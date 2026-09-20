@@ -1,5 +1,4 @@
-const { treesFromJpeg } = require("./trees");
-const UA = "openintent-clutter/0.6.1 (https://github.com/jolla/openintent-clutter)";
+const UA = "openintent-clutter/0.6.2 (https://github.com/jolla/openintent-clutter)";
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -83,12 +82,23 @@ function ringCoords(pts, imgW, imgH) {
 }
 function pickMat(areaM2, heightM) {
   const h = heightM > 2 ? heightM : areaM2 >= 80000 ? 32 : areaM2 >= 25000 ? 16 : areaM2 >= 4000 ? 8 : 4.5;
-  if (h >= 24) return { ...MAT.five, top_height: Math.min(80, h) };
+  if (h >= 24) return { ...MAT.ten, top_height: Math.min(80, h) };
   if (h >= 10) return { ...MAT.five, top_height: h };
   return { ...MAT.one, top_height: Math.max(3.5, h) };
 }
 function json(status, cors, obj) {
   return { statusCode: status, headers: { ...cors, "content-type": "application/json" }, body: JSON.stringify(obj) };
+}
+async function fetchOk(url) {
+  let last = "fetch failed";
+  for (let i = 0; i < 2; i++) {
+    try {
+      const r = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(6000) });
+      if (r.ok) return r;
+      last = "HTTP " + r.status;
+    } catch (e) { last = String(e.message || e); }
+  }
+  throw new Error(last);
 }
 
 exports.handler = async (event) => {
@@ -106,9 +116,9 @@ exports.handler = async (event) => {
   const lengthM = (north - south) * mpd.lat;
   if (widthM > 2500 || lengthM > 2500) return json(400, cors, { error: "bbox too large (max 2.5 km)" });
   if (widthM < 40 || lengthM < 40) return json(400, cors, { error: "bbox too small" });
-  let imgW = Math.round(widthM / 0.8);
-  let imgH = Math.round(lengthM / 0.8);
-  const maxSide = 1600;
+  let imgW = Math.round(widthM / 1.0);
+  let imgH = Math.round(lengthM / 1.0);
+  const maxSide = 1280;
   if (Math.max(imgW, imgH) > maxSide) {
     const k = maxSide / Math.max(imgW, imgH);
     imgW = Math.max(64, Math.round(imgW * k));
@@ -120,21 +130,16 @@ exports.handler = async (event) => {
     `?bbox=${bbox}&bboxSR=4326&imageSR=4326&size=${imgW},${imgH}&format=jpg&f=image`;
   const footprintsUrl = "https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/MSBFP2/FeatureServer/0/query" +
     "?f=geojson&returnGeometry=true&spatialRel=esriSpatialRelIntersects&geometryType=esriGeometryEnvelope" +
-    "&inSR=4326&outSR=4326&outFields=Height&resultRecordCount=400" +
+    "&inSR=4326&outSR=4326&outFields=Height&resultRecordCount=300" +
     `&geometry=${encodeURIComponent(JSON.stringify({ xmin: west, ymin: south, xmax: east, ymax: north, spatialReference: { wkid: 4326 } }))}`;
   let imgBuf, gj;
   try {
-    const [imgRes, fpRes] = await Promise.all([
-      fetch(imgUrl, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) }),
-      fetch(footprintsUrl, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) }),
-    ]);
-    if (!imgRes.ok) throw new Error("imagery " + imgRes.status);
+    const [imgRes, fpRes] = await Promise.all([fetchOk(imgUrl), fetchOk(footprintsUrl)]);
     imgBuf = Buffer.from(await imgRes.arrayBuffer());
     if (imgBuf.length < 100 || imgBuf[0] !== 0xff || imgBuf[1] !== 0xd8) throw new Error("imagery not jpeg");
-    if (!fpRes.ok) throw new Error("footprints " + fpRes.status);
     gj = await fpRes.json();
   } catch (e) {
-    return json(502, cors, { error: String(e.message || e) + " — draw a smaller box and retry" });
+    return json(502, cors, { error: String(e.message || e) + " — Esri timed out, retry or draw a smaller box" });
   }
   const areas = [];
   for (const f of gj.features || []) {
@@ -159,10 +164,6 @@ exports.handler = async (event) => {
       areas.push({ area: { coordinates: coords }, area_material: pickMat(am, heightM) });
     }
   }
-  let veg = { areas: [], clipboardZones: [], clipboardTypes: [] };
-  try { veg = treesFromJpeg(imgBuf, imgW, imgH, mpu, xyz); }
-  catch (e) {}
-  for (const a of veg.areas || []) areas.push(a);
   const rawName = String(body.name || "Site").slice(0, 60);
   const name = rawName.replace(/[^\w \-]/g, "").trim() || "Site";
   const slug = name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "") || "Site";
@@ -188,12 +189,11 @@ exports.handler = async (event) => {
     switches: [],
     openintent_version: "2.0.1",
   };
-  const files = [
+  const zip = zipStore([
     { name: `openIntent_${slug}.json`, data: Buffer.from(JSON.stringify(oi)) },
     { name: "images/" + imgName, data: imgBuf },
     { name: "export-warnings.json", data: Buffer.from('{"errors":[],"warnings":[]}') },
-  ];
-  const zip = zipStore(files);
+  ]);
   if (zip.length > 4500000) return json(413, cors, { error: "zip too large — draw a smaller box" });
   return {
     statusCode: 200,
