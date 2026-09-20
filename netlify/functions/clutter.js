@@ -1,4 +1,4 @@
-const UA = "openintent-clutter/0.6.2 (https://github.com/jolla/openintent-clutter)";
+const UA = "openintent-clutter/0.6.3 (https://github.com/jolla/openintent-clutter)";
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -63,9 +63,26 @@ const MAT = {
   five: material("Building - Five Floor", "#9A9A9A", 16, 5),
   ten: material("Building - Ten Floor", "#7A7A7A", 32, 5),
 };
+
+/** OpenIntent pixel coords: X east from west edge, Y north from south edge. */
 function llToPx(lon, lat, west, south, mpd, mpu) {
   return [((lon - west) * mpd.lon) / mpu, ((lat - south) * mpd.lat) / mpu];
 }
+
+/**
+ * HaminaClipboard meters for maps whose declared size IS widthM×lengthM
+ * (Esri imagery from this function). Empirical origin matching Planner paste:
+ *   x_clip = x_px * mpu - widthM
+ *   y_clip = y_from_south_px * mpu - lengthM
+ * Do NOT mix with a different auto-scale (see HANDOFF dual-scale / Wynn GE case).
+ */
+function pxToHaminaClip(xPx, yFromSouthPx, widthM, lengthM, mpu) {
+  return [
+    +(xPx * mpu - widthM).toFixed(4),
+    +(yFromSouthPx * mpu - lengthM).toFixed(4),
+  ];
+}
+
 function ringCoords(pts, imgW, imgH) {
   if (!pts || pts.length < 3) return null;
   const step = Math.max(1, Math.ceil(pts.length / 20));
@@ -80,12 +97,56 @@ function ringCoords(pts, imgW, imgH) {
   if (out.length < 4) return null;
   return out;
 }
+
+function ringCoordsClip(pts, imgW, imgH, widthM, lengthM, mpu) {
+  if (!pts || pts.length < 3) return null;
+  const step = Math.max(1, Math.ceil(pts.length / 20));
+  const out = [];
+  for (let i = 0; i < pts.length; i += step) {
+    const x = Math.min(imgW, Math.max(0, pts[i][0]));
+    const y = Math.min(imgH, Math.max(0, pts[i][1]));
+    out.push(pxToHaminaClip(x, y, widthM, lengthM, mpu));
+  }
+  if (out.length < 3) return null;
+  const a = out[0], b = out[out.length - 1];
+  if (a[0] !== b[0] || a[1] !== b[1]) out.push(out[0]);
+  if (out.length < 4) return null;
+  return out;
+}
+
 function pickMat(areaM2, heightM) {
   const h = heightM > 2 ? heightM : areaM2 >= 80000 ? 32 : areaM2 >= 25000 ? 16 : areaM2 >= 4000 ? 8 : 4.5;
   if (h >= 24) return { ...MAT.ten, top_height: Math.min(80, h) };
   if (h >= 10) return { ...MAT.five, top_height: h };
   return { ...MAT.one, top_height: Math.max(3.5, h) };
 }
+
+function pickTypeId(areaM2, heightM) {
+  const h = heightM > 2 ? heightM : areaM2 >= 80000 ? 32 : areaM2 >= 25000 ? 16 : areaM2 >= 4000 ? 8 : 4.5;
+  if (h >= 24) return "hotel";
+  if (h >= 10) return "bldg-five";
+  return "bldg-one";
+}
+
+const ZONE_TYPES = [
+  { id: "bldg-one", name: "Building - One Floor", color: "#C4C4C4", shortcutKey: "v", topEdge: 4.5, bottomEdge: null, attenuationDbPerMeter: 5.0, ituRModelEnabled: true, transparencyEnabled: false },
+  { id: "bldg-five", name: "Building - Five Floor", color: "#9A9A9A", shortcutKey: "b", topEdge: 16.0, bottomEdge: null, attenuationDbPerMeter: 5.0, ituRModelEnabled: true, transparencyEnabled: false },
+  { id: "hotel", name: "Hotel podium", color: "#8B6914", shortcutKey: "h", topEdge: 55.0, bottomEdge: null, attenuationDbPerMeter: 2.0, ituRModelEnabled: true, transparencyEnabled: false },
+];
+
+function emptyClipboard() {
+  return {
+    header: { type: "HaminaClipboard", version: [1, 0, 0], id: uuid() },
+    walls: [], wallEndpoints: [], wallTypes: [],
+    cableTrays: [], cableTrayEndpoints: [],
+    attenuatingZones: [],
+    attenuatingZoneTypes: ZONE_TYPES,
+    scopeZones: [], capacityZones: [], holeInFloorZones: [],
+    accessPoints: [], mapNotes: [], tiePoints: [], cableRisers: [],
+    clientDevices: [], networkInfraDevices: [], raisedFloorZones: [], slopedFloors: [],
+  };
+}
+
 function json(status, cors, obj) {
   return { statusCode: status, headers: { ...cors, "content-type": "application/json" }, body: JSON.stringify(obj) };
 }
@@ -125,6 +186,7 @@ exports.handler = async (event) => {
     imgH = Math.max(64, Math.round(imgH * k));
   }
   const mpu = widthM / imgW;
+  const wantClipboard = body.format === "hamina-clipboard" || body.clipboard === true || body.output === "clipboard";
   const bbox = `${west},${south},${east},${north}`;
   const imgUrl = "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export" +
     `?bbox=${bbox}&bboxSR=4326&imageSR=4326&size=${imgW},${imgH}&format=jpg&f=image`;
@@ -134,16 +196,25 @@ exports.handler = async (event) => {
     `&geometry=${encodeURIComponent(JSON.stringify({ xmin: west, ymin: south, xmax: east, ymax: north, spatialReference: { wkid: 4326 } }))}`;
   let imgBuf, gj;
   try {
-    const [imgRes, fpRes] = await Promise.all([fetchOk(imgUrl), fetchOk(footprintsUrl)]);
-    imgBuf = Buffer.from(await imgRes.arrayBuffer());
-    if (imgBuf.length < 100 || imgBuf[0] !== 0xff || imgBuf[1] !== 0xd8) throw new Error("imagery not jpeg");
-    gj = await fpRes.json();
+    // Clipboard-only path still needs footprints; skip imagery fetch to save time/timeout.
+    if (wantClipboard) {
+      const fpRes = await fetchOk(footprintsUrl);
+      gj = await fpRes.json();
+      imgBuf = null;
+    } else {
+      const [imgRes, fpRes] = await Promise.all([fetchOk(imgUrl), fetchOk(footprintsUrl)]);
+      imgBuf = Buffer.from(await imgRes.arrayBuffer());
+      if (imgBuf.length < 100 || imgBuf[0] !== 0xff || imgBuf[1] !== 0xd8) throw new Error("imagery not jpeg");
+      gj = await fpRes.json();
+    }
   } catch (e) {
     return json(502, cors, { error: String(e.message || e) + " — Esri timed out, retry or draw a smaller box" });
   }
+
   const areas = [];
+  const clipZones = [];
   for (const f of gj.features || []) {
-    if (areas.length > 300) break;
+    if (areas.length > 300 && clipZones.length > 300) break;
     const g = f.geometry;
     if (!g) continue;
     const heightM = Number((f.properties || {}).height || (f.properties || {}).Height || 0) || 0;
@@ -159,14 +230,43 @@ exports.handler = async (event) => {
       const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
       const am = (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys)) * mpu * mpu;
       if (am < 40) continue;
-      const coords = ringCoords(pts, imgW, imgH);
-      if (!coords) continue;
-      areas.push({ area: { coordinates: coords }, area_material: pickMat(am, heightM) });
+      if (am > 15000) continue; // drop campus mega-polygons
+      if (!wantClipboard) {
+        const coords = ringCoords(pts, imgW, imgH);
+        if (!coords) continue;
+        areas.push({ area: { coordinates: coords }, area_material: pickMat(am, heightM) });
+      } else {
+        const coords = ringCoordsClip(pts, imgW, imgH, widthM, lengthM, mpu);
+        if (!coords) continue;
+        clipZones.push({
+          typeId: pickTypeId(am, heightM),
+          area: { type: "Polygon", coordinates: [coords] },
+        });
+      }
     }
   }
+
   const rawName = String(body.name || "Site").slice(0, 60);
   const name = rawName.replace(/[^\w \-]/g, "").trim() || "Site";
   const slug = name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "") || "Site";
+
+  if (wantClipboard) {
+    const clip = emptyClipboard();
+    clip.attenuatingZones = clipZones;
+    return {
+      statusCode: 200,
+      headers: {
+        ...cors,
+        "content-type": "application/json",
+        "content-disposition": `attachment; filename="${slug}-hamina-clipboard.json"`,
+        "x-hamina-width-m": String(widthM),
+        "x-hamina-length-m": String(lengthM),
+        "x-hamina-mpu": String(mpu),
+      },
+      body: JSON.stringify(clip),
+    };
+  }
+
   const imgName = `${slug}.jpg`;
   const oi = {
     floorplans: [{
