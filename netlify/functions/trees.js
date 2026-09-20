@@ -56,7 +56,35 @@ function treesFromJpeg(imgBuf, imgW, imgH, mpu, xyz) {
   const w = raw.width, h = raw.height, data = raw.data;
   const sx = imgW / w;
   const sy = imgH / h;
-  const step = Math.max(8, Math.round(10 / mpu));
+  const step = Math.max(6, Math.round(8 / mpu));
+  const hits = [];
+  for (let yTop = step; yTop < h - step; yTop += step) {
+    for (let x = step; x < w - step; x += step) {
+      const i = (yTop * w + x) * 4;
+      if (!isVeg(data[i], data[i + 1], data[i + 2])) continue;
+      let ok = 0, n = 0;
+      for (let dy = -4; dy <= 4; dy += 4) {
+        for (let dx = -4; dx <= 4; dx += 4) {
+          const yy = yTop + dy, xx = x + dx;
+          if (yy < 0 || xx < 0 || yy >= h || xx >= w) continue;
+          n++;
+          if (isVeg(data[(yy * w + xx) * 4], data[(yy * w + xx) * 4 + 1], data[(yy * w + xx) * 4 + 2])) ok++;
+        }
+      }
+      if (n && ok / n < 0.4) continue;
+      hits.push({ x: x * sx, yUp: imgH - yTop * sy, seed: x * 0.13 + yTop * 0.07 });
+    }
+  }
+  const cell = Math.max(12, Math.round(14 / mpu));
+  const seen = new Set();
+  const picked = [];
+  for (const h0 of hits) {
+    const k = Math.floor(h0.x / cell) + ":" + Math.floor(h0.yUp / cell);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    picked.push(h0);
+    if (picked.length >= 180) break;
+  }
   const out = [];
   const zones = [];
   const typeCanopy = {
@@ -81,43 +109,23 @@ function treesFromJpeg(imgBuf, imgW, imgH, mpu, xyz) {
     ituRModelEnabled: true,
     transparencyEnabled: false,
   };
-  let n = 0;
-  for (let yTop = step; yTop < h - step && n < 160; yTop += step) {
-    for (let x = step; x < w - step; x += step) {
-      const i = (yTop * w + x) * 4;
-      if (!isVeg(data[i], data[i + 1], data[i + 2])) continue;
-      let hits = 0, samples = 0;
-      for (let dy = -4; dy <= 4; dy += 4) {
-        for (let dx = -4; dx <= 4; dx += 4) {
-          const yy = yTop + dy, xx = x + dx;
-          if (yy < 0 || xx < 0 || yy >= h || xx >= w) continue;
-          const j = (yy * w + xx) * 4;
-          samples++;
-          if (isVeg(data[j], data[j + 1], data[j + 2])) hits++;
-        }
-      }
-      if (samples && hits / samples < 0.4) continue;
-      const xMap = x * sx;
-      const yUp = imgH - yTop * sy;
-      const seed = x * 0.13 + yTop * 0.07;
-      const rCanopy = (5.0 + (n % 4) * 0.5) / mpu;
-      const rTrunk = 0.5 / mpu;
-      const canopy = toArea(blob(xMap, yUp, rCanopy, 10, 0.22, seed), imgW, imgH, CANOPY, xyz);
-      const trunk = toArea(blob(xMap, yUp, rTrunk, 8, 0.08, seed + 1), imgW, imgH, TRUNK, xyz);
-      if (canopy) out.push(canopy);
-      if (trunk) out.push(trunk);
-      const ringM = (ring) => ring.map(([px, py]) => [px * mpu, py * mpu]);
-      zones.push({
-        typeId: typeTrunk.id,
-        area: { type: "Polygon", coordinates: [ringM(blob(xMap, yUp, rTrunk, 8, 0.08, seed + 1))] },
-      });
-      zones.push({
-        typeId: typeCanopy.id,
-        area: { type: "Polygon", coordinates: [ringM(blob(xMap, yUp, rCanopy, 10, 0.22, seed))] },
-      });
-      n++;
-    }
-  }
+  picked.forEach((p, n) => {
+    const rCanopy = (4.8 + (n % 4) * 0.5) / mpu;
+    const rTrunk = 0.5 / mpu;
+    const canopy = toArea(blob(p.x, p.yUp, rCanopy, 10, 0.22, p.seed), imgW, imgH, CANOPY, xyz);
+    const trunk = toArea(blob(p.x, p.yUp, rTrunk, 8, 0.08, p.seed + 1), imgW, imgH, TRUNK, xyz);
+    if (canopy) out.push(canopy);
+    if (trunk) out.push(trunk);
+    const ringM = (ring) => ring.map(([px, py]) => [px * mpu, py * mpu]);
+    zones.push({
+      typeId: typeTrunk.id,
+      area: { type: "Polygon", coordinates: [ringM(blob(p.x, p.yUp, rTrunk, 8, 0.08, p.seed + 1))] },
+    });
+    zones.push({
+      typeId: typeCanopy.id,
+      area: { type: "Polygon", coordinates: [ringM(blob(p.x, p.yUp, rCanopy, 10, 0.22, p.seed))] },
+    });
+  });
   return { areas: out, clipboardZones: zones, clipboardTypes: [typeCanopy, typeTrunk] };
 }
 
