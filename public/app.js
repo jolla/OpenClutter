@@ -69,21 +69,31 @@ document.getElementById("search").onsubmit = async (e) => {
   }
 };
 
+async function exportOnce() {
+  const r = await fetch("/api/clutter", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...bbox, name: document.getElementById("q").value || "Site" }),
+  });
+  if (!r.ok) {
+    const t = await r.json().catch(() => ({ error: r.status + " " + r.statusText }));
+    throw new Error(t.error || ("Export failed (" + r.status + ")"));
+  }
+  return r.blob();
+}
+
 document.getElementById("export").onclick = async () => {
   if (!bbox) return;
   exportBtn.disabled = true;
   setStatus("Building OpenIntent zip…");
   try {
-    const r = await fetch("/api/clutter", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...bbox, name: document.getElementById("q").value || "Site" }),
-    });
-    if (!r.ok) {
-      const t = await r.json().catch(() => ({ error: r.statusText }));
-      throw new Error(t.error || "Export failed");
+    let blob;
+    try {
+      blob = await exportOnce();
+    } catch (e) {
+      setStatus("Retrying… " + e.message);
+      blob = await exportOnce();
     }
-    const blob = await r.blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = "openintent-clutter.zip";
@@ -91,7 +101,7 @@ document.getElementById("export").onclick = async () => {
     URL.revokeObjectURL(a.href);
     setStatus(`Downloaded ${Math.round(blob.size / 1024)} KB. Import the zip in Hamina.`);
   } catch (err) {
-    setStatus(err.message, true);
+    setStatus(err.message + " — try a smaller box and export again.", true);
   } finally {
     exportBtn.disabled = false;
   }
