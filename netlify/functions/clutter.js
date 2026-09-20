@@ -1,4 +1,4 @@
-const UA = "openintent-clutter/0.2 (https://github.com/jolla/openintent-clutter)";
+const UA = "openintent-clutter/0.3 (https://github.com/jolla/openintent-clutter)";
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -8,7 +8,6 @@ const CRC_TABLE = (() => {
   }
   return t;
 })();
-
 function crc32(buf) {
   let c = 0xffffffff;
   for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
@@ -41,101 +40,80 @@ function zipStore(files) {
   ]);
   return Buffer.concat([...locals, central, end]);
 }
-
 function metersPerDeg(lat) {
   const rad = (lat * Math.PI) / 180;
   return { lon: 111320 * Math.cos(rad), lat: 110540 };
 }
-function xyz(x, y) {
-  return { coordinate_xyz: { x: +x.toFixed(2), y: +y.toFixed(2), unit: "pixels" } };
+function uuid() {
+  const b = Buffer.alloc(16);
+  for (let i = 0; i < 16; i++) b[i] = (Math.random() * 256) | 0;
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = b.toString("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
-function material(name, color, top, db, bottom) {
-  const m = { name, display_color: color, top_height: top, rf_properties: { attenuation_per_m: db } };
-  if (bottom != null) m.bottom_height = bottom;
-  return m;
+function xyz(x, y) {
+  return { coordinate_xyz: { x: +Math.max(0, x).toFixed(3), y: +Math.max(0, y).toFixed(3), unit: "pixels" } };
+}
+function material(name, color, top, db) {
+  return { name, display_color: color, top_height: +top, rf_properties: { attenuation_per_m: +db } };
 }
 const MAT = {
   one: material("Building - One Floor", "#C4C4C4", 4.5, 5),
   five: material("Building - Five Floor", "#9A9A9A", 16, 5),
   ten: material("Building - Ten Floor", "#7A7A7A", 32, 5),
-  tall: material("Building - Ten Floor", "#5A5A5A", 55, 2),
-  fol: material("Foliage - Heavy", "#3F7D2A", 12, 2, 3.5),
-  trunk: material("Tree Trunk", "#8B6B4F", 8, 10),
+  fol: material("Foliage - Heavy", "#3F7D2A", 12, 2),
 };
 function llToPx(lon, lat, west, south, mpd, mpu) {
   return [((lon - west) * mpd.lon) / mpu, ((lat - south) * mpd.lat) / mpu];
 }
-function simplify(ring, minM, mpd) {
-  if (ring.length < 5) return ring;
-  const out = [ring[0]];
-  let acc = 0;
-  for (let i = 1; i < ring.length - 1; i++) {
-    const a = out[out.length - 1], b = ring[i];
-    acc += Math.hypot((b[0] - a[0]) * mpd.lon, (b[1] - a[1]) * mpd.lat);
-    if (acc >= minM) { out.push(b); acc = 0; }
-  }
-  out.push(ring[ring.length - 1]);
-  if (out[0][0] !== out[out.length - 1][0] || out[0][1] !== out[out.length - 1][1]) out.push(out[0]);
-  return out.length >= 4 ? out : ring;
+function bboxCoords(xs, ys, imgW, imgH) {
+  const x0 = Math.min(imgW, Math.max(0, Math.min(...xs)));
+  const x1 = Math.min(imgW, Math.max(0, Math.max(...xs)));
+  const y0 = Math.min(imgH, Math.max(0, Math.min(...ys)));
+  const y1 = Math.min(imgH, Math.max(0, Math.max(...ys)));
+  if (x1 - x0 < 3 || y1 - y0 < 3) return null;
+  return [xyz(x0, y0), xyz(x1, y0), xyz(x1, y1), xyz(x0, y1), xyz(x0, y0)];
 }
-function ringAreaM2(ring, mpd) {
-  let a = 0;
-  for (let i = 0; i < ring.length - 1; i++) {
-    const x0 = ring[i][0] * mpd.lon, y0 = ring[i][1] * mpd.lat;
-    const x1 = ring[i + 1][0] * mpd.lon, y1 = ring[i + 1][1] * mpd.lat;
-    a += x0 * y1 - x1 * y0;
-  }
-  return Math.abs(a) / 2;
-}
-function ringToArea(ring, west, south, mpd, mpu, imgW, imgH) {
-  const coords = [];
-  let on = 0;
-  for (const [lon, lat] of ring) {
-    let [x, y] = llToPx(lon, lat, west, south, mpd, mpu);
-    if (x >= 0 && x <= imgW && y >= 0 && y <= imgH) on++;
-    x = Math.max(-2, Math.min(imgW + 2, x));
-    y = Math.max(-2, Math.min(imgH + 2, y));
-    coords.push(xyz(x, y));
-  }
-  if (coords.length && (coords[0].coordinate_xyz.x !== coords[coords.length - 1].coordinate_xyz.x ||
-      coords[0].coordinate_xyz.y !== coords[coords.length - 1].coordinate_xyz.y)) {
-    coords.push(coords[0]);
-  }
-  return on >= 2 && coords.length >= 4 ? coords : null;
-}
-function pickBuildingMat(areaM2, heightM) {
-  const h = heightM && heightM > 2 ? heightM : areaM2 >= 80000 ? 32 : areaM2 >= 25000 ? 16 : areaM2 >= 4000 ? 8 : 4.5;
-  if (h >= 40) return { ...MAT.tall, top_height: Math.min(h, 80) };
-  if (h >= 24) return { ...MAT.ten, top_height: h };
+function pickMat(areaM2, heightM) {
+  const h = heightM > 2 ? heightM : areaM2 >= 80000 ? 32 : areaM2 >= 25000 ? 16 : areaM2 >= 4000 ? 8 : 4.5;
+  if (h >= 24) return { ...MAT.ten, top_height: Math.min(80, h) };
   if (h >= 10) return { ...MAT.five, top_height: h };
   return { ...MAT.one, top_height: Math.max(3.5, h) };
 }
-function circle(cx, cy, rPx, n) {
+function clipRing(ring, west, south, mpd, mpu, imgW, imgH) {
   const pts = [];
-  for (let i = 0; i < n; i++) {
-    const a = (2 * Math.PI * i) / n;
-    pts.push(xyz(cx + rPx * Math.cos(a), cy + rPx * Math.sin(a)));
+  for (const [lon, lat] of ring) {
+    let [x, y] = llToPx(lon, lat, west, south, mpd, mpu);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    pts.push([Math.min(imgW, Math.max(0, x)), Math.min(imgH, Math.max(0, y))]);
   }
-  pts.push(pts[0]);
-  return pts;
+  if (pts.length < 3) return null;
+  const dec = [];
+  const step = Math.max(1, Math.ceil(pts.length / 16));
+  for (let i = 0; i < pts.length; i += step) dec.push(pts[i]);
+  const a = dec[0], b = dec[dec.length - 1];
+  if (a[0] !== b[0] || a[1] !== b[1]) dec.push(a);
+  if (dec.length < 4) return null;
+  return dec.map(([x, y]) => xyz(x, y));
 }
 async function overpassTrees(west, south, east, north) {
-  const q = `[out:json][timeout:12];
+  const q = `[out:json][timeout:8];
 (
   way["natural"="wood"](${south},${west},${north},${east});
   way["landuse"="forest"](${south},${west},${north},${east});
-  way["leisure"="golf_course"](${south},${west},${north},${east});
-  way["natural"="scrub"](${south},${west},${north},${east});
   node["natural"="tree"](${south},${west},${north},${east});
 );
 out geom qt;`;
-  const r = await fetch("https://overpass-api.de/api/interpreter", {
-    method: "POST",
-    headers: { "user-agent": UA, "content-type": "application/x-www-form-urlencoded" },
-    body: "data=" + encodeURIComponent(q),
-  });
-  if (!r.ok) return { elements: [] };
-  return r.json();
+  try {
+    const r = await fetch("https://overpass-api.de/api/interpreter", {
+      method: "POST",
+      headers: { "user-agent": UA, "content-type": "application/x-www-form-urlencoded" },
+      body: "data=" + encodeURIComponent(q),
+    });
+    if (!r.ok) return { elements: [] };
+    return await r.json();
+  } catch { return { elements: [] }; }
 }
 function json(status, cors, obj) {
   return { statusCode: status, headers: { ...cors, "content-type": "application/json" }, body: JSON.stringify(obj) };
@@ -149,7 +127,7 @@ exports.handler = async (event) => {
   try { body = JSON.parse(event.body || "{}"); }
   catch { return json(400, cors, { error: "invalid json" }); }
   const west = +body.west, south = +body.south, east = +body.east, north = +body.north;
-  if (![west, south, east, north].every(Number.isFinite)) return json(400, cors, { error: "west,south,east,north required" });
+  if (![west, south, east, north].every(Number.isFinite)) return json(400, cors, { error: "bbox required" });
   if (east <= west || north <= south) return json(400, cors, { error: "bad bbox" });
   const mpd = metersPerDeg((south + north) / 2);
   const widthM = (east - west) * mpd.lon;
@@ -161,8 +139,8 @@ exports.handler = async (event) => {
   const maxSide = 3840;
   if (Math.max(imgW, imgH) > maxSide) {
     const k = maxSide / Math.max(imgW, imgH);
-    imgW = Math.round(imgW * k);
-    imgH = Math.round(imgH * k);
+    imgW = Math.max(64, Math.round(imgW * k));
+    imgH = Math.max(64, Math.round(imgH * k));
   }
   const mpu = widthM / imgW;
   const bbox = `${west},${south},${east},${north}`;
@@ -170,9 +148,9 @@ exports.handler = async (event) => {
     `?bbox=${bbox}&bboxSR=4326&imageSR=4326&size=${imgW},${imgH}&format=jpg&f=image`;
   const footprintsUrl = "https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/MSBFP2/FeatureServer/0/query" +
     "?f=geojson&returnGeometry=true&spatialRel=esriSpatialRelIntersects&geometryType=esriGeometryEnvelope" +
-    "&inSR=4326&outSR=4326&outFields=*&resultRecordCount=2000" +
+    "&inSR=4326&outSR=4326&outFields=*&resultRecordCount=800" +
     `&geometry=${encodeURIComponent(JSON.stringify({ xmin: west, ymin: south, xmax: east, ymax: north, spatialReference: { wkid: 4326 } }))}`;
-  let imgBuf, gj, osm;
+  let imgBuf, gj, osm = { elements: [] };
   try {
     const [imgRes, fpRes, osmJ] = await Promise.all([
       fetch(imgUrl, { headers: { "user-agent": UA } }),
@@ -181,63 +159,75 @@ exports.handler = async (event) => {
     ]);
     if (!imgRes.ok) throw new Error("imagery " + imgRes.status);
     imgBuf = Buffer.from(await imgRes.arrayBuffer());
+    if (imgBuf.length < 100 || imgBuf[0] !== 0xff || imgBuf[1] !== 0xd8) throw new Error("imagery not jpeg");
     if (!fpRes.ok) throw new Error("footprints " + fpRes.status);
     gj = await fpRes.json();
-    osm = osmJ;
+    osm = osmJ || { elements: [] };
   } catch (e) {
     return json(502, cors, { error: String(e.message || e) });
   }
   const areas = [];
   for (const f of gj.features || []) {
+    if (areas.length > 400) break;
     const g = f.geometry;
     if (!g) continue;
-    const props = f.properties || {};
-    const heightM = Number(props.height || props.Height || props.HEIGHT || props.building_height || 0);
+    const heightM = Number((f.properties || {}).height || 0) || 0;
     const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
     for (const poly of polys) {
-      const ring = simplify(poly[0] || [], 6, mpd);
-      const coords = ringToArea(ring, west, south, mpd, mpu, imgW, imgH);
+      const ring = poly[0] || [];
+      const xs = [], ys = [];
+      for (const [lon, lat] of ring) {
+        const [x, y] = llToPx(lon, lat, west, south, mpd, mpu);
+        if (Number.isFinite(x) && Number.isFinite(y)) { xs.push(x); ys.push(y); }
+      }
+      if (!xs.length) continue;
+      const coords = bboxCoords(xs, ys, imgW, imgH);
       if (!coords) continue;
-      const am = ringAreaM2(ring, mpd);
+      const am = (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys)) * mpu * mpu;
       if (am < 40) continue;
-      areas.push({ area: { coordinates: coords }, area_material: pickBuildingMat(am, heightM) });
+      areas.push({ area: { coordinates: coords }, area_material: pickMat(am, heightM) });
     }
   }
-  let treeN = 0;
+  let trees = 0;
   for (const el of osm.elements || []) {
-    if (treeN > 180) break;
+    if (trees > 80) break;
     if (el.type === "node" && el.lat) {
       const [x, y] = llToPx(el.lon, el.lat, west, south, mpd, mpu);
-      if (x < 0 || y < 0 || x > imgW || y > imgH) continue;
-      const r = 6 / mpu;
-      areas.push({ area: { coordinates: circle(x, y, r * 1.1, 8) }, area_material: MAT.fol });
-      areas.push({ area: { coordinates: circle(x, y, Math.max(1.2, r * 0.18), 6) }, area_material: MAT.trunk });
-      treeN++;
-    } else if (el.type === "way" && el.geometry && el.geometry.length >= 4) {
-      const ring = el.geometry.map((p) => [p.lon, p.lat]);
-      if (ring[0][0] !== ring[ring.length - 1][0]) ring.push(ring[0]);
-      const coords = ringToArea(simplify(ring, 10, mpd), west, south, mpd, mpu, imgW, imgH);
+      const coords = bboxCoords([x - 8, x + 8], [y - 8, y + 8], imgW, imgH);
       if (!coords) continue;
       areas.push({ area: { coordinates: coords }, area_material: MAT.fol });
-      treeN++;
+      trees++;
+    } else if (el.type === "way" && el.geometry && el.geometry.length >= 4) {
+      const coords = clipRing(el.geometry.map((p) => [p.lon, p.lat]), west, south, mpd, mpu, imgW, imgH);
+      if (!coords) continue;
+      areas.push({ area: { coordinates: coords }, area_material: MAT.fol });
+      trees++;
     }
   }
-  const name = String(body.name || "Site").slice(0, 80);
+  const rawName = String(body.name || "Site").slice(0, 60);
+  const name = rawName.replace(/[^\w \-]/g, "").trim() || "Site";
   const slug = name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "") || "Site";
   const imgName = `${slug}.jpg`;
   const oi = {
-    openintent_version: "2.0.1",
     floorplans: [{
-      name, project_name: name + " Clutter", rotation: 0, map_uri: "file://images/" + imgName,
+      name,
+      project_name: name + " Clutter",
+      floor_id: uuid(),
+      rotation: 0,
+      map_uri: "file://images/" + imgName,
       dimensions: [
         { width: imgW, length: imgH, height: 12, unit: "pixels" },
-        { width: widthM, length: lengthM, height: 55, unit: "meters" },
-        { width: widthM / 0.3048, length: lengthM / 0.3048, height: 55 / 0.3048, unit: "feet" },
+        { width: widthM, length: lengthM, height: 2.5, unit: "meters" },
+        { width: widthM / 0.3048, length: lengthM / 0.3048, height: 8.202, unit: "feet" },
       ],
-      attenuation_areas: areas, wall_segments: [], coverage_areas: [], reference_markers: [], closets: [],
+      attenuation_areas: areas,
+      coverage_areas: [],
+      reference_markers: [],
+      closets: [],
     }],
-    area_materials: [MAT.one, MAT.five, MAT.ten, MAT.tall, MAT.fol, MAT.trunk],
-    wall_materials: [], switches: [],
+    wall_materials: [],
+    switches: [],
+    openintent_version: "2.0.1",
   };
   const zip = zipStore([
     { name: `openIntent_${slug}.json`, data: Buffer.from(JSON.stringify(oi)) },
@@ -246,7 +236,11 @@ exports.handler = async (event) => {
   ]);
   return {
     statusCode: 200,
-    headers: { ...cors, "content-type": "application/zip", "content-disposition": `attachment; filename="${slug}-openintent.zip"` },
+    headers: {
+      ...cors,
+      "content-type": "application/zip",
+      "content-disposition": `attachment; filename="${slug}-openintent.zip"`,
+    },
     body: zip.toString("base64"),
     isBase64Encoded: true,
   };
