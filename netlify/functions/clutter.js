@@ -1,5 +1,5 @@
 const { treesFromJpeg } = require("./trees");
-const UA = "openintent-clutter/0.5 (https://github.com/jolla/openintent-clutter)";
+const UA = "openintent-clutter/0.6 (https://github.com/jolla/openintent-clutter)";
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -63,18 +63,23 @@ const MAT = {
   one: material("Building - One Floor", "#C4C4C4", 4.5, 5),
   five: material("Building - Five Floor", "#9A9A9A", 16, 5),
   ten: material("Building - Ten Floor", "#7A7A7A", 32, 5),
-  fol: material("Foliage - Heavy", "#3F7D2A", 12, 2),
 };
 function llToPx(lon, lat, west, south, mpd, mpu) {
   return [((lon - west) * mpd.lon) / mpu, ((lat - south) * mpd.lat) / mpu];
 }
-function bboxCoords(xs, ys, imgW, imgH) {
-  const x0 = Math.min(imgW, Math.max(0, Math.min(...xs)));
-  const x1 = Math.min(imgW, Math.max(0, Math.max(...xs)));
-  const y0 = Math.min(imgH, Math.max(0, Math.min(...ys)));
-  const y1 = Math.min(imgH, Math.max(0, Math.max(...ys)));
-  if (x1 - x0 < 3 || y1 - y0 < 3) return null;
-  return [xyz(x0, y0), xyz(x1, y0), xyz(x1, y1), xyz(x0, y1), xyz(x0, y0)];
+function ringCoords(pts, imgW, imgH) {
+  if (!pts || pts.length < 3) return null;
+  const step = Math.max(1, Math.ceil(pts.length / 20));
+  const out = [];
+  for (let i = 0; i < pts.length; i += step) {
+    const x = Math.min(imgW, Math.max(0, pts[i][0]));
+    const y = Math.min(imgH, Math.max(0, pts[i][1]));
+    out.push(xyz(x, y));
+  }
+  const a = out[0].coordinate_xyz, b = out[out.length - 1].coordinate_xyz;
+  if (a.x !== b.x || a.y !== b.y) out.push(out[0]);
+  if (out.length < 4) return null;
+  return out;
 }
 function pickMat(areaM2, heightM) {
   const h = heightM > 2 ? heightM : areaM2 >= 80000 ? 32 : areaM2 >= 25000 ? 16 : areaM2 >= 4000 ? 8 : 4.5;
@@ -140,16 +145,17 @@ exports.handler = async (event) => {
     const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
     for (const poly of polys) {
       const ring = poly[0] || [];
-      const xs = [], ys = [];
+      const pts = [];
       for (const [lon, lat] of ring) {
         const [x, y] = llToPx(lon, lat, west, south, mpd, mpu);
-        if (Number.isFinite(x) && Number.isFinite(y)) { xs.push(x); ys.push(y); }
+        if (Number.isFinite(x) && Number.isFinite(y)) pts.push([x, y]);
       }
-      if (!xs.length) continue;
-      const coords = bboxCoords(xs, ys, imgW, imgH);
-      if (!coords) continue;
+      if (pts.length < 3) continue;
+      const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
       const am = (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys)) * mpu * mpu;
       if (am < 40) continue;
+      const coords = ringCoords(pts, imgW, imgH);
+      if (!coords) continue;
       areas.push({ area: { coordinates: coords }, area_material: pickMat(am, heightM) });
     }
   }
