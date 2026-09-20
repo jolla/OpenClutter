@@ -130,7 +130,7 @@ exports.handler = async (event) => {
     `?bbox=${bbox}&bboxSR=4326&imageSR=4326&size=${imgW},${imgH}&format=jpg&f=image`;
   const footprintsUrl = "https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/MSBFP2/FeatureServer/0/query" +
     "?f=geojson&returnGeometry=true&spatialRel=esriSpatialRelIntersects&geometryType=esriGeometryEnvelope" +
-    "&inSR=4326&outSR=4326&outFields=Height&resultRecordCount=300" +
+    "&inSR=4326&outSR=4326&outFields=*&resultRecordCount=300" +
     `&geometry=${encodeURIComponent(JSON.stringify({ xmin: west, ymin: south, xmax: east, ymax: north, spatialReference: { wkid: 4326 } }))}`;
   let imgBuf, gj;
   try {
