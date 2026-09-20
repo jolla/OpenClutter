@@ -1,4 +1,5 @@
-const UA = "openintent-clutter/0.3 (https://github.com/jolla/openintent-clutter)";
+const { treesFromJpeg } = require("./trees");
+const UA = "openintent-clutter/0.4 (https://github.com/jolla/openintent-clutter)";
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -204,6 +205,9 @@ exports.handler = async (event) => {
       trees++;
     }
   }
+  try {
+    for (const a of treesFromJpeg(imgBuf, imgW, imgH, mpu, bboxCoords, MAT.fol)) areas.push(a);
+  } catch (e) {}
   const rawName = String(body.name || "Site").slice(0, 60);
   const name = rawName.replace(/[^\w \-]/g, "").trim() || "Site";
   const slug = name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "") || "Site";
