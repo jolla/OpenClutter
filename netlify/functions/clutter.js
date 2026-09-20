@@ -1,5 +1,5 @@
 const { treesFromJpeg } = require("./trees");
-const UA = "openintent-clutter/0.6 (https://github.com/jolla/openintent-clutter)";
+const UA = "openintent-clutter/0.6.1 (https://github.com/jolla/openintent-clutter)";
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -83,7 +83,7 @@ function ringCoords(pts, imgW, imgH) {
 }
 function pickMat(areaM2, heightM) {
   const h = heightM > 2 ? heightM : areaM2 >= 80000 ? 32 : areaM2 >= 25000 ? 16 : areaM2 >= 4000 ? 8 : 4.5;
-  if (h >= 24) return { ...MAT.ten, top_height: Math.min(80, h) };
+  if (h >= 24) return { ...MAT.five, top_height: Math.min(80, h) };
   if (h >= 10) return { ...MAT.five, top_height: h };
   return { ...MAT.one, top_height: Math.max(3.5, h) };
 }
@@ -106,9 +106,9 @@ exports.handler = async (event) => {
   const lengthM = (north - south) * mpd.lat;
   if (widthM > 2500 || lengthM > 2500) return json(400, cors, { error: "bbox too large (max 2.5 km)" });
   if (widthM < 40 || lengthM < 40) return json(400, cors, { error: "bbox too small" });
-  let imgW = Math.round(widthM / 0.6);
-  let imgH = Math.round(lengthM / 0.6);
-  const maxSide = 3840;
+  let imgW = Math.round(widthM / 0.8);
+  let imgH = Math.round(lengthM / 0.8);
+  const maxSide = 1600;
   if (Math.max(imgW, imgH) > maxSide) {
     const k = maxSide / Math.max(imgW, imgH);
     imgW = Math.max(64, Math.round(imgW * k));
@@ -120,13 +120,13 @@ exports.handler = async (event) => {
     `?bbox=${bbox}&bboxSR=4326&imageSR=4326&size=${imgW},${imgH}&format=jpg&f=image`;
   const footprintsUrl = "https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/MSBFP2/FeatureServer/0/query" +
     "?f=geojson&returnGeometry=true&spatialRel=esriSpatialRelIntersects&geometryType=esriGeometryEnvelope" +
-    "&inSR=4326&outSR=4326&outFields=*&resultRecordCount=800" +
+    "&inSR=4326&outSR=4326&outFields=Height&resultRecordCount=400" +
     `&geometry=${encodeURIComponent(JSON.stringify({ xmin: west, ymin: south, xmax: east, ymax: north, spatialReference: { wkid: 4326 } }))}`;
   let imgBuf, gj;
   try {
     const [imgRes, fpRes] = await Promise.all([
-      fetch(imgUrl, { headers: { "user-agent": UA } }),
-      fetch(footprintsUrl, { headers: { "user-agent": UA } }),
+      fetch(imgUrl, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) }),
+      fetch(footprintsUrl, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) }),
     ]);
     if (!imgRes.ok) throw new Error("imagery " + imgRes.status);
     imgBuf = Buffer.from(await imgRes.arrayBuffer());
@@ -134,14 +134,14 @@ exports.handler = async (event) => {
     if (!fpRes.ok) throw new Error("footprints " + fpRes.status);
     gj = await fpRes.json();
   } catch (e) {
-    return json(502, cors, { error: String(e.message || e) });
+    return json(502, cors, { error: String(e.message || e) + " — draw a smaller box and retry" });
   }
   const areas = [];
   for (const f of gj.features || []) {
-    if (areas.length > 400) break;
+    if (areas.length > 300) break;
     const g = f.geometry;
     if (!g) continue;
-    const heightM = Number((f.properties || {}).height || 0) || 0;
+    const heightM = Number((f.properties || {}).height || (f.properties || {}).Height || 0) || 0;
     const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
     for (const poly of polys) {
       const ring = poly[0] || [];
@@ -193,23 +193,8 @@ exports.handler = async (event) => {
     { name: "images/" + imgName, data: imgBuf },
     { name: "export-warnings.json", data: Buffer.from('{"errors":[],"warnings":[]}') },
   ];
-  if (veg.clipboardZones && veg.clipboardZones.length) {
-    files.push({
-      name: "hamina-trees-clipboard.json",
-      data: Buffer.from(JSON.stringify({
-        header: { type: "HaminaClipboard", version: [1, 0, 0], id: uuid() },
-        attenuatingZones: veg.clipboardZones,
-        attenuatingZoneTypes: veg.clipboardTypes,
-        walls: [], wallEndpoints: [], wallTypes: [],
-        cableTrays: [], cableTrayEndpoints: [],
-        scopeZones: [], capacityZones: [], holeInFloorZones: [],
-        accessPoints: [], mapNotes: [], tiePoints: [],
-        cableRisers: [], clientDevices: [], networkInfraDevices: [],
-        raisedFloorZones: [], slopedFloors: [],
-      })),
-    });
-  }
   const zip = zipStore(files);
+  if (zip.length > 4500000) return json(413, cors, { error: "zip too large — draw a smaller box" });
   return {
     statusCode: 200,
     headers: {
