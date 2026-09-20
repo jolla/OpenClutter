@@ -1,0 +1,7 @@
+{
+  "name": "openintent-clutter",
+  "private": true,
+  "dependencies": {
+    "jpeg-js": "^0.4.4"
+  }
+}
