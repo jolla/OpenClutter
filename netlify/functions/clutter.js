@@ -1,5 +1,5 @@
 const { treesFromJpeg } = require("./trees");
-const UA = "openintent-clutter/0.4 (https://github.com/jolla/openintent-clutter)";
+const UA = "openintent-clutter/0.5 (https://github.com/jolla/openintent-clutter)";
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -57,7 +57,7 @@ function xyz(x, y) {
   return { coordinate_xyz: { x: +Math.max(0, x).toFixed(3), y: +Math.max(0, y).toFixed(3), unit: "pixels" } };
 }
 function material(name, color, top, db) {
-  return { name, display_color: color, top_height: +top, rf_properties: { attenuation_per_m: +db } };
+  return { name, display_color: color, top_height: +top, rf_properties: { attenuation_per_m: db } };
 }
 const MAT = {
   one: material("Building - One Floor", "#C4C4C4", 4.5, 5),
@@ -81,40 +81,6 @@ function pickMat(areaM2, heightM) {
   if (h >= 24) return { ...MAT.ten, top_height: Math.min(80, h) };
   if (h >= 10) return { ...MAT.five, top_height: h };
   return { ...MAT.one, top_height: Math.max(3.5, h) };
-}
-function clipRing(ring, west, south, mpd, mpu, imgW, imgH) {
-  const pts = [];
-  for (const [lon, lat] of ring) {
-    let [x, y] = llToPx(lon, lat, west, south, mpd, mpu);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-    pts.push([Math.min(imgW, Math.max(0, x)), Math.min(imgH, Math.max(0, y))]);
-  }
-  if (pts.length < 3) return null;
-  const dec = [];
-  const step = Math.max(1, Math.ceil(pts.length / 16));
-  for (let i = 0; i < pts.length; i += step) dec.push(pts[i]);
-  const a = dec[0], b = dec[dec.length - 1];
-  if (a[0] !== b[0] || a[1] !== b[1]) dec.push(a);
-  if (dec.length < 4) return null;
-  return dec.map(([x, y]) => xyz(x, y));
-}
-async function overpassTrees(west, south, east, north) {
-  const q = `[out:json][timeout:8];
-(
-  way["natural"="wood"](${south},${west},${north},${east});
-  way["landuse"="forest"](${south},${west},${north},${east});
-  node["natural"="tree"](${south},${west},${north},${east});
-);
-out geom qt;`;
-  try {
-    const r = await fetch("https://overpass-api.de/api/interpreter", {
-      method: "POST",
-      headers: { "user-agent": UA, "content-type": "application/x-www-form-urlencoded" },
-      body: "data=" + encodeURIComponent(q),
-    });
-    if (!r.ok) return { elements: [] };
-    return await r.json();
-  } catch { return { elements: [] }; }
 }
 function json(status, cors, obj) {
   return { statusCode: status, headers: { ...cors, "content-type": "application/json" }, body: JSON.stringify(obj) };
@@ -151,19 +117,17 @@ exports.handler = async (event) => {
     "?f=geojson&returnGeometry=true&spatialRel=esriSpatialRelIntersects&geometryType=esriGeometryEnvelope" +
     "&inSR=4326&outSR=4326&outFields=*&resultRecordCount=800" +
     `&geometry=${encodeURIComponent(JSON.stringify({ xmin: west, ymin: south, xmax: east, ymax: north, spatialReference: { wkid: 4326 } }))}`;
-  let imgBuf, gj, osm = { elements: [] };
+  let imgBuf, gj;
   try {
-    const [imgRes, fpRes, osmJ] = await Promise.all([
+    const [imgRes, fpRes] = await Promise.all([
       fetch(imgUrl, { headers: { "user-agent": UA } }),
       fetch(footprintsUrl, { headers: { "user-agent": UA } }),
-      overpassTrees(west, south, east, north),
     ]);
     if (!imgRes.ok) throw new Error("imagery " + imgRes.status);
     imgBuf = Buffer.from(await imgRes.arrayBuffer());
     if (imgBuf.length < 100 || imgBuf[0] !== 0xff || imgBuf[1] !== 0xd8) throw new Error("imagery not jpeg");
     if (!fpRes.ok) throw new Error("footprints " + fpRes.status);
     gj = await fpRes.json();
-    osm = osmJ || { elements: [] };
   } catch (e) {
     return json(502, cors, { error: String(e.message || e) });
   }
@@ -189,25 +153,10 @@ exports.handler = async (event) => {
       areas.push({ area: { coordinates: coords }, area_material: pickMat(am, heightM) });
     }
   }
-  let trees = 0;
-  for (const el of osm.elements || []) {
-    if (trees > 80) break;
-    if (el.type === "node" && el.lat) {
-      const [x, y] = llToPx(el.lon, el.lat, west, south, mpd, mpu);
-      const coords = bboxCoords([x - 8, x + 8], [y - 8, y + 8], imgW, imgH);
-      if (!coords) continue;
-      areas.push({ area: { coordinates: coords }, area_material: MAT.fol });
-      trees++;
-    } else if (el.type === "way" && el.geometry && el.geometry.length >= 4) {
-      const coords = clipRing(el.geometry.map((p) => [p.lon, p.lat]), west, south, mpd, mpu, imgW, imgH);
-      if (!coords) continue;
-      areas.push({ area: { coordinates: coords }, area_material: MAT.fol });
-      trees++;
-    }
-  }
-  try {
-    for (const a of treesFromJpeg(imgBuf, imgW, imgH, mpu, bboxCoords, MAT.fol)) areas.push(a);
-  } catch (e) {}
+  let veg = { areas: [], clipboardZones: [], clipboardTypes: [] };
+  try { veg = treesFromJpeg(imgBuf, imgW, imgH, mpu, xyz); }
+  catch (e) {}
+  for (const a of veg.areas || []) areas.push(a);
   const rawName = String(body.name || "Site").slice(0, 60);
   const name = rawName.replace(/[^\w \-]/g, "").trim() || "Site";
   const slug = name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "") || "Site";
@@ -233,11 +182,28 @@ exports.handler = async (event) => {
     switches: [],
     openintent_version: "2.0.1",
   };
-  const zip = zipStore([
+  const files = [
     { name: `openIntent_${slug}.json`, data: Buffer.from(JSON.stringify(oi)) },
     { name: "images/" + imgName, data: imgBuf },
     { name: "export-warnings.json", data: Buffer.from('{"errors":[],"warnings":[]}') },
-  ]);
+  ];
+  if (veg.clipboardZones && veg.clipboardZones.length) {
+    files.push({
+      name: "hamina-trees-clipboard.json",
+      data: Buffer.from(JSON.stringify({
+        header: { type: "HaminaClipboard", version: [1, 0, 0], id: uuid() },
+        attenuatingZones: veg.clipboardZones,
+        attenuatingZoneTypes: veg.clipboardTypes,
+        walls: [], wallEndpoints: [], wallTypes: [],
+        cableTrays: [], cableTrayEndpoints: [],
+        scopeZones: [], capacityZones: [], holeInFloorZones: [],
+        accessPoints: [], mapNotes: [], tiePoints: [],
+        cableRisers: [], clientDevices: [], networkInfraDevices: [],
+        raisedFloorZones: [], slopedFloors: [],
+      })),
+    });
+  }
+  const zip = zipStore(files);
   return {
     statusCode: 200,
     headers: {
