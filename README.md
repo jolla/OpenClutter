@@ -53,7 +53,8 @@ Trees come from **USFS/NLCD percent tree canopy** on the same extent (threshold 
    - `frame-lock.json` — pixel/meter corners for Hamina vs OpenIntent vs JPEG
    - `export-warnings.json`
    - `hamina-clipboard.json` — silent fallback for Hamina builds before OpenIntent attenuating-object import
-   - `README.txt` — import-only instructions plus coverage stats (buildings kept / fetched / drop reasons, trees kept)
+   - `README.txt` — import-only instructions plus coverage stats (`buildingsKept`, `treesKept`, `treesSource`, fetched, drop reasons)
+   - `export-stats.json` — same coverage numbers as machine-readable JSON
 4. Hamina: **Projects → Import → OpenIntent**.
 5. Optional: unzip and open `alignment-overlay.svg` next to `images/` to check rooftops.
 
@@ -74,7 +75,7 @@ The page has no extra options. Tree source (NLCD canopy, RGB fallback), OSM, and
 }
 ```
 
-- `format: "bundle"` (default) — JSON with `zipBase64`, `frame`, `stats`, `alignment`
+- `format: "bundle"` (default) — JSON with `zipBase64`, `frame`, `stats`, `alignment`. `stats` includes `buildingsKept`, `treesKept`, `treesSource`, `fetched`, and drop reasons.
 - `format: "zip"` — same OpenIntent zip bytes
 - `format: "hamina-clipboard"` — clipboard JSON only (skips imagery fetch; old-Hamina fallback)
 
@@ -82,7 +83,7 @@ Calibration (API only): `"controlPoints": [{ "lon", "lat", "xM", "yM" }, …]` (
 
 ## Limits
 
-US footprints only (MSBFP2 is paginated up to 2000). Boxes over ~2.5 km fail. Microsoft campus-merge blobs that swallow a huge fraction of the map are dropped; real hotel / convention wings on large sites are kept. Tree and height accuracy is heuristic, not survey-grade. Function time is bounded by Netlify’s hobby limit.
+US footprints only (MSBFP2 is paginated up to 2000, queried against the snapped JPEG extent). Boxes over ~2.5 km fail. Microsoft campus-merge blobs &gt; 150,000 m² are dropped; big-box / warehouse roofs on a tight commercial map are kept. Tree and height accuracy is heuristic, not survey-grade. Function time is bounded by Netlify’s hobby limit.
 
 ## Local
 

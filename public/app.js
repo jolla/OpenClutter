@@ -135,39 +135,36 @@ document.getElementById("export").onclick = async () => {
   exportBtn.disabled = true;
   setStatus("Building map + clutter…");
   try {
+    const T = globalThis.OpenClutterTrees;
+    const budget = T.maxTreesForBbox(bbox);
     let trees = [];
     let treesSource = "none";
+    let woodsHits = 0;
+    let nlcdCount = 0;
     try {
       const canopy = await detectCanopyTrees(bbox);
       if (canopy) {
-        trees = canopy.trees;
+        trees = canopy.trees || [];
+        nlcdCount = trees.length;
         treesSource = "nlcd-canopy";
-        const budget = globalThis.OpenClutterTrees.maxTreesForBbox(bbox);
         const hits = (canopy.parsed && canopy.parsed.hits) || [];
-        const woodsHits = hits.filter((h) => (h.pct || 0) >= 40).length;
-        // Desert golf / sparse TCC: NLCD is valid but under-fills woods.
-        // Do not RGB-supplement a real high-canopy raster (Long Meadow lawn).
-        if (trees.length < budget * 0.4 && woodsHits < 16) {
-          try {
-            const rgb = await detectRgbTrees(bbox);
-            if (rgb && rgb.length) {
-              trees = globalThis.OpenClutterTrees.mergeTreePoints(trees, rgb, bbox, { maxTrees: budget });
-            }
-          } catch (e) {
-            /* NLCD points still used */
-          }
-        }
+        woodsHits = hits.filter((h) => (h.pct || 0) >= 40).length;
       }
     } catch (e) {
       treesSource = "none";
     }
-    if (treesSource !== "nlcd-canopy") {
+    // Oak Creek: NLCD can be valid with 0 hits on parking lots / winter street
+    // trees. Always RGB-fill when NLCD placed nothing; also supplement sparse TCC.
+    const needRgb = trees.length === 0 || (treesSource === "nlcd-canopy" && trees.length < budget * 0.4 && woodsHits < 16);
+    if (needRgb) {
       try {
-        trees = await detectRgbTrees(bbox);
-        treesSource = trees.length ? "imagery-rgb" : "none";
+        const rgb = await detectRgbTrees(bbox);
+        if (rgb && rgb.length) {
+          trees = T.mergeTreePoints(trees, rgb, bbox, { maxTrees: budget });
+          if (nlcdCount === 0) treesSource = "imagery-rgb";
+        }
       } catch (e) {
-        trees = [];
-        treesSource = "none";
+        /* keep NLCD points if any */
       }
     }
     let data;
