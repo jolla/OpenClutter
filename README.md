@@ -30,22 +30,18 @@ x_clip = x_px * mpuX − widthM
 y_clip = y_from_south_px * mpuY − lengthM
 ```
 
-Trees come from **USFS/NLCD percent tree canopy** on the same bbox (threshold ≥30%), not from lawn-colored pixels. If that raster is missing or nodata for the box (outside CONUS), the app falls back to Esri aerial RGB that prefers textured woody canopy over smooth grass. OSM tree *nodes* are optional and off by default. OSM building/tree **rings** are never emitted (they caused Hamina to drop all `attenuation_areas` on v8).
+Trees come from **USFS/NLCD percent tree canopy** on the same bbox (threshold ≥30%), not from lawn-colored pixels. If that raster is missing or nodata for the box (outside CONUS), the app **silently** falls back to Esri aerial RGB that prefers textured woody canopy over smooth grass. OSM tree *nodes* and `controlPoints` calibration are API-only (not on the default page). OSM building/tree **rings** are never emitted (they caused Hamina to drop all `attenuation_areas` on v8).
 
-`stats.treesSource` is `"nlcd-canopy"`, `"imagery-rgb"`, or `"none"`.
+`stats.treesSource` is `"nlcd-canopy"`, `"imagery-rgb"`, or `"none"` (in the API payload, not a UI picker).
 
 ## Use
 
-1. Open the deployed site.
-2. Search an address.
-3. Draw a rectangle over the site (keep it under ~2 km on a side).
-4. **Export clutter** downloads two files:
-   - `{site}-openintent.zip` — aerial + OpenIntent metadata at geographic size
-   - `{site}-hamina-clipboard.json` — pasteable zones (stock Hamina type names)
-5. Hamina **Projects → Import → OpenIntent** the zip.
-6. Copy the JSON, click the map canvas, paste (⌘V / Ctrl+V).
+1. Search an address.
+2. Draw the site (under ~2 km on a side).
+3. **Export** — downloads the OpenIntent zip and HaminaClipboard JSON.
+4. Import the zip in Hamina, then paste the JSON.
 
-Optional: 3+ `{lon,lat,xM,yM}` control points calibrate clipboard output onto a *legacy* wrong-scale map. Leave that empty for new sites.
+The page has no extra options. Tree source (NLCD canopy, RGB fallback), OSM, and calibration are automatic or API-only.
 
 ## API
 
@@ -66,7 +62,7 @@ Optional: 3+ `{lon,lat,xM,yM}` control points calibrate clipboard output onto a 
 - `format: "zip"` — OpenIntent zip bytes
 - `format: "hamina-clipboard"` — clipboard JSON only (skips imagery fetch)
 
-Calibration: `"controlPoints": [{ "lon", "lat", "xM", "yM" }, …]` (3+).
+Calibration (API only): `"controlPoints": [{ "lon", "lat", "xM", "yM" }, …]` (3+). Not shown in the UI.
 
 ## Limits
 
