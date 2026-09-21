@@ -8,6 +8,8 @@ const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees
 const { fetchMsGlobalFootprints, mergeFootprintFeatures } = require("../lib/ms-global");
 const { fetchUsaStructures } = require("../lib/usa-structures");
 const { treeHitsBuilding } = require("../lib/vegetation");
+const { supplementFootprints } = require("../lib/roof-mask");
+const { detectMedianTrees, appendTreePoints } = require("../lib/tree-source");
 
 function json(status, cors, obj) {
   return {
@@ -37,6 +39,18 @@ function parseFormat(body) {
   }
   if (body.format === "zip" || body.output === "zip") return "zip";
   return "bundle";
+}
+
+function decodeImagery(imgBuf) {
+  if (!imgBuf || imgBuf.length < 100 || imgBuf.length > 3500000) return null;
+  try {
+    const jpeg = require("jpeg-js");
+    const raw = jpeg.decode(imgBuf, { useTArray: true, maxResolutionInMP: 6, formatAsRGBA: true });
+    if (!raw || !raw.data || !(raw.width > 16) || !(raw.height > 16)) return null;
+    return raw;
+  } catch {
+    return null;
+  }
 }
 
 function wantOsm(body) {
@@ -171,12 +185,25 @@ exports.handler = async (event) => {
   const arcgisFeatures = (gj && gj.features) || [];
   const withArcgis = mergeFootprintFeatures(globalFeatures, arcgisFeatures);
   const merged = mergeFootprintFeatures(withArcgis.features, usaFeatures);
-  gj = { type: "FeatureCollection", features: merged.features };
+  let features = merged.features;
   const footprintMeta = {
     globalFootprints: globalFeatures.length,
     arcgisFootprints: arcgisFeatures.length,
     usaFootprints: usaFeatures.length,
+    imageryRoofs: 0,
+    medianTrees: 0,
   };
+  const decoded = needImage ? decodeImagery(imgBuf) : null;
+  if (decoded) {
+    try {
+      const sup = supplementFootprints(decoded, frame, features);
+      features = sup.features;
+      footprintMeta.imageryRoofs = sup.imageryRoofs;
+    } catch {
+      // Imagery roof fill is optional. Vector footprints still export.
+    }
+  }
+  gj = { type: "FeatureCollection", features };
 
   const clientHits = normalizeCanopyHits(body.canopyHits);
   const placeHits =
@@ -186,11 +213,22 @@ exports.handler = async (event) => {
         ? normalizeCanopyHits(serverCanopyHits)
         : [];
   if (placeHits.length && treesSource === "nlcd-canopy") {
-    const preview = footprintsToClutter(merged.features, frame);
+    const preview = footprintsToClutter(features, frame);
     treePoints = pickCanopyTrees(placeHits, frame, {
       maxTrees: maxTreesForBbox(frame),
       reject: (lon, lat) => treeHitsBuilding(lon, lat, frame, preview.aabbs),
     });
+    if (decoded) {
+      const medians = detectMedianTrees(decoded.data, decoded.width, decoded.height, frame, {
+        maxTrees: 80,
+        reject: (lon, lat) => treeHitsBuilding(lon, lat, frame, preview.aabbs),
+      });
+      footprintMeta.medianTrees = medians.length;
+      treePoints = appendTreePoints(treePoints, medians, frame, {
+        minDistM: 8,
+        maxTrees: Math.min(800, maxTreesForBbox(frame) + medians.length),
+      });
+    }
   }
 
   if (wantOsm(body)) {

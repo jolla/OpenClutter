@@ -84,7 +84,7 @@ Calibration (API only): `"controlPoints": [{ "lon", "lat", "xM", "yM" }, …]` (
 
 ## Limits
 
-US footprints only. Global ML Building Footprints (zoom-9 quadkey, clipped to the JPEG extent) fill roofs that the 2022 MSBFP2 layer never stored; MSBFP2 is still queried and merged, paginated up to 2000. FEMA USA Structures is merged the same way when its centroid is not already covered. Boxes over ~2.5 km fail. Campus-merge blobs &gt; 150,000 m² are dropped; big-box / warehouse roofs on a tight commercial map are kept. NLCD canopy is placed around those footprints so trees are not spent on rooftops. Valid NLCD zeros stay empty — imagery RGB does not carpet parking. Tree and height accuracy is heuristic, not survey-grade. Function time is bounded by Netlify’s hobby limit.
+US footprints only. Global ML Building Footprints (zoom-9 quadkey, clipped to the JPEG extent) fill roofs that the 2022 MSBFP2 layer never stored; MSBFP2 is still queried and merged, paginated up to 2000. FEMA USA Structures is merged the same way when its centroid is not already covered, and its `HEIGHT` is copied onto the footprint that already covers that centroid. A large smooth bright roof that none of those layers contain is filled from the Esri JPEG (connected membrane pixels, ≥2500 m², skipped when a vector already covers it). Boxes over ~2.5 km fail. Campus-merge blobs &gt; 150,000 m² are dropped; big-box / warehouse roofs on a tight commercial map are kept. NLCD canopy is placed around those footprints so trees are not spent on rooftops. Valid NLCD zeros stay empty — imagery RGB does not carpet parking — but a textured canopy island with a pavement ring is kept as a median. Measured building heights and NLCD-informed canopy heights are their own OpenIntent materials (`top_height`, no `bottom_height`). Function time is bounded by Netlify’s hobby limit.
 
 ## Development
 
@@ -94,7 +94,7 @@ npm run eval          # image-space quality gate on cached fixtures
 npx netlify dev
 ```
 
-`npm run eval` scores building/tree placement against cached aerial fixtures (no Hamina login). It fails if rooftops are missed, large footprints are dropped, or trees land on pavement. Optional: `npm run eval -- --live` to refresh against live Esri/NLCD.
+`npm run eval` scores building/tree placement against cached aerial fixtures (no Hamina login). It fails if rooftops are missed, large footprints are dropped, trees land on pavement or roofs, measured heights collapse back to stock bins, or the imagery mask cannot restore the Oak Creek white retail roof after that polygon is removed. Optional: `npm run eval -- --live` to refresh against live Esri/NLCD.
 
 
 ## License

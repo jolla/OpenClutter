@@ -80,8 +80,19 @@ function hasAny(line, needles) {
 }
 
 function usableHeight(props) {
-  const h = Number(props && (props.height != null ? props.height : props.Height));
+  const h = Number(
+    props && (props.height != null ? props.height : props.Height != null ? props.Height : props.HEIGHT)
+  );
   return h > 2 && h < 400 ? h : 0;
+}
+
+function featureHeight(feature) {
+  return usableHeight(feature && feature.properties);
+}
+
+function setFeatureHeight(feature, height) {
+  if (!feature.properties) feature.properties = {};
+  feature.properties.height = height;
 }
 
 function exteriorRings(geometry) {
@@ -191,31 +202,44 @@ function pointInRing(pt, ring) {
 }
 
 /**
- * Keep every global footprint, then add ArcGIS footprints whose centroid is
- * not already inside one (global is the newer, more complete set).
+ * Keep every primary footprint, then add secondary footprints whose centroid
+ * is not already inside one. When a secondary ring is already covered, copy
+ * its measured height onto the primary feature that contains the centroid
+ * (FEMA USA Structures HEIGHT is otherwise thrown away by the dedupe).
  */
 function mergeFootprintFeatures(primary, secondary) {
   const base = Array.isArray(primary) ? primary.slice() : [];
   const extraSrc = Array.isArray(secondary) ? secondary : [];
-  const rings = [];
+  const owners = [];
   for (const f of base) {
     const ex = exteriorRings(f && f.geometry);
-    for (const r of ex) rings.push(r);
+    for (const r of ex) owners.push({ ring: r, feature: f });
   }
   let added = 0;
+  let heightsTransferred = 0;
   for (const f of extraSrc) {
     const ex = exteriorRings(f && f.geometry);
     if (!ex.length) continue;
-    const covered = ex.every((ring) => {
+    const h = featureHeight(f);
+    let covered = true;
+    for (const ring of ex) {
       const c = centroid(ring);
-      return c && rings.some((r) => pointInRing(c, r));
-    });
+      const owner = c && owners.find((o) => pointInRing(c, o.ring));
+      if (!owner) {
+        covered = false;
+        continue;
+      }
+      if (h && !featureHeight(owner.feature)) {
+        setFeatureHeight(owner.feature, h);
+        heightsTransferred++;
+      }
+    }
     if (covered) continue;
     base.push(f);
-    for (const r of ex) rings.push(r);
+    for (const r of ex) owners.push({ ring: r, feature: f });
     added++;
   }
-  return { features: base, added };
+  return { features: base, added, heightsTransferred };
 }
 
 async function fetchMsGlobalFootprints(frame, fetchFn) {
@@ -252,4 +276,5 @@ module.exports = {
   exteriorRings,
   pointInRing,
   centroid,
+  featureHeight,
 };

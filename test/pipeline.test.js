@@ -565,6 +565,40 @@ describe("OpenIntent attenuation_areas", () => {
     }
   });
 
+  it("emits a measured building height as its own Hamina-safe material", () => {
+    const frame = geoFrame(WYNN);
+    const dLon = (frame.east - frame.west) * 0.04;
+    const dLat = (frame.north - frame.south) * 0.03;
+    const lon0 = frame.west + (frame.east - frame.west) * 0.4;
+    const lat0 = frame.south + (frame.north - frame.south) * 0.4;
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: {
+        features: [squareFeature(lon0, lat0, lon0 + dLon, lat0 + dLat, { height: 6.41 })],
+      },
+      treePoints: [
+        {
+          lon: frame.west + (frame.east - frame.west) * 0.15,
+          lat: frame.south + (frame.north - frame.south) * 0.15,
+          pct: 64,
+        },
+      ],
+      name: "Measured",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    const bldg = areas.find((a) => a.area_material.name === "Building 6.4 m");
+    assert.ok(bldg);
+    assert.equal(bldg.area_material.top_height, 6.4);
+    assert.equal(bldg.area_material.itu_material_type, "ITU_R_UNKNOWN");
+    assert.equal(bldg.area_material.rf_properties.attenuation_per_m, 5);
+    assert.equal("bottom_height" in bldg.area_material, false);
+    const cat = built.openintent.area_materials.find((m) => m.name === "Building 6.4 m");
+    assert.deepEqual(bldg.area_material, cat);
+    assert.ok(areas.some((a) => /^Foliage \d+\.\d m$/.test(a.area_material.name)));
+    assert.ok(built.clipboard.attenuatingZoneTypes.some((t) => t.id === "bldg-m-6_4" && t.topEdge === 6.4));
+  });
+
   it("caps complete tree pairs and never splits a canopy/trunk", () => {
     const { capAttenuationAreas } = require("../netlify/lib/pipeline");
     const areas = [];

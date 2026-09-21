@@ -10,12 +10,10 @@ const {
 const {
   uuid,
   ZONE_TYPES,
-  TYPE_BY_ID,
   emptyClipboard,
-  oiMaterialFromType,
-  pickBuildingTypeId,
   clipZone,
 } = require("./hamina-clipboard");
+const { materialForBuilding, catalogMaterials } = require("./materials");
 const { treePairsFromPoints } = require("./vegetation");
 const { zipStore } = require("./zip-store");
 const { overlaySvg, frameLockJson } = require("./overlay");
@@ -97,6 +95,10 @@ function coverageStats(stats) {
     globalFootprints: s.globalFootprints || 0,
     arcgisFootprints: s.arcgisFootprints || 0,
     usaFootprints: s.usaFootprints || 0,
+    imageryRoofs: s.imageryRoofs || 0,
+    medianTrees: s.medianTrees || 0,
+    measuredBuildings: s.measuredBuildings || 0,
+    areaMaterials: s.areaMaterials != null ? s.areaMaterials : STOCK_MATERIAL_NAMES.length,
     openintentVersion: s.openintentVersion || OPENINTENT_VERSION,
     coordinateUnit: s.coordinateUnit || "pixels",
     coordinateOrigin: s.coordinateOrigin || "Y-up from SW",
@@ -150,7 +152,7 @@ function verifyTxt(stats) {
     `openintent_version: ${c.openintentVersion}\n` +
     `coordinate_unit: ${c.coordinateUnit}\n` +
     `coordinate_origin: ${c.coordinateOrigin}\n` +
-    `area_materials: ${STOCK_MATERIAL_NAMES.length}\n` +
+    `area_materials: ${c.areaMaterials != null ? c.areaMaterials : STOCK_MATERIAL_NAMES.length}\n` +
     `buildingsKept: ${c.buildingsKept}\n` +
     `treesKept: ${c.treesKept}\n` +
     `attenuationAreasEmitted: ${c.attenuationAreasEmitted}\n`
@@ -442,7 +444,11 @@ function validateOiCoords(coords, imgW, imgH) {
 function validateOiArea(area, imgW, imgH) {
   if (!area || !area.area || !area.area_material) return { ok: false, reason: "shape" };
   const mat = area.area_material;
-  if (!STOCK_MATERIAL_NAMES.includes(mat.name)) return { ok: false, reason: "material" };
+  if (typeof mat.name !== "string" || mat.name.length < 3 || mat.name.length > 48) {
+    return { ok: false, reason: "material" };
+  }
+  if (Object.prototype.hasOwnProperty.call(mat, "bottom_height")) return { ok: false, reason: "bottom_height" };
+  if (mat.itu_material_type !== "ITU_R_UNKNOWN") return { ok: false, reason: "itu" };
   if (!(mat.top_height > 0)) return { ok: false, reason: "height" };
   const db = mat.rf_properties && mat.rf_properties.attenuation_per_m;
   if (!(db > 0)) return { ok: false, reason: "attenuation" };
@@ -520,10 +526,9 @@ function ringToOi(pts, imgW, imgH, mpuX) {
   return check.ok ? out : null;
 }
 
-function makeOiArea(coords, type) {
-  if (!coords || !type) return null;
-  const mat = oiMaterialFromType(type);
-  return { area: { coordinates: coords }, area_material: mat };
+function makeOiArea(coords, material) {
+  if (!coords || !material) return null;
+  return { area: { coordinates: coords }, area_material: material };
 }
 
 function emitIfValid(area, imgW, imgH) {
@@ -642,19 +647,85 @@ function emitBuilding(ring, heightM, frame, affine, buckets) {
   if (maxX < 0 || maxY < 0 || minX > frame.imgW || minY > frame.imgH) return "clip";
   const oiCoords = ringToOi(pts, frame.imgW, frame.imgH, frame.mpuX);
   if (!oiCoords) return "clip";
-  const typeId = pickBuildingTypeId(am, heightM);
-  const type = TYPE_BY_ID[typeId];
-  const area = emitIfValid(makeOiArea(oiCoords, type), frame.imgW, frame.imgH);
+  const picked = materialForBuilding(heightM, am);
+  const area = emitIfValid(makeOiArea(oiCoords, picked.material), frame.imgW, frame.imgH);
   if (!area) return "invalid";
   buckets.oiAreas.push(area);
-  const z = clipZone(typeId, clipRing);
+  if (picked.clipType) buckets.clipTypes.push(picked.clipType);
+  if (picked.material) buckets.materials.push(picked.material);
+  if (picked.measured) buckets.measured++;
+  const z = clipZone(picked.typeId, clipRing);
   if (z) buckets.clipZones.push(z);
   buckets.aabbs.push({ minX, maxX, minY, maxY });
   buckets.overlayRings.push(pts);
+  buckets.overlayHeights.push(picked.material.top_height);
   return "keep";
 }
 
+function ringCentroidLL(ring) {
+  if (!ring || ring.length < 3) return null;
+  const end =
+    ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+      ? ring.length - 1
+      : ring.length;
+  let sx = 0;
+  let sy = 0;
+  for (let i = 0; i < end; i++) {
+    sx += ring[i][0];
+    sy += ring[i][1];
+  }
+  return end ? [sx / end, sy / end] : null;
+}
+
+function readHeight(feature) {
+  const props = (feature && feature.properties) || {};
+  const h = Number(props.height || props.Height || props.HEIGHT || 0);
+  return h > 2 && h < 80 ? h : 0;
+}
+
+/**
+ * Buildings with no FEMA/MS height take the nearest measured height within 120 m.
+ * Farther than that, the stock area bins remain the fallback.
+ */
+function borrowNearbyHeights(features, frame) {
+  if (!frame || !frame.mpd) return 0;
+  const measured = [];
+  for (const f of features || []) {
+    const h = readHeight(f);
+    if (!h) continue;
+    const rings = featureExteriorRings(f.geometry);
+    const c = rings[0] && ringCentroidLL(rings[0]);
+    if (c) measured.push({ c, h });
+  }
+  if (!measured.length) return 0;
+  const maxD = 120 * 120;
+  let n = 0;
+  for (const f of features || []) {
+    if (readHeight(f)) continue;
+    const rings = featureExteriorRings(f.geometry);
+    const c = rings[0] && ringCentroidLL(rings[0]);
+    if (!c) continue;
+    let best = 0;
+    let bestD = maxD;
+    for (let i = 0; i < measured.length; i++) {
+      const dx = (c[0] - measured[i].c[0]) * frame.mpd.lon;
+      const dy = (c[1] - measured[i].c[1]) * frame.mpd.lat;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= bestD) {
+        bestD = d2;
+        best = measured[i].h;
+      }
+    }
+    if (!best) continue;
+    if (!f.properties) f.properties = {};
+    f.properties.height = best;
+    n++;
+  }
+  return n;
+}
+
 function footprintsToClutter(features, frame, affine) {
+  borrowNearbyHeights(features, frame);
   const oiAreas = [];
   const clipZones = [];
   const aabbs = [];
@@ -669,12 +740,21 @@ function footprintsToClutter(features, frame, affine) {
     droppedCap: 0,
     droppedInvalid: 0,
   };
-  const buckets = { oiAreas, clipZones, aabbs, overlayRings };
+  const buckets = {
+    oiAreas,
+    clipZones,
+    aabbs,
+    overlayRings,
+    overlayHeights: [],
+    clipTypes: [],
+    materials: [],
+    measured: 0,
+  };
   for (const f of list) {
     const g = f.geometry;
     if (!g) continue;
-    const heightM =
-      Number((f.properties || {}).height || (f.properties || {}).Height || 0) || 0;
+    const props = f.properties || {};
+    const heightM = Number(props.height || props.Height || props.HEIGHT || 0) || 0;
     const rings = featureExteriorRings(g);
     if (!rings.length) continue;
     for (const ring of rings) {
@@ -690,7 +770,17 @@ function footprintsToClutter(features, frame, affine) {
       else if (result === "invalid") stats.droppedInvalid++;
     }
   }
-  return { oiAreas, clipZones, aabbs, overlayRings, stats };
+  stats.measuredBuildings = buckets.measured;
+  return {
+    oiAreas,
+    clipZones,
+    aabbs,
+    overlayRings,
+    overlayHeights: buckets.overlayHeights,
+    clipTypes: buckets.clipTypes,
+    materials: buckets.materials,
+    stats,
+  };
 }
 
 function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
@@ -698,8 +788,7 @@ function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
   let droppedInvalid = 0;
   for (const t of oiTreeAreas) {
     const coords = ringToOi(t.ringPx, imgW, imgH, mpuX);
-    const type = TYPE_BY_ID[t.typeId];
-    const area = emitIfValid(makeOiArea(coords, type), imgW, imgH);
+    const area = emitIfValid(makeOiArea(coords, t.material), imgW, imgH);
     if (!area) {
       droppedInvalid++;
       continue;
@@ -709,7 +798,7 @@ function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
   return { areas: out, droppedInvalid };
 }
 
-function buildOpenIntent(frame, name, imgName, areas) {
+function buildOpenIntent(frame, name, imgName, areas, materials) {
   return {
     floorplans: [
       {
@@ -746,7 +835,7 @@ function buildOpenIntent(frame, name, imgName, areas) {
     ],
     wall_materials: [],
     switches: [],
-    area_materials: ZONE_TYPES.map((t) => oiMaterialFromType(t)),
+    area_materials: materials && materials.length ? materials : catalogMaterials([]),
     openintent_version: OPENINTENT_VERSION,
   };
 }
@@ -770,14 +859,22 @@ function buildClutter({
   const capped = capAttenuationAreas(uncapped, fp.oiAreas.length);
   const areas = capped.areas;
   const clip = emptyClipboard();
+  const seenTypes = new Set(clip.attenuatingZoneTypes.map((t) => t.id));
+  for (const t of (fp.clipTypes || []).concat(veg.clipTypes || [])) {
+    if (t && t.id && !seenTypes.has(t.id)) {
+      seenTypes.add(t.id);
+      clip.attenuatingZoneTypes.push(t);
+    }
+  }
   clip.attenuatingZones = fp.clipZones.concat(veg.clipZones);
   if (capped.dropped) {
     clip.attenuatingZones = clip.attenuatingZones.slice(0, areas.length);
   }
-  const oi = buildOpenIntent(frame, name, imgName, areas);
+  const materials = catalogMaterials((fp.materials || []).concat(veg.materials || []));
+  const oi = buildOpenIntent(frame, name, imgName, areas, materials);
   const treeOverlayPts = [];
   for (const t of veg.oiAreas || []) {
-    if (t.typeId !== "tree-trunk" || !t.ringPx || !t.ringPx.length) continue;
+    if (t.kind !== "trunk" || !t.ringPx || !t.ringPx.length) continue;
     let sx = 0;
     let sy = 0;
     const n = t.ringPx.length - 1;
@@ -813,6 +910,9 @@ function buildClutter({
     globalFootprints: footprintMeta && footprintMeta.globalFootprints ? footprintMeta.globalFootprints : 0,
     arcgisFootprints: footprintMeta && footprintMeta.arcgisFootprints ? footprintMeta.arcgisFootprints : 0,
     usaFootprints: footprintMeta && footprintMeta.usaFootprints ? footprintMeta.usaFootprints : 0,
+    imageryRoofs: footprintMeta && footprintMeta.imageryRoofs ? footprintMeta.imageryRoofs : 0,
+    medianTrees: footprintMeta && footprintMeta.medianTrees ? footprintMeta.medianTrees : 0,
+    areaMaterials: materials.length,
   };
   stats.summary = coverageSummary(stats);
   Object.assign(stats, coverageStats(stats));

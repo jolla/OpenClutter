@@ -20,7 +20,9 @@ const T = require("../../netlify/lib/tree-source");
 const { treeHitsBuilding } = require("../../netlify/lib/vegetation");
 const { fetchMsGlobalFootprints, mergeFootprintFeatures } = require("../../netlify/lib/ms-global");
 const { fetchUsaStructures } = require("../../netlify/lib/usa-structures");
-const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, evaluate, THRESHOLDS } = require("./score");
+const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, scoreMeasuredHeights, evaluate, pointInRing, THRESHOLDS } = require("./score");
+const { supplementFootprints } = require("../../netlify/lib/roof-mask");
+const { featureExteriorRings } = require("../../netlify/lib/pipeline");
 
 const ROOT = path.join(__dirname, "..", "..");
 const FIXTURES = path.join(ROOT, "test", "fixtures");
@@ -111,13 +113,35 @@ function resolveFromSources(frame, tcc, jpegDecoded, rgbPolicy, buildingAabbs) {
   return { canopy, rgb, resolved, parsed };
 }
 
+function probeInsideFeature(feature, probe) {
+  const rings = featureExteriorRings(feature && feature.geometry);
+  for (let i = 0; i < rings.length; i++) {
+    if (pointInRing([+probe.lon, +probe.lat], rings[i])) return true;
+  }
+  return false;
+}
+
+function imageryRecovery(jpegDecoded, frame, features, probes) {
+  const target = (probes || []).find((p) => p.id === "big-white-retail") || (probes || [])[0];
+  if (!target) return { required: false, hit: true, probe: null };
+  const blinded = (features || []).filter((f) => !probeInsideFeature(f, target));
+  const sup = supplementFootprints(jpegDecoded, frame, blinded);
+  const hit = sup.features.some((f) => probeInsideFeature(f, target));
+  return { required: true, hit, probe: target.id, imageryRoofs: sup.imageryRoofs };
+}
+
 function runLoaded(loaded, opts) {
   opts = opts || {};
   const rgbPolicy = opts.rgbPolicy || T.RGB_POLICY_PREFER_NLCD;
   const drawn = geoFrame(loaded.bbox);
   const frame = applyImageryMeta(drawn, loaded.meta, jpegSize(loaded.jpeg));
   const jpegDecoded = decodeJpeg(loaded.jpeg);
-  const fp = footprintsToClutter(loaded.footprints.features || [], frame);
+  const baseFeatures = loaded.footprints.features || [];
+  const supplemented =
+    rgbPolicy === T.RGB_POLICY_PREFER_NLCD
+      ? supplementFootprints(jpegDecoded, frame, baseFeatures)
+      : { features: baseFeatures, imageryRoofs: 0, droppedStubs: 0 };
+  const fp = footprintsToClutter(supplemented.features, frame);
   const { canopy, resolved, parsed } = resolveFromSources(
     frame,
     loaded.tcc,
@@ -125,21 +149,45 @@ function runLoaded(loaded, opts) {
     rgbPolicy,
     rgbPolicy === T.RGB_POLICY_PREFER_NLCD ? fp.aabbs : null
   );
+  let treePoints = resolved.trees;
+  let medianKept = 0;
+  if (rgbPolicy === T.RGB_POLICY_PREFER_NLCD && jpegDecoded) {
+    const medians = T.detectMedianTrees(jpegDecoded.data, jpegDecoded.width, jpegDecoded.height, frame, {
+      maxTrees: 80,
+      reject: (lon, lat) => treeHitsBuilding(lon, lat, frame, fp.aabbs),
+    });
+    treePoints = T.appendTreePoints(resolved.trees, medians, frame, {
+      minDistM: 8,
+      maxTrees: Math.min(T.MAX_TREES_LARGE, T.maxTreesForBbox(frame) + medians.length),
+    });
+    medianKept = treePoints.filter((t) => t.median).length;
+  }
   const built = buildClutter({
     frame,
-    footprintsGeojson: loaded.footprints,
-    treePoints: resolved.trees,
+    footprintsGeojson: { type: "FeatureCollection", features: supplemented.features },
+    treePoints,
     name: loaded.site.name || loaded.bbox.name || loaded.site.id,
     imgBuf: loaded.jpeg,
     treesSource: resolved.source,
+    footprintMeta: {
+      imageryRoofs: supplemented.imageryRoofs || 0,
+      medianTrees: medianKept,
+    },
   });
-  const buildings = scoreBuildings(loaded.footprints.features || [], fp.overlayRings, frame);
-  const trees = scoreTrees(resolved.trees, frame, jpegDecoded, loaded.tcc, resolved.source);
-  Object.assign(trees, scoreRoofTrees(resolved.trees, loaded.footprints.features || []));
+  const buildings = scoreBuildings(baseFeatures, fp.overlayRings, frame);
+  const trees = scoreTrees(treePoints, frame, jpegDecoded, loaded.tcc, resolved.source);
+  Object.assign(trees, scoreRoofTrees(treePoints, supplemented.features));
   const probes = (loaded.roofPoints && loaded.roofPoints.points) || [];
   const roofProbes = probes.length ? scoreRoofProbes(probes, fp.overlayRings, frame) : null;
   if (roofProbes) buildings.roofProbes = roofProbes;
-  const gate = evaluate({ buildings, trees, roofProbes });
+  const heights = scoreMeasuredHeights(baseFeatures, fp.overlayRings, fp.overlayHeights, frame, built.openintent);
+  const recovery =
+    rgbPolicy === T.RGB_POLICY_PREFER_NLCD ? imageryRecovery(jpegDecoded, frame, baseFeatures, probes) : { required: false, hit: true };
+  const medians = {
+    required: rgbPolicy === T.RGB_POLICY_PREFER_NLCD && loaded.site.id === "oak-creek-commercial",
+    kept: medianKept,
+  };
+  const gate = evaluate({ buildings, trees, roofProbes, heights, imageryRecovery: recovery, medians });
   const exportStats = {
     site: loaded.site.id,
     name: loaded.site.name,
@@ -166,6 +214,9 @@ function runLoaded(loaded, opts) {
     },
     buildings,
     trees,
+    heights,
+    imageryRecovery: recovery,
+    medians,
     gate,
     thresholds: THRESHOLDS,
     canopyReason: canopy.reason,
@@ -222,7 +273,11 @@ function formatRow(stats) {
     `pav ${stats.trees.pavementTreeFrac.toFixed(3)} ` +
     `roof ${stats.trees.roofTreeFrac == null ? "n/a" : stats.trees.roofTreeFrac.toFixed(3)} ` +
     `canopy ${rec} ` +
-    `trees ${stats.trees.treesPlaced} (${stats.trees.treesSource})`
+    `trees ${stats.trees.treesPlaced} (${stats.trees.treesSource}) ` +
+    `h ${stats.heights && stats.heights.uniqueBuildingHeights != null ? stats.heights.uniqueBuildingHeights : "-"} ` +
+    `fol ${stats.heights && stats.heights.uniqueFoliageHeights != null ? stats.heights.uniqueFoliageHeights : "-"} ` +
+    `med ${stats.medians ? stats.medians.kept : "-"} ` +
+    `roofFill ${stats.imageryRecovery && stats.imageryRecovery.imageryRoofs != null ? stats.imageryRecovery.imageryRoofs : "-"}`
   );
 }
 

@@ -45,6 +45,12 @@ describe("eval gate (cached fixtures, no Hamina)", () => {
         assert.ok(next.exportStats.buildings.roofProbes, "known white-roof probes");
         assert.equal(next.exportStats.buildings.roofProbes.missed.length, 0);
         assert.ok(next.exportStats.trees.roofTreeFrac <= 0.03);
+        assert.ok(next.exportStats.heights.applicable);
+        assert.ok(next.exportStats.heights.uniqueBuildingHeights >= 8);
+        assert.ok(next.exportStats.heights.matchedFrac >= 0.9);
+        assert.ok(next.exportStats.heights.uniqueFoliageHeights >= 4);
+        assert.equal(next.exportStats.imageryRecovery.hit, true);
+        assert.ok(next.exportStats.medians.kept >= 8);
       }
     }
   });
