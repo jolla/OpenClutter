@@ -1,0 +1,20 @@
+{
+  "sites": [
+    {
+      "id": "oak-creek-commercial",
+      "name": "Oak Creek WI commercial",
+      "west": -87.9217,
+      "south": 42.8964,
+      "east": -87.9155,
+      "north": 42.9018
+    },
+    {
+      "id": "long-meadow",
+      "name": "8121 S Long Meadow Dr (residential / woods)",
+      "west": -87.8885,
+      "south": 42.8935,
+      "east": -87.8815,
+      "north": 42.9002
+    }
+  ]
+}

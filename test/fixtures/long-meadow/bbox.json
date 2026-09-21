@@ -1,0 +1,9 @@
+{
+  "id": "long-meadow",
+  "name": "8121 S Long Meadow Dr (residential / woods)",
+  "west": -87.8885,
+  "south": 42.8935,
+  "east": -87.8815,
+  "north": 42.9002,
+  "note": "Drawn bbox. Eval snaps the frame to imagery-meta.json extent + imagery.jpg size (same as production)."
+}

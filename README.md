@@ -12,7 +12,7 @@ This tool does not mix sources. One bbox drives everything:
 
 1. Esri World Imagery for that bbox (`bboxSR=4326`, `imageSR=4326`). **The frame is the JPEG’s actual `extent`**, which is often taller than the drawn box.
 2. Microsoft US Building Footprints (Esri MSBFP2) mapped through that actual extent.
-3. USFS/NLCD percent tree canopy as a density field (jitter + NMS; imagery RGB only if the canopy raster is missing/empty).
+3. USFS/NLCD percent tree canopy as a density field (jitter + NMS; imagery RGB only if the canopy raster is missing/empty — **not** when NLCD is valid zeros on parking/lawn).
 4. lon/lat → JPEG pixels with the actual west/south/east/north (OpenIntent Y-up / JPEG Y-down).
 5. OpenIntent `floorplans[].attenuation_areas[]` + `area_materials` use that same snapped frame (stock Hamina type names, heights, dB/m).
 
@@ -38,7 +38,7 @@ SW → (−widthM, −lengthM)   NE → (0, 0)
 JPEG Y-down:  x_clip = x_img * mpuX − widthM ;  y_clip = −y_img * mpuY
 ```
 
-Trees come from **USFS/NLCD percent tree canopy** on the same extent (threshold ≥18%), placed with **jittered NMS** rather than on the 30 m sample lattice. Large maps scale the tree cap (up to 800) and relax spacing in continuous woods. If that raster is missing or nodata for the box (outside CONUS), the app **silently** falls back to Esri aerial RGB that prefers textured woody canopy over smooth grass. Sparse desert-golf canopy may also mix in RGB points. OSM tree *nodes* and `controlPoints` calibration are API-only (not on the default page). OSM building/tree **rings** are never emitted (they caused Hamina to drop all `attenuation_areas` on v8). Polygons are clipped to the JPEG and invalid rings are dropped so one bad ring cannot wipe the import.
+Trees come from **USFS/NLCD percent tree canopy** on the same extent (threshold ≥18%), placed with **jittered NMS** rather than on the 30 m sample lattice. Large maps scale the tree cap (up to 800) and relax spacing in continuous woods. If that raster is missing or nodata for the box (outside CONUS), the app **silently** falls back to Esri aerial RGB that requires textured woody canopy (not smooth grass, not gray parking). Valid NLCD — including sparse or all-zero parking lots — is trusted; RGB does not carpet the lawn. OSM tree *nodes* and `controlPoints` calibration are API-only (not on the default page). OSM building/tree **rings** are never emitted (they caused Hamina to drop all `attenuation_areas` on v8). Polygons are clipped to the JPEG and invalid rings are dropped so one bad ring cannot wipe the import.
 
 `stats.treesSource` is `"nlcd-canopy"`, `"imagery-rgb"`, or `"none"` (in the API payload, not a UI picker).
 
@@ -89,8 +89,35 @@ US footprints only (MSBFP2 is paginated up to 2000, queried against the snapped 
 
 ```bash
 npm test
+npm run eval
 npx netlify dev
 ```
+
+## Eval (no Hamina, no Jerry)
+
+Image-space scoring is the quality gate. It does **not** import into Hamina.
+
+Cached fixtures live in `test/fixtures/` (Oak Creek WI commercial bbox + Long Meadow residential/woods). Each site has `bbox.json`, `imagery.jpg`, `imagery-meta.json`, `footprints.geojson`, `tcc-samples.json` — no secrets.
+
+```bash
+npm run eval                 # fixtures, prefer-NLCD (must pass)
+npm run eval -- --legacy     # old RGB-carpet path (must fail pavement/lawn)
+npm run eval -- --compare-legacy
+npm run eval -- --live       # hit Esri World Imagery + MSBFP2 + NLCD TCC
+npm run fixtures:fetch       # refresh cached JPEG/footprints/TCC
+```
+
+`npm run eval` snaps the frame to the Esri JPEG extent (same as production), runs MSBFP2 + NLCD then RGB-only-on-true-gaps, writes `test/eval/out/<site>/alignment-overlay.svg` and `export-stats.json`, and **exits non-zero** if:
+
+- too few Microsoft footprints keep their centroid / IoU on the JPEG
+- a large roof in the footprint GeoJSON was dropped
+- MultiPolygon parts went missing
+- too many trees sit on pavement/parking/roof (NLCD ≈ 0% or high luma / low vegetation)
+- high-canopy NLCD cells have no nearby tree
+- trees form an orchard lattice (regular grid)
+
+Headless Hamina import is not required and is not blocked on. Unzip the overlay SVG next to `images/` if you want a visual check.
+
 
 ## License
 

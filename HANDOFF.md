@@ -24,7 +24,7 @@ Do **not** use an X Grok bot. It cannot push to GitHub.
 |---|---|---|
 | Map image | Esri World Imagery export | `bboxSR=4326` `imageSR=4326`; **snap frame to the export’s actual `extent` + JPEG size** (Esri often pads N/S) |
 | Buildings | Microsoft US Building Footprints (Esri MSBFP2), **paginated** to 2000 | same **actual** west/south/east/north as the JPEG |
-| Trees | **USFS/NLCD percent tree canopy** as a **density field** (jittered NMS, not the 30 m sample lattice) | same extent; ≥18% canopy. **Imagery RGB** only if canopy is missing/nodata, or when TCC is valid but too sparse for the bbox (desert golf). OSM nodes optional, **off**. |
+| Trees | **USFS/NLCD percent tree canopy** as a **density field** (jittered NMS, not the 30 m sample lattice) | same extent; ≥18% canopy. **Imagery RGB** only if canopy is missing/nodata (true gaps). Valid NLCD zeros/sparse stay NLCD — do not RGB-paint parking. OSM nodes optional, **off**. |
 | Map size | OpenIntent zip `dimensions` meters | `widthM` × `lengthM` from the **snapped JPEG extent** |
 | Objects | OpenIntent `floorplans[].attenuation_areas[]` + `area_materials` | same snapped extent, Y-up pixels, stock Hamina type names |
 
@@ -68,7 +68,7 @@ Do **not** inject OSM building or tree **rings** (broke v8 — Hamina dropped al
 
 1. MS footprint vintage can sit a few meters off current imagery.
 2. Heights are heuristics unless the footprint has `height`.
-3. Vegetation: default is USFS/NLCD percent tree canopy (30 m, CONUS) treated as a **density field** — jittered stratified samples + NMS, not one tree per getSamples lattice point. Imagery RGB is fallback when the raster is missing/nodata for the bbox (outside CONUS, empty samples) **or** when TCC is valid but places 0 trees (Oak Creek parking / winter street trees) or is too sparse for golf woods. RGB prefers textured woody canopy over smooth lawn, then the same scatter/NMS (never a step lattice, never north-first cap).
+3. Vegetation: default is USFS/NLCD percent tree canopy (30 m, CONUS) treated as a **density field** — jittered stratified samples + NMS, not one tree per getSamples lattice point. Imagery RGB is fallback **only** when the raster is missing/nodata for the bbox (outside CONUS, empty samples). Valid NLCD with 0 trees (parking lots) stays `nlcd-canopy`. RGB requires textured woody canopy (not smooth lawn, not gray parking). Never a step lattice, never north-first cap.
 4. Netlify hobby ~10s: footprints + imagery must fit; jpeg-js decode stays **off** the request path (504s). Canopy `getSamples` is JSON (~0.8 s). Browser tries canopy first and sends lon/lat + `treesSource`.
 5. US footprints only. NLCD TCC CONUS does not cover HI / PR / SEAK — those sites fall back to imagery RGB.
 
@@ -77,6 +77,7 @@ Do **not** inject OSM building or tree **rings** (broke v8 — Hamina dropped al
 1. USGS 3DEP or other height when available. Meta canopy *height* (not percent) is optional later.
 2. If Hamina exports a project that already contains objects, diff that OpenIntent JSON against ours and lock any remaining origin quirks.
 3. Optional server-side vegetation worker (not jpeg-js in the 10s function) for the RGB fallback path.
+4. Keep `npm run eval` green; refresh fixtures with `npm run fixtures:fetch` if Esri/NLCD vintage drifts.
 
 ## Tree source (do not re-learn)
 
@@ -90,11 +91,13 @@ Root cause of the old RGB path: `isVeg` matched olive lawn and missed brown cano
 
 Same west/south/east/north as the Esri map (`sr=4326`), latest `beginyear`, values 0–100 percent (254/255 nodata). Threshold **≥ 18%**. **Do not place a tree on every sample center** — `getSamples` is a regular grid (the Long Meadow orchard). `placeTreesFromCanopy` treats % as density: local maxima, jitter inside the cell, NMS spacing ~7–16 m (tighter in continuous woods), lawns/low % get few/none. Cap `maxTreesForBbox` (180 small maps, 600–800 large golf/campus). Server still drops points inside building AABBs. Stratified bins fill woods, not just building-yard peaks.
 
-**Fallback to imagery RGB** only when canopy fetch fails **or** fewer than `MIN_VALID_SAMPLES` (20) valid 0–100 pixels (empty raster / outside CONUS). A site that truly has 0–7 trees above 30% stays `nlcd-canopy` — do **not** RGB-paint the lawn.
+**Fallback to imagery RGB** only when canopy fetch fails **or** fewer than `MIN_VALID_SAMPLES` (20) valid 0–100 pixels (empty raster / outside CONUS). A site that truly has 0–7 trees above threshold stays `nlcd-canopy` — do **not** RGB-paint the lawn or parking lot (PR #8’s “RGB when NLCD=0” did that).
 
-RGB fallback: reject smooth lawn (low local luma variance); keep textured green + winter brown/gray canopy; collect the whole image then stratified sample (never north-first cap).
+RGB fallback: reject smooth lawn and gray pavement (low local luma variance, high luma, low sat); keep textured green + winter brown canopy; collect the whole image then stratified sample (never north-first cap).
 
-`stats.treesSource`: `"nlcd-canopy" | "imagery-rgb" | "none"` in the API/stats payload — **never a UI picker**. Shared logic: `public/tree-detect.js` (browser + Node).
+`stats.treesSource`: `"nlcd-canopy" | "imagery-rgb" | "none"` in the API/stats payload — **never a UI picker**. Shared logic: `public/tree-detect.js` (`resolveTrees` / `rgbFillNeeded`) used by the browser, eval, and Node tests.
+
+**Eval (no Hamina, no Jerry):** `npm run eval` scores cached fixtures in `test/fixtures/` (Oak Creek commercial + Long Meadow). Image-space overlay + `export-stats.json`. `--legacy` / `--compare-legacy` replays RGB-carpet. `--live` hits Esri/NLCD. Exit non-zero on over-trees or dropped large roofs.
 
 **UX (Jerry):** super simple tool. Search → Draw → Export → **one `.zip`**. Hide OSM checkbox, control-points textarea, format choosers. One status line (“Building map + clutter…”). After export: “Import this zip in Hamina (Projects → Import → OpenIntent).” plus coverage stats (buildings kept/fetched/drops, trees kept). OSM/`controlPoints` remain API escape hatches for tests only.
 
@@ -102,6 +105,7 @@ RGB fallback: reject smooth lawn (low local luma variance); keep textured green 
 
 ```
 npm test
+npm run eval
 edit netlify/lib/*.js netlify/functions/clutter.js public/*
 open a branch + PR
 ```
