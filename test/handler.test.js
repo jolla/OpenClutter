@@ -69,6 +69,22 @@ describe("clutter handler (mocked Esri)", () => {
         };
       }
       if (String(url).includes("World_Imagery")) {
+        if (String(url).includes("f=json")) {
+          return {
+            ok: true,
+            json: async () => ({
+              width: 64,
+              height: 64,
+              extent: {
+                xmin: WYNN.west,
+                ymin: WYNN.south,
+                xmax: WYNN.east,
+                ymax: WYNN.north,
+                spatialReference: { wkid: 4326 },
+              },
+            }),
+          };
+        }
         return { ok: true, arrayBuffer: async () => jpeg };
       }
       throw new Error("unexpected fetch " + url);
@@ -97,6 +113,8 @@ describe("clutter handler (mocked Esri)", () => {
     assert.ok(files["export-warnings.json"]);
     assert.ok(files["hamina-clipboard.json"]);
     assert.ok(files["README.txt"]);
+    assert.ok(files["alignment-overlay.svg"]);
+    assert.ok(files["frame-lock.json"]);
     const clip = JSON.parse(files["hamina-clipboard.json"].toString());
     assert.equal(clip.header.type, "HaminaClipboard");
     assert.ok(clip.attenuatingZones.length >= 1);
@@ -105,6 +123,7 @@ describe("clutter handler (mocked Esri)", () => {
     assert.match(files["README.txt"].toString(), /Import this zip in Hamina/);
     assert.ok(!urls.some((u) => u.includes("overpass")));
     assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("bboxSR=4326") && u.includes("imageSR=4326")));
+    assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("f=json")));
     assert.ok(urls.some((u) => u.includes("MSBFP2")));
     assert.ok(body.stats.trees >= 1);
     assert.equal(body.stats.treesSource, "imagery-rgb");

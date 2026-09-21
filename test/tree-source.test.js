@@ -134,6 +134,41 @@ describe("NLCD / USFS canopy source", () => {
     const south = picked.filter((p) => p.lat < mid);
     assert.ok(south.length >= 4, `expected southern woods in the sample, got ${south.length} of ${picked.length}`);
   });
+
+  it("does not plant an orchard grid on NLCD sample centers", () => {
+    const payload = sampleGrid(196, (row) => (row < 8 ? 82 : 6));
+    const parsed = treesFromCanopySamples(payload);
+    const trees = pickCanopyTrees(parsed.hits, LONG_MEADOW, { maxTrees: 80 });
+    assert.ok(trees.length >= 8, `expected woods trees, got ${trees.length}`);
+    assert.ok(trees.length < parsed.hits.length, "must subsample the 30 m lattice");
+    let onCenter = 0;
+    for (const t of trees) {
+      const hit = parsed.hits.some(
+        (h) => Math.abs(h.lon - t.lon) < 1e-10 && Math.abs(h.lat - t.lat) < 1e-10
+      );
+      if (hit) onCenter++;
+    }
+    assert.ok(
+      onCenter <= trees.length * 0.25,
+      `trees still on sample centers: ${onCenter}/${trees.length}`
+    );
+    const mpdLat = 110540;
+    const mpdLon = 111320 * Math.cos(((LONG_MEADOW.south + LONG_MEADOW.north) / 2) * Math.PI / 180);
+    let minD = Infinity;
+    for (let i = 0; i < trees.length; i++) {
+      for (let j = i + 1; j < trees.length; j++) {
+        const dx = (trees[i].lon - trees[j].lon) * mpdLon;
+        const dy = (trees[i].lat - trees[j].lat) * mpdLat;
+        const d = Math.hypot(dx, dy);
+        if (d < minD) minD = d;
+      }
+    }
+    assert.ok(minD >= 8, `NMS spacing too tight: ${minD} m`);
+    const mid = (LONG_MEADOW.north + LONG_MEADOW.south) / 2;
+    const south = trees.filter((t) => t.lat < mid);
+    const north = trees.filter((t) => t.lat >= mid);
+    assert.ok(south.length > north.length, `woods should dominate lawns: south ${south.length} north ${north.length}`);
+  });
 });
 
 describe("pickStratified does not north-fill", () => {
@@ -144,7 +179,7 @@ describe("pickStratified does not north-fill", () => {
     const picked = pickStratified(items, 80, (c) => [c.x, c.y], 0, 0, 100, 100, 8, 8);
     assert.equal(picked.length, 80);
     assert.ok(picked.some((p) => p.y > 50));
-    assert.equal(MAX_TREES, 250);
+    assert.equal(MAX_TREES, 180);
   });
 });
 

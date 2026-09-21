@@ -4,20 +4,30 @@
  * Shared geographic frame for Esri World Imagery + Microsoft footprints +
  * HaminaClipboard meters.
  *
- * Esri export uses bboxSR=4326 and imageSR=4326, so the JPEG is stretched to
- * size=imgW,imgH over the same west/south/east/north used for footprints.
- * Clipboard meters use that same widthM × lengthM — never a second auto-scale.
+ * Esri export uses bboxSR=4326 and imageSR=4326. The JPEG’s *actual* extent
+ * (from export?f=json) is the frame — not the rectangle the user drew.
+ * World Imagery often pads north/south (~1/cos(lat)) so a geodesic-aspect
+ * size= request still covers more latitude than asked. Mapping footprints
+ * with the drawn bbox then stretches buildings off rooftops (Long Meadow).
  *
- * Origin (unit-tested):
+ * Clipboard meters use that same actual widthM × lengthM — never a second
+ * auto-scale.
+ *
+ * Two pixel conventions (unit-tested):
+ *   OpenIntent / Y-up: (0,0) = SW, y increases north (oiconvert + Hamina OI)
+ *   JPEG / Y-down:     (0,0) = NW, y increases south (image rows)
+ * They sum to imgH. Clipboard uses image-space:
+ *   x_clip = x_img * mpuX − widthM
+ *   y_clip = −y_img * mpuY
+ * which is identical to Y-up:
+ *   x_clip = x_up * mpuX − widthM
+ *   y_clip = y_up * mpuY − lengthM
+ *
+ * Origin (HaminaClipboard native after OpenIntent import — NE = 0,0):
  *   SW (west, south) → clipboard (−widthM, −lengthM)
  *   SE (east, south) → clipboard (0, −lengthM)
  *   NW (west, north) → clipboard (−widthM, 0)
  *   NE (east, north) → clipboard (0, 0)
- *
- *   x_clip = x_px * mpuX − widthM
- *   y_clip = y_from_south_px * mpuY − lengthM
- *
- * OpenIntent pixels: X east from west, Y north from south (Y-up).
  */
 
 function metersPerDeg(lat) {
@@ -49,12 +59,19 @@ function geoFrame(bbox, opts = {}) {
 
   const metersPerPx = opts.metersPerPx ?? 1.0;
   const maxSide = opts.maxSide ?? 1280;
-  let imgW = Math.max(64, Math.round(widthM / metersPerPx));
-  let imgH = Math.max(64, Math.round(lengthM / metersPerPx));
-  if (Math.max(imgW, imgH) > maxSide) {
-    const k = maxSide / Math.max(imgW, imgH);
-    imgW = Math.max(64, Math.round(imgW * k));
-    imgH = Math.max(64, Math.round(imgH * k));
+  let imgW;
+  let imgH;
+  if (opts.imgW > 0 && opts.imgH > 0) {
+    imgW = Math.round(+opts.imgW);
+    imgH = Math.round(+opts.imgH);
+  } else {
+    imgW = Math.max(64, Math.round(widthM / metersPerPx));
+    imgH = Math.max(64, Math.round(lengthM / metersPerPx));
+    if (Math.max(imgW, imgH) > maxSide) {
+      const k = maxSide / Math.max(imgW, imgH);
+      imgW = Math.max(64, Math.round(imgW * k));
+      imgH = Math.max(64, Math.round(imgH * k));
+    }
   }
 
   const mpuX = widthM / imgW;
@@ -80,9 +97,10 @@ function geoFrame(bbox, opts = {}) {
 }
 
 const CLIPBOARD_ORIGIN =
-  "Clipboard meters share the map’s widthM×lengthM. " +
-  "SW(west,south)=(-widthM,-lengthM); NE(east,north)=(0,0). " +
-  "x_clip = x_px * mpuX - widthM; y_clip = y_from_south_px * mpuY - lengthM. " +
+  "Clipboard meters share the imported JPEG’s actual widthM×lengthM (Esri export extent, not the drawn box). " +
+  "HaminaClipboard origin after OpenIntent import: NE(east,north)=(0,0); SW=(-widthM,-lengthM). " +
+  "JPEG pixels are Y-down from NW; OpenIntent pixels are Y-up from SW (y_up + y_img = imgH). " +
+  "x_clip = x_img * mpuX - widthM; y_clip = -y_img * mpuY. " +
   "Import the OpenIntent zip first (sets geographic size), then paste clipboard. " +
   "Google Earth screenshots as maps are an anti-pattern (Hamina auto-scale ≠ photo meters).";
 
@@ -98,11 +116,36 @@ function pxToLl(x, y, frame) {
   return [lon, lat];
 }
 
+/** JPEG / SVG space: (0,0) = NW = top-left of the Esri JPEG, Y-down. */
+function llToImagePx(lon, lat, frame) {
+  const x = ((lon - frame.west) / (frame.east - frame.west)) * frame.imgW;
+  const y = ((frame.north - lat) / (frame.north - frame.south)) * frame.imgH;
+  return [x, y];
+}
+
+function imagePxToLl(x, y, frame) {
+  const lon = frame.west + (x / frame.imgW) * (frame.east - frame.west);
+  const lat = frame.north - (y / frame.imgH) * (frame.north - frame.south);
+  return [lon, lat];
+}
+
+function yUpToImage(yFromSouthPx, frame) {
+  return frame.imgH - yFromSouthPx;
+}
+
+function imageToYUp(yImg, frame) {
+  return frame.imgH - yImg;
+}
+
 function pxToClipboard(xPx, yFromSouthPx, frame) {
   return [
     xPx * frame.mpuX - frame.widthM,
     yFromSouthPx * frame.mpuY - frame.lengthM,
   ];
+}
+
+function imagePxToClipboard(xImg, yImg, frame) {
+  return [xImg * frame.mpuX - frame.widthM, -yImg * frame.mpuY];
 }
 
 function clipboardToPx(xM, yM, frame) {
@@ -156,12 +199,103 @@ function publicFrame(frame) {
   };
 }
 
-function esriImageryUrl(frame) {
+function esriExportQuery(frame, f) {
   const bbox = `${frame.west},${frame.south},${frame.east},${frame.north}`;
   return (
     "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export" +
-    `?bbox=${bbox}&bboxSR=4326&imageSR=4326&size=${frame.imgW},${frame.imgH}&format=jpg&f=image`
+    `?bbox=${bbox}&bboxSR=4326&imageSR=4326&size=${frame.imgW},${frame.imgH}&format=jpg&f=${f}`
   );
+}
+
+function esriImageryUrl(frame) {
+  return esriExportQuery(frame, "image");
+}
+
+function esriImageryMetaUrl(frame) {
+  return esriExportQuery(frame, "json");
+}
+
+/** Read JPEG SOF width/height without a full decode (no jpeg-js). */
+function jpegSize(buf) {
+  if (!buf || buf.length < 10 || buf[0] !== 0xff || buf[1] !== 0xd8) return null;
+  let i = 2;
+  while (i + 8 < buf.length) {
+    if (buf[i] !== 0xff) {
+      i++;
+      continue;
+    }
+    const marker = buf[i + 1];
+    if (marker === 0xd8) {
+      i += 2;
+      continue;
+    }
+    if (marker === 0xd9 || marker === 0xda) break;
+    if (marker === 0x00 || marker === 0xff) {
+      i++;
+      continue;
+    }
+    const len = (buf[i + 2] << 8) | buf[i + 3];
+    if (len < 2) break;
+    const isSof =
+      (marker >= 0xc0 && marker <= 0xc3) ||
+      (marker >= 0xc5 && marker <= 0xc7) ||
+      (marker >= 0xc9 && marker <= 0xcb) ||
+      (marker >= 0xcd && marker <= 0xcf);
+    if (isSof) {
+      const height = (buf[i + 5] << 8) | buf[i + 6];
+      const width = (buf[i + 7] << 8) | buf[i + 8];
+      if (width > 0 && height > 0) return { width, height };
+    }
+    i += 2 + len;
+  }
+  return null;
+}
+
+function extentFromMeta(meta) {
+  const ext = meta && meta.extent;
+  if (!ext) return null;
+  const sr = ext.spatialReference || {};
+  const wkid = +sr.wkid || +sr.latestWkid;
+  if (wkid && wkid !== 4326 && wkid !== 84) return null;
+  const west = +ext.xmin;
+  const south = +ext.ymin;
+  const east = +ext.xmax;
+  const north = +ext.ymax;
+  if (![west, south, east, north].every(Number.isFinite)) return null;
+  if (east <= west || north <= south) return null;
+  return { west, south, east, north };
+}
+
+/**
+ * Rebuild the frame from the JPEG Esri actually returned.
+ * Footprints, trees, OpenIntent, and clipboard must all use this, not the drawn box.
+ */
+function applyImageryMeta(frame, meta, jpegWH) {
+  const ext = extentFromMeta(meta);
+  const wh = jpegWH && jpegWH.width > 0 && jpegWH.height > 0 ? jpegWH : null;
+  const imgW = (wh && wh.width) || (meta && +meta.width) || frame.imgW;
+  const imgH = (wh && wh.height) || (meta && +meta.height) || frame.imgH;
+  if (!(imgW > 0 && imgH > 0)) return frame;
+  const bbox = ext || {
+    west: frame.west,
+    south: frame.south,
+    east: frame.east,
+    north: frame.north,
+  };
+  const padM = Math.max(frame.widthM, frame.lengthM, 2500) * 2.5;
+  try {
+    return geoFrame(bbox, { imgW, imgH, maxSpanM: padM, minSpanM: 1 });
+  } catch {
+    return geoFrame(
+      {
+        west: frame.west,
+        south: frame.south,
+        east: frame.east,
+        north: frame.north,
+      },
+      { imgW, imgH, maxSpanM: padM, minSpanM: 1 }
+    );
+  }
 }
 
 function msFootprintsUrl(frame, recordCount = 300) {
@@ -263,13 +397,23 @@ module.exports = {
   geoFrame,
   llToPx,
   pxToLl,
+  llToImagePx,
+  imagePxToLl,
+  yUpToImage,
+  imageToYUp,
   pxToClipboard,
+  imagePxToClipboard,
   clipboardToPx,
   llToClipboard,
   clipboardToLl,
   cornerClipboard,
   publicFrame,
+  esriExportQuery,
   esriImageryUrl,
+  esriImageryMetaUrl,
+  jpegSize,
+  extentFromMeta,
+  applyImageryMeta,
   msFootprintsUrl,
   fitAffine,
   applyAffine,

@@ -20,9 +20,9 @@ Do **not** use an X Grok bot. It cannot push to GitHub.
 
 | Piece | Source | Frame |
 |---|---|---|
-| Map image | Esri World Imagery export | `bboxSR=4326` `imageSR=4326` `size=imgW,imgH` |
-| Buildings | Microsoft US Building Footprints (Esri MSBFP2) | same west/south/east/north |
-| Trees | **USFS/NLCD percent tree canopy** (CONUS ImageServer `getSamples`) | same west/south/east/north; ≥30% canopy → lon/lat. **Imagery RGB** only if canopy is missing/nodata for the bbox. OSM nodes optional, **off**. |
+| Map image | Esri World Imagery export | `bboxSR=4326` `imageSR=4326`; **snap frame to the export’s actual `extent` + JPEG size** (Esri often pads N/S) |
+| Buildings | Microsoft US Building Footprints (Esri MSBFP2) | same **actual** west/south/east/north as the JPEG |
+| Trees | **USFS/NLCD percent tree canopy** as a **density field** (jittered NMS, not the 30 m sample lattice) | same extent; ≥30% canopy. **Imagery RGB** only if canopy is missing/nodata. OSM nodes optional, **off**. |
 | Map size | OpenIntent zip `dimensions` meters | `widthM` × `lengthM` from bbox |
 | Objects | HaminaClipboard JSON paste | same `widthM`/`lengthM`, documented origin |
 
@@ -30,13 +30,18 @@ Import **zip first** (sets map size), **then paste `hamina-clipboard.json` from 
 
 Shared math lives in `netlify/lib/geo-frame.js`. Pipeline in `netlify/lib/pipeline.js`. HTTP in `netlify/functions/clutter.js`. Tests in `test/`.
 
-Clipboard origin:
+Clipboard origin (HaminaClipboard native after OpenIntent import):
 
 ```
 SW → (−widthM, −lengthM)   NE → (0, 0)
-x_clip = x_px * mpuX − widthM
-y_clip = y_from_south_px * mpuY − lengthM
+JPEG (Y-down from NW):  x_clip = x_img * mpuX − widthM ;  y_clip = −y_img * mpuY
+OpenIntent (Y-up from SW): x_clip = x_up * mpuX − widthM ; y_clip = y_up * mpuY − lengthM
+y_up + y_img = imgH
 ```
+
+`widthM`×`lengthM` are the **JPEG’s actual Esri extent**, not the rectangle the user drew. World Imagery `imageSR=4326` routinely returns a taller lat span than requested (~1/cos φ). Mapping footprints with the drawn box was the Long Meadow rooftop miss.
+
+Zip also contains `alignment-overlay.svg` (buildings+trees on the exact Esri JPEG) and `frame-lock.json`. Open the SVG after unzip to verify image-space lock before blaming Hamina.
 
 HaminaClipboard schema (header, empty collections, zone types with `ituRModelEnabled` / `transparencyEnabled`, stock names) matches the working geo paste. Types: Foliage - Heavy/Light, Tree Trunk, Building - One/Five Floor, Hotel podium.
 
@@ -60,7 +65,7 @@ Do **not** inject OSM building or tree **rings** (broke v8 — Hamina dropped al
 
 1. MS footprint vintage can sit a few meters off current imagery.
 2. Heights are heuristics unless the footprint has `height`.
-3. Vegetation: default is USFS/NLCD percent tree canopy (30 m, CONUS). Imagery RGB is fallback when the raster is missing/nodata for the bbox (outside CONUS, empty samples). RGB prefers textured woody canopy over smooth lawn and never fills MAX_TREES north-first.
+3. Vegetation: default is USFS/NLCD percent tree canopy (30 m, CONUS) treated as a **density field** — jittered stratified samples + NMS, not one tree per getSamples lattice point. Imagery RGB is fallback when the raster is missing/nodata for the bbox (outside CONUS, empty samples). RGB prefers textured woody canopy over smooth lawn, then the same scatter/NMS (never a step lattice, never north-first cap).
 4. Netlify hobby ~10s: footprints + imagery must fit; jpeg-js decode stays **off** the request path (504s). Canopy `getSamples` is JSON (~0.8 s). Browser tries canopy first and sends lon/lat + `treesSource`.
 5. US footprints only. NLCD TCC CONUS does not cover HI / PR / SEAK — those sites fall back to imagery RGB.
 
@@ -80,7 +85,7 @@ Root cause of the old RGB path: `isVeg` matched olive lawn and missed brown cano
 
 `https://imagery.geoplatform.gov/iipp/rest/services/Vegetation/USFS_EDW_NLCD_TCC_CONUS/ImageServer/getSamples`
 
-Same west/south/east/north as the Esri map (`sr=4326`), latest `beginyear`, values 0–100 percent (254/255 nodata). Threshold **≥ 30%**. Spatially stratified pick up to `MAX_TREES` (250). Server still drops points inside building AABBs.
+Same west/south/east/north as the Esri map (`sr=4326`), latest `beginyear`, values 0–100 percent (254/255 nodata). Threshold **≥ 30%**. **Do not place a tree on every sample center** — `getSamples` is a regular grid (the Long Meadow orchard). `placeTreesFromCanopy` treats % as density: local maxima, jitter inside the cell, NMS spacing ~10–20 m, lawns/low % get few/none. Cap `MAX_TREES` (180). Server still drops points inside building AABBs.
 
 **Fallback to imagery RGB** only when canopy fetch fails **or** fewer than `MIN_VALID_SAMPLES` (20) valid 0–100 pixels (empty raster / outside CONUS). A site that truly has 0–7 trees above 30% stays `nlcd-canopy` — do **not** RGB-paint the lawn.
 

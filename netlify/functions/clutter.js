@@ -1,7 +1,7 @@
 "use strict";
 
-const UA = "openclutter/0.8.0 (https://github.com/jolla/OpenClutter)";
-const { geoFrame, esriImageryUrl, msFootprintsUrl, fitAffine } = require("../lib/geo-frame");
+const UA = "openclutter/0.9.0 (https://github.com/jolla/OpenClutter)";
+const { geoFrame, esriImageryUrl, esriImageryMetaUrl, msFootprintsUrl, fitAffine, jpegSize, applyImageryMeta } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchCanopyTrees, normalizeTreesSource } = require("../lib/tree-source");
@@ -78,6 +78,7 @@ exports.handler = async (event) => {
   const format = parseFormat(body);
   const needImage = format !== "hamina-clipboard";
   const imgUrl = esriImageryUrl(frame);
+  const imgMetaUrl = esriImageryMetaUrl(frame);
   const footprintsUrl = msFootprintsUrl(frame, 300);
 
   let treePoints = Array.isArray(body.trees) ? body.trees.slice() : [];
@@ -87,20 +88,32 @@ exports.handler = async (event) => {
 
   let imgBuf = null;
   let gj;
+  let imgMeta = null;
   try {
     const jobs = [fetchOk(footprintsUrl)];
-    if (needImage) jobs.push(fetchOk(imgUrl));
+    if (needImage) {
+      jobs.push(fetchOk(imgUrl));
+      jobs.push(fetchOk(imgMetaUrl).catch(() => null));
+    }
     const canopyJob =
       !treePoints.length && !treesSource
         ? fetchCanopyTrees(frame, (url) => fetchOk(url)).catch(() => null)
         : null;
-    const [fpRes, imgRes] = await Promise.all(jobs);
+    const [fpRes, imgRes, metaRes] = await Promise.all(jobs);
     gj = await fpRes.json();
     if (needImage) {
       imgBuf = Buffer.from(await imgRes.arrayBuffer());
       if (imgBuf.length < 100 || imgBuf[0] !== 0xff || imgBuf[1] !== 0xd8) {
         throw new Error("imagery not jpeg");
       }
+      if (metaRes) {
+        try {
+          imgMeta = await metaRes.json();
+        } catch {
+          imgMeta = null;
+        }
+      }
+      frame = applyImageryMeta(frame, imgMeta, jpegSize(imgBuf));
     }
     if (canopyJob) {
       const canopy = await canopyJob;
