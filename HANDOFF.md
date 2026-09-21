@@ -6,40 +6,74 @@ Owner: jolla (Jerry / Hamina)
 ## What to tell a new Grok chat
 
 > Continue https://github.com/jolla/openintent-clutter
-> Push fixes to main on that repo (GitHub is connected).
-> Read HANDOFF.md first.
+> Prefer a branch + PR. Read HANDOFF.md first.
 
 Do **not** use an X Grok bot. It cannot push to GitHub.
 
-## Current product
+## Product
 
-Address + draw bbox → Netlify function builds OpenIntent zip → import in Hamina Planner.
+User draws/enters a bbox (or address) → app produces clutter that lines up with the map in Hamina Planner, every time, for any site.
 
-- Imagery: Esri World Imagery export (same bbox as the math)
-- Buildings: Microsoft US Building Footprints (Esri MSBFP2)
-- Trees: OSM Overpass (wood/forest/golf_course/scrub + natural=tree)
-- Coords: pixels, Y-up from south edge of bbox
-- Scale: meters from bbox, not Hamina auto-scale
+**Default path (exact, repeatable):** one shared bbox frame.
 
-## Known issues (2026-09-20)
+| Piece | Source | Frame |
+|---|---|---|
+| Map image | Esri World Imagery export | `bboxSR=4326` `imageSR=4326` `size=imgW,imgH` |
+| Buildings | Microsoft US Building Footprints (Esri MSBFP2) | same west/south/east/north |
+| Trees | Imagery vegetation (browser) | lon/lat → same frame; OSM nodes optional, **off** |
+| Map size | OpenIntent zip `dimensions` meters | `widthM` × `lengthM` from bbox |
+| Objects | HaminaClipboard JSON paste | same `widthM`/`lengthM`, documented origin |
 
-1. Alignment still slightly off in Hamina after import.
-2. Heights are heuristics unless the footprint feature has a `height` property (most MS footprints do not).
-3. OSM trees are sparse outside well-mapped parks/golf; golf tree belts often missing.
-4. Hamina may still map OpenIntent `attenuation_areas` to walls on some builds — clipboard JSON is the fallback from the original Wynn thread.
-5. Function timeout: Overpass + Esri + footprints must finish inside Netlify’s limit (~10s hobby).
+Import **zip first** (sets map size), **then paste clipboard**. No per-site nudge.
+
+Shared math lives in `netlify/lib/geo-frame.js`. Pipeline in `netlify/lib/pipeline.js`. HTTP in `netlify/functions/clutter.js`. Tests in `test/`.
+
+Clipboard origin:
+
+```
+SW → (−widthM, −lengthM)   NE → (0, 0)
+x_clip = x_px * mpuX − widthM
+y_clip = y_from_south_px * mpuY − lengthM
+```
+
+HaminaClipboard schema (header, empty collections, zone types with `ituRModelEnabled` / `transparencyEnabled`, stock names) matches the working geo paste. Types: Foliage - Heavy/Light, Tree Trunk, Building - One/Five Floor, Hotel podium.
+
+## Root cause we already hit (do not re-learn the hard way)
+
+Mixing a **Google Earth screenshot** (Hamina auto-scale ≠ photo meters) with **lon/lat footprints** is the failure mode.
+
+Wynn example: 3840×2160 GE frame is ~2376×1337 m geographically; Hamina’s scale bar showed ~796×448 m. Clipboard built for 796 m **piled in a corner**. Clipboard built for the OpenIntent geographic meters **spread**. Guessing a dual-scale transform (world file → pixels → Hamina map meters) is fragile and site-specific.
+
+**GE screenshots as maps are an anti-pattern.** The zip from this app *is* the map.
+
+OpenIntent `attenuation_areas` imports are unreliable in Hamina; clipboard paste is the dependable object path. Keep emitting both: zip for map size + image, clipboard for objects.
+
+Do **not** inject OSM building or tree **rings** (broke v8 — Hamina dropped all attenuation_areas). Optional OSM is tree **nodes** only.
+
+## Calibration escape hatch
+
+`controlPoints`: 3+ `{lon,lat,xM,yM}` → affine lon/lat → clipboard meters. **Only** for a map already in Hamina at the wrong scale. Default path must stay shared-bbox (no affine).
+
+## Known issues
+
+1. MS footprint vintage can sit a few meters off current imagery.
+2. Heights are heuristics unless the footprint has `height`.
+3. Vegetation detection is color heuristic (desert/golf tuned); not species ID.
+4. Netlify hobby ~10s: footprints + imagery must fit; jpeg-js decode stays **off** the request path (504s). Trees are detected in the browser and sent as lon/lat.
+5. US footprints only.
 
 ## Next fixes (priority)
 
-1. Confirm Hamina Y direction: export a Hamina project that contains one drawn object and diff coords vs image pixels.
-2. USGS 3DEP point query or Microsoft/Google building height where available.
-3. Optional tree fill: sample Esri image is hard in a function without a decoder; keep OSM or add a later image worker.
-4. If objects import as walls, emit HaminaClipboard JSON as a second download.
+1. USGS 3DEP or other height when available.
+2. If Hamina ever exports a project that already contains objects, diff that JSON against our clipboard and lock any remaining origin quirks.
+3. Optional server-side vegetation worker (not jpeg-js in the 10s function).
 
 ## How to work
 
 ```
-edit netlify/functions/clutter.js
-push to jolla/openintent-clutter main
-Netlify auto-deploys if the site is linked to this repo
+npm test
+edit netlify/lib/*.js netlify/functions/clutter.js public/*
+open a branch + PR
 ```
+
+PR #1 (`feat/hamina-clipboard-consistent-transform`) added a clipboard-only path and dual-scale docs. This shared-bbox pipeline **supersedes** that dual-scale default: clipboard still uses consistent `widthM`/`lengthM`, but the map is the Esri zip, not a GE screenshot.
