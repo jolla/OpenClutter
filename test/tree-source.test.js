@@ -4,6 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   MAX_TREES,
+  MAX_TREES_LARGE,
   MIN_CANOPY_PCT,
   MIN_VALID_SAMPLES,
   TCC_IMAGESERVER,
@@ -15,6 +16,8 @@ const {
   normalizeTreesSource,
   pickStratified,
   pickCanopyTrees,
+  maxTreesForBbox,
+  mergeTreePoints,
   vegColorScore,
   isVeg,
   localLumaStats,
@@ -73,7 +76,14 @@ describe("NLCD / USFS canopy source", () => {
     assert.ok(url.includes("f=json"));
     assert.equal(TCC_IMAGESERVER.endsWith("USFS_EDW_NLCD_TCC_CONUS/ImageServer"), true);
     assert.ok(canopySampleCount(LONG_MEADOW) >= 64);
-    assert.ok(canopySampleCount(LONG_MEADOW) <= 800);
+    assert.ok(canopySampleCount(LONG_MEADOW) <= 1600);
+    const wynnCount = canopySampleCount({
+      west: -115.1735,
+      south: 36.1205,
+      east: -115.1488,
+      north: 36.1355,
+    });
+    assert.ok(wynnCount > 800, `large golf bbox should sample more than 800 TCC cells, got ${wynnCount}`);
   });
 
   it("parses percent canopy and drops nodata 254/255", () => {
@@ -82,7 +92,7 @@ describe("NLCD / USFS canopy source", () => {
     assert.equal(parseCanopyPct("254"), null);
     assert.equal(parseCanopyPct("255"), null);
     assert.equal(parseCanopyPct("101"), null);
-    assert.equal(MIN_CANOPY_PCT, 30);
+    assert.equal(MIN_CANOPY_PCT, 18);
     assert.equal(MIN_VALID_SAMPLES, 20);
   });
 
@@ -91,7 +101,7 @@ describe("NLCD / USFS canopy source", () => {
     const parsed = treesFromCanopySamples(payload);
     assert.equal(parsed.validCount, 25);
     assert.ok(parsed.hits.length >= 1);
-    assert.ok(parsed.hits.every((h) => h.pct >= 30));
+    assert.ok(parsed.hits.every((h) => h.pct >= 18));
     const decided = decideCanopy(parsed);
     assert.equal(decided.ok, true);
     assert.equal(decided.reason, "nlcd-canopy");
@@ -163,11 +173,58 @@ describe("NLCD / USFS canopy source", () => {
         if (d < minD) minD = d;
       }
     }
-    assert.ok(minD >= 8, `NMS spacing too tight: ${minD} m`);
+    assert.ok(minD >= 5, `NMS spacing too tight: ${minD} m`);
     const mid = (LONG_MEADOW.north + LONG_MEADOW.south) / 2;
     const south = trees.filter((t) => t.lat < mid);
     const north = trees.filter((t) => t.lat >= mid);
     assert.ok(south.length > north.length, `woods should dominate lawns: south ${south.length} north ${north.length}`);
+  });
+
+  it("fills continuous high canopy instead of only isolated yard peaks", () => {
+    const hits = [];
+    // Isolated landscaping trees (peaks) along the west edge.
+    for (let i = 0; i < 12; i++) {
+      hits.push({
+        lon: LONG_MEADOW.west + 0.0004,
+        lat: LONG_MEADOW.south + 0.0004 + i * 0.0004,
+        pct: 88,
+        score: 0.88,
+      });
+    }
+    // Continuous woods occupying the east half.
+    for (let row = 0; row < 14; row++) {
+      for (let col = 0; col < 12; col++) {
+        hits.push({
+          lon: LONG_MEADOW.west + 0.0035 + col * 0.00022,
+          lat: LONG_MEADOW.south + 0.0005 + row * 0.00035,
+          pct: 70 + ((row + col) % 8),
+          score: 0.75,
+        });
+      }
+    }
+    const trees = pickCanopyTrees(hits, LONG_MEADOW, { maxTrees: 120 });
+    assert.ok(trees.length >= 40, `expected woods to fill, got ${trees.length}`);
+    const midLon = (LONG_MEADOW.west + LONG_MEADOW.east) / 2;
+    const east = trees.filter((t) => t.lon > midLon);
+    assert.ok(
+      east.length >= trees.length * 0.5,
+      `woods bins should fill, east ${east.length} / ${trees.length}`
+    );
+  });
+
+  it("merges RGB supplements without snapping onto a lattice", () => {
+    const nlcd = [{ lon: LONG_MEADOW.west + 0.002, lat: LONG_MEADOW.south + 0.002, pct: 70 }];
+    const rgb = [];
+    for (let i = 0; i < 20; i++) {
+      rgb.push({
+        lon: LONG_MEADOW.west + 0.004 + i * 0.00008,
+        lat: LONG_MEADOW.south + 0.004,
+        score: 0.6,
+      });
+    }
+    const merged = mergeTreePoints(nlcd, rgb, LONG_MEADOW, { maxTrees: 12 });
+    assert.ok(merged.length >= 2 && merged.length <= 12);
+    assert.ok(merged.some((t) => Math.abs(t.lon - nlcd[0].lon) < 1e-6));
   });
 });
 
@@ -180,6 +237,19 @@ describe("pickStratified does not north-fill", () => {
     assert.equal(picked.length, 80);
     assert.ok(picked.some((p) => p.y > 50));
     assert.equal(MAX_TREES, 180);
+    assert.equal(MAX_TREES_LARGE, 800);
+  });
+
+  it("scales MAX_TREES with bbox area for golf/campus maps", () => {
+    const small = maxTreesForBbox(LONG_MEADOW);
+    const large = maxTreesForBbox({
+      west: -115.1735,
+      south: 36.1205,
+      east: -115.1488,
+      north: 36.1355,
+    });
+    assert.ok(small >= 180 && small <= 400, `small site cap ${small}`);
+    assert.ok(large >= 600 && large <= 800, `Wynn-scale cap ${large}`);
   });
 });
 

@@ -16,8 +16,9 @@
   "use strict";
 
   const MAX_TREES = 180;
-  /** Keep pixels at or above this NLCD/USFS percent canopy. */
-  const MIN_CANOPY_PCT = 30;
+  const MAX_TREES_LARGE = 800;
+  /** Keep pixels at or above this NLCD/USFS percent canopy (golf/sparse woods). */
+  const MIN_CANOPY_PCT = 18;
   /**
    * Need this many valid 0–100 samples to trust the raster for the bbox.
    * Below this → empty / nodata / outside CONUS → imagery-rgb fallback.
@@ -38,7 +39,7 @@
     // Native TCC is 30 m ≈ 0.00027°. Cap so getSamples stays well under 2 s.
     const nx = Math.max(8, Math.round(dLon / 0.00027));
     const ny = Math.max(8, Math.round(dLat / 0.00027));
-    return Math.min(800, Math.max(64, nx * ny));
+    return Math.min(1600, Math.max(64, nx * ny));
   }
 
   function canopySamplesUrl(bbox, opts) {
@@ -130,6 +131,24 @@
     return { lon: 111320 * Math.cos(rad), lat: 110540 };
   }
 
+  /**
+   * Scale the tree cap with map area: ~180 on a small campus, 600–800 on a
+   * 2 km golf/resort bbox. Never a UI slider.
+   */
+  function maxTreesForBbox(bbox) {
+    if (!bbox) return MAX_TREES;
+    const south = +bbox.south;
+    const north = +bbox.north;
+    const west = +bbox.west;
+    const east = +bbox.east;
+    if (![south, north, west, east].every(Number.isFinite)) return MAX_TREES;
+    const mpd = metersPerDeg((south + north) / 2);
+    const areaKm2 =
+      (Math.abs(east - west) * mpd.lon * Math.abs(north - south) * mpd.lat) / 1e6;
+    const scaled = Math.round(180 + areaKm2 * 175);
+    return Math.max(MAX_TREES, Math.min(MAX_TREES_LARGE, scaled));
+  }
+
   function hash01(lon, lat, salt) {
     const s = Math.sin(lon * 127.1 + lat * 311.7 + (salt || 0) * 74.7) * 43758.5453;
     return s - Math.floor(s);
@@ -206,6 +225,86 @@
     return n >= 2 && pct >= maxN && pct >= MIN_CANOPY_PCT;
   }
 
+  function woodsNeighborCount(grid, key, minPct) {
+    const cell = grid.get(key);
+    if (!cell) return 0;
+    let n = 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dy) continue;
+        const o = grid.get(cell.ix + dx + ":" + (cell.iy + dy));
+        if (o && o.pct >= minPct) n++;
+      }
+    }
+    return n;
+  }
+
+  /**
+   * Round-robin NMS across spatial bins so continuous woods fill instead of
+   * isolated yard peaks taking the whole cap.
+   */
+  function nmsStratified(candidates, bbox, maxTrees, distFn) {
+    if (!candidates || !candidates.length || maxTrees <= 0) return [];
+    const mpd = metersPerDeg((+bbox.south + +bbox.north) / 2);
+    const binsX = 12;
+    const binsY = 12;
+    const west = +bbox.west;
+    const south = +bbox.south;
+    const dx = (+bbox.east - west) || 1;
+    const dy = (+bbox.north - south) || 1;
+    const bins = [];
+    for (let i = 0; i < binsX * binsY; i++) bins.push([]);
+    const scored = candidates.slice().sort(function (a, b) {
+      return (b.score || 0) - (a.score || 0);
+    });
+    for (let i = 0; i < scored.length; i++) {
+      const c = scored[i];
+      let bx = Math.floor(((c.lon - west) / dx) * binsX);
+      let by = Math.floor(((c.lat - south) / dy) * binsY);
+      if (bx < 0) bx = 0;
+      if (by < 0) by = 0;
+      if (bx >= binsX) bx = binsX - 1;
+      if (by >= binsY) by = binsY - 1;
+      bins[by * binsX + bx].push(c);
+    }
+    const kept = [];
+    let guard = 0;
+    while (kept.length < maxTrees && guard < maxTrees + 4) {
+      guard++;
+      let added = false;
+      for (let i = 0; i < bins.length; i++) {
+        if (kept.length >= maxTrees) break;
+        const bin = bins[i];
+        while (bin.length) {
+          const c = bin.shift();
+          const minD = distFn(c);
+          let ok = true;
+          for (let k = 0; k < kept.length; k++) {
+            const ddx = (c.lon - kept[k].lon) * mpd.lon;
+            const ddy = (c.lat - kept[k].lat) * mpd.lat;
+            if (ddx * ddx + ddy * ddy < minD * minD) {
+              ok = false;
+              break;
+            }
+          }
+          if (ok) {
+            kept.push(c);
+            added = true;
+            break;
+          }
+        }
+      }
+      if (!added) break;
+    }
+    return kept;
+  }
+
+  function canopyNmsDistM(c) {
+    const score = Math.min(1, c.score || 0);
+    const d = 7 + 9 * (1 - score);
+    return c.woods ? d * 0.72 : d;
+  }
+
   /**
    * NLCD getSamples (and RGB step lattices) are regular grids. Do not plant a
    * tree on every cell center — that is the Long Meadow orchard.
@@ -216,7 +315,7 @@
   function placeTreesFromCanopy(hits, bbox, opts) {
     opts = opts || {};
     const minPct = opts.minPct == null ? MIN_CANOPY_PCT : opts.minPct;
-    const maxTrees = opts.maxTrees == null ? MAX_TREES : opts.maxTrees;
+    const maxTrees = opts.maxTrees == null ? maxTreesForBbox(bbox) : opts.maxTrees;
     if (!hits || !hits.length || maxTrees <= 0) return [];
     const mpd = metersPerDeg((+bbox.south + +bbox.north) / 2);
     const cell = inferCellDeg(hits, bbox);
@@ -240,13 +339,15 @@
     grid.forEach(function (c, key) {
       const frac = Math.max(0, Math.min(1, (c.pct - minPct) / (100 - minPct)));
       const peak = isLocalMax(grid, key, c.pct);
-      const spacing = 20 - 8 * frac;
-      let lambda = (c.pct / 100) * (cellArea / Math.max(80, spacing * spacing));
-      lambda = Math.min(2.2, lambda);
-      if (peak) lambda = Math.max(lambda, 0.9 + 0.4 * frac);
-      if (!peak && c.pct < 45) lambda *= 0.4;
+      const woods = woodsNeighborCount(grid, key, minPct) >= 3;
+      const spacing = woods ? 10 - 4 * frac : 18 - 8 * frac;
+      let lambda = (c.pct / 100) * (cellArea / Math.max(36, spacing * spacing));
+      lambda = Math.min(woods ? 4.5 : 2.5, lambda);
+      if (peak) lambda = Math.max(lambda, 1.0 + 0.6 * frac);
+      if (woods) lambda = Math.max(lambda, 0.85 + 1.4 * frac);
+      if (!peak && !woods && c.pct < minPct + 15) lambda *= 0.35;
       const n0 = Math.floor(lambda);
-      const n = Math.min(3, n0 + (hash01(c.lon, c.lat, 1) < lambda - n0 ? 1 : 0));
+      const n = Math.min(woods ? 5 : 3, n0 + (hash01(c.lon, c.lat, 1) < lambda - n0 ? 1 : 0));
       for (let i = 0; i < n; i++) {
         const jx = (hash01(c.lon, c.lat, 10 + i) - 0.5) * 0.92;
         const jy = (hash01(c.lon, c.lat, 30 + i) - 0.5) * 0.92;
@@ -257,29 +358,12 @@
           lon: lon,
           lat: lat,
           pct: c.pct,
-          score: c.pct / 100 + (peak ? 0.12 : 0) - i * 0.04,
+          woods: woods,
+          score: c.pct / 100 + (peak ? 0.08 : 0) + (woods ? 0.12 : 0) - i * 0.03,
         });
       }
     });
-    candidates.sort(function (a, b) {
-      return (b.score || 0) - (a.score || 0);
-    });
-    const kept = [];
-    for (let i = 0; i < candidates.length; i++) {
-      if (kept.length >= maxTrees) break;
-      const c = candidates[i];
-      const minD = 10 + 10 * (1 - Math.min(1, c.score || 0));
-      let ok = true;
-      for (let k = 0; k < kept.length; k++) {
-        const dx = (c.lon - kept[k].lon) * mpd.lon;
-        const dy = (c.lat - kept[k].lat) * mpd.lat;
-        if (dx * dx + dy * dy < minD * minD) {
-          ok = false;
-          break;
-        }
-      }
-      if (ok) kept.push(c);
-    }
+    const kept = nmsStratified(candidates, bbox, maxTrees, canopyNmsDistM);
     return kept.map(function (t) {
       return { lon: t.lon, lat: t.lat, pct: t.pct };
     });
@@ -344,7 +428,38 @@
   }
 
   function pickCanopyTrees(hits, bbox, opts) {
+    opts = opts || {};
+    if (opts.maxTrees == null) opts = Object.assign({}, opts, { maxTrees: maxTreesForBbox(bbox) });
     return placeTreesFromCanopy(hits, bbox, opts);
+  }
+
+  function mergeTreePoints(a, b, bbox, opts) {
+    opts = opts || {};
+    const maxTrees = opts.maxTrees == null ? maxTreesForBbox(bbox) : opts.maxTrees;
+    const src = (a || []).concat(b || []);
+    const all = [];
+    for (let i = 0; i < src.length; i++) {
+      const t = src[i];
+      if (!t) continue;
+      const lon = +(Array.isArray(t) ? t[0] : t.lon != null ? t.lon : t.lng);
+      const lat = +(Array.isArray(t) ? t[1] : t.lat);
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+      const pct = t.pct != null ? +t.pct : t.score != null ? +t.score * 100 : 50;
+      const score = t.score != null ? +t.score : pct / 100;
+      all.push({
+        lon: lon,
+        lat: lat,
+        pct: Number.isFinite(pct) ? pct : 50,
+        score: Number.isFinite(score) ? score : 0.5,
+        woods: !!t.woods,
+      });
+    }
+    return nmsStratified(all, bbox, maxTrees, canopyNmsDistM).map(function (t) {
+      const out = { lon: t.lon, lat: t.lat };
+      if (t.pct != null) out.pct = t.pct;
+      if (t.score != null) out.score = t.score;
+      return out;
+    });
   }
 
   async function fetchCanopyTrees(bbox, fetchFn, opts) {
@@ -524,7 +639,7 @@
 
   function scatterNmsPixels(hits, maxCount, minDist) {
     maxCount = maxCount == null ? MAX_TREES : maxCount;
-    minDist = minDist == null ? 14 : minDist;
+    minDist = minDist == null ? (maxCount >= 400 ? 9 : 14) : minDist;
     const scored = (hits || []).slice().sort(function (a, b) {
       return (b.score || 0) - (a.score || 0);
     });
@@ -553,9 +668,10 @@
 
   function detectTreesFromImageData(data, w, h, bbox, opts) {
     opts = opts || {};
-    const maxTrees = opts.maxTrees == null ? MAX_TREES : opts.maxTrees;
+    const maxTrees = opts.maxTrees == null ? (bbox ? maxTreesForBbox(bbox) : MAX_TREES) : opts.maxTrees;
     const hits = collectRgbCandidates(data, w, h, opts);
-    const picked = scatterNmsPixels(hits, maxTrees, opts.minDist || 14);
+    const minDist = opts.minDist != null ? opts.minDist : maxTrees >= 400 ? 9 : 14;
+    const picked = scatterNmsPixels(hits, maxTrees, minDist);
     if (!bbox) return picked;
     const west = +bbox.west;
     const south = +bbox.south;
@@ -572,10 +688,12 @@
 
   return {
     MAX_TREES: MAX_TREES,
+    MAX_TREES_LARGE: MAX_TREES_LARGE,
     MIN_CANOPY_PCT: MIN_CANOPY_PCT,
     MIN_VALID_SAMPLES: MIN_VALID_SAMPLES,
     TCC_IMAGESERVER: TCC_IMAGESERVER,
     KNOWN_SOURCES: KNOWN_SOURCES,
+    maxTreesForBbox: maxTreesForBbox,
     canopySampleCount: canopySampleCount,
     canopySamplesUrl: canopySamplesUrl,
     parseCanopyPct: parseCanopyPct,
@@ -586,6 +704,7 @@
     pickStratified: pickStratified,
     placeTreesFromCanopy: placeTreesFromCanopy,
     pickCanopyTrees: pickCanopyTrees,
+    mergeTreePoints: mergeTreePoints,
     scatterNmsPixels: scatterNmsPixels,
     fetchCanopyTrees: fetchCanopyTrees,
     vegColorScore: vegColorScore,

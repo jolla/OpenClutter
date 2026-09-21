@@ -20,6 +20,10 @@ const {
   jpegSize,
   applyImageryMeta,
   msFootprintsUrl,
+  fetchMsFootprints,
+  padFootprintBbox,
+  FP_PAGE_SIZE,
+  FP_CAP,
 } = require("../netlify/lib/geo-frame");
 
 /** Wynn Golf Course bbox from project notes (any-site math, this is the fixture). */
@@ -65,6 +69,9 @@ describe("shared geo frame", () => {
     const fp = msFootprintsUrl(frame);
     assert.match(fp, /MSBFP2/);
     assert.match(fp, /outFields=\*/);
+    assert.match(fp, /orderByFields=OBJECTID/);
+    assert.match(fp, /resultOffset=0/);
+    assert.match(fp, /resultRecordCount=500/);
   });
 
   it("ll → px → clipboard → px → ll round-trip", () => {
@@ -228,5 +235,44 @@ describe("Esri export extent snap (Long Meadow rooftop lock)", () => {
     const buf = tinyJpeg(571, 741);
     assert.deepEqual(jpegSize(buf), { width: 571, height: 741 });
     assert.equal(jpegSize(Buffer.from([0xff, 0xd8, 0xff, 0xd9])), null);
+  });
+});
+
+describe("MSBFP2 pagination", () => {
+  it("pads the footprint query latitude so Esri JPEG N/S pad is covered", () => {
+    const frame = geoFrame(WYNN);
+    const padded = padFootprintBbox(frame);
+    assert.ok(padded.south < frame.south);
+    assert.ok(padded.north > frame.north);
+    assert.equal(padded.west, frame.west);
+    assert.equal(padded.east, frame.east);
+    const dLat = frame.north - frame.south;
+    assert.ok(Math.abs((frame.south - padded.south) / dLat - 0.25) < 1e-9);
+  });
+
+  it("pages until exhausted and caps at FP_CAP", async () => {
+    const frame = geoFrame(WYNN);
+    const urls = [];
+    const fetchFn = async (url) => {
+      urls.push(url);
+      const u = new URL(url);
+      const offset = +u.searchParams.get("resultOffset") || 0;
+      const want = +u.searchParams.get("resultRecordCount") || 0;
+      const features = [];
+      const remain = 80 - offset;
+      const n = Math.max(0, Math.min(want, remain));
+      for (let i = 0; i < n; i++) {
+        features.push({ type: "Feature", id: offset + i, geometry: { type: "Polygon", coordinates: [] } });
+      }
+      return { ok: true, json: async () => ({ type: "FeatureCollection", features }) };
+    };
+    const gj = await fetchMsFootprints(frame, fetchFn, { pageSize: 30, cap: 200, pad: false });
+    assert.equal(gj.features.length, 80);
+    assert.equal(gj.fetched, 80);
+    assert.ok(urls.length >= 3);
+    assert.ok(urls[0].includes("resultOffset=0"));
+    assert.ok(urls[1].includes("resultOffset=30"));
+    assert.equal(FP_PAGE_SIZE, 500);
+    assert.equal(FP_CAP, 2000);
   });
 });

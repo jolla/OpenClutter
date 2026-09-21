@@ -3,7 +3,7 @@
 const { llToPx, pxToClipboard, applyAffine } = require("./geo-frame");
 const { clipZone } = require("./hamina-clipboard");
 
-const { MAX_TREES, pickStratified } = require("./tree-source");
+const { MAX_TREES, maxTreesForBbox, pickStratified } = require("./tree-source");
 const CANOPY_R_M = 5.2;
 const TRUNK_R_M = 0.5;
 
@@ -84,14 +84,18 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine) {
   }
   // Points are already jittered + NMS'd by the canopy placer. Do not snap
   // them back onto a pixel lattice (that re-creates the orchard grid).
+  const maxTrees = maxTreesForBbox(frame);
+  const bins = Math.max(8, Math.min(16, Math.round(Math.sqrt(maxTrees / 3.5))));
   const picked = pickStratified(
     candidates,
-    MAX_TREES,
+    maxTrees,
     (c) => [c.x, c.y],
     0,
     0,
     frame.imgW,
-    frame.imgH
+    frame.imgH,
+    bins,
+    bins
   );
 
   const oiAreas = [];
@@ -121,6 +125,7 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine) {
 
 module.exports = {
   MAX_TREES,
+  maxTreesForBbox,
   blobRingPx,
   pointInAabb,
   normalizeTreePoints,

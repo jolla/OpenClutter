@@ -1,10 +1,10 @@
 "use strict";
 
-const UA = "openclutter/0.10.0 (https://github.com/jolla/OpenClutter)";
-const { geoFrame, esriImageryUrl, esriImageryMetaUrl, msFootprintsUrl, fitAffine, jpegSize, applyImageryMeta } = require("../lib/geo-frame");
+const UA = "openclutter/0.11.0 (https://github.com/jolla/OpenClutter)";
+const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
-const { fetchCanopyTrees, normalizeTreesSource } = require("../lib/tree-source");
+const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox } = require("../lib/tree-source");
 
 function json(status, cors, obj) {
   return {
@@ -79,7 +79,6 @@ exports.handler = async (event) => {
   const needImage = format !== "hamina-clipboard";
   const imgUrl = esriImageryUrl(frame);
   const imgMetaUrl = esriImageryMetaUrl(frame);
-  const footprintsUrl = msFootprintsUrl(frame, 300);
 
   let treePoints = Array.isArray(body.trees) ? body.trees.slice() : [];
   let treesSource = ["nlcd-canopy", "imagery-rgb", "none"].includes(body.treesSource)
@@ -90,17 +89,17 @@ exports.handler = async (event) => {
   let gj;
   let imgMeta = null;
   try {
-    const jobs = [fetchOk(footprintsUrl)];
+    const jobs = [fetchMsFootprints(frame, (url) => fetchOk(url))];
     if (needImage) {
       jobs.push(fetchOk(imgUrl));
       jobs.push(fetchOk(imgMetaUrl).catch(() => null));
     }
     const canopyJob =
       !treePoints.length && !treesSource
-        ? fetchCanopyTrees(frame, (url) => fetchOk(url)).catch(() => null)
+        ? fetchCanopyTrees(frame, (url) => fetchOk(url), { maxTrees: maxTreesForBbox(frame) }).catch(() => null)
         : null;
-    const [fpRes, imgRes, metaRes] = await Promise.all(jobs);
-    gj = await fpRes.json();
+    const [fpGj, imgRes, metaRes] = await Promise.all(jobs);
+    gj = fpGj;
     if (needImage) {
       imgBuf = Buffer.from(await imgRes.arrayBuffer());
       if (imgBuf.length < 100 || imgBuf[0] !== 0xff || imgBuf[1] !== 0xd8) {

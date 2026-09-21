@@ -131,7 +131,12 @@ describe("clutter handler (mocked Esri)", () => {
     assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("bboxSR=4326") && u.includes("imageSR=4326")));
     assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("f=json")));
     assert.ok(urls.some((u) => u.includes("MSBFP2")));
+    assert.ok(urls.some((u) => u.includes("MSBFP2") && u.includes("orderByFields=OBJECTID")));
+    assert.ok(urls.some((u) => u.includes("MSBFP2") && u.includes("resultOffset=")));
     assert.ok(body.stats.trees >= 1);
+    assert.ok(body.stats.fetched >= 1);
+    assert.match(body.stats.summary, /Buildings /);
+    assert.match(body.stats.summary, /Trees /);
     assert.equal(body.stats.treesSource, "imagery-rgb");
     assert.ok(!urls.some((u) => u.includes("USFS_EDW_NLCD_TCC")));
   });

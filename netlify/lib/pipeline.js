@@ -20,9 +20,9 @@ const { treePairsFromPoints } = require("./vegetation");
 const { zipStore } = require("./zip-store");
 const { overlaySvg, frameLockJson } = require("./overlay");
 
-const MIN_AREA_M2 = 40;
-const MAX_AREA_M2 = 15000;
-const MAX_BUILDINGS = 300;
+const MIN_AREA_M2 = 25;
+const MAX_AREA_M2 = 40000;
+const MAX_BUILDINGS = 2000;
 
 const ZIP_README =
   "Import this zip in Hamina (Projects → Import → OpenIntent).\n" +
@@ -30,6 +30,42 @@ const ZIP_README =
   "Hamina 2026-09-01+ imports attenuation_areas (stock type names, heights, dB/m).\n" +
   "(Optional) Unzip and open alignment-overlay.svg next to images/ to check rooftops.\n" +
   "hamina-clipboard.json is a silent fallback for older Hamina builds only — not the happy path.\n";
+
+/**
+ * Skip Microsoft campus-merge blobs (one giant wrong polygon) without dropping
+ * real hotel / convention / multi-wing complexes on large maps.
+ */
+function megaCampusLimitM2(frame) {
+  const mapArea = Math.max(1, frame.widthM * frame.lengthM);
+  return Math.min(100000, Math.max(MAX_AREA_M2, mapArea * 0.025));
+}
+
+function isMegaCampus(areaM2, frame) {
+  const mapArea = Math.max(1, frame.widthM * frame.lengthM);
+  if (areaM2 > megaCampusLimitM2(frame)) return true;
+  if (areaM2 > mapArea * 0.45) return true;
+  return false;
+}
+
+function coverageSummary(stats) {
+  const s = stats || {};
+  const fetched = s.fetched != null ? s.fetched : s.buildings;
+  const drops = [];
+  if (s.droppedMega) drops.push("mega " + s.droppedMega);
+  if (s.droppedTiny) drops.push("tiny " + s.droppedTiny);
+  if (s.droppedClip) drops.push("clip " + s.droppedClip);
+  if (s.droppedCap) drops.push("cap " + s.droppedCap);
+  const dropTxt = drops.length ? `; dropped ${drops.join(", ")}` : "";
+  const src = s.treesSource ? ` (${s.treesSource})` : "";
+  return (
+    `Buildings ${s.buildings || 0} kept (${fetched} fetched${dropTxt}). ` +
+    `Trees ${s.trees || 0} kept${src}.`
+  );
+}
+
+function zipReadme(stats) {
+  return ZIP_README + "\nCoverage\n" + coverageSummary(stats) + "\n";
+}
 
 const ALIGNMENT = [
   "Exact alignment (repeatable, any site):",
@@ -101,7 +137,7 @@ function simplifyDP(pts, eps2) {
   return [a, b];
 }
 
-function simplifyRing(ring, maxPts = 24) {
+function simplifyRing(ring, maxPts = 32) {
   if (!ring || ring.length < 3) return ring;
   const closed =
     ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
@@ -244,19 +280,33 @@ function footprintsToClutter(features, frame, affine) {
   const clipZones = [];
   const aabbs = [];
   const overlayRings = [];
-  const stats = { buildings: 0, droppedMega: 0, droppedTiny: 0, droppedClip: 0 };
-  for (const f of features || []) {
-    if (oiAreas.length >= MAX_BUILDINGS) break;
+  const list = features || [];
+  const stats = {
+    fetched: list.length,
+    buildings: 0,
+    droppedMega: 0,
+    droppedTiny: 0,
+    droppedClip: 0,
+    droppedCap: 0,
+  };
+  for (const f of list) {
     const g = f.geometry;
     if (!g) continue;
     const heightM =
       Number((f.properties || {}).height || (f.properties || {}).Height || 0) || 0;
     const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
     for (const poly of polys) {
-      const ring = simplifyRing(poly[0] || []);
+      if (oiAreas.length >= MAX_BUILDINGS) {
+        stats.droppedCap++;
+        continue;
+      }
+      const raw = poly[0] || [];
+      const amRaw = ringAreaM2(raw, frame.mpd);
+      const maxPts = amRaw > 8000 ? 56 : amRaw > 1500 ? 40 : 32;
+      const ring = simplifyRing(raw, maxPts);
       if (!ring || ring.length < 4) continue;
       const am = ringAreaM2(ring, frame.mpd);
-      if (am > MAX_AREA_M2) {
+      if (isMegaCampus(am, frame)) {
         stats.droppedMega++;
         continue;
       }
@@ -399,7 +449,9 @@ function buildClutter({
     zones: clip.attenuatingZones.length,
     areas: areas.length,
     calibrated: Boolean(affine),
+    summary: "",
   };
+  stats.summary = coverageSummary(stats);
   let zip = null;
   if (imgBuf) {
     zip = zipStore([
@@ -407,7 +459,7 @@ function buildClutter({
       { name: "images/" + imgName, data: imgBuf },
       { name: "export-warnings.json", data: Buffer.from('{"errors":[],"warnings":[]}') },
       { name: "hamina-clipboard.json", data: Buffer.from(JSON.stringify(clip)) },
-      { name: "README.txt", data: ZIP_README },
+      { name: "README.txt", data: zipReadme(stats) },
       { name: "alignment-overlay.svg", data: Buffer.from(overlay) },
       { name: "frame-lock.json", data: Buffer.from(JSON.stringify(lock, null, 2)) },
     ]);
@@ -431,6 +483,10 @@ module.exports = {
   MIN_AREA_M2,
   MAX_AREA_M2,
   MAX_BUILDINGS,
+  megaCampusLimitM2,
+  isMegaCampus,
+  coverageSummary,
+  zipReadme,
   ringAreaM2,
   simplifyRing,
   footprintsToClutter,
