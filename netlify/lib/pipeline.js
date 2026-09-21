@@ -23,13 +23,47 @@ const { overlaySvg, frameLockJson } = require("./overlay");
 const MIN_AREA_M2 = 25;
 const MAX_AREA_M2 = 40000;
 const MAX_BUILDINGS = 2000;
+/** OpenIntent 2.0.1 coordinate_xyz.x/y minimum is 0; Hamina historically dropped *all* areas if one ring was invalid. */
+const MIN_OI_SPAN_PX = 4;
+/** Outdoor trunks are ~1 m across; at ~1 m/px that is sub-pixel and Hamina may reject the ring. */
+const MIN_OI_SPAN_M = 3;
+/**
+ * Hamina documents 20,000 walls/map and no attenuation_areas cap. Keep well under
+ * that wall budget so one outdoor site cannot blow the importer/GPU. Buildings
+ * first, then complete canopy+trunk pairs.
+ */
+const MAX_ATTENUATION_AREAS = 4000;
+const OPENINTENT_VERSION = "2.0.1";
+const STOCK_MATERIAL_NAMES = ZONE_TYPES.map((t) => t.name);
 
 const ZIP_README =
   "Import this zip in Hamina (Projects → Import → OpenIntent).\n" +
   "The OpenIntent JSON is the source of truth: map image + all attenuating objects.\n" +
   "Hamina 2026-09-01+ imports attenuation_areas (stock type names, heights, dB/m).\n" +
+  "Schema: OpenIntent 2.0.1, pixels Y-up from SW, closed rings, area_materials listed.\n" +
   "(Optional) Unzip and open alignment-overlay.svg next to images/ to check rooftops.\n" +
   "hamina-clipboard.json is a silent fallback for older Hamina builds only — not the happy path.\n";
+
+const ZIP_TROUBLESHOOT =
+  "\nTroubleshooting if Hamina shows the map but no attenuating objects:\n" +
+  "If VERIFY.txt attenuation_areas > 0, generation succeeded. Hamina then either dropped the import\n" +
+  "or failed to render (WebGL). Do this in order:\n" +
+  "  1. Unzip and confirm VERIFY.txt attenuation_areas (same as openIntent_*.json length).\n" +
+  "     buildingsKept 111 + 2×treesKept 367 = 845 polygons — not buildingsKept alone.\n" +
+  "  2. Open alignment-overlay.svg next to images/. Rooftops (red) and trees (green) should sit on the JPEG.\n" +
+  "  3. In Hamina, check the Attenuating Objects sidebar count.\n" +
+  "     0 = OpenIntent import dropped the areas. >0 = they imported but did not draw.\n" +
+  "  4. If stats>0 but Hamina is empty (sidebar 0 or objects invisible): paste hamina-clipboard.json into Hamina.\n" +
+  "  5. Console WebGL texSubImage2D / Rive warnings can hide objects after a successful import.\n" +
+  "     Try Hamina’s 2D map view, and turn hardware acceleration off, then zoom the full extent.\n" +
+  "Pixel vs meter aspect can differ after Esri N/S pad (non-square mpu). Overlay still locks image-space;\n" +
+  "that does not hide objects by itself.\n" +
+  "Hamina publishes a 20,000 walls/map OpenIntent cap and no attenuation_areas cap; this zip emits\n" +
+  "at most " +
+  MAX_ATTENUATION_AREAS +
+  " areas (buildings first). Invalid/open/NaN/self-intersecting rings are dropped per-polygon.\n" +
+  "OpenIntent materials omit bottom_height (Hamina rejected it as Invalid OpenIntent format) and use\n" +
+  "stock names + itu_material_type ITU_R_UNKNOWN (oiconvert / Hamina-tested importer).\n";
 
 /**
  * Skip Microsoft campus-merge blobs (one giant wrong polygon). Do NOT use a
@@ -57,6 +91,12 @@ function coverageStats(stats) {
     droppedTiny: s.droppedTiny || 0,
     droppedClip: s.droppedClip || 0,
     droppedCap: s.droppedCap || 0,
+    droppedInvalid: s.droppedInvalid || 0,
+    droppedAreasCap: s.droppedAreasCap || 0,
+    attenuationAreasEmitted: s.attenuationAreasEmitted != null ? s.attenuationAreasEmitted : s.areas || 0,
+    openintentVersion: s.openintentVersion || OPENINTENT_VERSION,
+    coordinateUnit: s.coordinateUnit || "pixels",
+    coordinateOrigin: s.coordinateOrigin || "Y-up from SW",
   };
 }
 
@@ -67,10 +107,13 @@ function coverageSummary(stats) {
   if (c.droppedTiny) drops.push("tiny " + c.droppedTiny);
   if (c.droppedClip) drops.push("clip " + c.droppedClip);
   if (c.droppedCap) drops.push("cap " + c.droppedCap);
+  if (c.droppedInvalid) drops.push("invalid " + c.droppedInvalid);
+  if (c.droppedAreasCap) drops.push("areas-cap " + c.droppedAreasCap);
   const dropTxt = drops.length ? `; dropped ${drops.join(", ")}` : "";
   return (
     `Buildings ${c.buildingsKept} kept (${c.fetched} fetched${dropTxt}). ` +
-    `Trees ${c.treesKept} kept (${c.treesSource}).`
+    `Trees ${c.treesKept} kept (${c.treesSource}). ` +
+    `attenuation_areas ${c.attenuationAreasEmitted}.`
   );
 }
 
@@ -78,17 +121,36 @@ function zipReadme(stats) {
   const c = coverageStats(stats);
   return (
     ZIP_README +
-    "\nCoverage — compare buildingsKept / treesKept to Hamina’s sidebar.\n" +
+    "\nCoverage — compare buildingsKept / treesKept / attenuationAreasEmitted to Hamina’s sidebar.\n" +
     coverageSummary(stats) +
     "\n" +
     `buildingsKept: ${c.buildingsKept}\n` +
     `treesKept: ${c.treesKept}\n` +
     `treesSource: ${c.treesSource}\n` +
+    `attenuationAreasEmitted: ${c.attenuationAreasEmitted}\n` +
+    `openintent_version: ${c.openintentVersion}\n` +
     `fetched: ${c.fetched}\n` +
     `droppedMega: ${c.droppedMega}\n` +
     `droppedTiny: ${c.droppedTiny}\n` +
     `droppedClip: ${c.droppedClip}\n` +
-    `droppedCap: ${c.droppedCap}\n`
+    `droppedCap: ${c.droppedCap}\n` +
+    `droppedInvalid: ${c.droppedInvalid}\n` +
+    `droppedAreasCap: ${c.droppedAreasCap}\n` +
+    ZIP_TROUBLESHOOT
+  );
+}
+
+function verifyTxt(stats) {
+  const c = coverageStats(stats);
+  return (
+    `attenuation_areas: ${c.attenuationAreasEmitted}\n` +
+    `openintent_version: ${c.openintentVersion}\n` +
+    `coordinate_unit: ${c.coordinateUnit}\n` +
+    `coordinate_origin: ${c.coordinateOrigin}\n` +
+    `area_materials: ${STOCK_MATERIAL_NAMES.length}\n` +
+    `buildingsKept: ${c.buildingsKept}\n` +
+    `treesKept: ${c.treesKept}\n` +
+    `attenuationAreasEmitted: ${c.attenuationAreasEmitted}\n`
   );
 }
 
@@ -230,6 +292,183 @@ function ringAreaPx(ring) {
   return Math.abs(a) / 2;
 }
 
+function ringBBox(pts) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [x, y] of pts) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return { minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY };
+}
+
+/** Keep a min-span square inside the image (shift inward at edges). */
+function fitSquareInImage(cx, cy, span, imgW, imgH) {
+  const hw = span / 2;
+  let x0 = cx - hw;
+  let y0 = cy - hw;
+  let x1 = cx + hw;
+  let y1 = cy + hw;
+  if (x0 < 0) {
+    x1 -= x0;
+    x0 = 0;
+  }
+  if (y0 < 0) {
+    y1 -= y0;
+    y0 = 0;
+  }
+  if (x1 > imgW) {
+    x0 -= x1 - imgW;
+    x1 = imgW;
+  }
+  if (y1 > imgH) {
+    y0 -= y1 - imgH;
+    y1 = imgH;
+  }
+  x0 = Math.max(0, x0);
+  y0 = Math.max(0, y0);
+  x1 = Math.min(imgW, x1);
+  y1 = Math.min(imgH, y1);
+  if (x1 - x0 < 1 || y1 - y0 < 1) return [];
+  return [
+    [x0, y0],
+    [x1, y0],
+    [x1, y1],
+    [x0, y1],
+  ];
+}
+
+function minOiSpanPx(mpuX) {
+  return Math.max(MIN_OI_SPAN_PX, MIN_OI_SPAN_M / Math.max(mpuX || 1, 0.01));
+}
+
+/**
+ * Sub-pixel tree trunks used to emit near-degenerate hexagons. After toFixed(3)
+ * those can be duplicate/NaN-adjacent and Hamina then dropped every area.
+ * Expand only collapsed blobs — not thin real building slivers.
+ */
+function ensureMinSpan(pts, imgW, imgH, minSpan) {
+  if (!pts || pts.length < 3) return pts;
+  const span = minSpan == null ? MIN_OI_SPAN_PX : minSpan;
+  const b = ringBBox(pts);
+  if (b.w >= span && b.h >= span) return pts;
+  if (b.w >= span || b.h >= span) return pts;
+  const cx = (b.minX + b.maxX) / 2;
+  const cy = (b.minY + b.maxY) / 2;
+  const square = fitSquareInImage(cx, cy, Math.max(span, b.w, b.h), imgW, imgH);
+  return square.length ? square : pts;
+}
+
+function ccw(a, b, c) {
+  return (c[1] - a[1]) * (b[0] - a[0]) > (b[1] - a[1]) * (c[0] - a[0]);
+}
+
+function segsIntersectProper(a, b, c, d) {
+  if (a[0] === c[0] && a[1] === c[1]) return false;
+  if (a[0] === d[0] && a[1] === d[1]) return false;
+  if (b[0] === c[0] && b[1] === c[1]) return false;
+  if (b[0] === d[0] && b[1] === d[1]) return false;
+  return ccw(a, c, d) !== ccw(b, c, d) && ccw(a, b, c) !== ccw(a, b, d);
+}
+
+function oiSelfIntersects(coords) {
+  const n = coords.length - 1;
+  if (n < 4) return false;
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const p = coords[i].coordinate_xyz;
+    pts.push([p.x, p.y]);
+  }
+  for (let i = 0; i < n; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % n];
+    for (let j = i + 1; j < n; j++) {
+      if (Math.abs(i - j) <= 1 || (i === 0 && j === n - 1)) continue;
+      const c = pts[j];
+      const d = pts[(j + 1) % n];
+      if (segsIntersectProper(a, b, c, d)) return true;
+    }
+  }
+  return false;
+}
+
+function signedAreaOi(coords) {
+  let a = 0;
+  for (let i = 0; i < coords.length - 1; i++) {
+    const p = coords[i].coordinate_xyz;
+    const q = coords[i + 1].coordinate_xyz;
+    a += p.x * q.y - q.x * p.y;
+  }
+  return a / 2;
+}
+
+/**
+ * OpenIntent 2.0.1 / Hamina import: closed ring, ≥3 unique vertices, unit pixels,
+ * x,y ≥ 0 and inside the JPEG, finite, no consecutive duplicates, non-zero area.
+ * One bad ring historically wiped the entire attenuation_areas import.
+ */
+function validateOiCoords(coords, imgW, imgH) {
+  if (!coords || coords.length < 4) return { ok: false, reason: "too-few" };
+  for (const c of coords) {
+    const p = c && c.coordinate_xyz;
+    if (!p) return { ok: false, reason: "missing-xyz" };
+    if (p.unit !== "pixels") return { ok: false, reason: "unit" };
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return { ok: false, reason: "nan" };
+    if (p.x < 0 || p.y < 0 || p.x > imgW || p.y > imgH) return { ok: false, reason: "bounds" };
+  }
+  const first = coords[0].coordinate_xyz;
+  const last = coords[coords.length - 1].coordinate_xyz;
+  if (first.x !== last.x || first.y !== last.y) return { ok: false, reason: "open" };
+  const seen = new Set();
+  for (let i = 0; i < coords.length - 1; i++) {
+    const p = coords[i].coordinate_xyz;
+    const q = coords[i + 1].coordinate_xyz;
+    if (p.x === q.x && p.y === q.y) return { ok: false, reason: "duplicate" };
+    seen.add(p.x + "," + p.y);
+  }
+  if (seen.size < 3) return { ok: false, reason: "degenerate" };
+  if (Math.abs(signedAreaOi(coords)) < 1e-6) return { ok: false, reason: "zero-area" };
+  if (oiSelfIntersects(coords)) return { ok: false, reason: "self-intersect" };
+  return { ok: true };
+}
+
+function validateOiArea(area, imgW, imgH) {
+  if (!area || !area.area || !area.area_material) return { ok: false, reason: "shape" };
+  const mat = area.area_material;
+  if (!STOCK_MATERIAL_NAMES.includes(mat.name)) return { ok: false, reason: "material" };
+  if (!(mat.top_height > 0)) return { ok: false, reason: "height" };
+  const db = mat.rf_properties && mat.rf_properties.attenuation_per_m;
+  if (!(db > 0)) return { ok: false, reason: "attenuation" };
+  if (mat.display_color && !/^#[0-9A-Fa-f]{6}$/.test(mat.display_color)) {
+    return { ok: false, reason: "color" };
+  }
+  return validateOiCoords(area.area.coordinates, imgW, imgH);
+}
+
+/** Round + drop consecutive duplicates *after* toFixed so Hamina never sees collapsed verts. */
+function finalizeOiCoords(rawPts, imgW, imgH) {
+  const pts = [];
+  for (const p of rawPts || []) {
+    if (!p || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) continue;
+    const c = xyz(Math.min(imgW, Math.max(0, p[0])), Math.min(imgH, Math.max(0, p[1])));
+    const xyzc = c.coordinate_xyz;
+    if (!Number.isFinite(xyzc.x) || !Number.isFinite(xyzc.y)) continue;
+    const last = pts[pts.length - 1];
+    if (last && last.coordinate_xyz.x === xyzc.x && last.coordinate_xyz.y === xyzc.y) continue;
+    pts.push(c);
+  }
+  if (pts.length < 3) return null;
+  const a = pts[0].coordinate_xyz;
+  const b = pts[pts.length - 1].coordinate_xyz;
+  if (a.x !== b.x || a.y !== b.y) pts.push(pts[0]);
+  if (pts.length < 4) return null;
+  return pts;
+}
+
 /**
  * Clip a ring to the image rectangle. Vertex clamp (old path) collapsed
  * off-map edges onto the border and produced invalid rings — Hamina then
@@ -265,25 +504,48 @@ function clipRingToRect(ring, w, h) {
   return pts;
 }
 
-function ringToOi(pts, imgW, imgH) {
+function ringToOi(pts, imgW, imgH, mpuX) {
   if (!pts || pts.length < 3) return null;
-  const clipped = clipRingToRect(pts, imgW, imgH);
+  let clipped = clipRingToRect(pts, imgW, imgH);
   if (clipped.length < 3) return null;
-  // Trunks are often <1 px across at outdoor mpu; a large px² cutoff would
-  // drop the canopy/trunk pair. Reject only collapsed rings.
+  clipped = ensureMinSpan(clipped, imgW, imgH, minOiSpanPx(mpuX));
+  if (!clipped || clipped.length < 3) return null;
   if (ringAreaPx(clipped) < 1e-6) return null;
-  const out = clipped.map(([x, y]) =>
-    xyz(Math.min(imgW, Math.max(0, x)), Math.min(imgH, Math.max(0, y)))
-  );
-  const a = out[0].coordinate_xyz;
-  const b = out[out.length - 1].coordinate_xyz;
-  if (a.x !== b.x || a.y !== b.y) out.push(out[0]);
-  const seen = new Set();
-  for (let i = 0; i < out.length - 1; i++) {
-    seen.add(out[i].coordinate_xyz.x + "," + out[i].coordinate_xyz.y);
+  const out = finalizeOiCoords(clipped, imgW, imgH);
+  if (!out) return null;
+  const check = validateOiCoords(out, imgW, imgH);
+  return check.ok ? out : null;
+}
+
+function makeOiArea(coords, type) {
+  if (!coords || !type) return null;
+  const mat = oiMaterialFromType(type);
+  return { area: { coordinates: coords }, area_material: mat };
+}
+
+function emitIfValid(area, imgW, imgH) {
+  if (!area) return null;
+  const check = validateOiArea(area, imgW, imgH);
+  if (!check.ok) return null;
+  // JSON.stringify turns NaN/Infinity into null — re-check the on-disk shape.
+  try {
+    const parsed = JSON.parse(JSON.stringify(area));
+    if (!validateOiArea(parsed, imgW, imgH).ok) return null;
+    return parsed;
+  } catch {
+    return null;
   }
-  if (seen.size < 3 || out.length < 4) return null;
-  return out;
+}
+
+/** Buildings first, then complete canopy+trunk pairs so a cap never splits a tree. */
+function capAttenuationAreas(areas, buildingCount, max) {
+  const limit = max == null ? MAX_ATTENUATION_AREAS : max;
+  if (!areas || areas.length <= limit) return { areas: areas || [], dropped: 0 };
+  const b = Math.min(buildingCount, limit);
+  let rest = limit - b;
+  rest -= rest % 2;
+  const kept = areas.slice(0, b + rest);
+  return { areas: kept, dropped: areas.length - kept.length };
 }
 
 function siteName(raw) {
@@ -375,12 +637,13 @@ function emitBuilding(ring, heightM, frame, affine, buckets) {
   const minY = Math.min(...ys);
   const maxY = Math.max(...ys);
   if (maxX < 0 || maxY < 0 || minX > frame.imgW || minY > frame.imgH) return "clip";
-  const oiCoords = ringToOi(pts, frame.imgW, frame.imgH);
+  const oiCoords = ringToOi(pts, frame.imgW, frame.imgH, frame.mpuX);
   if (!oiCoords) return "clip";
   const typeId = pickBuildingTypeId(am, heightM);
   const type = TYPE_BY_ID[typeId];
-  const mat = oiMaterialFromType(type, heightM > 2 ? heightM : type.topEdge);
-  buckets.oiAreas.push({ area: { coordinates: oiCoords }, area_material: mat });
+  const area = emitIfValid(makeOiArea(oiCoords, type), frame.imgW, frame.imgH);
+  if (!area) return "invalid";
+  buckets.oiAreas.push(area);
   const z = clipZone(typeId, clipRing);
   if (z) buckets.clipZones.push(z);
   buckets.aabbs.push({ minX, maxX, minY, maxY });
@@ -401,6 +664,7 @@ function footprintsToClutter(features, frame, affine) {
     droppedTiny: 0,
     droppedClip: 0,
     droppedCap: 0,
+    droppedInvalid: 0,
   };
   const buckets = { oiAreas, clipZones, aabbs, overlayRings };
   for (const f of list) {
@@ -420,20 +684,26 @@ function footprintsToClutter(features, frame, affine) {
       else if (result === "mega") stats.droppedMega++;
       else if (result === "tiny") stats.droppedTiny++;
       else if (result === "clip") stats.droppedClip++;
+      else if (result === "invalid") stats.droppedInvalid++;
     }
   }
   return { oiAreas, clipZones, aabbs, overlayRings, stats };
 }
 
-function treesToOi(oiTreeAreas, imgW, imgH) {
+function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
   const out = [];
+  let droppedInvalid = 0;
   for (const t of oiTreeAreas) {
-    const coords = ringToOi(t.ringPx, imgW, imgH);
-    if (!coords) continue;
+    const coords = ringToOi(t.ringPx, imgW, imgH, mpuX);
     const type = TYPE_BY_ID[t.typeId];
-    out.push({ area: { coordinates: coords }, area_material: oiMaterialFromType(type) });
+    const area = emitIfValid(makeOiArea(coords, type), imgW, imgH);
+    if (!area) {
+      droppedInvalid++;
+      continue;
+    }
+    out.push(area);
   }
-  return out;
+  return { areas: out, droppedInvalid };
 }
 
 function buildOpenIntent(frame, name, imgName, areas) {
@@ -474,7 +744,7 @@ function buildOpenIntent(frame, name, imgName, areas) {
     wall_materials: [],
     switches: [],
     area_materials: ZONE_TYPES.map((t) => oiMaterialFromType(t)),
-    openintent_version: "2.0.1",
+    openintent_version: OPENINTENT_VERSION,
   };
 }
 
@@ -491,9 +761,15 @@ function buildClutter({
   const imgName = `${slug}.jpg`;
   const fp = footprintsToClutter(footprintsGeojson?.features || [], frame, affine);
   const veg = treePairsFromPoints(treePoints || [], frame, fp.aabbs, affine);
-  const areas = fp.oiAreas.concat(treesToOi(veg.oiAreas, frame.imgW, frame.imgH));
+  const trees = treesToOi(veg.oiAreas, frame.imgW, frame.imgH, frame.mpuX);
+  const uncapped = fp.oiAreas.concat(trees.areas);
+  const capped = capAttenuationAreas(uncapped, fp.oiAreas.length);
+  const areas = capped.areas;
   const clip = emptyClipboard();
   clip.attenuatingZones = fp.clipZones.concat(veg.clipZones);
+  if (capped.dropped) {
+    clip.attenuatingZones = clip.attenuatingZones.slice(0, areas.length);
+  }
   const oi = buildOpenIntent(frame, name, imgName, areas);
   const treeOverlayPts = [];
   for (const t of veg.oiAreas || []) {
@@ -520,6 +796,12 @@ function buildClutter({
     treesSource: treesSource || (veg.count ? "imagery-rgb" : "none"),
     zones: clip.attenuatingZones.length,
     areas: areas.length,
+    droppedInvalid: (fp.stats.droppedInvalid || 0) + trees.droppedInvalid,
+    droppedAreasCap: capped.dropped,
+    attenuationAreasEmitted: areas.length,
+    openintentVersion: OPENINTENT_VERSION,
+    coordinateUnit: "pixels",
+    coordinateOrigin: "Y-up from SW",
     calibrated: Boolean(affine),
     summary: "",
     buildingsKept: 0,
@@ -534,6 +816,7 @@ function buildClutter({
       { name: "images/" + imgName, data: imgBuf },
       { name: "export-warnings.json", data: Buffer.from('{"errors":[],"warnings":[]}') },
       { name: "export-stats.json", data: Buffer.from(JSON.stringify(coverageStats(stats), null, 2)) },
+      { name: "VERIFY.txt", data: Buffer.from(verifyTxt(stats)) },
       { name: "hamina-clipboard.json", data: Buffer.from(JSON.stringify(clip)) },
       { name: "README.txt", data: zipReadme(stats) },
       { name: "alignment-overlay.svg", data: Buffer.from(overlay) },
@@ -556,15 +839,22 @@ function buildClutter({
 module.exports = {
   ALIGNMENT,
   ZIP_README,
+  ZIP_TROUBLESHOOT,
   MIN_AREA_M2,
   MAX_AREA_M2,
   MAX_BUILDINGS,
+  MAX_ATTENUATION_AREAS,
+  MIN_OI_SPAN_PX,
+  MIN_OI_SPAN_M,
+  OPENINTENT_VERSION,
+  STOCK_MATERIAL_NAMES,
   MEGA_CAMPUS_M2,
   megaCampusLimitM2,
   isMegaCampus,
   coverageStats,
   coverageSummary,
   zipReadme,
+  verifyTxt,
   featureExteriorRings,
   ringAreaM2,
   simplifyRing,
@@ -575,4 +865,10 @@ module.exports = {
   clipRingToRect,
   ringToOi,
   ringAreaPx,
+  validateOiCoords,
+  validateOiArea,
+  emitIfValid,
+  capAttenuationAreas,
+  ensureMinSpan,
+  minOiSpanPx,
 };

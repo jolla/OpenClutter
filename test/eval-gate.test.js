@@ -50,7 +50,9 @@ describe("eval gate (cached fixtures, no Hamina)", () => {
     const files = unzipStore(result.built.zip);
     assert.ok(files["alignment-overlay.svg"]);
     assert.ok(files["export-stats.json"]);
+    assert.ok(files["VERIFY.txt"]);
     assert.match(files["alignment-overlay.svg"].toString(), /<polygon |<circle /);
+    assert.match(files["VERIFY.txt"].toString(), /^attenuation_areas: \d+$/m);
   });
 });
 
