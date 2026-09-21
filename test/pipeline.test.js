@@ -112,6 +112,10 @@ describe("pipeline: footprints + trees share the frame", () => {
       assert.ok(stock.has(a.area_material.name), a.area_material.name);
       assert.ok(a.area_material.top_height > 0);
       assert.ok(a.area_material.rf_properties.attenuation_per_m > 0);
+      assert.equal(a.area_material.itu_material_type, "ITU_R_UNKNOWN");
+      assert.equal("bottom_height" in a.area_material, false, "Hamina rejected bottom_height on OI materials");
+      const cat = built.openintent.area_materials.find((m) => m.name === a.area_material.name);
+      assert.deepEqual(a.area_material, cat);
       const coords = a.area.coordinates;
       assert.ok(coords.length >= 4);
       const first = coords[0].coordinate_xyz;
@@ -182,6 +186,9 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.match(readme, /hamina-clipboard\.json/);
     assert.match(readme, /WebGL/);
     assert.match(readme, /2D/);
+    assert.match(readme, /sidebar/);
+    assert.match(readme, /paste hamina-clipboard\.json/);
+    assert.match(readme, /hardware acceleration/);
     assert.match(readme, /attenuationAreasEmitted: /);
     assert.equal(Object.keys(zipped).length, 9);
   });
@@ -517,8 +524,8 @@ describe("OpenIntent attenuation_areas", () => {
     assert.equal(validateOiCoords(expanded, w, h).ok, true);
     const xs = expanded.map((c) => c.coordinate_xyz.x);
     const ys = expanded.map((c) => c.coordinate_xyz.y);
-    assert.ok(Math.max(...xs) - Math.min(...xs) >= 1);
-    assert.ok(Math.max(...ys) - Math.min(...ys) >= 1);
+    assert.ok(Math.max(...xs) - Math.min(...xs) >= 3);
+    assert.ok(Math.max(...ys) - Math.min(...ys) >= 3);
   });
 
   it("keeps a valid building when a sibling ring is a bowtie", () => {

@@ -24,7 +24,9 @@ const MIN_AREA_M2 = 25;
 const MAX_AREA_M2 = 40000;
 const MAX_BUILDINGS = 2000;
 /** OpenIntent 2.0.1 coordinate_xyz.x/y minimum is 0; Hamina historically dropped *all* areas if one ring was invalid. */
-const MIN_OI_SPAN_PX = 1.5;
+const MIN_OI_SPAN_PX = 4;
+/** Outdoor trunks are ~1 m across; at ~1 m/px that is sub-pixel and Hamina may reject the ring. */
+const MIN_OI_SPAN_M = 3;
 /**
  * Hamina documents 20,000 walls/map and no attenuation_areas cap. Keep well under
  * that wall budget so one outdoor site cannot blow the importer/GPU. Buildings
@@ -44,19 +46,24 @@ const ZIP_README =
 
 const ZIP_TROUBLESHOOT =
   "\nTroubleshooting if Hamina shows the map but no attenuating objects:\n" +
-  "(a) Unzip. Open VERIFY.txt and confirm attenuation_areas is a positive integer.\n" +
-  "    That value is floorplans[0].attenuation_areas.length in openIntent_*.json\n" +
-  "    (buildingsKept + about 2× treesKept for canopy/trunk pairs — not buildingsKept alone).\n" +
-  "(b) Open alignment-overlay.svg next to images/. Red rooftops and green trees should sit on the JPEG.\n" +
-  "(c) Overlay OK but Hamina empty → Hamina import dropped the areas, or they did not render.\n" +
-  "    Fallback: copy hamina-clipboard.json and paste into Hamina (older builds / import drop).\n" +
-  "(d) Console WebGL texSubImage2D or Rive warnings can hide objects after a successful import.\n" +
-  "    Try turning hardware acceleration off, or use Hamina’s 2D map view and zoom the full extent.\n" +
+  "If VERIFY.txt attenuation_areas > 0, generation succeeded. Hamina then either dropped the import\n" +
+  "or failed to render (WebGL). Do this in order:\n" +
+  "  1. Unzip and confirm VERIFY.txt attenuation_areas (same as openIntent_*.json length).\n" +
+  "     buildingsKept 111 + 2×treesKept 367 = 845 polygons — not buildingsKept alone.\n" +
+  "  2. Open alignment-overlay.svg next to images/. Rooftops (red) and trees (green) should sit on the JPEG.\n" +
+  "  3. In Hamina, check the Attenuating Objects sidebar count.\n" +
+  "     0 = OpenIntent import dropped the areas. >0 = they imported but did not draw.\n" +
+  "  4. If stats>0 but Hamina is empty (sidebar 0 or objects invisible): paste hamina-clipboard.json into Hamina.\n" +
+  "  5. Console WebGL texSubImage2D / Rive warnings can hide objects after a successful import.\n" +
+  "     Try Hamina’s 2D map view, and turn hardware acceleration off, then zoom the full extent.\n" +
+  "Pixel vs meter aspect can differ after Esri N/S pad (non-square mpu). Overlay still locks image-space;\n" +
+  "that does not hide objects by itself.\n" +
   "Hamina publishes a 20,000 walls/map OpenIntent cap and no attenuation_areas cap; this zip emits\n" +
   "at most " +
   MAX_ATTENUATION_AREAS +
-  " areas (buildings first). Invalid/open/NaN/self-intersecting rings are dropped per-polygon\n" +
-  "so one bad ring cannot wipe the import.\n";
+  " areas (buildings first). Invalid/open/NaN/self-intersecting rings are dropped per-polygon.\n" +
+  "OpenIntent materials omit bottom_height (Hamina rejected it as Invalid OpenIntent format) and use\n" +
+  "stock names + itu_material_type ITU_R_UNKNOWN (oiconvert / Hamina-tested importer).\n";
 
 /**
  * Skip Microsoft campus-merge blobs (one giant wrong polygon). Do NOT use a
@@ -335,20 +342,24 @@ function fitSquareInImage(cx, cy, span, imgW, imgH) {
   ];
 }
 
+function minOiSpanPx(mpuX) {
+  return Math.max(MIN_OI_SPAN_PX, MIN_OI_SPAN_M / Math.max(mpuX || 1, 0.01));
+}
+
 /**
  * Sub-pixel tree trunks used to emit near-degenerate hexagons. After toFixed(3)
  * those can be duplicate/NaN-adjacent and Hamina then dropped every area.
  * Expand only collapsed blobs — not thin real building slivers.
  */
-function ensureMinSpan(pts, imgW, imgH) {
+function ensureMinSpan(pts, imgW, imgH, minSpan) {
   if (!pts || pts.length < 3) return pts;
+  const span = minSpan == null ? MIN_OI_SPAN_PX : minSpan;
   const b = ringBBox(pts);
-  if (b.w >= MIN_OI_SPAN_PX && b.h >= MIN_OI_SPAN_PX) return pts;
-  if (b.w >= MIN_OI_SPAN_PX || b.h >= MIN_OI_SPAN_PX) return pts;
+  if (b.w >= span && b.h >= span) return pts;
+  if (b.w >= span || b.h >= span) return pts;
   const cx = (b.minX + b.maxX) / 2;
   const cy = (b.minY + b.maxY) / 2;
-  const span = Math.max(MIN_OI_SPAN_PX, b.w, b.h);
-  const square = fitSquareInImage(cx, cy, span, imgW, imgH);
+  const square = fitSquareInImage(cx, cy, Math.max(span, b.w, b.h), imgW, imgH);
   return square.length ? square : pts;
 }
 
@@ -493,11 +504,11 @@ function clipRingToRect(ring, w, h) {
   return pts;
 }
 
-function ringToOi(pts, imgW, imgH) {
+function ringToOi(pts, imgW, imgH, mpuX) {
   if (!pts || pts.length < 3) return null;
   let clipped = clipRingToRect(pts, imgW, imgH);
   if (clipped.length < 3) return null;
-  clipped = ensureMinSpan(clipped, imgW, imgH);
+  clipped = ensureMinSpan(clipped, imgW, imgH, minOiSpanPx(mpuX));
   if (!clipped || clipped.length < 3) return null;
   if (ringAreaPx(clipped) < 1e-6) return null;
   const out = finalizeOiCoords(clipped, imgW, imgH);
@@ -506,9 +517,9 @@ function ringToOi(pts, imgW, imgH) {
   return check.ok ? out : null;
 }
 
-function makeOiArea(coords, type, topHeight) {
-  if (!coords) return null;
-  const mat = oiMaterialFromType(type, topHeight);
+function makeOiArea(coords, type) {
+  if (!coords || !type) return null;
+  const mat = oiMaterialFromType(type);
   return { area: { coordinates: coords }, area_material: mat };
 }
 
@@ -626,15 +637,11 @@ function emitBuilding(ring, heightM, frame, affine, buckets) {
   const minY = Math.min(...ys);
   const maxY = Math.max(...ys);
   if (maxX < 0 || maxY < 0 || minX > frame.imgW || minY > frame.imgH) return "clip";
-  const oiCoords = ringToOi(pts, frame.imgW, frame.imgH);
+  const oiCoords = ringToOi(pts, frame.imgW, frame.imgH, frame.mpuX);
   if (!oiCoords) return "clip";
   const typeId = pickBuildingTypeId(am, heightM);
   const type = TYPE_BY_ID[typeId];
-  const area = emitIfValid(
-    makeOiArea(oiCoords, type, heightM > 2 ? heightM : type.topEdge),
-    frame.imgW,
-    frame.imgH
-  );
+  const area = emitIfValid(makeOiArea(oiCoords, type), frame.imgW, frame.imgH);
   if (!area) return "invalid";
   buckets.oiAreas.push(area);
   const z = clipZone(typeId, clipRing);
@@ -683,11 +690,11 @@ function footprintsToClutter(features, frame, affine) {
   return { oiAreas, clipZones, aabbs, overlayRings, stats };
 }
 
-function treesToOi(oiTreeAreas, imgW, imgH) {
+function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
   const out = [];
   let droppedInvalid = 0;
   for (const t of oiTreeAreas) {
-    const coords = ringToOi(t.ringPx, imgW, imgH);
+    const coords = ringToOi(t.ringPx, imgW, imgH, mpuX);
     const type = TYPE_BY_ID[t.typeId];
     const area = emitIfValid(makeOiArea(coords, type), imgW, imgH);
     if (!area) {
@@ -754,7 +761,7 @@ function buildClutter({
   const imgName = `${slug}.jpg`;
   const fp = footprintsToClutter(footprintsGeojson?.features || [], frame, affine);
   const veg = treePairsFromPoints(treePoints || [], frame, fp.aabbs, affine);
-  const trees = treesToOi(veg.oiAreas, frame.imgW, frame.imgH);
+  const trees = treesToOi(veg.oiAreas, frame.imgW, frame.imgH, frame.mpuX);
   const uncapped = fp.oiAreas.concat(trees.areas);
   const capped = capAttenuationAreas(uncapped, fp.oiAreas.length);
   const areas = capped.areas;
@@ -838,6 +845,7 @@ module.exports = {
   MAX_BUILDINGS,
   MAX_ATTENUATION_AREAS,
   MIN_OI_SPAN_PX,
+  MIN_OI_SPAN_M,
   OPENINTENT_VERSION,
   STOCK_MATERIAL_NAMES,
   MEGA_CAMPUS_M2,
@@ -862,4 +870,5 @@ module.exports = {
   emitIfValid,
   capAttenuationAreas,
   ensureMinSpan,
+  minOiSpanPx,
 };

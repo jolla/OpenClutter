@@ -75,7 +75,7 @@ Do **not** inject OSM building or tree **rings** (broke v8 — Hamina dropped al
 ## Next fixes (priority)
 
 1. USGS 3DEP or other height when available. Meta canopy *height* (not percent) is optional later.
-2. If Hamina exports a project that already contains objects, diff that OpenIntent JSON against ours and lock any remaining origin quirks. Import-proofing: every ring is validated before emit (closed, finite, pixels Y-up, stock materials); `VERIFY.txt` + `export-stats.json` `attenuationAreasEmitted` record the exact `attenuation_areas` length. One bad ring must never wipe the import.
+2. If Hamina exports a project that already contains objects, diff that OpenIntent JSON against ours and lock any remaining origin quirks. Import-proofing: every ring is validated before emit (closed, finite, pixels Y-up, stock materials); omit `bottom_height` on OI materials (Hamina “Invalid OpenIntent format”); expand sub-pixel trunks; `VERIFY.txt` + `export-stats.json` `attenuationAreasEmitted` record the exact `attenuation_areas` length. One bad ring must never wipe the import. Jerry’s Oak Creek zip had 845 well-formed areas and still showed none in Hamina — generation ≠ display.
 3. Optional server-side vegetation worker (not jpeg-js in the 10s function) for the RGB fallback path.
 4. Keep `npm run eval` green; refresh fixtures with `npm run fixtures:fetch` if Esri/NLCD vintage drifts.
 
