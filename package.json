@@ -1,6 +1,9 @@
 {
   "name": "openintent-clutter",
   "private": true,
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
   "dependencies": {
     "jpeg-js": "^0.4.4"
   }

@@ -43,7 +43,7 @@ map.on(L.Draw.Event.CREATED, (e) => {
   };
   const w = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.south, bbox.east));
   const h = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.north, bbox.west));
-  setStatus(`${Math.round(w)} × ${Math.round(h)} m`);
+  setStatus(`${Math.round(w)} × ${Math.round(h)} m — export uses this bbox for imagery, footprints, and clipboard meters.`);
   exportBtn.disabled = w > 2500 || h > 2500 || w < 40 || h < 40;
   if (exportBtn.disabled) setStatus("Area must be between 40 m and 2.5 km on a side.", true);
 });
@@ -125,12 +125,37 @@ async function detectTrees(b) {
     if (seen.has(k)) continue;
     seen.add(k);
     out.push(t);
-    if (out.length >= 140) break;
+    if (out.length >= 180) break;
   }
   return out;
 }
 
-async function exportOnce(trees) {
+function parseControlPoints() {
+  const raw = (document.getElementById("controlPoints").value || "").trim();
+  if (!raw) return null;
+  const pts = JSON.parse(raw);
+  if (!Array.isArray(pts) || pts.length < 3) {
+    throw new Error("Calibration needs 3+ control points {lon,lat,xM,yM}.");
+  }
+  return pts;
+}
+
+function downloadBlob(blob, name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function b64ToBlob(b64, type) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type });
+}
+
+async function exportOnce(trees, controlPoints) {
   const r = await fetch("/api/clutter", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -138,40 +163,56 @@ async function exportOnce(trees) {
       ...bbox,
       name: document.getElementById("q").value || "Site",
       trees,
+      osmTrees: document.getElementById("osmTrees").checked,
+      format: "bundle",
+      controlPoints: controlPoints || undefined,
     }),
   });
-  if (!r.ok) {
-    const t = await r.json().catch(() => ({ error: r.status + " " + r.statusText }));
-    throw new Error(t.error || "Export failed (" + r.status + ")");
-  }
-  return r.blob();
+  const data = await r.json().catch(() => ({ error: r.status + " " + r.statusText }));
+  if (!r.ok) throw new Error(data.error || "Export failed (" + r.status + ")");
+  return data;
 }
 
 document.getElementById("export").onclick = async () => {
   if (!bbox) return;
   exportBtn.disabled = true;
-  setStatus("Finding trees in the aerial…");
+  setStatus("Finding trees in the Esri aerial…");
   try {
+    let controlPoints = null;
+    try {
+      controlPoints = parseControlPoints();
+    } catch (e) {
+      throw e;
+    }
     let trees = [];
     try {
       trees = await detectTrees(bbox);
     } catch (e) {
       trees = [];
     }
-    setStatus(`Found ${trees.length} tree points. Building zip…`);
-    let blob;
+    setStatus(`Found ${trees.length} vegetation points. Building zip + clipboard…`);
+    let data;
     try {
-      blob = await exportOnce(trees);
+      data = await exportOnce(trees, controlPoints);
     } catch (e) {
       setStatus("Retrying… " + e.message);
-      blob = await exportOnce(trees);
+      data = await exportOnce(trees, controlPoints);
     }
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "openintent-clutter.zip";
-    a.click();
-    URL.revokeObjectURL(a.href);
-    setStatus(`Downloaded ${Math.round(blob.size / 1024)} KB with ${trees.length} trees. Import in Hamina.`);
+    downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openintent-clutter.zip");
+    await new Promise((r) => setTimeout(r, 400));
+    downloadBlob(
+      new Blob([JSON.stringify(data.clipboard)], { type: "application/json" }),
+      data.clipboardFilename || "hamina-clipboard.json"
+    );
+    const s = data.stats || {};
+    const w = data.frame && Math.round(data.frame.widthM);
+    const l = data.frame && Math.round(data.frame.lengthM);
+    setStatus(
+      `Downloaded map zip (${w} × ${l} m) and clipboard JSON.\n` +
+        `${s.buildings || 0} buildings, ${s.trees || 0} trees` +
+        (s.calibrated ? " (legacy calibration on)." : ".") +
+        `\nImport the zip in Hamina first, then paste the JSON on the map.`
+    );
   } catch (err) {
     setStatus(err.message + " — try a smaller box and export again.", true);
   } finally {
