@@ -43,9 +43,9 @@ map.on(L.Draw.Event.CREATED, (e) => {
   };
   const w = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.south, bbox.east));
   const h = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.north, bbox.west));
-  setStatus(`${Math.round(w)} × ${Math.round(h)} m — export uses this bbox for imagery, footprints, and clipboard meters.`);
   exportBtn.disabled = w > 2500 || h > 2500 || w < 40 || h < 40;
   if (exportBtn.disabled) setStatus("Area must be between 40 m and 2.5 km on a side.", true);
+  else setStatus("Ready to export.");
 });
 
 document.getElementById("draw").onclick = () => {
@@ -63,7 +63,7 @@ document.getElementById("search").onsubmit = async (e) => {
     if (!hits.length) throw new Error("No results");
     const hit = hits[0];
     map.setView([+hit.lat, +hit.lon], 16);
-    setStatus(hit.display_name);
+    setStatus("Draw the site.");
   } catch (err) {
     setStatus(err.message, true);
   }
@@ -95,22 +95,6 @@ async function detectRgbTrees(b) {
   return T.detectTreesFromImageData(data, w, h, b);
 }
 
-function sourceLabel(source, n) {
-  if (source === "nlcd-canopy") return `${n} trees (NLCD / USFS canopy)`;
-  if (source === "imagery-rgb") return `${n} trees (imagery RGB fallback)`;
-  return "0 trees";
-}
-
-function parseControlPoints() {
-  const raw = (document.getElementById("controlPoints").value || "").trim();
-  if (!raw) return null;
-  const pts = JSON.parse(raw);
-  if (!Array.isArray(pts) || pts.length < 3) {
-    throw new Error("Calibration needs 3+ control points {lon,lat,xM,yM}.");
-  }
-  return pts;
-}
-
 function downloadBlob(blob, name) {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -126,7 +110,7 @@ function b64ToBlob(b64, type) {
   return new Blob([bytes], { type });
 }
 
-async function exportOnce(trees, controlPoints, treesSource) {
+async function exportOnce(trees, treesSource) {
   const r = await fetch("/api/clutter", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -135,9 +119,7 @@ async function exportOnce(trees, controlPoints, treesSource) {
       name: document.getElementById("q").value || "Site",
       trees,
       treesSource,
-      osmTrees: document.getElementById("osmTrees").checked,
       format: "bundle",
-      controlPoints: controlPoints || undefined,
     }),
   });
   const data = await r.json().catch(() => ({ error: r.status + " " + r.statusText }));
@@ -148,18 +130,11 @@ async function exportOnce(trees, controlPoints, treesSource) {
 document.getElementById("export").onclick = async () => {
   if (!bbox) return;
   exportBtn.disabled = true;
-  setStatus("Finding trees…");
+  setStatus("Building map + clutter…");
   try {
-    let controlPoints = null;
-    try {
-      controlPoints = parseControlPoints();
-    } catch (e) {
-      throw e;
-    }
     let trees = [];
     let treesSource = "none";
     try {
-      setStatus("Sampling NLCD / USFS tree canopy…");
       const canopy = await detectCanopyTrees(bbox);
       if (canopy) {
         trees = canopy.trees;
@@ -170,7 +145,6 @@ document.getElementById("export").onclick = async () => {
     }
     if (treesSource !== "nlcd-canopy") {
       try {
-        setStatus("Canopy raster missing for this bbox — detecting trees from imagery…");
         trees = await detectRgbTrees(bbox);
         treesSource = trees.length ? "imagery-rgb" : "none";
       } catch (e) {
@@ -178,13 +152,11 @@ document.getElementById("export").onclick = async () => {
         treesSource = "none";
       }
     }
-    setStatus(`Found ${sourceLabel(treesSource, trees.length)}. Building zip + clipboard…`);
     let data;
     try {
-      data = await exportOnce(trees, controlPoints, treesSource);
+      data = await exportOnce(trees, treesSource);
     } catch (e) {
-      setStatus("Retrying… " + e.message);
-      data = await exportOnce(trees, controlPoints, treesSource);
+      data = await exportOnce(trees, treesSource);
     }
     downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
     await new Promise((r) => setTimeout(r, 400));
@@ -192,18 +164,9 @@ document.getElementById("export").onclick = async () => {
       new Blob([JSON.stringify(data.clipboard)], { type: "application/json" }),
       data.clipboardFilename || "hamina-clipboard.json"
     );
-    const s = data.stats || {};
-    const w = data.frame && Math.round(data.frame.widthM);
-    const l = data.frame && Math.round(data.frame.lengthM);
-    const src = s.treesSource || treesSource;
-    setStatus(
-      `Downloaded map zip (${w} × ${l} m) and clipboard JSON.\n` +
-        `${s.buildings || 0} buildings, ${sourceLabel(src, s.trees || 0)}` +
-        (s.calibrated ? " (legacy calibration on)." : ".") +
-        `\nImport the zip in Hamina first, then paste the JSON on the map.`
-    );
+    setStatus("Downloaded. Import zip in Hamina, then paste JSON.");
   } catch (err) {
-    setStatus(err.message + " — try a smaller box and export again.", true);
+    setStatus(err.message + " — try a smaller box.", true);
   } finally {
     exportBtn.disabled = false;
   }

@@ -12,7 +12,9 @@ Do **not** use an X Grok bot. It cannot push to GitHub.
 
 ## Product
 
-**OpenClutter** — user draws/enters a bbox (or address) → app produces clutter that lines up with the map in Hamina Planner, every time, for any site.
+**OpenClutter** — search, draw a rectangle, export. Clutter lines up with the map in Hamina Planner, every time, for any site.
+
+**UI (must stay this simple):** address search → draw rectangle → one Export. No source picker, OSM checkbox, calibration textarea, or format choosers on the page. Canopy (NLCD) with silent RGB fallback. OSM / `controlPoints` stay API-only.
 
 **Default path (exact, repeatable):** one shared bbox frame.
 
@@ -48,11 +50,11 @@ Wynn example: 3840×2160 GE frame is ~2376×1337 m geographically; Hamina’s sc
 
 OpenIntent `attenuation_areas` imports are unreliable in Hamina; clipboard paste is the dependable object path. Keep emitting both: zip for map size + image, clipboard for objects.
 
-Do **not** inject OSM building or tree **rings** (broke v8 — Hamina dropped all attenuation_areas). Optional OSM is tree **nodes** only.
+Do **not** inject OSM building or tree **rings** (broke v8 — Hamina dropped all attenuation_areas). OSM tree **nodes** remain an API flag (`osmTrees: true`), off and hidden from the default page.
 
 ## Calibration escape hatch
 
-`controlPoints`: 3+ `{lon,lat,xM,yM}` → affine lon/lat → clipboard meters. **Only** for a map already in Hamina at the wrong scale. Default path must stay shared-bbox (no affine).
+`controlPoints`: 3+ `{lon,lat,xM,yM}` → affine lon/lat → clipboard meters. **API-only** — not on the default page. **Only** for a map already in Hamina at the wrong scale. Default path must stay shared-bbox (no affine).
 
 ## Known issues
 
@@ -84,7 +86,9 @@ Same west/south/east/north as the Esri map (`sr=4326`), latest `beginyear`, valu
 
 RGB fallback: reject smooth lawn (low local luma variance); keep textured green + winter brown/gray canopy; collect the whole image then stratified sample (never north-first cap).
 
-`stats.treesSource`: `"nlcd-canopy" | "imagery-rgb" | "none"`. Shared logic: `public/tree-detect.js` (browser + Node).
+`stats.treesSource`: `"nlcd-canopy" | "imagery-rgb" | "none"` in the API/stats payload — **never a UI picker**. Shared logic: `public/tree-detect.js` (browser + Node).
+
+**UX (Jerry):** super simple tool. Search → Draw → Export. Hide OSM checkbox, control-points textarea, format choosers. One status line (“Building map + clutter…”). One-line help: Import zip in Hamina, then paste JSON. OSM/`controlPoints` remain API escape hatches for tests only.
 
 ## How to work
 
