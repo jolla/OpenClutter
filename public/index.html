@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OpenIntent Clutter</title>
-  <meta name="description" content="Turn a map box into an OpenIntent zip plus HaminaClipboard JSON: Esri aerial and Microsoft footprints in one geographic frame so clutter lines up in Hamina Planner." />
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23238636'/><text x='8' y='12' text-anchor='middle' font-size='10' fill='white'>OI</text></svg>" />
+  <title>OpenClutter</title>
+  <meta name="description" content="OpenClutter: turn a map box into an OpenIntent zip plus HaminaClipboard JSON — Esri aerial and Microsoft footprints in one geographic frame so clutter lines up in Hamina Planner." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23238636'/><text x='8' y='12' text-anchor='middle' font-size='9' fill='white'>OC</text></svg>" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
   <style>
@@ -47,7 +47,7 @@
 <body>
   <div id="map"></div>
   <div class="panel">
-    <h1>OpenIntent Clutter</h1>
+    <h1>OpenClutter</h1>
     <div class="sub">Esri aerial + Microsoft footprints in one geographic frame. Import the zip in Hamina, then paste the clipboard JSON — no per-site nudge.</div>
     <form id="search">
       <input type="search" id="q" placeholder="Address or place" required />
@@ -56,6 +56,10 @@
     <div class="row">
       <button type="button" id="draw" class="secondary">Draw area</button>
       <button type="button" id="export" disabled>Export clutter</button>
+    </div>
+    <div class="row" id="saves" hidden>
+      <button type="button" id="saveZip" class="secondary">Save map zip</button>
+      <button type="button" id="saveClip" class="secondary">Save clipboard JSON</button>
     </div>
     <label class="check">
       <input type="checkbox" id="osmTrees" />
@@ -68,7 +72,7 @@
     </details>
     <ol class="steps">
       <li>Draw the site (under ~2 km on a side).</li>
-      <li>Export — downloads the OpenIntent zip <em>and</em> HaminaClipboard JSON.</li>
+      <li>Export — map zip downloads; click <em>Save clipboard JSON</em> for the paste file.</li>
       <li>Hamina: import the zip first (sets map size), then paste the JSON on the canvas.</li>
     </ol>
     <div id="status">Draw a rectangle under ~2 km on a side.</div>

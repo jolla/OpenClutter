@@ -1,6 +1,7 @@
 {
-  "name": "openintent-clutter",
+  "name": "openclutter",
   "private": true,
+  "description": "OpenClutter: bbox → Esri aerial + Microsoft footprints → OpenIntent zip and HaminaClipboard JSON for Hamina Planner",
   "scripts": {
     "test": "node --test test/*.test.js"
   },

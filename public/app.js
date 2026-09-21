@@ -140,6 +140,19 @@ function parseControlPoints() {
   return pts;
 }
 
+let lastExport = null;
+const savesEl = document.getElementById("saves");
+
+function offerSaves(data) {
+  lastExport = {
+    zip: b64ToBlob(data.zipBase64, "application/zip"),
+    zipName: data.zipFilename || "openclutter-openintent.zip",
+    clip: new Blob([JSON.stringify(data.clipboard)], { type: "application/json" }),
+    clipName: data.clipboardFilename || "hamina-clipboard.json",
+  };
+  savesEl.hidden = false;
+}
+
 function downloadBlob(blob, name) {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -154,6 +167,13 @@ function b64ToBlob(b64, type) {
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return new Blob([bytes], { type });
 }
+
+document.getElementById("saveZip").onclick = () => {
+  if (lastExport) downloadBlob(lastExport.zip, lastExport.zipName);
+};
+document.getElementById("saveClip").onclick = () => {
+  if (lastExport) downloadBlob(lastExport.clip, lastExport.clipName);
+};
 
 async function exportOnce(trees, controlPoints) {
   const r = await fetch("/api/clutter", {
@@ -198,17 +218,14 @@ document.getElementById("export").onclick = async () => {
       setStatus("Retrying… " + e.message);
       data = await exportOnce(trees, controlPoints);
     }
-    downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openintent-clutter.zip");
-    await new Promise((r) => setTimeout(r, 400));
-    downloadBlob(
-      new Blob([JSON.stringify(data.clipboard)], { type: "application/json" }),
-      data.clipboardFilename || "hamina-clipboard.json"
-    );
+    offerSaves(data);
+    // One automatic download only — Chrome treats two as a “multiple files” permission prompt.
+    downloadBlob(lastExport.zip, lastExport.zipName);
     const s = data.stats || {};
     const w = data.frame && Math.round(data.frame.widthM);
     const l = data.frame && Math.round(data.frame.lengthM);
     setStatus(
-      `Downloaded map zip (${w} × ${l} m) and clipboard JSON.\n` +
+      `Downloaded map zip (${w} × ${l} m). Use Save clipboard JSON for the paste file.\n` +
         `${s.buildings || 0} buildings, ${s.trees || 0} trees` +
         (s.calibrated ? " (legacy calibration on)." : ".") +
         `\nImport the zip in Hamina first, then paste the JSON on the map.`

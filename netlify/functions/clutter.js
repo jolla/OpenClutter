@@ -1,6 +1,6 @@
 "use strict";
 
-const UA = "openintent-clutter/0.7.0 (https://github.com/jolla/openintent-clutter)";
+const UA = "openclutter/0.8.0 (https://github.com/jolla/openclutter)";
 const { geoFrame, esriImageryUrl, msFootprintsUrl, fitAffine } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");

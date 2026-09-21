@@ -1,14 +1,19 @@
-# OpenIntent Clutter
+# OpenClutter
 
-Turn a map box into clutter that lines up with the map in [Hamina Planner](https://hamina.com): a georeferenced [OpenIntent](https://github.com/google/openintent) zip **and** a pasteable HaminaClipboard JSON, both in the **same geographic frame**.
+**OpenClutter** turns a map box into clutter that lines up with the map in [Hamina Planner](https://hamina.com): a georeferenced [OpenIntent](https://github.com/google/openintent) zip **and** a pasteable HaminaClipboard JSON, both in the **same geographic frame**.
 
-Live: https://openintent-clutter.netlify.app · Source: https://github.com/jolla/openintent-clutter
+OpenIntent here is the **Hamina import file format**, not the product name.
+
+Live: https://openintent-clutter.netlify.app · Source: https://github.com/jolla/openclutter
+
+> GitHub: rename `jolla/openintent-clutter` → `jolla/openclutter` (GitHub redirects the old URL).  
+> Netlify: site title is OpenClutter; the `openintent-clutter.netlify.app` subdomain stays until Jerry renames it in the Netlify dashboard (optional: `openclutter.netlify.app`).
 
 ## Exact alignment (every site)
 
 Hamina OpenIntent `attenuation_areas` imports are unreliable. The dependable object path is **HaminaClipboard JSON paste**. Alignment fails when the **map image** and the **clipboard meters** disagree — typically a Google Earth screenshot that Hamina auto-scales to the wrong size, then lon/lat footprints converted with a second guessed scale.
 
-This tool does not mix sources. One bbox drives everything:
+OpenClutter does not mix sources. One bbox drives everything:
 
 1. Esri World Imagery for that bbox (`bboxSR=4326`, `imageSR=4326`, same `size` as the math).
 2. Microsoft US Building Footprints (Esri MSBFP2) for that bbox.
@@ -36,7 +41,7 @@ Trees come from vegetation pixels on the Esri aerial (OSM tree *nodes* optional,
 1. Open the deployed site.
 2. Search an address.
 3. Draw a rectangle over the site (keep it under ~2 km on a side).
-4. **Export clutter** downloads two files:
+4. **Export clutter** — the OpenIntent map zip downloads; click **Save clipboard JSON** for the paste file:
    - `{site}-openintent.zip` — aerial + OpenIntent metadata at geographic size
    - `{site}-hamina-clipboard.json` — pasteable zones (stock Hamina type names)
 5. Hamina **Projects → Import → OpenIntent** the zip.
@@ -71,9 +76,13 @@ US footprints only. Boxes over ~2.5 km fail. Campus polygons &gt; 15,000 m² are
 ## Local
 
 ```bash
+git clone https://github.com/jolla/openclutter.git
+cd openclutter
 npm test
 npx netlify dev
 ```
+
+Until the GitHub rename, `git clone https://github.com/jolla/openintent-clutter.git` still works.
 
 ## License
 

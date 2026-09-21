@@ -1,18 +1,20 @@
 # Handoff — keep iterating here
 
-Repo: https://github.com/jolla/openintent-clutter
+Product: **OpenClutter** (OpenIntent is the Hamina zip *format*, not the product name)
+Repo: https://github.com/jolla/openclutter  
+Current GitHub name until Jerry renames it: https://github.com/jolla/openintent-clutter (redirects after rename)
 Owner: jolla (Jerry / Hamina)
 
 ## What to tell a new Grok chat
 
-> Continue https://github.com/jolla/openintent-clutter
+> Continue OpenClutter at https://github.com/jolla/openclutter (today still https://github.com/jolla/openintent-clutter until the repo is renamed).
 > Prefer a branch + PR. Read HANDOFF.md first.
 
 Do **not** use an X Grok bot. It cannot push to GitHub.
 
 ## Product
 
-User draws/enters a bbox (or address) → app produces clutter that lines up with the map in Hamina Planner, every time, for any site.
+OpenClutter: user draws/enters a bbox (or address) → app produces clutter that lines up with the map in Hamina Planner, every time, for any site.
 
 **Default path (exact, repeatable):** one shared bbox frame.
 
@@ -67,13 +69,15 @@ Do **not** inject OSM building or tree **rings** (broke v8 — Hamina dropped al
 1. USGS 3DEP or other height when available.
 2. If Hamina ever exports a project that already contains objects, diff that JSON against our clipboard and lock any remaining origin quirks.
 3. Optional server-side vegetation worker (not jpeg-js in the 10s function).
+4. Jerry: GitHub rename `jolla/openintent-clutter` → `jolla/openclutter`; optional Netlify subdomain `openclutter.netlify.app`.
 
 ## How to work
 
 ```
+git clone https://github.com/jolla/openclutter.git
 npm test
 edit netlify/lib/*.js netlify/functions/clutter.js public/*
 open a branch + PR
 ```
 
-PR #1 (`feat/hamina-clipboard-consistent-transform`) added a clipboard-only path and dual-scale docs. This shared-bbox pipeline **supersedes** that dual-scale default: clipboard still uses consistent `widthM`/`lengthM`, but the map is the Esri zip, not a GE screenshot.
+PR #1 added a clipboard-only path and dual-scale docs. PR #2 shipped the shared-bbox pipeline. Dual-scale GE screenshots are not the default.
