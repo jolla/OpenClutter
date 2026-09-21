@@ -115,6 +115,11 @@ describe("clutter handler (mocked Esri)", () => {
     assert.ok(files["README.txt"]);
     assert.ok(files["alignment-overlay.svg"]);
     assert.ok(files["frame-lock.json"]);
+    assert.ok(files["export-stats.json"]);
+    const exportStats = JSON.parse(files["export-stats.json"].toString());
+    assert.equal(typeof exportStats.buildingsKept, "number");
+    assert.equal(typeof exportStats.treesKept, "number");
+    assert.ok(exportStats.treesSource);
     const clip = JSON.parse(files["hamina-clipboard.json"].toString());
     assert.equal(clip.header.type, "HaminaClipboard");
     assert.ok(clip.attenuatingZones.length >= 1);
@@ -131,7 +136,12 @@ describe("clutter handler (mocked Esri)", () => {
     assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("bboxSR=4326") && u.includes("imageSR=4326")));
     assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("f=json")));
     assert.ok(urls.some((u) => u.includes("MSBFP2")));
+    assert.ok(urls.some((u) => u.includes("MSBFP2") && u.includes("orderByFields=OBJECTID")));
+    assert.ok(urls.some((u) => u.includes("MSBFP2") && u.includes("resultOffset=")));
     assert.ok(body.stats.trees >= 1);
+    assert.ok(body.stats.fetched >= 1);
+    assert.match(body.stats.summary, /Buildings /);
+    assert.match(body.stats.summary, /Trees /);
     assert.equal(body.stats.treesSource, "imagery-rgb");
     assert.ok(!urls.some((u) => u.includes("USFS_EDW_NLCD_TCC")));
   });

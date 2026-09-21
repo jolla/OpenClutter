@@ -71,13 +71,16 @@ document.getElementById("search").onsubmit = async (e) => {
 
 async function detectCanopyTrees(b) {
   const T = globalThis.OpenClutterTrees;
-  const result = await T.fetchCanopyTrees(b, (url) => fetch(url, { signal: AbortSignal.timeout(8000) }));
+  const result = await T.fetchCanopyTrees(b, (url) => fetch(url, { signal: AbortSignal.timeout(8000) }), {
+    maxTrees: T.maxTreesForBbox(b),
+  });
   if (!result.source) return null;
   return result;
 }
 
 async function detectRgbTrees(b) {
   const T = globalThis.OpenClutterTrees;
+  const maxTrees = T.maxTreesForBbox(b);
   const imgW = 720;
   const imgH = Math.max(200, Math.round(imgW * ((b.north - b.south) / Math.max(1e-9, b.east - b.west))));
   const url =
@@ -92,7 +95,7 @@ async function detectRgbTrees(b) {
   const ctx = c.getContext("2d", { willReadFrequently: true });
   ctx.drawImage(bmp, 0, 0);
   const { data, width: w, height: h } = ctx.getImageData(0, 0, c.width, c.height);
-  return T.detectTreesFromImageData(data, w, h, b);
+  return T.detectTreesFromImageData(data, w, h, b, { maxTrees, minDist: maxTrees >= 400 ? 9 : 14 });
 }
 
 function downloadBlob(blob, name) {
@@ -132,24 +135,36 @@ document.getElementById("export").onclick = async () => {
   exportBtn.disabled = true;
   setStatus("Building map + clutter…");
   try {
+    const T = globalThis.OpenClutterTrees;
+    const budget = T.maxTreesForBbox(bbox);
     let trees = [];
     let treesSource = "none";
+    let woodsHits = 0;
+    let nlcdCount = 0;
     try {
       const canopy = await detectCanopyTrees(bbox);
       if (canopy) {
-        trees = canopy.trees;
+        trees = canopy.trees || [];
+        nlcdCount = trees.length;
         treesSource = "nlcd-canopy";
+        const hits = (canopy.parsed && canopy.parsed.hits) || [];
+        woodsHits = hits.filter((h) => (h.pct || 0) >= 40).length;
       }
     } catch (e) {
       treesSource = "none";
     }
-    if (treesSource !== "nlcd-canopy") {
+    // Oak Creek: NLCD can be valid with 0 hits on parking lots / winter street
+    // trees. Always RGB-fill when NLCD placed nothing; also supplement sparse TCC.
+    const needRgb = trees.length === 0 || (treesSource === "nlcd-canopy" && trees.length < budget * 0.4 && woodsHits < 16);
+    if (needRgb) {
       try {
-        trees = await detectRgbTrees(bbox);
-        treesSource = trees.length ? "imagery-rgb" : "none";
+        const rgb = await detectRgbTrees(bbox);
+        if (rgb && rgb.length) {
+          trees = T.mergeTreePoints(trees, rgb, bbox, { maxTrees: budget });
+          if (nlcdCount === 0) treesSource = "imagery-rgb";
+        }
       } catch (e) {
-        trees = [];
-        treesSource = "none";
+        /* keep NLCD points if any */
       }
     }
     let data;
@@ -159,7 +174,11 @@ document.getElementById("export").onclick = async () => {
       data = await exportOnce(trees, treesSource);
     }
     downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
-    setStatus("Import this zip in Hamina (Projects → Import → OpenIntent).");
+    const summary = (data.stats && data.stats.summary) || "";
+    setStatus(
+      "Import this zip in Hamina (Projects → Import → OpenIntent)." +
+        (summary ? "\n" + summary : "")
+    );
   } catch (err) {
     setStatus(err.message + " — try a smaller box.", true);
   } finally {
