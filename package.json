@@ -1,5 +1,5 @@
 {
-  "name": "openintent-clutter",
+  "name": "openclutter",
   "private": true,
   "scripts": {
     "test": "node --test test/*.test.js"
