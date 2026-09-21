@@ -1,8 +1,8 @@
-# OpenIntent Clutter
+# OpenClutter
 
-Turn a map box into clutter that lines up with the map in [Hamina Planner](https://hamina.com): a georeferenced [OpenIntent](https://github.com/google/openintent) zip **and** a pasteable HaminaClipboard JSON, both in the **same geographic frame**.
+**OpenClutter** turns a map box into clutter that lines up with the map in [Hamina Planner](https://hamina.com): a georeferenced [OpenIntent](https://github.com/google/openintent) zip **and** a pasteable HaminaClipboard JSON, both in the **same geographic frame**.
 
-Live: https://openintent-clutter.netlify.app · Source: https://github.com/jolla/openintent-clutter
+Live: https://openclutter.netlify.app · Source: https://github.com/jolla/OpenClutter
 
 ## Exact alignment (every site)
 
