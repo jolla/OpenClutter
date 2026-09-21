@@ -1,19 +1,21 @@
 # OpenIntent Clutter
 
-Public tool: type an address, draw the site, download an [OpenIntent](https://github.com/google/openintent) `.zip` with building clutter for [Hamina Planner](https://hamina.com).
+Turn a map box into an [OpenIntent](https://github.com/google/openintent) zip for [Hamina Planner](https://hamina.com): a georeferenced aerial plus buildings and trees as attenuating objects, so you do not have to trace clutter by hand.
 
-https://github.com/jolla/openintent-clutter
+Live: https://openintent-clutter.netlify.app · Source: https://github.com/jolla/openintent-clutter
 
 ## Use
 
-1. Open the deployed site (Netlify).
+1. Open the deployed site.
 2. Search an address.
-3. Draw a rectangle over the site (keep it under ~2 km).
+3. Draw a rectangle over the site (keep it under ~2 km on a side).
 4. Download the zip → Hamina **Projects → Import → OpenIntent**.
 
-Scale comes from the bounding box, not Hamina auto-scale. Buildings are [Microsoft US Building Footprints](https://github.com/microsoft/USBuildingFootprints) via Esri. The map image is Esri World Imagery.
+Scale comes from the bounding box. Buildings are [Microsoft US Building Footprints](https://github.com/microsoft/USBuildingFootprints) via Esri. The map image is Esri World Imagery. Trees are sampled from green pixels on that aerial.
 
-v1 is **US buildings + map + correct meters**. Trees / heights are next.
+## Limits
+
+US footprints only. Boxes over ~2.5 km fail. Large campus polygons are dropped. Tree and height accuracy is heuristic, not survey-grade.
 
 ## Local
 
