@@ -87,4 +87,22 @@ function zipStore(files) {
   return Buffer.concat([...locals, central, end]);
 }
 
-module.exports = { zipStore };
+/** Read uncompressed (store-method) zips written by zipStore. */
+function unzipStore(buf) {
+  const files = {};
+  let i = 0;
+  while (i + 30 <= buf.length) {
+    const sig = buf.readUInt32LE(i);
+    if (sig !== 0x04034b50) break;
+    const size = buf.readUInt32LE(i + 18);
+    const nameLen = buf.readUInt16LE(i + 26);
+    const extraLen = buf.readUInt16LE(i + 28);
+    const name = buf.slice(i + 30, i + 30 + nameLen).toString("utf8");
+    const start = i + 30 + nameLen + extraLen;
+    files[name] = buf.slice(start, start + size);
+    i = start + size;
+  }
+  return files;
+}
+
+module.exports = { zipStore, unzipStore };

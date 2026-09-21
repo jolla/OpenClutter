@@ -4,6 +4,7 @@ const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const { handler } = require("../netlify/functions/clutter");
 const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
+const { unzipStore } = require("../netlify/lib/zip-store");
 
 const WYNN = {
   west: -115.1735,
@@ -77,7 +78,7 @@ describe("clutter handler (mocked Esri)", () => {
     global.fetch = orig;
   });
 
-  it("bundle emits zip + clipboard on one frame and does not call Overpass by default", async () => {
+  it("bundle emits one zip that already contains clipboard JSON", async () => {
     urls.length = 0;
     const res = await handler({
       httpMethod: "POST",
@@ -87,10 +88,21 @@ describe("clutter handler (mocked Esri)", () => {
     const body = JSON.parse(res.body);
     assert.equal(body.ok, true);
     assert.ok(body.zipBase64);
-    assert.equal(body.clipboard.header.type, "HaminaClipboard");
-    assert.ok(body.clipboard.attenuatingZones.length >= 1);
+    assert.equal(body.clipboard, undefined);
+    assert.equal(body.clipboardFilename, undefined);
+    assert.match(body.zipFilename, /\.zip$/);
+    const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+    assert.ok(files["openIntent_Wynn-Golf.json"]);
+    assert.ok(files["images/Wynn-Golf.jpg"]);
+    assert.ok(files["export-warnings.json"]);
+    assert.ok(files["hamina-clipboard.json"]);
+    assert.ok(files["README.txt"]);
+    const clip = JSON.parse(files["hamina-clipboard.json"].toString());
+    assert.equal(clip.header.type, "HaminaClipboard");
+    assert.ok(clip.attenuatingZones.length >= 1);
     assert.deepEqual(body.frame.clipboardCorners.ne, [0, 0]);
     assert.match(body.alignment, /Import the OpenIntent zip/);
+    assert.match(files["README.txt"].toString(), /Import this zip in Hamina/);
     assert.ok(!urls.some((u) => u.includes("overpass")));
     assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("bboxSR=4326") && u.includes("imageSR=4326")));
     assert.ok(urls.some((u) => u.includes("MSBFP2")));
@@ -112,6 +124,19 @@ describe("clutter handler (mocked Esri)", () => {
     assert.ok(urls.some((u) => u.includes("USFS_EDW_NLCD_TCC")));
     assert.equal(res.headers["x-hamina-alignment"], "import-zip-then-paste");
     assert.ok(Number(res.headers["x-hamina-width-m"]) > 2000);
+  });
+
+  it("format=zip bytes already contain hamina-clipboard.json", async () => {
+    const res = await handler({
+      httpMethod: "POST",
+      body: JSON.stringify({ ...WYNN, trees: [{ lon: -115.17, lat: 36.122 }], format: "zip" }),
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.headers["content-type"], "application/zip");
+    const files = unzipStore(Buffer.from(res.body, "base64"));
+    const clip = JSON.parse(files["hamina-clipboard.json"].toString());
+    assert.equal(clip.header.type, "HaminaClipboard");
+    assert.ok(files["openIntent_Wynn-Golf.json"]);
   });
 
   it("echoes client treesSource and does not re-fetch canopy when trees are provided", async () => {
