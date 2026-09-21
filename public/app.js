@@ -198,7 +198,7 @@ document.getElementById("export").onclick = async () => {
       setStatus("Retrying… " + e.message);
       data = await exportOnce(trees, controlPoints);
     }
-    downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openintent-clutter.zip");
+    downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
     await new Promise((r) => setTimeout(r, 400));
     downloadBlob(
       new Blob([JSON.stringify(data.clipboard)], { type: "application/json" }),
