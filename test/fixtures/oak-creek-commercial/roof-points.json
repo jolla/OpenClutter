@@ -1,0 +1,8 @@
+{
+  "note": "Image-space probes on roofs missing from the 2022 MSBFP2 layer. July 2026 global ML footprints cover them; eval fails if emit drops these points.",
+  "points": [
+    { "id": "east-white-roof", "lon": -87.91575, "lat": 42.89857 },
+    { "id": "east-white-roof-north", "lon": -87.91575, "lat": 42.90077 },
+    { "id": "north-white-roof", "lon": -87.91839, "lat": 42.9021 }
+  ]
+}

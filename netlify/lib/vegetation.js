@@ -27,6 +27,14 @@ function pointInAabb(x, y, boxes, pad) {
   return false;
 }
 
+/** True when a lon/lat sits on a kept building (plus a ~2 px halo). */
+function treeHitsBuilding(lon, lat, frame, buildingAabbs) {
+  if (!buildingAabbs || !buildingAabbs.length || !frame) return false;
+  const [x, y] = llToPx(lon, lat, frame);
+  const pad = 2 / Math.max(frame.mpuX, 0.01);
+  return pointInAabb(x, y, buildingAabbs, pad);
+}
+
 function normalizeTreePoints(raw) {
   if (!Array.isArray(raw)) return [];
   const out = [];
@@ -128,6 +136,7 @@ module.exports = {
   maxTreesForBbox,
   blobRingPx,
   pointInAabb,
+  treeHitsBuilding,
   normalizeTreePoints,
   treePairsFromPoints,
 };

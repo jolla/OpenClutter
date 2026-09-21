@@ -111,7 +111,7 @@ function b64ToBlob(b64, type) {
   return new Blob([bytes], { type });
 }
 
-async function exportOnce(trees, treesSource) {
+async function exportOnce(trees, treesSource, canopyHits) {
   const r = await fetch("/api/clutter", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -120,6 +120,7 @@ async function exportOnce(trees, treesSource) {
       name: document.getElementById("q").value || "Site",
       trees,
       treesSource,
+      canopyHits: canopyHits && canopyHits.length ? canopyHits : undefined,
       format: "bundle",
     }),
   });
@@ -152,11 +153,15 @@ document.getElementById("export").onclick = async () => {
     const resolved = T.resolveTrees(bbox, canopy, rgb, { maxTrees: budget });
     const trees = resolved.trees;
     const treesSource = resolved.source;
+    const canopyHits =
+      treesSource === "nlcd-canopy" && canopy && canopy.parsed && canopy.parsed.hits
+        ? canopy.parsed.hits
+        : null;
     let data;
     try {
-      data = await exportOnce(trees, treesSource);
+      data = await exportOnce(trees, treesSource, canopyHits);
     } catch (e) {
-      data = await exportOnce(trees, treesSource);
+      data = await exportOnce(trees, treesSource, canopyHits);
     }
     downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
     const summary = (data.stats && data.stats.summary) || "";

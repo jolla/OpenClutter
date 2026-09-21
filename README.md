@@ -11,7 +11,7 @@ Hamina **2026-09-01** (docs.hamina.com release notes): “OpenIntent import and 
 This tool does not mix sources. One bbox drives everything:
 
 1. Esri World Imagery for that bbox (`bboxSR=4326`, `imageSR=4326`). **The frame is the JPEG’s actual `extent`**, which is often taller than the drawn box.
-2. Microsoft US Building Footprints (Esri MSBFP2) mapped through that actual extent.
+2. Microsoft building footprints mapped through that actual extent: Global ML Building Footprints where the quadkey file is available, with Esri MSBFP2 merged in for anything the global file does not already cover.
 3. USFS/NLCD percent tree canopy as a density field (jitter + NMS; imagery RGB only if the canopy raster is missing/empty — **not** when NLCD is valid zeros on parking/lawn).
 4. lon/lat → JPEG pixels with the actual west/south/east/north (OpenIntent Y-up / JPEG Y-down).
 5. OpenIntent `floorplans[].attenuation_areas[]` + `area_materials` use that same snapped frame (stock Hamina type names, heights, dB/m).
@@ -84,7 +84,7 @@ Calibration (API only): `"controlPoints": [{ "lon", "lat", "xM", "yM" }, …]` (
 
 ## Limits
 
-US footprints only (MSBFP2 is paginated up to 2000, queried against the snapped JPEG extent). Boxes over ~2.5 km fail. Microsoft campus-merge blobs &gt; 150,000 m² are dropped; big-box / warehouse roofs on a tight commercial map are kept. Tree and height accuracy is heuristic, not survey-grade. Function time is bounded by Netlify’s hobby limit.
+US footprints only. Global ML Building Footprints (zoom-9 quadkey, clipped to the JPEG extent) fill roofs that the 2022 MSBFP2 layer never stored; MSBFP2 is still queried and merged, paginated up to 2000. Boxes over ~2.5 km fail. Campus-merge blobs &gt; 150,000 m² are dropped; big-box / warehouse roofs on a tight commercial map are kept. NLCD canopy is placed around those footprints so trees are not spent on rooftops. Valid NLCD zeros stay empty — imagery RGB does not carpet parking. Tree and height accuracy is heuristic, not survey-grade. Function time is bounded by Netlify’s hobby limit.
 
 ## Development
 
