@@ -98,6 +98,15 @@ function coverageStats(stats) {
     imageryRoofs: s.imageryRoofs || 0,
     medianTrees: s.medianTrees || 0,
     measuredBuildings: s.measuredBuildings || 0,
+    overtureFootprints: s.overtureFootprints || 0,
+    overtureAdded: s.overtureAdded || 0,
+    msHeights: s.msHeights || 0,
+    overtureHeights: s.overtureHeights || 0,
+    femaHeights: s.femaHeights || 0,
+    floorHeights: s.floorHeights || 0,
+    chmTrees: s.chmTrees || 0,
+    terrainRaised: s.terrainRaised || 0,
+    terrainSloped: s.terrainSloped || 0,
     areaMaterials: s.areaMaterials != null ? s.areaMaterials : STOCK_MATERIAL_NAMES.length,
     openintentVersion: s.openintentVersion || OPENINTENT_VERSION,
     coordinateUnit: s.coordinateUnit || "pixels",
@@ -122,12 +131,27 @@ function coverageSummary(stats) {
   );
 }
 
+const TERRAIN_README =
+  "\nOptional Planner Plus terrain (not part of the OpenIntent import):\n" +
+  "USGS 3DEP bare-earth elevations are simplified to a few pads and facets in\n" +
+  "terrain-clipboard.json. OpenIntent does not support raised or sloped floors.\n" +
+  "1. Unzip terrain-clipboard.json. Do not import that file as OpenIntent.\n" +
+  "2. In Hamina Planner Plus, open the map and paste the file contents.\n" +
+  "3. raisedFloorZones are flat pads (xy meters, NE origin, same frame as hamina-clipboard.json).\n" +
+  "   height is meters above the lowest DEM sample. slabOnly is true. attenuationDbPerMeter is 0\n" +
+  "   so the ground slab is not a second clutter wall.\n" +
+  "4. slopedFloors are triangles with xyz vertices (z = meters above that same low point).\n" +
+  "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
+  "The OpenIntent zip import is unchanged either way.\n";
+
 function zipReadme(stats) {
   const c = coverageStats(stats);
   return (
     ZIP_README +
     "\nCoverage — compare buildingsKept / treesKept / attenuationAreasEmitted to Hamina’s sidebar.\n" +
     coverageSummary(stats) +
+    "\n" +
+    TERRAIN_README +
     "\n" +
     `buildingsKept: ${c.buildingsKept}\n` +
     `treesKept: ${c.treesKept}\n` +
@@ -719,6 +743,7 @@ function borrowNearbyHeights(features, frame) {
     if (!best) continue;
     if (!f.properties) f.properties = {};
     f.properties.height = best;
+    if (!f.properties.heightSource) f.properties.heightSource = "nearby";
     n++;
   }
   return n;
@@ -849,6 +874,7 @@ function buildClutter({
   imgBuf,
   treesSource,
   footprintMeta,
+  terrain,
 }) {
   const { name, slug } = siteName(rawName);
   const imgName = `${slug}.jpg`;
@@ -912,13 +938,22 @@ function buildClutter({
     usaFootprints: footprintMeta && footprintMeta.usaFootprints ? footprintMeta.usaFootprints : 0,
     imageryRoofs: footprintMeta && footprintMeta.imageryRoofs ? footprintMeta.imageryRoofs : 0,
     medianTrees: footprintMeta && footprintMeta.medianTrees ? footprintMeta.medianTrees : 0,
+    overtureFootprints: footprintMeta && footprintMeta.overtureFootprints ? footprintMeta.overtureFootprints : 0,
+    overtureAdded: footprintMeta && footprintMeta.overtureAdded ? footprintMeta.overtureAdded : 0,
+    msHeights: footprintMeta && footprintMeta.msHeights ? footprintMeta.msHeights : 0,
+    overtureHeights: footprintMeta && footprintMeta.overtureHeights ? footprintMeta.overtureHeights : 0,
+    femaHeights: footprintMeta && footprintMeta.femaHeights ? footprintMeta.femaHeights : 0,
+    floorHeights: footprintMeta && footprintMeta.floorHeights ? footprintMeta.floorHeights : 0,
+    chmTrees: footprintMeta && footprintMeta.chmTrees ? footprintMeta.chmTrees : 0,
+    terrainRaised: terrain && terrain.raised ? terrain.raised : 0,
+    terrainSloped: terrain && terrain.sloped ? terrain.sloped : 0,
     areaMaterials: materials.length,
   };
   stats.summary = coverageSummary(stats);
   Object.assign(stats, coverageStats(stats));
   let zip = null;
   if (imgBuf) {
-    zip = zipStore([
+    const zipFiles = [
       { name: `openIntent_${slug}.json`, data: Buffer.from(JSON.stringify(oi)) },
       { name: "images/" + imgName, data: imgBuf },
       { name: "export-warnings.json", data: Buffer.from('{"errors":[],"warnings":[]}') },
@@ -928,7 +963,14 @@ function buildClutter({
       { name: "README.txt", data: zipReadme(stats) },
       { name: "alignment-overlay.svg", data: Buffer.from(overlay) },
       { name: "frame-lock.json", data: Buffer.from(JSON.stringify(lock, null, 2)) },
-    ]);
+    ];
+    if (terrain && terrain.clipboard && (terrain.raised || terrain.sloped)) {
+      zipFiles.push({
+        name: "terrain-clipboard.json",
+        data: Buffer.from(JSON.stringify(terrain.clipboard)),
+      });
+    }
+    zip = zipStore(zipFiles);
   }
   return {
     name,
@@ -936,6 +978,7 @@ function buildClutter({
     imgName,
     openintent: oi,
     clipboard: clip,
+    terrain: terrain || null,
     zip,
     stats,
     frame: publicFrame(frame),

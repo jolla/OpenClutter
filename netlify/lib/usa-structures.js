@@ -31,9 +31,14 @@ function esriFeaturesToGeojson(features) {
     const rings = list[i] && list[i].geometry && list[i].geometry.rings;
     if (!rings || !rings[0] || rings[0].length < 4) continue;
     const height = usableHeight(list[i].attributes);
+    const properties = { geomSource: "usa" };
+    if (height) {
+      properties.height = height;
+      properties.heightSource = "fema";
+    }
     out.push({
       type: "Feature",
-      properties: height ? { height } : {},
+      properties,
       geometry: { type: "Polygon", coordinates: [rings[0]] },
     });
   }

@@ -11,8 +11,8 @@ Hamina **2026-09-01** (docs.hamina.com release notes): “OpenIntent import and 
 One bbox drives everything:
 
 1. Esri World Imagery for that bbox (`bboxSR=4326`, `imageSR=4326`). **The frame is the JPEG’s actual `extent`**, which is often taller than the drawn box.
-2. Building footprints mapped through that actual extent: Microsoft Global ML where the quadkey file is available, Esri MSBFP2 for anything that file does not already cover, then FEMA USA Structures for roofs still missing.
-3. USFS/NLCD percent tree canopy as a density field (jitter + NMS; imagery RGB only if the canopy raster is missing/empty — **not** when NLCD is valid zeros on parking/lawn).
+2. Building footprints mapped through that actual extent: Microsoft Global ML (height used when the tile has one), Overture Buildings (`height` or `num_floors`), Esri MSBFP2, then FEMA USA Structures. One ring per roof; the best measured height wins.
+3. USFS/NLCD percent tree canopy as a density field (jitter + NMS; imagery RGB only if the canopy raster is missing/empty — **not** when NLCD is valid zeros on parking/lawn). A Meta/WRI canopy-height window sets foliage `top_height` when it returns; NLCD still decides where trees go.
 4. lon/lat → JPEG pixels with the actual west/south/east/north (OpenIntent Y-up / JPEG Y-down).
 5. OpenIntent `floorplans[].attenuation_areas[]` + `area_materials` use that same snapped frame (stock Hamina type names, heights, dB/m).
 
@@ -52,8 +52,9 @@ Trees come from **USFS/NLCD percent tree canopy** on the same extent (threshold 
    - `alignment-overlay.svg` — buildings (red) + trees (green) on that JPEG
    - `frame-lock.json` — pixel/meter corners for Hamina vs OpenIntent vs JPEG
    - `export-warnings.json`
-   - `hamina-clipboard.json` — silent fallback for Hamina builds before OpenIntent attenuating-object import
-   - `README.txt` — import-only instructions, coverage stats, and troubleshooting if Hamina shows the map but no objects
+   - `hamina-clipboard.json` — silent fallback for Hamina builds before OpenIntent attenuating-object import (raised and sloped floors stay empty here)
+   - `terrain-clipboard.json` — optional USGS 3DEP pads and sloped facets for Planner Plus paste, same NE-origin meter frame. Absent when the DEM request fails. Do not import this file as OpenIntent.
+   - `README.txt` — import-only instructions, coverage stats, terrain paste steps, and troubleshooting if Hamina shows the map but no objects
    - `export-stats.json` — same coverage numbers as machine-readable JSON, including `attenuationAreasEmitted`
    - `VERIFY.txt` — exact `attenuation_areas` length (same as `openIntent_*.json`)
 4. Hamina: **Projects → Import → OpenIntent**.
@@ -84,7 +85,9 @@ Calibration (API only): `"controlPoints": [{ "lon", "lat", "xM", "yM" }, …]` (
 
 ## Limits
 
-US footprints only. Global ML Building Footprints (zoom-9 quadkey, clipped to the JPEG extent) fill roofs that the 2022 MSBFP2 layer never stored; MSBFP2 is still queried and merged, paginated up to 2000. FEMA USA Structures is merged the same way when its centroid is not already covered, and its `HEIGHT` is copied onto the footprint that already covers that centroid. A large smooth bright roof that none of those layers contain is filled from the Esri JPEG (connected membrane pixels, ≥2500 m², skipped when a vector already covers it). Boxes over ~2.5 km fail. Campus-merge blobs &gt; 150,000 m² are dropped; big-box / warehouse roofs on a tight commercial map are kept. NLCD canopy is placed around those footprints so trees are not spent on rooftops. Valid NLCD zeros stay empty — imagery RGB does not carpet parking — but a textured canopy island with a pavement ring is kept as a median. Measured building heights and NLCD-informed canopy heights are their own OpenIntent materials (`top_height`, no `bottom_height`). Function time is bounded by Netlify’s hobby limit.
+Global ML (zoom-9 quadkey, clipped to the JPEG) is the base polygon. Overture Buildings release `2026-08-19.0` is read from one or two Azure GeoParquet row groups (committed bbox index, not a full scan). Esri MSBFP2 (paginated to 2000) and FEMA USA Structures fill centroids still uncovered. A candidate is the same roof when its centroid sits inside a kept ring or within 11 m of that ring’s centroid. Geometry is replaced only for a single exterior that is more detailed at a similar area, or when the kept ring is a stub inside a fuller outline. Height rank: Overture explicit height, then Microsoft Global ML `height` (values ≤ 2 m and −1 ignored), then FEMA `HEIGHT`, then Overture `num_floors` × 3 m, then the nearest measured neighbor within 120 m, then stock One Floor / Five Floor / Hotel bins. Ties keep the height already on the ring. A stub whose area is outside 0.4–2.5× does not overwrite a larger footprint’s height. Each distinct height is `Building X.Y m` (`top_height`, 5 dB/m, `ITU_R_UNKNOWN`, no `bottom_height`). OSM building ways are not read.
+
+A large smooth bright roof that none of those layers contain is filled from the Esri JPEG (connected membrane pixels, ≥2500 m², skipped when a vector already covers it). Boxes over ~2.5 km fail. Campus-merge blobs &gt; 150,000 m² are dropped. NLCD still places trees and still refuses roofs and pavement; a textured canopy island with a pavement ring is kept as a median. Meta/WRI CHM v2 (zoom-10 COG, pixel window, max side 180) overrides foliage `top_height` where the canopy is above 2 m. USGS 3DEP `getSamples` (36 points, no API key) becomes `terrain-clipboard.json` only: flat pads when a cell’s corner relief is under 0.5 m, otherwise two sloped triangles. OpenIntent and `hamina-clipboard.json` stay free of raised and sloped floors. Overture, CHM, and DEM failures are ignored so the OpenIntent zip still exports. FEMA, NLCD, and 3DEP are United States sources.
 
 ## Development
 
@@ -94,9 +97,9 @@ npm run eval          # image-space quality gate on cached fixtures
 npx netlify dev
 ```
 
-`npm run eval` scores building/tree placement against cached aerial fixtures (no Hamina login). It fails if rooftops are missed, large footprints are dropped, trees land on pavement or roofs, measured heights collapse back to stock bins, or the imagery mask cannot restore the Oak Creek white retail roof after that polygon is removed. Optional: `npm run eval -- --live` to refresh against live Esri/NLCD.
+`npm run eval` scores building/tree placement against cached aerial fixtures (no Hamina login). It fails if rooftops are missed, large footprints are dropped, trees land on pavement or roofs, measured heights collapse back to stock bins, Overture does not add or upgrade a footprint, CHM does not set foliage heights, the terrain clipboard is empty on a sloped DEM, or the imagery mask cannot restore the Oak Creek white retail roof after that polygon is removed. Optional: `npm run eval -- --live` to refresh against live Esri/NLCD.
 
 
 ## License
 
-MIT. Imagery © Esri. Building footprints © Microsoft (ODbL) and FEMA USA Structures (ORNL / NGA).
+MIT. Imagery © Esri. Building footprints © Microsoft (ODbL), Overture Maps Foundation, and FEMA USA Structures (ORNL / NGA). Canopy height © Meta / World Resources Institute. Elevation © USGS 3DEP.
