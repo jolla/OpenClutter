@@ -1,3 +1,8 @@
+/**
+ * Server-side JPEG vegetation (jpeg-js). Kept for offline/experiments.
+ * Do NOT require this from clutter.js — decode 504s on Netlify hobby.
+ * Default trees: browser detectTrees() → lon/lat → shared geo frame.
+ */
 function tryDecode(buf) {
   try {
     const jpeg = require("jpeg-js");
