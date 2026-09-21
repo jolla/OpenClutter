@@ -120,7 +120,15 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(fromZip.header.type, "HaminaClipboard");
     assert.deepEqual(fromZip.attenuatingZones, built.clipboard.attenuatingZones);
     assert.match(zipped["README.txt"].toString(), /hamina-clipboard\.json/);
-    assert.equal(Object.keys(zipped).length, 5);
+    assert.ok(zipped["alignment-overlay.svg"]);
+    assert.ok(zipped["frame-lock.json"]);
+    const svg = zipped["alignment-overlay.svg"].toString();
+    assert.match(svg, /images\/Wynn-Golf\.jpg/);
+    assert.match(svg, /polygon /);
+    const lock = JSON.parse(zipped["frame-lock.json"].toString());
+    assert.equal(lock.clipboard.convention.includes("NE"), true);
+    assert.equal(lock.openintent.yRelation, "y_up + y_img = imgH");
+    assert.equal(Object.keys(zipped).length, 7);
   });
 
   it("drops campus mega-polygons and tiny sheds", () => {

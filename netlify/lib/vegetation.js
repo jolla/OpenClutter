@@ -68,16 +68,11 @@ function toClipRing(ringPx, frame, affine, lonLatHint) {
 function treePairsFromPoints(treePoints, frame, buildingAabbs, affine) {
   const pts = normalizeTreePoints(treePoints);
   const pad = 2 / Math.max(frame.mpuX, 0.01);
-  const cell = Math.max(12, Math.round(14 / frame.mpuX));
-  const seen = new Set();
   const candidates = [];
   for (const p of pts) {
     const [x, y] = llToPx(p.lon, p.lat, frame);
     if (x < 0 || y < 0 || x > frame.imgW || y > frame.imgH) continue;
     if (buildingAabbs && pointInAabb(x, y, buildingAabbs, pad)) continue;
-    const k = Math.floor(x / cell) + ":" + Math.floor(y / cell);
-    if (seen.has(k)) continue;
-    seen.add(k);
     candidates.push({
       lon: p.lon,
       lat: p.lat,
@@ -87,6 +82,8 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine) {
       seed: x * 0.13 + y * 0.07,
     });
   }
+  // Points are already jittered + NMS'd by the canopy placer. Do not snap
+  // them back onto a pixel lattice (that re-creates the orchard grid).
   const picked = pickStratified(
     candidates,
     MAX_TREES,

@@ -15,7 +15,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  const MAX_TREES = 250;
+  const MAX_TREES = 180;
   /** Keep pixels at or above this NLCD/USFS percent canopy. */
   const MIN_CANOPY_PCT = 30;
   /**
@@ -125,6 +125,166 @@
     return Array.from(best.values());
   }
 
+  function metersPerDeg(lat) {
+    const rad = (lat * Math.PI) / 180;
+    return { lon: 111320 * Math.cos(rad), lat: 110540 };
+  }
+
+  function hash01(lon, lat, salt) {
+    const s = Math.sin(lon * 127.1 + lat * 311.7 + (salt || 0) * 74.7) * 43758.5453;
+    return s - Math.floor(s);
+  }
+
+  function uniqueSorted(nums, digits) {
+    const seen = [];
+    const k = Math.pow(10, digits == null ? 8 : digits);
+    const set = new Set();
+    for (let i = 0; i < nums.length; i++) {
+      const v = Math.round(nums[i] * k) / k;
+      if (!set.has(v)) {
+        set.add(v);
+        seen.push(v);
+      }
+    }
+    seen.sort(function (a, b) {
+      return a - b;
+    });
+    return seen;
+  }
+
+  function medianGap(sorted) {
+    if (!sorted || sorted.length < 2) return null;
+    const gaps = [];
+    for (let i = 1; i < sorted.length; i++) {
+      const d = sorted[i] - sorted[i - 1];
+      if (d > 0) gaps.push(d);
+    }
+    if (!gaps.length) return null;
+    gaps.sort(function (a, b) {
+      return a - b;
+    });
+    return gaps[(gaps.length / 2) | 0];
+  }
+
+  function inferCellDeg(hits, bbox) {
+    const xs = uniqueSorted(
+      hits.map(function (h) {
+        return h.lon;
+      })
+    );
+    const ys = uniqueSorted(
+      hits.map(function (h) {
+        return h.lat;
+      })
+    );
+    const dx = medianGap(xs);
+    const dy = medianGap(ys);
+    const dLon = Math.abs(+bbox.east - +bbox.west) || 0.001;
+    const dLat = Math.abs(+bbox.north - +bbox.south) || 0.001;
+    return {
+      lon: dx && dx > 1e-8 ? dx : dLon / Math.max(8, xs.length),
+      lat: dy && dy > 1e-8 ? dy : dLat / Math.max(8, ys.length),
+    };
+  }
+
+  function isLocalMax(grid, key, pct) {
+    const cell = grid.get(key);
+    if (!cell) return false;
+    const ix = cell.ix;
+    const iy = cell.iy;
+    let maxN = pct;
+    let n = 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dy) continue;
+        const o = grid.get(ix + dx + ":" + (iy + dy));
+        if (!o) continue;
+        n++;
+        if (o.pct > maxN) maxN = o.pct;
+      }
+    }
+    return n >= 2 && pct >= maxN && pct >= MIN_CANOPY_PCT;
+  }
+
+  /**
+   * NLCD getSamples (and RGB step lattices) are regular grids. Do not plant a
+   * tree on every cell center — that is the Long Meadow orchard.
+   *
+   * Treat canopy % as a density field: local-maxima get a tree, woods get a
+   * few jittered points with non-max suppression, lawns (low %) get few/none.
+   */
+  function placeTreesFromCanopy(hits, bbox, opts) {
+    opts = opts || {};
+    const minPct = opts.minPct == null ? MIN_CANOPY_PCT : opts.minPct;
+    const maxTrees = opts.maxTrees == null ? MAX_TREES : opts.maxTrees;
+    if (!hits || !hits.length || maxTrees <= 0) return [];
+    const mpd = metersPerDeg((+bbox.south + +bbox.north) / 2);
+    const cell = inferCellDeg(hits, bbox);
+    const originLon = +bbox.west;
+    const originLat = +bbox.south;
+    const grid = new Map();
+    for (let i = 0; i < hits.length; i++) {
+      const h = hits[i];
+      const pct = h.pct != null ? +h.pct : (h.score || 0) * 100;
+      if (!Number.isFinite(pct) || pct < minPct) continue;
+      const ix = Math.round((h.lon - originLon) / cell.lon);
+      const iy = Math.round((h.lat - originLat) / cell.lat);
+      const key = ix + ":" + iy;
+      const prev = grid.get(key);
+      if (!prev || pct > prev.pct) {
+        grid.set(key, { lon: h.lon, lat: h.lat, pct: pct, ix: ix, iy: iy });
+      }
+    }
+    const cellArea = cell.lon * mpd.lon * cell.lat * mpd.lat;
+    const candidates = [];
+    grid.forEach(function (c, key) {
+      const frac = Math.max(0, Math.min(1, (c.pct - minPct) / (100 - minPct)));
+      const peak = isLocalMax(grid, key, c.pct);
+      const spacing = 20 - 8 * frac;
+      let lambda = (c.pct / 100) * (cellArea / Math.max(80, spacing * spacing));
+      lambda = Math.min(2.2, lambda);
+      if (peak) lambda = Math.max(lambda, 0.9 + 0.4 * frac);
+      if (!peak && c.pct < 45) lambda *= 0.4;
+      const n0 = Math.floor(lambda);
+      const n = Math.min(3, n0 + (hash01(c.lon, c.lat, 1) < lambda - n0 ? 1 : 0));
+      for (let i = 0; i < n; i++) {
+        const jx = (hash01(c.lon, c.lat, 10 + i) - 0.5) * 0.92;
+        const jy = (hash01(c.lon, c.lat, 30 + i) - 0.5) * 0.92;
+        const lon = c.lon + jx * cell.lon;
+        const lat = c.lat + jy * cell.lat;
+        if (lon < bbox.west || lon > bbox.east || lat < bbox.south || lat > bbox.north) continue;
+        candidates.push({
+          lon: lon,
+          lat: lat,
+          pct: c.pct,
+          score: c.pct / 100 + (peak ? 0.12 : 0) - i * 0.04,
+        });
+      }
+    });
+    candidates.sort(function (a, b) {
+      return (b.score || 0) - (a.score || 0);
+    });
+    const kept = [];
+    for (let i = 0; i < candidates.length; i++) {
+      if (kept.length >= maxTrees) break;
+      const c = candidates[i];
+      const minD = 10 + 10 * (1 - Math.min(1, c.score || 0));
+      let ok = true;
+      for (let k = 0; k < kept.length; k++) {
+        const dx = (c.lon - kept[k].lon) * mpd.lon;
+        const dy = (c.lat - kept[k].lat) * mpd.lat;
+        if (dx * dx + dy * dy < minD * minD) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) kept.push(c);
+    }
+    return kept.map(function (t) {
+      return { lon: t.lon, lat: t.lat, pct: t.pct };
+    });
+  }
+
   /**
    * Whole-frame pick: highest score per spatial bin, round-robin so the south
    * woods are not starved after the north lawn fills a scan-order cap.
@@ -184,25 +344,7 @@
   }
 
   function pickCanopyTrees(hits, bbox, opts) {
-    opts = opts || {};
-    const maxTrees = opts.maxTrees == null ? MAX_TREES : opts.maxTrees;
-    const cell = opts.cell == null ? 0.00012 : opts.cell;
-    const deduped = dedupeByCell(hits, function (t) {
-      return [t.lon, t.lat];
-    }, cell);
-    return pickStratified(
-      deduped,
-      maxTrees,
-      function (t) {
-        return [t.lon, t.lat];
-      },
-      +bbox.west,
-      +bbox.south,
-      +bbox.east,
-      +bbox.north
-    ).map(function (t) {
-      return { lon: t.lon, lat: t.lat, pct: t.pct };
-    });
+    return placeTreesFromCanopy(hits, bbox, opts);
   }
 
   async function fetchCanopyTrees(bbox, fetchFn, opts) {
@@ -380,17 +522,40 @@
     return hits;
   }
 
+  function scatterNmsPixels(hits, maxCount, minDist) {
+    maxCount = maxCount == null ? MAX_TREES : maxCount;
+    minDist = minDist == null ? 14 : minDist;
+    const scored = (hits || []).slice().sort(function (a, b) {
+      return (b.score || 0) - (a.score || 0);
+    });
+    const out = [];
+    const minD2 = minDist * minDist;
+    for (let i = 0; i < scored.length; i++) {
+      if (out.length >= maxCount) break;
+      const h = scored[i];
+      const jx = (hash01(h.x, h.y, 3) - 0.5) * 7;
+      const jy = (hash01(h.x, h.y, 9) - 0.5) * 7;
+      const x = h.x + jx;
+      const y = h.y + jy;
+      let ok = true;
+      for (let k = 0; k < out.length; k++) {
+        const dx = x - out[k].x;
+        const dy = y - out[k].y;
+        if (dx * dx + dy * dy < minD2) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) out.push({ x: x, y: y, score: h.score });
+    }
+    return out;
+  }
+
   function detectTreesFromImageData(data, w, h, bbox, opts) {
     opts = opts || {};
     const maxTrees = opts.maxTrees == null ? MAX_TREES : opts.maxTrees;
     const hits = collectRgbCandidates(data, w, h, opts);
-    const cell = opts.cell || 16;
-    const deduped = dedupeByCell(hits, function (t) {
-      return [t.x, t.y];
-    }, cell);
-    const picked = pickStratified(deduped, maxTrees, function (t) {
-      return [t.x, t.y];
-    }, 0, 0, w, h);
+    const picked = scatterNmsPixels(hits, maxTrees, opts.minDist || 14);
     if (!bbox) return picked;
     const west = +bbox.west;
     const south = +bbox.south;
@@ -419,7 +584,9 @@
     normalizeTreesSource: normalizeTreesSource,
     dedupeByCell: dedupeByCell,
     pickStratified: pickStratified,
+    placeTreesFromCanopy: placeTreesFromCanopy,
     pickCanopyTrees: pickCanopyTrees,
+    scatterNmsPixels: scatterNmsPixels,
     fetchCanopyTrees: fetchCanopyTrees,
     vegColorScore: vegColorScore,
     isVeg: isVeg,

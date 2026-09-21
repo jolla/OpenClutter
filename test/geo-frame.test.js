@@ -6,6 +6,8 @@ const {
   geoFrame,
   llToPx,
   pxToLl,
+  llToImagePx,
+  imagePxToClipboard,
   pxToClipboard,
   clipboardToPx,
   llToClipboard,
@@ -14,6 +16,9 @@ const {
   fitAffine,
   applyAffine,
   esriImageryUrl,
+  esriImageryMetaUrl,
+  jpegSize,
+  applyImageryMeta,
   msFootprintsUrl,
 } = require("../netlify/lib/geo-frame");
 
@@ -134,5 +139,94 @@ describe("calibration affine (legacy maps only)", () => {
 
   it("throws with fewer than 3 points", () => {
     assert.throws(() => fitAffine([{ lon: 0, lat: 0, xM: 0, yM: 0 }]));
+  });
+});
+
+/** Actual Esri World Imagery export?f=json for the 8121 S Long Meadow fixture. */
+const LONG_MEADOW_DRAWN = {
+  west: -87.8885,
+  south: 42.8935,
+  east: -87.8815,
+  north: 42.9002,
+};
+const LONG_MEADOW_EXPORT = {
+  width: 571,
+  height: 741,
+  extent: {
+    xmin: -87.8885,
+    ymin: 42.89230796847636,
+    xmax: -87.8815,
+    ymax: 42.901392031523635,
+    spatialReference: { wkid: 4326, latestWkid: 4326 },
+  },
+};
+
+function tinyJpeg(width, height) {
+  const sof = Buffer.from([
+    0xff, 0xc0, 0x00, 0x11, 0x08,
+    (height >> 8) & 0xff, height & 0xff,
+    (width >> 8) & 0xff, width & 0xff,
+    0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
+  ]);
+  return Buffer.concat([Buffer.from([0xff, 0xd8]), sof, Buffer.from([0xff, 0xd9])]);
+}
+
+describe("Hamina image vs OpenIntent pixel conventions", () => {
+  it("Y-up + Y-down = imgH; clipboard from image px matches Y-up formula", () => {
+    const frame = geoFrame(WYNN);
+    const lon = (frame.west + frame.east) / 2;
+    const lat = (frame.south + frame.north) / 2;
+    const [xUp, yUp] = llToPx(lon, lat, frame);
+    const [xImg, yImg] = llToImagePx(lon, lat, frame);
+    assert.equal(xUp, xImg);
+    assert.ok(Math.abs(yUp + yImg - frame.imgH) < 1e-9);
+    const fromUp = pxToClipboard(xUp, yUp, frame);
+    const fromImg = imagePxToClipboard(xImg, yImg, frame);
+    assert.ok(Math.abs(fromUp[0] - fromImg[0]) < 1e-9);
+    assert.ok(Math.abs(fromUp[1] - fromImg[1]) < 1e-9);
+    assert.ok(Math.abs(fromImg[0] + frame.widthM / 2) < 1);
+    assert.ok(Math.abs(fromImg[1] + frame.lengthM / 2) < 1);
+  });
+
+  it("meta URL is the same export as the JPEG, f=json", () => {
+    const frame = geoFrame(WYNN);
+    const img = esriImageryUrl(frame);
+    const meta = esriImageryMetaUrl(frame);
+    assert.match(img, /f=image/);
+    assert.match(meta, /f=json/);
+    assert.equal(img.replace("f=image", "f=json"), meta);
+  });
+});
+
+describe("Esri export extent snap (Long Meadow rooftop lock)", () => {
+  it("does not treat the drawn south edge as y=0 on the JPEG when Esri pads latitude", () => {
+    const drawn = geoFrame(LONG_MEADOW_DRAWN);
+    const [ , yDrawnSouth] = llToPx(-87.885, LONG_MEADOW_DRAWN.south, drawn);
+    assert.ok(Math.abs(yDrawnSouth) < 1e-6, "drawn-bbox mapping puts user south at JPEG south");
+
+    const live = applyImageryMeta(drawn, LONG_MEADOW_EXPORT, { width: 571, height: 741 });
+    assert.equal(live.imgW, 571);
+    assert.equal(live.imgH, 741);
+    assert.ok(live.south < LONG_MEADOW_DRAWN.south);
+    assert.ok(live.north > LONG_MEADOW_DRAWN.north);
+    assert.ok(live.lengthM > drawn.lengthM + 200);
+
+    const [, yUp] = llToPx(-87.885, LONG_MEADOW_DRAWN.south, live);
+    const [, yImg] = llToImagePx(-87.885, LONG_MEADOW_DRAWN.south, live);
+    assert.ok(yUp > 80, `user south must sit inset on the padded JPEG, got y_up=${yUp}`);
+    assert.ok(yImg > 80 && yImg < live.imgH - 80);
+    assert.ok(Math.abs(yUp + yImg - live.imgH) < 1e-6);
+
+    const clipSouth = llToClipboard(-87.885, LONG_MEADOW_DRAWN.south, live);
+    const clipNorth = llToClipboard(-87.885, LONG_MEADOW_DRAWN.north, live);
+    assert.ok(clipSouth[1] < clipNorth[1]);
+    assert.ok(clipSouth[1] > -live.lengthM + 50);
+    assert.ok(clipNorth[1] < -50);
+  });
+
+  it("reads JPEG SOF size without jpeg-js", () => {
+    const buf = tinyJpeg(571, 741);
+    assert.deepEqual(jpegSize(buf), { width: 571, height: 741 });
+    assert.equal(jpegSize(Buffer.from([0xff, 0xd8, 0xff, 0xd9])), null);
   });
 });
