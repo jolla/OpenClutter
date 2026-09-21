@@ -101,7 +101,7 @@ const CLIPBOARD_ORIGIN =
   "HaminaClipboard origin after OpenIntent import: NE(east,north)=(0,0); SW=(-widthM,-lengthM). " +
   "JPEG pixels are Y-down from NW; OpenIntent pixels are Y-up from SW (y_up + y_img = imgH). " +
   "x_clip = x_img * mpuX - widthM; y_clip = -y_img * mpuY. " +
-  "Import the OpenIntent zip first (sets geographic size), then paste clipboard. " +
+  "Import this zip in Hamina (Projects → Import → OpenIntent); OpenIntent attenuation_areas are the objects. " +
   "Google Earth screenshots as maps are an anti-pattern (Hamina auto-scale ≠ photo meters).";
 
 function llToPx(lon, lat, frame) {

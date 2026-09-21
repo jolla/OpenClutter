@@ -119,8 +119,14 @@ describe("clutter handler (mocked Esri)", () => {
     assert.equal(clip.header.type, "HaminaClipboard");
     assert.ok(clip.attenuatingZones.length >= 1);
     assert.deepEqual(body.frame.clipboardCorners.ne, [0, 0]);
-    assert.match(body.alignment, /Import the OpenIntent zip/);
-    assert.match(files["README.txt"].toString(), /Import this zip in Hamina/);
+    assert.match(body.alignment, /Import this zip in Hamina/);
+    assert.match(files["README.txt"].toString(), /Import this zip in Hamina \(Projects → Import → OpenIntent\)/);
+    const oi = JSON.parse(files["openIntent_Wynn-Golf.json"].toString());
+    assert.ok(oi.floorplans[0].attenuation_areas.length >= 1);
+    assert.equal(
+      oi.floorplans[0].attenuation_areas.length,
+      body.stats.buildings + body.stats.trees * 2
+    );
     assert.ok(!urls.some((u) => u.includes("overpass")));
     assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("bboxSR=4326") && u.includes("imageSR=4326")));
     assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("f=json")));
@@ -141,7 +147,7 @@ describe("clutter handler (mocked Esri)", () => {
     assert.equal(clip.header.type, "HaminaClipboard");
     assert.ok(!urls.some((u) => u.includes("World_Imagery")));
     assert.ok(urls.some((u) => u.includes("USFS_EDW_NLCD_TCC")));
-    assert.equal(res.headers["x-hamina-alignment"], "import-zip-then-paste");
+    assert.equal(res.headers["x-hamina-alignment"], "import-openintent-zip");
     assert.ok(Number(res.headers["x-hamina-width-m"]) > 2000);
   });
 

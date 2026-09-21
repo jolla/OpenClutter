@@ -104,8 +104,8 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine) {
     const rTrunk = TRUNK_R_M / frame.mpuX;
     const ryCanopy = (CANOPY_R_M + (n % 4) * 0.4) / frame.mpuY;
     const ryTrunk = TRUNK_R_M / frame.mpuY;
-    const canopyPx = blobRingPx(p.x, p.y, rCanopy, ryCanopy, 10, 0.22, p.seed);
-    const trunkPx = blobRingPx(p.x, p.y, rTrunk, ryTrunk, 8, 0.08, p.seed + 1);
+    const canopyPx = blobRingPx(p.x, p.y, rCanopy, ryCanopy, 8, 0.12, p.seed);
+    const trunkPx = blobRingPx(p.x, p.y, rTrunk, ryTrunk, 6, 0.06, p.seed + 1);
     const hint = { lon: p.lon, lat: p.lat };
     const canopyM = toClipRing(canopyPx, frame, affine, hint);
     const trunkM = toClipRing(trunkPx, frame, affine, hint);
