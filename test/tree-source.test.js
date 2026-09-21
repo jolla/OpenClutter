@@ -24,6 +24,11 @@ const {
   canopyScore,
   collectRgbCandidates,
   detectTreesFromImageData,
+  rgbFillNeeded,
+  resolveTrees,
+  RGB_POLICY_PREFER_NLCD,
+  RGB_POLICY_LEGACY,
+  RGB_POLICY_FORCE_RGB,
 } = require("../netlify/lib/tree-source");
 
 const LONG_MEADOW = {
@@ -295,6 +300,17 @@ describe("imagery RGB fallback classifier", () => {
     const south = picked.filter((p) => p.y >= h / 2);
     assert.ok(south.length >= picked.length * 0.6, `south ${south.length} / ${picked.length}`);
   });
+
+  it("does not carpet gray parking / pavement", () => {
+    const data = makeRgba(80, 80, (x, y) => {
+      const stripe = x % 18 === 0 ? 14 : 0;
+      return [148 + stripe, 146 + stripe, 141 + stripe];
+    });
+    const hits = collectRgbCandidates(data, 80, 80, { step: 8 });
+    assert.equal(hits.length, 0);
+    const picked = detectTreesFromImageData(data, 80, 80, null, { step: 8, maxTrees: 40 });
+    assert.equal(picked.length, 0);
+  });
 });
 
 describe("treesSource labels", () => {
@@ -304,5 +320,63 @@ describe("treesSource labels", () => {
     assert.equal(normalizeTreesSource("none", 0), "none");
     assert.equal(normalizeTreesSource(undefined, 4), "imagery-rgb");
     assert.equal(normalizeTreesSource("wat", 0), "none");
+  });
+});
+
+describe("RGB fill policy", () => {
+  const bbox = LONG_MEADOW;
+  const rgb = [
+    { lon: bbox.west + 0.001, lat: bbox.south + 0.001, score: 0.7 },
+    { lon: bbox.west + 0.002, lat: bbox.south + 0.002, score: 0.6 },
+  ];
+
+  it("prefers valid NLCD even when it placed 0 trees (no parking carpet)", () => {
+    const canopy = {
+      trees: [],
+      source: "nlcd-canopy",
+      reason: "nlcd-canopy",
+      parsed: { samples: 64, validCount: 64, hits: [] },
+    };
+    assert.equal(rgbFillNeeded(canopy, bbox, { rgbPolicy: RGB_POLICY_PREFER_NLCD }), false);
+    const resolved = resolveTrees(bbox, canopy, rgb, { rgbPolicy: RGB_POLICY_PREFER_NLCD });
+    assert.equal(resolved.source, "nlcd-canopy");
+    assert.equal(resolved.trees.length, 0);
+  });
+
+  it("RGB-fills only true gaps (nodata / outside CONUS)", () => {
+    const canopy = {
+      trees: [],
+      source: null,
+      reason: "nodata-or-outside-conus",
+      parsed: { samples: 12, validCount: 0, hits: [] },
+    };
+    assert.equal(rgbFillNeeded(canopy, bbox, { rgbPolicy: RGB_POLICY_PREFER_NLCD }), true);
+    const resolved = resolveTrees(bbox, canopy, rgb, { rgbPolicy: RGB_POLICY_PREFER_NLCD });
+    assert.equal(resolved.source, "imagery-rgb");
+    assert.equal(resolved.trees.length, 2);
+  });
+
+  it("PR #8 legacy policy RGB-fills when NLCD placed nothing", () => {
+    const canopy = {
+      trees: [],
+      source: "nlcd-canopy",
+      reason: "nlcd-canopy",
+      parsed: { samples: 64, validCount: 64, hits: [] },
+    };
+    assert.equal(rgbFillNeeded(canopy, bbox, { rgbPolicy: RGB_POLICY_LEGACY }), true);
+    const resolved = resolveTrees(bbox, canopy, rgb, { rgbPolicy: RGB_POLICY_LEGACY });
+    assert.equal(resolved.source, "imagery-rgb");
+    assert.ok(resolved.trees.length >= 1);
+  });
+
+  it("force-rgb always uses imagery points (eval contrast)", () => {
+    const canopy = {
+      trees: [{ lon: bbox.west + 0.003, lat: bbox.south + 0.003, pct: 70 }],
+      source: "nlcd-canopy",
+      parsed: { samples: 64, validCount: 64, hits: [{ pct: 70 }] },
+    };
+    assert.equal(rgbFillNeeded(canopy, bbox, { rgbPolicy: RGB_POLICY_FORCE_RGB }), true);
+    const resolved = resolveTrees(bbox, canopy, rgb, { rgbPolicy: RGB_POLICY_FORCE_RGB });
+    assert.equal(resolved.source, "imagery-rgb");
   });
 });

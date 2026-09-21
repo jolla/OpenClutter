@@ -1,0 +1,9 @@
+{
+  "id": "oak-creek-commercial",
+  "name": "Oak Creek WI commercial",
+  "west": -87.9217,
+  "south": 42.8964,
+  "east": -87.9155,
+  "north": 42.9018,
+  "note": "Drawn bbox. Eval snaps the frame to imagery-meta.json extent + imagery.jpg size (same as production)."
+}

@@ -22,12 +22,19 @@
   /**
    * Need this many valid 0–100 samples to trust the raster for the bbox.
    * Below this → empty / nodata / outside CONUS → imagery-rgb fallback.
-   * Sparse-but-valid canopy (0–7 trees) is still nlcd-canopy, not RGB.
+   * Sparse-but-valid canopy (including 0 trees above threshold) stays
+   * nlcd-canopy — do not RGB-paint parking lots and lawns.
    */
   const MIN_VALID_SAMPLES = 20;
   const TCC_IMAGESERVER =
     "https://imagery.geoplatform.gov/iipp/rest/services/Vegetation/USFS_EDW_NLCD_TCC_CONUS/ImageServer";
   const KNOWN_SOURCES = ["nlcd-canopy", "imagery-rgb", "none"];
+  /** Production: trust valid NLCD (including sparse / all-zero). RGB only on true gaps. */
+  const RGB_POLICY_PREFER_NLCD = "prefer-nlcd";
+  /** PR #8: RGB-fill when NLCD places 0 trees — carpets parking/lawn. Eval must fail this. */
+  const RGB_POLICY_LEGACY = "legacy-rgb-when-empty";
+  /** Always RGB (eval contrast on fixtures: what PR #8 did on NLCD=0 parking boxes). */
+  const RGB_POLICY_FORCE_RGB = "force-rgb";
 
   function luma(r, g, b) {
     return 0.299 * r + 0.587 * g + 0.114 * b;
@@ -462,6 +469,84 @@
     });
   }
 
+  function woodsHitCount(parsed) {
+    const hits = parsed && parsed.hits ? parsed.hits : [];
+    let n = 0;
+    for (let i = 0; i < hits.length; i++) {
+      if ((hits[i].pct || 0) >= 40) n++;
+    }
+    return n;
+  }
+
+  /**
+   * RGB only for true gaps: canopy raster missing / nodata / outside CONUS.
+   * Valid NLCD (zeros or sparse) is trusted. The PR #8 "RGB when NLCD placed
+   * 0 trees" path carpets pavement — keep it only behind rgbPolicy=legacy.
+   */
+  function rgbFillNeeded(canopy, bbox, opts) {
+    opts = opts || {};
+    const policy = opts.rgbPolicy || RGB_POLICY_PREFER_NLCD;
+    if (policy === RGB_POLICY_FORCE_RGB) return true;
+    if (policy === RGB_POLICY_LEGACY) {
+      const trees = (canopy && canopy.trees) || [];
+      const budget = opts.maxTrees == null ? maxTreesForBbox(bbox) : opts.maxTrees;
+      const woodsHits = woodsHitCount(canopy && canopy.parsed);
+      return (
+        trees.length === 0 ||
+        (canopy &&
+          canopy.source === "nlcd-canopy" &&
+          trees.length < budget * 0.4 &&
+          woodsHits < 16)
+      );
+    }
+    return !canopy || !canopy.source;
+  }
+
+  function resolveTrees(bbox, canopy, rgbTrees, opts) {
+    opts = opts || {};
+    const budget = opts.maxTrees == null ? maxTreesForBbox(bbox) : opts.maxTrees;
+    const nlcdTrees = (canopy && canopy.trees) || [];
+    const rgb = rgbTrees || [];
+    const policy = opts.rgbPolicy || RGB_POLICY_PREFER_NLCD;
+    const need = rgbFillNeeded(canopy, bbox, opts);
+    if (policy === RGB_POLICY_FORCE_RGB && rgb.length) {
+      return {
+        trees: rgb.length > budget ? rgb.slice(0, budget) : rgb,
+        source: "imagery-rgb",
+        reason: "force-rgb",
+      };
+    }
+    if (!need) {
+      return {
+        trees: nlcdTrees,
+        source: canopy && canopy.source ? canopy.source : nlcdTrees.length ? "nlcd-canopy" : "none",
+        reason: "nlcd-covers-bbox",
+      };
+    }
+    if (policy === RGB_POLICY_LEGACY && nlcdTrees.length && rgb.length) {
+      return {
+        trees: mergeTreePoints(nlcdTrees, rgb, bbox, { maxTrees: budget }),
+        source: "imagery-rgb",
+        reason: "legacy-sparse-supplement",
+      };
+    }
+    if (rgb.length) {
+      return {
+        trees: rgb.length > budget ? rgb.slice(0, budget) : rgb,
+        source: "imagery-rgb",
+        reason: (canopy && canopy.reason) || "nodata-or-outside-conus",
+      };
+    }
+    if (nlcdTrees.length) {
+      return { trees: nlcdTrees, source: "nlcd-canopy", reason: "rgb-unavailable" };
+    }
+    return {
+      trees: [],
+      source: canopy && canopy.source ? canopy.source : "none",
+      reason: (canopy && canopy.reason) || "no-trees",
+    };
+  }
+
   async function fetchCanopyTrees(bbox, fetchFn, opts) {
     opts = opts || {};
     const url = canopySamplesUrl(bbox, opts);
@@ -495,7 +580,8 @@
     const maxc = Math.max(r, g, b);
     const minc = Math.min(r, g, b);
     const sat = maxc === 0 ? 0 : (maxc - minc) / maxc;
-    if (Y > 175 && sat < 0.2) return 0;
+    if (Y > 150) return 0;
+    if (Y > 132 && sat < 0.18) return 0;
 
     const exg = 2 * g - r - b;
     const olive =
@@ -507,7 +593,10 @@
       g < 160 &&
       b < 120 &&
       exg > 4;
-    if (olive) return Y < 95 ? 0.9 : Y < 125 ? 0.75 : 0.55;
+    if (olive) {
+      if (Y >= 125) return 0;
+      return Y < 95 ? 0.9 : 0.7;
+    }
 
     const dusty =
       r >= g - 8 &&
@@ -518,7 +607,10 @@
       g < 130 &&
       b < 95 &&
       g > r * 0.5;
-    if (dusty) return Y < 110 ? 0.82 : 0.62;
+    if (dusty) {
+      if (Y >= 125) return 0;
+      return Y < 110 ? 0.82 : 0.62;
+    }
 
     const winterBrown =
       Y > 28 &&
@@ -535,8 +627,8 @@
     if (winterBrown) return Y < 85 ? 0.88 : 0.7;
 
     const winterGray =
-      Y > 30 && Y < 105 && sat < 0.22 && Math.abs(r - g) < 18 && Math.abs(g - b) < 22 && r < 140;
-    if (winterGray) return 0.55;
+      Y > 30 && Y < 80 && sat < 0.18 && Math.abs(r - g) < 14 && Math.abs(g - b) < 16 && r < 110;
+    if (winterGray) return 0.5;
     return 0;
   }
 
@@ -592,13 +684,14 @@
   function canopyScore(colorScore, stats) {
     if (colorScore <= 0) return 0;
     if (!stats || stats.n < 8) return 0;
-    if (stats.vegFrac < 0.22) return 0;
-    // Smooth lawn / water / roof: low local texture even when the color is green.
-    if (stats.std < 7.5 && stats.range < 22) return 0;
+    if (stats.vegFrac < 0.3) return 0;
+    // Smooth lawn / water / roof / parking: low local texture even when green.
+    if (stats.std < 9 && stats.range < 26) return 0;
     if (stats.absDev < 5 && stats.std < 10) return 0;
+    if (stats.mean > 132) return 0;
     const texture = Math.min(1, (stats.std - 4) / 24);
-    if (texture < 0.12) return 0;
-    const dark = stats.mean < 90 ? 1.12 : stats.mean < 115 ? 1.0 : 0.82;
+    if (texture < 0.18) return 0;
+    const dark = stats.mean < 90 ? 1.12 : stats.mean < 115 ? 1.0 : 0.78;
     const neighborhood = 0.55 + 0.45 * Math.min(1, stats.vegFrac / 0.7);
     return colorScore * (0.3 + 0.7 * texture) * dark * neighborhood;
   }
@@ -619,7 +712,7 @@
     opts = opts || {};
     const step = opts.step || 8;
     const radius = opts.radius || 5;
-    const minScore = opts.minScore == null ? 0.28 : opts.minScore;
+    const minScore = opts.minScore == null ? 0.36 : opts.minScore;
     const boxes = opts.buildingAabbs;
     const hits = [];
     for (let y = step; y < h - step; y += step) {
@@ -693,6 +786,9 @@
     MIN_VALID_SAMPLES: MIN_VALID_SAMPLES,
     TCC_IMAGESERVER: TCC_IMAGESERVER,
     KNOWN_SOURCES: KNOWN_SOURCES,
+    RGB_POLICY_PREFER_NLCD: RGB_POLICY_PREFER_NLCD,
+    RGB_POLICY_LEGACY: RGB_POLICY_LEGACY,
+    RGB_POLICY_FORCE_RGB: RGB_POLICY_FORCE_RGB,
     maxTreesForBbox: maxTreesForBbox,
     canopySampleCount: canopySampleCount,
     canopySamplesUrl: canopySamplesUrl,
@@ -700,6 +796,9 @@
     treesFromCanopySamples: treesFromCanopySamples,
     decideCanopy: decideCanopy,
     normalizeTreesSource: normalizeTreesSource,
+    rgbFillNeeded: rgbFillNeeded,
+    resolveTrees: resolveTrees,
+    woodsHitCount: woodsHitCount,
     dedupeByCell: dedupeByCell,
     pickStratified: pickStratified,
     placeTreesFromCanopy: placeTreesFromCanopy,

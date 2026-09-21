@@ -71,11 +71,9 @@ document.getElementById("search").onsubmit = async (e) => {
 
 async function detectCanopyTrees(b) {
   const T = globalThis.OpenClutterTrees;
-  const result = await T.fetchCanopyTrees(b, (url) => fetch(url, { signal: AbortSignal.timeout(8000) }), {
+  return T.fetchCanopyTrees(b, (url) => fetch(url, { signal: AbortSignal.timeout(8000) }), {
     maxTrees: T.maxTreesForBbox(b),
   });
-  if (!result.source) return null;
-  return result;
 }
 
 async function detectRgbTrees(b) {
@@ -137,36 +135,23 @@ document.getElementById("export").onclick = async () => {
   try {
     const T = globalThis.OpenClutterTrees;
     const budget = T.maxTreesForBbox(bbox);
-    let trees = [];
-    let treesSource = "none";
-    let woodsHits = 0;
-    let nlcdCount = 0;
+    let canopy = null;
     try {
-      const canopy = await detectCanopyTrees(bbox);
-      if (canopy) {
-        trees = canopy.trees || [];
-        nlcdCount = trees.length;
-        treesSource = "nlcd-canopy";
-        const hits = (canopy.parsed && canopy.parsed.hits) || [];
-        woodsHits = hits.filter((h) => (h.pct || 0) >= 40).length;
-      }
+      canopy = await detectCanopyTrees(bbox);
     } catch (e) {
-      treesSource = "none";
+      canopy = { trees: [], source: null, reason: "fetch-failed", parsed: { samples: 0, validCount: 0, hits: [] } };
     }
-    // Oak Creek: NLCD can be valid with 0 hits on parking lots / winter street
-    // trees. Always RGB-fill when NLCD placed nothing; also supplement sparse TCC.
-    const needRgb = trees.length === 0 || (treesSource === "nlcd-canopy" && trees.length < budget * 0.4 && woodsHits < 16);
-    if (needRgb) {
+    let rgb = [];
+    if (T.rgbFillNeeded(canopy, bbox, { maxTrees: budget })) {
       try {
-        const rgb = await detectRgbTrees(bbox);
-        if (rgb && rgb.length) {
-          trees = T.mergeTreePoints(trees, rgb, bbox, { maxTrees: budget });
-          if (nlcdCount === 0) treesSource = "imagery-rgb";
-        }
+        rgb = await detectRgbTrees(bbox);
       } catch (e) {
-        /* keep NLCD points if any */
+        rgb = [];
       }
     }
+    const resolved = T.resolveTrees(bbox, canopy, rgb, { maxTrees: budget });
+    const trees = resolved.trees;
+    const treesSource = resolved.source;
     let data;
     try {
       data = await exportOnce(trees, treesSource);
