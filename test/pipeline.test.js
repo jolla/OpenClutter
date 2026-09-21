@@ -9,7 +9,7 @@ const {
   CLIPBOARD_COLLECTION_KEYS,
   pickBuildingTypeId,
 } = require("../netlify/lib/hamina-clipboard");
-const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2 } = require("../netlify/lib/pipeline");
+const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2 } = require("../netlify/lib/pipeline");
 const { zipStore, unzipStore } = require("../netlify/lib/zip-store");
 
 const WYNN = {
@@ -96,6 +96,8 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(built.stats.trees, 1);
     assert.equal(built.stats.treesSource, "nlcd-canopy");
     assert.equal(built.stats.fetched, 1);
+    assert.equal(built.stats.buildingsKept, 1);
+    assert.equal(built.stats.treesKept, 1);
     assert.match(built.stats.summary, /Buildings 1 kept \(1 fetched\)/);
     const areas = built.openintent.floorplans[0].attenuation_areas;
     assert.equal(areas.length, built.stats.buildings + built.stats.trees * 2);
@@ -150,8 +152,9 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.match(readme, /Import this zip in Hamina \(Projects → Import → OpenIntent\)/);
     assert.match(readme, /silent fallback/);
     assert.match(readme, /Coverage/);
-    assert.match(readme, /Buildings 1 kept/);
-    assert.match(readme, /Trees 1 kept/);
+    assert.match(readme, /buildingsKept: 1/);
+    assert.match(readme, /treesKept: 1/);
+    assert.match(readme, /treesSource: nlcd-canopy/);
     assert.ok(!/click map, paste/i.test(readme));
     const oiZip = JSON.parse(zipped[`openIntent_${built.slug}.json`].toString());
     assert.equal(oiZip.floorplans[0].attenuation_areas.length, areas.length);
@@ -164,7 +167,12 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(lock.clipboard.convention.includes("NE"), true);
     assert.equal(lock.openintent.yRelation, "y_up + y_img = imgH");
     assert.match(lock.note, /OpenIntent/);
-    assert.equal(Object.keys(zipped).length, 7);
+    assert.ok(zipped["export-stats.json"]);
+    const exportStats = JSON.parse(zipped["export-stats.json"].toString());
+    assert.equal(exportStats.buildingsKept, 1);
+    assert.equal(exportStats.treesKept, 1);
+    assert.equal(exportStats.treesSource, "nlcd-canopy");
+    assert.equal(Object.keys(zipped).length, 8);
   });
 
   it("drops campus mega-polygons and tiny sheds", () => {
@@ -189,9 +197,94 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.match(built.stats.summary, /Buildings 0 kept/);
     assert.match(built.stats.summary, /dropped mega/);
     const readme = unzipStore(built.zip)["README.txt"].toString();
-    assert.match(readme, /Coverage/);
-    assert.match(readme, /Buildings 0 kept/);
-    assert.match(readme, /Trees 0 kept/);
+    assert.match(readme, /buildingsKept: 0/);
+    assert.match(readme, /treesKept: 0/);
+    assert.match(readme, /droppedMega: /);
+  });
+
+  it("keeps a big-box roof on a tight commercial bbox (Oak Creek)", () => {
+    const frame = geoFrame({
+      west: -87.92,
+      south: 42.898,
+      east: -87.9172,
+      north: 42.9002,
+    });
+    const mapArea = frame.widthM * frame.lengthM;
+    assert.ok(mapArea < 90000, `expected tight site, got ${Math.round(mapArea)} m²`);
+    const midLon = (frame.west + frame.east) / 2;
+    const midLat = (frame.south + frame.north) / 2;
+    const dLon = 180 / frame.mpd.lon / 2;
+    const dLat = 150 / frame.mpd.lat / 2;
+    const store = squareFeature(midLon - dLon, midLat - dLat, midLon + dLon, midLat + dLat);
+    const storeArea = ringAreaM2(store.geometry.coordinates[0], frame.mpd);
+    assert.ok(storeArea > 15000 && storeArea < MEGA_CAMPUS_M2, `store ${storeArea}`);
+    assert.ok(storeArea > mapArea * 0.45, "this is the fraction that used to drop the white roof");
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [store] },
+      treePoints: [
+        {
+          lon: frame.west + (frame.east - frame.west) * 0.06,
+          lat: frame.south + (frame.north - frame.south) * 0.06,
+        },
+      ],
+      name: "Oak Creek WI",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      treesSource: "imagery-rgb",
+    });
+    assert.equal(built.stats.buildingsKept, 1);
+    assert.equal(built.stats.droppedMega, 0);
+    assert.equal(built.stats.treesKept, 1);
+    assert.equal(built.stats.treesSource, "imagery-rgb");
+    const readme = unzipStore(built.zip)["README.txt"].toString();
+    assert.match(readme, /buildingsKept: 1/);
+    assert.match(readme, /treesSource: imagery-rgb/);
+  });
+
+  it("emits every MultiPolygon part and Polygon sibling ring", () => {
+    const frame = geoFrame({
+      west: -87.92,
+      south: 42.898,
+      east: -87.9172,
+      north: 42.9002,
+    });
+    const wing = squareFeature(frame.west + 0.0003, frame.south + 0.0003, frame.west + 0.0008, frame.south + 0.0008);
+    const hall = squareFeature(frame.west + 0.0012, frame.south + 0.0003, frame.west + 0.0024, frame.south + 0.0012);
+    const multi = {
+      type: "Feature",
+      properties: {},
+      geometry: {
+        type: "MultiPolygon",
+        coordinates: [wing.geometry.coordinates, hall.geometry.coordinates],
+      },
+    };
+    const siblingPoly = {
+      type: "Feature",
+      properties: {},
+      geometry: {
+        type: "Polygon",
+        coordinates: [wing.geometry.coordinates[0], hall.geometry.coordinates[0]],
+      },
+    };
+    assert.equal(featureExteriorRings(multi.geometry).length, 2);
+    assert.equal(featureExteriorRings(siblingPoly.geometry).length, 2);
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [multi] },
+      treePoints: [],
+      name: "Site",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    assert.equal(built.stats.fetched, 1);
+    assert.equal(built.stats.buildingsKept, 2);
+    const built2 = buildClutter({
+      frame,
+      footprintsGeojson: { features: [siblingPoly] },
+      treePoints: [],
+      name: "Site",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    assert.equal(built2.stats.buildingsKept, 2);
   });
 
   it("keeps hotel-scale wings and skips map-swallowing campus blobs", () => {

@@ -32,39 +32,64 @@ const ZIP_README =
   "hamina-clipboard.json is a silent fallback for older Hamina builds only — not the happy path.\n";
 
 /**
- * Skip Microsoft campus-merge blobs (one giant wrong polygon) without dropping
- * real hotel / convention / multi-wing complexes on large maps.
+ * Skip Microsoft campus-merge blobs (one giant wrong polygon). Do NOT use a
+ * fraction of the drawn map — a tight commercial bbox makes a 2 ha big-box
+ * roof look like “half the site” (Oak Creek white roof).
  */
-function megaCampusLimitM2(frame) {
-  const mapArea = Math.max(1, frame.widthM * frame.lengthM);
-  return Math.min(100000, Math.max(MAX_AREA_M2, mapArea * 0.025));
+const MEGA_CAMPUS_M2 = 150000;
+
+function megaCampusLimitM2() {
+  return MEGA_CAMPUS_M2;
 }
 
-function isMegaCampus(areaM2, frame) {
-  const mapArea = Math.max(1, frame.widthM * frame.lengthM);
-  if (areaM2 > megaCampusLimitM2(frame)) return true;
-  if (areaM2 > mapArea * 0.45) return true;
-  return false;
+function isMegaCampus(areaM2) {
+  return areaM2 > MEGA_CAMPUS_M2;
+}
+
+function coverageStats(stats) {
+  const s = stats || {};
+  return {
+    buildingsKept: s.buildings || 0,
+    treesKept: s.trees || 0,
+    treesSource: s.treesSource || "none",
+    fetched: s.fetched != null ? s.fetched : s.buildings || 0,
+    droppedMega: s.droppedMega || 0,
+    droppedTiny: s.droppedTiny || 0,
+    droppedClip: s.droppedClip || 0,
+    droppedCap: s.droppedCap || 0,
+  };
 }
 
 function coverageSummary(stats) {
-  const s = stats || {};
-  const fetched = s.fetched != null ? s.fetched : s.buildings;
+  const c = coverageStats(stats);
   const drops = [];
-  if (s.droppedMega) drops.push("mega " + s.droppedMega);
-  if (s.droppedTiny) drops.push("tiny " + s.droppedTiny);
-  if (s.droppedClip) drops.push("clip " + s.droppedClip);
-  if (s.droppedCap) drops.push("cap " + s.droppedCap);
+  if (c.droppedMega) drops.push("mega " + c.droppedMega);
+  if (c.droppedTiny) drops.push("tiny " + c.droppedTiny);
+  if (c.droppedClip) drops.push("clip " + c.droppedClip);
+  if (c.droppedCap) drops.push("cap " + c.droppedCap);
   const dropTxt = drops.length ? `; dropped ${drops.join(", ")}` : "";
-  const src = s.treesSource ? ` (${s.treesSource})` : "";
   return (
-    `Buildings ${s.buildings || 0} kept (${fetched} fetched${dropTxt}). ` +
-    `Trees ${s.trees || 0} kept${src}.`
+    `Buildings ${c.buildingsKept} kept (${c.fetched} fetched${dropTxt}). ` +
+    `Trees ${c.treesKept} kept (${c.treesSource}).`
   );
 }
 
 function zipReadme(stats) {
-  return ZIP_README + "\nCoverage\n" + coverageSummary(stats) + "\n";
+  const c = coverageStats(stats);
+  return (
+    ZIP_README +
+    "\nCoverage — compare buildingsKept / treesKept to Hamina’s sidebar.\n" +
+    coverageSummary(stats) +
+    "\n" +
+    `buildingsKept: ${c.buildingsKept}\n` +
+    `treesKept: ${c.treesKept}\n` +
+    `treesSource: ${c.treesSource}\n` +
+    `fetched: ${c.fetched}\n` +
+    `droppedMega: ${c.droppedMega}\n` +
+    `droppedTiny: ${c.droppedTiny}\n` +
+    `droppedClip: ${c.droppedClip}\n` +
+    `droppedCap: ${c.droppedCap}\n`
+  );
 }
 
 const ALIGNMENT = [
@@ -275,6 +300,94 @@ function lonLatToClip(lon, lat, frame, affine) {
   return pxToClipboard(...llToPx(lon, lat, frame), frame);
 }
 
+function pointInRing(pt, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1];
+    const xj = ring[j][0], yj = ring[j][1];
+    const intersect = yi > pt[1] !== yj > pt[1] && pt[0] < ((xj - xi) * (pt[1] - yi)) / ((yj - yi) || 1e-20) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function ringInside(inner, outer) {
+  if (!inner || inner.length < 3 || !outer || outer.length < 3) return false;
+  let hits = 0;
+  const n = Math.min(inner.length - 1, 5);
+  for (let i = 0; i < n; i++) {
+    if (pointInRing(inner[i], outer)) hits++;
+  }
+  return hits >= Math.ceil(n * 0.6);
+}
+
+/**
+ * Every exterior ring of a Polygon or MultiPolygon. Extra rings that are not
+ * holes (Oak Creek: L-wing + white roof as sibling exteriors) are kept.
+ */
+function featureExteriorRings(geometry) {
+  if (!geometry || !geometry.coordinates) return [];
+  const groups = [];
+  if (geometry.type === "MultiPolygon") {
+    for (const poly of geometry.coordinates) groups.push(poly || []);
+  } else if (geometry.type === "Polygon") {
+    groups.push(geometry.coordinates);
+  } else {
+    return [];
+  }
+  const out = [];
+  for (const rings of groups) {
+    if (!rings || !rings.length) continue;
+    const exterior = rings[0];
+    if (exterior && exterior.length >= 4) out.push(exterior);
+    for (let i = 1; i < rings.length; i++) {
+      const r = rings[i];
+      if (!r || r.length < 4) continue;
+      if (ringInside(r, exterior)) continue;
+      out.push(r);
+    }
+  }
+  return out;
+}
+
+function emitBuilding(ring, heightM, frame, affine, buckets) {
+  const amRaw = ringAreaM2(ring, frame.mpd);
+  const maxPts = amRaw > 8000 ? 56 : amRaw > 1500 ? 40 : 32;
+  const simple = simplifyRing(ring, maxPts);
+  if (!simple || simple.length < 4) return "skip";
+  const am = ringAreaM2(simple, frame.mpd);
+  if (isMegaCampus(am)) return "mega";
+  if (am < MIN_AREA_M2) return "tiny";
+  const pts = [];
+  const clipRing = [];
+  for (const [lon, lat] of simple) {
+    const [x, y] = llToPx(lon, lat, frame);
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      pts.push([x, y]);
+      clipRing.push(lonLatToClip(lon, lat, frame, affine));
+    }
+  }
+  if (pts.length < 3) return "skip";
+  const xs = pts.map((p) => p[0]);
+  const ys = pts.map((p) => p[1]);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  if (maxX < 0 || maxY < 0 || minX > frame.imgW || minY > frame.imgH) return "clip";
+  const oiCoords = ringToOi(pts, frame.imgW, frame.imgH);
+  if (!oiCoords) return "clip";
+  const typeId = pickBuildingTypeId(am, heightM);
+  const type = TYPE_BY_ID[typeId];
+  const mat = oiMaterialFromType(type, heightM > 2 ? heightM : type.topEdge);
+  buckets.oiAreas.push({ area: { coordinates: oiCoords }, area_material: mat });
+  const z = clipZone(typeId, clipRing);
+  if (z) buckets.clipZones.push(z);
+  buckets.aabbs.push({ minX, maxX, minY, maxY });
+  buckets.overlayRings.push(pts);
+  return "keep";
+}
+
 function footprintsToClutter(features, frame, affine) {
   const oiAreas = [];
   const clipZones = [];
@@ -289,65 +402,24 @@ function footprintsToClutter(features, frame, affine) {
     droppedClip: 0,
     droppedCap: 0,
   };
+  const buckets = { oiAreas, clipZones, aabbs, overlayRings };
   for (const f of list) {
     const g = f.geometry;
     if (!g) continue;
     const heightM =
       Number((f.properties || {}).height || (f.properties || {}).Height || 0) || 0;
-    const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
-    for (const poly of polys) {
+    const rings = featureExteriorRings(g);
+    if (!rings.length) continue;
+    for (const ring of rings) {
       if (oiAreas.length >= MAX_BUILDINGS) {
         stats.droppedCap++;
         continue;
       }
-      const raw = poly[0] || [];
-      const amRaw = ringAreaM2(raw, frame.mpd);
-      const maxPts = amRaw > 8000 ? 56 : amRaw > 1500 ? 40 : 32;
-      const ring = simplifyRing(raw, maxPts);
-      if (!ring || ring.length < 4) continue;
-      const am = ringAreaM2(ring, frame.mpd);
-      if (isMegaCampus(am, frame)) {
-        stats.droppedMega++;
-        continue;
-      }
-      if (am < MIN_AREA_M2) {
-        stats.droppedTiny++;
-        continue;
-      }
-      const pts = [];
-      const clipRing = [];
-      for (const [lon, lat] of ring) {
-        const [x, y] = llToPx(lon, lat, frame);
-        if (Number.isFinite(x) && Number.isFinite(y)) {
-          pts.push([x, y]);
-          clipRing.push(lonLatToClip(lon, lat, frame, affine));
-        }
-      }
-      if (pts.length < 3) continue;
-      const xs = pts.map((p) => p[0]);
-      const ys = pts.map((p) => p[1]);
-      const minX = Math.min(...xs);
-      const maxX = Math.max(...xs);
-      const minY = Math.min(...ys);
-      const maxY = Math.max(...ys);
-      if (maxX < 0 || maxY < 0 || minX > frame.imgW || minY > frame.imgH) {
-        stats.droppedClip++;
-        continue;
-      }
-      const oiCoords = ringToOi(pts, frame.imgW, frame.imgH);
-      if (!oiCoords) {
-        stats.droppedClip++;
-        continue;
-      }
-      const typeId = pickBuildingTypeId(am, heightM);
-      const type = TYPE_BY_ID[typeId];
-      const mat = oiMaterialFromType(type, heightM > 2 ? heightM : type.topEdge);
-      oiAreas.push({ area: { coordinates: oiCoords }, area_material: mat });
-      const z = clipZone(typeId, clipRing);
-      if (z) clipZones.push(z);
-      aabbs.push({ minX, maxX, minY, maxY });
-      overlayRings.push(pts);
-      stats.buildings++;
+      const result = emitBuilding(ring, heightM, frame, affine, buckets);
+      if (result === "keep") stats.buildings++;
+      else if (result === "mega") stats.droppedMega++;
+      else if (result === "tiny") stats.droppedTiny++;
+      else if (result === "clip") stats.droppedClip++;
     }
   }
   return { oiAreas, clipZones, aabbs, overlayRings, stats };
@@ -450,14 +522,18 @@ function buildClutter({
     areas: areas.length,
     calibrated: Boolean(affine),
     summary: "",
+    buildingsKept: 0,
+    treesKept: 0,
   };
   stats.summary = coverageSummary(stats);
+  Object.assign(stats, coverageStats(stats));
   let zip = null;
   if (imgBuf) {
     zip = zipStore([
       { name: `openIntent_${slug}.json`, data: Buffer.from(JSON.stringify(oi)) },
       { name: "images/" + imgName, data: imgBuf },
       { name: "export-warnings.json", data: Buffer.from('{"errors":[],"warnings":[]}') },
+      { name: "export-stats.json", data: Buffer.from(JSON.stringify(coverageStats(stats), null, 2)) },
       { name: "hamina-clipboard.json", data: Buffer.from(JSON.stringify(clip)) },
       { name: "README.txt", data: zipReadme(stats) },
       { name: "alignment-overlay.svg", data: Buffer.from(overlay) },
@@ -483,10 +559,13 @@ module.exports = {
   MIN_AREA_M2,
   MAX_AREA_M2,
   MAX_BUILDINGS,
+  MEGA_CAMPUS_M2,
   megaCampusLimitM2,
   isMegaCampus,
+  coverageStats,
   coverageSummary,
   zipReadme,
+  featureExteriorRings,
   ringAreaM2,
   simplifyRing,
   footprintsToClutter,

@@ -68,7 +68,7 @@ Do **not** inject OSM building or tree **rings** (broke v8 — Hamina dropped al
 
 1. MS footprint vintage can sit a few meters off current imagery.
 2. Heights are heuristics unless the footprint has `height`.
-3. Vegetation: default is USFS/NLCD percent tree canopy (30 m, CONUS) treated as a **density field** — jittered stratified samples + NMS, not one tree per getSamples lattice point. Imagery RGB is fallback when the raster is missing/nodata for the bbox (outside CONUS, empty samples) **or** when TCC is valid but too sparse to fill golf/wooded areas (desert landscaping). RGB prefers textured woody canopy over smooth lawn, then the same scatter/NMS (never a step lattice, never north-first cap).
+3. Vegetation: default is USFS/NLCD percent tree canopy (30 m, CONUS) treated as a **density field** — jittered stratified samples + NMS, not one tree per getSamples lattice point. Imagery RGB is fallback when the raster is missing/nodata for the bbox (outside CONUS, empty samples) **or** when TCC is valid but places 0 trees (Oak Creek parking / winter street trees) or is too sparse for golf woods. RGB prefers textured woody canopy over smooth lawn, then the same scatter/NMS (never a step lattice, never north-first cap).
 4. Netlify hobby ~10s: footprints + imagery must fit; jpeg-js decode stays **off** the request path (504s). Canopy `getSamples` is JSON (~0.8 s). Browser tries canopy first and sends lon/lat + `treesSource`.
 5. US footprints only. NLCD TCC CONUS does not cover HI / PR / SEAK — those sites fall back to imagery RGB.
 

@@ -115,6 +115,11 @@ describe("clutter handler (mocked Esri)", () => {
     assert.ok(files["README.txt"]);
     assert.ok(files["alignment-overlay.svg"]);
     assert.ok(files["frame-lock.json"]);
+    assert.ok(files["export-stats.json"]);
+    const exportStats = JSON.parse(files["export-stats.json"].toString());
+    assert.equal(typeof exportStats.buildingsKept, "number");
+    assert.equal(typeof exportStats.treesKept, "number");
+    assert.ok(exportStats.treesSource);
     const clip = JSON.parse(files["hamina-clipboard.json"].toString());
     assert.equal(clip.header.type, "HaminaClipboard");
     assert.ok(clip.attenuatingZones.length >= 1);
