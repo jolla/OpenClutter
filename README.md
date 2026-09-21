@@ -85,38 +85,15 @@ Calibration (API only): `"controlPoints": [{ "lon", "lat", "xM", "yM" }, …]` (
 
 US footprints only (MSBFP2 is paginated up to 2000, queried against the snapped JPEG extent). Boxes over ~2.5 km fail. Microsoft campus-merge blobs &gt; 150,000 m² are dropped; big-box / warehouse roofs on a tight commercial map are kept. Tree and height accuracy is heuristic, not survey-grade. Function time is bounded by Netlify’s hobby limit.
 
-## Local
+## Development
 
 ```bash
 npm test
-npm run eval
+npm run eval          # image-space quality gate on cached fixtures
 npx netlify dev
 ```
 
-## Eval (no Hamina, no Jerry)
-
-Image-space scoring is the quality gate. It does **not** import into Hamina.
-
-Cached fixtures live in `test/fixtures/` (Oak Creek WI commercial bbox + Long Meadow residential/woods). Each site has `bbox.json`, `imagery.jpg`, `imagery-meta.json`, `footprints.geojson`, `tcc-samples.json` — no secrets.
-
-```bash
-npm run eval                 # fixtures, prefer-NLCD (must pass)
-npm run eval -- --legacy     # old RGB-carpet path (must fail pavement/lawn)
-npm run eval -- --compare-legacy
-npm run eval -- --live       # hit Esri World Imagery + MSBFP2 + NLCD TCC
-npm run fixtures:fetch       # refresh cached JPEG/footprints/TCC
-```
-
-`npm run eval` snaps the frame to the Esri JPEG extent (same as production), runs MSBFP2 + NLCD then RGB-only-on-true-gaps, writes `test/eval/out/<site>/alignment-overlay.svg` and `export-stats.json`, and **exits non-zero** if:
-
-- too few Microsoft footprints keep their centroid / IoU on the JPEG
-- a large roof in the footprint GeoJSON was dropped
-- MultiPolygon parts went missing
-- too many trees sit on pavement/parking/roof (NLCD ≈ 0% or high luma / low vegetation)
-- high-canopy NLCD cells have no nearby tree
-- trees form an orchard lattice (regular grid)
-
-Headless Hamina import is not required and is not blocked on. Unzip the overlay SVG next to `images/` if you want a visual check.
+`npm run eval` scores building/tree placement against cached aerial fixtures (no Hamina login). It fails if rooftops are missed, large footprints are dropped, or trees land on pavement. Optional: `npm run eval -- --live` to refresh against live Esri/NLCD.
 
 
 ## License
