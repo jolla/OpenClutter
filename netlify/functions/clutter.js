@@ -1,6 +1,6 @@
 "use strict";
 
-const UA = "openclutter/0.9.0 (https://github.com/jolla/OpenClutter)";
+const UA = "openclutter/0.10.0 (https://github.com/jolla/OpenClutter)";
 const { geoFrame, esriImageryUrl, esriImageryMetaUrl, msFootprintsUrl, fitAffine, jpegSize, applyImageryMeta } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
@@ -151,7 +151,7 @@ exports.handler = async (event) => {
     "x-hamina-width-m": String(frame.widthM),
     "x-hamina-length-m": String(frame.lengthM),
     "x-hamina-mpu": String(frame.mpuX),
-    "x-hamina-alignment": "import-zip-then-paste",
+    "x-hamina-alignment": "import-openintent-zip",
   };
 
   if (format === "hamina-clipboard") {

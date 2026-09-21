@@ -16,6 +16,8 @@ Do **not** use an X Grok bot. It cannot push to GitHub.
 
 **UI (must stay this simple):** address search → draw rectangle → one Export → **one `.zip` download**. No source picker, OSM checkbox, calibration textarea, or format choosers on the page. Canopy (NLCD) with silent RGB fallback. OSM / `controlPoints` stay API-only.
 
+**Happy path:** import the zip. Status copy: “Import this zip in Hamina (Projects → Import → OpenIntent).” No paste instructions in the main UI.
+
 **Default path (exact, repeatable):** one shared bbox frame.
 
 | Piece | Source | Frame |
@@ -23,17 +25,20 @@ Do **not** use an X Grok bot. It cannot push to GitHub.
 | Map image | Esri World Imagery export | `bboxSR=4326` `imageSR=4326`; **snap frame to the export’s actual `extent` + JPEG size** (Esri often pads N/S) |
 | Buildings | Microsoft US Building Footprints (Esri MSBFP2) | same **actual** west/south/east/north as the JPEG |
 | Trees | **USFS/NLCD percent tree canopy** as a **density field** (jittered NMS, not the 30 m sample lattice) | same extent; ≥30% canopy. **Imagery RGB** only if canopy is missing/nodata. OSM nodes optional, **off**. |
-| Map size | OpenIntent zip `dimensions` meters | `widthM` × `lengthM` from bbox |
-| Objects | HaminaClipboard JSON paste | same `widthM`/`lengthM`, documented origin |
+| Map size | OpenIntent zip `dimensions` meters | `widthM` × `lengthM` from the **snapped JPEG extent** |
+| Objects | OpenIntent `floorplans[].attenuation_areas[]` + `area_materials` | same snapped extent, Y-up pixels, stock Hamina type names |
 
-Import **zip first** (sets map size), **then paste `hamina-clipboard.json` from inside that zip**. No per-site nudge. The UI must not trigger a second clipboard download.
+Hamina **2026-09-01** (docs.hamina.com): “OpenIntent import and export now supports attenuating objects!” Support matrix: Attenuating Objects ✅ import/export. Clipboard paste was the workaround from when import dropped areas.
+
+`hamina-clipboard.json` stays **inside the zip as a silent fallback** for older Hamina builds. Do not make paste the happy path. The UI must not trigger a second clipboard download.
 
 Shared math lives in `netlify/lib/geo-frame.js`. Pipeline in `netlify/lib/pipeline.js`. HTTP in `netlify/functions/clutter.js`. Tests in `test/`.
 
-Clipboard origin (HaminaClipboard native after OpenIntent import):
+OpenIntent pixels (Y-up from SW) and clipboard meters (NE = 0,0) share the JPEG extent:
 
 ```
-SW → (−widthM, −lengthM)   NE → (0, 0)
+OpenIntent: SW → (0, 0) px ; NE → (imgW, imgH) px
+Clipboard:  SW → (−widthM, −lengthM) ; NE → (0, 0)
 JPEG (Y-down from NW):  x_clip = x_img * mpuX − widthM ;  y_clip = −y_img * mpuY
 OpenIntent (Y-up from SW): x_clip = x_up * mpuX − widthM ; y_clip = y_up * mpuY − lengthM
 y_up + y_img = imgH
@@ -43,7 +48,7 @@ y_up + y_img = imgH
 
 Zip also contains `alignment-overlay.svg` (buildings+trees on the exact Esri JPEG) and `frame-lock.json`. Open the SVG after unzip to verify image-space lock before blaming Hamina.
 
-HaminaClipboard schema (header, empty collections, zone types with `ituRModelEnabled` / `transparencyEnabled`, stock names) matches the working geo paste. Types: Foliage - Heavy/Light, Tree Trunk, Building - One/Five Floor, Hotel podium.
+Stock Hamina type names (do not invent): Foliage - Heavy/Light, Tree Trunk, Building - One/Five Floor, Hotel podium. Heights and `attenuation_per_m` match the clipboard zone types. Schema: OpenIntent 2.0.1 `attenuation_area` = `{ area: { coordinates: [{coordinate_xyz:{x,y,unit:"pixels"}}] }, area_material }`. Coords must be ≥ 0 (schema minimum). Invalid / OSM rings historically caused Hamina to drop **all** areas — emit fewer, clipped, closed polygons only.
 
 ## Root cause we already hit (do not re-learn the hard way)
 
@@ -52,8 +57,6 @@ Mixing a **Google Earth screenshot** (Hamina auto-scale ≠ photo meters) with *
 Wynn example: 3840×2160 GE frame is ~2376×1337 m geographically; Hamina’s scale bar showed ~796×448 m. Clipboard built for 796 m **piled in a corner**. Clipboard built for the OpenIntent geographic meters **spread**. Guessing a dual-scale transform (world file → pixels → Hamina map meters) is fragile and site-specific.
 
 **GE screenshots as maps are an anti-pattern.** The zip from this app *is* the map.
-
-OpenIntent `attenuation_areas` imports are unreliable in Hamina; clipboard paste is the dependable object path. Emit **one zip**: map size + image + `hamina-clipboard.json` (full HaminaClipboard object) + short README. Extra files in the zip are fine — Hamina ignores them on OpenIntent import.
 
 Do **not** inject OSM building or tree **rings** (broke v8 — Hamina dropped all attenuation_areas). OSM tree **nodes** remain an API flag (`osmTrees: true`), off and hidden from the default page.
 
@@ -72,7 +75,7 @@ Do **not** inject OSM building or tree **rings** (broke v8 — Hamina dropped al
 ## Next fixes (priority)
 
 1. USGS 3DEP or other height when available. Meta canopy *height* (not percent) is optional later.
-2. If Hamina ever exports a project that already contains objects, diff that JSON against our clipboard and lock any remaining origin quirks.
+2. If Hamina exports a project that already contains objects, diff that OpenIntent JSON against ours and lock any remaining origin quirks.
 3. Optional server-side vegetation worker (not jpeg-js in the 10s function) for the RGB fallback path.
 
 ## Tree source (do not re-learn)
@@ -93,7 +96,7 @@ RGB fallback: reject smooth lawn (low local luma variance); keep textured green 
 
 `stats.treesSource`: `"nlcd-canopy" | "imagery-rgb" | "none"` in the API/stats payload — **never a UI picker**. Shared logic: `public/tree-detect.js` (browser + Node).
 
-**UX (Jerry):** super simple tool. Search → Draw → Export → **one `.zip`**. Hide OSM checkbox, control-points textarea, format choosers. One status line (“Building map + clutter…”). After export: one file downloaded; import zip, then paste clipboard JSON from inside the zip. OSM/`controlPoints` remain API escape hatches for tests only.
+**UX (Jerry):** super simple tool. Search → Draw → Export → **one `.zip`**. Hide OSM checkbox, control-points textarea, format choosers. One status line (“Building map + clutter…”). After export: “Import this zip in Hamina (Projects → Import → OpenIntent).” OSM/`controlPoints` remain API escape hatches for tests only.
 
 ## How to work
 
@@ -103,4 +106,4 @@ edit netlify/lib/*.js netlify/functions/clutter.js public/*
 open a branch + PR
 ```
 
-PR #1 (`feat/hamina-clipboard-consistent-transform`) added a clipboard-only path and dual-scale docs. This shared-bbox pipeline **supersedes** that dual-scale default: clipboard still uses consistent `widthM`/`lengthM`, but the map is the Esri zip, not a GE screenshot.
+PR #1 (`feat/hamina-clipboard-consistent-transform`) added a clipboard-only path and dual-scale docs. This shared-bbox pipeline **supersedes** that dual-scale default. As of Hamina 2026-09-01, OpenIntent import is the object path; clipboard is fallback only.

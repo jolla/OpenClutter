@@ -1,12 +1,12 @@
 # OpenClutter
 
-**OpenClutter** turns a map box into clutter that lines up with the map in [Hamina Planner](https://hamina.com): one georeferenced [OpenIntent](https://github.com/google/openintent) zip that also contains a pasteable HaminaClipboard JSON, all in the **same geographic frame**.
+**OpenClutter** turns a map box into clutter that lines up with the map in [Hamina Planner](https://hamina.com): one georeferenced [OpenIntent](https://github.com/google/openintent) zip. Import that zip and you get the map **and** all attenuating objects. No clipboard paste.
 
 Live: https://openclutter.netlify.app · Source: https://github.com/jolla/OpenClutter
 
 ## Exact alignment (every site)
 
-Hamina OpenIntent `attenuation_areas` imports are unreliable. The dependable object path is **HaminaClipboard JSON paste**. Alignment fails when the **map image** and the **clipboard meters** disagree — typically a Google Earth screenshot that Hamina auto-scales to the wrong size, then lon/lat footprints converted with a second guessed scale.
+Hamina **2026-09-01** (docs.hamina.com release notes): “OpenIntent import and export now supports attenuating objects!” The [support matrix](https://docs.hamina.com/hamina/live/openintent) shows Attenuating Objects ✅ import/export. Older OpenClutter clipboard paste was a workaround from when import dropped areas.
 
 This tool does not mix sources. One bbox drives everything:
 
@@ -14,24 +14,31 @@ This tool does not mix sources. One bbox drives everything:
 2. Microsoft US Building Footprints (Esri MSBFP2) mapped through that actual extent.
 3. USFS/NLCD percent tree canopy as a density field (jitter + NMS; imagery RGB only if the canopy raster is missing/empty).
 4. lon/lat → JPEG pixels with the actual west/south/east/north (OpenIntent Y-up / JPEG Y-down).
-5. Clipboard meters use that same actual `widthM` × `lengthM`.
+5. OpenIntent `floorplans[].attenuation_areas[]` + `area_materials` use that same snapped frame (stock Hamina type names, heights, dB/m).
 
-**Import the zip first** (sets the Hamina map to geographic size), **then paste `hamina-clipboard.json` from inside the zip**. No per-site hand nudge. Do not use a GE screenshot as the map.
+**Import this zip in Hamina (Projects → Import → OpenIntent).** No per-site hand nudge. Do not use a GE screenshot as the map.
 
-Clipboard origin (unit-tested; HaminaClipboard native after OpenIntent import):
+OpenIntent pixels (unit-tested; Y-up from SW, matching oiconvert / Hamina OI):
 
 ```
-SW (west, south) → (−widthM, −lengthM)
-SE (east, south) → (0, −lengthM)
-NW (west, north) → (−widthM, 0)
-NE (east, north) → (0, 0)
+SW (west, south) → (0, 0) px
+SE (east, south) → (imgW, 0) px
+NW (west, north) → (0, imgH) px
+NE (east, north) → (imgW, imgH) px
 
-JPEG Y-down:  x_clip = x_img * mpuX − widthM ;  y_clip = −y_img * mpuY
-OpenIntent Y-up: x_clip = x_up * mpuX − widthM ; y_clip = y_up * mpuY − lengthM
+JPEG Y-down:  y_img from NW
+OpenIntent Y-up: y_up from SW
 y_up + y_img = imgH
 ```
 
-Trees come from **USFS/NLCD percent tree canopy** on the same extent (threshold ≥30%), placed with **jittered NMS** rather than on the 30 m sample lattice. If that raster is missing or nodata for the box (outside CONUS), the app **silently** falls back to Esri aerial RGB that prefers textured woody canopy over smooth grass. OSM tree *nodes* and `controlPoints` calibration are API-only (not on the default page). OSM building/tree **rings** are never emitted (they caused Hamina to drop all `attenuation_areas` on v8).
+Clipboard meters (silent fallback JSON inside the zip, same frame):
+
+```
+SW → (−widthM, −lengthM)   NE → (0, 0)
+JPEG Y-down:  x_clip = x_img * mpuX − widthM ;  y_clip = −y_img * mpuY
+```
+
+Trees come from **USFS/NLCD percent tree canopy** on the same extent (threshold ≥30%), placed with **jittered NMS** rather than on the 30 m sample lattice. If that raster is missing or nodata for the box (outside CONUS), the app **silently** falls back to Esri aerial RGB that prefers textured woody canopy over smooth grass. OSM tree *nodes* and `controlPoints` calibration are API-only (not on the default page). OSM building/tree **rings** are never emitted (they caused Hamina to drop all `attenuation_areas` on v8). Polygons are clipped to the JPEG and invalid rings are dropped so one bad ring cannot wipe the import.
 
 `stats.treesSource` is `"nlcd-canopy"`, `"imagery-rgb"`, or `"none"` (in the API payload, not a UI picker).
 
@@ -40,15 +47,15 @@ Trees come from **USFS/NLCD percent tree canopy** on the same extent (threshold 
 1. Search an address.
 2. Draw the site (under ~2 km on a side).
 3. **Export** — one `{site}-openintent.zip` download. Inside:
-   - `openIntent_<slug>.json` — OpenIntent metadata at the JPEG’s geographic size
+   - `openIntent_<slug>.json` — OpenIntent 2.0.1 with `attenuation_areas` (buildings + tree pairs) at the JPEG’s geographic size
    - `images/<slug>.jpg` — Esri aerial
    - `alignment-overlay.svg` — buildings (red) + trees (green) on that JPEG
    - `frame-lock.json` — pixel/meter corners for Hamina vs OpenIntent vs JPEG
    - `export-warnings.json`
-   - `hamina-clipboard.json` — full HaminaClipboard object (stock type names)
-   - `README.txt` — import zip, then copy/paste clipboard JSON
-4. **Check the overlay** (unzip, open `alignment-overlay.svg` next to `images/`). If rooftops match here, image-space is locked.
-5. Hamina: import the zip (OpenIntent), then open `hamina-clipboard.json`, copy all, click the map, paste.
+   - `hamina-clipboard.json` — silent fallback for Hamina builds before OpenIntent attenuating-object import
+   - `README.txt` — import-only instructions
+4. Hamina: **Projects → Import → OpenIntent**.
+5. Optional: unzip and open `alignment-overlay.svg` next to `images/` to check rooftops.
 
 The page has no extra options. Tree source (NLCD canopy, RGB fallback), OSM, and calibration are automatic or API-only.
 
@@ -67,9 +74,9 @@ The page has no extra options. Tree source (NLCD canopy, RGB fallback), OSM, and
 }
 ```
 
-- `format: "bundle"` (default) — JSON with `zipBase64` (clipboard is already inside the zip), `frame`, `stats`, `alignment`
-- `format: "zip"` — same OpenIntent zip bytes (also contains `hamina-clipboard.json`)
-- `format: "hamina-clipboard"` — clipboard JSON only (skips imagery fetch)
+- `format: "bundle"` (default) — JSON with `zipBase64`, `frame`, `stats`, `alignment`
+- `format: "zip"` — same OpenIntent zip bytes
+- `format: "hamina-clipboard"` — clipboard JSON only (skips imagery fetch; old-Hamina fallback)
 
 Calibration (API only): `"controlPoints": [{ "lon", "lat", "xM", "yM" }, …]` (3+). Not shown in the UI.
 
