@@ -152,7 +152,9 @@
     const mpd = metersPerDeg((south + north) / 2);
     const areaKm2 =
       (Math.abs(east - west) * mpd.lon * Math.abs(north - south) * mpd.lat) / 1e6;
-    const scaled = Math.round(180 + areaKm2 * 175);
+    // ~300 on a 0.5 km commercial block so continuous woods can fill after
+    // rooftop points are rejected. Golf/campus maps still stop at 800.
+    const scaled = Math.round(200 + areaKm2 * 240);
     return Math.max(MAX_TREES, Math.min(MAX_TREES_LARGE, scaled));
   }
 
@@ -308,8 +310,10 @@
 
   function canopyNmsDistM(c) {
     const score = Math.min(1, c.score || 0);
-    const d = 7 + 9 * (1 - score);
-    return c.woods ? d * 0.72 : d;
+    const d = 6.5 + 8 * (1 - score);
+    if (!c.woods) return d;
+    // Continuous woods can sit ~5 m apart. Floor stays above the orchard test.
+    return Math.max(5.2, d * 0.6);
   }
 
   /**
@@ -323,6 +327,7 @@
     opts = opts || {};
     const minPct = opts.minPct == null ? MIN_CANOPY_PCT : opts.minPct;
     const maxTrees = opts.maxTrees == null ? maxTreesForBbox(bbox) : opts.maxTrees;
+    const reject = typeof opts.reject === "function" ? opts.reject : null;
     if (!hits || !hits.length || maxTrees <= 0) return [];
     const mpd = metersPerDeg((+bbox.south + +bbox.north) / 2);
     const cell = inferCellDeg(hits, bbox);
@@ -347,20 +352,21 @@
       const frac = Math.max(0, Math.min(1, (c.pct - minPct) / (100 - minPct)));
       const peak = isLocalMax(grid, key, c.pct);
       const woods = woodsNeighborCount(grid, key, minPct) >= 3;
-      const spacing = woods ? 10 - 4 * frac : 18 - 8 * frac;
-      let lambda = (c.pct / 100) * (cellArea / Math.max(36, spacing * spacing));
-      lambda = Math.min(woods ? 4.5 : 2.5, lambda);
+      const spacing = woods ? 8 - 3 * frac : 18 - 8 * frac;
+      let lambda = (c.pct / 100) * (cellArea / Math.max(28, spacing * spacing));
+      lambda = Math.min(woods ? 6 : 2.5, lambda);
       if (peak) lambda = Math.max(lambda, 1.0 + 0.6 * frac);
-      if (woods) lambda = Math.max(lambda, 0.85 + 1.4 * frac);
+      if (woods) lambda = Math.max(lambda, 1.35 + 2.0 * frac);
       if (!peak && !woods && c.pct < minPct + 15) lambda *= 0.35;
       const n0 = Math.floor(lambda);
-      const n = Math.min(woods ? 5 : 3, n0 + (hash01(c.lon, c.lat, 1) < lambda - n0 ? 1 : 0));
+      const n = Math.min(woods ? 6 : 3, n0 + (hash01(c.lon, c.lat, 1) < lambda - n0 ? 1 : 0));
       for (let i = 0; i < n; i++) {
         const jx = (hash01(c.lon, c.lat, 10 + i) - 0.5) * 0.92;
         const jy = (hash01(c.lon, c.lat, 30 + i) - 0.5) * 0.92;
         const lon = c.lon + jx * cell.lon;
         const lat = c.lat + jy * cell.lat;
         if (lon < bbox.west || lon > bbox.east || lat < bbox.south || lat > bbox.north) continue;
+        if (reject && reject(lon, lat)) continue;
         candidates.push({
           lon: lon,
           lat: lat,

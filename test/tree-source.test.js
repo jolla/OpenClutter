@@ -185,6 +185,24 @@ describe("NLCD / USFS canopy source", () => {
     assert.ok(south.length > north.length, `woods should dominate lawns: south ${south.length} north ${north.length}`);
   });
 
+  it("does not spend canopy points on a building footprint", () => {
+    const hits = [];
+    for (let row = 0; row < 6; row++) {
+      for (let col = 0; col < 6; col++) {
+        hits.push({
+          lon: LONG_MEADOW.west + 0.001 + col * 0.00035,
+          lat: LONG_MEADOW.south + 0.001 + row * 0.00035,
+          pct: 72,
+          score: 0.72,
+        });
+      }
+    }
+    const reject = (lon, lat) => lon < LONG_MEADOW.west + 0.0022;
+    const trees = pickCanopyTrees(hits, LONG_MEADOW, { maxTrees: 40, reject });
+    assert.ok(trees.length >= 4, `expected off-roof trees, got ${trees.length}`);
+    assert.ok(trees.every((t) => t.lon >= LONG_MEADOW.west + 0.0022));
+  });
+
   it("fills continuous high canopy instead of only isolated yard peaks", () => {
     const hits = [];
     // Isolated landscaping trees (peaks) along the west edge.

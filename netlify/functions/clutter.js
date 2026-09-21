@@ -1,10 +1,13 @@
 "use strict";
 
-const UA = "openclutter/0.11.0 (https://github.com/jolla/OpenClutter)";
+const UA = "openclutter/0.13.0 (https://github.com/jolla/OpenClutter)";
 const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta } = require("../lib/geo-frame");
-const { buildClutter, ALIGNMENT } = require("../lib/pipeline");
+const { buildClutter, ALIGNMENT, footprintsToClutter } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
-const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox } = require("../lib/tree-source");
+const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
+const { fetchMsGlobalFootprints, mergeFootprintFeatures } = require("../lib/ms-global");
+const { fetchUsaStructures } = require("../lib/usa-structures");
+const { treeHitsBuilding } = require("../lib/vegetation");
 
 function json(status, cors, obj) {
   return {
@@ -38,6 +41,24 @@ function parseFormat(body) {
 
 function wantOsm(body) {
   return body.osmTrees === true || body.osm === true;
+}
+
+/** Client-supplied NLCD hits, capped. Used to re-place trees off rooftops. */
+function normalizeCanopyHits(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const n = Math.min(raw.length, 5000);
+  for (let i = 0; i < n; i++) {
+    const h = raw[i];
+    if (!h) continue;
+    const lon = +(h.lon != null ? h.lon : h.lng);
+    const lat = +h.lat;
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+    const pct = h.pct != null ? +h.pct : h.score != null ? +h.score * 100 : 40;
+    if (!Number.isFinite(pct) || pct < 18 || pct > 100) continue;
+    out.push({ lon, lat, pct, score: pct / 100 });
+  }
+  return out;
 }
 
 exports.handler = async (event) => {
@@ -88,6 +109,9 @@ exports.handler = async (event) => {
   let imgBuf = null;
   let gj;
   let imgMeta = null;
+  let globalFeatures = [];
+  let usaFeatures = [];
+  let serverCanopyHits = null;
   try {
     if (needImage) {
       const metaRes = await fetchOk(imgMetaUrl).catch(() => null);
@@ -101,13 +125,24 @@ exports.handler = async (event) => {
       }
     }
     const jobs = [fetchMsFootprints(frame, (url) => fetchOk(url), { pad: false })];
+    const globalJob = fetchMsGlobalFootprints(frame, (url) =>
+      fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) })
+    ).catch(() => ({ features: [] }));
+    const usaJob = fetchUsaStructures(frame, (url) =>
+      fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) })
+    ).catch(() => ({ features: [] }));
+    jobs.push(globalJob);
+    jobs.push(usaJob);
     if (needImage) jobs.push(fetchOk(imgUrl));
     const canopyJob =
       !treePoints.length
         ? fetchCanopyTrees(frame, (url) => fetchOk(url), { maxTrees: maxTreesForBbox(frame) }).catch(() => null)
         : null;
-    const [fpGj, imgRes] = await Promise.all(jobs);
-    gj = fpGj;
+    const fetched = await Promise.all(jobs);
+    gj = fetched[0];
+    globalFeatures = (fetched[1] && fetched[1].features) || [];
+    usaFeatures = (fetched[2] && fetched[2].features) || [];
+    const imgRes = needImage ? fetched[3] : null;
     if (needImage) {
       imgBuf = Buffer.from(await imgRes.arrayBuffer());
       if (imgBuf.length < 100 || imgBuf[0] !== 0xff || imgBuf[1] !== 0xd8) {
@@ -117,6 +152,9 @@ exports.handler = async (event) => {
     }
     if (canopyJob) {
       const canopy = await canopyJob;
+      if (canopy && canopy.parsed && canopy.parsed.hits && canopy.parsed.hits.length) {
+        serverCanopyHits = canopy.parsed.hits;
+      }
       if (canopy && canopy.trees && canopy.trees.length) {
         treePoints = canopy.trees;
         treesSource = "nlcd-canopy";
@@ -129,6 +167,31 @@ exports.handler = async (event) => {
   }
 
   treesSource = normalizeTreesSource(treesSource, treePoints.length);
+
+  const arcgisFeatures = (gj && gj.features) || [];
+  const withArcgis = mergeFootprintFeatures(globalFeatures, arcgisFeatures);
+  const merged = mergeFootprintFeatures(withArcgis.features, usaFeatures);
+  gj = { type: "FeatureCollection", features: merged.features };
+  const footprintMeta = {
+    globalFootprints: globalFeatures.length,
+    arcgisFootprints: arcgisFeatures.length,
+    usaFootprints: usaFeatures.length,
+  };
+
+  const clientHits = normalizeCanopyHits(body.canopyHits);
+  const placeHits =
+    clientHits.length > 0
+      ? clientHits
+      : treesSource === "nlcd-canopy"
+        ? normalizeCanopyHits(serverCanopyHits)
+        : [];
+  if (placeHits.length && treesSource === "nlcd-canopy") {
+    const preview = footprintsToClutter(merged.features, frame);
+    treePoints = pickCanopyTrees(placeHits, frame, {
+      maxTrees: maxTreesForBbox(frame),
+      reject: (lon, lat) => treeHitsBuilding(lon, lat, frame, preview.aabbs),
+    });
+  }
 
   if (wantOsm(body)) {
     try {
@@ -147,6 +210,7 @@ exports.handler = async (event) => {
     name: body.name,
     imgBuf,
     treesSource,
+    footprintMeta,
   });
 
   const frameHeaders = {
