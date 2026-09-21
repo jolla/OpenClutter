@@ -177,8 +177,6 @@ exports.handler = async (event) => {
     frame: built.frame,
     stats: built.stats,
     zipFilename: `${built.slug}-openintent.zip`,
-    clipboardFilename: `${built.slug}-hamina-clipboard.json`,
     zipBase64: built.zip.toString("base64"),
-    clipboard: built.clipboard,
   });
 };

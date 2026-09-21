@@ -14,7 +14,7 @@ Do **not** use an X Grok bot. It cannot push to GitHub.
 
 **OpenClutter** — search, draw a rectangle, export. Clutter lines up with the map in Hamina Planner, every time, for any site.
 
-**UI (must stay this simple):** address search → draw rectangle → one Export. No source picker, OSM checkbox, calibration textarea, or format choosers on the page. Canopy (NLCD) with silent RGB fallback. OSM / `controlPoints` stay API-only.
+**UI (must stay this simple):** address search → draw rectangle → one Export → **one `.zip` download**. No source picker, OSM checkbox, calibration textarea, or format choosers on the page. Canopy (NLCD) with silent RGB fallback. OSM / `controlPoints` stay API-only.
 
 **Default path (exact, repeatable):** one shared bbox frame.
 
@@ -26,7 +26,7 @@ Do **not** use an X Grok bot. It cannot push to GitHub.
 | Map size | OpenIntent zip `dimensions` meters | `widthM` × `lengthM` from bbox |
 | Objects | HaminaClipboard JSON paste | same `widthM`/`lengthM`, documented origin |
 
-Import **zip first** (sets map size), **then paste clipboard**. No per-site nudge.
+Import **zip first** (sets map size), **then paste `hamina-clipboard.json` from inside that zip**. No per-site nudge. The UI must not trigger a second clipboard download.
 
 Shared math lives in `netlify/lib/geo-frame.js`. Pipeline in `netlify/lib/pipeline.js`. HTTP in `netlify/functions/clutter.js`. Tests in `test/`.
 
@@ -48,7 +48,7 @@ Wynn example: 3840×2160 GE frame is ~2376×1337 m geographically; Hamina’s sc
 
 **GE screenshots as maps are an anti-pattern.** The zip from this app *is* the map.
 
-OpenIntent `attenuation_areas` imports are unreliable in Hamina; clipboard paste is the dependable object path. Keep emitting both: zip for map size + image, clipboard for objects.
+OpenIntent `attenuation_areas` imports are unreliable in Hamina; clipboard paste is the dependable object path. Emit **one zip**: map size + image + `hamina-clipboard.json` (full HaminaClipboard object) + short README. Extra files in the zip are fine — Hamina ignores them on OpenIntent import.
 
 Do **not** inject OSM building or tree **rings** (broke v8 — Hamina dropped all attenuation_areas). OSM tree **nodes** remain an API flag (`osmTrees: true`), off and hidden from the default page.
 
@@ -88,7 +88,7 @@ RGB fallback: reject smooth lawn (low local luma variance); keep textured green 
 
 `stats.treesSource`: `"nlcd-canopy" | "imagery-rgb" | "none"` in the API/stats payload — **never a UI picker**. Shared logic: `public/tree-detect.js` (browser + Node).
 
-**UX (Jerry):** super simple tool. Search → Draw → Export. Hide OSM checkbox, control-points textarea, format choosers. One status line (“Building map + clutter…”). One-line help: Import zip in Hamina, then paste JSON. OSM/`controlPoints` remain API escape hatches for tests only.
+**UX (Jerry):** super simple tool. Search → Draw → Export → **one `.zip`**. Hide OSM checkbox, control-points textarea, format choosers. One status line (“Building map + clutter…”). After export: one file downloaded; import zip, then paste clipboard JSON from inside the zip. OSM/`controlPoints` remain API escape hatches for tests only.
 
 ## How to work
 
