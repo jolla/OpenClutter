@@ -1,8 +1,7 @@
 {
-  "note": "Image-space probes on roofs missing from the 2022 MSBFP2 layer. July 2026 global ML footprints cover them; eval fails if emit drops these points.",
+  "note": "Points on large white roofs in the repro export (877x1046). MSBFP2 returns 49 footprints for this extent and does not cover these roofs. Global ML footprints do; eval fails if emit drops them.",
   "points": [
-    { "id": "east-white-roof", "lon": -87.91575, "lat": 42.89857 },
-    { "id": "east-white-roof-north", "lon": -87.91575, "lat": 42.90077 },
-    { "id": "north-white-roof", "lon": -87.91839, "lat": 42.9021 }
+    { "id": "big-white-retail", "lon": -87.91482, "lat": 42.89849 },
+    { "id": "ne-white-roof", "lon": -87.91572, "lat": 42.90066 }
   ]
 }
