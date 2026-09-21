@@ -18,19 +18,23 @@ const {
 } = require("./hamina-clipboard");
 const { treePairsFromPoints } = require("./vegetation");
 const { zipStore } = require("./zip-store");
+const { overlaySvg, frameLockJson } = require("./overlay");
 
 const MIN_AREA_M2 = 40;
 const MAX_AREA_M2 = 15000;
 const MAX_BUILDINGS = 300;
 
 const ZIP_README =
-  "Import this zip in Hamina (OpenIntent), then open hamina-clipboard.json, copy all, click map, paste\n";
+  "Import this zip in Hamina (OpenIntent), then open hamina-clipboard.json, copy all, click map, paste.\n" +
+  "Verify image-space lock first: unzip and open alignment-overlay.svg (keep images/ next to it).\n" +
+  "Red = buildings, green = trees, drawn on the exact Esri JPEG. If overlay is on rooftops\n" +
+  "but Hamina is not, the bug is clipboard↔Hamina mapping — see frame-lock.json.\n";
 
 const ALIGNMENT = [
   "Exact alignment (repeatable, any site):",
   "1. Import the OpenIntent zip in Hamina (Projects → Import → OpenIntent).",
   "   The zip’s meter dimensions ARE the geographic bbox (widthM × lengthM).",
-  "   Extra files (hamina-clipboard.json, README.txt) are ignored on import.",
+  "   Extra files (hamina-clipboard.json, README.txt, alignment-overlay.svg, frame-lock.json) are ignored on import.",
   "2. Delete any leftover attenuating objects.",
   "3. Open hamina-clipboard.json from the zip, copy all, click the map, paste.",
   "Clipboard meters use that same widthM × lengthM. Origin: " + CLIPBOARD_ORIGIN,
@@ -56,15 +60,62 @@ function ringAreaM2(ring, mpd) {
   return Math.abs(a) / 2;
 }
 
-function simplifyRing(ring, maxPts = 20) {
+function dist2(a, b) {
+  const dx = a[0] - b[0];
+  const dy = a[1] - b[1];
+  return dx * dx + dy * dy;
+}
+
+function perpDist2(p, a, b) {
+  const vx = b[0] - a[0];
+  const vy = b[1] - a[1];
+  const len2 = vx * vx + vy * vy;
+  if (len2 < 1e-24) return dist2(p, a);
+  let t = ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / len2;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  return dist2(p, [a[0] + t * vx, a[1] + t * vy]);
+}
+
+function simplifyDP(pts, eps2) {
+  if (pts.length <= 2) return pts;
+  let maxI = 0;
+  let maxD = 0;
+  const a = pts[0];
+  const b = pts[pts.length - 1];
+  for (let i = 1; i < pts.length - 1; i++) {
+    const d = perpDist2(pts[i], a, b);
+    if (d > maxD) {
+      maxD = d;
+      maxI = i;
+    }
+  }
+  if (maxD > eps2) {
+    const left = simplifyDP(pts.slice(0, maxI + 1), eps2);
+    const right = simplifyDP(pts.slice(maxI), eps2);
+    return left.slice(0, -1).concat(right);
+  }
+  return [a, b];
+}
+
+function simplifyRing(ring, maxPts = 24) {
   if (!ring || ring.length < 3) return ring;
   const closed =
     ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
       ? ring.slice(0, -1)
-      : ring;
-  const step = Math.max(1, Math.ceil(closed.length / maxPts));
-  const out = [];
-  for (let i = 0; i < closed.length; i += step) out.push(closed[i]);
+      : ring.slice();
+  if (closed.length <= maxPts) {
+    closed.push(closed[0]);
+    return closed;
+  }
+  const eps = 2.5e-6;
+  let out = simplifyDP(closed, eps * eps);
+  if (out.length > maxPts) {
+    const step = Math.max(1, Math.ceil(out.length / maxPts));
+    const thin = [];
+    for (let i = 0; i < out.length; i += step) thin.push(out[i]);
+    out = thin;
+  }
   if (out.length < 3) return ring;
   out.push(out[0]);
   return out;
@@ -113,6 +164,7 @@ function footprintsToClutter(features, frame, affine) {
   const oiAreas = [];
   const clipZones = [];
   const aabbs = [];
+  const overlayRings = [];
   const stats = { buildings: 0, droppedMega: 0, droppedTiny: 0, droppedClip: 0 };
   for (const f of features || []) {
     if (oiAreas.length >= MAX_BUILDINGS) break;
@@ -165,10 +217,11 @@ function footprintsToClutter(features, frame, affine) {
       const z = clipZone(typeId, clipRing);
       if (z) clipZones.push(z);
       aabbs.push({ minX, maxX, minY, maxY });
+      overlayRings.push(pts);
       stats.buildings++;
     }
   }
-  return { oiAreas, clipZones, aabbs, stats };
+  return { oiAreas, clipZones, aabbs, overlayRings, stats };
 }
 
 function treesToOi(oiTreeAreas, imgW, imgH) {
@@ -192,7 +245,12 @@ function buildOpenIntent(frame, name, imgName, areas) {
         rotation: 0,
         map_uri: "file://images/" + imgName,
         dimensions: [
-          { width: frame.imgW, length: frame.imgH, height: 12, unit: "pixels" },
+          {
+            width: frame.imgW,
+            length: frame.imgH,
+            height: 12 / frame.mpuY,
+            unit: "pixels",
+          },
           { width: frame.widthM, length: frame.lengthM, height: 12, unit: "meters" },
           {
             width: frame.widthM / 0.3048,
@@ -203,7 +261,12 @@ function buildOpenIntent(frame, name, imgName, areas) {
         ],
         attenuation_areas: areas,
         coverage_areas: [],
-        reference_markers: [],
+        reference_markers: [
+          { name: "OC-SW", coordinate_xyz: { x: 0, y: 0, unit: "pixels" } },
+          { name: "OC-SE", coordinate_xyz: { x: frame.imgW, y: 0, unit: "pixels" } },
+          { name: "OC-NW", coordinate_xyz: { x: 0, y: frame.imgH, unit: "pixels" } },
+          { name: "OC-NE", coordinate_xyz: { x: frame.imgW, y: frame.imgH, unit: "pixels" } },
+        ],
         closets: [],
       },
     ],
@@ -231,6 +294,25 @@ function buildClutter({
   const clip = emptyClipboard();
   clip.attenuatingZones = fp.clipZones.concat(veg.clipZones);
   const oi = buildOpenIntent(frame, name, imgName, areas);
+  const treeOverlayPts = [];
+  for (const t of veg.oiAreas || []) {
+    if (t.typeId !== "tree-trunk" || !t.ringPx || !t.ringPx.length) continue;
+    let sx = 0;
+    let sy = 0;
+    const n = t.ringPx.length - 1;
+    for (let i = 0; i < n; i++) {
+      sx += t.ringPx[i][0];
+      sy += t.ringPx[i][1];
+    }
+    treeOverlayPts.push([sx / n, sy / n]);
+  }
+  const overlay = overlaySvg({
+    frame,
+    imgName,
+    buildingRingsYUp: fp.overlayRings,
+    treePointsYUp: treeOverlayPts,
+  });
+  const lock = frameLockJson(frame, imgName);
   const stats = {
     ...fp.stats,
     trees: veg.count,
@@ -246,6 +328,8 @@ function buildClutter({
       { name: "export-warnings.json", data: Buffer.from('{"errors":[],"warnings":[]}') },
       { name: "hamina-clipboard.json", data: Buffer.from(JSON.stringify(clip)) },
       { name: "README.txt", data: ZIP_README },
+      { name: "alignment-overlay.svg", data: Buffer.from(overlay) },
+      { name: "frame-lock.json", data: Buffer.from(JSON.stringify(lock, null, 2)) },
     ]);
   }
   return {
@@ -272,4 +356,5 @@ module.exports = {
   footprintsToClutter,
   buildClutter,
   siteName,
+  simplifyDP,
 };

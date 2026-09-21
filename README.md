@@ -10,15 +10,15 @@ Hamina OpenIntent `attenuation_areas` imports are unreliable. The dependable obj
 
 This tool does not mix sources. One bbox drives everything:
 
-1. Esri World Imagery for that bbox (`bboxSR=4326`, `imageSR=4326`, same `size` as the math).
-2. Microsoft US Building Footprints (Esri MSBFP2) for that bbox.
-3. USFS/NLCD percent tree canopy for that bbox (imagery RGB only if the canopy raster is missing/empty).
-4. lon/lat → image pixels with the same west/south/east/north.
-5. Clipboard meters use that same `widthM` × `lengthM`.
+1. Esri World Imagery for that bbox (`bboxSR=4326`, `imageSR=4326`). **The frame is the JPEG’s actual `extent`**, which is often taller than the drawn box.
+2. Microsoft US Building Footprints (Esri MSBFP2) mapped through that actual extent.
+3. USFS/NLCD percent tree canopy as a density field (jitter + NMS; imagery RGB only if the canopy raster is missing/empty).
+4. lon/lat → JPEG pixels with the actual west/south/east/north (OpenIntent Y-up / JPEG Y-down).
+5. Clipboard meters use that same actual `widthM` × `lengthM`.
 
 **Import the zip first** (sets the Hamina map to geographic size), **then paste `hamina-clipboard.json` from inside the zip**. No per-site hand nudge. Do not use a GE screenshot as the map.
 
-Clipboard origin (unit-tested):
+Clipboard origin (unit-tested; HaminaClipboard native after OpenIntent import):
 
 ```
 SW (west, south) → (−widthM, −lengthM)
@@ -26,11 +26,12 @@ SE (east, south) → (0, −lengthM)
 NW (west, north) → (−widthM, 0)
 NE (east, north) → (0, 0)
 
-x_clip = x_px * mpuX − widthM
-y_clip = y_from_south_px * mpuY − lengthM
+JPEG Y-down:  x_clip = x_img * mpuX − widthM ;  y_clip = −y_img * mpuY
+OpenIntent Y-up: x_clip = x_up * mpuX − widthM ; y_clip = y_up * mpuY − lengthM
+y_up + y_img = imgH
 ```
 
-Trees come from **USFS/NLCD percent tree canopy** on the same bbox (threshold ≥30%), not from lawn-colored pixels. If that raster is missing or nodata for the box (outside CONUS), the app **silently** falls back to Esri aerial RGB that prefers textured woody canopy over smooth grass. OSM tree *nodes* and `controlPoints` calibration are API-only (not on the default page). OSM building/tree **rings** are never emitted (they caused Hamina to drop all `attenuation_areas` on v8).
+Trees come from **USFS/NLCD percent tree canopy** on the same extent (threshold ≥30%), placed with **jittered NMS** rather than on the 30 m sample lattice. If that raster is missing or nodata for the box (outside CONUS), the app **silently** falls back to Esri aerial RGB that prefers textured woody canopy over smooth grass. OSM tree *nodes* and `controlPoints` calibration are API-only (not on the default page). OSM building/tree **rings** are never emitted (they caused Hamina to drop all `attenuation_areas` on v8).
 
 `stats.treesSource` is `"nlcd-canopy"`, `"imagery-rgb"`, or `"none"` (in the API payload, not a UI picker).
 
@@ -39,12 +40,15 @@ Trees come from **USFS/NLCD percent tree canopy** on the same bbox (threshold �
 1. Search an address.
 2. Draw the site (under ~2 km on a side).
 3. **Export** — one `{site}-openintent.zip` download. Inside:
-   - `openIntent_<slug>.json` — OpenIntent metadata at geographic size
+   - `openIntent_<slug>.json` — OpenIntent metadata at the JPEG’s geographic size
    - `images/<slug>.jpg` — Esri aerial
+   - `alignment-overlay.svg` — buildings (red) + trees (green) on that JPEG
+   - `frame-lock.json` — pixel/meter corners for Hamina vs OpenIntent vs JPEG
    - `export-warnings.json`
    - `hamina-clipboard.json` — full HaminaClipboard object (stock type names)
    - `README.txt` — import zip, then copy/paste clipboard JSON
-4. Hamina: import the zip (OpenIntent), then open `hamina-clipboard.json`, copy all, click the map, paste.
+4. **Check the overlay** (unzip, open `alignment-overlay.svg` next to `images/`). If rooftops match here, image-space is locked.
+5. Hamina: import the zip (OpenIntent), then open `hamina-clipboard.json`, copy all, click the map, paste.
 
 The page has no extra options. Tree source (NLCD canopy, RGB fallback), OSM, and calibration are automatic or API-only.
 
