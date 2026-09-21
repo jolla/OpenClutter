@@ -28,6 +28,10 @@ const THRESHOLDS = {
   minHighCanopyRecall: 0.55,
   minHighCanopyCells: 8,
   maxOrchardScore: 0.75,
+  minUniqueBuildingHeights: 8,
+  minMatchedHeightFrac: 0.9,
+  minUniqueFoliageHeights: 4,
+  minMedianTrees: 8,
 };
 
 function luma(r, g, b) {
@@ -241,6 +245,29 @@ function sampleRgba(raw, x, y) {
 /**
  * Pavement / parking / roof: high luma, low vegetation, or NLCD cell ≈ 0.
  */
+function medianRing(raw, x, y) {
+  let pav = 0;
+  let veg = 0;
+  let n = 0;
+  for (let a = 0; a < 12; a++) {
+    const ang = (Math.PI * 2 * a) / 12;
+    const xx = Math.round(x + Math.cos(ang) * 14);
+    const yy = Math.round(y + Math.sin(ang) * 14);
+    if (xx < 0 || yy < 0 || xx >= raw.width || yy >= raw.height) continue;
+    const i = (yy * raw.width + xx) * 4;
+    const r = raw.data[i];
+    const g = raw.data[i + 1];
+    const b = raw.data[i + 2];
+    const Y = luma(r, g, b);
+    const color = T.vegColorScore(r, g, b);
+    n++;
+    if (color > 0) veg++;
+    else if (Y > 75 && Y < 168) pav++;
+  }
+  if (n < 8) return false;
+  return pav / n >= 0.45 && veg / n <= 0.34;
+}
+
 function isPavementLike(tree, frame, raw, samples) {
   const [ix, iy] = llToImagePx(tree.lon, tree.lat, frame);
   const px = sampleRgba(raw, ix, iy);
@@ -249,6 +276,11 @@ function isPavementLike(tree, frame, raw, samples) {
   const color = T.vegColorScore(px.r, px.g, px.b);
   const score = T.canopyScore(color, stats);
   const pct = nearestTccPct(tree.lon, tree.lat, samples);
+  // Parking medians sit in NLCD cells near 0. Exempt only a textured canopy
+  // core whose ring is gray pavement — not a lawn and not an RGB carpet.
+  if (score >= 0.36 && Y < 155 && medianRing(raw, px.x, px.y)) {
+    return { pavement: false, reason: "median-canopy", Y, score, pct };
+  }
   if (pct != null && pct >= 18) return { pavement: false, reason: "nlcd-canopy", Y, score, pct };
   if (pct != null && pct < 8) return { pavement: true, reason: "nlcd-low", Y, score, pct };
   if (Y > 160 && score < 0.4) return { pavement: true, reason: "bright-roof", Y, score, pct };
@@ -441,7 +473,81 @@ function evaluate(scores, thresholds) {
   if (v.orchard && v.orchard.reject) {
     failures.push(`orchardLattice ${v.orchard.score.toFixed(3)}`);
   }
+  const h = scores.heights;
+  if (h && h.applicable) {
+    if (h.uniqueBuildingHeights < t.minUniqueBuildingHeights) {
+      failures.push(`uniqueBuildingHeights ${h.uniqueBuildingHeights} < ${t.minUniqueBuildingHeights}`);
+    }
+    if (h.matchedFrac < t.minMatchedHeightFrac) {
+      failures.push(`matchedHeightFrac ${h.matchedFrac.toFixed(3)} < ${t.minMatchedHeightFrac}`);
+    }
+    if (h.uniqueFoliageHeights < t.minUniqueFoliageHeights) {
+      failures.push(`uniqueFoliageHeights ${h.uniqueFoliageHeights} < ${t.minUniqueFoliageHeights}`);
+    }
+  }
+  if (scores.imageryRecovery && scores.imageryRecovery.required && !scores.imageryRecovery.hit) {
+    failures.push("imagery roof recovery missed " + (scores.imageryRecovery.probe || "probe"));
+  }
+  if (scores.medians && scores.medians.required && scores.medians.kept < t.minMedianTrees) {
+    failures.push(`medianTrees ${scores.medians.kept} < ${t.minMedianTrees}`);
+  }
   return { ok: failures.length === 0, failures };
+}
+
+function scoreMeasuredHeights(features, overlayRings, overlayHeights, frame, openintent) {
+  let eligible = 0;
+  let matched = 0;
+  const emitted = new Set();
+  for (const f of features || []) {
+    const props = (f && f.properties) || {};
+    const h = Number(props.height || props.Height || props.HEIGHT || 0);
+    if (!(h > 2 && h < 80)) continue;
+    const rings = [];
+    const g = f.geometry;
+    if (!g) continue;
+    if (g.type === "Polygon" && g.coordinates && g.coordinates[0]) rings.push(g.coordinates[0]);
+    else if (g.type === "MultiPolygon") {
+      for (const poly of g.coordinates || []) if (poly && poly[0]) rings.push(poly[0]);
+    }
+    for (const ring of rings) {
+      const c = shoelaceCentroid(ring);
+      if (!c) continue;
+      const px = llToPx(c[0], c[1], frame);
+      let found = -1;
+      for (let i = 0; i < (overlayRings || []).length; i++) {
+        if (pointInRing(px, overlayRings[i])) {
+          found = i;
+          break;
+        }
+      }
+      if (found < 0) continue;
+      eligible++;
+      const eh = overlayHeights && overlayHeights[found];
+      if (eh != null) emitted.add(Number(eh).toFixed(1));
+      if (eh != null && Math.abs(eh - Math.round(h * 10) / 10) <= 0.15) matched++;
+    }
+  }
+  const areas = (openintent && openintent.floorplans && openintent.floorplans[0].attenuation_areas) || [];
+  const foliageH = new Set();
+  let stockFoliage = 0;
+  let foliage = 0;
+  for (const a of areas) {
+    const name = a.area_material && a.area_material.name;
+    if (!name || name.indexOf("Foliage") !== 0) continue;
+    foliage++;
+    foliageH.add(Number(a.area_material.top_height).toFixed(1));
+    if (name === "Foliage - Heavy" || name === "Foliage - Light") stockFoliage++;
+  }
+  return {
+    applicable: eligible >= 8,
+    eligible,
+    matched,
+    matchedFrac: eligible ? matched / eligible : 1,
+    uniqueBuildingHeights: emitted.size,
+    uniqueFoliageHeights: foliageH.size,
+    foliage,
+    stockFoliage,
+  };
 }
 
 function scoreSite({ built, frame, footprints, jpegDecoded, tcc, treePoints, treesSource }) {
@@ -466,6 +572,7 @@ module.exports = {
   scoreTrees,
   scoreRoofTrees,
   scoreRoofProbes,
+  scoreMeasuredHeights,
   isPavementLike,
   orchardLatticeScore,
   highCanopyRecall,
