@@ -96,6 +96,7 @@ function coverageStats(stats) {
     attenuationAreasEmitted: s.attenuationAreasEmitted != null ? s.attenuationAreasEmitted : s.areas || 0,
     globalFootprints: s.globalFootprints || 0,
     arcgisFootprints: s.arcgisFootprints || 0,
+    usaFootprints: s.usaFootprints || 0,
     openintentVersion: s.openintentVersion || OPENINTENT_VERSION,
     coordinateUnit: s.coordinateUnit || "pixels",
     coordinateOrigin: s.coordinateOrigin || "Y-up from SW",
@@ -811,6 +812,7 @@ function buildClutter({
     treesKept: 0,
     globalFootprints: footprintMeta && footprintMeta.globalFootprints ? footprintMeta.globalFootprints : 0,
     arcgisFootprints: footprintMeta && footprintMeta.arcgisFootprints ? footprintMeta.arcgisFootprints : 0,
+    usaFootprints: footprintMeta && footprintMeta.usaFootprints ? footprintMeta.usaFootprints : 0,
   };
   stats.summary = coverageSummary(stats);
   Object.assign(stats, coverageStats(stats));

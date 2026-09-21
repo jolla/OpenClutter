@@ -19,6 +19,7 @@ const { buildClutter, footprintsToClutter } = require("../../netlify/lib/pipelin
 const T = require("../../netlify/lib/tree-source");
 const { treeHitsBuilding } = require("../../netlify/lib/vegetation");
 const { fetchMsGlobalFootprints, mergeFootprintFeatures } = require("../../netlify/lib/ms-global");
+const { fetchUsaStructures } = require("../../netlify/lib/usa-structures");
 const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, evaluate, THRESHOLDS } = require("./score");
 
 const ROOT = path.join(__dirname, "..", "..");
@@ -63,12 +64,16 @@ async function fetchLive(site) {
   const frame = applyImageryMeta(drawn, meta, jpegSize(jpeg));
   const arcgis = await fetchMsFootprints(frame, (url) => fetchOk(url), { pad: false });
   const globalPack = await fetchMsGlobalFootprints(frame, (url) => fetchOk(url)).catch(() => ({ features: [] }));
-  const merged = mergeFootprintFeatures(globalPack.features || [], arcgis.features || []);
+  const usaPack = await fetchUsaStructures(frame, (url) => fetchOk(url)).catch(() => ({ features: [] }));
+  const withArcgis = mergeFootprintFeatures(globalPack.features || [], arcgis.features || []);
+  const merged = mergeFootprintFeatures(withArcgis.features, usaPack.features || []);
   const footprints = {
     type: "FeatureCollection",
     features: merged.features,
     globalFootprints: (globalPack.features || []).length,
     arcgisFootprints: (arcgis.features || []).length,
+    usaFootprints: (usaPack.features || []).length,
+    addedFromUsa: merged.added,
   };
   const tcc = await (await fetchOk(T.canopySamplesUrl(frame))).json();
   return { site, bbox: { ...site }, meta, jpeg, footprints, tcc, roofPoints: null };

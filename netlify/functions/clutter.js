@@ -6,6 +6,7 @@ const { buildClutter, ALIGNMENT, footprintsToClutter } = require("../lib/pipelin
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
 const { fetchMsGlobalFootprints, mergeFootprintFeatures } = require("../lib/ms-global");
+const { fetchUsaStructures } = require("../lib/usa-structures");
 const { treeHitsBuilding } = require("../lib/vegetation");
 
 function json(status, cors, obj) {
@@ -109,6 +110,7 @@ exports.handler = async (event) => {
   let gj;
   let imgMeta = null;
   let globalFeatures = [];
+  let usaFeatures = [];
   let serverCanopyHits = null;
   try {
     if (needImage) {
@@ -126,7 +128,11 @@ exports.handler = async (event) => {
     const globalJob = fetchMsGlobalFootprints(frame, (url) =>
       fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) })
     ).catch(() => ({ features: [] }));
+    const usaJob = fetchUsaStructures(frame, (url) =>
+      fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) })
+    ).catch(() => ({ features: [] }));
     jobs.push(globalJob);
+    jobs.push(usaJob);
     if (needImage) jobs.push(fetchOk(imgUrl));
     const canopyJob =
       !treePoints.length
@@ -135,7 +141,8 @@ exports.handler = async (event) => {
     const fetched = await Promise.all(jobs);
     gj = fetched[0];
     globalFeatures = (fetched[1] && fetched[1].features) || [];
-    const imgRes = needImage ? fetched[2] : null;
+    usaFeatures = (fetched[2] && fetched[2].features) || [];
+    const imgRes = needImage ? fetched[3] : null;
     if (needImage) {
       imgBuf = Buffer.from(await imgRes.arrayBuffer());
       if (imgBuf.length < 100 || imgBuf[0] !== 0xff || imgBuf[1] !== 0xd8) {
@@ -162,11 +169,13 @@ exports.handler = async (event) => {
   treesSource = normalizeTreesSource(treesSource, treePoints.length);
 
   const arcgisFeatures = (gj && gj.features) || [];
-  const merged = mergeFootprintFeatures(globalFeatures, arcgisFeatures);
+  const withArcgis = mergeFootprintFeatures(globalFeatures, arcgisFeatures);
+  const merged = mergeFootprintFeatures(withArcgis.features, usaFeatures);
   gj = { type: "FeatureCollection", features: merged.features };
   const footprintMeta = {
     globalFootprints: globalFeatures.length,
     arcgisFootprints: arcgisFeatures.length,
+    usaFootprints: usaFeatures.length,
   };
 
   const clientHits = normalizeCanopyHits(body.canopyHits);

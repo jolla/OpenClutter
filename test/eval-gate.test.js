@@ -35,11 +35,11 @@ describe("eval gate (cached fixtures, no Hamina)", () => {
       assert.equal(next.exportStats.buildings.missingLargeRoofs, 0);
       if (site.id === "oak-creek-commercial") {
         assert.ok(
-          next.exportStats.coverage.buildingsKept >= 70,
+          next.exportStats.coverage.buildingsKept >= 78,
           `Oak Creek repro kept ${next.exportStats.coverage.buildingsKept}, MSBFP2-only export kept 48`
         );
         assert.ok(
-          next.exportStats.buildings.eligibleFootprints >= 70,
+          next.exportStats.buildings.eligibleFootprints >= 78,
           "major MS footprints present"
         );
         assert.ok(next.exportStats.buildings.roofProbes, "known white-roof probes");
