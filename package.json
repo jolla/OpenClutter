@@ -2,7 +2,12 @@
   "name": "openclutter",
   "private": true,
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "eval": "node scripts/eval-sites.js",
+    "eval:legacy": "node scripts/eval-sites.js --legacy",
+    "eval:compare": "node scripts/eval-sites.js --compare-legacy",
+    "eval:live": "node scripts/eval-sites.js --live",
+    "fixtures:fetch": "node scripts/fetch-eval-fixtures.js"
   },
   "dependencies": {
     "jpeg-js": "^0.4.4"

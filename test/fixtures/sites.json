@@ -1,0 +1,20 @@
+{
+  "sites": [
+    {
+      "id": "oak-creek-commercial",
+      "name": "Oak Creek WI commercial",
+      "west": -87.9217,
+      "south": 42.8964,
+      "east": -87.9155,
+      "north": 42.9018
+    },
+    {
+      "id": "wooded-lot-old",
+      "name": "Wooded Lot (residential / woods)",
+      "west": -87.0005,
+      "south": 42.0035,
+      "east": -87.0015,
+      "north": 42.9002
+    }
+  ]
+}
