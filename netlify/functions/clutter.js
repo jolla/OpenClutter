@@ -1,9 +1,10 @@
 "use strict";
 
-const UA = "openclutter/0.7.0 (https://github.com/jolla/OpenClutter)";
+const UA = "openclutter/0.8.0 (https://github.com/jolla/OpenClutter)";
 const { geoFrame, esriImageryUrl, msFootprintsUrl, fitAffine } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
+const { fetchCanopyTrees, normalizeTreesSource } = require("../lib/tree-source");
 
 function json(status, cors, obj) {
   return {
@@ -79,11 +80,20 @@ exports.handler = async (event) => {
   const imgUrl = esriImageryUrl(frame);
   const footprintsUrl = msFootprintsUrl(frame, 300);
 
+  let treePoints = Array.isArray(body.trees) ? body.trees.slice() : [];
+  let treesSource = ["nlcd-canopy", "imagery-rgb", "none"].includes(body.treesSource)
+    ? body.treesSource
+    : null;
+
   let imgBuf = null;
   let gj;
   try {
     const jobs = [fetchOk(footprintsUrl)];
     if (needImage) jobs.push(fetchOk(imgUrl));
+    const canopyJob =
+      !treePoints.length && !treesSource
+        ? fetchCanopyTrees(frame, (url) => fetchOk(url)).catch(() => null)
+        : null;
     const [fpRes, imgRes] = await Promise.all(jobs);
     gj = await fpRes.json();
     if (needImage) {
@@ -92,17 +102,25 @@ exports.handler = async (event) => {
         throw new Error("imagery not jpeg");
       }
     }
+    if (canopyJob) {
+      const canopy = await canopyJob;
+      if (canopy && canopy.source) {
+        treePoints = canopy.trees;
+        treesSource = "nlcd-canopy";
+      }
+    }
   } catch (e) {
     return json(502, cors, { error: String(e.message || e) + " — Esri timed out, retry or draw a smaller box" });
   }
 
-  let treePoints = Array.isArray(body.trees) ? body.trees.slice() : [];
+  treesSource = normalizeTreesSource(treesSource, treePoints.length);
+
   if (wantOsm(body)) {
     try {
       const osm = await fetchOsmTreeNodes(frame.west, frame.south, frame.east, frame.north, UA);
       treePoints = treePoints.concat(osm);
     } catch {
-      // OSM is optional; imagery vegetation still applies.
+      // OSM is optional; canopy / imagery vegetation still applies.
     }
   }
 
@@ -113,6 +131,7 @@ exports.handler = async (event) => {
     affine,
     name: body.name,
     imgBuf,
+    treesSource,
   });
 
   const frameHeaders = {

@@ -34,6 +34,16 @@ describe("clutter handler (mocked Esri)", () => {
   before(() => {
     global.fetch = async (url) => {
       urls.push(String(url));
+      if (String(url).includes("USFS_EDW_NLCD_TCC") || String(url).includes("getSamples")) {
+        const samples = [];
+        for (let i = 0; i < 24; i++) {
+          samples.push({
+            location: { x: -115.16 - i * 0.0003, y: 36.128 - i * 0.0002 },
+            value: String(40 + (i % 40)),
+          });
+        }
+        return { ok: true, json: async () => ({ samples }) };
+      }
       if (String(url).includes("overpass")) {
         return {
           ok: true,
@@ -85,6 +95,8 @@ describe("clutter handler (mocked Esri)", () => {
     assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("bboxSR=4326") && u.includes("imageSR=4326")));
     assert.ok(urls.some((u) => u.includes("MSBFP2")));
     assert.ok(body.stats.trees >= 1);
+    assert.equal(body.stats.treesSource, "imagery-rgb");
+    assert.ok(!urls.some((u) => u.includes("USFS_EDW_NLCD_TCC")));
   });
 
   it("clipboard-only skips imagery and still uses shared widthM", async () => {
@@ -97,7 +109,26 @@ describe("clutter handler (mocked Esri)", () => {
     const clip = JSON.parse(res.body);
     assert.equal(clip.header.type, "HaminaClipboard");
     assert.ok(!urls.some((u) => u.includes("World_Imagery")));
+    assert.ok(urls.some((u) => u.includes("USFS_EDW_NLCD_TCC")));
     assert.equal(res.headers["x-hamina-alignment"], "import-zip-then-paste");
     assert.ok(Number(res.headers["x-hamina-width-m"]) > 2000);
+  });
+
+  it("echoes client treesSource and does not re-fetch canopy when trees are provided", async () => {
+    urls.length = 0;
+    const res = await handler({
+      httpMethod: "POST",
+      body: JSON.stringify({
+        ...WYNN,
+        trees: [{ lon: -115.17, lat: 36.122, pct: 72 }],
+        treesSource: "nlcd-canopy",
+        format: "bundle",
+      }),
+    });
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.stats.treesSource, "nlcd-canopy");
+    assert.ok(body.stats.trees >= 1);
+    assert.ok(!urls.some((u) => u.includes("USFS_EDW_NLCD_TCC")));
   });
 });

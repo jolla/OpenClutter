@@ -59,7 +59,7 @@
     </div>
     <label class="check">
       <input type="checkbox" id="osmTrees" />
-      <span>Also add OSM tree <em>nodes</em> (off by default — imagery vegetation is the tree source; OSM rings are never used).</span>
+      <span>Also add OSM tree <em>nodes</em> (off by default — NLCD/USFS canopy is the tree source, Esri imagery RGB is fallback; OSM rings are never used).</span>
     </label>
     <details>
       <summary>Legacy map calibration (optional)</summary>
@@ -75,6 +75,7 @@
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script src="/tree-detect.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

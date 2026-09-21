@@ -69,17 +69,15 @@ document.getElementById("search").onsubmit = async (e) => {
   }
 };
 
-function isVeg(r, g, b) {
-  const s = r + g + b;
-  if (s < 70 || s > 420) return false;
-  if (b > 125 && b > g + 8) return false;
-  if (r > 185 && g > 170) return false;
-  const olive = g >= r - 18 && g > b + 4 && r > 38 && r < 160 && g > 42 && g < 145 && b < 110;
-  const dusty = r >= g - 8 && r > b + 10 && r > 45 && r < 140 && g > 40 && g < 120 && b < 90 && g > r * 0.55;
-  return olive || dusty;
+async function detectCanopyTrees(b) {
+  const T = globalThis.OpenClutterTrees;
+  const result = await T.fetchCanopyTrees(b, (url) => fetch(url, { signal: AbortSignal.timeout(8000) }));
+  if (!result.source) return null;
+  return result;
 }
 
-async function detectTrees(b) {
+async function detectRgbTrees(b) {
+  const T = globalThis.OpenClutterTrees;
   const imgW = 720;
   const imgH = Math.max(200, Math.round(imgW * ((b.north - b.south) / Math.max(1e-9, b.east - b.west))));
   const url =
@@ -94,40 +92,13 @@ async function detectTrees(b) {
   const ctx = c.getContext("2d", { willReadFrequently: true });
   ctx.drawImage(bmp, 0, 0);
   const { data, width: w, height: h } = ctx.getImageData(0, 0, c.width, c.height);
-  const step = 8;
-  const hits = [];
-  for (let y = step; y < h - step; y += step) {
-    for (let x = step; x < w - step; x += step) {
-      const i = (y * w + x) * 4;
-      if (!isVeg(data[i], data[i + 1], data[i + 2])) continue;
-      let ok = 0, n = 0;
-      for (let dy = -4; dy <= 4; dy += 4) {
-        for (let dx = -4; dx <= 4; dx += 4) {
-          const j = ((y + dy) * w + (x + dx)) * 4;
-          if (j < 0 || j >= data.length) continue;
-          n++;
-          if (isVeg(data[j], data[j + 1], data[j + 2])) ok++;
-        }
-      }
-      if (n && ok / n >= 0.4) {
-        hits.push({
-          lon: b.west + (x / w) * (b.east - b.west),
-          lat: b.north - (y / h) * (b.north - b.south),
-        });
-      }
-    }
-  }
-  const cell = 0.00012;
-  const seen = new Set();
-  const out = [];
-  for (const t of hits) {
-    const k = Math.floor(t.lon / cell) + ":" + Math.floor(t.lat / cell);
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(t);
-    if (out.length >= 180) break;
-  }
-  return out;
+  return T.detectTreesFromImageData(data, w, h, b);
+}
+
+function sourceLabel(source, n) {
+  if (source === "nlcd-canopy") return `${n} trees (NLCD / USFS canopy)`;
+  if (source === "imagery-rgb") return `${n} trees (imagery RGB fallback)`;
+  return "0 trees";
 }
 
 function parseControlPoints() {
@@ -155,7 +126,7 @@ function b64ToBlob(b64, type) {
   return new Blob([bytes], { type });
 }
 
-async function exportOnce(trees, controlPoints) {
+async function exportOnce(trees, controlPoints, treesSource) {
   const r = await fetch("/api/clutter", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -163,6 +134,7 @@ async function exportOnce(trees, controlPoints) {
       ...bbox,
       name: document.getElementById("q").value || "Site",
       trees,
+      treesSource,
       osmTrees: document.getElementById("osmTrees").checked,
       format: "bundle",
       controlPoints: controlPoints || undefined,
@@ -176,7 +148,7 @@ async function exportOnce(trees, controlPoints) {
 document.getElementById("export").onclick = async () => {
   if (!bbox) return;
   exportBtn.disabled = true;
-  setStatus("Finding trees in the Esri aerial…");
+  setStatus("Finding trees…");
   try {
     let controlPoints = null;
     try {
@@ -185,18 +157,34 @@ document.getElementById("export").onclick = async () => {
       throw e;
     }
     let trees = [];
+    let treesSource = "none";
     try {
-      trees = await detectTrees(bbox);
+      setStatus("Sampling NLCD / USFS tree canopy…");
+      const canopy = await detectCanopyTrees(bbox);
+      if (canopy) {
+        trees = canopy.trees;
+        treesSource = "nlcd-canopy";
+      }
     } catch (e) {
-      trees = [];
+      treesSource = "none";
     }
-    setStatus(`Found ${trees.length} vegetation points. Building zip + clipboard…`);
+    if (treesSource !== "nlcd-canopy") {
+      try {
+        setStatus("Canopy raster missing for this bbox — detecting trees from imagery…");
+        trees = await detectRgbTrees(bbox);
+        treesSource = trees.length ? "imagery-rgb" : "none";
+      } catch (e) {
+        trees = [];
+        treesSource = "none";
+      }
+    }
+    setStatus(`Found ${sourceLabel(treesSource, trees.length)}. Building zip + clipboard…`);
     let data;
     try {
-      data = await exportOnce(trees, controlPoints);
+      data = await exportOnce(trees, controlPoints, treesSource);
     } catch (e) {
       setStatus("Retrying… " + e.message);
-      data = await exportOnce(trees, controlPoints);
+      data = await exportOnce(trees, controlPoints, treesSource);
     }
     downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
     await new Promise((r) => setTimeout(r, 400));
@@ -207,9 +195,10 @@ document.getElementById("export").onclick = async () => {
     const s = data.stats || {};
     const w = data.frame && Math.round(data.frame.widthM);
     const l = data.frame && Math.round(data.frame.lengthM);
+    const src = s.treesSource || treesSource;
     setStatus(
       `Downloaded map zip (${w} × ${l} m) and clipboard JSON.\n` +
-        `${s.buildings || 0} buildings, ${s.trees || 0} trees` +
+        `${s.buildings || 0} buildings, ${sourceLabel(src, s.trees || 0)}` +
         (s.calibrated ? " (legacy calibration on)." : ".") +
         `\nImport the zip in Hamina first, then paste the JSON on the map.`
     );
