@@ -24,6 +24,7 @@ const THRESHOLDS = {
   maxIncompleteMultiPolygons: 0,
   minLargeRoofKeepRate: 1,
   maxPavementTreeFrac: 0.15,
+  maxRoofTreeFrac: 0.03,
   minHighCanopyRecall: 0.55,
   minHighCanopyCells: 8,
   maxOrchardScore: 0.75,
@@ -342,6 +343,44 @@ function treePointsFromBuilt(built) {
   return pts;
 }
 
+function scoreRoofTrees(treeLonLat, features) {
+  const rings = [];
+  for (const f of features || []) {
+    const g = f && f.geometry;
+    if (!g) continue;
+    if (g.type === "Polygon" && g.coordinates && g.coordinates[0]) rings.push(g.coordinates[0]);
+    else if (g.type === "MultiPolygon") {
+      for (const poly of g.coordinates || []) {
+        if (poly && poly[0]) rings.push(poly[0]);
+      }
+    }
+  }
+  const trees = treeLonLat || [];
+  let onRoof = 0;
+  for (const t of trees) {
+    const pt = [t.lon, t.lat];
+    if (rings.some((ring) => pointInRing(pt, ring))) onRoof++;
+  }
+  return {
+    roofTrees: onRoof,
+    roofTreeFrac: trees.length ? onRoof / trees.length : 0,
+  };
+}
+
+/** Probe points (lon/lat) that must land inside an emitted building ring. */
+function scoreRoofProbes(probes, overlayRings, frame) {
+  const points = probes || [];
+  let hit = 0;
+  const missed = [];
+  for (const p of points) {
+    const px = llToPx(+p.lon, +p.lat, frame);
+    const ok = (overlayRings || []).some((ring) => pointInRing(px, ring));
+    if (ok) hit++;
+    else missed.push(p.id || `${p.lon},${p.lat}`);
+  }
+  return { probes: points.length, hit, missed };
+}
+
 function scoreTrees(treeLonLat, frame, raw, tccPayload, treesSource) {
   const parsed = T.treesFromCanopySamples(tccPayload || { samples: [] });
   const samples = (tccPayload && tccPayload.samples) || [];
@@ -390,6 +429,12 @@ function evaluate(scores, thresholds) {
   if (v.pavementTreeFrac > t.maxPavementTreeFrac) {
     failures.push(`pavementTreeFrac ${v.pavementTreeFrac.toFixed(3)} > ${t.maxPavementTreeFrac}`);
   }
+  if (v.roofTreeFrac != null && v.roofTreeFrac > t.maxRoofTreeFrac) {
+    failures.push(`roofTreeFrac ${v.roofTreeFrac.toFixed(3)} > ${t.maxRoofTreeFrac}`);
+  }
+  if (scores.roofProbes && scores.roofProbes.missed && scores.roofProbes.missed.length) {
+    failures.push(`roofProbes missed ${scores.roofProbes.missed.join(", ")}`);
+  }
   if (v.highCanopyRecall != null && v.highCanopyRecall < t.minHighCanopyRecall) {
     failures.push(`highCanopyRecall ${v.highCanopyRecall.toFixed(3)} < ${t.minHighCanopyRecall}`);
   }
@@ -419,6 +464,8 @@ module.exports = {
   iouSets,
   scoreBuildings,
   scoreTrees,
+  scoreRoofTrees,
+  scoreRoofProbes,
   isPavementLike,
   orchardLatticeScore,
   highCanopyRecall,

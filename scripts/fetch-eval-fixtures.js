@@ -15,6 +15,8 @@ const {
   jpegSize,
 } = require("../netlify/lib/geo-frame");
 const { canopySamplesUrl } = require("../netlify/lib/tree-source");
+const { fetchMsGlobalFootprints, mergeFootprintFeatures } = require("../netlify/lib/ms-global");
+const { fetchUsaStructures } = require("../netlify/lib/usa-structures");
 
 const UA = "openclutter/0.12.0-eval (https://github.com/jolla/OpenClutter)";
 const ROOT = path.join(__dirname, "..", "test", "fixtures");
@@ -40,7 +42,26 @@ async function main() {
     const jpeg = Buffer.from(await imgRes.arrayBuffer());
     const frame = applyImageryMeta(drawn, meta, jpegSize(jpeg));
     console.log("  snapped", Math.round(frame.widthM) + "×" + Math.round(frame.lengthM) + " m", frame.imgW + "×" + frame.imgH);
-    const fp = await fetchMsFootprints(frame, (url) => fetchOk(url), { pad: false });
+    const arcgis = await fetchMsFootprints(frame, (url) => fetchOk(url), { pad: false });
+    const globalPack = await fetchMsGlobalFootprints(frame, (url) => fetchOk(url)).catch((e) => {
+      console.warn("  global footprints skipped:", e.message || e);
+      return { features: [] };
+    });
+    const usaPack = await fetchUsaStructures(frame, (url) => fetchOk(url)).catch((e) => {
+      console.warn("  USA Structures skipped:", e.message || e);
+      return { features: [] };
+    });
+    const withArcgis = mergeFootprintFeatures(globalPack.features || [], arcgis.features || []);
+    const merged = mergeFootprintFeatures(withArcgis.features, usaPack.features || []);
+    const fp = {
+      type: "FeatureCollection",
+      features: merged.features,
+      globalFootprints: (globalPack.features || []).length,
+      arcgisFootprints: (arcgis.features || []).length,
+      usaFootprints: (usaPack.features || []).length,
+      addedFromArcgis: withArcgis.added,
+      addedFromUsa: merged.added,
+    };
     const tccUrl = canopySamplesUrl(frame);
     const tccRes = await fetchOk(tccUrl);
     const tcc = await tccRes.json();

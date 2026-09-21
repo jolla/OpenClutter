@@ -17,7 +17,10 @@ const {
 } = require("../../netlify/lib/geo-frame");
 const { buildClutter, footprintsToClutter } = require("../../netlify/lib/pipeline");
 const T = require("../../netlify/lib/tree-source");
-const { scoreBuildings, scoreTrees, evaluate, THRESHOLDS } = require("./score");
+const { treeHitsBuilding } = require("../../netlify/lib/vegetation");
+const { fetchMsGlobalFootprints, mergeFootprintFeatures } = require("../../netlify/lib/ms-global");
+const { fetchUsaStructures } = require("../../netlify/lib/usa-structures");
+const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, evaluate, THRESHOLDS } = require("./score");
 
 const ROOT = path.join(__dirname, "..", "..");
 const FIXTURES = path.join(ROOT, "test", "fixtures");
@@ -41,6 +44,9 @@ function loadFixture(site) {
     jpeg: fs.readFileSync(path.join(dir, "imagery.jpg")),
     footprints: JSON.parse(fs.readFileSync(path.join(dir, "footprints.geojson"), "utf8")),
     tcc: JSON.parse(fs.readFileSync(path.join(dir, "tcc-samples.json"), "utf8")),
+    roofPoints: fs.existsSync(path.join(dir, "roof-points.json"))
+      ? JSON.parse(fs.readFileSync(path.join(dir, "roof-points.json"), "utf8"))
+      : null,
   };
 }
 
@@ -56,9 +62,21 @@ async function fetchLive(site) {
   const meta = await (await fetchOk(esriImageryMetaUrl(drawn))).json();
   const jpeg = Buffer.from(await (await fetchOk(esriImageryUrl(drawn))).arrayBuffer());
   const frame = applyImageryMeta(drawn, meta, jpegSize(jpeg));
-  const footprints = await fetchMsFootprints(frame, (url) => fetchOk(url), { pad: false });
+  const arcgis = await fetchMsFootprints(frame, (url) => fetchOk(url), { pad: false });
+  const globalPack = await fetchMsGlobalFootprints(frame, (url) => fetchOk(url)).catch(() => ({ features: [] }));
+  const usaPack = await fetchUsaStructures(frame, (url) => fetchOk(url)).catch(() => ({ features: [] }));
+  const withArcgis = mergeFootprintFeatures(globalPack.features || [], arcgis.features || []);
+  const merged = mergeFootprintFeatures(withArcgis.features, usaPack.features || []);
+  const footprints = {
+    type: "FeatureCollection",
+    features: merged.features,
+    globalFootprints: (globalPack.features || []).length,
+    arcgisFootprints: (arcgis.features || []).length,
+    usaFootprints: (usaPack.features || []).length,
+    addedFromUsa: merged.added,
+  };
   const tcc = await (await fetchOk(T.canopySamplesUrl(frame))).json();
-  return { site, bbox: { ...site }, meta, jpeg, footprints, tcc };
+  return { site, bbox: { ...site }, meta, jpeg, footprints, tcc, roofPoints: null };
 }
 
 function decodeJpeg(buf) {
@@ -66,13 +84,17 @@ function decodeJpeg(buf) {
   return jpeg.decode(buf, { useTArray: true, maxResolutionInMP: 20 });
 }
 
-function resolveFromSources(frame, tcc, jpegDecoded, rgbPolicy) {
+function resolveFromSources(frame, tcc, jpegDecoded, rgbPolicy, buildingAabbs) {
   const parsed = T.treesFromCanopySamples(tcc);
   const decided = T.decideCanopy(parsed);
   const budget = T.maxTreesForBbox(frame);
+  const reject =
+    buildingAabbs && buildingAabbs.length
+      ? (lon, lat) => treeHitsBuilding(lon, lat, frame, buildingAabbs)
+      : null;
   const canopy = decided.ok
     ? {
-        trees: T.pickCanopyTrees(parsed.hits, frame, { maxTrees: budget }),
+        trees: T.pickCanopyTrees(parsed.hits, frame, { maxTrees: budget, reject }),
         source: "nlcd-canopy",
         reason: decided.reason,
         parsed,
@@ -95,8 +117,14 @@ function runLoaded(loaded, opts) {
   const drawn = geoFrame(loaded.bbox);
   const frame = applyImageryMeta(drawn, loaded.meta, jpegSize(loaded.jpeg));
   const jpegDecoded = decodeJpeg(loaded.jpeg);
-  const { canopy, resolved, parsed } = resolveFromSources(frame, loaded.tcc, jpegDecoded, rgbPolicy);
   const fp = footprintsToClutter(loaded.footprints.features || [], frame);
+  const { canopy, resolved, parsed } = resolveFromSources(
+    frame,
+    loaded.tcc,
+    jpegDecoded,
+    rgbPolicy,
+    rgbPolicy === T.RGB_POLICY_PREFER_NLCD ? fp.aabbs : null
+  );
   const built = buildClutter({
     frame,
     footprintsGeojson: loaded.footprints,
@@ -107,7 +135,11 @@ function runLoaded(loaded, opts) {
   });
   const buildings = scoreBuildings(loaded.footprints.features || [], fp.overlayRings, frame);
   const trees = scoreTrees(resolved.trees, frame, jpegDecoded, loaded.tcc, resolved.source);
-  const gate = evaluate({ buildings, trees });
+  Object.assign(trees, scoreRoofTrees(resolved.trees, loaded.footprints.features || []));
+  const probes = (loaded.roofPoints && loaded.roofPoints.points) || [];
+  const roofProbes = probes.length ? scoreRoofProbes(probes, fp.overlayRings, frame) : null;
+  if (roofProbes) buildings.roofProbes = roofProbes;
+  const gate = evaluate({ buildings, trees, roofProbes });
   const exportStats = {
     site: loaded.site.id,
     name: loaded.site.name,
@@ -188,6 +220,7 @@ function formatRow(stats) {
     `iou ${stats.buildings.iou.toFixed(2)} ` +
     `missLarge ${stats.buildings.missingLargeRoofs} ` +
     `pav ${stats.trees.pavementTreeFrac.toFixed(3)} ` +
+    `roof ${stats.trees.roofTreeFrac == null ? "n/a" : stats.trees.roofTreeFrac.toFixed(3)} ` +
     `canopy ${rec} ` +
     `trees ${stats.trees.treesPlaced} (${stats.trees.treesSource})`
   );

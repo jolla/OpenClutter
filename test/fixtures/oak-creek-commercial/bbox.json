@@ -1,9 +1,9 @@
 {
   "id": "oak-creek-commercial",
   "name": "Oak Creek WI commercial",
-  "west": -87.9217,
-  "south": 42.8964,
-  "east": -87.9155,
-  "north": 42.9018,
-  "note": "Drawn bbox. Eval snaps the frame to imagery-meta.json extent + imagery.jpg size (same as production)."
+  "west": -87.92259693145752,
+  "south": 42.89043196008693,
+  "east": -87.91184663772584,
+  "north": 42.90325386116256,
+  "note": "Snapped JPEG extent from the repro export that Hamina imported as 558 attenuating objects (48 buildings from 49 MSBFP2 hits). Eval uses imagery-meta.json + imagery.jpg the same way production snaps the frame."
 }

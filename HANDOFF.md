@@ -23,7 +23,7 @@ Do **not** use an X Grok bot. It cannot push to GitHub.
 | Piece | Source | Frame |
 |---|---|---|
 | Map image | Esri World Imagery export | `bboxSR=4326` `imageSR=4326`; **snap frame to the export’s actual `extent` + JPEG size** (Esri often pads N/S) |
-| Buildings | Microsoft US Building Footprints (Esri MSBFP2), **paginated** to 2000 | same **actual** west/south/east/north as the JPEG |
+| Buildings | Microsoft **Global ML** footprints (zoom-9 quadkey gzip, bbox-clipped) **plus** Esri MSBFP2, then FEMA **USA Structures** for centroids not already covered. MSBFP2 paginated to 2000 | same **actual** west/south/east/north as the JPEG |
 | Trees | **USFS/NLCD percent tree canopy** as a **density field** (jittered NMS, not the 30 m sample lattice) | same extent; ≥18% canopy. **Imagery RGB** only if canopy is missing/nodata (true gaps). Valid NLCD zeros/sparse stay NLCD — do not RGB-paint parking. OSM nodes optional, **off**. |
 | Map size | OpenIntent zip `dimensions` meters | `widthM` × `lengthM` from the **snapped JPEG extent** |
 | Objects | OpenIntent `floorplans[].attenuation_areas[]` + `area_materials` | same snapped extent, Y-up pixels, stock Hamina type names |
@@ -66,10 +66,10 @@ Do **not** inject OSM building or tree **rings** (broke v8 — Hamina dropped al
 
 ## Known issues
 
-1. MS footprint vintage can sit a few meters off current imagery.
+1. Esri MSBFP2 (`dataLastEditDate` 2022-04-13) is not the full Microsoft set. Jerry’s Oak Creek draw is the north–south commercial corridor in the 877×1046 export (extent in `test/fixtures/oak-creek-commercial/bbox.json`, ~877×1417 m). That export fetched **49** MSBFP2 footprints and kept **48** (one tiny). Hamina imported all **558** emitted areas. The large white retail roof is not in those 49. Global ML for quadkey `030222210` clips to **68** on that extent (the 2026-08-13 tile was checked; the polygons that hit this bbox match the 2026-07-24 file). FEMA USA Structures adds roofs whose centroids are still outside that merge. A few bright roofs are in none of the three layers and are not invented. Index: `netlify/lib/ms-buildings-index.json`. Refresh when Microsoft moves `dataset-links.csv` (index is the 2026-07-24 UnitedStates rows; current manifest is `https://bfppub.z5.web.core.windows.net/2026-08-13/dataset-links.csv`). A failed or slow (>8s) global or USA Structures download is ignored. OSM building ways are still not fetched.
 2. Heights are heuristics unless the footprint has `height`.
-3. Vegetation: default is USFS/NLCD percent tree canopy (30 m, CONUS) treated as a **density field** — jittered stratified samples + NMS, not one tree per getSamples lattice point. Imagery RGB is fallback **only** when the raster is missing/nodata for the bbox (outside CONUS, empty samples). Valid NLCD with 0 trees (parking lots) stays `nlcd-canopy`. RGB requires textured woody canopy (not smooth lawn, not gray parking). Never a step lattice, never north-first cap.
-4. Netlify hobby ~10s: footprints + imagery must fit; jpeg-js decode stays **off** the request path (504s). Canopy `getSamples` is JSON (~0.8 s). Browser tries canopy first and sends lon/lat + `treesSource`.
+3. Vegetation: default is USFS/NLCD percent tree canopy (30 m, CONUS) treated as a **density field** — jittered stratified samples + NMS, not one tree per getSamples lattice point. Continuous woods pack tighter (about a 5 m floor) than isolated 18% cells, which stay sparse so parking is not carpeted. The browser sends NLCD hits (`canopyHits`); the server re-places them after footprints exist and rejects points on building boxes, so rooftop false trees do not use up the cap. Imagery RGB is fallback **only** when the raster is missing/nodata for the bbox (outside CONUS, empty samples). Valid NLCD with 0 trees (parking lots) stays `nlcd-canopy`. RGB requires textured woody canopy (not smooth lawn, not gray parking). Never a step lattice, never north-first cap.
+4. Netlify hobby ~10s: imagery + MSBFP2 + one global quadkey gzip (~40 MB, usually one zoom-9 tile) + USA Structures (object ids, then geometry chunks, cap 500) must fit. Global and USA Structures fetches are each capped at 8s and ignored on failure so MSBFP2 still exports. jpeg-js decode stays **off** the request path. Canopy `getSamples` is JSON (~0.8 s). Browser tries canopy first and sends lon/lat hits + `treesSource`.
 5. US footprints only. NLCD TCC CONUS does not cover HI / PR / SEAK — those sites fall back to imagery RGB.
 
 ## Next fixes (priority)
