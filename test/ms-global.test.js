@@ -95,4 +95,34 @@ describe("Microsoft global building footprints", () => {
     assert.equal(merged.added, 1);
     assert.equal(merged.features[0], globalF);
   });
+
+  it("copies a covered USA height onto the primary footprint that lacks one", () => {
+    const globalF = {
+      type: "Feature",
+      properties: {},
+      geometry: {
+        type: "Polygon",
+        coordinates: [[
+          [-87.918, 42.899],
+          [-87.917, 42.899],
+          [-87.917, 42.9],
+          [-87.918, 42.9],
+          [-87.918, 42.899],
+        ]],
+      },
+    };
+    const usa = poly([
+      [-87.9179, 42.8991],
+      [-87.9171, 42.8991],
+      [-87.9171, 42.8999],
+      [-87.9179, 42.8999],
+      [-87.9179, 42.8991],
+    ]);
+    usa.properties.height = 7.4;
+    const merged = mergeFootprintFeatures([globalF], [usa]);
+    assert.equal(merged.added, 0);
+    assert.equal(merged.features.length, 1);
+    assert.equal(merged.heightsTransferred, 1);
+    assert.equal(merged.features[0].properties.height, 7.4);
+  });
 });

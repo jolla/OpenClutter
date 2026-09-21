@@ -1,9 +1,10 @@
 "use strict";
 
 const { llToPx, pxToClipboard, applyAffine } = require("./geo-frame");
-const { clipZone } = require("./hamina-clipboard");
+const { clipZone, TYPE_BY_ID, oiMaterialFromType } = require("./hamina-clipboard");
+const { measuredFoliageMaterial, measuredTrunkMaterial } = require("./materials");
 
-const { MAX_TREES, maxTreesForBbox, pickStratified } = require("./tree-source");
+const { MAX_TREES, MAX_TREES_LARGE, maxTreesForBbox, pickStratified, canopyHeightM } = require("./tree-source");
 const CANOPY_R_M = 5.2;
 const TRUNK_R_M = 0.5;
 
@@ -86,13 +87,17 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine) {
       lat: p.lat,
       x,
       y,
+      pct: p.pct != null && Number.isFinite(+p.pct) ? +p.pct : null,
+      heightM: p.heightM != null && Number.isFinite(+p.heightM) ? +p.heightM : null,
       score: Number.isFinite(+p.pct) ? +p.pct / 100 : Number.isFinite(+p.score) ? +p.score : 0.5,
       seed: x * 0.13 + y * 0.07,
     });
   }
   // Points are already jittered + NMS'd by the canopy placer. Do not snap
   // them back onto a pixel lattice (that re-creates the orchard grid).
-  const maxTrees = maxTreesForBbox(frame);
+  // Callers already NMS. Keep an intentional median supplement instead of
+  // clipping back to the NLCD-only budget. Still stop at the large-map cap.
+  const maxTrees = Math.min(MAX_TREES_LARGE, Math.max(maxTreesForBbox(frame), candidates.length));
   const bins = Math.max(8, Math.min(16, Math.round(Math.sqrt(maxTrees / 3.5))));
   const picked = pickStratified(
     candidates,
@@ -108,10 +113,20 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine) {
 
   const oiAreas = [];
   const clipZones = [];
+  const clipTypes = [];
+  const materials = [];
+  const seenClip = new Set();
   for (let n = 0; n < picked.length; n++) {
     const p = picked[n];
+    const measuredH =
+      p.heightM > 2 ? p.heightM : p.pct != null ? canopyHeightM(p.pct, p.lon, p.lat) : 0;
+    const foliage = measuredH ? measuredFoliageMaterial(measuredH) : null;
+    const trunk = measuredH ? measuredTrunkMaterial(measuredH) : null;
     const heavy = n % 12 !== 0;
-    const canopyId = heavy ? "foliage-heavy" : "foliage-light";
+    const canopyId = foliage ? foliage.typeId : heavy ? "foliage-heavy" : "foliage-light";
+    const trunkId = trunk ? trunk.typeId : "tree-trunk";
+    const canopyMat = foliage ? foliage.material : oiMaterialFromType(TYPE_BY_ID[canopyId]);
+    const trunkMat = trunk ? trunk.material : oiMaterialFromType(TYPE_BY_ID["tree-trunk"]);
     const rCanopy = (CANOPY_R_M + (n % 4) * 0.4) / frame.mpuX;
     const rTrunk = TRUNK_R_M / frame.mpuX;
     const ryCanopy = (CANOPY_R_M + (n % 4) * 0.4) / frame.mpuY;
@@ -122,13 +137,23 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine) {
     const canopyM = toClipRing(canopyPx, frame, affine, hint);
     const trunkM = toClipRing(trunkPx, frame, affine, hint);
     const canopyZ = clipZone(canopyId, canopyM);
-    const trunkZ = clipZone("tree-trunk", trunkM);
+    const trunkZ = clipZone(trunkId, trunkM);
     if (canopyZ) clipZones.push(canopyZ);
     if (trunkZ) clipZones.push(trunkZ);
-    oiAreas.push({ ringPx: canopyPx, typeId: canopyId });
-    oiAreas.push({ ringPx: trunkPx, typeId: "tree-trunk" });
+    if (foliage && !seenClip.has(foliage.clipType.id)) {
+      seenClip.add(foliage.clipType.id);
+      clipTypes.push(foliage.clipType);
+      materials.push(foliage.material);
+    }
+    if (trunk && !seenClip.has(trunk.clipType.id)) {
+      seenClip.add(trunk.clipType.id);
+      clipTypes.push(trunk.clipType);
+      materials.push(trunk.material);
+    }
+    oiAreas.push({ ringPx: canopyPx, typeId: canopyId, material: canopyMat, kind: "canopy" });
+    oiAreas.push({ ringPx: trunkPx, typeId: trunkId, material: trunkMat, kind: "trunk" });
   }
-  return { oiAreas, clipZones, count: picked.length };
+  return { oiAreas, clipZones, clipTypes, materials, count: picked.length };
 }
 
 module.exports = {

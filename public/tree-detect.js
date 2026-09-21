@@ -313,7 +313,7 @@
     const d = 6.5 + 8 * (1 - score);
     if (!c.woods) return d;
     // Continuous woods can sit ~5 m apart. Floor stays above the orchard test.
-    return Math.max(5.2, d * 0.6);
+    return Math.max(5.0, d * 0.55);
   }
 
   /**
@@ -354,12 +354,12 @@
       const woods = woodsNeighborCount(grid, key, minPct) >= 3;
       const spacing = woods ? 8 - 3 * frac : 18 - 8 * frac;
       let lambda = (c.pct / 100) * (cellArea / Math.max(28, spacing * spacing));
-      lambda = Math.min(woods ? 6 : 2.5, lambda);
+      lambda = Math.min(woods ? 8 : 2.5, lambda);
       if (peak) lambda = Math.max(lambda, 1.0 + 0.6 * frac);
-      if (woods) lambda = Math.max(lambda, 1.35 + 2.0 * frac);
+      if (woods) lambda = Math.max(lambda, 1.6 + 2.4 * frac);
       if (!peak && !woods && c.pct < minPct + 15) lambda *= 0.35;
       const n0 = Math.floor(lambda);
-      const n = Math.min(woods ? 6 : 3, n0 + (hash01(c.lon, c.lat, 1) < lambda - n0 ? 1 : 0));
+      const n = Math.min(woods ? 8 : 3, n0 + (hash01(c.lon, c.lat, 1) < lambda - n0 ? 1 : 0));
       for (let i = 0; i < n; i++) {
         const jx = (hash01(c.lon, c.lat, 10 + i) - 0.5) * 0.92;
         const jy = (hash01(c.lon, c.lat, 30 + i) - 0.5) * 0.92;
@@ -378,8 +378,34 @@
     });
     const kept = nmsStratified(candidates, bbox, maxTrees, canopyNmsDistM);
     return kept.map(function (t) {
-      return { lon: t.lon, lat: t.lat, pct: t.pct };
+      return { lon: t.lon, lat: t.lat, pct: t.pct, woods: !!t.woods };
     });
+  }
+
+  /** Add points that clear minDistM from an existing set. Does not reshuffle the base. */
+  function appendTreePoints(base, extra, bbox, opts) {
+    opts = opts || {};
+    const minD = opts.minDistM == null ? 8 : opts.minDistM;
+    const maxTrees = opts.maxTrees == null ? maxTreesForBbox(bbox) : opts.maxTrees;
+    const mpd = metersPerDeg((+bbox.south + +bbox.north) / 2);
+    const out = (base || []).slice();
+    const src = extra || [];
+    for (let i = 0; i < src.length; i++) {
+      if (out.length >= maxTrees) break;
+      const t = src[i];
+      if (!t) continue;
+      let ok = true;
+      for (let k = 0; k < out.length; k++) {
+        const dx = (t.lon - out[k].lon) * mpd.lon;
+        const dy = (t.lat - out[k].lat) * mpd.lat;
+        if (dx * dx + dy * dy < minD * minD) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) out.push(t);
+    }
+    return out;
   }
 
   /**
@@ -462,17 +488,130 @@
       all.push({
         lon: lon,
         lat: lat,
-        pct: Number.isFinite(pct) ? pct : 50,
+        pct: t.pct != null && Number.isFinite(+t.pct) ? +t.pct : Number.isFinite(pct) ? pct : 50,
+        heightM: t.heightM != null && Number.isFinite(+t.heightM) ? +t.heightM : null,
         score: Number.isFinite(score) ? score : 0.5,
         woods: !!t.woods,
+        median: !!t.median,
       });
     }
     return nmsStratified(all, bbox, maxTrees, canopyNmsDistM).map(function (t) {
       const out = { lon: t.lon, lat: t.lat };
       if (t.pct != null) out.pct = t.pct;
       if (t.score != null) out.score = t.score;
+      if (t.heightM != null) out.heightM = t.heightM;
+      if (t.median) out.median = true;
       return out;
     });
+  }
+
+  /**
+   * NLCD percent → a varied canopy height (meters). Continuous woods in the
+   * upper classes run taller than parking-island trees. Jitter keeps the
+   * export off the fixed 8/9/12 m stock bins. Meta CHM tiles are ~1 m COGs
+   * and are not fetched inside the Netlify time budget; this is the
+   * NLCD-informed default.
+   */
+  function canopyHeightM(pct, lon, lat) {
+    const p = +pct;
+    let base;
+    if (p >= 70) base = 18;
+    else if (p >= 50) base = 14.5;
+    else if (p >= 30) base = 11;
+    else if (p >= 18) base = 8.5;
+    else base = 6.5;
+    const j = (hash01(+lon || 0, +lat || 0, 5) - 0.5) * 2.6;
+    const h = Math.round((base + j) * 2) / 2;
+    return Math.max(5, Math.min(28, h));
+  }
+
+  /**
+   * Parking medians are smaller than an NLCD 30 m cell, so percent canopy
+   * stays near zero and the woods placer skips them. A median is a small
+   * textured canopy core with a gray pavement ring (not a lawn, not a roof).
+   */
+  function detectMedianTrees(data, w, h, bbox, opts) {
+    opts = opts || {};
+    if (!data || !w || !h || !bbox) return [];
+    const step = opts.step || 7;
+    const maxTrees = opts.maxTrees == null ? 80 : opts.maxTrees;
+    const reject = typeof opts.reject === "function" ? opts.reject : null;
+    const hits = [];
+    for (let y = step * 2; y < h - step * 2; y += step) {
+      for (let x = step * 2; x < w - step * 2; x += step) {
+        const i = (y * w + x) * 4;
+        const color = vegColorScore(data[i], data[i + 1], data[i + 2]);
+        if (color <= 0) continue;
+        const core = localLumaStats(data, w, h, x, y, 4, 2);
+        const score = canopyScore(color, core);
+        if (score < 0.4) continue;
+        let pav = 0;
+        let veg = 0;
+        let bright = 0;
+        let n = 0;
+        for (let a = 0; a < 12; a++) {
+          const ang = (Math.PI * 2 * a) / 12;
+          const xx = Math.round(x + Math.cos(ang) * 14);
+          const yy = Math.round(y + Math.sin(ang) * 14);
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          const j = (yy * w + xx) * 4;
+          const r = data[j];
+          const g = data[j + 1];
+          const b = data[j + 2];
+          const Y = luma(r, g, b);
+          const c = vegColorScore(r, g, b);
+          n++;
+          if (c > 0) veg++;
+          else if (Y > 168) bright++;
+          else if (Y > 75 && Y < 168) pav++;
+        }
+        if (n < 8) continue;
+        if (veg / n > 0.34) continue;
+        if (bright / n > 0.2) continue;
+        if (pav / n < 0.55) continue;
+        const lon = +bbox.west + (x / w) * (+bbox.east - +bbox.west);
+        const lat = +bbox.north - (y / h) * (+bbox.north - +bbox.south);
+        if (reject && reject(lon, lat)) continue;
+        const heightM = Math.round((6.2 + hash01(lon, lat, 8) * 2.6) * 2) / 2;
+        hits.push({ x: x, y: y, score: score, lon: lon, lat: lat, heightM: heightM });
+      }
+    }
+    // No jitter: a few meters of scatter walks a median point onto the
+    // surrounding pavement. Keep the pixel that passed the island test.
+    const scored = hits.slice().sort(function (a, b) {
+      return (b.score || 0) - (a.score || 0);
+    });
+    const minDist = opts.minDist != null ? opts.minDist : 12;
+    const minD2 = minDist * minDist;
+    const picked = [];
+    for (let i = 0; i < scored.length; i++) {
+      if (picked.length >= maxTrees) break;
+      const h = scored[i];
+      let ok = true;
+      for (let k = 0; k < picked.length; k++) {
+        const dx = h.x - picked[k].x;
+        const dy = h.y - picked[k].y;
+        if (dx * dx + dy * dy < minD2) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) picked.push(h);
+    }
+    const out = [];
+    for (let i = 0; i < picked.length; i++) {
+      const p = picked[i];
+      if (reject && reject(p.lon, p.lat)) continue;
+      out.push({
+        lon: p.lon,
+        lat: p.lat,
+        score: p.score,
+        pct: 22,
+        heightM: p.heightM,
+        median: true,
+      });
+    }
+    return out;
   }
 
   function woodsHitCount(parsed) {
@@ -818,5 +957,8 @@
     canopyScore: canopyScore,
     collectRgbCandidates: collectRgbCandidates,
     detectTreesFromImageData: detectTreesFromImageData,
+    canopyHeightM: canopyHeightM,
+    detectMedianTrees: detectMedianTrees,
+    appendTreePoints: appendTreePoints,
   };
 });
