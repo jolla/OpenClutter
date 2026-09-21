@@ -9,7 +9,7 @@ const {
   CLIPBOARD_COLLECTION_KEYS,
   pickBuildingTypeId,
 } = require("../netlify/lib/hamina-clipboard");
-const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2 } = require("../netlify/lib/pipeline");
+const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2 } = require("../netlify/lib/pipeline");
 const { zipStore, unzipStore } = require("../netlify/lib/zip-store");
 
 const WYNN = {
@@ -95,6 +95,8 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(built.stats.buildings, 1);
     assert.equal(built.stats.trees, 1);
     assert.equal(built.stats.treesSource, "nlcd-canopy");
+    assert.equal(built.stats.fetched, 1);
+    assert.match(built.stats.summary, /Buildings 1 kept \(1 fetched\)/);
     const areas = built.openintent.floorplans[0].attenuation_areas;
     assert.equal(areas.length, built.stats.buildings + built.stats.trees * 2);
     assert.equal(areas.length, built.clipboard.attenuatingZones.length);
@@ -147,6 +149,9 @@ describe("pipeline: footprints + trees share the frame", () => {
     const readme = zipped["README.txt"].toString();
     assert.match(readme, /Import this zip in Hamina \(Projects → Import → OpenIntent\)/);
     assert.match(readme, /silent fallback/);
+    assert.match(readme, /Coverage/);
+    assert.match(readme, /Buildings 1 kept/);
+    assert.match(readme, /Trees 1 kept/);
     assert.ok(!/click map, paste/i.test(readme));
     const oiZip = JSON.parse(zipped[`openIntent_${built.slug}.json`].toString());
     assert.equal(oiZip.floorplans[0].attenuation_areas.length, areas.length);
@@ -180,6 +185,39 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(built.stats.buildings, 0);
     assert.ok(built.stats.droppedMega >= 1);
     assert.ok(built.stats.droppedTiny >= 1);
+    assert.equal(built.stats.fetched, 2);
+    assert.match(built.stats.summary, /Buildings 0 kept/);
+    assert.match(built.stats.summary, /dropped mega/);
+    const readme = unzipStore(built.zip)["README.txt"].toString();
+    assert.match(readme, /Coverage/);
+    assert.match(readme, /Buildings 0 kept/);
+    assert.match(readme, /Trees 0 kept/);
+  });
+
+  it("keeps hotel-scale wings and skips map-swallowing campus blobs", () => {
+    const frame = geoFrame(WYNN);
+    const limit = megaCampusLimitM2(frame);
+    assert.ok(limit > 40000, `large-map mega limit should exceed 4 ha, got ${limit}`);
+    const midLon = (frame.west + frame.east) / 2;
+    const midLat = (frame.south + frame.north) / 2;
+    // ~2.5 ha hotel podium (was dropped by the old 1.5 ha hard cap).
+    const dLon = 180 / frame.mpd.lon / 2;
+    const dLat = 140 / frame.mpd.lat / 2;
+    const hotel = squareFeature(midLon - dLon, midLat - dLat, midLon + dLon, midLat + dLat);
+    const hotelArea = ringAreaM2(hotel.geometry.coordinates[0], frame.mpd);
+    assert.ok(hotelArea > 15000 && hotelArea < limit, `hotel area ${hotelArea} vs limit ${limit}`);
+    const campus = squareFeature(frame.west, frame.south, frame.east, frame.north);
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [hotel, campus] },
+      treePoints: [],
+      name: "Site",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    assert.equal(built.stats.buildings, 1);
+    assert.ok(built.stats.droppedMega >= 1);
+    assert.equal(built.stats.fetched, 2);
+    assert.match(built.stats.summary, /Buildings 1 kept \(2 fetched/);
   });
 
   it("skips trees that land inside a building AABB", () => {
@@ -359,6 +397,7 @@ describe("main UI is import-only", () => {
     const app = fs.readFileSync(path.join(root, "app.js"), "utf8");
     assert.match(html, /Import this zip in Hamina \(Projects → Import → OpenIntent\)/);
     assert.match(app, /Import this zip in Hamina \(Projects → Import → OpenIntent\)/);
+    assert.match(app, /stats\.summary/);
     assert.ok(!/\bpaste\b/i.test(html));
     assert.ok(!/\bpaste\b/i.test(app));
   });

@@ -298,7 +298,26 @@ function applyImageryMeta(frame, meta, jpegWH) {
   }
 }
 
-function msFootprintsUrl(frame, recordCount = 300) {
+const FP_PAGE_SIZE = 500;
+const FP_CAP = 2000;
+
+/**
+ * Esri World Imagery often pads N/S (~1/cos φ). Query footprints with that
+ * extra latitude so rooftops on the snapped JPEG are not missing, then clip
+ * to the actual image in the pipeline.
+ */
+function padFootprintBbox(frame) {
+  const dLat = Math.abs(+frame.north - +frame.south) || 0;
+  const pad = dLat * 0.25;
+  return {
+    west: +frame.west,
+    south: +frame.south - pad,
+    east: +frame.east,
+    north: +frame.north + pad,
+  };
+}
+
+function msFootprintsUrl(frame, recordCount = FP_PAGE_SIZE, resultOffset = 0) {
   const geometry = {
     xmin: frame.west,
     ymin: frame.south,
@@ -309,9 +328,40 @@ function msFootprintsUrl(frame, recordCount = 300) {
   return (
     "https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/MSBFP2/FeatureServer/0/query" +
     "?f=geojson&returnGeometry=true&spatialRel=esriSpatialRelIntersects&geometryType=esriGeometryEnvelope" +
-    `&inSR=4326&outSR=4326&outFields=*&resultRecordCount=${recordCount}` +
+    `&inSR=4326&outSR=4326&outFields=*&orderByFields=OBJECTID` +
+    `&resultRecordCount=${recordCount}&resultOffset=${resultOffset}` +
     `&geometry=${encodeURIComponent(JSON.stringify(geometry))}`
   );
+}
+
+/**
+ * Paginate MSBFP2 until the service is exhausted or FP_CAP (2000) features.
+ * resultRecordCount alone (historically 300) truncates large campus/golf bboxes.
+ */
+async function fetchMsFootprints(frame, fetchFn, opts = {}) {
+  const pageSize = opts.pageSize || FP_PAGE_SIZE;
+  const cap = opts.cap || FP_CAP;
+  const queryFrame = opts.pad === false ? frame : padFootprintBbox(frame);
+  const features = [];
+  let offset = 0;
+  let pages = 0;
+  while (features.length < cap && pages < 8) {
+    const want = Math.min(pageSize, cap - features.length);
+    const url = msFootprintsUrl(queryFrame, want, offset);
+    const res = await fetchFn(url);
+    const gj = await res.json();
+    const chunk = gj && Array.isArray(gj.features) ? gj.features : [];
+    features.push.apply(features, chunk);
+    pages++;
+    offset += chunk.length;
+    if (chunk.length < want) break;
+  }
+  return {
+    type: "FeatureCollection",
+    features: features.slice(0, cap),
+    fetched: Math.min(features.length, cap),
+    pages,
+  };
 }
 
 function solve3(A, b) {
@@ -414,7 +464,11 @@ module.exports = {
   jpegSize,
   extentFromMeta,
   applyImageryMeta,
+  FP_PAGE_SIZE,
+  FP_CAP,
+  padFootprintBbox,
   msFootprintsUrl,
+  fetchMsFootprints,
   fitAffine,
   applyAffine,
 };
