@@ -1,12 +1,16 @@
 "use strict";
 
-const UA = "openclutter/0.13.0 (https://github.com/jolla/OpenClutter)";
+const UA = "openclutter/0.14.0 (https://github.com/jolla/OpenClutter)";
 const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
-const { fetchMsGlobalFootprints, mergeFootprintFeatures } = require("../lib/ms-global");
+const { fetchMsGlobalFootprints } = require("../lib/ms-global");
 const { fetchUsaStructures } = require("../lib/usa-structures");
+const { assembleFootprints } = require("../lib/conflate");
+const { fetchOvertureFootprints } = require("../lib/overture");
+const { fetchChmGrid, applyChmToTrees, sampleChmGrid } = require("../lib/canopy-height");
+const { fetchDemSamples, terrainFromSamples } = require("../lib/terrain");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
 const { detectMedianTrees, appendTreePoints } = require("../lib/tree-source");
@@ -126,6 +130,9 @@ exports.handler = async (event) => {
   let globalFeatures = [];
   let usaFeatures = [];
   let serverCanopyHits = null;
+  let overturePack = { features: [] };
+  let demSamples = null;
+  let chmGrid = null;
   try {
     if (needImage) {
       const metaRes = await fetchOk(imgMetaUrl).catch(() => null);
@@ -138,25 +145,37 @@ exports.handler = async (event) => {
         if (imgMeta) frame = applyImageryMeta(frame, imgMeta, null);
       }
     }
-    const jobs = [fetchMsFootprints(frame, (url) => fetchOk(url), { pad: false })];
     const globalJob = fetchMsGlobalFootprints(frame, (url) =>
       fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) })
     ).catch(() => ({ features: [] }));
     const usaJob = fetchUsaStructures(frame, (url) =>
       fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) })
     ).catch(() => ({ features: [] }));
-    jobs.push(globalJob);
-    jobs.push(usaJob);
-    if (needImage) jobs.push(fetchOk(imgUrl));
+    const overtureJob = fetchOvertureFootprints(frame).catch(() => ({ features: [] }));
+    const demJob = fetchDemSamples(frame, (url) =>
+      fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(5000) })
+    ).catch(() => null);
+    const chmJob = needImage ? fetchChmGrid(frame).catch(() => null) : Promise.resolve(null);
     const canopyJob =
       !treePoints.length
         ? fetchCanopyTrees(frame, (url) => fetchOk(url), { maxTrees: maxTreesForBbox(frame) }).catch(() => null)
         : null;
-    const fetched = await Promise.all(jobs);
+    const fetched = await Promise.all([
+      fetchMsFootprints(frame, (url) => fetchOk(url), { pad: false }),
+      globalJob,
+      usaJob,
+      needImage ? fetchOk(imgUrl) : Promise.resolve(null),
+      overtureJob,
+      demJob,
+      chmJob,
+    ]);
     gj = fetched[0];
     globalFeatures = (fetched[1] && fetched[1].features) || [];
     usaFeatures = (fetched[2] && fetched[2].features) || [];
     const imgRes = needImage ? fetched[3] : null;
+    overturePack = fetched[4] || { features: [] };
+    demSamples = fetched[5];
+    chmGrid = fetched[6];
     if (needImage) {
       imgBuf = Buffer.from(await imgRes.arrayBuffer());
       if (imgBuf.length < 100 || imgBuf[0] !== 0xff || imgBuf[1] !== 0xd8) {
@@ -183,15 +202,28 @@ exports.handler = async (event) => {
   treesSource = normalizeTreesSource(treesSource, treePoints.length);
 
   const arcgisFeatures = (gj && gj.features) || [];
-  const withArcgis = mergeFootprintFeatures(globalFeatures, arcgisFeatures);
-  const merged = mergeFootprintFeatures(withArcgis.features, usaFeatures);
-  let features = merged.features;
+  const overtureFeatures = (overturePack && overturePack.features) || [];
+  const assembled = assembleFootprints({
+    global: globalFeatures,
+    overture: overtureFeatures,
+    arcgis: arcgisFeatures,
+    usa: usaFeatures,
+  });
+  let features = assembled.features;
+  const sources = assembled.heightSources || {};
   const footprintMeta = {
     globalFootprints: globalFeatures.length,
     arcgisFootprints: arcgisFeatures.length,
     usaFootprints: usaFeatures.length,
+    overtureFootprints: overtureFeatures.length,
+    overtureAdded: assembled.overtureAdded || 0,
+    msHeights: sources["ms-global"] || 0,
+    overtureHeights: sources.overture || 0,
+    femaHeights: sources.fema || 0,
+    floorHeights: sources["overture-floors"] || 0,
     imageryRoofs: 0,
     medianTrees: 0,
+    chmTrees: 0,
   };
   const decoded = needImage ? decodeImagery(imgBuf) : null;
   if (decoded) {
@@ -230,6 +262,11 @@ exports.handler = async (event) => {
       });
     }
   }
+  if (chmGrid && treePoints.length) {
+    const applied = applyChmToTrees(treePoints, (lon, lat) => sampleChmGrid(chmGrid, lon, lat));
+    treePoints = applied.trees;
+    footprintMeta.chmTrees = applied.applied;
+  }
 
   if (wantOsm(body)) {
     try {
@@ -237,6 +274,15 @@ exports.handler = async (event) => {
       treePoints = treePoints.concat(osm);
     } catch {
       // OSM is optional; canopy / imagery vegetation still applies.
+    }
+  }
+
+  let terrain = null;
+  if (demSamples && demSamples.length && frame) {
+    try {
+      terrain = terrainFromSamples(demSamples, frame);
+    } catch {
+      terrain = null;
     }
   }
 
@@ -249,6 +295,7 @@ exports.handler = async (event) => {
     imgBuf,
     treesSource,
     footprintMeta,
+    terrain,
   });
 
   const frameHeaders = {

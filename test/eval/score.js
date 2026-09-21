@@ -32,6 +32,9 @@ const THRESHOLDS = {
   minMatchedHeightFrac: 0.9,
   minUniqueFoliageHeights: 4,
   minMedianTrees: 8,
+  minOvertureExplicit: 8,
+  minChmTrees: 8,
+  minTerrainPolygons: 1,
 };
 
 function luma(r, g, b) {
@@ -491,6 +494,26 @@ function evaluate(scores, thresholds) {
   if (scores.medians && scores.medians.required && scores.medians.kept < t.minMedianTrees) {
     failures.push(`medianTrees ${scores.medians.kept} < ${t.minMedianTrees}`);
   }
+  const ov = scores.overture;
+  if (ov && ov.required) {
+    if (ov.explicit < t.minOvertureExplicit) {
+      failures.push(`overtureHeights ${ov.explicit} < ${t.minOvertureExplicit}`);
+    }
+    if (ov.added + ov.heightsUpgraded < 1) {
+      failures.push("overture merge did not add or upgrade a footprint");
+    }
+  }
+  const terrain = scores.terrain;
+  if (terrain && terrain.required) {
+    if (terrain.polygons < t.minTerrainPolygons) failures.push("terrain clipboard empty");
+    if (terrain.reliefM > 2 && terrain.sloped < 1) failures.push("terrain relief missing sloped floors");
+    if (!terrain.separateFromOpenIntent) failures.push("terrain leaked into OpenIntent");
+    if (!terrain.mainClipboardFlat) failures.push("main hamina clipboard gained terrain zones");
+  }
+  const chm = scores.chm;
+  if (chm && chm.required && chm.applied < t.minChmTrees) {
+    failures.push(`chmTrees ${chm.applied} < ${t.minChmTrees}`);
+  }
   return { ok: failures.length === 0, failures };
 }
 
@@ -510,17 +533,27 @@ function scoreMeasuredHeights(features, overlayRings, overlayHeights, frame, ope
       for (const poly of g.coordinates || []) if (poly && poly[0]) rings.push(poly[0]);
     }
     for (const ring of rings) {
-      const c = shoelaceCentroid(ring);
-      if (!c) continue;
+      // Shoelace centroids of bowed or self-touching rings can land tens of
+      // meters outside the footprint and inside a neighbor. Score a point
+      // that lies in the source ring, then the nearest emitted roof that
+      // contains it.
+      const c = interiorPoint(ring);
+      if (!c || !pointInRing(c, ring)) continue;
       const px = llToPx(c[0], c[1], frame);
       let found = -1;
+      let bestD = Infinity;
+      const maxD = 12 / Math.max((frame.mpuX || 1), 0.05);
       for (let i = 0; i < (overlayRings || []).length; i++) {
-        if (pointInRing(px, overlayRings[i])) {
+        if (!pointInRing(px, overlayRings[i])) continue;
+        const oc = shoelaceCentroid(overlayRings[i]);
+        if (!oc) continue;
+        const d = Math.hypot(oc[0] - px[0], oc[1] - px[1]);
+        if (d < bestD) {
+          bestD = d;
           found = i;
-          break;
         }
       }
-      if (found < 0) continue;
+      if (found < 0 || bestD > maxD) continue;
       eligible++;
       const eh = overlayHeights && overlayHeights[found];
       if (eh != null) emitted.add(Number(eh).toFixed(1));

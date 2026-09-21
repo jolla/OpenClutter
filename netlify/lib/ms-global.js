@@ -138,9 +138,14 @@ function geometryHitsBbox(geometry, bbox) {
 function normalizeFeature(obj) {
   if (!obj || !obj.geometry) return null;
   const height = usableHeight(obj.properties);
+  const properties = { geomSource: "ms-global" };
+  if (height) {
+    properties.height = height;
+    properties.heightSource = "ms-global";
+  }
   return {
     type: "Feature",
-    properties: height ? { height } : {},
+    properties,
     geometry: obj.geometry,
   };
 }
@@ -277,4 +282,5 @@ module.exports = {
   pointInRing,
   centroid,
   featureHeight,
+  setFeatureHeight,
 };

@@ -20,6 +20,9 @@ const T = require("../../netlify/lib/tree-source");
 const { treeHitsBuilding } = require("../../netlify/lib/vegetation");
 const { fetchMsGlobalFootprints, mergeFootprintFeatures } = require("../../netlify/lib/ms-global");
 const { fetchUsaStructures } = require("../../netlify/lib/usa-structures");
+const { conflateFootprints, countHeightSources } = require("../../netlify/lib/conflate");
+const { terrainFromSamples } = require("../../netlify/lib/terrain");
+const { applyChmToTrees, sampleChmGrid } = require("../../netlify/lib/canopy-height");
 const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, scoreMeasuredHeights, evaluate, pointInRing, THRESHOLDS } = require("./score");
 const { supplementFootprints } = require("../../netlify/lib/roof-mask");
 const { featureExteriorRings } = require("../../netlify/lib/pipeline");
@@ -48,6 +51,15 @@ function loadFixture(site) {
     tcc: JSON.parse(fs.readFileSync(path.join(dir, "tcc-samples.json"), "utf8")),
     roofPoints: fs.existsSync(path.join(dir, "roof-points.json"))
       ? JSON.parse(fs.readFileSync(path.join(dir, "roof-points.json"), "utf8"))
+      : null,
+    overture: fs.existsSync(path.join(dir, "overture.geojson"))
+      ? JSON.parse(fs.readFileSync(path.join(dir, "overture.geojson"), "utf8"))
+      : null,
+    dem: fs.existsSync(path.join(dir, "dem-samples.json"))
+      ? JSON.parse(fs.readFileSync(path.join(dir, "dem-samples.json"), "utf8"))
+      : null,
+    chm: fs.existsSync(path.join(dir, "chm-grid.json"))
+      ? JSON.parse(fs.readFileSync(path.join(dir, "chm-grid.json"), "utf8"))
       : null,
   };
 }
@@ -137,10 +149,19 @@ function runLoaded(loaded, opts) {
   const frame = applyImageryMeta(drawn, loaded.meta, jpegSize(loaded.jpeg));
   const jpegDecoded = decodeJpeg(loaded.jpeg);
   const baseFeatures = loaded.footprints.features || [];
-  const supplemented =
-    rgbPolicy === T.RGB_POLICY_PREFER_NLCD
-      ? supplementFootprints(jpegDecoded, frame, baseFeatures)
-      : { features: baseFeatures, imageryRoofs: 0, droppedStubs: 0 };
+  const prefer = rgbPolicy === T.RGB_POLICY_PREFER_NLCD;
+  let vectorFeatures = baseFeatures;
+  let overtureMerge = null;
+  if (prefer && loaded.overture && loaded.overture.features && loaded.overture.features.length) {
+    overtureMerge = conflateFootprints(baseFeatures.slice(), loaded.overture.features, {
+      replaceGeometry: true,
+      rankHeight: true,
+    });
+    vectorFeatures = overtureMerge.features;
+  }
+  const supplemented = prefer
+    ? supplementFootprints(jpegDecoded, frame, vectorFeatures)
+    : { features: baseFeatures, imageryRoofs: 0, droppedStubs: 0 };
   const fp = footprintsToClutter(supplemented.features, frame);
   const { canopy, resolved, parsed } = resolveFromSources(
     frame,
@@ -162,6 +183,14 @@ function runLoaded(loaded, opts) {
     });
     medianKept = treePoints.filter((t) => t.median).length;
   }
+  let chmApplied = 0;
+  if (prefer && loaded.chm) {
+    const applied = applyChmToTrees(treePoints, (lon, lat) => sampleChmGrid(loaded.chm, lon, lat));
+    treePoints = applied.trees;
+    chmApplied = applied.applied;
+  }
+  const terrain = prefer && loaded.dem && loaded.dem.samples ? terrainFromSamples(loaded.dem.samples, frame) : null;
+  const heightSources = countHeightSources(vectorFeatures);
   const built = buildClutter({
     frame,
     footprintsGeojson: { type: "FeatureCollection", features: supplemented.features },
@@ -169,25 +198,62 @@ function runLoaded(loaded, opts) {
     name: loaded.site.name || loaded.bbox.name || loaded.site.id,
     imgBuf: loaded.jpeg,
     treesSource: resolved.source,
+    terrain,
     footprintMeta: {
       imageryRoofs: supplemented.imageryRoofs || 0,
       medianTrees: medianKept,
+      overtureFootprints: loaded.overture && loaded.overture.features ? loaded.overture.features.length : 0,
+      overtureAdded: overtureMerge ? overtureMerge.added : 0,
+      msHeights: heightSources["ms-global"] || 0,
+      overtureHeights: heightSources.overture || 0,
+      femaHeights: heightSources.fema || 0,
+      floorHeights: heightSources["overture-floors"] || 0,
+      chmTrees: chmApplied,
     },
   });
-  const buildings = scoreBuildings(baseFeatures, fp.overlayRings, frame);
+  const buildings = scoreBuildings(vectorFeatures, fp.overlayRings, frame);
   const trees = scoreTrees(treePoints, frame, jpegDecoded, loaded.tcc, resolved.source);
   Object.assign(trees, scoreRoofTrees(treePoints, supplemented.features));
   const probes = (loaded.roofPoints && loaded.roofPoints.points) || [];
   const roofProbes = probes.length ? scoreRoofProbes(probes, fp.overlayRings, frame) : null;
   if (roofProbes) buildings.roofProbes = roofProbes;
-  const heights = scoreMeasuredHeights(baseFeatures, fp.overlayRings, fp.overlayHeights, frame, built.openintent);
-  const recovery =
-    rgbPolicy === T.RGB_POLICY_PREFER_NLCD ? imageryRecovery(jpegDecoded, frame, baseFeatures, probes) : { required: false, hit: true };
+  const heights = scoreMeasuredHeights(vectorFeatures, fp.overlayRings, fp.overlayHeights, frame, built.openintent);
+  const recovery = prefer ? imageryRecovery(jpegDecoded, frame, vectorFeatures, probes) : { required: false, hit: true };
   const medians = {
-    required: rgbPolicy === T.RGB_POLICY_PREFER_NLCD && loaded.site.id === "oak-creek-commercial",
+    required: prefer && loaded.site.id === "oak-creek-commercial",
     kept: medianKept,
   };
-  const gate = evaluate({ buildings, trees, roofProbes, heights, imageryRecovery: recovery, medians });
+  const overture = {
+    required: prefer && !!(loaded.overture && loaded.overture.features && loaded.overture.features.length),
+    considered: loaded.overture && loaded.overture.features ? loaded.overture.features.length : 0,
+    added: overtureMerge ? overtureMerge.added : 0,
+    heightsUpgraded: overtureMerge ? overtureMerge.heightsUpgraded : 0,
+    explicit: heightSources.overture || 0,
+  };
+  const terrainScore = {
+    required: prefer && !!(loaded.dem && loaded.dem.samples && loaded.dem.samples.length),
+    raised: terrain ? terrain.raised : 0,
+    sloped: terrain ? terrain.sloped : 0,
+    reliefM: terrain ? terrain.reliefM : 0,
+    polygons: terrain ? terrain.raised + terrain.sloped : 0,
+    separateFromOpenIntent: !JSON.stringify(built.openintent).includes("raisedFloorZones"),
+    mainClipboardFlat: built.clipboard.raisedFloorZones.length === 0 && built.clipboard.slopedFloors.length === 0,
+  };
+  const chm = {
+    required: prefer && !!loaded.chm,
+    applied: chmApplied,
+  };
+  const gate = evaluate({
+    buildings,
+    trees,
+    roofProbes,
+    heights,
+    imageryRecovery: recovery,
+    medians,
+    overture,
+    terrain: terrainScore,
+    chm,
+  });
   const exportStats = {
     site: loaded.site.id,
     name: loaded.site.name,
@@ -217,6 +283,9 @@ function runLoaded(loaded, opts) {
     heights,
     imageryRecovery: recovery,
     medians,
+    overture,
+    terrain: terrainScore,
+    chm,
     gate,
     thresholds: THRESHOLDS,
     canopyReason: canopy.reason,
@@ -277,6 +346,9 @@ function formatRow(stats) {
     `h ${stats.heights && stats.heights.uniqueBuildingHeights != null ? stats.heights.uniqueBuildingHeights : "-"} ` +
     `fol ${stats.heights && stats.heights.uniqueFoliageHeights != null ? stats.heights.uniqueFoliageHeights : "-"} ` +
     `med ${stats.medians ? stats.medians.kept : "-"} ` +
+    `ov ${stats.overture ? stats.overture.explicit : "-"} ` +
+    `chm ${stats.chm ? stats.chm.applied : "-"} ` +
+    `ter ${stats.terrain ? stats.terrain.sloped + "/" + stats.terrain.raised : "-"} ` +
     `roofFill ${stats.imageryRecovery && stats.imageryRecovery.imageryRoofs != null ? stats.imageryRecovery.imageryRoofs : "-"}`
   );
 }

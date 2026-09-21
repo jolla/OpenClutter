@@ -52,7 +52,10 @@ function normalizeTreePoints(raw) {
     if (Number.isFinite(lon) && Number.isFinite(lat)) {
       const pct = t.pct != null ? +t.pct : null;
       const score = t.score != null ? +t.score : null;
-      out.push({ lon, lat, pct, score });
+      const row = { lon, lat, pct, score };
+      if (t.heightM != null && Number.isFinite(+t.heightM)) row.heightM = +t.heightM;
+      if (t.median) row.median = true;
+      out.push(row);
     }
   }
   return out;
