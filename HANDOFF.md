@@ -23,8 +23,8 @@ Do **not** use an X Grok bot. It cannot push to GitHub.
 | Piece | Source | Frame |
 |---|---|---|
 | Map image | Esri World Imagery export | `bboxSR=4326` `imageSR=4326`; **snap frame to the export’s actual `extent` + JPEG size** (Esri often pads N/S) |
-| Buildings | Microsoft US Building Footprints (Esri MSBFP2) | same **actual** west/south/east/north as the JPEG |
-| Trees | **USFS/NLCD percent tree canopy** as a **density field** (jittered NMS, not the 30 m sample lattice) | same extent; ≥30% canopy. **Imagery RGB** only if canopy is missing/nodata. OSM nodes optional, **off**. |
+| Buildings | Microsoft US Building Footprints (Esri MSBFP2), **paginated** to 2000 | same **actual** west/south/east/north as the JPEG |
+| Trees | **USFS/NLCD percent tree canopy** as a **density field** (jittered NMS, not the 30 m sample lattice) | same extent; ≥18% canopy. **Imagery RGB** only if canopy is missing/nodata, or when TCC is valid but too sparse for the bbox (desert golf). OSM nodes optional, **off**. |
 | Map size | OpenIntent zip `dimensions` meters | `widthM` × `lengthM` from the **snapped JPEG extent** |
 | Objects | OpenIntent `floorplans[].attenuation_areas[]` + `area_materials` | same snapped extent, Y-up pixels, stock Hamina type names |
 
@@ -68,7 +68,7 @@ Do **not** inject OSM building or tree **rings** (broke v8 — Hamina dropped al
 
 1. MS footprint vintage can sit a few meters off current imagery.
 2. Heights are heuristics unless the footprint has `height`.
-3. Vegetation: default is USFS/NLCD percent tree canopy (30 m, CONUS) treated as a **density field** — jittered stratified samples + NMS, not one tree per getSamples lattice point. Imagery RGB is fallback when the raster is missing/nodata for the bbox (outside CONUS, empty samples). RGB prefers textured woody canopy over smooth lawn, then the same scatter/NMS (never a step lattice, never north-first cap).
+3. Vegetation: default is USFS/NLCD percent tree canopy (30 m, CONUS) treated as a **density field** — jittered stratified samples + NMS, not one tree per getSamples lattice point. Imagery RGB is fallback when the raster is missing/nodata for the bbox (outside CONUS, empty samples) **or** when TCC is valid but places 0 trees (Oak Creek parking / winter street trees) or is too sparse for golf woods. RGB prefers textured woody canopy over smooth lawn, then the same scatter/NMS (never a step lattice, never north-first cap).
 4. Netlify hobby ~10s: footprints + imagery must fit; jpeg-js decode stays **off** the request path (504s). Canopy `getSamples` is JSON (~0.8 s). Browser tries canopy first and sends lon/lat + `treesSource`.
 5. US footprints only. NLCD TCC CONUS does not cover HI / PR / SEAK — those sites fall back to imagery RGB.
 
@@ -88,7 +88,7 @@ Root cause of the old RGB path: `isVeg` matched olive lawn and missed brown cano
 
 `https://imagery.geoplatform.gov/iipp/rest/services/Vegetation/USFS_EDW_NLCD_TCC_CONUS/ImageServer/getSamples`
 
-Same west/south/east/north as the Esri map (`sr=4326`), latest `beginyear`, values 0–100 percent (254/255 nodata). Threshold **≥ 30%**. **Do not place a tree on every sample center** — `getSamples` is a regular grid (the Long Meadow orchard). `placeTreesFromCanopy` treats % as density: local maxima, jitter inside the cell, NMS spacing ~10–20 m, lawns/low % get few/none. Cap `MAX_TREES` (180). Server still drops points inside building AABBs.
+Same west/south/east/north as the Esri map (`sr=4326`), latest `beginyear`, values 0–100 percent (254/255 nodata). Threshold **≥ 18%**. **Do not place a tree on every sample center** — `getSamples` is a regular grid (the Long Meadow orchard). `placeTreesFromCanopy` treats % as density: local maxima, jitter inside the cell, NMS spacing ~7–16 m (tighter in continuous woods), lawns/low % get few/none. Cap `maxTreesForBbox` (180 small maps, 600–800 large golf/campus). Server still drops points inside building AABBs. Stratified bins fill woods, not just building-yard peaks.
 
 **Fallback to imagery RGB** only when canopy fetch fails **or** fewer than `MIN_VALID_SAMPLES` (20) valid 0–100 pixels (empty raster / outside CONUS). A site that truly has 0–7 trees above 30% stays `nlcd-canopy` — do **not** RGB-paint the lawn.
 
@@ -96,7 +96,7 @@ RGB fallback: reject smooth lawn (low local luma variance); keep textured green 
 
 `stats.treesSource`: `"nlcd-canopy" | "imagery-rgb" | "none"` in the API/stats payload — **never a UI picker**. Shared logic: `public/tree-detect.js` (browser + Node).
 
-**UX (Jerry):** super simple tool. Search → Draw → Export → **one `.zip`**. Hide OSM checkbox, control-points textarea, format choosers. One status line (“Building map + clutter…”). After export: “Import this zip in Hamina (Projects → Import → OpenIntent).” OSM/`controlPoints` remain API escape hatches for tests only.
+**UX (Jerry):** super simple tool. Search → Draw → Export → **one `.zip`**. Hide OSM checkbox, control-points textarea, format choosers. One status line (“Building map + clutter…”). After export: “Import this zip in Hamina (Projects → Import → OpenIntent).” plus coverage stats (buildings kept/fetched/drops, trees kept). OSM/`controlPoints` remain API escape hatches for tests only.
 
 ## How to work
 

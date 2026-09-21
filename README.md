@@ -38,7 +38,7 @@ SW → (−widthM, −lengthM)   NE → (0, 0)
 JPEG Y-down:  x_clip = x_img * mpuX − widthM ;  y_clip = −y_img * mpuY
 ```
 
-Trees come from **USFS/NLCD percent tree canopy** on the same extent (threshold ≥30%), placed with **jittered NMS** rather than on the 30 m sample lattice. If that raster is missing or nodata for the box (outside CONUS), the app **silently** falls back to Esri aerial RGB that prefers textured woody canopy over smooth grass. OSM tree *nodes* and `controlPoints` calibration are API-only (not on the default page). OSM building/tree **rings** are never emitted (they caused Hamina to drop all `attenuation_areas` on v8). Polygons are clipped to the JPEG and invalid rings are dropped so one bad ring cannot wipe the import.
+Trees come from **USFS/NLCD percent tree canopy** on the same extent (threshold ≥18%), placed with **jittered NMS** rather than on the 30 m sample lattice. Large maps scale the tree cap (up to 800) and relax spacing in continuous woods. If that raster is missing or nodata for the box (outside CONUS), the app **silently** falls back to Esri aerial RGB that prefers textured woody canopy over smooth grass. Sparse desert-golf canopy may also mix in RGB points. OSM tree *nodes* and `controlPoints` calibration are API-only (not on the default page). OSM building/tree **rings** are never emitted (they caused Hamina to drop all `attenuation_areas` on v8). Polygons are clipped to the JPEG and invalid rings are dropped so one bad ring cannot wipe the import.
 
 `stats.treesSource` is `"nlcd-canopy"`, `"imagery-rgb"`, or `"none"` (in the API payload, not a UI picker).
 
@@ -53,7 +53,8 @@ Trees come from **USFS/NLCD percent tree canopy** on the same extent (threshold 
    - `frame-lock.json` — pixel/meter corners for Hamina vs OpenIntent vs JPEG
    - `export-warnings.json`
    - `hamina-clipboard.json` — silent fallback for Hamina builds before OpenIntent attenuating-object import
-   - `README.txt` — import-only instructions
+   - `README.txt` — import-only instructions plus coverage stats (`buildingsKept`, `treesKept`, `treesSource`, fetched, drop reasons)
+   - `export-stats.json` — same coverage numbers as machine-readable JSON
 4. Hamina: **Projects → Import → OpenIntent**.
 5. Optional: unzip and open `alignment-overlay.svg` next to `images/` to check rooftops.
 
@@ -74,7 +75,7 @@ The page has no extra options. Tree source (NLCD canopy, RGB fallback), OSM, and
 }
 ```
 
-- `format: "bundle"` (default) — JSON with `zipBase64`, `frame`, `stats`, `alignment`
+- `format: "bundle"` (default) — JSON with `zipBase64`, `frame`, `stats`, `alignment`. `stats` includes `buildingsKept`, `treesKept`, `treesSource`, `fetched`, and drop reasons.
 - `format: "zip"` — same OpenIntent zip bytes
 - `format: "hamina-clipboard"` — clipboard JSON only (skips imagery fetch; old-Hamina fallback)
 
@@ -82,7 +83,7 @@ Calibration (API only): `"controlPoints": [{ "lon", "lat", "xM", "yM" }, …]` (
 
 ## Limits
 
-US footprints only. Boxes over ~2.5 km fail. Campus polygons &gt; 15,000 m² are dropped. Tree and height accuracy is heuristic, not survey-grade. Function time is bounded by Netlify’s hobby limit.
+US footprints only (MSBFP2 is paginated up to 2000, queried against the snapped JPEG extent). Boxes over ~2.5 km fail. Microsoft campus-merge blobs &gt; 150,000 m² are dropped; big-box / warehouse roofs on a tight commercial map are kept. Tree and height accuracy is heuristic, not survey-grade. Function time is bounded by Netlify’s hobby limit.
 
 ## Local
 
