@@ -23,12 +23,16 @@ const MIN_AREA_M2 = 40;
 const MAX_AREA_M2 = 15000;
 const MAX_BUILDINGS = 300;
 
+const ZIP_README =
+  "Import this zip in Hamina (OpenIntent), then open hamina-clipboard.json, copy all, click map, paste\n";
+
 const ALIGNMENT = [
   "Exact alignment (repeatable, any site):",
   "1. Import the OpenIntent zip in Hamina (Projects → Import → OpenIntent).",
   "   The zip’s meter dimensions ARE the geographic bbox (widthM × lengthM).",
+  "   Extra files (hamina-clipboard.json, README.txt) are ignored on import.",
   "2. Delete any leftover attenuating objects.",
-  "3. Copy the HaminaClipboard JSON, click the map canvas, paste (⌘V / Ctrl+V).",
+  "3. Open hamina-clipboard.json from the zip, copy all, click the map, paste.",
   "Clipboard meters use that same widthM × lengthM. Origin: " + CLIPBOARD_ORIGIN,
   "Do NOT use a Google Earth screenshot as the map — Hamina auto-scale will not",
   "match lon/lat footprints. Dual-scale nudges are a legacy escape hatch only.",
@@ -240,6 +244,8 @@ function buildClutter({
       { name: `openIntent_${slug}.json`, data: Buffer.from(JSON.stringify(oi)) },
       { name: "images/" + imgName, data: imgBuf },
       { name: "export-warnings.json", data: Buffer.from('{"errors":[],"warnings":[]}') },
+      { name: "hamina-clipboard.json", data: Buffer.from(JSON.stringify(clip)) },
+      { name: "README.txt", data: ZIP_README },
     ]);
   }
   return {
@@ -257,6 +263,7 @@ function buildClutter({
 
 module.exports = {
   ALIGNMENT,
+  ZIP_README,
   MIN_AREA_M2,
   MAX_AREA_M2,
   MAX_BUILDINGS,

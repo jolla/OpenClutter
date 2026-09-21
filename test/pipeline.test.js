@@ -10,7 +10,7 @@ const {
   pickBuildingTypeId,
 } = require("../netlify/lib/hamina-clipboard");
 const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2 } = require("../netlify/lib/pipeline");
-const { zipStore } = require("../netlify/lib/zip-store");
+const { zipStore, unzipStore } = require("../netlify/lib/zip-store");
 
 const WYNN = {
   west: -115.1735,
@@ -110,6 +110,17 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.ok(Math.abs(got[1] - expected[1]) < 0.05);
     assert.ok(built.zip.length > 100);
     assert.equal(built.openintent.openintent_version, "2.0.1");
+    const zipped = unzipStore(built.zip);
+    assert.ok(zipped[`openIntent_${built.slug}.json`]);
+    assert.ok(zipped[`images/${built.slug}.jpg`]);
+    assert.ok(zipped["export-warnings.json"]);
+    assert.ok(zipped["hamina-clipboard.json"]);
+    assert.ok(zipped["README.txt"]);
+    const fromZip = JSON.parse(zipped["hamina-clipboard.json"].toString());
+    assert.equal(fromZip.header.type, "HaminaClipboard");
+    assert.deepEqual(fromZip.attenuatingZones, built.clipboard.attenuatingZones);
+    assert.match(zipped["README.txt"].toString(), /hamina-clipboard\.json/);
+    assert.equal(Object.keys(zipped).length, 5);
   });
 
   it("drops campus mega-polygons and tiny sheds", () => {
@@ -189,6 +200,16 @@ describe("zip store", () => {
     const z = zipStore([{ name: "a.txt", data: "hi" }]);
     assert.equal(z[0], 0x50);
     assert.equal(z[1], 0x4b);
+  });
+
+  it("round-trips stored files", () => {
+    const z = zipStore([
+      { name: "openIntent_Site.json", data: "{}" },
+      { name: "hamina-clipboard.json", data: '{"header":{"type":"HaminaClipboard"}}' },
+    ]);
+    const files = unzipStore(z);
+    assert.equal(files["openIntent_Site.json"].toString(), "{}");
+    assert.equal(JSON.parse(files["hamina-clipboard.json"]).header.type, "HaminaClipboard");
   });
 });
 

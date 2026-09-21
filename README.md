@@ -1,6 +1,6 @@
 # OpenClutter
 
-**OpenClutter** turns a map box into clutter that lines up with the map in [Hamina Planner](https://hamina.com): a georeferenced [OpenIntent](https://github.com/google/openintent) zip **and** a pasteable HaminaClipboard JSON, both in the **same geographic frame**.
+**OpenClutter** turns a map box into clutter that lines up with the map in [Hamina Planner](https://hamina.com): one georeferenced [OpenIntent](https://github.com/google/openintent) zip that also contains a pasteable HaminaClipboard JSON, all in the **same geographic frame**.
 
 Live: https://openclutter.netlify.app · Source: https://github.com/jolla/OpenClutter
 
@@ -16,7 +16,7 @@ This tool does not mix sources. One bbox drives everything:
 4. lon/lat → image pixels with the same west/south/east/north.
 5. Clipboard meters use that same `widthM` × `lengthM`.
 
-**Import the zip first** (sets the Hamina map to geographic size), **then paste the clipboard**. No per-site hand nudge. Do not use a GE screenshot as the map.
+**Import the zip first** (sets the Hamina map to geographic size), **then paste `hamina-clipboard.json` from inside the zip**. No per-site hand nudge. Do not use a GE screenshot as the map.
 
 Clipboard origin (unit-tested):
 
@@ -38,8 +38,13 @@ Trees come from **USFS/NLCD percent tree canopy** on the same bbox (threshold �
 
 1. Search an address.
 2. Draw the site (under ~2 km on a side).
-3. **Export** — downloads the OpenIntent zip and HaminaClipboard JSON.
-4. Import the zip in Hamina, then paste the JSON.
+3. **Export** — one `{site}-openintent.zip` download. Inside:
+   - `openIntent_<slug>.json` — OpenIntent metadata at geographic size
+   - `images/<slug>.jpg` — Esri aerial
+   - `export-warnings.json`
+   - `hamina-clipboard.json` — full HaminaClipboard object (stock type names)
+   - `README.txt` — import zip, then copy/paste clipboard JSON
+4. Hamina: import the zip (OpenIntent), then open `hamina-clipboard.json`, copy all, click the map, paste.
 
 The page has no extra options. Tree source (NLCD canopy, RGB fallback), OSM, and calibration are automatic or API-only.
 
@@ -58,8 +63,8 @@ The page has no extra options. Tree source (NLCD canopy, RGB fallback), OSM, and
 }
 ```
 
-- `format: "bundle"` (default) — JSON with `zipBase64`, `clipboard`, `frame`, `stats`, `alignment`
-- `format: "zip"` — OpenIntent zip bytes
+- `format: "bundle"` (default) — JSON with `zipBase64` (clipboard is already inside the zip), `frame`, `stats`, `alignment`
+- `format: "zip"` — same OpenIntent zip bytes (also contains `hamina-clipboard.json`)
 - `format: "hamina-clipboard"` — clipboard JSON only (skips imagery fetch)
 
 Calibration (API only): `"controlPoints": [{ "lon", "lat", "xM", "yM" }, …]` (3+). Not shown in the UI.
