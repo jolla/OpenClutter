@@ -112,6 +112,10 @@ describe("pipeline: footprints + trees share the frame", () => {
       assert.ok(stock.has(a.area_material.name), a.area_material.name);
       assert.ok(a.area_material.top_height > 0);
       assert.ok(a.area_material.rf_properties.attenuation_per_m > 0);
+      assert.equal(a.area_material.itu_material_type, "ITU_R_UNKNOWN");
+      assert.equal("bottom_height" in a.area_material, false, "Hamina rejected bottom_height on OI materials");
+      const cat = built.openintent.area_materials.find((m) => m.name === a.area_material.name);
+      assert.deepEqual(a.area_material, cat);
       const coords = a.area.coordinates;
       assert.ok(coords.length >= 4);
       const first = coords[0].coordinate_xyz;
@@ -172,7 +176,21 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(exportStats.buildingsKept, 1);
     assert.equal(exportStats.treesKept, 1);
     assert.equal(exportStats.treesSource, "nlcd-canopy");
-    assert.equal(Object.keys(zipped).length, 8);
+    assert.equal(exportStats.attenuationAreasEmitted, areas.length);
+    assert.equal(exportStats.openintentVersion, "2.0.1");
+    assert.ok(zipped["VERIFY.txt"]);
+    const verify = zipped["VERIFY.txt"].toString();
+    assert.match(verify, new RegExp(`^attenuation_areas: ${areas.length}$`, "m"));
+    assert.match(readme, /VERIFY\.txt/);
+    assert.match(readme, /alignment-overlay\.svg/);
+    assert.match(readme, /hamina-clipboard\.json/);
+    assert.match(readme, /WebGL/);
+    assert.match(readme, /2D/);
+    assert.match(readme, /sidebar/);
+    assert.match(readme, /paste hamina-clipboard\.json/);
+    assert.match(readme, /hardware acceleration/);
+    assert.match(readme, /attenuationAreasEmitted: /);
+    assert.equal(Object.keys(zipped).length, 9);
   });
 
   it("drops campus mega-polygons and tiny sheds", () => {
@@ -450,6 +468,111 @@ describe("OpenIntent attenuation_areas", () => {
     assert.ok(Math.min(...xs) >= -1e-6);
     assert.ok(Math.max(...xs) > 10);
     assert.equal(ringToOi([[-5, -5], [-1, -5], [-1, -1], [-5, -1], [-5, -5]], w, h), null);
+  });
+
+  it("rejects open, NaN, duplicate, and self-intersecting rings after rounding", () => {
+    const { validateOiCoords, ringToOi, ensureMinSpan } = require("../netlify/lib/pipeline");
+    const w = 100;
+    const h = 80;
+    const closed = [
+      { coordinate_xyz: { x: 10, y: 10, unit: "pixels" } },
+      { coordinate_xyz: { x: 40, y: 10, unit: "pixels" } },
+      { coordinate_xyz: { x: 40, y: 40, unit: "pixels" } },
+      { coordinate_xyz: { x: 10, y: 40, unit: "pixels" } },
+      { coordinate_xyz: { x: 10, y: 10, unit: "pixels" } },
+    ];
+    assert.equal(validateOiCoords(closed, w, h).ok, true);
+    const open = closed.slice(0, -1);
+    assert.equal(validateOiCoords(open, w, h).ok, false);
+    const nan = closed.map((c, i) =>
+      i === 1 ? { coordinate_xyz: { x: NaN, y: 10, unit: "pixels" } } : c
+    );
+    assert.equal(validateOiCoords(nan, w, h).reason, "nan");
+    const dup = [
+      closed[0],
+      closed[1],
+      { coordinate_xyz: { x: 40, y: 10, unit: "pixels" } },
+      closed[2],
+      closed[3],
+      closed[4],
+    ];
+    assert.equal(validateOiCoords(dup, w, h).reason, "duplicate");
+    const bowtie = ringToOi(
+      [
+        [10, 10],
+        [40, 10],
+        [10, 40],
+        [40, 40],
+        [10, 10],
+      ],
+      w,
+      h
+    );
+    assert.equal(bowtie, null);
+    const tiny = ensureMinSpan(
+      [
+        [20, 20],
+        [20.2, 20],
+        [20.2, 20.2],
+        [20, 20.2],
+      ],
+      w,
+      h
+    );
+    const expanded = ringToOi(tiny, w, h);
+    assert.ok(expanded);
+    assert.equal(validateOiCoords(expanded, w, h).ok, true);
+    const xs = expanded.map((c) => c.coordinate_xyz.x);
+    const ys = expanded.map((c) => c.coordinate_xyz.y);
+    assert.ok(Math.max(...xs) - Math.min(...xs) >= 3);
+    assert.ok(Math.max(...ys) - Math.min(...ys) >= 3);
+  });
+
+  it("keeps a valid building when a sibling ring is a bowtie", () => {
+    const frame = geoFrame(WYNN);
+    const dLon = (frame.east - frame.west) * 0.03;
+    const dLat = (frame.north - frame.south) * 0.03;
+    const lon0 = frame.west + (frame.east - frame.west) * 0.3;
+    const lat0 = frame.south + (frame.north - frame.south) * 0.3;
+    const good = squareFeature(lon0, lat0, lon0 + dLon, lat0 + dLat);
+    const bow = {
+      type: "Feature",
+      properties: {},
+      geometry: {
+        type: "Polygon",
+        coordinates: [[
+          [lon0 + dLon * 3, lat0],
+          [lon0 + dLon * 5, lat0],
+          [lon0 + dLon * 3, lat0 + dLat * 2],
+          [lon0 + dLon * 5, lat0 + dLat * 2],
+          [lon0 + dLon * 3, lat0],
+        ]],
+      },
+    };
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [good, bow] },
+      treePoints: [],
+      name: "Site",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    assert.ok(built.stats.buildingsKept >= 1);
+    assert.equal(built.openintent.floorplans[0].attenuation_areas.length, built.stats.attenuationAreasEmitted);
+    assert.ok(built.stats.attenuationAreasEmitted >= 1);
+    for (const a of built.openintent.floorplans[0].attenuation_areas) {
+      const { validateOiArea } = require("../netlify/lib/pipeline");
+      assert.equal(validateOiArea(a, frame.imgW, frame.imgH).ok, true);
+    }
+  });
+
+  it("caps complete tree pairs and never splits a canopy/trunk", () => {
+    const { capAttenuationAreas } = require("../netlify/lib/pipeline");
+    const areas = [];
+    for (let i = 0; i < 10; i++) areas.push({ id: i });
+    const capped = capAttenuationAreas(areas, 3, 6);
+    assert.equal(capped.areas.length, 5);
+    assert.equal(capped.dropped, 5);
+    assert.deepEqual(capped.areas.map((a) => a.id), [0, 1, 2, 3, 4]);
   });
 });
 

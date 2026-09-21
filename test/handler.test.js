@@ -116,6 +116,7 @@ describe("clutter handler (mocked Esri)", () => {
     assert.ok(files["alignment-overlay.svg"]);
     assert.ok(files["frame-lock.json"]);
     assert.ok(files["export-stats.json"]);
+    assert.ok(files["VERIFY.txt"]);
     const exportStats = JSON.parse(files["export-stats.json"].toString());
     assert.equal(typeof exportStats.buildingsKept, "number");
     assert.equal(typeof exportStats.treesKept, "number");
@@ -128,6 +129,8 @@ describe("clutter handler (mocked Esri)", () => {
     assert.match(files["README.txt"].toString(), /Import this zip in Hamina \(Projects → Import → OpenIntent\)/);
     const oi = JSON.parse(files["openIntent_Wynn-Golf.json"].toString());
     assert.ok(oi.floorplans[0].attenuation_areas.length >= 1);
+    assert.equal(exportStats.attenuationAreasEmitted, oi.floorplans[0].attenuation_areas.length);
+    assert.match(files["VERIFY.txt"].toString(), new RegExp(`^attenuation_areas: ${exportStats.attenuationAreasEmitted}$`, "m"));
     assert.equal(
       oi.floorplans[0].attenuation_areas.length,
       body.stats.buildings + body.stats.trees * 2

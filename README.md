@@ -53,10 +53,11 @@ Trees come from **USFS/NLCD percent tree canopy** on the same extent (threshold 
    - `frame-lock.json` — pixel/meter corners for Hamina vs OpenIntent vs JPEG
    - `export-warnings.json`
    - `hamina-clipboard.json` — silent fallback for Hamina builds before OpenIntent attenuating-object import
-   - `README.txt` — import-only instructions plus coverage stats (`buildingsKept`, `treesKept`, `treesSource`, fetched, drop reasons)
-   - `export-stats.json` — same coverage numbers as machine-readable JSON
+   - `README.txt` — import-only instructions, coverage stats, and troubleshooting if Hamina shows the map but no objects
+   - `export-stats.json` — same coverage numbers as machine-readable JSON, including `attenuationAreasEmitted`
+   - `VERIFY.txt` — exact `attenuation_areas` length (same as `openIntent_*.json`)
 4. Hamina: **Projects → Import → OpenIntent**.
-5. Optional: unzip and open `alignment-overlay.svg` next to `images/` to check rooftops.
+5. Optional: unzip. Confirm `VERIFY.txt` `attenuation_areas` is a positive integer, then open `alignment-overlay.svg` next to `images/`. If that count is >0 but Hamina is empty, check the Attenuating Objects sidebar, paste `hamina-clipboard.json`, and try 2D view / hardware acceleration off. Zip `README.txt` has the full steps.
 
 The page has no extra options. Tree source (NLCD canopy, RGB fallback), OSM, and calibration are automatic or API-only.
 
