@@ -3,7 +3,7 @@
 const { llToPx, pxToClipboard, applyAffine } = require("./geo-frame");
 const { clipZone } = require("./hamina-clipboard");
 
-const MAX_TREES = 180;
+const { MAX_TREES, pickStratified } = require("./tree-source");
 const CANOPY_R_M = 5.2;
 const TRUNK_R_M = 0.5;
 
@@ -40,7 +40,11 @@ function normalizeTreePoints(raw) {
     }
     const lon = +(t.lon ?? t.lng ?? t.longitude);
     const lat = +(t.lat ?? t.latitude);
-    if (Number.isFinite(lon) && Number.isFinite(lat)) out.push({ lon, lat });
+    if (Number.isFinite(lon) && Number.isFinite(lat)) {
+      const pct = t.pct != null ? +t.pct : null;
+      const score = t.score != null ? +t.score : null;
+      out.push({ lon, lat, pct, score });
+    }
   }
   return out;
 }
@@ -66,7 +70,7 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine) {
   const pad = 2 / Math.max(frame.mpuX, 0.01);
   const cell = Math.max(12, Math.round(14 / frame.mpuX));
   const seen = new Set();
-  const picked = [];
+  const candidates = [];
   for (const p of pts) {
     const [x, y] = llToPx(p.lon, p.lat, frame);
     if (x < 0 || y < 0 || x > frame.imgW || y > frame.imgH) continue;
@@ -74,9 +78,24 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine) {
     const k = Math.floor(x / cell) + ":" + Math.floor(y / cell);
     if (seen.has(k)) continue;
     seen.add(k);
-    picked.push({ lon: p.lon, lat: p.lat, x, y, seed: x * 0.13 + y * 0.07 });
-    if (picked.length >= MAX_TREES) break;
+    candidates.push({
+      lon: p.lon,
+      lat: p.lat,
+      x,
+      y,
+      score: Number.isFinite(+p.pct) ? +p.pct / 100 : Number.isFinite(+p.score) ? +p.score : 0.5,
+      seed: x * 0.13 + y * 0.07,
+    });
   }
+  const picked = pickStratified(
+    candidates,
+    MAX_TREES,
+    (c) => [c.x, c.y],
+    0,
+    0,
+    frame.imgW,
+    frame.imgH
+  );
 
   const oiAreas = [];
   const clipZones = [];

@@ -12,8 +12,9 @@ This tool does not mix sources. One bbox drives everything:
 
 1. Esri World Imagery for that bbox (`bboxSR=4326`, `imageSR=4326`, same `size` as the math).
 2. Microsoft US Building Footprints (Esri MSBFP2) for that bbox.
-3. lon/lat → image pixels with the same west/south/east/north.
-4. Clipboard meters use that same `widthM` × `lengthM`.
+3. USFS/NLCD percent tree canopy for that bbox (imagery RGB only if the canopy raster is missing/empty).
+4. lon/lat → image pixels with the same west/south/east/north.
+5. Clipboard meters use that same `widthM` × `lengthM`.
 
 **Import the zip first** (sets the Hamina map to geographic size), **then paste the clipboard**. No per-site hand nudge. Do not use a GE screenshot as the map.
 
@@ -29,7 +30,9 @@ x_clip = x_px * mpuX − widthM
 y_clip = y_from_south_px * mpuY − lengthM
 ```
 
-Trees come from vegetation pixels on the Esri aerial (OSM tree *nodes* optional, off by default). OSM building/tree **rings** are never emitted (they caused Hamina to drop all `attenuation_areas` on v8).
+Trees come from **USFS/NLCD percent tree canopy** on the same bbox (threshold ≥30%), not from lawn-colored pixels. If that raster is missing or nodata for the box (outside CONUS), the app falls back to Esri aerial RGB that prefers textured woody canopy over smooth grass. OSM tree *nodes* are optional and off by default. OSM building/tree **rings** are never emitted (they caused Hamina to drop all `attenuation_areas` on v8).
+
+`stats.treesSource` is `"nlcd-canopy"`, `"imagery-rgb"`, or `"none"`.
 
 ## Use
 
@@ -53,6 +56,7 @@ Optional: 3+ `{lon,lat,xM,yM}` control points calibrate clipboard output onto a 
   "west": -115.1735, "south": 36.1205, "east": -115.1488, "north": 36.1355,
   "name": "Site",
   "trees": [{ "lon": -115.16, "lat": 36.128 }],
+  "treesSource": "nlcd-canopy",
   "osmTrees": false,
   "format": "bundle"
 }

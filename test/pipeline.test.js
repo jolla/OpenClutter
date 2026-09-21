@@ -86,6 +86,7 @@ describe("pipeline: footprints + trees share the frame", () => {
       treePoints: [{ lon: lon0 + dLon / 2, lat: lat0 + dLat * 8 }],
       name: "Wynn Golf",
       imgBuf,
+      treesSource: "nlcd-canopy",
     });
     const meters = built.openintent.floorplans[0].dimensions.find((d) => d.unit === "meters");
     assert.equal(meters.width, frame.widthM);
@@ -93,6 +94,7 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(built.clipboard.header.type, "HaminaClipboard");
     assert.equal(built.stats.buildings, 1);
     assert.equal(built.stats.trees, 1);
+    assert.equal(built.stats.treesSource, "nlcd-canopy");
     const bldg = built.clipboard.attenuatingZones.find((z) => z.typeId.startsWith("bldg"));
     const tree = built.clipboard.attenuatingZones.find((z) => z.typeId === "tree-trunk");
     assert.ok(bldg);

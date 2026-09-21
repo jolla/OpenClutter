@@ -217,6 +217,7 @@ function buildClutter({
   affine,
   name: rawName,
   imgBuf,
+  treesSource,
 }) {
   const { name, slug } = siteName(rawName);
   const imgName = `${slug}.jpg`;
@@ -229,6 +230,7 @@ function buildClutter({
   const stats = {
     ...fp.stats,
     trees: veg.count,
+    treesSource: treesSource || (veg.count ? "imagery-rgb" : "none"),
     zones: clip.attenuatingZones.length,
     calibrated: Boolean(affine),
   };
