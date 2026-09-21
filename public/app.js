@@ -159,7 +159,7 @@ document.getElementById("export").onclick = async () => {
       data = await exportOnce(trees, treesSource);
     }
     downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
-    setStatus("One file downloaded. Import zip, then paste clipboard JSON from inside the zip.");
+    setStatus("Import this zip in Hamina (Projects → Import → OpenIntent).");
   } catch (err) {
     setStatus(err.message + " — try a smaller box.", true);
   } finally {

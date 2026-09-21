@@ -25,18 +25,21 @@ const MAX_AREA_M2 = 15000;
 const MAX_BUILDINGS = 300;
 
 const ZIP_README =
-  "Import this zip in Hamina (OpenIntent), then open hamina-clipboard.json, copy all, click map, paste.\n" +
-  "Verify image-space lock first: unzip and open alignment-overlay.svg (keep images/ next to it).\n" +
-  "Red = buildings, green = trees, drawn on the exact Esri JPEG. If overlay is on rooftops\n" +
-  "but Hamina is not, the bug is clipboard↔Hamina mapping — see frame-lock.json.\n";
+  "Import this zip in Hamina (Projects → Import → OpenIntent).\n" +
+  "The OpenIntent JSON is the source of truth: map image + all attenuating objects.\n" +
+  "Hamina 2026-09-01+ imports attenuation_areas (stock type names, heights, dB/m).\n" +
+  "(Optional) Unzip and open alignment-overlay.svg next to images/ to check rooftops.\n" +
+  "hamina-clipboard.json is a silent fallback for older Hamina builds only — not the happy path.\n";
 
 const ALIGNMENT = [
   "Exact alignment (repeatable, any site):",
-  "1. Import the OpenIntent zip in Hamina (Projects → Import → OpenIntent).",
-  "   The zip’s meter dimensions ARE the geographic bbox (widthM × lengthM).",
-  "   Extra files (hamina-clipboard.json, README.txt, alignment-overlay.svg, frame-lock.json) are ignored on import.",
-  "2. Delete any leftover attenuating objects.",
-  "3. Open hamina-clipboard.json from the zip, copy all, click the map, paste.",
+  "1. Import this zip in Hamina (Projects → Import → OpenIntent).",
+  "   The zip’s meter dimensions ARE the JPEG’s geographic extent (widthM × lengthM).",
+  "   OpenIntent floorplans[].attenuation_areas[] carry buildings + tree pairs",
+  "   (stock Hamina names: Building - One/Five Floor, Hotel podium, Foliage - Heavy/Light, Tree Trunk).",
+  "   Extra files (alignment-overlay.svg, frame-lock.json, hamina-clipboard.json) are ignored on import.",
+  "2. Hamina 2026-09-01+ imports attenuating objects from OpenIntent. No clipboard paste.",
+  "3. hamina-clipboard.json inside the zip is a silent fallback for older Hamina builds only.",
   "Clipboard meters use that same widthM × lengthM. Origin: " + CLIPBOARD_ORIGIN,
   "Do NOT use a Google Earth screenshot as the map — Hamina auto-scale will not",
   "match lon/lat footprints. Dual-scale nudges are a legacy escape hatch only.",
@@ -131,18 +134,94 @@ function xyz(x, y) {
   };
 }
 
+function lerp(a, b, t) {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+}
+
+function uniqueOpenRing(ring, eps = 0.0005) {
+  const src =
+    ring && ring.length >= 2 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+      ? ring.slice(0, -1)
+      : (ring || []).slice();
+  const out = [];
+  for (const p of src) {
+    if (!p || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) continue;
+    const last = out[out.length - 1];
+    if (!last || Math.hypot(p[0] - last[0], p[1] - last[1]) > eps) out.push([p[0], p[1]]);
+  }
+  if (out.length >= 2) {
+    const a = out[0];
+    const b = out[out.length - 1];
+    if (Math.hypot(a[0] - b[0], a[1] - b[1]) <= eps) out.pop();
+  }
+  return out;
+}
+
+function ringAreaPx(ring) {
+  const pts = uniqueOpenRing(ring);
+  if (pts.length < 3) return 0;
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const [x0, y0] = pts[i];
+    const [x1, y1] = pts[(i + 1) % pts.length];
+    a += x0 * y1 - x1 * y0;
+  }
+  return Math.abs(a) / 2;
+}
+
+/**
+ * Clip a ring to the image rectangle. Vertex clamp (old path) collapsed
+ * off-map edges onto the border and produced invalid rings — Hamina then
+ * dropped every attenuation_area.
+ */
+function clipRingToRect(ring, w, h) {
+  const edges = [
+    [(p) => p[0] >= 0, (a, b) => lerp(a, b, (0 - a[0]) / (b[0] - a[0] || 1e-12))],
+    [(p) => p[0] <= w, (a, b) => lerp(a, b, (w - a[0]) / (b[0] - a[0] || 1e-12))],
+    [(p) => p[1] >= 0, (a, b) => lerp(a, b, (0 - a[1]) / (b[1] - a[1] || 1e-12))],
+    [(p) => p[1] <= h, (a, b) => lerp(a, b, (h - a[1]) / (b[1] - a[1] || 1e-12))],
+  ];
+  let pts = uniqueOpenRing(ring);
+  if (pts.length < 3) return [];
+  for (const [inside, intersect] of edges) {
+    const src = pts;
+    const out = [];
+    for (let i = 0; i < src.length; i++) {
+      const cur = src[i];
+      const prev = src[(i + src.length - 1) % src.length];
+      const curIn = inside(cur);
+      const prevIn = inside(prev);
+      if (curIn) {
+        if (!prevIn) out.push(intersect(prev, cur));
+        out.push(cur);
+      } else if (prevIn) {
+        out.push(intersect(prev, cur));
+      }
+    }
+    pts = uniqueOpenRing(out);
+    if (pts.length < 3) return [];
+  }
+  return pts;
+}
+
 function ringToOi(pts, imgW, imgH) {
   if (!pts || pts.length < 3) return null;
-  const out = [];
-  for (const p of pts) {
-    const x = Math.min(imgW, Math.max(0, p[0]));
-    const y = Math.min(imgH, Math.max(0, p[1]));
-    out.push(xyz(x, y));
-  }
+  const clipped = clipRingToRect(pts, imgW, imgH);
+  if (clipped.length < 3) return null;
+  // Trunks are often <1 px across at outdoor mpu; a large px² cutoff would
+  // drop the canopy/trunk pair. Reject only collapsed rings.
+  if (ringAreaPx(clipped) < 1e-6) return null;
+  const out = clipped.map(([x, y]) =>
+    xyz(Math.min(imgW, Math.max(0, x)), Math.min(imgH, Math.max(0, y)))
+  );
   const a = out[0].coordinate_xyz;
   const b = out[out.length - 1].coordinate_xyz;
   if (a.x !== b.x || a.y !== b.y) out.push(out[0]);
-  if (out.length < 4) return null;
+  const seen = new Set();
+  for (let i = 0; i < out.length - 1; i++) {
+    seen.add(out[i].coordinate_xyz.x + "," + out[i].coordinate_xyz.y);
+  }
+  if (seen.size < 3 || out.length < 4) return null;
   return out;
 }
 
@@ -318,6 +397,7 @@ function buildClutter({
     trees: veg.count,
     treesSource: treesSource || (veg.count ? "imagery-rgb" : "none"),
     zones: clip.attenuatingZones.length,
+    areas: areas.length,
     calibrated: Boolean(affine),
   };
   let zip = null;
@@ -357,4 +437,7 @@ module.exports = {
   buildClutter,
   siteName,
   simplifyDP,
+  clipRingToRect,
+  ringToOi,
+  ringAreaPx,
 };

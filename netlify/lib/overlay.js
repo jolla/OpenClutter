@@ -46,7 +46,7 @@ function frameLockJson(frame, imgName) {
   const neI = llToImagePx(frame.east, frame.north, frame);
   return {
     note:
-      "If alignment-overlay.svg puts buildings on rooftops but Hamina does not, the bug is clipboard↔Hamina mapping (not MSBFP2 vs imagery).",
+      "If alignment-overlay.svg puts buildings on rooftops but Hamina does not after OpenIntent import, the remaining bug is OpenIntent↔Hamina mapping (not MSBFP2 vs imagery). hamina-clipboard.json is a silent fallback for old Hamina builds.",
     origin: CLIPBOARD_ORIGIN,
     image: {
       name: "images/" + imgName,
