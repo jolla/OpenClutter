@@ -1,18 +1,18 @@
 # Handoff — keep iterating here
 
-Repo: https://github.com/jolla/openintent-clutter
+Repo: https://github.com/jolla/OpenClutter
 Owner: jolla (Jerry / Hamina)
 
 ## What to tell a new Grok chat
 
-> Continue https://github.com/jolla/openintent-clutter
+> Continue https://github.com/jolla/OpenClutter
 > Prefer a branch + PR. Read HANDOFF.md first.
 
 Do **not** use an X Grok bot. It cannot push to GitHub.
 
 ## Product
 
-User draws/enters a bbox (or address) → app produces clutter that lines up with the map in Hamina Planner, every time, for any site.
+**OpenClutter** — user draws/enters a bbox (or address) → app produces clutter that lines up with the map in Hamina Planner, every time, for any site.
 
 **Default path (exact, repeatable):** one shared bbox frame.
 

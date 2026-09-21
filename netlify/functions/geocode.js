@@ -1,4 +1,4 @@
-const UA = "openintent-clutter/0.1 (https://github.com/jolla/openintent-clutter)";
+const UA = "openclutter/0.1 (https://github.com/jolla/OpenClutter)";
 
 exports.handler = async (event) => {
   const cors = {
