@@ -43,9 +43,9 @@ map.on(L.Draw.Event.CREATED, (e) => {
   };
   const w = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.south, bbox.east));
   const h = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.north, bbox.west));
-  setStatus(`${Math.round(w)} × ${Math.round(h)} m — export uses this bbox for imagery, footprints, and clipboard meters.`);
   exportBtn.disabled = w > 2500 || h > 2500 || w < 40 || h < 40;
   if (exportBtn.disabled) setStatus("Area must be between 40 m and 2.5 km on a side.", true);
+  else setStatus("Ready to export.");
 });
 
 document.getElementById("draw").onclick = () => {
@@ -63,23 +63,21 @@ document.getElementById("search").onsubmit = async (e) => {
     if (!hits.length) throw new Error("No results");
     const hit = hits[0];
     map.setView([+hit.lat, +hit.lon], 16);
-    setStatus(hit.display_name);
+    setStatus("Draw the site.");
   } catch (err) {
     setStatus(err.message, true);
   }
 };
 
-function isVeg(r, g, b) {
-  const s = r + g + b;
-  if (s < 70 || s > 420) return false;
-  if (b > 125 && b > g + 8) return false;
-  if (r > 185 && g > 170) return false;
-  const olive = g >= r - 18 && g > b + 4 && r > 38 && r < 160 && g > 42 && g < 145 && b < 110;
-  const dusty = r >= g - 8 && r > b + 10 && r > 45 && r < 140 && g > 40 && g < 120 && b < 90 && g > r * 0.55;
-  return olive || dusty;
+async function detectCanopyTrees(b) {
+  const T = globalThis.OpenClutterTrees;
+  const result = await T.fetchCanopyTrees(b, (url) => fetch(url, { signal: AbortSignal.timeout(8000) }));
+  if (!result.source) return null;
+  return result;
 }
 
-async function detectTrees(b) {
+async function detectRgbTrees(b) {
+  const T = globalThis.OpenClutterTrees;
   const imgW = 720;
   const imgH = Math.max(200, Math.round(imgW * ((b.north - b.south) / Math.max(1e-9, b.east - b.west))));
   const url =
@@ -94,50 +92,7 @@ async function detectTrees(b) {
   const ctx = c.getContext("2d", { willReadFrequently: true });
   ctx.drawImage(bmp, 0, 0);
   const { data, width: w, height: h } = ctx.getImageData(0, 0, c.width, c.height);
-  const step = 8;
-  const hits = [];
-  for (let y = step; y < h - step; y += step) {
-    for (let x = step; x < w - step; x += step) {
-      const i = (y * w + x) * 4;
-      if (!isVeg(data[i], data[i + 1], data[i + 2])) continue;
-      let ok = 0, n = 0;
-      for (let dy = -4; dy <= 4; dy += 4) {
-        for (let dx = -4; dx <= 4; dx += 4) {
-          const j = ((y + dy) * w + (x + dx)) * 4;
-          if (j < 0 || j >= data.length) continue;
-          n++;
-          if (isVeg(data[j], data[j + 1], data[j + 2])) ok++;
-        }
-      }
-      if (n && ok / n >= 0.4) {
-        hits.push({
-          lon: b.west + (x / w) * (b.east - b.west),
-          lat: b.north - (y / h) * (b.north - b.south),
-        });
-      }
-    }
-  }
-  const cell = 0.00012;
-  const seen = new Set();
-  const out = [];
-  for (const t of hits) {
-    const k = Math.floor(t.lon / cell) + ":" + Math.floor(t.lat / cell);
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(t);
-    if (out.length >= 180) break;
-  }
-  return out;
-}
-
-function parseControlPoints() {
-  const raw = (document.getElementById("controlPoints").value || "").trim();
-  if (!raw) return null;
-  const pts = JSON.parse(raw);
-  if (!Array.isArray(pts) || pts.length < 3) {
-    throw new Error("Calibration needs 3+ control points {lon,lat,xM,yM}.");
-  }
-  return pts;
+  return T.detectTreesFromImageData(data, w, h, b);
 }
 
 function downloadBlob(blob, name) {
@@ -155,7 +110,7 @@ function b64ToBlob(b64, type) {
   return new Blob([bytes], { type });
 }
 
-async function exportOnce(trees, controlPoints) {
+async function exportOnce(trees, treesSource) {
   const r = await fetch("/api/clutter", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -163,9 +118,8 @@ async function exportOnce(trees, controlPoints) {
       ...bbox,
       name: document.getElementById("q").value || "Site",
       trees,
-      osmTrees: document.getElementById("osmTrees").checked,
+      treesSource,
       format: "bundle",
-      controlPoints: controlPoints || undefined,
     }),
   });
   const data = await r.json().catch(() => ({ error: r.status + " " + r.statusText }));
@@ -176,27 +130,33 @@ async function exportOnce(trees, controlPoints) {
 document.getElementById("export").onclick = async () => {
   if (!bbox) return;
   exportBtn.disabled = true;
-  setStatus("Finding trees in the Esri aerial…");
+  setStatus("Building map + clutter…");
   try {
-    let controlPoints = null;
-    try {
-      controlPoints = parseControlPoints();
-    } catch (e) {
-      throw e;
-    }
     let trees = [];
+    let treesSource = "none";
     try {
-      trees = await detectTrees(bbox);
+      const canopy = await detectCanopyTrees(bbox);
+      if (canopy) {
+        trees = canopy.trees;
+        treesSource = "nlcd-canopy";
+      }
     } catch (e) {
-      trees = [];
+      treesSource = "none";
     }
-    setStatus(`Found ${trees.length} vegetation points. Building zip + clipboard…`);
+    if (treesSource !== "nlcd-canopy") {
+      try {
+        trees = await detectRgbTrees(bbox);
+        treesSource = trees.length ? "imagery-rgb" : "none";
+      } catch (e) {
+        trees = [];
+        treesSource = "none";
+      }
+    }
     let data;
     try {
-      data = await exportOnce(trees, controlPoints);
+      data = await exportOnce(trees, treesSource);
     } catch (e) {
-      setStatus("Retrying… " + e.message);
-      data = await exportOnce(trees, controlPoints);
+      data = await exportOnce(trees, treesSource);
     }
     downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
     await new Promise((r) => setTimeout(r, 400));
@@ -204,17 +164,9 @@ document.getElementById("export").onclick = async () => {
       new Blob([JSON.stringify(data.clipboard)], { type: "application/json" }),
       data.clipboardFilename || "hamina-clipboard.json"
     );
-    const s = data.stats || {};
-    const w = data.frame && Math.round(data.frame.widthM);
-    const l = data.frame && Math.round(data.frame.lengthM);
-    setStatus(
-      `Downloaded map zip (${w} × ${l} m) and clipboard JSON.\n` +
-        `${s.buildings || 0} buildings, ${s.trees || 0} trees` +
-        (s.calibrated ? " (legacy calibration on)." : ".") +
-        `\nImport the zip in Hamina first, then paste the JSON on the map.`
-    );
+    setStatus("Downloaded. Import zip in Hamina, then paste JSON.");
   } catch (err) {
-    setStatus(err.message + " — try a smaller box and export again.", true);
+    setStatus(err.message + " — try a smaller box.", true);
   } finally {
     exportBtn.disabled = false;
   }
