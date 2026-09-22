@@ -8,7 +8,12 @@
  */
 
 const { llToPx, llToImagePx, metersPerDeg } = require("../../netlify/lib/geo-frame");
-const { OI_BUILDING_NAMES, catalogMaterials } = require("../../netlify/lib/materials");
+const {
+  OI_BUILDING_NAMES,
+  OI_VEGETATION_NAMES,
+  buildingCatalog,
+  isPoisonedOiName,
+} = require("../../netlify/lib/materials");
 const {
   featureExteriorRings,
   ringAreaM2,
@@ -529,15 +534,15 @@ function evaluate(scores, thresholds) {
   }
   const compat = scores.compatibility;
   if (compat && compat.required !== false) {
-    if (compat.materials !== OI_BUILDING_NAMES.length) {
-      failures.push(`openIntentMaterials ${compat.materials} !== ${OI_BUILDING_NAMES.length}`);
-    }
-    if (!compat.stockOnly) failures.push("OpenIntent material is not a Hamina outdoor Building-* name");
+    if (!compat.buildingsExact) failures.push("OpenIntent building materials drifted from the gold set");
+    if (!compat.customsOk) failures.push("OpenIntent vegetation material is not Tree Foliage / Tall Tree Foliage / Tree Wood");
+    if (compat.poisoned) failures.push("OpenIntent catalog contains a name that emptied imports");
     if (!compat.consistent) failures.push("area material does not match the catalog entry");
   }
   const oiTrees = scores.openIntentTrees;
   if (oiTrees && oiTrees.required) {
     if (oiTrees.emitted < 1) failures.push(`openIntentTreeAreas ${oiTrees.emitted} < 1`);
+    if (oiTrees.custom < 1) failures.push("tree attenuation areas are not on a custom vegetation material");
     if (oiTrees.placed > 0 && oiTrees.emitted > oiTrees.placed * 2) {
       failures.push(`openIntentTreeAreas ${oiTrees.emitted} > ${oiTrees.placed * 2}`);
     }
@@ -550,11 +555,17 @@ function scoreMaterialCompatibility(openintent) {
   const areas =
     (openintent && openintent.floorplans && openintent.floorplans[0] && openintent.floorplans[0].attenuation_areas) ||
     [];
-  const expected = catalogMaterials().map((m) => m.name);
+  const gold = buildingCatalog();
   const names = mats.map((m) => m && m.name);
-  const stockOnly = names.length === expected.length && names.every((n, i) => n === expected[i]);
+  const buildingsExact =
+    names.length >= gold.length &&
+    gold.every((g, i) => names[i] === g.name && JSON.stringify(mats[i]) === JSON.stringify(g));
+  const extras = names.slice(gold.length);
+  const customsOk = extras.every((n) => OI_VEGETATION_NAMES.includes(n));
+  const poisoned = names.some((n) => isPoisonedOiName(n));
   const byName = new Map(mats.map((m) => [m.name, m]));
-  let consistent = stockOnly;
+  let consistent = buildingsExact && customsOk && !poisoned;
+  let vegetationAreas = 0;
   for (const a of areas) {
     const m = a && a.area_material;
     const name = typeof m === "string" ? m : m && m.name;
@@ -563,16 +574,21 @@ function scoreMaterialCompatibility(openintent) {
       consistent = false;
       break;
     }
-    if (!OI_BUILDING_NAMES.includes(name)) {
+    if (!OI_BUILDING_NAMES.includes(name) && !OI_VEGETATION_NAMES.includes(name)) {
       consistent = false;
       break;
     }
+    if (OI_VEGETATION_NAMES.includes(name)) vegetationAreas++;
   }
   return {
     required: true,
-    mode: "stock-openintent",
+    mode: "custom-vegetation",
     materials: mats.length,
-    stockOnly,
+    stockOnly: buildingsExact && customsOk && !poisoned,
+    buildingsExact,
+    customsOk,
+    poisoned,
+    vegetationAreas,
     consistent,
   };
 }

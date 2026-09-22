@@ -19,8 +19,11 @@
  *     -d '{"west":-87.92259693145752,"south":42.89043196008693,"east":-87.91184663772584,"north":42.90325386116256,"name":"Oak Creek WI commercial","trees":[],"format":"bundle"}'
  *
  * Pass: HTTP 200, wall clock under 10s, attenuation_areas > 0 and ≤ 982,
- * the gold Building - One/Two/Five/Ten Floor area_materials, every area_material a catalog-equal
- * object (a name string is Invalid OpenIntent format), JPEG SOI, clipboard
+ * the gold Building - One/Two/Five/Ten Floor prefix, plus Tree Foliage /
+ * Tall Tree Foliage / Tree Wood only when a tree area uses them. Every
+ * area_material is a catalog-equal object (a name string is Invalid
+ * OpenIntent format). Poisoned names (Foliage - Heavy, Tree Trunk, Foliage
+ * N.N m) fail the check. JPEG SOI, clipboard
  * vertices inside the meter frame, and VERIFY.txt / export-stats.json
  * agreeing with that length. When ajv is installed, the OpenIntent JSON is
  * also checked against google/openintent 2.0.1.
@@ -29,7 +32,7 @@
 const fs = require("fs");
 const path = require("path");
 const { unzipStore } = require("../netlify/lib/zip-store");
-const { OI_BUILDING_NAMES } = require("../netlify/lib/materials");
+const { OI_BUILDING_NAMES, OI_VEGETATION_NAMES, isPoisonedOiName, COMPATIBILITY_MODE } = require("../netlify/lib/materials");
 const { scoreClipboardOverlayAlignment } = require("../netlify/lib/overlay");
 
 const BBOX = {
@@ -113,12 +116,15 @@ function checkZip(zipBuf) {
     }
     if (!(areas > 0)) failures.push("attenuation_areas.length is " + areas);
     if (areas > 982) failures.push("attenuation_areas " + areas + " above the last accepted import (982)");
-    if (materials.length !== STOCK_NAMES.length) failures.push("area_materials count " + materials.length);
-    const custom = materials.filter((n) => !STOCK_NAMES.includes(n));
-    if (custom.length) failures.push("non-gold Building materials: " + custom.join(", "));
-    if (STOCK_NAMES.some((n) => !materials.includes(n))) failures.push("gold Building set mismatch: " + materials.join(" | "));
-    if (/Foliage|Tree Trunk|Hotel podium/.test(materials.join("|"))) {
-      failures.push("OI catalog still has foliage/trunk/hotel names");
+    const goldPrefix = materials.slice(0, STOCK_NAMES.length);
+    if (goldPrefix.join("|") !== STOCK_NAMES.join("|")) {
+      failures.push("gold Building prefix mismatch: " + materials.join(" | "));
+    }
+    const custom = materials.slice(STOCK_NAMES.length);
+    const badCustom = custom.filter((n) => !OI_VEGETATION_NAMES.includes(n) || isPoisonedOiName(n));
+    if (badCustom.length) failures.push("unexpected vegetation materials: " + badCustom.join(", "));
+    if (materials.some((n) => isPoisonedOiName(n))) {
+      failures.push("OI catalog has a name that emptied imports: " + materials.join(" | "));
     }
     if (strings) failures.push("string area_material (Invalid OpenIntent format): " + strings);
     if (mismatches) failures.push("area_material not equal to catalog entry: " + mismatches);
@@ -191,7 +197,7 @@ function checkZip(zipBuf) {
     const v = parseVerify(files["VERIFY.txt"].toString("utf8"));
     verifyAreas = Number(v.attenuation_areas);
     if (verifyAreas !== areas) failures.push("VERIFY attenuation_areas " + verifyAreas + " != JSON " + areas);
-    if (Number(v.area_materials) !== STOCK_NAMES.length) failures.push("VERIFY area_materials " + v.area_materials);
+    if (Number(v.area_materials) !== materials.length) failures.push("VERIFY area_materials " + v.area_materials);
   }
   if (files["hamina-clipboard.json"] && oiName) {
     const clip = JSON.parse(files["hamina-clipboard.json"].toString("utf8"));
@@ -251,8 +257,8 @@ function checkZip(zipBuf) {
     statsMaterials = stats.areaMaterials;
     compatibilityMode = stats.compatibilityMode;
     if (statsAreas !== areas) failures.push("export-stats attenuationAreasEmitted " + statsAreas + " != JSON " + areas);
-    if (statsMaterials !== STOCK_NAMES.length) failures.push("export-stats areaMaterials " + statsMaterials);
-    if (compatibilityMode !== "stock-openintent") failures.push("compatibilityMode " + compatibilityMode);
+    if (statsMaterials !== materials.length) failures.push("export-stats areaMaterials " + statsMaterials);
+    if (compatibilityMode !== COMPATIBILITY_MODE) failures.push("compatibilityMode " + compatibilityMode);
   }
   return {
     failures,

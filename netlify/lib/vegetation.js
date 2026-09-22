@@ -137,10 +137,11 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine) {
     const canopyStockId = heavy ? "foliage-heavy" : "foliage-light";
     const canopyId = foliage ? foliage.typeId : canopyStockId;
     const trunkId = trunk ? trunk.typeId : "tree-trunk";
-    // Clipboard keeps Foliage / Tree Trunk. OpenIntent must not: those names
-    // drop every attenuation_area. Height picks a gold Building-* object.
-    const canopyMat = materialForVegetation(foliage ? foliage.material.top_height : heavy ? 12 : 9);
-    const trunkMat = materialForVegetation(trunk ? trunk.material.top_height : 8);
+    const canopyMat = materialForVegetation(
+      foliage ? foliage.material.top_height : heavy ? 12 : 9,
+      "canopy"
+    );
+    const trunkMat = materialForVegetation(trunk ? trunk.material.top_height : 8, "trunk");
     const rCanopy = (CANOPY_R_M + (n % 4) * 0.4) / frame.mpuX;
     const rTrunk = TRUNK_R_M / frame.mpuX;
     const ryCanopy = (CANOPY_R_M + (n % 4) * 0.4) / frame.mpuY;

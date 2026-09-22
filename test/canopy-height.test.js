@@ -38,10 +38,13 @@ describe("canopy height grid", () => {
     const lat = frame.south + (frame.north - frame.south) * 0.2;
     const pairs = treePairsFromPoints([{ lon, lat, pct: 70, heightM: 14.2 }], frame, []);
     const canopy = pairs.oiAreas.find((a) => a.kind === "canopy");
-    // 14.2 m buckets to the gold Five Floor object. Exact metres stay on the clipboard type.
-    assert.equal(canopy.material.name, "Building - Five Floor");
-    assert.equal(canopy.material.top_height, 15.240185320653499);
+    // 14.2 m is the tall canopy bin. Exact metres stay on the clipboard type.
+    assert.equal(canopy.material.name, "Tall Tree Foliage");
+    assert.equal(canopy.material.top_height, 15);
+    assert.equal(canopy.material.rf_properties.attenuation_per_m, 2);
+    assert.equal(canopy.material.display_color, "#3F7D2A");
     assert.equal("bottom_height" in canopy.material, false);
+    assert.equal("itu_material_type" in canopy.material, false);
     assert.ok(pairs.clipTypes.some((t) => t.id === "foliage-m-14_2" && t.topEdge === 14.2));
   });
 

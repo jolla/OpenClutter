@@ -21,7 +21,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 
 ## Exact alignment (every site)
 
-Hamina **2026-09-01** (docs.hamina.com release notes): “OpenIntent import and export now supports attenuating objects!” The [support matrix](https://docs.hamina.com/hamina/live/openintent) shows Attenuating Objects ✅ import/export. Outdoor OpenIntent imports accept Hamina’s Building - One/Two/Five/Ten Floor catalog (Jerry’s gold export). Tree rings use those same objects. Foliage / Tree Trunk names emptied every attenuation_area, so they stay off the OpenIntent catalog.
+Hamina **2026-09-01** (docs.hamina.com release notes): “OpenIntent import and export now supports attenuating objects!” The [support matrix](https://docs.hamina.com/hamina/live/openintent) shows Attenuating Objects ✅ import/export. Buildings use Hamina’s Building - One/Two/Five/Ten Floor catalog (Jerry’s gold export). Trees use custom materials with that same object shape. Names that emptied every attenuation_area (`Foliage - Heavy`, `Tree Trunk`, per-metre `Foliage N.N m`) stay off the OpenIntent catalog.
 
 One bbox drives everything:
 
@@ -29,33 +29,29 @@ One bbox drives everything:
 2. Building footprints mapped through that actual extent: Microsoft Global ML (height used when the tile has one), Overture Buildings (`height` or `num_floors`), Esri MSBFP2, then FEMA USA Structures. One ring per roof; the best measured height wins.
 3. USFS/NLCD percent tree canopy as a density field (jitter + NMS; imagery RGB only if the canopy raster is missing/empty — **not** when NLCD is valid zeros on parking/lawn). A Meta/WRI canopy-height window sets foliage `top_height` when it returns; NLCD still decides where trees go.
 4. lon/lat → JPEG pixels with the actual west/south/east/north (OpenIntent Y-up / JPEG Y-down).
-5. OpenIntent `attenuation_areas` include **buildings and trees**. Both use Building - One/Two/Five/Ten Floor (the gold outdoor set). Canopy height picks the bucket. Exact foliage names stay on the optional clipboard.
+5. OpenIntent `attenuation_areas` include **buildings and trees**. Buildings use Building - One/Two/Five/Ten Floor. Canopy uses Tree Foliage (under 12 m) or Tall Tree Foliage (12 m and up); trunks use Tree Wood. Exact foliage metres stay on the optional clipboard.
 
 **Import this zip in Hamina (Projects → Import → OpenIntent)** for the map, buildings, and trees. Do not use a GE screenshot as the map.
 
 ### Materials that import
 
-Hamina’s outdoor OpenIntent importer keeps attenuating objects when every `area_materials` entry is one of these gold objects (name, `rf_properties.attenuation_per_m`, `top_height`, `display_color` — no `itu_material_type`, no `bottom_height`):
+Every `area_material` is an object with exactly these keys: `name`, `rf_properties.attenuation_per_m`, `top_height`, `display_color`. No `itu_material_type`, no `bottom_height`. The object deep-equals its catalog entry (a stock name with a different `top_height` is rejected). Buildings are always the gold prefix. A vegetation material is added only when an area uses it, so a buildings-only zip stays the four gold objects.
 
-| Name | Color | Top height | dB/m |
-|---|---|---|---|
-| Building - One Floor | `#9AA5AC` | 4.5 | 5 |
-| Building - Two Floor | `#9A4159` | 7.620092660326749 | 5 |
-| Building - Five Floor | `#9AA5AC` | 15.240185320653499 | 5 |
-| Building - Ten Floor | `#9AA5AC` | 32 | 5 |
+| Name | Color | Top height | dB/m | Used for |
+|---|---|---|---|---|
+| Building - One Floor | `#9AA5AC` | 4.5 | 5 | buildings under 6 m |
+| Building - Two Floor | `#9A4159` | 7.620092660326749 | 5 | buildings under 11 m |
+| Building - Five Floor | `#9AA5AC` | 15.240185320653499 | 5 | buildings under 24 m |
+| Building - Ten Floor | `#9AA5AC` | 32 | 5 | taller buildings |
+| Tree Foliage | `#509D33` | 9 | 1 | canopy under 12 m |
+| Tall Tree Foliage | `#3F7D2A` | 15 | 2 | canopy 12 m and up |
+| Tree Wood | `#937E75` | 8 | 10 | trunks |
 
-These names emptied every `attenuation_area` when they were added to the catalog: `Foliage - Heavy`, `Foliage - Light`, `Tree Trunk`, `Foliage N.N m`, `Tree Trunk N.N m`, `Hotel podium`, `Building N.N m`. The docs clipboard example `Tree Foliage` is not in Jerry’s gold export or the Hamina client bundle, so it is not emitted.
+These names emptied every `attenuation_area` when they were in the catalog, and they are not emitted: `Foliage - Heavy`, `Foliage - Light`, `Tree Trunk`, `Foliage N.N m`, `Tree Trunk N.N m`, `Hotel podium`, `Building N.N m`. Exact measured metres stay on `hamina-clipboard.json` (`foliage-m-*`, `trunk-m-*`, `bldg-m-*`).
 
-Canopy and trunk rings are still written as `attenuation_areas`. Height picks one of the four objects above (under 6 m → One Floor, under 11 m → Two Floor, under 24 m → Five Floor, else Ten Floor). Rings that fail the vertex or span checks are omitted; they do not drop the buildings. `VERIFY.txt` lists `openIntentBuildingAreas` and `openIntentTreeAreas`.
+Rings over 40 vertices, or thinner than 4 px on either axis, are omitted. They do not drop the buildings. `VERIFY.txt` lists `openIntentBuildingAreas` and `openIntentTreeAreas`.
 
-Smallest Hamina-side ask: accept two more catalog objects with the same keys, and skip unknown materials instead of discarding the whole import:
-
-```json
-{ "name": "Tree Foliage", "rf_properties": { "attenuation_per_m": 1 }, "top_height": 12.192148256522799, "display_color": "#509D33" }
-{ "name": "Tree Trunk", "rf_properties": { "attenuation_per_m": 10 }, "top_height": 9.1441111923921, "display_color": "#937E75" }
-```
-
-Those heights match the [attenuating objects](https://docs.hamina.com/hamina/simulation/attenuating-objects) clipboard example (40 ft and 30 ft). Until that ships, the gold Building buckets are what a single Import can draw.
+A/B from the gold schema (buildings-only vs one 14.2 m tree): the building prefix is byte-identical; the tree zip adds only `Tall Tree Foliage` and `Tree Wood`, and the building `area_material` objects do not change. OpenIntent 2.0.1 does not enum-restrict material names. Hamina’s client accepts any name; the silent all-drop was server-side and tracked the poisoned names above, `itu_material_type`, `bottom_height`, a material that did not match its catalog entry, and bad rings. These three customs use the gold field set, fixed heights (not one name per metre), and names that are not on that list. If a Hamina import still drops every area, the next step is fewer custom names (one canopy material), not mapping trees back onto Building - *.
 
 OpenIntent pixels (unit-tested; Y-up from SW, matching oiconvert / Hamina OI):
 
@@ -86,7 +82,7 @@ Trees come from **USFS/NLCD percent tree canopy** on the same extent (threshold 
 1. Search an address.
 2. Draw the site (under ~2 km on a side).
 3. **Export** — one `{site}-openintent.zip` download. Inside:
-   - `openIntent_<slug>.json` — OpenIntent 2.0.1 with building and tree `attenuation_areas` (Building - One/Two/Five/Ten Floor) at the JPEG meter size; floorplan height 2.5 m (Hamina outdoor default)
+   - `openIntent_<slug>.json` — OpenIntent 2.0.1 with building and tree `attenuation_areas` (gold Building materials plus Tree Foliage / Tall Tree Foliage / Tree Wood) at the JPEG meter size; floorplan height 2.5 m (Hamina outdoor default)
    - `images/<slug>.jpg` — Esri aerial
    - `alignment-overlay.svg` — buildings (red) + trees (green) on that JPEG
    - `frame-lock.json` — pixel/meter corners for Hamina vs OpenIntent vs JPEG
@@ -124,7 +120,7 @@ Calibration (API only): `"controlPoints": [{ "lon", "lat", "xM", "yM" }, …]` (
 
 ## Limits
 
-Global ML (zoom-9 quadkey, clipped to the JPEG) is the base polygon. Overture Buildings release `2026-08-19.0` is read from one or two Azure GeoParquet row groups (committed bbox index, not a full scan). Esri MSBFP2 (paginated to 2000) and FEMA USA Structures fill centroids still uncovered. A candidate is the same roof when its centroid sits inside a kept ring or within 11 m of that ring’s centroid. Geometry is replaced only for a single exterior that is more detailed at a similar area, or when the kept ring is a stub inside a fuller outline. Height rank: Overture explicit height, then Microsoft Global ML `height` (values ≤ 2 m and −1 ignored), then FEMA `HEIGHT`, then Overture `num_floors` × 3 m, then the nearest measured neighbor within 120 m, then stock One Floor / Five Floor / Hotel bins. Ties keep the height already on the ring. A stub whose area is outside 0.4–2.5× does not overwrite a larger footprint’s height. OpenIntent `area_materials` stay the four Hamina outdoor Building - One/Two/Five/Ten Floor names (`compatibilityMode` `stock-openintent`). Tree attenuation areas use that same catalog (canopy height picks the bucket). `hamina-clipboard.json` remains optional for foliage/trunk names and exact metres. OSM building ways are not read.
+Global ML (zoom-9 quadkey, clipped to the JPEG) is the base polygon. Overture Buildings release `2026-08-19.0` is read from one or two Azure GeoParquet row groups (committed bbox index, not a full scan). Esri MSBFP2 (paginated to 2000) and FEMA USA Structures fill centroids still uncovered. A candidate is the same roof when its centroid sits inside a kept ring or within 11 m of that ring’s centroid. Geometry is replaced only for a single exterior that is more detailed at a similar area, or when the kept ring is a stub inside a fuller outline. Height rank: Overture explicit height, then Microsoft Global ML `height` (values ≤ 2 m and −1 ignored), then FEMA `HEIGHT`, then Overture `num_floors` × 3 m, then the nearest measured neighbor within 120 m, then stock One Floor / Five Floor / Hotel bins. Ties keep the height already on the ring. A stub whose area is outside 0.4–2.5× does not overwrite a larger footprint’s height. OpenIntent building `area_materials` stay the four Hamina outdoor Building - One/Two/Five/Ten Floor objects. Tree attenuation areas add Tree Foliage, Tall Tree Foliage, and Tree Wood (`compatibilityMode` `custom-vegetation`). `hamina-clipboard.json` remains optional for foliage/trunk names and exact metres. OSM building ways are not read.
 
 A large smooth bright roof that none of those layers contain is filled from the Esri JPEG (connected membrane pixels, ≥2500 m², skipped when a vector already covers it). Boxes over ~2.5 km fail. Campus-merge blobs &gt; 150,000 m² are dropped. NLCD still places trees and still refuses roofs and pavement; a textured canopy island with a pavement ring is kept as a median. Meta/WRI CHM v2 (zoom-10 COG, pixel window, max side 180) overrides foliage `top_height` where the canopy is above 2 m. USGS 3DEP `getSamples` (36 points, no API key) becomes `terrain-clipboard.json` only: flat pads when a cell’s corner relief is under 0.5 m, otherwise two sloped triangles. OpenIntent and `hamina-clipboard.json` stay free of raised and sloped floors. Overture starts with the aerial JPEG, before the Global ML download, on its own abort. A finished read is kept even if the core phase has passed 5 seconds; a read still in flight may run up to 1.5 seconds more, not past 9 seconds. The Las Vegas Sphere is in that Overture row group and missing from Microsoft and USA Structures. Canopy height and 3DEP still start after the aerial and footprints are in memory. Each has its own 2 second abort. If the map fetch already used 5 seconds, they are skipped. A miss is recorded in `export-warnings.json` and the OpenIntent zip still exports. The page does not ask for a smaller box when a source times out. FEMA, NLCD, and 3DEP are United States sources.
 

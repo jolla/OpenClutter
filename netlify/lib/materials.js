@@ -1,18 +1,16 @@
 "use strict";
 
 /**
- * OpenIntent area_materials must match Hamina's outdoor building stock.
- * Jerry's gold Hamina export only catalogs:
- *   Building - One / Two / Five / Ten Floor
- * Those four objects import. Names outside that set — Foliage - Heavy,
- * Foliage - Light, Tree Trunk, Foliage N.N m, Tree Trunk N.N m, Hotel podium,
- * Building N.N m — silently drop every attenuation_area. The docs clipboard
- * example "Tree Foliage" is not in the gold export or the Hamina client
- * bundle, so it is not emitted either.
- * Tree rings reuse the gold object for their height bucket (same keys:
- * name, rf_properties, top_height, display_color). Exact foliage names and
- * measured metres stay on hamina-clipboard.json (optional legacy paste).
- * compatibilityMode is "stock-openintent".
+ * Buildings keep Hamina's gold outdoor objects (Jerry's export).
+ * Trees use a few custom materials with that same object shape:
+ *   name, rf_properties.attenuation_per_m, top_height, display_color
+ * No itu_material_type, no bottom_height, no per-metre name.
+ *
+ * Shapes that emptied every attenuation_area: Foliage - Heavy, Foliage - Light,
+ * Tree Trunk, Foliage N.N m, Tree Trunk N.N m, Building N.N m, Hotel podium,
+ * and any material whose top_height differed from its catalog entry.
+ * Those names stay on the clipboard only. OpenIntent canopy is Tree Foliage /
+ * Tall Tree Foliage; trunks are Tree Wood. compatibilityMode is custom-vegetation.
  */
 
 const { ZONE_TYPES, TYPE_BY_ID, oiMaterialFromType, pickBuildingTypeId } = require("./hamina-clipboard");
@@ -51,6 +49,45 @@ const OI_BUILDING_TYPES = [
 
 const OI_BUILDING_BY_ID = Object.fromEntries(OI_BUILDING_TYPES.map((t) => [t.id, t]));
 const OI_BUILDING_NAMES = OI_BUILDING_TYPES.map((t) => t.name);
+
+/**
+ * Fixed vegetation objects. Two canopy bins plus one trunk — not one material
+ * per measured metre. Field set matches the gold building objects.
+ */
+const OI_VEGETATION_TYPES = [
+  {
+    id: "tree-foliage",
+    name: "Tree Foliage",
+    color: "#509D33",
+    topEdge: 9,
+    attenuationDbPerMeter: 1,
+  },
+  {
+    id: "tall-tree-foliage",
+    name: "Tall Tree Foliage",
+    color: "#3F7D2A",
+    topEdge: 15,
+    attenuationDbPerMeter: 2,
+  },
+  {
+    id: "tree-wood",
+    name: "Tree Wood",
+    color: "#937E75",
+    topEdge: 8,
+    attenuationDbPerMeter: 10,
+  },
+];
+
+const OI_VEGETATION_BY_ID = Object.fromEntries(OI_VEGETATION_TYPES.map((t) => [t.id, t]));
+const OI_VEGETATION_NAMES = OI_VEGETATION_TYPES.map((t) => t.name);
+
+/** Names that previously emptied a whole OpenIntent import. Never emit these. */
+const POISONED_OI_NAMES = [
+  "Foliage - Heavy",
+  "Foliage - Light",
+  "Tree Trunk",
+  "Hotel podium",
+];
 
 function roundHeightM(heightM) {
   const n = Number(heightM);
@@ -134,7 +171,16 @@ function measuredTrunkMaterial(heightM) {
   };
 }
 
-const COMPATIBILITY_MODE = "stock-openintent";
+const COMPATIBILITY_MODE = "custom-vegetation";
+
+function isPoisonedOiName(name) {
+  if (!name) return true;
+  if (POISONED_OI_NAMES.indexOf(name) >= 0) return true;
+  if (/^Foliage \d/.test(name)) return true;
+  if (/^Tree Trunk \d/.test(name)) return true;
+  if (/^Building \d/.test(name)) return true;
+  return false;
+}
 
 /**
  * Bucket measured/estimated height into Hamina's four outdoor building materials.
@@ -177,22 +223,45 @@ function materialForBuilding(heightM, areaM2) {
 }
 
 /**
- * Canopy and trunk rings in OpenIntent. Height only picks a gold Building-*
- * bucket. Returning a foliage name here would empty the whole import.
+ * Canopy and trunk rings. kind "trunk" is always Tree Wood. Canopy under 12 m
+ * is Tree Foliage; 12 m and up is Tall Tree Foliage. The returned object is
+ * the catalog entry, not a per-tree height.
  */
-function materialForVegetation(heightM) {
+function materialForVegetation(heightM, kind) {
+  if (kind === "trunk") return oiMaterialFromType(OI_VEGETATION_BY_ID["tree-wood"]);
   const h = roundHeightM(heightM);
-  const oiId = pickOiBuildingTypeId(0, h || 9);
-  return oiMaterialFromType(OI_BUILDING_BY_ID[oiId]);
+  const id = h >= 12 ? "tall-tree-foliage" : "tree-foliage";
+  return oiMaterialFromType(OI_VEGETATION_BY_ID[id]);
 }
 
 function stockMaterials() {
   return ZONE_TYPES.map((t) => oiMaterialFromType(t));
 }
 
-/** OpenIntent catalog: Hamina outdoor Building-* set only. */
-function catalogMaterials() {
+function buildingCatalog() {
   return OI_BUILDING_TYPES.map((t) => oiMaterialFromType(t));
+}
+
+/** Allowed OpenIntent materials: gold buildings, then the fixed vegetation set. */
+function catalogMaterials() {
+  return buildingCatalog().concat(OI_VEGETATION_TYPES.map((t) => oiMaterialFromType(t)));
+}
+
+/**
+ * Document catalog. Buildings are always present (the known-good prefix).
+ * A vegetation material is included only when an area uses it, so a
+ * buildings-only zip stays the four gold objects.
+ */
+function documentMaterials(areas) {
+  const used = new Set();
+  for (const a of areas || []) {
+    const mat = a && a.area_material;
+    const name = typeof mat === "string" ? mat : mat && mat.name;
+    if (name) used.add(name);
+  }
+  return buildingCatalog().concat(
+    OI_VEGETATION_TYPES.filter((t) => used.has(t.name)).map((t) => oiMaterialFromType(t))
+  );
 }
 
 module.exports = {
@@ -203,10 +272,16 @@ module.exports = {
   measuredTrunkMaterial,
   materialForBuilding,
   materialForVegetation,
+  isPoisonedOiName,
   pickOiBuildingTypeId,
   stockMaterials,
   catalogMaterials,
+  documentMaterials,
+  buildingCatalog,
   OI_BUILDING_TYPES,
   OI_BUILDING_NAMES,
+  OI_VEGETATION_TYPES,
+  OI_VEGETATION_NAMES,
+  POISONED_OI_NAMES,
   COMPATIBILITY_MODE,
 };

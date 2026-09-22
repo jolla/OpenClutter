@@ -21,8 +21,9 @@
  *    > stock One Floor / Five Floor / Hotel bins.
  *    Microsoft height -1 and anything ≤ 2 m is ignored.
  *    Ties keep the height already on the kept ring.
- *    OpenIntent still uses the six stock Hamina names. Exact metres are
- *    clipboard zone types only (materials.js, compatibilityMode stock-openintent).
+ *    OpenIntent buildings use the four gold Building names. Trees use
+ *    Tree Foliage / Tall Tree Foliage / Tree Wood. Exact metres are
+ *    clipboard zone types only (materials.js, compatibilityMode custom-vegetation).
  */
 
 const { exteriorRings, centroid, pointInRing, featureHeight, setFeatureHeight } = require("./ms-global");

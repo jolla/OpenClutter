@@ -24,6 +24,7 @@ const { fetchUsaStructures } = require("../../netlify/lib/usa-structures");
 const { conflateFootprints, countHeightSources } = require("../../netlify/lib/conflate");
 const { terrainFromSamples } = require("../../netlify/lib/terrain");
 const { applyChmToTrees, sampleChmGrid } = require("../../netlify/lib/canopy-height");
+const { OI_VEGETATION_NAMES } = require("../../netlify/lib/materials");
 const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, scoreMeasuredHeights, scoreMaterialCompatibility, evaluate, pointInRing, THRESHOLDS } = require("./score");
 const { supplementFootprints } = require("../../netlify/lib/roof-mask");
 const { featureExteriorRings } = require("../../netlify/lib/pipeline");
@@ -232,10 +233,19 @@ function runLoaded(loaded, opts) {
     built.clipboard
   );
   const compatibility = scoreMaterialCompatibility(built.openintent);
+  const vegNames = new Set(OI_VEGETATION_NAMES);
+  let customTreeAreas = 0;
+  const oiAreas =
+    (built.openintent.floorplans[0] && built.openintent.floorplans[0].attenuation_areas) || [];
+  for (const a of oiAreas) {
+    const name = a && a.area_material && a.area_material.name;
+    if (vegNames.has(name)) customTreeAreas++;
+  }
   const openIntentTrees = {
     required: treePoints.length > 0,
     placed: treePoints.length,
     emitted: built.stats.openIntentTreeAreas || 0,
+    custom: customTreeAreas,
     buildingAreas: built.stats.openIntentBuildingAreas || 0,
   };
   const recovery = prefer ? imageryRecovery(jpegDecoded, frame, vectorFeatures, probes) : { required: false, hit: true };
