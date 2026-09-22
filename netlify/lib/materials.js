@@ -1,11 +1,11 @@
 "use strict";
 
 /**
- * Measured heights become their own OpenIntent materials.
- * Hamina accepts a unique name + top_height + attenuation_per_m.
- * Do not emit bottom_height (rejected as Invalid OpenIntent format).
- * itu_material_type stays ITU_R_UNKNOWN. Stock names remain the fallback
- * when no measured height is available.
+ * OpenIntent uses only the six stock Hamina names, with the stock top_height
+ * and attenuation. Hamina drops every attenuation_area when the catalog
+ * contains invented names (Building 6.4 m, Foliage 14.2 m) or when an area's
+ * material differs from the catalog entry. Exact metres stay on the clipboard
+ * zone types. compatibilityMode is "stock-openintent".
  */
 
 const { ZONE_TYPES, TYPE_BY_ID, oiMaterialFromType, pickBuildingTypeId } = require("./hamina-clipboard");
@@ -93,17 +93,23 @@ function measuredTrunkMaterial(heightM) {
   };
 }
 
-/** Real height when present; otherwise the stock area heuristic. */
+const COMPATIBILITY_MODE = "stock-openintent";
+
+/**
+ * OpenIntent material is always a stock type. Measured height only chooses
+ * the bucket (one floor / five floor / hotel) and is copied onto the clipboard
+ * type so paste can keep the real metres.
+ */
 function materialForBuilding(heightM, areaM2) {
-  const measured = measuredBuildingMaterial(heightM);
-  if (measured) return measured;
-  const typeId = pickBuildingTypeId(areaM2, 0);
+  const exact = measuredBuildingMaterial(heightM);
+  const typeId = pickBuildingTypeId(areaM2, exact ? exact.material.top_height : 0);
   const type = TYPE_BY_ID[typeId];
   return {
     material: oiMaterialFromType(type),
-    clipType: null,
-    typeId,
-    measured: false,
+    clipType: exact ? exact.clipType : null,
+    typeId: exact ? exact.typeId : typeId,
+    measured: !!exact,
+    exactHeight: exact ? exact.material.top_height : 0,
   };
 }
 
@@ -111,15 +117,9 @@ function stockMaterials() {
   return ZONE_TYPES.map((t) => oiMaterialFromType(t));
 }
 
-function catalogMaterials(extra) {
-  const mats = stockMaterials();
-  const names = new Set(mats.map((m) => m.name));
-  for (const m of extra || []) {
-    if (!m || !m.name || names.has(m.name)) continue;
-    names.add(m.name);
-    mats.push(m);
-  }
-  return mats;
+/** Hamina-safe catalog. Extras are ignored on purpose. */
+function catalogMaterials() {
+  return stockMaterials();
 }
 
 module.exports = {
@@ -131,4 +131,5 @@ module.exports = {
   materialForBuilding,
   stockMaterials,
   catalogMaterials,
+  COMPATIBILITY_MODE,
 };

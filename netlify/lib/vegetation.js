@@ -125,11 +125,12 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine) {
       p.heightM > 2 ? p.heightM : p.pct != null ? canopyHeightM(p.pct, p.lon, p.lat) : 0;
     const foliage = measuredH ? measuredFoliageMaterial(measuredH) : null;
     const trunk = measuredH ? measuredTrunkMaterial(measuredH) : null;
-    const heavy = n % 12 !== 0;
-    const canopyId = foliage ? foliage.typeId : heavy ? "foliage-heavy" : "foliage-light";
+    const heavy = foliage ? foliage.material.top_height >= 12 : n % 12 !== 0;
+    const canopyStockId = heavy ? "foliage-heavy" : "foliage-light";
+    const canopyId = foliage ? foliage.typeId : canopyStockId;
     const trunkId = trunk ? trunk.typeId : "tree-trunk";
-    const canopyMat = foliage ? foliage.material : oiMaterialFromType(TYPE_BY_ID[canopyId]);
-    const trunkMat = trunk ? trunk.material : oiMaterialFromType(TYPE_BY_ID["tree-trunk"]);
+    const canopyMat = oiMaterialFromType(TYPE_BY_ID[canopyStockId]);
+    const trunkMat = oiMaterialFromType(TYPE_BY_ID["tree-trunk"]);
     const rCanopy = (CANOPY_R_M + (n % 4) * 0.4) / frame.mpuX;
     const rTrunk = TRUNK_R_M / frame.mpuX;
     const ryCanopy = (CANOPY_R_M + (n % 4) * 0.4) / frame.mpuY;
@@ -146,12 +147,10 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine) {
     if (foliage && !seenClip.has(foliage.clipType.id)) {
       seenClip.add(foliage.clipType.id);
       clipTypes.push(foliage.clipType);
-      materials.push(foliage.material);
     }
     if (trunk && !seenClip.has(trunk.clipType.id)) {
       seenClip.add(trunk.clipType.id);
       clipTypes.push(trunk.clipType);
-      materials.push(trunk.material);
     }
     oiAreas.push({ ringPx: canopyPx, typeId: canopyId, material: canopyMat, kind: "canopy" });
     oiAreas.push({ ringPx: trunkPx, typeId: trunkId, material: trunkMat, kind: "trunk" });
