@@ -13,15 +13,11 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | URL | https://openclutter.netlify.app | https://openclutter.netlify.app/dev → https://dev--openclutter.netlify.app |
 | Git branch | `main` | `dev` |
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
-| Deploy | Netlify production (branch `main` only) | Netlify branch deploy for `dev` (continuous) |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **`/dev`** (or the branch URL directly). The UI shows a small **dev** badge on non-production hosts.
+- Hack on **https://openclutter.netlify.app/dev**. The UI shows a small **dev** badge there.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
-**Netlify (Jerry once):** Site `openclutter` → Project configuration → Continuous deployment → **Branches and deploy contexts** → add branch `dev` (or “All” branch deploys). Production branch stays `main`. Until that toggle is on, `/dev` redirects to a 404 branch hostname.
-
-`/dev` is a **302** to the branch subdomain (not a 200 proxy). Netlify’s branch-subdomain proxies are unreliable; a redirect keeps assets and `/api/*` on the same deploy. To keep `/dev` in the address bar later: create a second Netlify site whose production branch is `dev`, then change `netlify.toml` to a status-200 rewrite against that site’s `*.netlify.app` URL.
 
 ## Exact alignment (every site)
 
