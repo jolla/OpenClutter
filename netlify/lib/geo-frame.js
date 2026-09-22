@@ -375,6 +375,29 @@ function resizeRgba(src, sw, sh, dstW, dstH) {
  * north stay the Esri JPEG extent for lon/lat → pixel mapping onto the
  * **content** pixel grid — do not stretch the aerial to fit geodesic meters.
  */
+/**
+ * How far a roof moves if content-grid Y pixels are read on a geodesic-aspect
+ * pixel grid (the stretch-after-project miss). Zero only when imgH already
+ * matches geodesic meters per pixel — which the Esri 4326 JPEG does not.
+ * lockIsotropicImagery keeps the content grid instead, so this number stays
+ * large on Oak Creek and the export never applies it.
+ */
+function geodesicPixelMismatchPx(frame, lon, lat) {
+  if (!frame || !(frame.imgW > 0) || !(frame.imgH > 0)) return 0;
+  if (![lon, lat, frame.west, frame.south, frame.east, frame.north].every(Number.isFinite)) return 0;
+  const span = frame.north - frame.south;
+  if (!(span > 0)) return 0;
+  const mpd = frame.mpd || metersPerDeg((frame.south + frame.north) / 2);
+  const geoWid = (frame.east - frame.west) * mpd.lon;
+  const geoLen = span * mpd.lat;
+  if (!(geoWid > 0) || !(geoLen > 0)) return 0;
+  const stretchedH = Math.max(1, Math.round(frame.imgW * (geoLen / geoWid)));
+  const frac = (frame.north - lat) / span;
+  const yContent = frac * frame.imgH;
+  const yStretched = frac * stretchedH;
+  return Math.abs(yStretched - yContent);
+}
+
 function unifyFrameMpu(frame) {
   if (!frame || !(frame.imgW > 0) || !(frame.imgH > 0) || !(frame.widthM > 0)) return frame;
   const mpu = frame.widthM / frame.imgW;
@@ -612,6 +635,7 @@ module.exports = {
   isAspectLocked,
   isotropicPixelSize,
   resizeRgba,
+  geodesicPixelMismatchPx,
   unifyFrameMpu,
   lockIsotropicImagery,
   FP_PAGE_SIZE,
