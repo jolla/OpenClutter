@@ -107,21 +107,22 @@ describe("Hamina OpenIntent material compatibility", () => {
       fp.dimensions.map((d) => d.unit),
       ["pixels", "meters", "feet"]
     );
-    assert.deepEqual(
-      fp.reference_markers.map((m) => m.name),
-      ["OC-SW", "OC-SE", "OC-NW", "OC-NE"]
-    );
+    assert.deepEqual(fp.reference_markers, []);
     for (const a of fp.attenuation_areas) {
       assert.deepEqual(Object.keys(a).sort(), ["area", "area_material"]);
       const cat = built.openintent.area_materials.find((m) => m.name === a.area_material.name);
       assert.deepEqual(a.area_material, cat);
-      assert.deepEqual(Object.keys(a.area_material).sort(), [
-        "display_color",
-        "itu_material_type",
-        "name",
-        "rf_properties",
-        "top_height",
-      ]);
+      assert.deepEqual(Object.keys(a.area_material), ["name", "rf_properties", "top_height", "display_color"]);
+      assert.equal("itu_material_type" in a.area_material, false);
+      assert.equal("bottom_height" in a.area_material, false);
+      const coords = a.area.coordinates;
+      assert.ok(coords.length >= 12);
+      assert.equal(coords.length % 3, 0);
+      for (let i = 0; i < coords.length; i += 3) {
+        assert.equal(coords[i].coordinate_xyz.unit, "pixels");
+        assert.equal(coords[i + 1].coordinate_xyz.unit, "meters");
+        assert.equal(coords[i + 2].coordinate_xyz.unit, "feet");
+      }
     }
   });
 
@@ -144,10 +145,9 @@ describe("Hamina OpenIntent material compatibility", () => {
         area: { coordinates: coords },
         area_material: {
           name: "Building 6.4 m",
-          display_color: "#C4C4C4",
-          top_height: 6.4,
-          itu_material_type: "ITU_R_UNKNOWN",
           rf_properties: { attenuation_per_m: 5 },
+          top_height: 6.4,
+          display_color: "#C4C4C4",
         },
       },
       frame.imgW,
@@ -160,10 +160,9 @@ describe("Hamina OpenIntent material compatibility", () => {
         area: { coordinates: coords },
         area_material: {
           name: "Building - One Floor",
-          display_color: "#C4C4C4",
-          top_height: 6.4,
-          itu_material_type: "ITU_R_UNKNOWN",
           rf_properties: { attenuation_per_m: 5 },
+          top_height: 6.4,
+          display_color: "#C4C4C4",
         },
       },
       frame.imgW,
@@ -177,6 +176,16 @@ describe("Hamina OpenIntent material compatibility", () => {
     const named = validateOiArea({ area: { coordinates: coords }, area_material: stock.name }, frame.imgW, frame.imgH);
     assert.equal(named.ok, false);
     assert.equal(named.reason, "material");
+    const withItu = validateOiArea(
+      {
+        area: { coordinates: coords },
+        area_material: { ...stock, itu_material_type: "ITU_R_UNKNOWN" },
+      },
+      frame.imgW,
+      frame.imgH
+    );
+    assert.equal(withItu.ok, false);
+    assert.equal(withItu.reason, "material");
     const withBottom = validateOiArea(
       {
         area: { coordinates: coords },

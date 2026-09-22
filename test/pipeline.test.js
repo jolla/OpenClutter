@@ -149,16 +149,30 @@ describe("pipeline: footprints + trees share the frame", () => {
       assert.ok(stock.has(a.area_material.name), a.area_material.name);
       const cat = built.openintent.area_materials.find((m) => m.name === a.area_material.name);
       assert.deepEqual(a.area_material, cat);
-      assert.equal(a.area_material.itu_material_type, "ITU_R_UNKNOWN");
+      assert.equal("itu_material_type" in a.area_material, false);
       assert.equal("bottom_height" in a.area_material, false);
       const coords = a.area.coordinates;
-      assert.ok(coords.length >= 4);
+      assert.ok(coords.length >= 12);
+      assert.equal(coords.length % 3, 0);
+      for (let i = 0; i < coords.length; i += 3) {
+        assert.equal(coords[i].coordinate_xyz.unit, "pixels");
+        assert.equal(coords[i + 1].coordinate_xyz.unit, "meters");
+        assert.equal(coords[i + 2].coordinate_xyz.unit, "feet");
+        const px = coords[i].coordinate_xyz;
+        const m = coords[i + 1].coordinate_xyz;
+        assert.ok(Math.abs(m.x - px.x * frame.mpuX) < 1e-4);
+        assert.ok(Math.abs(m.y - px.y * frame.mpuX) < 1e-4);
+        const ft = coords[i + 2].coordinate_xyz;
+        assert.ok(Math.abs(ft.x - m.x / 0.3048) < 1e-3);
+        assert.ok(Math.abs(ft.y - m.y / 0.3048) < 1e-3);
+      }
       const first = coords[0].coordinate_xyz;
-      const last = coords[coords.length - 1].coordinate_xyz;
+      const lastPx = coords[coords.length - 3].coordinate_xyz;
       assert.equal(first.unit, "pixels");
-      assert.equal(first.x, last.x);
-      assert.equal(first.y, last.y);
-      for (const c of coords) {
+      assert.equal(first.x, lastPx.x);
+      assert.equal(first.y, lastPx.y);
+      for (let i = 0; i < coords.length; i += 3) {
+        const c = coords[i];
         assert.ok(c.coordinate_xyz.x >= 0 && c.coordinate_xyz.x <= frame.imgW);
         assert.ok(c.coordinate_xyz.y >= 0 && c.coordinate_xyz.y <= frame.imgH);
       }
@@ -502,7 +516,7 @@ describe("OpenIntent attenuation_areas", () => {
     const xs = clipped.map((p) => p[0]);
     assert.ok(Math.min(...xs) >= -1e-6);
     assert.ok(Math.max(...xs) > 10);
-    assert.equal(ringToOi([[-5, -5], [-1, -5], [-1, -1], [-5, -1], [-5, -5]], w, h), null);
+    assert.equal(ringToOi([[-5, -5], [-1, -5], [-1, -1], [-5, -1], [-5, -5]], w, h, 1), null);
   });
 
   it("rejects open, NaN, duplicate, and self-intersecting rings after rounding", () => {
@@ -541,7 +555,8 @@ describe("OpenIntent attenuation_areas", () => {
         [10, 10],
       ],
       w,
-      h
+      h,
+      1
     );
     assert.equal(bowtie, null);
     const tiny = ensureMinSpan(
@@ -554,11 +569,12 @@ describe("OpenIntent attenuation_areas", () => {
       w,
       h
     );
-    const expanded = ringToOi(tiny, w, h);
+    const expanded = ringToOi(tiny, w, h, 1);
     assert.ok(expanded);
     assert.equal(validateOiCoords(expanded, w, h).ok, true);
-    const xs = expanded.map((c) => c.coordinate_xyz.x);
-    const ys = expanded.map((c) => c.coordinate_xyz.y);
+    assert.equal(expanded.length % 3, 0);
+    const xs = expanded.filter((c) => c.coordinate_xyz.unit === "pixels").map((c) => c.coordinate_xyz.x);
+    const ys = expanded.filter((c) => c.coordinate_xyz.unit === "pixels").map((c) => c.coordinate_xyz.y);
     assert.ok(Math.max(...xs) - Math.min(...xs) >= 3);
     assert.ok(Math.max(...ys) - Math.min(...ys) >= 3);
   });
@@ -632,7 +648,7 @@ describe("OpenIntent attenuation_areas", () => {
     const cat = built.openintent.area_materials.find((m) => m.name === "Building - One Floor");
     assert.deepEqual(bldg.area_material, cat);
     assert.equal(cat.top_height, 4.5);
-    assert.equal(cat.itu_material_type, "ITU_R_UNKNOWN");
+    assert.equal("itu_material_type" in cat, false);
     assert.equal(cat.rf_properties.attenuation_per_m, 5);
     assert.equal("bottom_height" in cat, false);
     assert.equal(built.stats.compatibilityMode, "stock-openintent");
