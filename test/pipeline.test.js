@@ -145,12 +145,12 @@ describe("pipeline: footprints + trees share the frame", () => {
       ZONE_TYPES.map((t) => t.name)
     );
     for (const a of areas) {
-      assert.equal(typeof a.area_material, "string");
-      assert.ok(stock.has(a.area_material), a.area_material);
-      const cat = built.openintent.area_materials.find((m) => m.name === a.area_material);
-      assert.ok(cat);
-      assert.equal(cat.itu_material_type, "ITU_R_UNKNOWN");
-      assert.equal("bottom_height" in cat, false);
+      assert.equal(typeof a.area_material, "object");
+      assert.ok(stock.has(a.area_material.name), a.area_material.name);
+      const cat = built.openintent.area_materials.find((m) => m.name === a.area_material.name);
+      assert.deepEqual(a.area_material, cat);
+      assert.equal(a.area_material.itu_material_type, "ITU_R_UNKNOWN");
+      assert.equal("bottom_height" in a.area_material, false);
       const coords = a.area.coordinates;
       assert.ok(coords.length >= 4);
       const first = coords[0].coordinate_xyz;
@@ -472,7 +472,7 @@ describe("OpenIntent attenuation_areas", () => {
     assert.equal(built.stats.trees, 3);
     assert.equal(oi.attenuation_areas.length, 2 + 3 * 2);
     assert.equal(built.clipboard.attenuatingZones.length, oi.attenuation_areas.length);
-    const names = oi.attenuation_areas.map((a) => a.area_material);
+    const names = oi.attenuation_areas.map((a) => a.area_material.name);
     assert.ok(names.includes("Building - One Floor") || names.includes("Building - Five Floor"));
     assert.ok(names.includes("Tree Trunk"));
     assert.ok(names.includes("Foliage - Heavy") || names.includes("Foliage - Light"));
@@ -626,17 +626,18 @@ describe("OpenIntent attenuation_areas", () => {
       built.openintent.area_materials.map((m) => m.name),
       ZONE_TYPES.map((t) => t.name)
     );
-    const bldg = areas.find((a) => a.area_material === "Building - One Floor");
+    const bldg = areas.find((a) => a.area_material && a.area_material.name === "Building - One Floor");
     assert.ok(bldg);
-    assert.equal(typeof bldg.area_material, "string");
+    assert.equal(typeof bldg.area_material, "object");
     const cat = built.openintent.area_materials.find((m) => m.name === "Building - One Floor");
+    assert.deepEqual(bldg.area_material, cat);
     assert.equal(cat.top_height, 4.5);
     assert.equal(cat.itu_material_type, "ITU_R_UNKNOWN");
     assert.equal(cat.rf_properties.attenuation_per_m, 5);
     assert.equal("bottom_height" in cat, false);
     assert.equal(built.stats.compatibilityMode, "stock-openintent");
     assert.equal(built.stats.areaMaterials, ZONE_TYPES.length);
-    assert.ok(areas.some((a) => a.area_material === "Foliage - Heavy" || a.area_material === "Foliage - Light"));
+    assert.ok(areas.some((a) => a.area_material.name === "Foliage - Heavy" || a.area_material.name === "Foliage - Light"));
     assert.ok(built.clipboard.attenuatingZoneTypes.some((t) => t.id === "bldg-m-6_4" && t.topEdge === 6.4));
   });
 
