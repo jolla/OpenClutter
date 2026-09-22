@@ -29,14 +29,72 @@ const drawControl = new L.Control.Draw({
     circle: false,
     circlemarker: false,
     marker: false,
-    rectangle: { shapeOptions: { color: "#3fb950", weight: 2 } },
+    rectangle: {
+      shapeOptions: { color: "#3fb950", weight: 2 },
+      showArea: false,
+    },
   },
   edit: { featureGroup: drawn },
 });
 
 let bbox = null;
+let rectDrawer = null;
+/** Finished rectangle; the chip returns here if a redraw is cancelled. */
+let committedBounds = null;
+let gestureCommitted = false;
+let areaChip = null;
 const statusEl = document.getElementById("status");
 const exportBtn = document.getElementById("export");
+
+function chipBbox(bounds) {
+  return {
+    west: bounds.getWest(),
+    south: bounds.getSouth(),
+    east: bounds.getEast(),
+    north: bounds.getNorth(),
+  };
+}
+
+function hideAreaChip() {
+  if (areaChip && map.hasLayer(areaChip)) map.removeLayer(areaChip);
+}
+
+function showAreaChip(bounds) {
+  const label = OpenClutterArea.formatBboxSqFt(chipBbox(bounds));
+  if (!label) {
+    hideAreaChip();
+    return;
+  }
+  if (!areaChip) {
+    areaChip = L.tooltip({
+      permanent: true,
+      direction: "center",
+      className: "area-chip",
+      opacity: 1,
+      interactive: false,
+    });
+  }
+  areaChip.setLatLng(bounds.getCenter()).setContent(label);
+  if (!map.hasLayer(areaChip)) areaChip.addTo(map);
+}
+
+function onDrawPointerMove(e) {
+  if (!rectDrawer || !rectDrawer._isDrawing || !rectDrawer._startLatLng || !e.latlng) return;
+  const bounds = L.latLngBounds(rectDrawer._startLatLng, e.latlng);
+  if (!OpenClutterArea.formatBboxSqFt(chipBbox(bounds))) return;
+  showAreaChip(bounds);
+}
+
+map.on("mousemove", onDrawPointerMove);
+map.on("touchmove", onDrawPointerMove);
+map.on(L.Draw.Event.DRAWSTART, () => {
+  gestureCommitted = false;
+});
+map.on(L.Draw.Event.DRAWSTOP, () => {
+  if (gestureCommitted) return;
+  if (committedBounds) showAreaChip(committedBounds);
+  else hideAreaChip();
+});
 
 function setStatus(msg, err) {
   statusEl.textContent = msg;
@@ -44,15 +102,13 @@ function setStatus(msg, err) {
 }
 
 map.on(L.Draw.Event.CREATED, (e) => {
+  gestureCommitted = true;
   drawn.clearLayers();
   drawn.addLayer(e.layer);
   const b = e.layer.getBounds();
-  bbox = {
-    west: b.getWest(),
-    south: b.getSouth(),
-    east: b.getEast(),
-    north: b.getNorth(),
-  };
+  committedBounds = b;
+  bbox = chipBbox(b);
+  showAreaChip(b);
   const w = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.south, bbox.east));
   const h = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.north, bbox.west));
   exportBtn.disabled = w > 2500 || h > 2500 || w < 40 || h < 40;
@@ -61,7 +117,9 @@ map.on(L.Draw.Event.CREATED, (e) => {
 });
 
 document.getElementById("draw").onclick = () => {
-  new L.Draw.Rectangle(map, drawControl.options.draw.rectangle).enable();
+  if (rectDrawer && rectDrawer.enabled()) rectDrawer.disable();
+  rectDrawer = new L.Draw.Rectangle(map, drawControl.options.draw.rectangle);
+  rectDrawer.enable();
 };
 
 document.getElementById("search").onsubmit = async (e) => {
