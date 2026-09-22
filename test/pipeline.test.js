@@ -9,7 +9,7 @@ const {
   CLIPBOARD_COLLECTION_KEYS,
   pickBuildingTypeId,
 } = require("../netlify/lib/hamina-clipboard");
-const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2 } = require("../netlify/lib/pipeline");
+const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, footprintsToClutter, ringVertexCount } = require("../netlify/lib/pipeline");
 const { OI_BUILDING_NAMES } = require("../netlify/lib/materials");
 const { zipStore, unzipStore } = require("../netlify/lib/zip-store");
 
@@ -35,6 +35,50 @@ function squareFeature(west, south, east, north, props = {}) {
         [west, south],
       ]],
     },
+  };
+}
+
+/** Densify each edge so ringVertexCount stays high after simplify. */
+function densifyFeature(feature, targetVerts) {
+  const ring = feature.geometry.coordinates[0];
+  const closed =
+    ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+      ? ring.slice(0, -1)
+      : ring.slice();
+  const out = [];
+  const perEdge = Math.max(2, Math.ceil(targetVerts / closed.length));
+  for (let i = 0; i < closed.length; i++) {
+    const a = closed[i];
+    const b = closed[(i + 1) % closed.length];
+    for (let s = 0; s < perEdge; s++) {
+      const t = s / perEdge;
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+    }
+  }
+  out.push(out[0]);
+  return {
+    type: "Feature",
+    properties: feature.properties || {},
+    geometry: { type: "Polygon", coordinates: [out] },
+  };
+}
+
+/** Irregular ~areaM2 podium that keeps detail verts under Douglas–Peucker. */
+function wavyPodiumFeature(midLon, midLat, areaM2, mpd, n = 72) {
+  // Wobble lowers mean radius; scale so shoelace area lands near target.
+  const r0 = Math.sqrt(areaM2 / Math.PI) * 1.22;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    const wobble = 0.82 + 0.18 * Math.sin(a * 5) + 0.06 * Math.cos(a * 9);
+    const rr = r0 * wobble;
+    out.push([midLon + (rr * Math.cos(a)) / mpd.lon, midLat + (rr * Math.sin(a)) / mpd.lat]);
+  }
+  out.push(out[0]);
+  return {
+    type: "Feature",
+    properties: {},
+    geometry: { type: "Polygon", coordinates: [out] },
   };
 }
 
@@ -359,6 +403,7 @@ describe("pipeline: footprints + trees share the frame", () => {
     const frame = geoFrame(WYNN);
     const limit = megaCampusLimitM2(frame);
     assert.ok(limit > 40000, `large-map mega limit should exceed 4 ha, got ${limit}`);
+    assert.equal(limit, HOTEL_MEGA_M2);
     const midLon = (frame.west + frame.east) / 2;
     const midLat = (frame.south + frame.north) / 2;
     // ~2.5 ha hotel podium (was dropped by the old 1.5 ha hard cap).
@@ -379,6 +424,81 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.ok(built.stats.droppedMega >= 1);
     assert.equal(built.stats.fetched, 2);
     assert.match(built.stats.summary, /Buildings 1 kept \(2 fetched/);
+  });
+
+  it("keeps a detailed casino podium above MEGA_CAMPUS but drops a coarse MS hull", () => {
+    const frame = geoFrame(WYNN);
+    const midLon = (frame.west + frame.east) / 2;
+    const midLat = (frame.south + frame.north) / 2;
+    // ~185k m² irregular podium (Wynn-scale). A densified square collapses to
+    // 4 corners under Douglas–Peucker; a wavy ring keeps detail verts.
+    const detailed = wavyPodiumFeature(midLon, midLat, 185000, frame.mpd, 72);
+    const detailedArea = ringAreaM2(detailed.geometry.coordinates[0], frame.mpd);
+    assert.ok(detailedArea > MEGA_CAMPUS_M2 && detailedArea < HOTEL_MEGA_M2, `podium ${detailedArea}`);
+    assert.ok(ringVertexCount(detailed.geometry.coordinates[0]) >= 40);
+    assert.equal(isMegaCampus(detailedArea, 56), false);
+    const side = Math.sqrt(185000);
+    const dLon = (side * 1.05) / frame.mpd.lon / 2;
+    const dLat = (side * 1.05) / frame.mpd.lat / 2;
+    // Coarse 4-corner hull in the same size band (MS campus-merge style).
+    const coarse = squareFeature(midLon - dLon, midLat - dLat, midLon + dLon, midLat + dLat);
+    const coarseArea = ringAreaM2(coarse.geometry.coordinates[0], frame.mpd);
+    assert.ok(coarseArea > MEGA_CAMPUS_M2 && coarseArea < HOTEL_MEGA_M2, `coarse ${coarseArea}`);
+    assert.equal(isMegaCampus(coarseArea, 4), true);
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [detailed, coarse] },
+      treePoints: [],
+      name: "Site",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    assert.equal(built.stats.buildingsKept, 1);
+    assert.equal(built.stats.droppedMega, 1);
+    assert.equal(built.stats.fetched, 2);
+  });
+
+  it("clips an off-map mega hull instead of counting it as mega", () => {
+    const frame = geoFrame(WYNN);
+    // Entirely east of the frame — intersects nothing after clip.
+    const off = squareFeature(frame.east + 0.001, frame.south, frame.east + 0.02, frame.north);
+    assert.ok(ringAreaM2(off.geometry.coordinates[0], frame.mpd) > MEGA_CAMPUS_M2);
+    const built = footprintsToClutter([off], frame, null);
+    assert.equal(built.stats.buildings, 0);
+    assert.equal(built.stats.droppedMega, 0);
+    assert.ok(built.stats.droppedClip >= 1);
+  });
+
+  it("keeps Wynn resort mega rings from the Jerry export diagnosis fixture", () => {
+    const fs = require("fs");
+    const path = require("path");
+    const fixture = path.join(__dirname, "fixtures/wynn-golf/mega-dropped.geojson");
+    const lockPath = path.join(__dirname, "fixtures/wynn-golf/frame-lock.json");
+    assert.ok(fs.existsSync(fixture), "wynn mega fixture missing");
+    assert.ok(fs.existsSync(lockPath), "wynn frame-lock fixture missing");
+    const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+    const megaFc = JSON.parse(fs.readFileSync(fixture, "utf8"));
+    const frame = geoFrame(
+      {
+        west: lock.extent.west,
+        south: lock.extent.south,
+        east: lock.extent.east,
+        north: lock.extent.north,
+        name: "Wynn Golf",
+      },
+      { imgW: lock.image.widthPx, imgH: lock.image.heightPx }
+    );
+    // Before the fix these three were droppedMega; now the on-map detailed USA
+    // resort ring (~185k) and the clipped hotel tip (~111k) must be kept. The
+    // off-map MS hull becomes clip, not mega.
+    const beforeStyle = megaFc.features.filter((f) => {
+      const am = ringAreaM2(f.geometry.coordinates[0], frame.mpd);
+      return am > MEGA_CAMPUS_M2;
+    });
+    assert.equal(beforeStyle.length, 3);
+    const built = footprintsToClutter(megaFc.features, frame, null);
+    assert.ok(built.stats.buildings >= 2, `expected ≥2 kept, got ${built.stats.buildings}`);
+    assert.equal(built.stats.droppedMega, 0);
+    assert.ok(built.stats.droppedClip >= 1);
   });
 
   it("skips trees that land inside a building AABB", () => {

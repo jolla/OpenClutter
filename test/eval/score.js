@@ -12,9 +12,10 @@ const { OI_BUILDING_NAMES, catalogMaterials } = require("../../netlify/lib/mater
 const {
   featureExteriorRings,
   ringAreaM2,
-  MEGA_CAMPUS_M2,
   MIN_AREA_M2,
   coverageStats,
+  isMegaCampus,
+  ringVertexCount,
 } = require("../../netlify/lib/pipeline");
 const T = require("../../netlify/lib/tree-source");
 
@@ -177,7 +178,11 @@ function scoreBuildings(features, overlayRings, frame) {
   let incompleteMultiPolygons = 0;
 
   for (const m of majors) {
-    const keepable = m.parts.filter((p) => p.areaM2 >= MIN_AREA_M2 && p.areaM2 <= MEGA_CAMPUS_M2);
+    const keepable = m.parts.filter((p) => {
+      if (p.areaM2 < MIN_AREA_M2) return false;
+      const verts = ringVertexCount(p.ring);
+      return !isMegaCampus(p.areaM2, verts);
+    });
     if (!keepable.length) continue;
     let keptParts = 0;
     for (const p of keepable) {
