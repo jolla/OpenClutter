@@ -131,9 +131,11 @@ describe("clutter handler (mocked Esri)", () => {
     assert.ok(oi.floorplans[0].attenuation_areas.length >= 1);
     assert.equal(exportStats.attenuationAreasEmitted, oi.floorplans[0].attenuation_areas.length);
     assert.match(files["VERIFY.txt"].toString(), new RegExp(`^attenuation_areas: ${exportStats.attenuationAreasEmitted}$`, "m"));
+    assert.equal(body.stats.openIntentBuildingAreas, body.stats.buildings);
+    assert.ok(body.stats.openIntentTreeAreas >= 1);
     assert.equal(
       oi.floorplans[0].attenuation_areas.length,
-      body.stats.buildings
+      body.stats.openIntentBuildingAreas + body.stats.openIntentTreeAreas
     );
     assert.ok(clip.attenuatingZones.length >= body.stats.buildings + body.stats.trees * 2);
     assert.ok(!urls.some((u) => u.includes("overpass")));

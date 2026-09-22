@@ -8,7 +8,13 @@
  */
 
 const { llToPx, llToImagePx, metersPerDeg } = require("../../netlify/lib/geo-frame");
-const { OI_BUILDING_NAMES, catalogMaterials } = require("../../netlify/lib/materials");
+const {
+  OI_BUILDING_NAMES,
+  isVegetationOiName,
+  buildingCatalog,
+  isPoisonedOiName,
+  COMPATIBILITY_MODE,
+} = require("../../netlify/lib/materials");
 const {
   featureExteriorRings,
   ringAreaM2,
@@ -367,10 +373,9 @@ function highCanopyRecall(trees, hits, bbox) {
 function treePointsFromBuilt(built) {
   const pts = [];
   const areas = (built.openintent && built.openintent.floorplans[0].attenuation_areas) || [];
-  const mats = new Set(["Tree Trunk"]);
   for (const a of areas) {
     const trunkName = typeof a.area_material === "string" ? a.area_material : a.area_material && a.area_material.name;
-    if (!mats.has(trunkName)) continue;
+    if (!isVegetationOiName(trunkName)) continue;
     const coords = a.area.coordinates || [];
     const pixels = [];
     for (let i = 0; i < coords.length; i++) {
@@ -529,11 +534,18 @@ function evaluate(scores, thresholds) {
   }
   const compat = scores.compatibility;
   if (compat && compat.required !== false) {
-    if (compat.materials !== OI_BUILDING_NAMES.length) {
-      failures.push(`openIntentMaterials ${compat.materials} !== ${OI_BUILDING_NAMES.length}`);
-    }
-    if (!compat.stockOnly) failures.push("OpenIntent material is not a Hamina outdoor Building-* name");
+    if (!compat.buildingsExact) failures.push("OpenIntent building materials drifted from the gold set");
+    if (!compat.customsOk) failures.push("OpenIntent vegetation material is not stock Foliage - Heavy / Light or a measured-height custom");
+    if (compat.poisoned) failures.push("OpenIntent catalog contains a name that emptied imports");
     if (!compat.consistent) failures.push("area material does not match the catalog entry");
+  }
+  const oiTrees = scores.openIntentTrees;
+  if (oiTrees && oiTrees.required) {
+    if (oiTrees.emitted < 1) failures.push(`openIntentTreeAreas ${oiTrees.emitted} < 1`);
+    if (oiTrees.custom < 1) failures.push("tree attenuation areas are not on a custom vegetation material");
+    if (oiTrees.placed > 0 && oiTrees.emitted > oiTrees.placed * 2) {
+      failures.push(`openIntentTreeAreas ${oiTrees.emitted} > ${oiTrees.placed * 2}`);
+    }
   }
   return { ok: failures.length === 0, failures };
 }
@@ -543,11 +555,18 @@ function scoreMaterialCompatibility(openintent) {
   const areas =
     (openintent && openintent.floorplans && openintent.floorplans[0] && openintent.floorplans[0].attenuation_areas) ||
     [];
-  const expected = catalogMaterials().map((m) => m.name);
+  const gold = buildingCatalog();
   const names = mats.map((m) => m && m.name);
-  const stockOnly = names.length === expected.length && names.every((n, i) => n === expected[i]);
+  const buildingsExact =
+    names.length >= gold.length &&
+    gold.every((g, i) => names[i] === g.name && JSON.stringify(mats[i]) === JSON.stringify(g));
+  const extras = mats.slice(gold.length);
+  const customsOk = extras.every((m) => m && isVegetationOiName(m.name));
+  const poisoned = names.some((n) => isPoisonedOiName(n));
   const byName = new Map(mats.map((m) => [m.name, m]));
-  let consistent = stockOnly;
+  let consistent = buildingsExact && customsOk && !poisoned;
+  let vegetationAreas = 0;
+  const vegetationHeights = new Set();
   for (const a of areas) {
     const m = a && a.area_material;
     const name = typeof m === "string" ? m : m && m.name;
@@ -556,16 +575,25 @@ function scoreMaterialCompatibility(openintent) {
       consistent = false;
       break;
     }
-    if (!OI_BUILDING_NAMES.includes(name)) {
+    if (!OI_BUILDING_NAMES.includes(name) && !isVegetationOiName(name)) {
       consistent = false;
       break;
+    }
+    if (isVegetationOiName(name)) {
+      vegetationAreas++;
+      if (m.top_height > 2) vegetationHeights.add(Number(m.top_height).toFixed(1));
     }
   }
   return {
     required: true,
-    mode: "stock-openintent",
+    mode: COMPATIBILITY_MODE,
     materials: mats.length,
-    stockOnly,
+    stockOnly: buildingsExact && customsOk && !poisoned,
+    buildingsExact,
+    customsOk,
+    poisoned,
+    vegetationAreas,
+    vegetationHeights: vegetationHeights.size,
     consistent,
   };
 }

@@ -511,6 +511,8 @@ exports.handler = async (event) => {
     footprintMeta,
     terrain,
     warnings,
+    canopyHits: placeHits,
+    heightSample: chmGrid ? (lon, lat) => sampleChmGrid(chmGrid, lon, lat) : null,
   });
 
   const frameHeaders = {

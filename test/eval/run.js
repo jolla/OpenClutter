@@ -24,6 +24,7 @@ const { fetchUsaStructures } = require("../../netlify/lib/usa-structures");
 const { conflateFootprints, countHeightSources } = require("../../netlify/lib/conflate");
 const { terrainFromSamples } = require("../../netlify/lib/terrain");
 const { applyChmToTrees, sampleChmGrid } = require("../../netlify/lib/canopy-height");
+const { isVegetationOiName } = require("../../netlify/lib/materials");
 const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, scoreMeasuredHeights, scoreMaterialCompatibility, evaluate, pointInRing, THRESHOLDS } = require("./score");
 const { supplementFootprints } = require("../../netlify/lib/roof-mask");
 const { featureExteriorRings } = require("../../netlify/lib/pipeline");
@@ -216,6 +217,8 @@ function runLoaded(loaded, opts) {
       floorHeights: heightSources["overture-floors"] || 0,
       chmTrees: chmApplied,
     },
+    canopyHits: resolved.source === "nlcd-canopy" && parsed && parsed.hits ? parsed.hits : [],
+    heightSample: prefer && loaded.chm ? (lon, lat) => sampleChmGrid(loaded.chm, lon, lat) : null,
   });
   const buildings = scoreBuildings(vectorFeatures, fp.overlayRings, frame);
   const trees = scoreTrees(treePoints, frame, jpegDecoded, loaded.tcc, resolved.source);
@@ -232,6 +235,20 @@ function runLoaded(loaded, opts) {
     built.clipboard
   );
   const compatibility = scoreMaterialCompatibility(built.openintent);
+  let customTreeAreas = 0;
+  const oiAreas =
+    (built.openintent.floorplans[0] && built.openintent.floorplans[0].attenuation_areas) || [];
+  for (const a of oiAreas) {
+    const name = a && a.area_material && a.area_material.name;
+    if (isVegetationOiName(name)) customTreeAreas++;
+  }
+  const openIntentTrees = {
+    required: treePoints.length > 0,
+    placed: treePoints.length,
+    emitted: built.stats.openIntentTreeAreas || 0,
+    custom: customTreeAreas,
+    buildingAreas: built.stats.openIntentBuildingAreas || 0,
+  };
   const recovery = prefer ? imageryRecovery(jpegDecoded, frame, vectorFeatures, probes) : { required: false, hit: true };
   const medians = {
     required: prefer && loaded.site.id === "oak-creek-commercial",
@@ -268,6 +285,7 @@ function runLoaded(loaded, opts) {
     terrain: terrainScore,
     chm,
     compatibility,
+    openIntentTrees,
   });
   const exportStats = {
     site: loaded.site.id,
@@ -297,6 +315,7 @@ function runLoaded(loaded, opts) {
     trees,
     heights,
     compatibility,
+    openIntentTrees,
     imageryRecovery: recovery,
     medians,
     overture,
