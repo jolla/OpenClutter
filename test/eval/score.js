@@ -45,6 +45,10 @@ const THRESHOLDS = {
   minChmTrees: 8,
   minTerrainPolygons: 1,
   maxFoliageBuildingOverlapM2: 5,
+  maxBuildingOverlapM2: 80,
+  maxBuildingPairM2: 40,
+  maxFoliageSelfOverlapM2: 80,
+  maxFoliageSelfPairM2: 40,
 };
 
 function luma(r, g, b) {
@@ -542,6 +546,24 @@ function evaluate(scores, thresholds) {
       `foliageBuildingOverlapM2 ${foliageOverlap.overlapM2.toFixed(1)} > ${t.maxFoliageBuildingOverlapM2}`
     );
   }
+  const buildingOverlap = scores.buildingOverlap;
+  if (buildingOverlap) {
+    if (buildingOverlap.overlapM2 > t.maxBuildingOverlapM2) {
+      failures.push(`buildingOverlapM2 ${buildingOverlap.overlapM2.toFixed(1)} > ${t.maxBuildingOverlapM2}`);
+    }
+    if (buildingOverlap.maxPairM2 > t.maxBuildingPairM2) {
+      failures.push(`buildingPairM2 ${buildingOverlap.maxPairM2.toFixed(1)} > ${t.maxBuildingPairM2}`);
+    }
+  }
+  const foliageSelf = scores.foliageSelfOverlap;
+  if (foliageSelf) {
+    if (foliageSelf.overlapM2 > t.maxFoliageSelfOverlapM2) {
+      failures.push(`foliageSelfOverlapM2 ${foliageSelf.overlapM2.toFixed(1)} > ${t.maxFoliageSelfOverlapM2}`);
+    }
+    if (foliageSelf.maxPairM2 > t.maxFoliageSelfPairM2) {
+      failures.push(`foliageSelfPairM2 ${foliageSelf.maxPairM2.toFixed(1)} > ${t.maxFoliageSelfPairM2}`);
+    }
+  }
   const chm = scores.chm;
   if (chm && chm.required && chm.applied < t.minChmTrees) {
     failures.push(`chmTrees ${chm.applied} < ${t.minChmTrees}`);
@@ -717,6 +739,65 @@ function scoreFoliageBuildingOverlap(vegRings, buildingRings, frame) {
   return { overlapPx2: px, overlapM2: px * mpuX * mpuY };
 }
 
+function ringPxArea(ring) {
+  if (!ring || ring.length < 3) return 0;
+  let a = 0;
+  const n = ring.length;
+  const closed = ring[0][0] === ring[n - 1][0] && ring[0][1] === ring[n - 1][1];
+  const last = closed ? n - 1 : n;
+  for (let i = 0; i < last; i++) {
+    const p = ring[i];
+    const q = ring[(i + 1) % last];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return Math.abs(a) / 2;
+}
+
+function ringBBox(ring) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of ring || []) {
+    if (!p) continue;
+    if (p[0] < minX) minX = p[0];
+    if (p[1] < minY) minY = p[1];
+    if (p[0] > maxX) maxX = p[0];
+    if (p[1] > maxY) maxY = p[1];
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+/** Pairwise intersection of emitted rings, in square metres. */
+function scorePairwiseOverlap(rings, frame) {
+  const list = rings || [];
+  const mpuX = frame && frame.mpuX ? frame.mpuX : 1;
+  const mpuY = frame && frame.mpuY ? frame.mpuY : 1;
+  const scale = mpuX * mpuY;
+  const boxes = list.map(ringBBox);
+  const areas = list.map((ring) => ringPxArea(ring) * scale);
+  let overlapM2 = 0;
+  let pairs = 0;
+  let heavyPairs = 0;
+  let maxPairM2 = 0;
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      const a = boxes[i];
+      const b = boxes[j];
+      if (a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY) continue;
+      const px = intersectionAreaPx(list[i], list[j]);
+      if (!(px > 0.5)) continue;
+      const m2 = px * scale;
+      overlapM2 += m2;
+      pairs++;
+      if (m2 > maxPairM2) maxPairM2 = m2;
+      const smaller = Math.min(areas[i], areas[j]);
+      if (m2 >= 40 || (smaller > 1 && m2 / smaller >= 0.25 && m2 >= 15)) heavyPairs++;
+    }
+  }
+  return { overlapM2, pairs, heavyPairs, maxPairM2 };
+}
+
 function scoreSite({ built, frame, footprints, jpegDecoded, tcc, treePoints, treesSource }) {
   const buildings = scoreBuildings(footprints.features || [], built._overlayRings || [], frame);
   // overlay rings are not on built; caller may pass overlayRings
@@ -748,5 +829,6 @@ module.exports = {
   evaluate,
   scoreSite,
   scoreFoliageBuildingOverlap,
+  scorePairwiseOverlap,
   nearestTccPct,
 };
