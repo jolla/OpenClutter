@@ -1,0 +1,93 @@
+{
+  "note": "If alignment-overlay.svg puts buildings on rooftops but Hamina does not after OpenIntent import, the remaining bug is OpenIntent↔Hamina mapping (not MSBFP2 vs imagery). hamina-clipboard.json is a silent fallback for old Hamina builds.",
+  "origin": "Clipboard meters share the imported JPEG’s actual widthM×lengthM (Esri export extent, not the drawn box). HaminaClipboard origin after OpenIntent import: NE(east,north)=(0,0); SW=(-widthM,-lengthM). JPEG pixels are Y-down from NW; OpenIntent pixels are Y-up from SW (y_up + y_img = imgH). x_clip = x_img * mpuX - widthM; y_clip = -y_img * mpuY. Import this zip in Hamina (Projects → Import → OpenIntent); OpenIntent attenuation_areas are the objects. Google Earth screenshots as maps are an anti-pattern (Hamina auto-scale ≠ photo meters).",
+  "image": {
+    "name": "images/Site.jpg",
+    "widthPx": 1040,
+    "heightPx": 865,
+    "convention": "Y-down from NW (JPEG / SVG)",
+    "cornersPx": {
+      "nw": [
+        0,
+        0
+      ],
+      "ne": [
+        1040,
+        0
+      ],
+      "se": [
+        1040,
+        865
+      ],
+      "sw": [
+        0,
+        865
+      ]
+    },
+    "drawnSouthOnImage": [
+      0,
+      865
+    ],
+    "drawnNorthOnImage": [
+      1040,
+      0
+    ]
+  },
+  "openintent": {
+    "convention": "Y-up from SW (oiconvert / Hamina OpenIntent importer)",
+    "cornersPx": {
+      "sw": [
+        0,
+        0
+      ],
+      "se": [
+        1040,
+        0
+      ],
+      "nw": [
+        0,
+        865
+      ],
+      "ne": [
+        1040,
+        865
+      ]
+    },
+    "yRelation": "y_up + y_img = imgH"
+  },
+  "clipboard": {
+    "convention": "HaminaClipboard native, origin NE=(0,0)",
+    "cornersM": {
+      "sw": [
+        -1300.40058,
+        -1081.583175
+      ],
+      "se": [
+        0,
+        -1081.583175
+      ],
+      "nw": [
+        -1300.40058,
+        0
+      ],
+      "ne": [
+        0,
+        0
+      ]
+    },
+    "fromImagePx": {
+      "x_clip": "x_img * mpuX - widthM",
+      "y_clip": "-y_img * mpuY"
+    }
+  },
+  "extent": {
+    "west": -115.16911983489992,
+    "south": 36.121236902880185,
+    "east": -115.15465736389162,
+    "north": 36.131012046867205,
+    "widthM": 1300.4005800311716,
+    "lengthM": 1081.5831747374648,
+    "mpuX": 1.2503851731068958,
+    "mpuY": 1.2503851731068958
+  }
+}

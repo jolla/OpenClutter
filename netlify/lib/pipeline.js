@@ -61,15 +61,46 @@ const ZIP_TROUBLESHOOT =
  * Skip Microsoft campus-merge blobs (one giant wrong polygon). Do NOT use a
  * fraction of the drawn map — a tight commercial bbox makes a 2 ha big-box
  * roof look like “half the site” (Oak Creek white roof).
+ *
+ * Size is measured after clipping the ring to the imagery frame. Off-map MS
+ * hulls (Wynn SE blob) become empty/tiny instead of “mega”.
+ *
+ * Coarse rings above MEGA_CAMPUS_M2 are still dropped. Detailed outlines
+ * (USA Structures / high-vertex roofs) may reach HOTEL_MEGA_M2 so casino and
+ * convention podiums (Wynn ~185k m²) are kept. Anything larger is always mega.
  */
 const MEGA_CAMPUS_M2 = 150000;
+const HOTEL_MEGA_M2 = 400000;
+/** After simplify, coarse MS hulls stay ~20–32 verts; real large roofs keep ≥40. */
+const MEGA_MIN_DETAIL_VERTS = 40;
 
 function megaCampusLimitM2() {
-  return MEGA_CAMPUS_M2;
+  return HOTEL_MEGA_M2;
 }
 
-function isMegaCampus(areaM2) {
-  return areaM2 > MEGA_CAMPUS_M2;
+function ringVertexCount(ring) {
+  if (!ring || ring.length < 3) return 0;
+  const closed =
+    ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1];
+  return closed ? ring.length - 1 : ring.length;
+}
+
+/**
+ * @param {number} areaM2 area of the ring already clipped to the map
+ * @param {number} [vertCount] vertex count of the simplified (pre-clip) ring
+ */
+function isMegaCampus(areaM2, vertCount) {
+  if (!(areaM2 > MEGA_CAMPUS_M2)) return false;
+  if (areaM2 > HOTEL_MEGA_M2) return true;
+  const verts = vertCount == null ? 0 : +vertCount;
+  return !(verts >= MEGA_MIN_DETAIL_VERTS);
+}
+
+function pxRingAreaM2(pts, mpuX, mpuY) {
+  if (!pts || pts.length < 3) return 0;
+  const mx = mpuX > 0 ? mpuX : 1;
+  const my = mpuY > 0 ? mpuY : mx;
+  return ringAreaPx(pts) * mx * my;
 }
 
 function coverageStats(stats) {
@@ -251,7 +282,7 @@ function simplifyDP(pts, eps2) {
   return [a, b];
 }
 
-function simplifyRing(ring, maxPts = 32) {
+function simplifyRing(ring, maxPts = 32, eps = 2.5e-6) {
   if (!ring || ring.length < 3) return ring;
   const closed =
     ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
@@ -261,8 +292,8 @@ function simplifyRing(ring, maxPts = 32) {
     closed.push(closed[0]);
     return closed;
   }
-  const eps = 2.5e-6;
-  let out = simplifyDP(closed, eps * eps);
+  const tol = eps > 0 ? eps : 2.5e-6;
+  let out = simplifyDP(closed, tol * tol);
   if (out.length > maxPts) {
     const step = Math.max(1, Math.ceil(out.length / maxPts));
     const thin = [];
@@ -708,12 +739,46 @@ function featureExteriorRings(geometry) {
 
 function emitBuilding(ring, heightM, frame, affine, buckets) {
   const amRaw = ringAreaM2(ring, frame.mpd);
-  const maxPts = amRaw > 8000 ? 56 : amRaw > 1500 ? 40 : 32;
-  const simple = simplifyRing(ring, maxPts);
+  // Large detailed roofs (Wynn casino) self-intersect if Douglas–Peucker is too
+  // aggressive; try a tighter pass before giving up as clip.
+  const budgets =
+    amRaw > 80000
+      ? [
+          [180, 1e-6],
+          [320, 5e-7],
+          [400, 1e-7],
+        ]
+      : amRaw > 20000
+        ? [
+            [96, 2.5e-6],
+            [160, 1e-6],
+          ]
+        : amRaw > 8000
+          ? [[56, 2.5e-6]]
+          : amRaw > 1500
+            ? [[40, 2.5e-6]]
+            : [[32, 2.5e-6]];
+
+  let lastFail = "skip";
+  for (const [maxPts, eps] of budgets) {
+    const result = emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps);
+    if (result === "keep") return "keep";
+    // Tiny clipped area will not grow with more verts.
+    if (result === "tiny") return "tiny";
+    // Mega from a coarse simplify may clear once detail verts are preserved.
+    if (result === "mega") {
+      lastFail = "mega";
+      continue;
+    }
+    lastFail = result;
+  }
+  return lastFail;
+}
+
+function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps) {
+  const simple = simplifyRing(ring, maxPts, eps);
   if (!simple || simple.length < 4) return "skip";
-  const am = ringAreaM2(simple, frame.mpd);
-  if (isMegaCampus(am)) return "mega";
-  if (am < MIN_AREA_M2) return "tiny";
+  const detailVerts = ringVertexCount(simple);
   const pts = [];
   const clipRing = [];
   for (const [lon, lat] of simple) {
@@ -731,7 +796,13 @@ function emitBuilding(ring, heightM, frame, affine, buckets) {
   const minY = Math.min(...ys);
   const maxY = Math.max(...ys);
   if (maxX < 0 || maxY < 0 || minX > frame.imgW || minY > frame.imgH) return "clip";
-  const oiCoords = ringToOi(pts, frame.imgW, frame.imgH, frame.mpuX);
+  // Clip before size filters so off-map MS hulls are not counted as mega.
+  const clippedPts = clipRingToRect(pts, frame.imgW, frame.imgH);
+  if (!clippedPts || clippedPts.length < 3) return "clip";
+  const am = pxRingAreaM2(clippedPts, frame.mpuX, frame.mpuY);
+  if (isMegaCampus(am, detailVerts)) return "mega";
+  if (am < MIN_AREA_M2) return "tiny";
+  const oiCoords = ringToOi(clippedPts, frame.imgW, frame.imgH, frame.mpuX);
   if (!oiCoords) return "clip";
   const picked = materialForBuilding(heightM, am);
   const area = emitIfValid(makeOiArea(oiCoords, picked.material), frame.imgW, frame.imgH);
@@ -767,8 +838,15 @@ function emitBuilding(ring, heightM, frame, affine, buckets) {
   }
   const z = clipZone(picked.typeId, affine ? clipRing : clipFromImage);
   if (z) buckets.clipZones.push(z);
-  buckets.aabbs.push({ minX, maxX, minY, maxY });
-  buckets.overlayRings.push(pts);
+  const cxs = clippedPts.map((p) => p[0]);
+  const cys = clippedPts.map((p) => p[1]);
+  buckets.aabbs.push({
+    minX: Math.min(...cxs),
+    maxX: Math.max(...cxs),
+    minY: Math.min(...cys),
+    maxY: Math.max(...cys),
+  });
+  buckets.overlayRings.push(clippedPts);
   buckets.overlayHeights.push(picked.exactHeight || picked.material.top_height);
   return "keep";
 }
@@ -1106,8 +1184,12 @@ module.exports = {
   OI_FLOORPLAN_HEIGHT_FT,
   STOCK_MATERIAL_NAMES,
   MEGA_CAMPUS_M2,
+  HOTEL_MEGA_M2,
+  MEGA_MIN_DETAIL_VERTS,
   megaCampusLimitM2,
   isMegaCampus,
+  ringVertexCount,
+  pxRingAreaM2,
   coverageStats,
   coverageSummary,
   zipReadme,
