@@ -107,9 +107,47 @@ function checkZip(zipBuf) {
     if (oi.openintent_version !== "2.0.1") failures.push("openintent_version " + oi.openintent_version);
     if (!String(fp.map_uri || "").startsWith("file://images/")) failures.push("map_uri " + fp.map_uri);
     const sample = areaList[0] && areaList[0].area_material;
-    if (sample && (sample.itu_material_type !== "ITU_R_UNKNOWN" || "bottom_height" in sample)) {
-      failures.push("sample material drifted from the known-good object");
+    if (sample && ("itu_material_type" in sample || "bottom_height" in sample)) {
+      failures.push("sample material drifted from Hamina-native keys");
     }
+    const matKeys = sample && Object.keys(sample);
+    if (matKeys && matKeys.join(",") !== "name,rf_properties,top_height,display_color") {
+      failures.push("material key order/shape " + matKeys.join(","));
+    }
+    let badTriples = 0;
+    let aspectFail = false;
+    const px = (fp.dimensions || []).find((d) => d.unit === "pixels");
+    const meters = (fp.dimensions || []).find((d) => d.unit === "meters");
+    if (px && meters) {
+      const pixelAspect = px.width / px.length;
+      const meterAspect = meters.width / meters.length;
+      if (Math.abs(pixelAspect - meterAspect) > 0.002) {
+        aspectFail = true;
+        failures.push("aspect px " + pixelAspect.toFixed(4) + " != m " + meterAspect.toFixed(4));
+      }
+    }
+    if (fp.reference_markers && fp.reference_markers.length) {
+      failures.push("reference_markers should be empty (Hamina-native)");
+    }
+    for (const a of areaList) {
+      const coords = a.area && a.area.coordinates;
+      if (!coords || coords.length < 12 || coords.length % 3 !== 0) {
+        badTriples++;
+        continue;
+      }
+      for (let i = 0; i < Math.min(coords.length, 12); i += 3) {
+        if (
+          coords[i].coordinate_xyz.unit !== "pixels" ||
+          coords[i + 1].coordinate_xyz.unit !== "meters" ||
+          coords[i + 2].coordinate_xyz.unit !== "feet"
+        ) {
+          badTriples++;
+          break;
+        }
+      }
+    }
+    if (badTriples) failures.push("attenuation rings missing pixels+meters+feet triples: " + badTriples);
+    void aspectFail;
   }
   if (jpegName) {
     const jpeg = files[jpegName];

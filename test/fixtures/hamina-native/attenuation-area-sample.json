@@ -1,0 +1,305 @@
+{
+  "note": "Excerpt from Jerry's Hamina-exported OpenIntent (hand-drawn AOs). Source: Hamina Outdoor export.",
+  "openintent_version": "2.0.1",
+  "map_uri": "file://images/Hamina-Outdoor_Hamina-City.jpg",
+  "dimensions": [
+    {
+      "width": 4186,
+      "length": 2668,
+      "height": 8.165713030872485,
+      "unit": "pixels"
+    },
+    {
+      "width": 1281.5782235347356,
+      "length": 816.8300765386226,
+      "height": 2.5,
+      "unit": "meters"
+    },
+    {
+      "width": 4204.601835772761,
+      "length": 2679.8561151079134,
+      "height": 8.202,
+      "unit": "feet"
+    }
+  ],
+  "reference_markers": [],
+  "area_materials": [
+    {
+      "name": "Building - One Floor",
+      "rf_properties": {
+        "attenuation_per_m": 5
+      },
+      "top_height": 4.5,
+      "display_color": "#9AA5AC"
+    },
+    {
+      "name": "Building - Two Floor",
+      "rf_properties": {
+        "attenuation_per_m": 5
+      },
+      "top_height": 7.620092660326749,
+      "display_color": "#9A4159"
+    },
+    {
+      "name": "Building - Five Floor",
+      "rf_properties": {
+        "attenuation_per_m": 5
+      },
+      "top_height": 15.240185320653499,
+      "display_color": "#9AA5AC"
+    },
+    {
+      "name": "Building - Ten Floor",
+      "rf_properties": {
+        "attenuation_per_m": 5
+      },
+      "top_height": 32,
+      "display_color": "#9AA5AC"
+    }
+  ],
+  "attenuation_area": {
+    "area": {
+      "coordinates": [
+        {
+          "coordinate_xyz": {
+            "x": 1840.752319,
+            "y": 1616.143755,
+            "unit": "pixels"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 563.561416,
+            "y": 494.795662,
+            "unit": "meters"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1848.932294,
+            "y": 1623.325608,
+            "unit": "feet"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1859.002995,
+            "y": 1539.822748,
+            "unit": "pixels"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 569.14901,
+            "y": 471.42936,
+            "unit": "meters"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1867.264072,
+            "y": 1546.665445,
+            "unit": "feet"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1859.002995,
+            "y": 1539.822748,
+            "unit": "pixels"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 569.14901,
+            "y": 471.42936,
+            "unit": "meters"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1867.264072,
+            "y": 1546.665445,
+            "unit": "feet"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1874.764942,
+            "y": 1542.311477,
+            "unit": "pixels"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 573.974659,
+            "y": 472.191305,
+            "unit": "meters"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1883.096062,
+            "y": 1549.165233,
+            "unit": "feet"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1878.912823,
+            "y": 1526.54953,
+            "unit": "pixels"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 575.244567,
+            "y": 467.365656,
+            "unit": "meters"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1887.262375,
+            "y": 1533.333243,
+            "unit": "feet"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1912.925445,
+            "y": 1533.186139,
+            "unit": "pixels"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 585.65781,
+            "y": 469.397508,
+            "unit": "meters"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1921.426144,
+            "y": 1539.999344,
+            "unit": "feet"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1912.925445,
+            "y": 1533.186139,
+            "unit": "pixels"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 585.65781,
+            "y": 469.397508,
+            "unit": "meters"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1921.426144,
+            "y": 1539.999344,
+            "unit": "feet"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1908.777564,
+            "y": 1550.607238,
+            "unit": "pixels"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 584.387903,
+            "y": 474.73112,
+            "unit": "meters"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1917.259831,
+            "y": 1557.497859,
+            "unit": "feet"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1908.777564,
+            "y": 1550.607238,
+            "unit": "pixels"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 584.387903,
+            "y": 474.73112,
+            "unit": "meters"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1917.259831,
+            "y": 1557.497859,
+            "unit": "feet"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1926.198664,
+            "y": 1553.925543,
+            "unit": "pixels"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 589.721515,
+            "y": 475.747046,
+            "unit": "meters"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1934.758346,
+            "y": 1560.83091,
+            "unit": "feet"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1908.777564,
+            "y": 1632.735278,
+            "unit": "pixels"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 584.387903,
+            "y": 499.875293,
+            "unit": "meters"
+          }
+        },
+        {
+          "coordinate_xyz": {
+            "x": 1917.259831,
+            "y": 1639.990861,
+            "unit": "feet"
+          }
+        }
+      ]
+    },
+    "area_material": {
+      "name": "Building - Two Floor",
+      "rf_properties": {
+        "attenuation_per_m": 5
+      },
+      "top_height": 7.620092660326749,
+      "display_color": "#9A4159"
+    }
+  }
+}

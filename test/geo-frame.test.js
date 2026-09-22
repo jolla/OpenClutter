@@ -19,6 +19,8 @@ const {
   esriImageryMetaUrl,
   jpegSize,
   applyImageryMeta,
+  lockIsotropicImagery,
+  isAspectLocked,
   msFootprintsUrl,
   fetchMsFootprints,
   padFootprintBbox,
@@ -247,6 +249,56 @@ describe("Esri export extent snap (Long Meadow rooftop lock)", () => {
     const buf = tinyJpeg(571, 741);
     assert.deepEqual(jpegSize(buf), { width: 571, height: 741 });
     assert.equal(jpegSize(Buffer.from([0xff, 0xd8, 0xff, 0xd9])), null);
+  });
+});
+
+describe("isotropic aspect lock after Esri N/S pad", () => {
+  it("resamples the JPEG so meter aspect equals pixel aspect", () => {
+    const fs = require("fs");
+    const path = require("path");
+    const jpeg = fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/imagery.jpg"));
+    const meta = JSON.parse(
+      fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/imagery-meta.json"), "utf8")
+    );
+    const bbox = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/bbox.json"), "utf8"));
+    const drawn = geoFrame(bbox);
+    const snapped = applyImageryMeta(drawn, meta, jpegSize(jpeg));
+    assert.ok(!isAspectLocked(snapped) || Math.abs(snapped.mpuX - snapped.mpuY) > 0.01);
+    const locked = lockIsotropicImagery(snapped, jpeg);
+    assert.equal(isAspectLocked(locked.frame), true);
+    assert.ok(Math.abs(locked.frame.mpuX - locked.frame.mpuY) / locked.frame.mpuX < 0.002);
+    assert.ok(locked.resampled);
+    const wh = jpegSize(locked.jpegBuf);
+    assert.equal(wh.width, locked.frame.imgW);
+    assert.equal(wh.height, locked.frame.imgH);
+    // Known roof stays inside the locked frame in clipboard meters.
+    const roof = { lon: -87.91482, lat: 42.89849 };
+    const clip = llToClipboard(roof.lon, roof.lat, locked.frame);
+    assert.ok(clip[0] > -locked.frame.widthM - 0.05 && clip[0] < 0.05);
+    assert.ok(clip[1] > -locked.frame.lengthM - 0.05 && clip[1] < 0.05);
+  });
+
+  it("fixes Jerry's Oak Creek anisotropic frame (px 0.696 vs m 0.514)", () => {
+    // Repro numbers from Jerry's failing zip frame-lock.json.
+    const anisotropic = geoFrame(
+      {
+        west: -87.9224467277527,
+        south: 42.88805299761886,
+        east: -87.91167497634889,
+        north: 42.90352623167958,
+      },
+      { imgW: 724, imgH: 1040, maxSpanM: 10000, minSpanM: 1 }
+    );
+    assert.ok(Math.abs(anisotropic.imgW / anisotropic.imgH - 0.696) < 0.01);
+    assert.ok(Math.abs(anisotropic.widthM / anisotropic.lengthM - 0.514) < 0.01);
+    assert.equal(isAspectLocked(anisotropic), false);
+    const fs = require("fs");
+    const path = require("path");
+    const jpeg = fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/imagery.jpg"));
+    const locked = lockIsotropicImagery(anisotropic, jpeg);
+    assert.equal(isAspectLocked(locked.frame), true);
+    const haminaLenIfWrong = anisotropic.widthM * (anisotropic.imgH / anisotropic.imgW);
+    assert.ok(locked.frame.lengthM > haminaLenIfWrong + 100);
   });
 });
 

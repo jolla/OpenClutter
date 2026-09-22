@@ -11,7 +11,9 @@
  * with the drawn bbox then stretches buildings off rooftops (Long Meadow).
  *
  * Clipboard meters use that same actual widthM × lengthM — never a second
- * auto-scale.
+ * auto-scale. After the Esri snap, lockIsotropicImagery resamples the JPEG so
+ * imgW/imgH == widthM/lengthM (mpuX == mpuY). Hamina sizes the floorplan from
+ * the JPEG aspect; leaving anisotropic mpu made clipboard paste spill south.
  *
  * Two pixel conventions (unit-tested):
  *   OpenIntent / Y-up: (0,0) = SW, y increases north (oiconvert + Hamina OI)
@@ -270,6 +272,10 @@ function extentFromMeta(meta) {
 /**
  * Rebuild the frame from the JPEG Esri actually returned.
  * Footprints, trees, OpenIntent, and clipboard must all use this, not the drawn box.
+ *
+ * Esri often pads N/S while keeping the requested pixel size, so mpuX ≠ mpuY
+ * after this snap. Call lockIsotropicImagery next so Hamina sees matching
+ * pixel and meter aspects (otherwise clipboard paste spills south of the map).
  */
 function applyImageryMeta(frame, meta, jpegWH) {
   const ext = extentFromMeta(meta);
@@ -297,6 +303,114 @@ function applyImageryMeta(frame, meta, jpegWH) {
       { imgW, imgH, maxSpanM: padM, minSpanM: 1 }
     );
   }
+}
+
+/** Pixel aspect and meter aspect must match so Hamina’s isotropic map scale agrees with our meters. */
+function aspectMismatch(frame, eps = 0.002) {
+  if (!frame || !(frame.imgW > 0) || !(frame.imgH > 0) || !(frame.widthM > 0) || !(frame.lengthM > 0)) {
+    return Infinity;
+  }
+  return Math.abs(frame.imgW / frame.imgH - frame.widthM / frame.lengthM);
+}
+
+function isAspectLocked(frame, eps = 0.002) {
+  return aspectMismatch(frame, eps) <= eps;
+}
+
+/** Choose imgW×imgH with the geographic aspect, capped on the long side. */
+function isotropicPixelSize(widthM, lengthM, maxSide) {
+  const side = Math.max(64, Math.round(+maxSide || 1040));
+  const aspect = widthM / lengthM;
+  let imgW;
+  let imgH;
+  if (aspect >= 1) {
+    imgW = side;
+    imgH = Math.max(64, Math.round(side / aspect));
+  } else {
+    imgH = side;
+    imgW = Math.max(64, Math.round(side * aspect));
+  }
+  return { imgW, imgH };
+}
+
+function sampleBilinear(src, sw, sh, x, y, c) {
+  const x0 = Math.max(0, Math.min(sw - 1, Math.floor(x)));
+  const y0 = Math.max(0, Math.min(sh - 1, Math.floor(y)));
+  const x1 = Math.min(sw - 1, x0 + 1);
+  const y1 = Math.min(sh - 1, y0 + 1);
+  const fx = Math.max(0, Math.min(1, x - x0));
+  const fy = Math.max(0, Math.min(1, y - y0));
+  const i00 = (y0 * sw + x0) * 4 + c;
+  const i10 = (y0 * sw + x1) * 4 + c;
+  const i01 = (y1 * sw + x0) * 4 + c;
+  const i11 = (y1 * sw + x1) * 4 + c;
+  const v0 = src[i00] * (1 - fx) + src[i10] * fx;
+  const v1 = src[i01] * (1 - fx) + src[i11] * fx;
+  return v0 * (1 - fy) + v1 * fy;
+}
+
+/** Resample an RGBA buffer into dstW×dstH (bilinear). */
+function resizeRgba(src, sw, sh, dstW, dstH) {
+  const out = new Uint8Array(dstW * dstH * 4);
+  for (let y = 0; y < dstH; y++) {
+    const sy = ((y + 0.5) * sh) / dstH - 0.5;
+    for (let x = 0; x < dstW; x++) {
+      const sx = ((x + 0.5) * sw) / dstW - 0.5;
+      const o = (y * dstW + x) * 4;
+      out[o] = Math.round(sampleBilinear(src, sw, sh, sx, sy, 0));
+      out[o + 1] = Math.round(sampleBilinear(src, sw, sh, sx, sy, 1));
+      out[o + 2] = Math.round(sampleBilinear(src, sw, sh, sx, sy, 2));
+      out[o + 3] = 255;
+    }
+  }
+  return out;
+}
+
+/**
+ * Resample the Esri JPEG so imgW/imgH == widthM/lengthM (isotropic mpu).
+ * Keeps the true geographic meters from the snapped extent. Hamina sizes the
+ * floorplan from the JPEG aspect; an anisotropic mpu made clipboard Y overshoot
+ * by ~450 m on Oak Creek (spill south onto white canvas).
+ */
+function lockIsotropicImagery(frame, jpegBuf, opts = {}) {
+  const maxSide = opts.maxSide != null ? opts.maxSide : 1040;
+  const eps = opts.eps != null ? opts.eps : 0.002;
+  if (!frame) return { frame, jpegBuf, resampled: false };
+  if (isAspectLocked(frame, eps)) {
+    return { frame, jpegBuf, resampled: false };
+  }
+  const { imgW, imgH } = isotropicPixelSize(frame.widthM, frame.lengthM, maxSide);
+  if (!jpegBuf || jpegBuf.length < 100) {
+    return { frame, jpegBuf, resampled: false };
+  }
+  let raw;
+  try {
+    const jpeg = require("jpeg-js");
+    raw = jpeg.decode(jpegBuf, { useTArray: true, maxResolutionInMP: 20, formatAsRGBA: true });
+  } catch {
+    return { frame, jpegBuf, resampled: false };
+  }
+  if (!raw || !raw.data || !(raw.width > 0) || !(raw.height > 0)) {
+    return { frame, jpegBuf, resampled: false };
+  }
+  const padM = Math.max(frame.widthM, frame.lengthM, 2500) * 2.5;
+  const locked = geoFrame(
+    { west: frame.west, south: frame.south, east: frame.east, north: frame.north },
+    { imgW, imgH, maxSpanM: padM, minSpanM: 1 }
+  );
+  const rgba =
+    raw.width === imgW && raw.height === imgH
+      ? raw.data
+      : resizeRgba(raw.data, raw.width, raw.height, imgW, imgH);
+  let outBuf;
+  try {
+    const jpeg = require("jpeg-js");
+    const enc = jpeg.encode({ data: rgba, width: imgW, height: imgH }, opts.quality != null ? opts.quality : 85);
+    outBuf = Buffer.from(enc.data);
+  } catch {
+    return { frame, jpegBuf, resampled: false };
+  }
+  return { frame: locked, jpegBuf: outBuf, resampled: true };
 }
 
 const FP_PAGE_SIZE = 500;
@@ -465,6 +579,11 @@ module.exports = {
   jpegSize,
   extentFromMeta,
   applyImageryMeta,
+  aspectMismatch,
+  isAspectLocked,
+  isotropicPixelSize,
+  resizeRgba,
+  lockIsotropicImagery,
   FP_PAGE_SIZE,
   FP_CAP,
   padFootprintBbox,
