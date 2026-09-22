@@ -52,8 +52,8 @@ describe("eval gate (cached fixtures, no Hamina)", () => {
         assert.equal(next.exportStats.compatibility.buildingsExact, true);
         assert.equal(next.exportStats.compatibility.customsOk, true);
         assert.ok(next.exportStats.compatibility.materials > 4);
-        assert.ok(next.exportStats.compatibility.materials <= 7);
         assert.ok(next.exportStats.compatibility.vegetationAreas >= 1);
+        assert.ok(next.exportStats.compatibility.vegetationHeights >= 3);
         assert.equal(next.exportStats.compatibility.stockOnly, true);
         assert.equal(next.exportStats.compatibility.consistent, true);
         assert.ok(next.exportStats.openIntentTrees.custom >= 1);

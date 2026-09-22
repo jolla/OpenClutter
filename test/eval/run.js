@@ -24,7 +24,7 @@ const { fetchUsaStructures } = require("../../netlify/lib/usa-structures");
 const { conflateFootprints, countHeightSources } = require("../../netlify/lib/conflate");
 const { terrainFromSamples } = require("../../netlify/lib/terrain");
 const { applyChmToTrees, sampleChmGrid } = require("../../netlify/lib/canopy-height");
-const { OI_VEGETATION_NAMES } = require("../../netlify/lib/materials");
+const { isVegetationOiName } = require("../../netlify/lib/materials");
 const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, scoreMeasuredHeights, scoreMaterialCompatibility, evaluate, pointInRing, THRESHOLDS } = require("./score");
 const { supplementFootprints } = require("../../netlify/lib/roof-mask");
 const { featureExteriorRings } = require("../../netlify/lib/pipeline");
@@ -217,6 +217,8 @@ function runLoaded(loaded, opts) {
       floorHeights: heightSources["overture-floors"] || 0,
       chmTrees: chmApplied,
     },
+    canopyHits: resolved.source === "nlcd-canopy" && parsed && parsed.hits ? parsed.hits : [],
+    heightSample: prefer && loaded.chm ? (lon, lat) => sampleChmGrid(loaded.chm, lon, lat) : null,
   });
   const buildings = scoreBuildings(vectorFeatures, fp.overlayRings, frame);
   const trees = scoreTrees(treePoints, frame, jpegDecoded, loaded.tcc, resolved.source);
@@ -233,13 +235,12 @@ function runLoaded(loaded, opts) {
     built.clipboard
   );
   const compatibility = scoreMaterialCompatibility(built.openintent);
-  const vegNames = new Set(OI_VEGETATION_NAMES);
   let customTreeAreas = 0;
   const oiAreas =
     (built.openintent.floorplans[0] && built.openintent.floorplans[0].attenuation_areas) || [];
   for (const a of oiAreas) {
     const name = a && a.area_material && a.area_material.name;
-    if (vegNames.has(name)) customTreeAreas++;
+    if (isVegetationOiName(name)) customTreeAreas++;
   }
   const openIntentTrees = {
     required: treePoints.length > 0,

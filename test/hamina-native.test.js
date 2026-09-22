@@ -6,7 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { buildClutter, expandOiCoordTriples, oiPixelCoords, validateOiCoords } = require("../netlify/lib/pipeline");
-const { buildingCatalog, OI_BUILDING_NAMES, OI_VEGETATION_NAMES } = require("../netlify/lib/materials");
+const { buildingCatalog, OI_BUILDING_NAMES, isVegetationOiName, isPoisonedOiName } = require("../netlify/lib/materials");
 
 const SAMPLE = JSON.parse(
   fs.readFileSync(path.join(__dirname, "fixtures/hamina-native/attenuation-area-sample.json"), "utf8")
@@ -99,7 +99,7 @@ describe("Hamina-native OpenIntent gold shape", () => {
     assert.deepEqual(built.openintent.area_materials.slice(0, 4), buildingCatalog());
     const extra = names.slice(4);
     assert.ok(extra.length >= 1);
-    for (const n of extra) assert.ok(OI_VEGETATION_NAMES.includes(n), n);
+    for (const n of extra) assert.equal(isVegetationOiName(n), true, n);
     for (const mat of built.openintent.area_materials) {
       assert.deepEqual(Object.keys(mat), ["name", "rf_properties", "top_height", "display_color"]);
     }
@@ -109,8 +109,8 @@ describe("Hamina-native OpenIntent gold shape", () => {
     let vegetationAreas = 0;
     for (const a of fp.attenuation_areas) {
       const name = a.area_material.name;
-      assert.ok(GOLD_BUILDING_NAMES.includes(name) || OI_VEGETATION_NAMES.includes(name), name);
-      if (OI_VEGETATION_NAMES.includes(name)) vegetationAreas++;
+      assert.ok(GOLD_BUILDING_NAMES.includes(name) || isVegetationOiName(name), name);
+      if (isVegetationOiName(name)) vegetationAreas++;
       const coords = a.area.coordinates;
       assert.equal(coords.length % 3, 0);
       assert.ok(coords.length >= 12);
@@ -127,8 +127,9 @@ describe("Hamina-native OpenIntent gold shape", () => {
     }
     assert.ok(vegetationAreas >= 1);
     const dumped = JSON.stringify(built.openintent);
-    assert.equal(/Foliage - |Tree Trunk|Foliage \d|Hotel podium|Building \d/.test(dumped), false);
-    assert.ok(/Tree Foliage|Tall Tree Foliage|Tree Wood/.test(dumped));
+    assert.ok(built.openintent.area_materials.every((m) => !isPoisonedOiName(m.name)));
+    assert.ok(dumped.includes("Tree Foliage"));
+    assert.ok(dumped.includes("Tree Wood"));
     assert.ok(built.clipboard.attenuatingZones.length >= 3);
     assert.ok(
       built.clipboard.attenuatingZones.some(

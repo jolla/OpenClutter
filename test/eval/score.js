@@ -10,7 +10,7 @@
 const { llToPx, llToImagePx, metersPerDeg } = require("../../netlify/lib/geo-frame");
 const {
   OI_BUILDING_NAMES,
-  OI_VEGETATION_NAMES,
+  isVegetationOiName,
   buildingCatalog,
   isPoisonedOiName,
 } = require("../../netlify/lib/materials");
@@ -535,7 +535,7 @@ function evaluate(scores, thresholds) {
   const compat = scores.compatibility;
   if (compat && compat.required !== false) {
     if (!compat.buildingsExact) failures.push("OpenIntent building materials drifted from the gold set");
-    if (!compat.customsOk) failures.push("OpenIntent vegetation material is not Tree Foliage / Tall Tree Foliage / Tree Wood");
+    if (!compat.customsOk) failures.push("OpenIntent vegetation material is not Tree Foliage / Tree Wood at a measured height");
     if (compat.poisoned) failures.push("OpenIntent catalog contains a name that emptied imports");
     if (!compat.consistent) failures.push("area material does not match the catalog entry");
   }
@@ -560,12 +560,13 @@ function scoreMaterialCompatibility(openintent) {
   const buildingsExact =
     names.length >= gold.length &&
     gold.every((g, i) => names[i] === g.name && JSON.stringify(mats[i]) === JSON.stringify(g));
-  const extras = names.slice(gold.length);
-  const customsOk = extras.every((n) => OI_VEGETATION_NAMES.includes(n));
+  const extras = mats.slice(gold.length);
+  const customsOk = extras.every((m) => m && isVegetationOiName(m.name));
   const poisoned = names.some((n) => isPoisonedOiName(n));
   const byName = new Map(mats.map((m) => [m.name, m]));
   let consistent = buildingsExact && customsOk && !poisoned;
   let vegetationAreas = 0;
+  const vegetationHeights = new Set();
   for (const a of areas) {
     const m = a && a.area_material;
     const name = typeof m === "string" ? m : m && m.name;
@@ -574,11 +575,14 @@ function scoreMaterialCompatibility(openintent) {
       consistent = false;
       break;
     }
-    if (!OI_BUILDING_NAMES.includes(name) && !OI_VEGETATION_NAMES.includes(name)) {
+    if (!OI_BUILDING_NAMES.includes(name) && !isVegetationOiName(name)) {
       consistent = false;
       break;
     }
-    if (OI_VEGETATION_NAMES.includes(name)) vegetationAreas++;
+    if (isVegetationOiName(name)) {
+      vegetationAreas++;
+      if (m.top_height > 2) vegetationHeights.add(Number(m.top_height).toFixed(1));
+    }
   }
   return {
     required: true,
@@ -589,6 +593,7 @@ function scoreMaterialCompatibility(openintent) {
     customsOk,
     poisoned,
     vegetationAreas,
+    vegetationHeights: vegetationHeights.size,
     consistent,
   };
 }

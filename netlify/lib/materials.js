@@ -2,15 +2,16 @@
 
 /**
  * Buildings keep Hamina's gold outdoor objects (Jerry's export).
- * Trees use a few custom materials with that same object shape:
+ * Trees use custom materials with that same object shape:
  *   name, rf_properties.attenuation_per_m, top_height, display_color
- * No itu_material_type, no bottom_height, no per-metre name.
+ * No itu_material_type, no bottom_height.
  *
- * Shapes that emptied every attenuation_area: Foliage - Heavy, Foliage - Light,
- * Tree Trunk, Foliage N.N m, Tree Trunk N.N m, Building N.N m, Hotel podium,
- * and any material whose top_height differed from its catalog entry.
- * Those names stay on the clipboard only. OpenIntent canopy is Tree Foliage /
- * Tall Tree Foliage; trunks are Tree Wood. compatibilityMode is custom-vegetation.
+ * When a measured or CHM height exists, top_height is that height (0.1 m).
+ * The name is "Tree Foliage 14.2" / "Tree Wood 14.2" so each catalog entry is
+ * unique and still deep-equals the area. Those are not the strings that
+ * emptied imports: Foliage - Heavy, Foliage - Light, Tree Trunk,
+ * "Foliage N.N m", "Tree Trunk N.N m", "Building N.N m", Hotel podium.
+ * compatibilityMode is custom-vegetation.
  */
 
 const { ZONE_TYPES, TYPE_BY_ID, oiMaterialFromType, pickBuildingTypeId } = require("./hamina-clipboard");
@@ -50,36 +51,13 @@ const OI_BUILDING_TYPES = [
 const OI_BUILDING_BY_ID = Object.fromEntries(OI_BUILDING_TYPES.map((t) => [t.id, t]));
 const OI_BUILDING_NAMES = OI_BUILDING_TYPES.map((t) => t.name);
 
-/**
- * Fixed vegetation objects. Two canopy bins plus one trunk — not one material
- * per measured metre. Field set matches the gold building objects.
- */
-const OI_VEGETATION_TYPES = [
-  {
-    id: "tree-foliage",
-    name: "Tree Foliage",
-    color: "#509D33",
-    topEdge: 9,
-    attenuationDbPerMeter: 1,
-  },
-  {
-    id: "tall-tree-foliage",
-    name: "Tall Tree Foliage",
-    color: "#3F7D2A",
-    topEdge: 15,
-    attenuationDbPerMeter: 2,
-  },
-  {
-    id: "tree-wood",
-    name: "Tree Wood",
-    color: "#937E75",
-    topEdge: 8,
-    attenuationDbPerMeter: 10,
-  },
-];
+/** Family labels. The emitted name appends the measured height in metres. */
+const TREE_FOLIAGE_NAME = "Tree Foliage";
+const TREE_WOOD_NAME = "Tree Wood";
+const TRUNK_COLOR = "#937E75";
+const TRUNK_DB_PER_M = 10;
 
-const OI_VEGETATION_BY_ID = Object.fromEntries(OI_VEGETATION_TYPES.map((t) => [t.id, t]));
-const OI_VEGETATION_NAMES = OI_VEGETATION_TYPES.map((t) => t.name);
+const OI_VEGETATION_NAMES = [TREE_FOLIAGE_NAME, TREE_WOOD_NAME];
 
 /** Names that previously emptied a whole OpenIntent import. Never emit these. */
 const POISONED_OI_NAMES = [
@@ -182,6 +160,31 @@ function isPoisonedOiName(name) {
   return false;
 }
 
+/** "Tree Foliage 14.2" / "Tree Wood 8.0". Not the poisoned "Foliage N.N m" form. */
+function isVegetationOiName(name) {
+  if (!name || isPoisonedOiName(name)) return false;
+  return /^Tree Foliage \d+\.\d$/.test(name) || /^Tree Wood \d+\.\d$/.test(name);
+}
+
+function hexByte(n) {
+  return Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0");
+}
+
+/** Young canopy toward #6FA84A, tall canopy toward #245C28. Never a building gray/pink. */
+function foliageColor(heightM) {
+  const t = Math.max(0, Math.min(1, (Number(heightM) - 4) / 22));
+  const r = 0x6f + (0x24 - 0x6f) * t;
+  const g = 0xa8 + (0x5c - 0xa8) * t;
+  const b = 0x4a + (0x28 - 0x4a) * t;
+  return "#" + hexByte(r) + hexByte(g) + hexByte(b);
+}
+
+/** Broadleaf foliage is about 0.8–2.2 dB/m. Taller, denser crowns sit at the top of that range. */
+function foliageDbPerM(heightM) {
+  const t = Math.max(0, Math.min(1, (Number(heightM) - 4) / 22));
+  return Math.round((0.8 + t * 1.4) * 10) / 10;
+}
+
 /**
  * Bucket measured/estimated height into Hamina's four outdoor building materials.
  * Clipboard still uses ZONE_TYPES (incl. foliage / Hotel podium) via pickBuildingTypeId.
@@ -223,15 +226,37 @@ function materialForBuilding(heightM, areaM2) {
 }
 
 /**
- * Canopy and trunk rings. kind "trunk" is always Tree Wood. Canopy under 12 m
- * is Tree Foliage; 12 m and up is Tall Tree Foliage. The returned object is
- * the catalog entry, not a per-tree height.
+ * Canopy and trunk rings. top_height is the measured/CHM/NLCD height rounded
+ * to 0.1 m. The same height always yields the same object, so the area
+ * deep-equals its catalog entry.
  */
 function materialForVegetation(heightM, kind) {
-  if (kind === "trunk") return oiMaterialFromType(OI_VEGETATION_BY_ID["tree-wood"]);
   const h = roundHeightM(heightM);
-  const id = h >= 12 ? "tall-tree-foliage" : "tree-foliage";
-  return oiMaterialFromType(OI_VEGETATION_BY_ID[id]);
+  if (!h) return null;
+  const trunk = kind === "trunk";
+  const name = (trunk ? TREE_WOOD_NAME : TREE_FOLIAGE_NAME) + " " + h.toFixed(1);
+  if (!isVegetationOiName(name)) return null;
+  return oiMaterial(name, trunk ? TRUNK_COLOR : foliageColor(h), h, trunk ? TRUNK_DB_PER_M : foliageDbPerM(h));
+}
+
+/**
+ * Gold building object, or the canonical vegetation object for this height.
+ * A drifted top_height or a poisoned name returns null so that ring is omitted.
+ */
+function canonicalAreaMaterial(material) {
+  if (!material || typeof material !== "object" || Array.isArray(material)) return null;
+  if ("itu_material_type" in material || "bottom_height" in material) return null;
+  const name = material.name;
+  if (OI_BUILDING_NAMES.includes(name)) {
+    const cat = buildingCatalog().find((m) => m.name === name);
+    if (!cat || JSON.stringify(material) !== JSON.stringify(cat)) return null;
+    return JSON.parse(JSON.stringify(cat));
+  }
+  if (!isVegetationOiName(name)) return null;
+  const kind = name.indexOf(TREE_WOOD_NAME) === 0 ? "trunk" : "canopy";
+  const canon = materialForVegetation(material.top_height, kind);
+  if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
+  return JSON.parse(JSON.stringify(canon));
 }
 
 function stockMaterials() {
@@ -242,26 +267,35 @@ function buildingCatalog() {
   return OI_BUILDING_TYPES.map((t) => oiMaterialFromType(t));
 }
 
-/** Allowed OpenIntent materials: gold buildings, then the fixed vegetation set. */
+/** Gold building objects. Vegetation entries are added per measured height by documentMaterials. */
 function catalogMaterials() {
-  return buildingCatalog().concat(OI_VEGETATION_TYPES.map((t) => oiMaterialFromType(t)));
+  return buildingCatalog();
 }
 
 /**
- * Document catalog. Buildings are always present (the known-good prefix).
- * A vegetation material is included only when an area uses it, so a
+ * Document catalog. Buildings are always the gold prefix.
+ * Each measured vegetation object is included only when an area uses it, so a
  * buildings-only zip stays the four gold objects.
  */
+function vegetationSortKey(name) {
+  const m = /^(Tree Foliage|Tree Wood) (\d+\.\d)$/.exec(name || "");
+  if (!m) return String(name || "");
+  return (m[1] === "Tree Foliage" ? "0" : "1") + Number(m[2]).toFixed(1).padStart(6, "0");
+}
+
 function documentMaterials(areas) {
-  const used = new Set();
+  const veg = new Map();
   for (const a of areas || []) {
     const mat = a && a.area_material;
-    const name = typeof mat === "string" ? mat : mat && mat.name;
-    if (name) used.add(name);
+    if (!mat || typeof mat !== "object" || !isVegetationOiName(mat.name)) continue;
+    if (!veg.has(mat.name)) veg.set(mat.name, JSON.parse(JSON.stringify(mat)));
   }
-  return buildingCatalog().concat(
-    OI_VEGETATION_TYPES.filter((t) => used.has(t.name)).map((t) => oiMaterialFromType(t))
-  );
+  const extra = Array.from(veg.values()).sort((a, b) => {
+    const ka = vegetationSortKey(a.name);
+    const kb = vegetationSortKey(b.name);
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
+  return buildingCatalog().concat(extra);
 }
 
 module.exports = {
@@ -272,6 +306,10 @@ module.exports = {
   measuredTrunkMaterial,
   materialForBuilding,
   materialForVegetation,
+  canonicalAreaMaterial,
+  foliageColor,
+  foliageDbPerM,
+  isVegetationOiName,
   isPoisonedOiName,
   pickOiBuildingTypeId,
   stockMaterials,
@@ -280,8 +318,9 @@ module.exports = {
   buildingCatalog,
   OI_BUILDING_TYPES,
   OI_BUILDING_NAMES,
-  OI_VEGETATION_TYPES,
   OI_VEGETATION_NAMES,
+  TREE_FOLIAGE_NAME,
+  TREE_WOOD_NAME,
   POISONED_OI_NAMES,
   COMPATIBILITY_MODE,
 };

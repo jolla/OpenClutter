@@ -14,7 +14,7 @@ const {
 } = require("./hamina-clipboard");
 const {
   materialForBuilding,
-  catalogMaterials,
+  canonicalAreaMaterial,
   documentMaterials,
   OI_BUILDING_NAMES,
   COMPATIBILITY_MODE,
@@ -32,8 +32,8 @@ const MIN_OI_SPAN_PX = 4;
 const MIN_OI_SPAN_M = 3;
 /**
  * Last Hamina import that showed clutter was 982 areas (PR #12, stock names).
- * Buildings fill the cap first. Tree rings use Tree Foliage / Tall Tree
- * Foliage / Tree Wood and take whatever slots remain.
+ * Buildings fill the cap first. Tree rings use measured-height Tree Foliage
+ * and Tree Wood materials and take whatever slots remain.
  */
 const MAX_ATTENUATION_AREAS = 982;
 const OPENINTENT_VERSION = "2.0.1";
@@ -43,7 +43,8 @@ const ZIP_README =
   "Import this zip in Hamina (Projects → Import → OpenIntent).\n" +
   "OpenIntent carries the map image plus building and tree attenuation_areas.\n" +
   "Buildings use Hamina's outdoor Building - One/Two/Five/Ten Floor materials.\n" +
-  "Trees use custom materials with the same fields: Tree Foliage, Tall Tree Foliage, and Tree Wood.\n" +
+  "Trees use custom materials with the same fields. top_height is the measured or CHM height.\n" +
+  "Names look like Tree Foliage 14.2 and Tree Wood 14.2 (canopy green, wood brown).\n" +
   "Foliage - Heavy, Tree Trunk, and Foliage N.N m are not used — those names emptied every area.\n" +
   "hamina-clipboard.json is optional legacy paste for those older names and exact measured metres.\n" +
   "Schema: OpenIntent 2.0.1, pixels+meters+feet per vertex, isotropic meter/pixel aspect.\n" +
@@ -63,7 +64,7 @@ const ZIP_TROUBLESHOOT =
   "     Try Hamina’s 2D map view, and turn hardware acceleration off, then zoom the full extent.\n" +
   "Floorplan dimensions.height is Hamina outdoor 2.5 m (8.202 ft); meters match JPEG pixel aspect.\n" +
   "Building materials are the gold One/Two/Five/Ten Floor objects.\n" +
-  "Tree materials are Tree Foliage (under 12 m), Tall Tree Foliage (12 m and up), and Tree Wood.\n" +
+  "Tree materials are Tree Foliage and Tree Wood at the measured height (0.1 m), not a 9/15 m bucket.\n" +
   "Each is name + rf_properties + top_height + display_color. No itu_material_type, no bottom_height.\n" +
   "Foliage - Heavy / Tree Trunk / per-metre names are clipboard-only — they emptied OI imports.\n" +
   "Each ring vertex is pixels+meters+feet; materials omit itu_material_type and bottom_height.\n" +
@@ -267,7 +268,7 @@ const ALIGNMENT = [
   "   Floorplan meters match the JPEG pixel aspect (unified mpu; Esri content grid).",
   "   dimensions.height is Hamina outdoor 2.5 m. OpenIntent areas are buildings and trees.",
   "   Buildings: Building - One / Two / Five / Ten Floor.",
-  "   Trees: Tree Foliage, Tall Tree Foliage, and Tree Wood (custom, same object fields).",
+  "   Trees: Tree Foliage and Tree Wood at the measured canopy height (custom, same object fields).",
   "2. hamina-clipboard.json is optional legacy paste for older Foliage / Tree Trunk names",
   "   and exact measured heights. The import already includes canopy.",
   "3. Extra files (alignment-overlay.svg, frame-lock.json) are ignored on OpenIntent import.",
@@ -684,11 +685,9 @@ function oiAreaMaterialName(mat) {
   return mat && mat.name ? mat.name : "";
 }
 
-/** Clone of the stock catalog entry for this name. Null when the name is not stock. */
+/** Gold building clone, or the canonical measured vegetation object. Null if it would not match the catalog. */
 function catalogMaterial(material) {
-  const name = oiAreaMaterialName(material);
-  const cat = catalogMaterials().find((m) => m.name === name);
-  return cat ? JSON.parse(JSON.stringify(cat)) : null;
+  return canonicalAreaMaterial(material);
 }
 
 function validateOiArea(area, imgW, imgH) {
@@ -696,9 +695,9 @@ function validateOiArea(area, imgW, imgH) {
   const mat = area.area_material;
   // OpenIntent 2.0.1 attenuation_area.area_material is a material object.
   // A catalog name string fails the whole document ("Invalid OpenIntent format",
-  // PR #18). The object must deep-equal its catalog entry (gold building or
-  // a fixed vegetation material): same top_height, no itu_material_type,
-  // no bottom_height. Poisoned names are not in the catalog, so they fail closed.
+  // PR #18). The object must deep-equal its catalog entry: gold building, or
+  // Tree Foliage / Tree Wood at the measured top_height. No itu_material_type,
+  // no bottom_height. Poisoned names fail closed and that ring is omitted.
   if (typeof mat !== "object" || mat == null || Array.isArray(mat)) return { ok: false, reason: "material" };
   if ("itu_material_type" in mat || "bottom_height" in mat) return { ok: false, reason: "material" };
   const cat = catalogMaterial(mat);
@@ -1319,13 +1318,18 @@ function buildClutter({
   footprintMeta,
   terrain,
   warnings,
+  canopyHits,
+  heightSample,
 }) {
   const { name, slug } = siteName(rawName);
   const imgName = `${slug}.jpg`;
   const fp = footprintsToClutter(footprintsGeojson?.features || [], frame, affine);
-  const veg = treePairsFromPoints(treePoints || [], frame, fp.aabbs, affine);
-  // Tree materials are the fixed custom set. A poisoned or unknown name fails
-  // makeOiArea and that ring is omitted, so it cannot empty the buildings.
+  const veg = treePairsFromPoints(treePoints || [], frame, fp.aabbs, affine, {
+    canopyHits,
+    heightSample,
+  });
+  // A poisoned or drifted vegetation material fails makeOiArea and that ring
+  // is omitted, so it cannot empty the buildings.
   const treeOi = treesToOi(veg.oiAreas, frame.imgW, frame.imgH, frame.mpuX);
   const canopies = [];
   const trunks = [];
@@ -1372,7 +1376,8 @@ function buildClutter({
     frame,
     imgName,
     buildingRingsYUp: fp.overlayRings,
-    treePointsYUp: treeOverlayPts,
+    treePointsYUp: veg.overlayPoints && veg.overlayPoints.length ? veg.overlayPoints : treeOverlayPts,
+    treeRingsYUp: veg.overlayRings,
   });
   const lock = frameLockJson(frame, imgName);
   const buildingEmitted = Math.min(fp.oiAreas.length, areas.length);

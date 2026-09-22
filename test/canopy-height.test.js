@@ -38,14 +38,56 @@ describe("canopy height grid", () => {
     const lat = frame.south + (frame.north - frame.south) * 0.2;
     const pairs = treePairsFromPoints([{ lon, lat, pct: 70, heightM: 14.2 }], frame, []);
     const canopy = pairs.oiAreas.find((a) => a.kind === "canopy");
-    // 14.2 m is the tall canopy bin. Exact metres stay on the clipboard type.
-    assert.equal(canopy.material.name, "Tall Tree Foliage");
-    assert.equal(canopy.material.top_height, 15);
-    assert.equal(canopy.material.rf_properties.attenuation_per_m, 2);
-    assert.equal(canopy.material.display_color, "#3F7D2A");
+    assert.equal(canopy.shape, "circle");
+    assert.equal(canopy.material.name, "Tree Foliage 14.2");
+    assert.equal(canopy.material.top_height, 14.2);
+    assert.ok(canopy.material.rf_properties.attenuation_per_m > 0.5);
+    assert.ok(canopy.material.rf_properties.attenuation_per_m < 3);
+    assert.notEqual(canopy.material.display_color, "#9AA5AC");
+    assert.notEqual(canopy.material.display_color, "#9A4159");
     assert.equal("bottom_height" in canopy.material, false);
     assert.equal("itu_material_type" in canopy.material, false);
     assert.ok(pairs.clipTypes.some((t) => t.id === "foliage-m-14_2" && t.topEdge === 14.2));
+  });
+
+  it("traces a multi-cell NLCD patch as one canopy polygon at the measured height", () => {
+    const frame = geoFrame({ west: -87.93, south: 42.89, east: -87.91, north: 42.91, name: "P" });
+    const cellLon = 30 / (111320 * Math.cos((42.9 * Math.PI) / 180));
+    const cellLat = 30 / 110540;
+    const lon0 = frame.west + (frame.east - frame.west) * 0.35;
+    const lat0 = frame.south + (frame.north - frame.south) * 0.35;
+    const hits = [];
+    for (let iy = 0; iy < 2; iy++) {
+      for (let ix = 0; ix < 3; ix++) {
+        hits.push({ lon: lon0 + ix * cellLon, lat: lat0 + iy * cellLat, pct: 80 });
+      }
+    }
+    const inside = { lon: lon0 + cellLon, lat: lat0 + cellLat * 0.4, pct: 80, heightM: 14.2 };
+    const pairs = treePairsFromPoints([inside], frame, [], null, {
+      canopyHits: hits,
+      heightSample: () => 14.2,
+    });
+    const canopies = pairs.oiAreas.filter((a) => a.kind === "canopy");
+    assert.equal(canopies.length, 1);
+    assert.equal(canopies[0].shape, "polygon");
+    assert.equal(canopies[0].material.name, "Tree Foliage 14.2");
+    assert.equal(canopies[0].material.top_height, 14.2);
+    assert.ok(canopies[0].ringPx.length >= 5);
+    assert.ok(canopies[0].ringPx.length <= 41);
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const p of canopies[0].ringPx) {
+      minX = Math.min(minX, p[0]);
+      maxX = Math.max(maxX, p[0]);
+      minY = Math.min(minY, p[1]);
+      maxY = Math.max(maxY, p[1]);
+    }
+    const aspect = Math.max(maxX - minX, maxY - minY) / Math.min(maxX - minX, maxY - minY);
+    assert.ok(aspect > 1.3, "patch outline follows the 3×2 cells, not a circle");
+    assert.equal(pairs.oiAreas.some((a) => a.kind === "trunk"), false);
+    assert.ok(pairs.clipTypes.some((t) => t.id === "foliage-m-14_2"));
   });
 
   it("points Oak Creek at the zoom-10 CHM quadkey", () => {

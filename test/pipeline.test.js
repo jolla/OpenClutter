@@ -10,7 +10,7 @@ const {
   pickBuildingTypeId,
 } = require("../netlify/lib/hamina-clipboard");
 const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS } = require("../netlify/lib/pipeline");
-const { OI_BUILDING_NAMES, OI_VEGETATION_NAMES } = require("../netlify/lib/materials");
+const { OI_BUILDING_NAMES, isVegetationOiName, isPoisonedOiName } = require("../netlify/lib/materials");
 const { zipStore, unzipStore } = require("../netlify/lib/zip-store");
 
 const WYNN = {
@@ -184,18 +184,18 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(built.stats.openIntentBuildingAreas, 1);
     assert.ok(built.stats.openIntentTreeAreas >= 1);
     assert.equal(areas.length, built.stats.openIntentBuildingAreas + built.stats.openIntentTreeAreas);
-    assert.equal(/Foliage - |Foliage \d|Tree Trunk|Hotel podium/.test(JSON.stringify(built.openintent)), false);
-    assert.ok(JSON.stringify(built.openintent).includes("Tree Foliage") || JSON.stringify(built.openintent).includes("Tall Tree Foliage"));
+    assert.ok(built.openintent.area_materials.every((m) => !isPoisonedOiName(m.name)));
+    assert.ok(JSON.stringify(built.openintent).includes("Tree Foliage"));
     assert.equal(built.clipboard.attenuatingZones.length, built.stats.buildings + built.stats.trees * 2);
     assert.equal(built.stats.areas, areas.length);
-    const allowed = new Set(OI_BUILDING_NAMES.concat(OI_VEGETATION_NAMES));
+    const allowed = (name) => OI_BUILDING_NAMES.includes(name) || isVegetationOiName(name);
     assert.deepEqual(
       built.openintent.area_materials.map((m) => m.name).slice(0, 4),
       OI_BUILDING_NAMES
     );
     for (const a of areas) {
       assert.equal(typeof a.area_material, "object");
-      assert.ok(allowed.has(a.area_material.name), a.area_material.name);
+      assert.equal(allowed(a.area_material.name), true, a.area_material.name);
       const cat = built.openintent.area_materials.find((m) => m.name === a.area_material.name);
       assert.deepEqual(a.area_material, cat);
       assert.equal("itu_material_type" in a.area_material, false);
@@ -667,8 +667,8 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(built.stats.openIntentBuildingAreas, 0);
     const treeOi = built.openintent.floorplans[0].attenuation_areas;
     assert.equal(treeOi.length, built.stats.openIntentTreeAreas);
-    assert.ok(treeOi.every((a) => OI_VEGETATION_NAMES.includes(a.area_material.name)));
-    assert.equal(/Foliage - |Tree Trunk|Foliage \d/.test(JSON.stringify(built.openintent)), false);
+    assert.ok(treeOi.every((a) => isVegetationOiName(a.area_material.name)));
+    assert.ok(built.openintent.area_materials.every((m) => !isPoisonedOiName(m.name)));
   });
 
   it("zip dimensions and clipboard origin stay one shared frame", () => {
@@ -745,10 +745,10 @@ describe("OpenIntent attenuation_areas", () => {
     assert.equal(oi.attenuation_areas.length, built.stats.openIntentBuildingAreas + built.stats.openIntentTreeAreas);
     assert.equal(built.clipboard.attenuatingZones.length, 2 + 3 * 2);
     const names = oi.attenuation_areas.map((a) => a.area_material.name);
-    assert.ok(names.every((n) => OI_BUILDING_NAMES.includes(n) || OI_VEGETATION_NAMES.includes(n)));
+    assert.ok(names.every((n) => OI_BUILDING_NAMES.includes(n) || isVegetationOiName(n)));
     assert.ok(names.includes("Building - One Floor") || names.includes("Building - Five Floor") || names.includes("Building - Two Floor"));
     assert.ok(!names.includes("Tree Trunk"));
-    assert.ok(names.some((n) => n === "Tree Foliage" || n === "Tall Tree Foliage"));
+    assert.ok(names.some((n) => isVegetationOiName(n) && n.indexOf("Tree Foliage") === 0));
     assert.ok(!names.some((n) => n === "Foliage - Heavy" || n === "Tree Trunk"));
     const zipped = unzipStore(built.zip);
     assert.ok(zipped["alignment-overlay.svg"]);
@@ -972,7 +972,7 @@ describe("OpenIntent attenuation_areas", () => {
     assert.equal(built.stats.openIntentBuildingAreas, 1);
     assert.ok(built.stats.openIntentTreeAreas >= 1);
     assert.equal(areas.length, 1 + built.stats.openIntentTreeAreas);
-    assert.ok(areas.some((a) => a.area_material.name === "Tree Foliage" || a.area_material.name === "Tall Tree Foliage"));
+    assert.ok(areas.some((a) => isVegetationOiName(a.area_material.name) && a.area_material.top_height > 2));
     assert.ok(!areas.some((a) => a.area_material.name === "Foliage - Heavy" || a.area_material.name === "Tree Trunk"));
     assert.ok(built.clipboard.attenuatingZoneTypes.some((t) => t.id === "bldg-m-6_4" && t.topEdge === 6.4));
     assert.ok(built.clipboard.attenuatingZones.length >= 1 + 2);

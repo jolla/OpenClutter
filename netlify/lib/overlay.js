@@ -126,13 +126,19 @@ function ringToSvgPoints(ringYUp, frame) {
     .join(" ");
 }
 
-function overlaySvg({ frame, imgName, buildingRingsYUp, treePointsYUp }) {
+function overlaySvg({ frame, imgName, buildingRingsYUp, treePointsYUp, treeRingsYUp }) {
   const w = frame.imgW;
   const h = frame.imgH;
   const bldg = (buildingRingsYUp || [])
     .map((ring) => {
       const pts = ringToSvgPoints(ring, frame);
       return `  <polygon points="${pts}" fill="none" stroke="#ff4d4f" stroke-width="1.2"/>`;
+    })
+    .join("\n");
+  const treePolys = (treeRingsYUp || [])
+    .map((ring) => {
+      const pts = ringToSvgPoints(ring, frame);
+      return `  <polygon points="${pts}" fill="#509D33" fill-opacity="0.28" stroke="#245C28" stroke-width="1"/>`;
     })
     .join("\n");
   const trees = (treePointsYUp || [])
@@ -148,6 +154,7 @@ function overlaySvg({ frame, imgName, buildingRingsYUp, treePointsYUp }) {
 ${bldg}
   </g>
   <g id="trees">
+${treePolys}
 ${trees}
   </g>
 </svg>

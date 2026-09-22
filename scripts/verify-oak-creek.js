@@ -19,8 +19,8 @@
  *     -d '{"west":-87.92259693145752,"south":42.89043196008693,"east":-87.91184663772584,"north":42.90325386116256,"name":"Oak Creek WI commercial","trees":[],"format":"bundle"}'
  *
  * Pass: HTTP 200, wall clock under 10s, attenuation_areas > 0 and ≤ 982,
- * the gold Building - One/Two/Five/Ten Floor prefix, plus Tree Foliage /
- * Tall Tree Foliage / Tree Wood only when a tree area uses them. Every
+ * the gold Building - One/Two/Five/Ten Floor prefix, plus Tree Foliage H.H /
+ * Tree Wood H.H only when a tree area uses that measured height. Every
  * area_material is a catalog-equal object (a name string is Invalid
  * OpenIntent format). Poisoned names (Foliage - Heavy, Tree Trunk, Foliage
  * N.N m) fail the check. JPEG SOI, clipboard
@@ -32,7 +32,7 @@
 const fs = require("fs");
 const path = require("path");
 const { unzipStore } = require("../netlify/lib/zip-store");
-const { OI_BUILDING_NAMES, OI_VEGETATION_NAMES, isPoisonedOiName, COMPATIBILITY_MODE } = require("../netlify/lib/materials");
+const { OI_BUILDING_NAMES, isVegetationOiName, isPoisonedOiName, COMPATIBILITY_MODE } = require("../netlify/lib/materials");
 const { scoreClipboardOverlayAlignment } = require("../netlify/lib/overlay");
 
 const BBOX = {
@@ -121,7 +121,7 @@ function checkZip(zipBuf) {
       failures.push("gold Building prefix mismatch: " + materials.join(" | "));
     }
     const custom = materials.slice(STOCK_NAMES.length);
-    const badCustom = custom.filter((n) => !OI_VEGETATION_NAMES.includes(n) || isPoisonedOiName(n));
+    const badCustom = custom.filter((n) => !isVegetationOiName(n) || isPoisonedOiName(n));
     if (badCustom.length) failures.push("unexpected vegetation materials: " + badCustom.join(", "));
     if (materials.some((n) => isPoisonedOiName(n))) {
       failures.push("OI catalog has a name that emptied imports: " + materials.join(" | "));

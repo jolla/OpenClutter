@@ -10,8 +10,10 @@ const {
   COMPATIBILITY_MODE,
   OI_BUILDING_NAMES,
   OI_BUILDING_TYPES,
-  OI_VEGETATION_NAMES,
   materialForVegetation,
+  isVegetationOiName,
+  isPoisonedOiName,
+  foliageDbPerM,
 } = require("../netlify/lib/materials");
 const { scoreMaterialCompatibility } = require("./eval/score");
 
@@ -39,18 +41,23 @@ describe("Hamina OpenIntent material compatibility", () => {
     const light = materialForVegetation(9, "canopy");
     const heavy = materialForVegetation(14.2, "canopy");
     const wood = materialForVegetation(14.2, "trunk");
-    assert.equal(light.name, "Tree Foliage");
+    assert.equal(light.name, "Tree Foliage 9.0");
     assert.equal(light.top_height, 9);
-    assert.equal(light.rf_properties.attenuation_per_m, 1);
-    assert.equal(heavy.name, "Tall Tree Foliage");
-    assert.equal(heavy.top_height, 15);
-    assert.equal(heavy.rf_properties.attenuation_per_m, 2);
-    assert.equal(wood.name, "Tree Wood");
-    assert.equal(wood.top_height, 8);
+    assert.equal(light.rf_properties.attenuation_per_m, foliageDbPerM(9));
+    assert.equal(heavy.name, "Tree Foliage 14.2");
+    assert.equal(heavy.top_height, 14.2);
+    assert.equal(heavy.rf_properties.attenuation_per_m, foliageDbPerM(14.2));
+    assert.ok(heavy.rf_properties.attenuation_per_m < 3);
+    assert.notEqual(heavy.display_color, "#9AA5AC");
+    assert.notEqual(heavy.display_color, "#9A4159");
+    assert.equal(wood.name, "Tree Wood 14.2");
+    assert.equal(wood.top_height, 14.2);
     assert.equal(wood.rf_properties.attenuation_per_m, 10);
+    assert.equal(wood.display_color, "#937E75");
     for (const mat of [light, heavy, wood]) {
       assert.deepEqual(Object.keys(mat), ["name", "rf_properties", "top_height", "display_color"]);
-      assert.deepEqual(mat, catalogMaterials().find((m) => m.name === mat.name));
+      assert.equal(isVegetationOiName(mat.name), true);
+      assert.equal(isPoisonedOiName(mat.name), false);
       assert.equal("itu_material_type" in mat, false);
       assert.equal("bottom_height" in mat, false);
     }
@@ -119,7 +126,11 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.equal(bare.stats.openIntentTreeAreas, 0);
     assert.deepEqual(withTrees.openintent.area_materials.slice(0, 4), bare.openintent.area_materials);
     const extra = withTrees.openintent.area_materials.slice(4).map((m) => m.name);
-    assert.deepEqual(extra, ["Tall Tree Foliage", "Tree Wood"]);
+    assert.deepEqual(extra, ["Tree Foliage 14.2", "Tree Wood 14.2"]);
+    const foliage = withTrees.openintent.floorplans[0].attenuation_areas.find(
+      (a) => a.area_material.name === "Tree Foliage 14.2"
+    );
+    assert.equal(foliage.area_material.top_height, 14.2);
     const bareAreas = bare.openintent.floorplans[0].attenuation_areas;
     const both = withTrees.openintent.floorplans[0].attenuation_areas;
     assert.equal(bareAreas.length, 1);
@@ -129,12 +140,12 @@ describe("Hamina OpenIntent material compatibility", () => {
     );
     assert.ok(both.length > bareAreas.length);
     for (const a of both.slice(bareAreas.length)) {
-      assert.ok(OI_VEGETATION_NAMES.includes(a.area_material.name));
+      assert.equal(isVegetationOiName(a.area_material.name), true);
       assert.deepEqual(Object.keys(a.area_material), ["name", "rf_properties", "top_height", "display_color"]);
       const cat = withTrees.openintent.area_materials.find((m) => m.name === a.area_material.name);
       assert.deepEqual(a.area_material, cat);
     }
-    assert.equal(/Foliage - |Tree Trunk|Foliage \d/.test(JSON.stringify(withTrees.openintent)), false);
+    assert.ok(withTrees.openintent.area_materials.every((m) => !isPoisonedOiName(m.name)));
   });
 
   it("keeps the gold Building-* OI catalog and exact heights on the clipboard", () => {
@@ -163,8 +174,17 @@ describe("Hamina OpenIntent material compatibility", () => {
     });
     const names = built.openintent.area_materials.map((m) => m.name);
     assert.deepEqual(names.slice(0, 4), OI_BUILDING_NAMES);
-    assert.deepEqual(names.slice(4), ["Tree Foliage", "Tall Tree Foliage", "Tree Wood"]);
-    assert.deepEqual(built.openintent.area_materials, catalogMaterials());
+    assert.deepEqual(built.openintent.area_materials.slice(0, 4), catalogMaterials());
+    const vegNames = names.slice(4);
+    assert.deepEqual(vegNames, [
+      "Tree Foliage 7.5",
+      "Tree Foliage 9.1",
+      "Tree Foliage 14.2",
+      "Tree Wood 7.5",
+      "Tree Wood 9.1",
+      "Tree Wood 14.2",
+    ]);
+    assert.ok(vegNames.every((n) => isVegetationOiName(n)));
     for (let i = 0; i < OI_BUILDING_TYPES.length; i++) {
       assert.equal(built.openintent.area_materials[i].top_height, OI_BUILDING_TYPES[i].topEdge);
       assert.equal(
@@ -176,15 +196,14 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.equal(compat.mode, COMPATIBILITY_MODE);
     assert.equal(compat.stockOnly, true);
     assert.equal(compat.consistent, true);
-    assert.equal(compat.materials, 7);
+    assert.equal(compat.materials, 10);
+    assert.equal(compat.vegetationHeights, 3);
     assert.equal(compat.vegetationAreas >= 3, true);
     assert.equal(built.stats.compatibilityMode, COMPATIBILITY_MODE);
-    assert.equal(built.stats.areaMaterials, 7);
-    const dumped = JSON.stringify(built.openintent);
-    assert.equal(/Building \d/.test(dumped), false);
-    assert.equal(/Foliage - |Foliage \d|Tree Trunk|Hotel podium/.test(dumped), false);
-    assert.ok(dumped.includes("Tree Foliage"));
-    assert.ok(dumped.includes("Tree Wood"));
+    assert.equal(built.stats.areaMaterials, 10);
+    assert.ok(built.openintent.area_materials.every((m) => !isPoisonedOiName(m.name)));
+    assert.ok(names.some((n) => n.indexOf("Tree Foliage") === 0));
+    assert.ok(names.some((n) => n.indexOf("Tree Wood") === 0));
     const types = built.clipboard.attenuatingZoneTypes;
     assert.ok(types.some((t) => t.id === "bldg-m-6_4" && t.topEdge === 6.4));
     assert.ok(types.some((t) => t.id === "bldg-m-18_2" && t.topEdge === 18.2));
@@ -233,7 +252,7 @@ describe("Hamina OpenIntent material compatibility", () => {
       assert.deepEqual(a.area_material, cat);
       assert.deepEqual(Object.keys(a.area_material), ["name", "rf_properties", "top_height", "display_color"]);
       assert.ok(
-        OI_BUILDING_NAMES.includes(a.area_material.name) || OI_VEGETATION_NAMES.includes(a.area_material.name)
+        OI_BUILDING_NAMES.includes(a.area_material.name) || isVegetationOiName(a.area_material.name)
       );
       assert.equal("itu_material_type" in a.area_material, false);
       assert.equal("bottom_height" in a.area_material, false);
