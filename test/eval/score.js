@@ -364,7 +364,8 @@ function treePointsFromBuilt(built) {
   const areas = (built.openintent && built.openintent.floorplans[0].attenuation_areas) || [];
   const mats = new Set(["Tree Trunk"]);
   for (const a of areas) {
-    if (!mats.has(a.area_material && a.area_material.name)) continue;
+    const trunkName = typeof a.area_material === "string" ? a.area_material : a.area_material && a.area_material.name;
+    if (!mats.has(trunkName)) continue;
     const coords = a.area.coordinates || [];
     if (coords.length < 3) continue;
     let sx = 0;
@@ -538,8 +539,13 @@ function scoreMaterialCompatibility(openintent) {
   let consistent = stockOnly;
   for (const a of areas) {
     const m = a && a.area_material;
-    const cat = m && byName.get(m.name);
-    if (!cat || JSON.stringify(m) !== JSON.stringify(cat)) {
+    const name = typeof m === "string" ? m : m && m.name;
+    const cat = name && byName.get(name);
+    if (!cat) {
+      consistent = false;
+      break;
+    }
+    if (typeof m !== "string" && JSON.stringify(m) !== JSON.stringify(cat)) {
       consistent = false;
       break;
     }
@@ -601,7 +607,7 @@ function scoreMeasuredHeights(features, overlayRings, overlayHeights, frame, ope
   let stockFoliage = 0;
   let foliage = 0;
   for (const a of areas) {
-    const name = a.area_material && a.area_material.name;
+    const name = typeof a.area_material === "string" ? a.area_material : a.area_material && a.area_material.name;
     if (!name || name.indexOf("Foliage") !== 0) continue;
     foliage++;
     if (name === "Foliage - Heavy" || name === "Foliage - Light") stockFoliage++;

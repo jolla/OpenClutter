@@ -83,13 +83,13 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.ok(built.openintent.floorplans[0].attenuation_areas.length >= 3);
   });
 
-  it("rejects the custom catalog that Hamina dropped, and treats 1377 areas as a full emit", () => {
+  it("rejects embedded materials and caps at the last import that showed clutter", () => {
     const buildings = 129;
     const trees = 624;
     const areas = buildings + trees * 2;
     assert.equal(areas, 1377);
-    assert.ok(areas < MAX_ATTENUATION_AREAS);
-    assert.ok(areas > 982);
+    assert.equal(MAX_ATTENUATION_AREAS, 982);
+    assert.ok(areas > MAX_ATTENUATION_AREAS);
     const frame = { imgW: 100, imgH: 100 };
     const coords = [
       { coordinate_xyz: { x: 0, y: 0, unit: "pixels" } },
@@ -130,7 +130,10 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.equal(drifted.ok, false);
     assert.equal(drifted.reason, "material");
     const stock = catalogMaterials().find((m) => m.name === "Building - One Floor");
-    const ok = validateOiArea({ area: { coordinates: coords }, area_material: stock }, frame.imgW, frame.imgH);
+    const embedded = validateOiArea({ area: { coordinates: coords }, area_material: stock }, frame.imgW, frame.imgH);
+    assert.equal(embedded.ok, false);
+    assert.equal(embedded.reason, "material");
+    const ok = validateOiArea({ area: { coordinates: coords }, area_material: stock.name }, frame.imgW, frame.imgH);
     assert.equal(ok.ok, true);
   });
 });

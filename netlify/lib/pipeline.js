@@ -26,11 +26,11 @@ const MIN_OI_SPAN_PX = 4;
 /** Outdoor trunks are ~1 m across; at ~1 m/px that is sub-pixel and Hamina may reject the ring. */
 const MIN_OI_SPAN_M = 3;
 /**
- * Hamina documents 20,000 walls/map and no attenuation_areas cap. Keep well under
- * that wall budget so one outdoor site cannot blow the importer/GPU. Buildings
- * first, then complete canopy+trunk pairs.
+ * Last Hamina import that showed clutter was 982 areas (PR #12, stock names).
+ * 1377 and 1494 both imported the floorplan and zero clutter. Stay at that
+ * last accepted count. Buildings first, then complete canopy+trunk pairs.
  */
-const MAX_ATTENUATION_AREAS = 4000;
+const MAX_ATTENUATION_AREAS = 982;
 const OPENINTENT_VERSION = "2.0.1";
 const STOCK_MATERIAL_NAMES = ZONE_TYPES.map((t) => t.name);
 
@@ -57,10 +57,10 @@ const ZIP_TROUBLESHOOT =
   "     Try Hamina’s 2D map view, and turn hardware acceleration off, then zoom the full extent.\n" +
   "Pixel vs meter aspect can differ after Esri N/S pad (non-square mpu). Overlay still locks image-space;\n" +
   "that does not hide objects by itself.\n" +
-  "Hamina publishes a 20,000 walls/map OpenIntent cap and no attenuation_areas cap; this zip emits\n" +
-  "at most " +
+  "The last OpenIntent import that showed clutter was 982 areas. This zip emits at most " +
   MAX_ATTENUATION_AREAS +
   " areas (buildings first). Invalid/open/NaN/self-intersecting rings are dropped per-polygon.\n" +
+  "Each attenuation area references area_materials by name. The six stock definitions live only in that catalog.\n" +
   "OpenIntent materials omit bottom_height (Hamina rejected it as Invalid OpenIntent format) and use\n" +
   "stock names + itu_material_type ITU_R_UNKNOWN (oiconvert / Hamina-tested importer).\n";
 
@@ -469,22 +469,21 @@ function validateOiCoords(coords, imgW, imgH) {
   return { ok: true };
 }
 
+function oiAreaMaterialName(mat) {
+  if (typeof mat === "string") return mat;
+  return mat && mat.name ? mat.name : "";
+}
+
 function validateOiArea(area, imgW, imgH) {
-  if (!area || !area.area || !area.area_material) return { ok: false, reason: "shape" };
+  if (!area || !area.area || area.area_material == null) return { ok: false, reason: "shape" };
   const mat = area.area_material;
-  // PR #12 imports (558 and 982 areas) used only these six names at the stock
-  // top_height. A custom name or a stock name with a different height made
-  // Hamina drop every attenuation_area (Jerry: 1377 emitted, 0 imported).
-  const spec = ZONE_TYPES.find((t) => t.name === mat.name);
+  // Per-area objects (even a stock name with the stock height) still imported
+  // as a floorplan with zero clutter after #16. Hamina's wall importer, which
+  // does accept materials, references the catalog by name. An embedded object
+  // here is rejected so it cannot be emitted.
+  if (typeof mat !== "string") return { ok: false, reason: "material" };
+  const spec = ZONE_TYPES.find((t) => t.name === mat);
   if (!spec) return { ok: false, reason: "material" };
-  if (mat.top_height !== spec.topEdge) return { ok: false, reason: "material" };
-  if (Object.prototype.hasOwnProperty.call(mat, "bottom_height")) return { ok: false, reason: "bottom_height" };
-  if (mat.itu_material_type !== "ITU_R_UNKNOWN") return { ok: false, reason: "itu" };
-  const db = mat.rf_properties && mat.rf_properties.attenuation_per_m;
-  if (db !== spec.attenuationDbPerMeter) return { ok: false, reason: "attenuation" };
-  if (mat.display_color && !/^#[0-9A-Fa-f]{6}$/.test(mat.display_color)) {
-    return { ok: false, reason: "color" };
-  }
   return validateOiCoords(area.area.coordinates, imgW, imgH);
 }
 
@@ -494,6 +493,10 @@ function finalizeOiCoords(rawPts, imgW, imgH) {
   for (const p of rawPts || []) {
     if (!p || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) continue;
     const c = xyz(Math.min(imgW, Math.max(0, p[0])), Math.min(imgH, Math.max(0, p[1])));
+    // toFixed(3) rounds imgW-epsilon back up to imgW. A point on the far edge
+    // is outside a strict < dimension check and one such ring drops the import.
+    if (imgW > 0 && c.coordinate_xyz.x >= imgW) c.coordinate_xyz.x = Math.round((imgW - 0.002) * 1000) / 1000;
+    if (imgH > 0 && c.coordinate_xyz.y >= imgH) c.coordinate_xyz.y = Math.round((imgH - 0.002) * 1000) / 1000;
     const xyzc = c.coordinate_xyz;
     if (!Number.isFinite(xyzc.x) || !Number.isFinite(xyzc.y)) continue;
     const last = pts[pts.length - 1];
@@ -557,8 +560,9 @@ function ringToOi(pts, imgW, imgH, mpuX) {
 }
 
 function makeOiArea(coords, material) {
-  if (!coords || !material) return null;
-  return { area: { coordinates: coords }, area_material: material };
+  const name = oiAreaMaterialName(material);
+  if (!coords || !name) return null;
+  return { area: { coordinates: coords }, area_material: name };
 }
 
 function emitIfValid(area, imgW, imgH) {
@@ -684,7 +688,21 @@ function emitBuilding(ring, heightM, frame, affine, buckets) {
   if (picked.clipType) buckets.clipTypes.push(picked.clipType);
   if (picked.material) buckets.materials.push(picked.material);
   if (picked.measured) buckets.measured++;
-  const z = clipZone(picked.typeId, clipRing);
+  // Clipboard meters follow the clipped OpenIntent ring, not the raw lon/lat
+  // polygon. Footprints that cross the JPEG were landing at x=+8.4, y=+38,
+  // y=-1999 against a south edge of -1919.
+  const clipFromImage = [];
+  if (!affine) {
+    for (let i = 0; i < oiCoords.length - 1; i++) {
+      const p = oiCoords[i].coordinate_xyz;
+      const m = pxToClipboard(p.x, p.y, frame);
+      clipFromImage.push([
+        Math.min(0, Math.max(-frame.widthM, m[0])),
+        Math.min(0, Math.max(-frame.lengthM, m[1])),
+      ]);
+    }
+  }
+  const z = clipZone(picked.typeId, affine ? clipRing : clipFromImage);
   if (z) buckets.clipZones.push(z);
   buckets.aabbs.push({ minX, maxX, minY, maxY });
   buckets.overlayRings.push(pts);
@@ -1036,6 +1054,7 @@ module.exports = {
   ringAreaPx,
   validateOiCoords,
   validateOiArea,
+  oiAreaMaterialName,
   emitIfValid,
   capAttenuationAreas,
   ensureMinSpan,
