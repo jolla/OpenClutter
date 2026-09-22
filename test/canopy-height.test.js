@@ -39,7 +39,7 @@ describe("canopy height grid", () => {
     const pairs = treePairsFromPoints([{ lon, lat, pct: 70, heightM: 14.2 }], frame, []);
     const canopy = pairs.oiAreas.find((a) => a.kind === "canopy");
     assert.equal(canopy.shape, "circle");
-    assert.equal(canopy.material.name, "Tree Foliage 14.2");
+    assert.equal(canopy.material.name, "Foliage - Heavy 14.2");
     assert.equal(canopy.material.top_height, 14.2);
     assert.ok(canopy.material.rf_properties.attenuation_per_m > 0.5);
     assert.ok(canopy.material.rf_properties.attenuation_per_m < 3);
@@ -70,7 +70,7 @@ describe("canopy height grid", () => {
     const canopies = pairs.oiAreas.filter((a) => a.kind === "canopy");
     assert.equal(canopies.length, 1);
     assert.equal(canopies[0].shape, "polygon");
-    assert.equal(canopies[0].material.name, "Tree Foliage 14.2");
+    assert.equal(canopies[0].material.name, "Foliage - Heavy 14.2");
     assert.equal(canopies[0].material.top_height, 14.2);
     assert.ok(canopies[0].ringPx.length >= 5);
     assert.ok(canopies[0].ringPx.length <= 41);

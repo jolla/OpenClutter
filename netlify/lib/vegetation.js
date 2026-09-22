@@ -222,12 +222,16 @@ function canopyPolygonsFromHits(hits, frame, buildingAabbs, heightSample) {
     const prev = grid.get(key);
     if (!prev || pct > prev.pct) {
       let heightM = 0;
+      let measured = false;
       if (heightSample) {
         const sampled = +heightSample(h.lon, h.lat);
-        if (sampled > 2 && sampled < 80) heightM = sampled;
+        if (sampled > 2 && sampled < 80) {
+          heightM = sampled;
+          measured = true;
+        }
       }
       if (!(heightM > 2)) heightM = canopyHeightM(pct, h.lon, h.lat);
-      grid.set(key, { ix, iy, lon: h.lon, lat: h.lat, pct, heightM });
+      grid.set(key, { ix, iy, lon: h.lon, lat: h.lat, pct, heightM, measured });
     }
   }
   const seen = new Set();
@@ -280,8 +284,11 @@ function canopyPolygonsFromHits(hits, frame, buildingAabbs, heightSample) {
       originLat + (iy - 0.5) * cell.lat,
     ]);
     const ringPx = lonLat.map(([lon, lat]) => llToPx(lon, lat, frame));
-    const heightM = medianNumber(comp.map((c) => c.heightM));
-    const material = materialForVegetation(heightM, "canopy");
+    const measuredVals = comp.filter((c) => c.measured).map((c) => c.heightM);
+    const heightM = measuredVals.length ? medianNumber(measuredVals) : 0;
+    const pct = medianNumber(comp.map((c) => c.pct));
+    const tier = heightM > 2 ? (heightM >= 12 ? "heavy" : "light") : pct >= 50 ? "heavy" : "light";
+    const material = materialForVegetation(heightM, tier);
     if (!material || ringPx.length < 4) continue;
     polygons.push({ ringPx, ringLonLat: lonLat, material, kind: "canopy", shape: "polygon" });
   }
@@ -295,10 +302,11 @@ function crownRadiusM(heightM, pct) {
 }
 
 /**
- * Imagery vegetation points (lon/lat) → trunk + canopy pairs.
+ * Imagery vegetation points (lon/lat) → canopy rings.
  * Multi-cell NLCD patches become canopy polygons. Circles are only for
  * point-like trees (a single cell, a median, RGB, or OSM).
- * OSM rings are never generated here.
+ * OpenIntent uses stock Foliage - Heavy / Light, or a measured-height custom.
+ * Clipboard still carries a trunk zone. OSM rings are never generated here.
  */
 function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
   const pts = normalizeTreePoints(treePoints);
@@ -361,18 +369,18 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
   }
   for (let n = 0; n < picked.length; n++) {
     const p = picked[n];
-    const measuredH =
-      p.heightM > 2 ? p.heightM : p.pct != null ? canopyHeightM(p.pct, p.lon, p.lat) : 0;
-    const foliage = measuredH ? measuredFoliageMaterial(measuredH) : null;
-    const trunk = measuredH ? measuredTrunkMaterial(measuredH) : null;
-    const heavy = foliage ? foliage.material.top_height >= 12 : n % 12 !== 0;
+    const measuredH = p.heightM > 2 ? p.heightM : 0;
+    const clipHeight =
+      measuredH > 2 ? measuredH : p.pct != null ? canopyHeightM(p.pct, p.lon, p.lat) : 0;
+    const foliage = clipHeight ? measuredFoliageMaterial(clipHeight) : null;
+    const trunk = clipHeight ? measuredTrunkMaterial(clipHeight) : null;
+    const heavy =
+      measuredH > 2 ? measuredH >= 12 : p.pct != null ? p.pct >= 50 : n % 12 !== 0;
     const canopyStockId = heavy ? "foliage-heavy" : "foliage-light";
     const canopyId = foliage ? foliage.typeId : canopyStockId;
     const trunkId = trunk ? trunk.typeId : "tree-trunk";
-    const oiHeight = measuredH > 2 ? measuredH : heavy ? 12 : 9;
-    const canopyMat = materialForVegetation(oiHeight, "canopy");
-    const trunkMat = materialForVegetation(oiHeight, "trunk");
-    const radiusM = crownRadiusM(measuredH, p.pct);
+    const canopyMat = materialForVegetation(measuredH, heavy ? "heavy" : "light");
+    const radiusM = crownRadiusM(measuredH || clipHeight, p.pct);
     const rCanopy = radiusM / frame.mpuX;
     const rTrunk = TRUNK_R_M / frame.mpuX;
     const ryCanopy = radiusM / frame.mpuY;
@@ -395,9 +403,8 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
       clipTypes.push(trunk.clipType);
     }
     const covered = polygons.some((poly) => pointInLonLatRing(p.lon, p.lat, poly.ringLonLat));
-    if (covered || !canopyMat || !trunkMat) continue;
+    if (covered || !canopyMat) continue;
     oiAreas.push({ ringPx: canopyPx, typeId: canopyId, material: canopyMat, kind: "canopy", shape: "circle" });
-    oiAreas.push({ ringPx: trunkPx, typeId: trunkId, material: trunkMat, kind: "trunk", shape: "circle" });
     overlayRings.push(canopyPx);
   }
   const overlayPoints = picked.map((p) => [p.x, p.y]);

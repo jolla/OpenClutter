@@ -19,10 +19,11 @@
  *     -d '{"west":-87.92259693145752,"south":42.89043196008693,"east":-87.91184663772584,"north":42.90325386116256,"name":"Oak Creek WI commercial","trees":[],"format":"bundle"}'
  *
  * Pass: HTTP 200, wall clock under 10s, attenuation_areas > 0 and ≤ 982,
- * the gold Building - One/Two/Five/Ten Floor prefix, plus Tree Foliage H.H /
- * Tree Wood H.H only when a tree area uses that measured height. Every
+ * the gold Building - One/Two/Five/Ten Floor prefix, plus stock
+ * Foliage - Heavy / Foliage - Light or Foliage - Heavy H.H / Foliage - Light H.H
+ * only when a tree area uses that material. Every
  * area_material is a catalog-equal object (a name string is Invalid
- * OpenIntent format). Poisoned names (Foliage - Heavy, Tree Trunk, Foliage
+ * OpenIntent format). Poisoned names (Tree Trunk, Foliage
  * N.N m) fail the check. JPEG SOI, clipboard
  * vertices inside the meter frame, and VERIFY.txt / export-stats.json
  * agreeing with that length. When ajv is installed, the OpenIntent JSON is

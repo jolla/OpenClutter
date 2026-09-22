@@ -13,6 +13,7 @@ const {
   isVegetationOiName,
   buildingCatalog,
   isPoisonedOiName,
+  COMPATIBILITY_MODE,
 } = require("../../netlify/lib/materials");
 const {
   featureExteriorRings,
@@ -372,10 +373,9 @@ function highCanopyRecall(trees, hits, bbox) {
 function treePointsFromBuilt(built) {
   const pts = [];
   const areas = (built.openintent && built.openintent.floorplans[0].attenuation_areas) || [];
-  const mats = new Set(["Tree Trunk"]);
   for (const a of areas) {
     const trunkName = typeof a.area_material === "string" ? a.area_material : a.area_material && a.area_material.name;
-    if (!mats.has(trunkName)) continue;
+    if (!isVegetationOiName(trunkName)) continue;
     const coords = a.area.coordinates || [];
     const pixels = [];
     for (let i = 0; i < coords.length; i++) {
@@ -535,7 +535,7 @@ function evaluate(scores, thresholds) {
   const compat = scores.compatibility;
   if (compat && compat.required !== false) {
     if (!compat.buildingsExact) failures.push("OpenIntent building materials drifted from the gold set");
-    if (!compat.customsOk) failures.push("OpenIntent vegetation material is not Tree Foliage / Tree Wood at a measured height");
+    if (!compat.customsOk) failures.push("OpenIntent vegetation material is not stock Foliage - Heavy / Light or a measured-height custom");
     if (compat.poisoned) failures.push("OpenIntent catalog contains a name that emptied imports");
     if (!compat.consistent) failures.push("area material does not match the catalog entry");
   }
@@ -586,7 +586,7 @@ function scoreMaterialCompatibility(openintent) {
   }
   return {
     required: true,
-    mode: "custom-vegetation",
+    mode: COMPATIBILITY_MODE,
     materials: mats.length,
     stockOnly: buildingsExact && customsOk && !poisoned,
     buildingsExact,

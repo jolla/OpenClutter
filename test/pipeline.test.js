@@ -185,7 +185,7 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.ok(built.stats.openIntentTreeAreas >= 1);
     assert.equal(areas.length, built.stats.openIntentBuildingAreas + built.stats.openIntentTreeAreas);
     assert.ok(built.openintent.area_materials.every((m) => !isPoisonedOiName(m.name)));
-    assert.ok(JSON.stringify(built.openintent).includes("Tree Foliage"));
+    assert.ok(JSON.stringify(built.openintent).includes("Foliage - Light"));
     assert.equal(built.clipboard.attenuatingZones.length, built.stats.buildings + built.stats.trees * 2);
     assert.equal(built.stats.areas, areas.length);
     const allowed = (name) => OI_BUILDING_NAMES.includes(name) || isVegetationOiName(name);
@@ -747,9 +747,8 @@ describe("OpenIntent attenuation_areas", () => {
     const names = oi.attenuation_areas.map((a) => a.area_material.name);
     assert.ok(names.every((n) => OI_BUILDING_NAMES.includes(n) || isVegetationOiName(n)));
     assert.ok(names.includes("Building - One Floor") || names.includes("Building - Five Floor") || names.includes("Building - Two Floor"));
+    assert.ok(names.some((n) => n === "Foliage - Heavy" || n === "Foliage - Light"));
     assert.ok(!names.includes("Tree Trunk"));
-    assert.ok(names.some((n) => isVegetationOiName(n) && n.indexOf("Tree Foliage") === 0));
-    assert.ok(!names.some((n) => n === "Foliage - Heavy" || n === "Tree Trunk"));
     const zipped = unzipStore(built.zip);
     assert.ok(zipped["alignment-overlay.svg"]);
     assert.match(zipped["alignment-overlay.svg"].toString(), /polygon /);
@@ -967,13 +966,13 @@ describe("OpenIntent attenuation_areas", () => {
     assert.equal("itu_material_type" in cat, false);
     assert.equal(cat.rf_properties.attenuation_per_m, 5);
     assert.equal("bottom_height" in cat, false);
-    assert.equal(built.stats.compatibilityMode, "custom-vegetation");
+    assert.equal(built.stats.compatibilityMode, "stock-foliage");
     assert.ok(built.stats.areaMaterials > OI_BUILDING_NAMES.length);
     assert.equal(built.stats.openIntentBuildingAreas, 1);
     assert.ok(built.stats.openIntentTreeAreas >= 1);
     assert.equal(areas.length, 1 + built.stats.openIntentTreeAreas);
-    assert.ok(areas.some((a) => isVegetationOiName(a.area_material.name) && a.area_material.top_height > 2));
-    assert.ok(!areas.some((a) => a.area_material.name === "Foliage - Heavy" || a.area_material.name === "Tree Trunk"));
+    assert.ok(areas.some((a) => a.area_material.name === "Foliage - Heavy" && a.area_material.top_height > 2));
+    assert.ok(!areas.some((a) => a.area_material.name === "Tree Trunk"));
     assert.ok(built.clipboard.attenuatingZoneTypes.some((t) => t.id === "bldg-m-6_4" && t.topEdge === 6.4));
     assert.ok(built.clipboard.attenuatingZones.length >= 1 + 2);
   });

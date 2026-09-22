@@ -48,7 +48,7 @@ describe("Hamina-native OpenIntent gold shape", () => {
     assert.ok(Math.abs(m0.y - p0.y * mpu) < 1e-4);
   });
 
-  it("emits tree areas on custom vegetation materials and keeps the gold building prefix", () => {
+  it("emits tree areas on stock foliage materials and keeps the gold building prefix", () => {
     const frame = geoFrame({
       west: -87.93,
       south: 42.89,
@@ -128,8 +128,9 @@ describe("Hamina-native OpenIntent gold shape", () => {
     assert.ok(vegetationAreas >= 1);
     const dumped = JSON.stringify(built.openintent);
     assert.ok(built.openintent.area_materials.every((m) => !isPoisonedOiName(m.name)));
-    assert.ok(dumped.includes("Tree Foliage"));
-    assert.ok(dumped.includes("Tree Wood"));
+    assert.ok(dumped.includes("Foliage - Heavy"));
+    assert.equal(dumped.includes("Tree Trunk"), false);
+    assert.equal(dumped.includes("Tree Wood"), false);
     assert.ok(built.clipboard.attenuatingZones.length >= 3);
     assert.ok(
       built.clipboard.attenuatingZones.some(

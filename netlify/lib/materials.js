@@ -2,16 +2,19 @@
 
 /**
  * Buildings keep Hamina's gold outdoor objects (Jerry's export).
- * Trees use custom materials with that same object shape:
+ * Canopy uses the stock outdoor foliage objects from the Attenuating Objects
+ * picker, with the same four keys as those buildings:
  *   name, rf_properties.attenuation_per_m, top_height, display_color
- * No itu_material_type, no bottom_height.
+ * No itu_material_type, no bottom_height (OpenIntent rejected both).
  *
- * When a measured or CHM height exists, top_height is that height (0.1 m).
- * The name is "Tree Foliage 14.2" / "Tree Wood 14.2" so each catalog entry is
- * unique and still deep-equals the area. Those are not the strings that
- * emptied imports: Foliage - Heavy, Foliage - Light, Tree Trunk,
- * "Foliage N.N m", "Tree Trunk N.N m", "Building N.N m", Hotel podium.
- * compatibilityMode is custom-vegetation.
+ * Picker (2026-09): Foliage - Heavy is 19.68 ft / 2 dB/m, Foliage - Light is
+ * 19.68 ft / 1 dB/m. There is no Tree type, so OpenIntent does not emit trunks.
+ * A measured or CHM height that is not that stock height becomes
+ * "Foliage - Heavy 14.2" / "Foliage - Light 7.5": same color and dB/m, real
+ * top_height. That is not "Foliage 14.2 m".
+ * Still off OpenIntent: Tree Trunk, Hotel podium, "Foliage N.N m",
+ * "Tree Trunk N.N m", "Building N.N m".
+ * compatibilityMode is stock-foliage.
  */
 
 const { ZONE_TYPES, TYPE_BY_ID, oiMaterialFromType, pickBuildingTypeId } = require("./hamina-clipboard");
@@ -51,21 +54,22 @@ const OI_BUILDING_TYPES = [
 const OI_BUILDING_BY_ID = Object.fromEntries(OI_BUILDING_TYPES.map((t) => [t.id, t]));
 const OI_BUILDING_NAMES = OI_BUILDING_TYPES.map((t) => t.name);
 
-/** Family labels. The emitted name appends the measured height in metres. */
-const TREE_FOLIAGE_NAME = "Tree Foliage";
-const TREE_WOOD_NAME = "Tree Wood";
-const TRUNK_COLOR = "#937E75";
-const TRUNK_DB_PER_M = 10;
+/**
+ * Hamina displays feet as metres × 3.280839895, two decimals (gold: 32 m → 104.99 ft).
+ * 19.68 / that factor is the metre value that displays as 19.68 ft.
+ */
+const FT_PER_M = 3.280839895;
+const OI_FOLIAGE_TOP_M = 19.68 / FT_PER_M;
+const STOCK_HEIGHT_TOL_M = 0.25;
+const FOLIAGE_HEAVY_NAME = "Foliage - Heavy";
+const FOLIAGE_LIGHT_NAME = "Foliage - Light";
+const FOLIAGE_HEAVY_COLOR = "#3F7D2A";
+const FOLIAGE_LIGHT_COLOR = "#6FA84A";
 
-const OI_VEGETATION_NAMES = [TREE_FOLIAGE_NAME, TREE_WOOD_NAME];
+const OI_VEGETATION_NAMES = [FOLIAGE_HEAVY_NAME, FOLIAGE_LIGHT_NAME];
 
 /** Names that previously emptied a whole OpenIntent import. Never emit these. */
-const POISONED_OI_NAMES = [
-  "Foliage - Heavy",
-  "Foliage - Light",
-  "Tree Trunk",
-  "Hotel podium",
-];
+const POISONED_OI_NAMES = ["Tree Trunk", "Hotel podium"];
 
 function roundHeightM(heightM) {
   const n = Number(heightM);
@@ -149,7 +153,18 @@ function measuredTrunkMaterial(heightM) {
   };
 }
 
-const COMPATIBILITY_MODE = "custom-vegetation";
+const COMPATIBILITY_MODE = "stock-foliage";
+
+function cloneMaterial(material) {
+  return JSON.parse(JSON.stringify(material));
+}
+
+const FOLIAGE_HEAVY = oiMaterial(FOLIAGE_HEAVY_NAME, FOLIAGE_HEAVY_COLOR, OI_FOLIAGE_TOP_M, 2);
+const FOLIAGE_LIGHT = oiMaterial(FOLIAGE_LIGHT_NAME, FOLIAGE_LIGHT_COLOR, OI_FOLIAGE_TOP_M, 1);
+const STOCK_FOLIAGE_BY_NAME = {
+  [FOLIAGE_HEAVY_NAME]: FOLIAGE_HEAVY,
+  [FOLIAGE_LIGHT_NAME]: FOLIAGE_LIGHT,
+};
 
 function isPoisonedOiName(name) {
   if (!name) return true;
@@ -160,29 +175,26 @@ function isPoisonedOiName(name) {
   return false;
 }
 
-/** "Tree Foliage 14.2" / "Tree Wood 8.0". Not the poisoned "Foliage N.N m" form. */
+function isStockFoliageName(name) {
+  return name === FOLIAGE_HEAVY_NAME || name === FOLIAGE_LIGHT_NAME;
+}
+
+/**
+ * Stock "Foliage - Heavy" / "Foliage - Light", or "Foliage - Heavy 14.2".
+ * Not the poisoned "Foliage N.N m" form.
+ */
 function isVegetationOiName(name) {
   if (!name || isPoisonedOiName(name)) return false;
-  return /^Tree Foliage \d+\.\d$/.test(name) || /^Tree Wood \d+\.\d$/.test(name);
+  if (isStockFoliageName(name)) return true;
+  return /^Foliage - (?:Heavy|Light) \d+\.\d$/.test(name);
 }
 
-function hexByte(n) {
-  return Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0");
-}
-
-/** Young canopy toward #6FA84A, tall canopy toward #245C28. Never a building gray/pink. */
-function foliageColor(heightM) {
-  const t = Math.max(0, Math.min(1, (Number(heightM) - 4) / 22));
-  const r = 0x6f + (0x24 - 0x6f) * t;
-  const g = 0xa8 + (0x5c - 0xa8) * t;
-  const b = 0x4a + (0x28 - 0x4a) * t;
-  return "#" + hexByte(r) + hexByte(g) + hexByte(b);
-}
-
-/** Broadleaf foliage is about 0.8–2.2 dB/m. Taller, denser crowns sit at the top of that range. */
-function foliageDbPerM(heightM) {
-  const t = Math.max(0, Math.min(1, (Number(heightM) - 4) / 22));
-  return Math.round((0.8 + t * 1.4) * 10) / 10;
+function foliageTier(heightM, kind) {
+  if (kind === "heavy" || kind === "light") return kind;
+  const h = roundHeightM(heightM);
+  if (h >= 12) return "heavy";
+  if (h > 2) return "light";
+  return "heavy";
 }
 
 /**
@@ -226,21 +238,29 @@ function materialForBuilding(heightM, areaM2) {
 }
 
 /**
- * Canopy and trunk rings. top_height is the measured/CHM/NLCD height rounded
- * to 0.1 m. The same height always yields the same object, so the area
- * deep-equals its catalog entry.
+ * Stock Foliage - Heavy / Light when height is missing or within 0.25 m of
+ * the picker height (19.68 ft). Otherwise a custom with that stock color and
+ * dB/m and the measured top_height (0.1 m). The same inputs always yield the
+ * same object, so the area deep-equals its catalog entry.
  */
 function materialForVegetation(heightM, kind) {
+  const tier = foliageTier(heightM, kind);
+  const heavy = tier === "heavy";
+  const stock = heavy ? FOLIAGE_HEAVY : FOLIAGE_LIGHT;
   const h = roundHeightM(heightM);
-  if (!h) return null;
-  const trunk = kind === "trunk";
-  const name = (trunk ? TREE_WOOD_NAME : TREE_FOLIAGE_NAME) + " " + h.toFixed(1);
+  if (!h || Math.abs(h - OI_FOLIAGE_TOP_M) <= STOCK_HEIGHT_TOL_M) return cloneMaterial(stock);
+  const name = (heavy ? FOLIAGE_HEAVY_NAME : FOLIAGE_LIGHT_NAME) + " " + h.toFixed(1);
   if (!isVegetationOiName(name)) return null;
-  return oiMaterial(name, trunk ? TRUNK_COLOR : foliageColor(h), h, trunk ? TRUNK_DB_PER_M : foliageDbPerM(h));
+  return oiMaterial(name, heavy ? FOLIAGE_HEAVY_COLOR : FOLIAGE_LIGHT_COLOR, h, heavy ? 2 : 1);
+}
+
+/** Exact picker object. kind is "heavy" or "light". */
+function stockFoliageMaterial(kind) {
+  return cloneMaterial(kind === "light" ? FOLIAGE_LIGHT : FOLIAGE_HEAVY);
 }
 
 /**
- * Gold building object, or the canonical vegetation object for this height.
+ * Gold building object, exact stock foliage, or the canonical measured custom.
  * A drifted top_height or a poisoned name returns null so that ring is omitted.
  */
 function canonicalAreaMaterial(material) {
@@ -250,13 +270,18 @@ function canonicalAreaMaterial(material) {
   if (OI_BUILDING_NAMES.includes(name)) {
     const cat = buildingCatalog().find((m) => m.name === name);
     if (!cat || JSON.stringify(material) !== JSON.stringify(cat)) return null;
-    return JSON.parse(JSON.stringify(cat));
+    return cloneMaterial(cat);
+  }
+  if (isStockFoliageName(name)) {
+    const cat = STOCK_FOLIAGE_BY_NAME[name];
+    if (!cat || JSON.stringify(material) !== JSON.stringify(cat)) return null;
+    return cloneMaterial(cat);
   }
   if (!isVegetationOiName(name)) return null;
-  const kind = name.indexOf(TREE_WOOD_NAME) === 0 ? "trunk" : "canopy";
+  const kind = name.indexOf(FOLIAGE_HEAVY_NAME) === 0 ? "heavy" : "light";
   const canon = materialForVegetation(material.top_height, kind);
   if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
-  return JSON.parse(JSON.stringify(canon));
+  return cloneMaterial(canon);
 }
 
 function stockMaterials() {
@@ -278,9 +303,11 @@ function catalogMaterials() {
  * buildings-only zip stays the four gold objects.
  */
 function vegetationSortKey(name) {
-  const m = /^(Tree Foliage|Tree Wood) (\d+\.\d)$/.exec(name || "");
+  if (name === FOLIAGE_HEAVY_NAME) return "0000000";
+  if (name === FOLIAGE_LIGHT_NAME) return "1000000";
+  const m = /^Foliage - (Heavy|Light) (\d+\.\d)$/.exec(name || "");
   if (!m) return String(name || "");
-  return (m[1] === "Tree Foliage" ? "0" : "1") + Number(m[2]).toFixed(1).padStart(6, "0");
+  return (m[1] === "Heavy" ? "0" : "1") + Number(m[2]).toFixed(1).padStart(6, "0");
 }
 
 function documentMaterials(areas) {
@@ -306,10 +333,10 @@ module.exports = {
   measuredTrunkMaterial,
   materialForBuilding,
   materialForVegetation,
+  stockFoliageMaterial,
   canonicalAreaMaterial,
-  foliageColor,
-  foliageDbPerM,
   isVegetationOiName,
+  isStockFoliageName,
   isPoisonedOiName,
   pickOiBuildingTypeId,
   stockMaterials,
@@ -319,8 +346,9 @@ module.exports = {
   OI_BUILDING_TYPES,
   OI_BUILDING_NAMES,
   OI_VEGETATION_NAMES,
-  TREE_FOLIAGE_NAME,
-  TREE_WOOD_NAME,
+  OI_FOLIAGE_TOP_M,
+  FOLIAGE_HEAVY_NAME,
+  FOLIAGE_LIGHT_NAME,
   POISONED_OI_NAMES,
   COMPATIBILITY_MODE,
 };
