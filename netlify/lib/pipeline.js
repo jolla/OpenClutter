@@ -60,9 +60,10 @@ const ZIP_TROUBLESHOOT =
   "The last OpenIntent import that showed clutter was 982 areas. This zip emits at most " +
   MAX_ATTENUATION_AREAS +
   " areas (buildings first). Invalid/open/NaN/self-intersecting rings are dropped per-polygon.\n" +
-  "Each attenuation area references area_materials by name. The six stock definitions live only in that catalog.\n" +
+  "Each attenuation area embeds a copy of its area_materials catalog entry. A name string is not\n" +
+  "OpenIntent 2.0.1 and Hamina rejects the document as Invalid OpenIntent format.\n" +
   "OpenIntent materials omit bottom_height (Hamina rejected it as Invalid OpenIntent format) and use\n" +
-  "stock names + itu_material_type ITU_R_UNKNOWN (oiconvert / Hamina-tested importer).\n";
+  "stock names, stock heights, and itu_material_type ITU_R_UNKNOWN.\n";
 
 /**
  * Skip Microsoft campus-merge blobs (one giant wrong polygon). Do NOT use a
@@ -474,16 +475,23 @@ function oiAreaMaterialName(mat) {
   return mat && mat.name ? mat.name : "";
 }
 
+/** Clone of the stock catalog entry for this name. Null when the name is not stock. */
+function catalogMaterial(material) {
+  const name = oiAreaMaterialName(material);
+  const cat = catalogMaterials().find((m) => m.name === name);
+  return cat ? JSON.parse(JSON.stringify(cat)) : null;
+}
+
 function validateOiArea(area, imgW, imgH) {
   if (!area || !area.area || area.area_material == null) return { ok: false, reason: "shape" };
   const mat = area.area_material;
-  // Per-area objects (even a stock name with the stock height) still imported
-  // as a floorplan with zero clutter after #16. Hamina's wall importer, which
-  // does accept materials, references the catalog by name. An embedded object
-  // here is rejected so it cannot be emitted.
-  if (typeof mat !== "string") return { ok: false, reason: "material" };
-  const spec = ZONE_TYPES.find((t) => t.name === mat);
-  if (!spec) return { ok: false, reason: "material" };
+  // OpenIntent 2.0.1 attenuation_area.area_material is a material object.
+  // A catalog name string fails the whole document ("Invalid OpenIntent format",
+  // PR #18). The object must equal the stock catalog entry: stock name, stock
+  // top_height, ITU_R_UNKNOWN, no bottom_height.
+  if (typeof mat !== "object" || mat == null || Array.isArray(mat)) return { ok: false, reason: "material" };
+  const cat = catalogMaterial(mat);
+  if (!cat || JSON.stringify(mat) !== JSON.stringify(cat)) return { ok: false, reason: "material" };
   return validateOiCoords(area.area.coordinates, imgW, imgH);
 }
 
@@ -560,9 +568,9 @@ function ringToOi(pts, imgW, imgH, mpuX) {
 }
 
 function makeOiArea(coords, material) {
-  const name = oiAreaMaterialName(material);
-  if (!coords || !name) return null;
-  return { area: { coordinates: coords }, area_material: name };
+  const mat = catalogMaterial(material);
+  if (!coords || !mat) return null;
+  return { area: { coordinates: coords }, area_material: mat };
 }
 
 function emitIfValid(area, imgW, imgH) {

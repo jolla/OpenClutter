@@ -541,11 +541,7 @@ function scoreMaterialCompatibility(openintent) {
     const m = a && a.area_material;
     const name = typeof m === "string" ? m : m && m.name;
     const cat = name && byName.get(name);
-    if (!cat) {
-      consistent = false;
-      break;
-    }
-    if (typeof m !== "string" && JSON.stringify(m) !== JSON.stringify(cat)) {
+    if (!cat || typeof m !== "object" || m == null || JSON.stringify(m) !== JSON.stringify(cat)) {
       consistent = false;
       break;
     }
