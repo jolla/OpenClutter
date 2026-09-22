@@ -875,6 +875,7 @@ function buildClutter({
   treesSource,
   footprintMeta,
   terrain,
+  warnings,
 }) {
   const { name, slug } = siteName(rawName);
   const imgName = `${slug}.jpg`;
@@ -956,7 +957,10 @@ function buildClutter({
     const zipFiles = [
       { name: `openIntent_${slug}.json`, data: Buffer.from(JSON.stringify(oi)) },
       { name: "images/" + imgName, data: imgBuf },
-      { name: "export-warnings.json", data: Buffer.from('{"errors":[],"warnings":[]}') },
+      {
+        name: "export-warnings.json",
+        data: Buffer.from(JSON.stringify({ errors: [], warnings: (warnings || []).filter(Boolean).map(String) })),
+      },
       { name: "export-stats.json", data: Buffer.from(JSON.stringify(coverageStats(stats), null, 2)) },
       { name: "VERIFY.txt", data: Buffer.from(verifyTxt(stats)) },
       { name: "hamina-clipboard.json", data: Buffer.from(JSON.stringify(clip)) },

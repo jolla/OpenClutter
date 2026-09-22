@@ -195,3 +195,121 @@ describe("clutter handler (mocked Esri)", () => {
     assert.ok(!urls.some((u) => u.includes("USFS_EDW_NLCD_TCC")));
   });
 });
+
+describe("optional sources cannot fail the export", () => {
+  const orig = global.fetch;
+
+  function urlOf(input) {
+    if (typeof input === "string") return input;
+    if (input && input.url) return String(input.url);
+    return String(input);
+  }
+
+  function hang(signal) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve({ ok: false, status: 504, json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0) }), 30000);
+      const abort = () => {
+        clearTimeout(timer);
+        const err = new Error("The operation was aborted due to timeout");
+        err.name = "AbortError";
+        reject(err);
+      };
+      if (signal && signal.aborted) abort();
+      else if (signal) signal.addEventListener("abort", abort, { once: true });
+    });
+  }
+
+  function coreFetch(url, init) {
+    const u = urlOf(url);
+    if (u.includes("overturemaps") || u.includes("blob.core.windows.net/release") || u.includes("dataforgood-fb-data") || u.includes("elevation.nationalmap.gov")) {
+      return hang(init && init.signal);
+    }
+    if (u.includes("World_Imagery")) {
+      if (u.includes("f=json")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: WYNN.west, ymin: WYNN.south, xmax: WYNN.east, ymax: WYNN.north, spatialReference: { wkid: 4326 } },
+          }),
+        });
+      }
+      return Promise.resolve({ ok: true, arrayBuffer: async () => jpeg });
+    }
+    if (u.includes("MSBFP2")) {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          features: [{
+            type: "Feature",
+            properties: {},
+            geometry: {
+              type: "Polygon",
+              coordinates: [[[-115.165, 36.126], [-115.164, 36.126], [-115.164, 36.127], [-115.165, 36.127], [-115.165, 36.126]]],
+            },
+          }],
+        }),
+      });
+    }
+    return Promise.resolve({ ok: true, json: async () => ({ features: [] }), arrayBuffer: async () => new ArrayBuffer(0) });
+  }
+
+  after(() => {
+    global.fetch = orig;
+  });
+
+  it("returns the OpenIntent zip when Overture, canopy height, and terrain hang", async () => {
+    global.fetch = coreFetch;
+    const t0 = Date.now();
+    const res = await handler({
+      httpMethod: "POST",
+      body: JSON.stringify({ ...WYNN, trees: [{ lon: -115.17, lat: 36.122 }], format: "bundle" }),
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(res.statusCode, 200);
+    assert.ok(elapsed < 4500, "elapsed " + elapsed);
+    const body = JSON.parse(res.body);
+    assert.ok(body.zipBase64);
+    assert.equal(body.stats.fetched >= 1, true);
+    const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+    assert.ok(files["openIntent_Wynn-Golf.json"]);
+    const warnings = JSON.parse(files["export-warnings.json"].toString());
+    const text = warnings.warnings.join("\n");
+    assert.match(text, /Overture buildings omitted/);
+    assert.match(text, /Canopy height omitted/);
+    assert.match(text, /Terrain omitted/);
+    assert.equal(/esri/i.test(text), false);
+    assert.equal(/smaller box/i.test(text + body.warnings.join(" ")), false);
+    assert.equal(files["terrain-clipboard.json"], undefined);
+  });
+
+  it("does not call an imagery timeout Esri or a smaller box", async () => {
+    global.fetch = async (url) => {
+      const u = urlOf(url);
+      if (u.includes("World_Imagery") && !u.includes("f=json")) {
+        throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "AbortError" });
+      }
+      if (u.includes("World_Imagery")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: WYNN.west, ymin: WYNN.south, xmax: WYNN.east, ymax: WYNN.north },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+    const res = await handler({
+      httpMethod: "POST",
+      body: JSON.stringify({ ...WYNN, trees: [{ lon: -115.17, lat: 36.122 }], format: "bundle" }),
+    });
+    assert.equal(res.statusCode, 502);
+    const body = JSON.parse(res.body);
+    assert.match(body.error, /Aerial imagery timed out/);
+    assert.equal(/esri/i.test(body.error), false);
+    assert.equal(/smaller box/i.test(body.error), false);
+  });
+});

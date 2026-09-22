@@ -1,6 +1,12 @@
 "use strict";
 
-const UA = "openclutter/0.14.0 (https://github.com/jolla/OpenClutter)";
+const UA = "openclutter/0.14.1 (https://github.com/jolla/OpenClutter)";
+// Core map + footprints stay inside one window. Optional enrichment starts
+// only after those bytes are in memory, and each call is aborted on its own
+// clock so a hang cannot fail the OpenIntent zip or be reported as Esri.
+const CORE_FETCH_MS = 7000;
+const OPTIONAL_MS = 2000;
+const SKIP_OPTIONAL_AFTER_MS = 5000;
 const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
@@ -23,18 +29,89 @@ function json(status, cors, obj) {
   };
 }
 
-async function fetchOk(url) {
+function isTimeout(err) {
+  const msg = String(err && err.message ? err.message : err || "");
+  return /abort|timeout/i.test(msg);
+}
+
+function fail(source, message) {
+  const err = new Error(message);
+  err.source = source;
+  return err;
+}
+
+async function fetchOk(url, source) {
   let last = "fetch failed";
+  let timedOut = false;
   for (let i = 0; i < 2; i++) {
     try {
-      const r = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(6000) });
+      const r = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(CORE_FETCH_MS) });
       if (r.ok) return r;
       last = "HTTP " + r.status;
+      if (r.status < 500) break;
     } catch (e) {
       last = String(e.message || e);
+      timedOut = isTimeout(e);
+      // A timeout already used the core window. A second attempt would blow the function.
+      if (timedOut) break;
     }
   }
-  throw new Error(last);
+  throw fail(source || "export", timedOut ? "The operation was aborted due to timeout" : last);
+}
+
+function describeCoreFailure(e) {
+  const msg = String(e && e.message ? e.message : e);
+  const source = e && e.source;
+  const timedOut = isTimeout(e) || isTimeout(msg);
+  if (source === "imagery") {
+    return timedOut ? "Aerial imagery timed out. Retry the export." : "Aerial imagery failed (" + msg + "). Retry the export.";
+  }
+  if (source === "footprints") {
+    return timedOut
+      ? "Building footprints timed out. Retry the export."
+      : "Building footprints failed (" + msg + "). Retry the export.";
+  }
+  if (timedOut) return "Export timed out. Retry the export.";
+  return msg + " — export failed. Retry the export.";
+}
+
+const TIMED_OUT = Symbol("timed-out");
+
+async function runOptional(warnings, started, label, fn) {
+  const elapsed = Date.now() - started;
+  if (elapsed >= SKIP_OPTIONAL_AFTER_MS) {
+    warnings.push(label + " omitted: export budget spent on the map and footprints");
+    return null;
+  }
+  const budget = Math.min(OPTIONAL_MS, Math.max(400, SKIP_OPTIONAL_AFTER_MS - elapsed));
+  const ctrl = new AbortController();
+  let timer;
+  let workError = null;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      ctrl.abort();
+      resolve(TIMED_OUT);
+    }, budget);
+  });
+  const work = Promise.resolve()
+    .then(() => fn(ctrl.signal))
+    .then((value) => (ctrl.signal.aborted ? TIMED_OUT : value))
+    .catch((e) => {
+      workError = e;
+      return TIMED_OUT;
+    });
+  try {
+    const result = await Promise.race([work, timeout]);
+    if (result === TIMED_OUT) {
+      const msg = workError ? String(workError.message || workError) : "";
+      const timedOut = !workError || ctrl.signal.aborted || isTimeout(workError);
+      warnings.push(label + (timedOut ? " omitted: timed out" : " omitted: " + msg));
+      return null;
+    }
+    return result;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function parseFormat(body) {
@@ -133,9 +210,11 @@ exports.handler = async (event) => {
   let overturePack = { features: [] };
   let demSamples = null;
   let chmGrid = null;
+  const warnings = [];
+  const started = Date.now();
   try {
     if (needImage) {
-      const metaRes = await fetchOk(imgMetaUrl).catch(() => null);
+      const metaRes = await fetchOk(imgMetaUrl, "imagery").catch(() => null);
       if (metaRes) {
         try {
           imgMeta = await metaRes.json();
@@ -146,58 +225,64 @@ exports.handler = async (event) => {
       }
     }
     const globalJob = fetchMsGlobalFootprints(frame, (url) =>
-      fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) })
+      fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(CORE_FETCH_MS) })
     ).catch(() => ({ features: [] }));
     const usaJob = fetchUsaStructures(frame, (url) =>
-      fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) })
+      fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(CORE_FETCH_MS) })
     ).catch(() => ({ features: [] }));
-    const overtureJob = fetchOvertureFootprints(frame).catch(() => ({ features: [] }));
-    const demJob = fetchDemSamples(frame, (url) =>
-      fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(5000) })
-    ).catch(() => null);
-    const chmJob = needImage ? fetchChmGrid(frame).catch(() => null) : Promise.resolve(null);
     const canopyJob =
       !treePoints.length
-        ? fetchCanopyTrees(frame, (url) => fetchOk(url), { maxTrees: maxTreesForBbox(frame) }).catch(() => null)
+        ? fetchCanopyTrees(frame, (url) => fetchOk(url, "canopy"), { maxTrees: maxTreesForBbox(frame) }).catch(() => null)
         : null;
+    const imageryJob = needImage
+      ? (async () => {
+          try {
+            const res = await fetchOk(imgUrl, "imagery");
+            const buf = Buffer.from(await res.arrayBuffer());
+            if (buf.length < 100 || buf[0] !== 0xff || buf[1] !== 0xd8) throw fail("imagery", "imagery not jpeg");
+            return buf;
+          } catch (e) {
+            if (e && e.source) throw e;
+            throw fail("imagery", String(e && e.message ? e.message : e));
+          }
+        })()
+      : Promise.resolve(null);
     const fetched = await Promise.all([
-      fetchMsFootprints(frame, (url) => fetchOk(url), { pad: false }),
+      fetchMsFootprints(frame, (url) => fetchOk(url, "footprints"), { pad: false }),
       globalJob,
       usaJob,
-      needImage ? fetchOk(imgUrl) : Promise.resolve(null),
-      overtureJob,
-      demJob,
-      chmJob,
+      imageryJob,
+      canopyJob,
     ]);
     gj = fetched[0];
     globalFeatures = (fetched[1] && fetched[1].features) || [];
     usaFeatures = (fetched[2] && fetched[2].features) || [];
-    const imgRes = needImage ? fetched[3] : null;
-    overturePack = fetched[4] || { features: [] };
-    demSamples = fetched[5];
-    chmGrid = fetched[6];
-    if (needImage) {
-      imgBuf = Buffer.from(await imgRes.arrayBuffer());
-      if (imgBuf.length < 100 || imgBuf[0] !== 0xff || imgBuf[1] !== 0xd8) {
-        throw new Error("imagery not jpeg");
-      }
-      frame = applyImageryMeta(frame, imgMeta, jpegSize(imgBuf));
+    imgBuf = fetched[3];
+    if (imgBuf) frame = applyImageryMeta(frame, imgMeta, jpegSize(imgBuf));
+    const canopy = fetched[4];
+    if (canopy && canopy.parsed && canopy.parsed.hits && canopy.parsed.hits.length) {
+      serverCanopyHits = canopy.parsed.hits;
     }
-    if (canopyJob) {
-      const canopy = await canopyJob;
-      if (canopy && canopy.parsed && canopy.parsed.hits && canopy.parsed.hits.length) {
-        serverCanopyHits = canopy.parsed.hits;
-      }
-      if (canopy && canopy.trees && canopy.trees.length) {
-        treePoints = canopy.trees;
-        treesSource = "nlcd-canopy";
-      } else if (canopy && canopy.source && !treesSource) {
-        treesSource = "nlcd-canopy";
-      }
+    if (canopy && canopy.trees && canopy.trees.length) {
+      treePoints = canopy.trees;
+      treesSource = "nlcd-canopy";
+    } else if (canopy && canopy.source && !treesSource) {
+      treesSource = "nlcd-canopy";
     }
   } catch (e) {
-    return json(502, cors, { error: String(e.message || e) + " — Esri timed out, retry or draw a smaller box" });
+    return json(502, cors, { error: describeCoreFailure(e) });
   }
+
+  const optional = await Promise.all([
+    runOptional(warnings, started, "Overture buildings", (signal) => fetchOvertureFootprints(frame, { signal })),
+    runOptional(warnings, started, "Terrain", (signal) => fetchDemSamples(frame, null, { signal })),
+    needImage
+      ? runOptional(warnings, started, "Canopy height", (signal) => fetchChmGrid(frame, { signal }))
+      : Promise.resolve(null),
+  ]);
+  overturePack = optional[0] || { features: [] };
+  demSamples = optional[1];
+  chmGrid = optional[2];
 
   treesSource = normalizeTreesSource(treesSource, treePoints.length);
 
@@ -296,6 +381,7 @@ exports.handler = async (event) => {
     treesSource,
     footprintMeta,
     terrain,
+    warnings,
   });
 
   const frameHeaders = {
@@ -319,7 +405,7 @@ exports.handler = async (event) => {
   }
 
   if (!built.zip) return json(500, cors, { error: "zip missing" });
-  if (built.zip.length > 4500000) return json(413, cors, { error: "zip too large — draw a smaller box" });
+  if (built.zip.length > 4500000) return json(413, cors, { error: "zip too large" });
 
   if (format === "zip") {
     return {
@@ -342,5 +428,6 @@ exports.handler = async (event) => {
     stats: built.stats,
     zipFilename: `${built.slug}-openintent.zip`,
     zipBase64: built.zip.toString("base64"),
+    warnings,
   });
 };
