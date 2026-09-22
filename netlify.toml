@@ -5,7 +5,27 @@
 [functions]
   node_bundler = "esbuild"
 
+# Production API (main deploy only — keep ahead of /dev rules).
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"
   status = 200
+
+# Preferred entry URL → long-lived branch deploy.
+# Netlify staff advise against status-200 proxies to *-branch* subdomains
+# (flaky); a 302 keeps /dev as the bookmarkable entry without path/asset breakage.
+# After Jerry enables branch deploys for `dev`, this resolves to the live track.
+# To keep /dev in the address bar later: link a second Netlify site whose
+# production branch is `dev`, then switch these to status 200 against that
+# site's *.netlify.app (not the branch subdomain).
+[[redirects]]
+  from = "/dev"
+  to = "https://dev--openclutter.netlify.app/"
+  status = 302
+  force = true
+
+[[redirects]]
+  from = "/dev/*"
+  to = "https://dev--openclutter.netlify.app/:splat"
+  status = 302
+  force = true

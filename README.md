@@ -2,7 +2,26 @@
 
 **OpenClutter** turns a map box into clutter that lines up with the map in [Hamina Planner](https://hamina.com): one georeferenced [OpenIntent](https://github.com/google/openintent) zip. Import the zip for the map **and buildings**. Paste `hamina-clipboard.json` from the same zip for trees and exact measured heights.
 
-Live: https://openclutter.netlify.app · Source: https://github.com/jolla/OpenClutter
+**v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
+
+Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/dev · Source: https://github.com/jolla/OpenClutter
+
+## Production vs Dev
+
+| | Production | Dev |
+|---|---|---|
+| URL | https://openclutter.netlify.app | https://openclutter.netlify.app/dev → https://dev--openclutter.netlify.app |
+| Git branch | `main` | `dev` |
+| Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
+| Deploy | Netlify production (branch `main` only) | Netlify branch deploy for `dev` (continuous) |
+
+- Use **production** for the known-good 1.0 buildings workflow.
+- Hack on **`/dev`** (or the branch URL directly). The UI shows a small **dev** badge on non-production hosts.
+- Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
+
+**Netlify (Jerry once):** Site `openclutter` → Project configuration → Continuous deployment → **Branches and deploy contexts** → add branch `dev` (or “All” branch deploys). Production branch stays `main`. Until that toggle is on, `/dev` redirects to a 404 branch hostname.
+
+`/dev` is a **302** to the branch subdomain (not a 200 proxy). Netlify’s branch-subdomain proxies are unreliable; a redirect keeps assets and `/api/*` on the same deploy. To keep `/dev` in the address bar later: create a second Netlify site whose production branch is `dev`, then change `netlify.toml` to a status-200 rewrite against that site’s `*.netlify.app` URL.
 
 ## Exact alignment (every site)
 
@@ -90,6 +109,8 @@ Global ML (zoom-9 quadkey, clipped to the JPEG) is the base polygon. Overture Bu
 A large smooth bright roof that none of those layers contain is filled from the Esri JPEG (connected membrane pixels, ≥2500 m², skipped when a vector already covers it). Boxes over ~2.5 km fail. Campus-merge blobs &gt; 150,000 m² are dropped. NLCD still places trees and still refuses roofs and pavement; a textured canopy island with a pavement ring is kept as a median. Meta/WRI CHM v2 (zoom-10 COG, pixel window, max side 180) overrides foliage `top_height` where the canopy is above 2 m. USGS 3DEP `getSamples` (36 points, no API key) becomes `terrain-clipboard.json` only: flat pads when a cell’s corner relief is under 0.5 m, otherwise two sloped triangles. OpenIntent and `hamina-clipboard.json` stay free of raised and sloped floors. Overture, canopy height, and 3DEP start only after the aerial image and footprints are in memory. Each has its own 2 second abort. If the map fetch already used 5 seconds, they are skipped. A miss is recorded in `export-warnings.json` and the OpenIntent zip still exports. The page does not ask for a smaller box when a source times out. FEMA, NLCD, and 3DEP are United States sources.
 
 ## Development
+
+Feature work targets the long-lived **`dev`** branch (see [Production vs Dev](#production-vs-dev)). Promote `dev` → `main` only for production releases.
 
 ```bash
 npm test

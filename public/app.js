@@ -1,3 +1,15 @@
+(function markDeployEnv() {
+  const host = location.hostname || "";
+  const path = location.pathname || "";
+  const isDev =
+    host.startsWith("dev--") ||
+    host.startsWith("deploy-preview-") ||
+    path === "/dev" ||
+    path.startsWith("/dev/");
+  const badge = document.getElementById("env-badge");
+  if (badge && isDev) badge.classList.add("on");
+})();
+
 const map = L.map("map").setView([36.128, -115.16], 15);
 L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
   attribution: "&copy; OSM &copy; CARTO",
