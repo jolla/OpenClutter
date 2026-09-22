@@ -48,6 +48,18 @@ describe("shared geo frame", () => {
     assert.ok(Math.abs(c.ne[1]) < 1e-9);
   });
 
+  it("caps Oak Creek commercial imagery near a 1000px long side", () => {
+    const frame = geoFrame({
+      west: -87.92259693145752,
+      south: 42.89043196008693,
+      east: -87.91184663772584,
+      north: 42.90325386116256,
+    });
+    const longSide = Math.max(frame.imgW, frame.imgH);
+    assert.ok(longSide <= 1040, String(longSide));
+    assert.ok(longSide >= 900, String(longSide));
+  });
+
   it("uses geographic aspect (not a square image)", () => {
     const frame = geoFrame(WYNN);
     const imgAspect = frame.imgW / frame.imgH;

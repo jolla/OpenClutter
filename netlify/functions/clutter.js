@@ -1,10 +1,23 @@
 "use strict";
 
-const UA = "openclutter/0.14.1 (https://github.com/jolla/OpenClutter)";
-// Core map + footprints stay inside one window. Optional enrichment starts
-// only after those bytes are in memory, and each call is aborted on its own
-// clock so a hang cannot fail the OpenIntent zip or be reported as Esri.
+const UA = "openclutter/0.14.2 (https://github.com/jolla/OpenClutter)";
+// Netlify hobby kills the function around 10s. The JPEG is the long pole
+// (Oak Creek ~6s) and must start immediately. Imagery metadata is the same
+// Esri export and used to be awaited for up to 7s before that download began,
+// so a slow meta response left no time for the JPEG. Meta is now capped and
+// overlapped with the JPEG. Footprints keep their own 7s clock and are not
+// aborted when the JPEG aborts. Optional sources still start only after core.
 const CORE_FETCH_MS = 7000;
+const IMAGERY_ATTEMPT_MS = 8500;
+const IMAGERY_ATTEMPTS = 2;
+const IMAGERY_BACKOFF_MS = 400;
+// One full attempt fits in the function. A retry runs only when the first
+// failure leaves at least 1.2s under this ceiling (fast reset, not a 8.5s hang).
+const IMAGERY_BUDGET_MS = 8500;
+// Live Oak Creek metadata was ~3.0s and pads latitude by ~500 m at the same
+// pixel size. 2.5s dropped that snap and clipped the corridor. 4s still
+// overlaps the JPEG instead of running before it.
+const META_MS = 4000;
 const OPTIONAL_MS = 2000;
 const SKIP_OPTIONAL_AFTER_MS = 5000;
 const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta } = require("../lib/geo-frame");
@@ -57,6 +70,53 @@ async function fetchOk(url, source) {
     }
   }
   throw fail(source || "export", timedOut ? "The operation was aborted due to timeout" : last);
+}
+
+/** Extent JSON is optional. A slow response must not hold the JPEG. */
+async function fetchImageryMeta(url) {
+  try {
+    const r = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(META_MS) });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
+/** Headers and JPEG body share one AbortController per attempt. A timeout does not reuse that signal. */
+async function fetchImageryJpeg(url) {
+  let last = "aerial imagery failed";
+  let timedOut = false;
+  const started = Date.now();
+  for (let attempt = 0; attempt < IMAGERY_ATTEMPTS; attempt++) {
+    const budget = Math.min(IMAGERY_ATTEMPT_MS, IMAGERY_BUDGET_MS - (Date.now() - started));
+    if (budget < 1200) break;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), budget);
+    try {
+      const r = await fetch(url, { headers: { "user-agent": UA }, signal: ctrl.signal });
+      if (!r.ok) {
+        last = "HTTP " + r.status;
+        timedOut = false;
+        if (r.status < 500) throw fail("imagery", last);
+      } else {
+        const buf = Buffer.from(await r.arrayBuffer());
+        if (buf.length < 100 || buf[0] !== 0xff || buf[1] !== 0xd8) throw fail("imagery", "imagery not jpeg");
+        return buf;
+      }
+    } catch (e) {
+      if (e && e.source) throw e;
+      last = String(e && e.message ? e.message : e);
+      timedOut = isTimeout(e);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (attempt + 1 >= IMAGERY_ATTEMPTS) break;
+    const pause = IMAGERY_BACKOFF_MS * (attempt + 1);
+    if (Date.now() - started + pause > IMAGERY_BUDGET_MS - 1200) break;
+    await new Promise((resolve) => setTimeout(resolve, pause));
+  }
+  throw fail("imagery", timedOut || isTimeout(last) ? "The operation was aborted due to timeout" : last);
 }
 
 function describeCoreFailure(e) {
@@ -213,16 +273,11 @@ exports.handler = async (event) => {
   const warnings = [];
   const started = Date.now();
   try {
+    // JPEG first. Meta may snap the footprint query, but it must not gate the image.
+    const imageryJob = needImage ? fetchImageryJpeg(imgUrl) : Promise.resolve(null);
     if (needImage) {
-      const metaRes = await fetchOk(imgMetaUrl, "imagery").catch(() => null);
-      if (metaRes) {
-        try {
-          imgMeta = await metaRes.json();
-        } catch {
-          imgMeta = null;
-        }
-        if (imgMeta) frame = applyImageryMeta(frame, imgMeta, null);
-      }
+      imgMeta = await fetchImageryMeta(imgMetaUrl);
+      if (imgMeta) frame = applyImageryMeta(frame, imgMeta, null);
     }
     const globalJob = fetchMsGlobalFootprints(frame, (url) =>
       fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(CORE_FETCH_MS) })
@@ -234,19 +289,6 @@ exports.handler = async (event) => {
       !treePoints.length
         ? fetchCanopyTrees(frame, (url) => fetchOk(url, "canopy"), { maxTrees: maxTreesForBbox(frame) }).catch(() => null)
         : null;
-    const imageryJob = needImage
-      ? (async () => {
-          try {
-            const res = await fetchOk(imgUrl, "imagery");
-            const buf = Buffer.from(await res.arrayBuffer());
-            if (buf.length < 100 || buf[0] !== 0xff || buf[1] !== 0xd8) throw fail("imagery", "imagery not jpeg");
-            return buf;
-          } catch (e) {
-            if (e && e.source) throw e;
-            throw fail("imagery", String(e && e.message ? e.message : e));
-          }
-        })()
-      : Promise.resolve(null);
     const fetched = await Promise.all([
       fetchMsFootprints(frame, (url) => fetchOk(url, "footprints"), { pad: false }),
       globalJob,

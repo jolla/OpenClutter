@@ -58,7 +58,8 @@ function geoFrame(bbox, opts = {}) {
   }
 
   const metersPerPx = opts.metersPerPx ?? 1.0;
-  const maxSide = opts.maxSide ?? 1280;
+  // 1040 keeps an Oak Creek-scale box (~0.9–1.4 km) near a 1000px JPEG instead of 1280.
+  const maxSide = opts.maxSide ?? 1040;
   let imgW;
   let imgH;
   if (opts.imgW > 0 && opts.imgH > 0) {
