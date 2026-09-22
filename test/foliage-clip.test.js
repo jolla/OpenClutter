@@ -221,4 +221,37 @@ describe("foliage rings stay off buildings and water", () => {
       false
     );
   });
+
+  it("does not stack two crowns that overlap each other", () => {
+    const cos = Math.cos((42.9 * Math.PI) / 180);
+    const lon = (frame.west + frame.east) / 2;
+    const lat = (frame.south + frame.north) / 2;
+    const dLon = 5 / (111320 * cos);
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [] },
+      treePoints: [
+        { lon, lat, pct: 80, heightM: 14.2 },
+        { lon: lon + dLon, lat, pct: 78, heightM: 13.4 },
+      ],
+      name: "Crowns",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      treesSource: "nlcd-canopy",
+    });
+    const foliage = oiFoliageRings(built.openintent);
+    assert.ok(foliage.length >= 1);
+    let pair = 0;
+    for (let i = 0; i < foliage.length; i++) {
+      for (let j = i + 1; j < foliage.length; j++) pair += intersectionAreaPx(foliage[i], foliage[j]);
+    }
+    const pairM2 = pair * frame.mpuX * frame.mpuY;
+    assert.ok(pairM2 < 1, `crown intersection ${pairM2.toFixed(2)} m²`);
+    for (const ring of foliage) {
+      const xs = ring.map((p) => p[0]);
+      const ys = ring.map((p) => p[1]);
+      assert.ok(Math.max(...xs) - Math.min(...xs) >= 4);
+      assert.ok(Math.max(...ys) - Math.min(...ys) >= 4);
+      assert.ok(ring.length <= 41);
+    }
+  });
 });

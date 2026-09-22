@@ -26,7 +26,7 @@ const { conflateFootprints, countHeightSources } = require("../../netlify/lib/co
 const { terrainFromSamples } = require("../../netlify/lib/terrain");
 const { applyChmToTrees, sampleChmGrid } = require("../../netlify/lib/canopy-height");
 const { isVegetationOiName } = require("../../netlify/lib/materials");
-const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, scoreMeasuredHeights, scoreMaterialCompatibility, scoreFoliageBuildingOverlap, evaluate, pointInRing, THRESHOLDS } = require("./score");
+const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, scoreMeasuredHeights, scoreMaterialCompatibility, scoreFoliageBuildingOverlap, scorePairwiseOverlap, evaluate, pointInRing, THRESHOLDS } = require("./score");
 const { surfaceMasksFromImage } = require("../../netlify/lib/surface-mask");
 const { supplementFootprints } = require("../../netlify/lib/roof-mask");
 const { rejectPavementFootprints } = require("../../netlify/lib/pavement");
@@ -305,7 +305,6 @@ function runLoaded(loaded, opts) {
     required: prefer && !!loaded.chm,
     applied: chmApplied,
   };
-  const foliageOverlap = scoreFoliageBuildingOverlap(vegetationRingsFromOi(built.openintent), fp.overlayRings, frame);
   const oiRings = (fp.oiAreas || []).map((area) => {
     const pix = oiPixelCoords(area.area.coordinates);
     const pts = [];
@@ -314,6 +313,10 @@ function runLoaded(loaded, opts) {
     }
     return pts;
   });
+  const foliageRings = vegetationRingsFromOi(built.openintent);
+  const foliageOverlap = scoreFoliageBuildingOverlap(foliageRings, fp.overlayRings, frame);
+  const buildingOverlap = scorePairwiseOverlap(oiRings, frame);
+  const foliageSelfOverlap = scorePairwiseOverlap(foliageRings, frame);
   const drift = scoreOiContentGrid(fp.overlayRings, oiRings);
   const jpegWH = jpegSize(locked.jpegBuf || loaded.jpeg);
   const retail = (probes || []).find((p) => p.id === "big-white-retail") || { lon: frame.west, lat: frame.south };
@@ -351,6 +354,8 @@ function runLoaded(loaded, opts) {
     compatibility,
     openIntentTrees,
     foliageOverlap,
+    buildingOverlap,
+    foliageSelfOverlap,
     contentGrid,
     pavementFootprints,
   });
@@ -389,6 +394,8 @@ function runLoaded(loaded, opts) {
     terrain: terrainScore,
     chm,
     foliageOverlap,
+    buildingOverlap,
+    foliageSelfOverlap,
     surface: {
       waterRings: surface.waterRings.length,
       waterM2: surface.waterM2 || 0,
@@ -460,7 +467,9 @@ function formatRow(stats) {
     `ov ${stats.overture ? stats.overture.explicit : "-"} ` +
     `chm ${stats.chm ? stats.chm.applied : "-"} ` +
     `ter ${stats.terrain ? stats.terrain.sloped + "/" + stats.terrain.raised : "-"} ` +
-    `roofFill ${stats.imageryRecovery && stats.imageryRecovery.imageryRoofs != null ? stats.imageryRecovery.imageryRoofs : "-"}`
+    `roofFill ${stats.imageryRecovery && stats.imageryRecovery.imageryRoofs != null ? stats.imageryRecovery.imageryRoofs : "-"} ` +
+    `bOv ${((stats.buildingOverlap && stats.buildingOverlap.overlapM2) || 0).toFixed(1)} ` +
+    `fOv ${((stats.foliageSelfOverlap && stats.foliageSelfOverlap.overlapM2) || 0).toFixed(1)}`
   );
 }
 

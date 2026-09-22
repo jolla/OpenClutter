@@ -20,6 +20,7 @@ const {
   COMPATIBILITY_MODE,
 } = require("./materials");
 const { treePairsFromPoints } = require("./vegetation");
+const { dedupeStackedFootprints } = require("./conflate");
 const { zipStore } = require("./zip-store");
 const { overlaySvg, frameLockJson } = require("./overlay");
 
@@ -1216,14 +1217,18 @@ function borrowNearbyHeights(features, frame) {
 }
 
 function footprintsToClutter(features, frame, affine) {
-  borrowNearbyHeights(features, frame);
+  const separated = dedupeStackedFootprints(features || []);
+  const list = separated.features;
+  borrowNearbyHeights(list, frame);
   const oiAreas = [];
   const clipZones = [];
   const aabbs = [];
   const overlayRings = [];
-  const list = features || [];
   const stats = {
-    fetched: list.length,
+    fetched: (features || []).length,
+    droppedStacked: separated.dropped,
+    cutStacked: separated.cut,
+    mergedStacked: separated.merged,
     buildings: 0,
     droppedMega: 0,
     droppedTiny: 0,
