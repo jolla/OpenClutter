@@ -2,7 +2,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { geoFrame, llToClipboard, cornerClipboard } = require("../netlify/lib/geo-frame");
+const { geoFrame, llToClipboard, cornerClipboard, llToPx } = require("../netlify/lib/geo-frame");
 const {
   ZONE_TYPES,
   emptyClipboard,
@@ -499,6 +499,62 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.ok(built.stats.buildings >= 2, `expected ≥2 kept, got ${built.stats.buildings}`);
     assert.equal(built.stats.droppedMega, 0);
     assert.ok(built.stats.droppedClip >= 1);
+  });
+
+  it("keeps the Las Vegas Sphere ring on Jerry's Wynn frame and on a south-extended frame", () => {
+    const fs = require("fs");
+    const path = require("path");
+    const lock = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/wynn-golf/frame-lock.json"), "utf8"));
+    const sphere = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/wynn-golf/sphere-overture.geojson"), "utf8"));
+    const area = ringAreaM2(sphere.geometry.coordinates[0], { lon: 90000, lat: 110540 });
+    assert.ok(area > 15000 && area < MEGA_CAMPUS_M2, `sphere area ${area}`);
+    assert.ok(ringVertexCount(sphere.geometry.coordinates[0]) >= 30);
+    assert.equal(isMegaCampus(area, ringVertexCount(sphere.geometry.coordinates[0])), false);
+
+    function frameFor(south) {
+      return geoFrame(
+        {
+          west: lock.extent.west,
+          south,
+          east: lock.extent.east,
+          north: lock.extent.north,
+          name: "Wynn Golf",
+        },
+        { imgW: lock.image.widthPx, imgH: lock.image.heightPx }
+      );
+    }
+    function covers(frame, built, lon, lat) {
+      const [x, y] = llToPx(lon, lat, frame);
+      const ring = built.overlayRings[0];
+      let inside = false;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const xi = ring[i][0];
+        const yi = ring[i][1];
+        const xj = ring[j][0];
+        const yj = ring[j][1];
+        const hit = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-20) + xi;
+        if (hit) inside = !inside;
+      }
+      return inside;
+    }
+
+    // Jerry's export extent clips the southern half. The visible cap stays.
+    const clipped = frameFor(lock.extent.south);
+    const cap = footprintsToClutter([sphere], clipped, null);
+    assert.equal(cap.stats.buildings, 1);
+    assert.equal(cap.stats.droppedMega, 0);
+    assert.equal(cap.stats.droppedTiny, 0);
+    assert.equal(cap.stats.droppedClip, 0);
+    assert.equal(cap.oiAreas[0].area_material.name, "Building - Ten Floor");
+    assert.equal(covers(clipped, cap, -115.1621, 36.1216), true);
+
+    // Bbox that includes the center keeps the full disk on the same material.
+    const full = frameFor(36.119);
+    const disk = footprintsToClutter([sphere], full, null);
+    assert.equal(disk.stats.buildings, 1);
+    assert.equal(disk.stats.droppedMega, 0);
+    assert.equal(disk.oiAreas[0].area_material.name, "Building - Ten Floor");
+    assert.equal(covers(full, disk, -115.16208, 36.12123), true);
   });
 
   it("skips trees that land inside a building AABB", () => {
