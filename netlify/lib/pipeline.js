@@ -44,6 +44,7 @@ const ZIP_README =
   "OpenIntent carries the map image plus building and tree attenuation_areas.\n" +
   "Buildings use Hamina's outdoor Building - One/Two/Five/Ten Floor materials.\n" +
   "Trees use Hamina's Foliage - Heavy (19.68 ft, 2 dB/m) and Foliage - Light (19.68 ft, 1 dB/m).\n" +
+  "Canopy rings are cut around building footprints (4 m buffer) and imagery water, so foliage does not cover roofs or ponds.\n" +
   "A measured height that is not 19.68 ft is Foliage - Heavy 14.2 or Foliage - Light 7.5 (same color and dB/m).\n" +
   "There is no Tree type, so OpenIntent does not emit trunks. Tree Trunk and Foliage N.N m stay off OpenIntent.\n" +
   "hamina-clipboard.json is optional legacy paste for trunks and exact measured metres.\n" +
@@ -171,6 +172,8 @@ function coverageStats(stats) {
     compatibilityMode: s.compatibilityMode || COMPATIBILITY_MODE,
     exactBuildingHeights: s.exactBuildingHeights || 0,
     exactFoliageHeights: s.exactFoliageHeights || 0,
+    waterMaskRings: s.waterMaskRings || 0,
+    pavementMaskRings: s.pavementMaskRings || 0,
     openintentVersion: s.openintentVersion || OPENINTENT_VERSION,
     coordinateUnit: s.coordinateUnit || "pixels",
     coordinateOrigin: s.coordinateOrigin || "Y-up from SW",
@@ -1320,6 +1323,8 @@ function buildClutter({
   warnings,
   canopyHits,
   heightSample,
+  maskRings,
+  maskPolygons,
 }) {
   const { name, slug } = siteName(rawName);
   const imgName = `${slug}.jpg`;
@@ -1327,6 +1332,9 @@ function buildClutter({
   const veg = treePairsFromPoints(treePoints || [], frame, fp.aabbs, affine, {
     canopyHits,
     heightSample,
+    buildingRings: fp.overlayRings,
+    maskRings,
+    maskPolygons,
   });
   // A poisoned or drifted vegetation material fails makeOiArea and that ring
   // is omitted, so it cannot empty the buildings.
@@ -1419,6 +1427,8 @@ function buildClutter({
     compatibilityMode: COMPATIBILITY_MODE,
     exactBuildingHeights,
     exactFoliageHeights,
+    waterMaskRings: (maskRings || []).length,
+    pavementMaskRings: (maskPolygons || []).length,
   };
   stats.summary = coverageSummary(stats);
   Object.assign(stats, coverageStats(stats));
