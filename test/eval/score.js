@@ -8,6 +8,7 @@
  */
 
 const { llToPx, llToImagePx, metersPerDeg } = require("../../netlify/lib/geo-frame");
+const { ZONE_TYPES } = require("../../netlify/lib/hamina-clipboard");
 const {
   featureExteriorRings,
   ringAreaM2,
@@ -514,10 +515,45 @@ function evaluate(scores, thresholds) {
   if (chm && chm.required && chm.applied < t.minChmTrees) {
     failures.push(`chmTrees ${chm.applied} < ${t.minChmTrees}`);
   }
+  const compat = scores.compatibility;
+  if (compat && compat.required !== false) {
+    if (compat.materials !== ZONE_TYPES.length) {
+      failures.push(`openIntentMaterials ${compat.materials} !== ${ZONE_TYPES.length}`);
+    }
+    if (!compat.stockOnly) failures.push("OpenIntent material is not a stock Hamina name");
+    if (!compat.consistent) failures.push("area material does not match the catalog entry");
+  }
   return { ok: failures.length === 0, failures };
 }
 
-function scoreMeasuredHeights(features, overlayRings, overlayHeights, frame, openintent) {
+function scoreMaterialCompatibility(openintent) {
+  const mats = (openintent && openintent.area_materials) || [];
+  const areas =
+    (openintent && openintent.floorplans && openintent.floorplans[0] && openintent.floorplans[0].attenuation_areas) ||
+    [];
+  const expected = ZONE_TYPES.map((t) => t.name);
+  const names = mats.map((m) => m && m.name);
+  const stockOnly = names.length === expected.length && names.every((n, i) => n === expected[i]);
+  const byName = new Map(mats.map((m) => [m.name, m]));
+  let consistent = stockOnly;
+  for (const a of areas) {
+    const m = a && a.area_material;
+    const cat = m && byName.get(m.name);
+    if (!cat || JSON.stringify(m) !== JSON.stringify(cat)) {
+      consistent = false;
+      break;
+    }
+  }
+  return {
+    required: true,
+    mode: "stock-openintent",
+    materials: mats.length,
+    stockOnly,
+    consistent,
+  };
+}
+
+function scoreMeasuredHeights(features, overlayRings, overlayHeights, frame, openintent, clipboard) {
   let eligible = 0;
   let matched = 0;
   const emitted = new Set();
@@ -568,8 +604,13 @@ function scoreMeasuredHeights(features, overlayRings, overlayHeights, frame, ope
     const name = a.area_material && a.area_material.name;
     if (!name || name.indexOf("Foliage") !== 0) continue;
     foliage++;
-    foliageH.add(Number(a.area_material.top_height).toFixed(1));
     if (name === "Foliage - Heavy" || name === "Foliage - Light") stockFoliage++;
+  }
+  const clipTypes = (clipboard && clipboard.attenuatingZoneTypes) || [];
+  for (const t of clipTypes) {
+    if (t && t.id && String(t.id).indexOf("foliage-m-") === 0 && t.topEdge > 2) {
+      foliageH.add(Number(t.topEdge).toFixed(1));
+    }
   }
   return {
     applicable: eligible >= 8,
@@ -606,6 +647,7 @@ module.exports = {
   scoreRoofTrees,
   scoreRoofProbes,
   scoreMeasuredHeights,
+  scoreMaterialCompatibility,
   isPavementLike,
   orchardLatticeScore,
   highCanopyRecall,

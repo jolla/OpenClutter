@@ -23,7 +23,7 @@ const { fetchUsaStructures } = require("../../netlify/lib/usa-structures");
 const { conflateFootprints, countHeightSources } = require("../../netlify/lib/conflate");
 const { terrainFromSamples } = require("../../netlify/lib/terrain");
 const { applyChmToTrees, sampleChmGrid } = require("../../netlify/lib/canopy-height");
-const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, scoreMeasuredHeights, evaluate, pointInRing, THRESHOLDS } = require("./score");
+const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, scoreMeasuredHeights, scoreMaterialCompatibility, evaluate, pointInRing, THRESHOLDS } = require("./score");
 const { supplementFootprints } = require("../../netlify/lib/roof-mask");
 const { featureExteriorRings } = require("../../netlify/lib/pipeline");
 
@@ -217,7 +217,15 @@ function runLoaded(loaded, opts) {
   const probes = (loaded.roofPoints && loaded.roofPoints.points) || [];
   const roofProbes = probes.length ? scoreRoofProbes(probes, fp.overlayRings, frame) : null;
   if (roofProbes) buildings.roofProbes = roofProbes;
-  const heights = scoreMeasuredHeights(vectorFeatures, fp.overlayRings, fp.overlayHeights, frame, built.openintent);
+  const heights = scoreMeasuredHeights(
+    vectorFeatures,
+    fp.overlayRings,
+    fp.overlayHeights,
+    frame,
+    built.openintent,
+    built.clipboard
+  );
+  const compatibility = scoreMaterialCompatibility(built.openintent);
   const recovery = prefer ? imageryRecovery(jpegDecoded, frame, vectorFeatures, probes) : { required: false, hit: true };
   const medians = {
     required: prefer && loaded.site.id === "oak-creek-commercial",
@@ -253,6 +261,7 @@ function runLoaded(loaded, opts) {
     overture,
     terrain: terrainScore,
     chm,
+    compatibility,
   });
   const exportStats = {
     site: loaded.site.id,
@@ -281,6 +290,7 @@ function runLoaded(loaded, opts) {
     buildings,
     trees,
     heights,
+    compatibility,
     imageryRecovery: recovery,
     medians,
     overture,

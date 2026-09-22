@@ -38,9 +38,10 @@ describe("canopy height grid", () => {
     const lat = frame.south + (frame.north - frame.south) * 0.2;
     const pairs = treePairsFromPoints([{ lon, lat, pct: 70, heightM: 14.2 }], frame, []);
     const canopy = pairs.oiAreas.find((a) => a.kind === "canopy");
-    assert.equal(canopy.material.top_height, 14.2);
-    assert.equal(canopy.material.name, "Foliage 14.2 m");
+    assert.equal(canopy.material.name, "Foliage - Heavy");
+    assert.equal(canopy.material.top_height, 12);
     assert.equal("bottom_height" in canopy.material, false);
+    assert.ok(pairs.clipTypes.some((t) => t.id === "foliage-m-14_2" && t.topEdge === 14.2));
   });
 
   it("points Oak Creek at the zoom-10 CHM quadkey", () => {

@@ -21,8 +21,8 @@
  *    > stock One Floor / Five Floor / Hotel bins.
  *    Microsoft height -1 and anything ≤ 2 m is ignored.
  *    Ties keep the height already on the kept ring.
- *    OpenIntent material is still `Building X.Y m` (top_height, 5 dB/m,
- *    ITU_R_UNKNOWN, no bottom_height) via materials.js.
+ *    OpenIntent still uses the six stock Hamina names. Exact metres are
+ *    clipboard zone types only (materials.js, compatibilityMode stock-openintent).
  */
 
 const { exteriorRings, centroid, pointInRing, featureHeight, setFeatureHeight } = require("./ms-global");
