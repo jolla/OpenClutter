@@ -5,6 +5,7 @@ const { clipZone } = require("./hamina-clipboard");
 const { measuredFoliageMaterial, measuredTrunkMaterial, materialForVegetation } = require("./materials");
 
 const { MAX_TREES, MAX_TREES_LARGE, maxTreesForBbox, pickStratified, canopyHeightM } = require("./tree-source");
+const { BUILDING_BUFFER_M, createClipSet, clipFoliageRing } = require("./poly-clip");
 const TRUNK_R_M = 0.5;
 
 function blobRingPx(cx, cy, rx, ry, n, jitter, seed) {
@@ -357,16 +358,27 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     buildingAabbs,
     opts && opts.heightSample
   );
-  for (const poly of polygons) {
-    oiAreas.push({
-      ringPx: poly.ringPx,
-      material: poly.material,
-      kind: "canopy",
-      shape: "polygon",
-    });
-    overlayRings.push(poly.ringPx);
-    materials.push(poly.material);
-  }
+  const bufferM = opts && opts.buildingBufferM > 0 ? opts.buildingBufferM : BUILDING_BUFFER_M;
+  const clipSet = createClipSet(
+    opts && opts.buildingRings,
+    opts && opts.maskRings,
+    opts && opts.maskPolygons,
+    bufferM / Math.max(frame.mpuX || 1, 0.05)
+  );
+  const pushCanopy = (ringPx, material, shape) => {
+    const pieces = clipFoliageRing(ringPx, clipSet);
+    for (const piece of pieces) {
+      oiAreas.push({
+        ringPx: piece,
+        material,
+        kind: "canopy",
+        shape: piece.length === ringPx.length ? shape : "polygon",
+      });
+      overlayRings.push(piece);
+      if (material) materials.push(material);
+    }
+  };
+  for (const poly of polygons) pushCanopy(poly.ringPx, poly.material, "polygon");
   for (let n = 0; n < picked.length; n++) {
     const p = picked[n];
     const measuredH = p.heightM > 2 ? p.heightM : 0;
@@ -404,8 +416,7 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     }
     const covered = polygons.some((poly) => pointInLonLatRing(p.lon, p.lat, poly.ringLonLat));
     if (covered || !canopyMat) continue;
-    oiAreas.push({ ringPx: canopyPx, typeId: canopyId, material: canopyMat, kind: "canopy", shape: "circle" });
-    overlayRings.push(canopyPx);
+    pushCanopy(canopyPx, canopyMat, "circle");
   }
   const overlayPoints = picked.map((p) => [p.x, p.y]);
   return {

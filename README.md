@@ -27,7 +27,7 @@ One bbox drives everything:
 
 1. Esri World Imagery for that bbox (`bboxSR=4326`, `imageSR=4326`). **The frame is the JPEG’s actual `extent`**, which is often taller than the drawn box. After that snap, meters are unified to the JPEG pixel aspect (`lengthM = imgH * widthM/imgW`) so Hamina’s isotropic map scale matches — the aerial content grid is kept (no geodesic stretch).
 2. Building footprints mapped through that actual extent: Microsoft Global ML (height used when the tile has one), Overture Buildings (`height` or `num_floors`), Esri MSBFP2, then FEMA USA Structures. One ring per roof; the best measured height wins.
-3. USFS/NLCD percent tree canopy as a density field (jitter + NMS; imagery RGB only if the canopy raster is missing/empty — **not** when NLCD is valid zeros on parking/lawn). A Meta/WRI canopy-height window sets foliage `top_height` when it returns; NLCD still decides where trees go.
+3. USFS/NLCD percent tree canopy as a density field (jitter + NMS; imagery RGB only if the canopy raster is missing/empty — **not** when NLCD is valid zeros on parking/lawn). Canopy rings are cut around building footprints (4 m buffer) and imagery water before they are emitted, so foliage does not cover roofs or ponds. A Meta/WRI canopy-height window sets foliage `top_height` when it returns; NLCD still decides where trees go.
 4. lon/lat → JPEG pixels with the actual west/south/east/north (OpenIntent Y-up / JPEG Y-down).
 5. OpenIntent `attenuation_areas` include **buildings and trees**. Buildings use Building - One/Two/Five/Ten Floor. Canopy uses Foliage - Heavy or Foliage - Light. A measured or CHM height that is not the stock 19.68 ft uses `Foliage - Heavy H.H` or `Foliage - Light H.H` at that height. A multi-cell NLCD patch is one canopy polygon. A single tree stays a circle. Exact foliage metres and trunks stay on the optional clipboard.
 
@@ -135,7 +135,7 @@ npm run eval          # image-space quality gate on cached fixtures
 npx netlify dev
 ```
 
-`npm run eval` scores building/tree placement against cached aerial fixtures (no Hamina login). It fails if rooftops are missed, large footprints are dropped, trees land on pavement or roofs, measured heights collapse back to stock bins, Overture does not add or upgrade a footprint, CHM does not set foliage heights, the terrain clipboard is empty on a sloped DEM, or the imagery mask cannot restore the Oak Creek white retail roof after that polygon is removed. Optional: `npm run eval -- --live` to refresh against live Esri/NLCD.
+`npm run eval` scores building/tree placement against cached aerial fixtures (no Hamina login). It fails if rooftops are missed, large footprints are dropped, trees land on pavement or roofs, foliage rings still cover building footprints, measured heights collapse back to stock bins, Overture does not add or upgrade a footprint, CHM does not set foliage heights, the terrain clipboard is empty on a sloped DEM, or the imagery mask cannot restore the Oak Creek white retail roof after that polygon is removed. Optional: `npm run eval -- --live` to refresh against live Esri/NLCD.
 
 
 ## License

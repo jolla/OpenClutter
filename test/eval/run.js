@@ -16,7 +16,7 @@ const {
   lockIsotropicImagery,
   jpegSize,
 } = require("../../netlify/lib/geo-frame");
-const { buildClutter, footprintsToClutter } = require("../../netlify/lib/pipeline");
+const { buildClutter, footprintsToClutter, oiPixelCoords } = require("../../netlify/lib/pipeline");
 const T = require("../../netlify/lib/tree-source");
 const { treeHitsBuilding } = require("../../netlify/lib/vegetation");
 const { fetchMsGlobalFootprints, mergeFootprintFeatures } = require("../../netlify/lib/ms-global");
@@ -25,7 +25,8 @@ const { conflateFootprints, countHeightSources } = require("../../netlify/lib/co
 const { terrainFromSamples } = require("../../netlify/lib/terrain");
 const { applyChmToTrees, sampleChmGrid } = require("../../netlify/lib/canopy-height");
 const { isVegetationOiName } = require("../../netlify/lib/materials");
-const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, scoreMeasuredHeights, scoreMaterialCompatibility, evaluate, pointInRing, THRESHOLDS } = require("./score");
+const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, scoreMeasuredHeights, scoreMaterialCompatibility, scoreFoliageBuildingOverlap, evaluate, pointInRing, THRESHOLDS } = require("./score");
+const { surfaceMasksFromImage } = require("../../netlify/lib/surface-mask");
 const { supplementFootprints } = require("../../netlify/lib/roof-mask");
 const { featureExteriorRings } = require("../../netlify/lib/pipeline");
 
@@ -130,6 +131,20 @@ function resolveFromSources(frame, tcc, jpegDecoded, rgbPolicy, buildingAabbs) {
   return { canopy, rgb, resolved, parsed };
 }
 
+function vegetationRingsFromOi(oi) {
+  const areas =
+    (oi && oi.floorplans && oi.floorplans[0] && oi.floorplans[0].attenuation_areas) || [];
+  const rings = [];
+  for (const a of areas) {
+    const name = a && a.area_material && a.area_material.name;
+    if (!isVegetationOiName(name)) continue;
+    const px = oiPixelCoords(a.area.coordinates);
+    if (!px || px.length < 4) continue;
+    rings.push(px.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]));
+  }
+  return rings;
+}
+
 function probeInsideFeature(feature, probe) {
   const rings = featureExteriorRings(feature && feature.geometry);
   for (let i = 0; i < rings.length; i++) {
@@ -198,6 +213,10 @@ function runLoaded(loaded, opts) {
   }
   const terrain = prefer && loaded.dem && loaded.dem.samples ? terrainFromSamples(loaded.dem.samples, frame) : null;
   const heightSources = countHeightSources(vectorFeatures);
+  const surface =
+    jpegDecoded && jpegDecoded.width === frame.imgW && jpegDecoded.height === frame.imgH
+      ? surfaceMasksFromImage(jpegDecoded, frame)
+      : { waterRings: [], pavementPolygons: [], waterM2: 0, pavementM2: 0 };
   const built = buildClutter({
     frame,
     footprintsGeojson: { type: "FeatureCollection", features: supplemented.features },
@@ -206,6 +225,8 @@ function runLoaded(loaded, opts) {
     imgBuf: locked.jpegBuf || loaded.jpeg,
     treesSource: resolved.source,
     terrain,
+    maskRings: surface.waterRings,
+    maskPolygons: surface.pavementPolygons,
     footprintMeta: {
       imageryRoofs: supplemented.imageryRoofs || 0,
       medianTrees: medianKept,
@@ -274,6 +295,7 @@ function runLoaded(loaded, opts) {
     required: prefer && !!loaded.chm,
     applied: chmApplied,
   };
+  const foliageOverlap = scoreFoliageBuildingOverlap(vegetationRingsFromOi(built.openintent), fp.overlayRings, frame);
   const gate = evaluate({
     buildings,
     trees,
@@ -286,6 +308,7 @@ function runLoaded(loaded, opts) {
     chm,
     compatibility,
     openIntentTrees,
+    foliageOverlap,
   });
   const exportStats = {
     site: loaded.site.id,
@@ -321,6 +344,13 @@ function runLoaded(loaded, opts) {
     overture,
     terrain: terrainScore,
     chm,
+    foliageOverlap,
+    surface: {
+      waterRings: surface.waterRings.length,
+      waterM2: surface.waterM2 || 0,
+      pavementRings: surface.pavementPolygons.length,
+      pavementM2: surface.pavementM2 || 0,
+    },
     gate,
     thresholds: THRESHOLDS,
     canopyReason: canopy.reason,
