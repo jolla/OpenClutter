@@ -37,7 +37,8 @@ const STOCK_MATERIAL_NAMES = ZONE_TYPES.map((t) => t.name);
 const ZIP_README =
   "Import this zip in Hamina (Projects → Import → OpenIntent).\n" +
   "The OpenIntent JSON is the source of truth: map image + all attenuating objects.\n" +
-  "Hamina 2026-09-01+ imports attenuation_areas (stock type names, heights, dB/m).\n" +
+  "Hamina 2026-09-01+ imports attenuation_areas. area_materials are the six stock names only.\n" +
+  "Exact measured metres are zone types inside hamina-clipboard.json (paste that file for those heights).\n" +
   "Schema: OpenIntent 2.0.1, pixels Y-up from SW, closed rings, area_materials listed.\n" +
   "(Optional) Unzip and open alignment-overlay.svg next to images/ to check rooftops.\n" +
   "hamina-clipboard.json is a silent fallback for older Hamina builds only — not the happy path.\n";
@@ -108,6 +109,9 @@ function coverageStats(stats) {
     terrainRaised: s.terrainRaised || 0,
     terrainSloped: s.terrainSloped || 0,
     areaMaterials: s.areaMaterials != null ? s.areaMaterials : STOCK_MATERIAL_NAMES.length,
+    compatibilityMode: s.compatibilityMode || "stock-openintent",
+    exactBuildingHeights: s.exactBuildingHeights || 0,
+    exactFoliageHeights: s.exactFoliageHeights || 0,
     openintentVersion: s.openintentVersion || OPENINTENT_VERSION,
     coordinateUnit: s.coordinateUnit || "pixels",
     coordinateOrigin: s.coordinateOrigin || "Y-up from SW",
@@ -682,7 +686,7 @@ function emitBuilding(ring, heightM, frame, affine, buckets) {
   if (z) buckets.clipZones.push(z);
   buckets.aabbs.push({ minX, maxX, minY, maxY });
   buckets.overlayRings.push(pts);
-  buckets.overlayHeights.push(picked.material.top_height);
+  buckets.overlayHeights.push(picked.exactHeight || picked.material.top_height);
   return "keep";
 }
 
@@ -860,7 +864,7 @@ function buildOpenIntent(frame, name, imgName, areas, materials) {
     ],
     wall_materials: [],
     switches: [],
-    area_materials: materials && materials.length ? materials : catalogMaterials([]),
+    area_materials: catalogMaterials(),
     openintent_version: OPENINTENT_VERSION,
   };
 }
@@ -897,7 +901,13 @@ function buildClutter({
   if (capped.dropped) {
     clip.attenuatingZones = clip.attenuatingZones.slice(0, areas.length);
   }
-  const materials = catalogMaterials((fp.materials || []).concat(veg.materials || []));
+  const materials = catalogMaterials();
+  let exactBuildingHeights = 0;
+  let exactFoliageHeights = 0;
+  for (const t of clip.attenuatingZoneTypes) {
+    if (t.id && String(t.id).indexOf("bldg-m-") === 0) exactBuildingHeights++;
+    if (t.id && String(t.id).indexOf("foliage-m-") === 0) exactFoliageHeights++;
+  }
   const oi = buildOpenIntent(frame, name, imgName, areas, materials);
   const treeOverlayPts = [];
   for (const t of veg.oiAreas || []) {
@@ -949,6 +959,9 @@ function buildClutter({
     terrainRaised: terrain && terrain.raised ? terrain.raised : 0,
     terrainSloped: terrain && terrain.sloped ? terrain.sloped : 0,
     areaMaterials: materials.length,
+    compatibilityMode: "stock-openintent",
+    exactBuildingHeights,
+    exactFoliageHeights,
   };
   stats.summary = coverageSummary(stats);
   Object.assign(stats, coverageStats(stats));
