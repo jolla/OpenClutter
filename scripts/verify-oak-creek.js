@@ -30,6 +30,7 @@ const fs = require("fs");
 const path = require("path");
 const { unzipStore } = require("../netlify/lib/zip-store");
 const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
+const { OI_BUILDING_NAMES } = require("../netlify/lib/materials");
 
 const BBOX = {
   west: -87.92259693145752,
@@ -41,7 +42,7 @@ const BBOX = {
   format: "bundle",
 };
 
-const STOCK_NAMES = ZONE_TYPES.map((z) => z.name);
+const STOCK_NAMES = OI_BUILDING_NAMES.slice();
 const BUDGET_MS = 10000;
 
 function arg(name) {
@@ -93,10 +94,13 @@ function checkZip(zipBuf) {
     }
     if (!(areas > 0)) failures.push("attenuation_areas.length is " + areas);
     if (areas > 982) failures.push("attenuation_areas " + areas + " above the last accepted import (982)");
-    if (materials.length !== 6) failures.push("area_materials count " + materials.length);
-    const custom = materials.filter((n) => /Building \d/.test(n) || /Foliage \d/.test(n) || !STOCK_NAMES.includes(n));
-    if (custom.length) failures.push("non-stock materials: " + custom.join(", "));
-    if (STOCK_NAMES.some((n) => !materials.includes(n))) failures.push("stock set mismatch: " + materials.join(" | "));
+    if (materials.length !== STOCK_NAMES.length) failures.push("area_materials count " + materials.length);
+    const custom = materials.filter((n) => !STOCK_NAMES.includes(n));
+    if (custom.length) failures.push("non-gold Building materials: " + custom.join(", "));
+    if (STOCK_NAMES.some((n) => !materials.includes(n))) failures.push("gold Building set mismatch: " + materials.join(" | "));
+    if (/Foliage|Tree Trunk|Hotel podium/.test(materials.join("|"))) {
+      failures.push("OI catalog still has foliage/trunk/hotel names");
+    }
     if (strings) failures.push("string area_material (Invalid OpenIntent format): " + strings);
     if (mismatches) failures.push("area_material not equal to catalog entry: " + mismatches);
     const fp = oi.floorplans[0] || {};
@@ -157,7 +161,7 @@ function checkZip(zipBuf) {
     const v = parseVerify(files["VERIFY.txt"].toString("utf8"));
     verifyAreas = Number(v.attenuation_areas);
     if (verifyAreas !== areas) failures.push("VERIFY attenuation_areas " + verifyAreas + " != JSON " + areas);
-    if (Number(v.area_materials) !== 6) failures.push("VERIFY area_materials " + v.area_materials);
+    if (Number(v.area_materials) !== STOCK_NAMES.length) failures.push("VERIFY area_materials " + v.area_materials);
   }
   if (files["hamina-clipboard.json"] && oiName) {
     const clip = JSON.parse(files["hamina-clipboard.json"].toString("utf8"));
@@ -187,7 +191,7 @@ function checkZip(zipBuf) {
     statsMaterials = stats.areaMaterials;
     compatibilityMode = stats.compatibilityMode;
     if (statsAreas !== areas) failures.push("export-stats attenuationAreasEmitted " + statsAreas + " != JSON " + areas);
-    if (statsMaterials !== 6) failures.push("export-stats areaMaterials " + statsMaterials);
+    if (statsMaterials !== STOCK_NAMES.length) failures.push("export-stats areaMaterials " + statsMaterials);
     if (compatibilityMode !== "stock-openintent") failures.push("compatibilityMode " + compatibilityMode);
   }
   return {

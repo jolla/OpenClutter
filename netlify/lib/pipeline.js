@@ -9,11 +9,10 @@ const {
 } = require("./geo-frame");
 const {
   uuid,
-  ZONE_TYPES,
   emptyClipboard,
   clipZone,
 } = require("./hamina-clipboard");
-const { materialForBuilding, catalogMaterials } = require("./materials");
+const { materialForBuilding, catalogMaterials, OI_BUILDING_NAMES } = require("./materials");
 const { treePairsFromPoints } = require("./vegetation");
 const { zipStore } = require("./zip-store");
 const { overlaySvg, frameLockJson } = require("./overlay");
@@ -27,43 +26,36 @@ const MIN_OI_SPAN_PX = 4;
 const MIN_OI_SPAN_M = 3;
 /**
  * Last Hamina import that showed clutter was 982 areas (PR #12, stock names).
- * 1377 and 1494 both imported the floorplan and zero clutter. Stay at that
- * last accepted count. Buildings first, then complete canopy+trunk pairs.
+ * Stay at that cap for buildings. Trees are clipboard-only (not OpenIntent).
  */
 const MAX_ATTENUATION_AREAS = 982;
 const OPENINTENT_VERSION = "2.0.1";
-const STOCK_MATERIAL_NAMES = ZONE_TYPES.map((t) => t.name);
+const STOCK_MATERIAL_NAMES = OI_BUILDING_NAMES.slice();
 
 const ZIP_README =
   "Import this zip in Hamina (Projects → Import → OpenIntent).\n" +
-  "The OpenIntent JSON is the source of truth: map image + all attenuating objects.\n" +
-  "Hamina 2026-09-01+ imports attenuation_areas. area_materials are the six stock names only.\n" +
-  "Exact measured metres are zone types inside hamina-clipboard.json (paste that file for those heights).\n" +
-  "Schema: OpenIntent 2.0.1, pixels Y-up from SW, closed rings, area_materials listed.\n" +
-  "(Optional) Unzip and open alignment-overlay.svg next to images/ to check rooftops.\n" +
-  "hamina-clipboard.json is a silent fallback for older Hamina builds only — not the happy path.\n";
+  "OpenIntent carries the map image + building attenuation_areas only.\n" +
+  "area_materials are Hamina's outdoor Building - One/Two/Five/Ten Floor names (gold export match).\n" +
+  "Trees and exact measured metres are in hamina-clipboard.json — paste that file after import for foliage.\n" +
+  "Schema: OpenIntent 2.0.1, pixels+meters+feet per vertex, isotropic meter/pixel aspect.\n" +
+  "(Optional) Unzip and open alignment-overlay.svg next to images/ to check rooftops.\n";
 
 const ZIP_TROUBLESHOOT =
   "\nTroubleshooting if Hamina shows the map but no attenuating objects:\n" +
   "If VERIFY.txt attenuation_areas > 0, generation succeeded. Hamina then either dropped the import\n" +
   "or failed to render (WebGL). Do this in order:\n" +
   "  1. Unzip and confirm VERIFY.txt attenuation_areas (same as openIntent_*.json length).\n" +
-  "     buildingsKept 111 + 2×treesKept 367 = 845 polygons — not buildingsKept alone.\n" +
+  "     That count is buildings only — trees are not in OpenIntent.\n" +
   "  2. Open alignment-overlay.svg next to images/. Rooftops (red) and trees (green) should sit on the JPEG.\n" +
   "  3. In Hamina, check the Attenuating Objects sidebar count.\n" +
   "     0 = OpenIntent import dropped the areas. >0 = they imported but did not draw.\n" +
-  "  4. If stats>0 but Hamina is empty (sidebar 0 or objects invisible): paste hamina-clipboard.json into Hamina.\n" +
+  "  4. Paste hamina-clipboard.json for trees and exact measured building heights.\n" +
   "  5. Console WebGL texSubImage2D / Rive warnings can hide objects after a successful import.\n" +
   "     Try Hamina’s 2D map view, and turn hardware acceleration off, then zoom the full extent.\n" +
-  "Pixel and meter aspects are locked equal after the Esri snap (isotropic mpu). Overlay locks image-space;\n" +
-  "clipboard meters then sit on the same map Hamina builds from the JPEG aspect.\n" +
-  "The last OpenIntent import that showed clutter was 982 areas. This zip emits at most " +
-  MAX_ATTENUATION_AREAS +
-  " areas (buildings first). Invalid/open/NaN/self-intersecting rings are dropped per-polygon.\n" +
-  "Each attenuation area embeds a copy of its area_materials catalog entry. A name string is not\n" +
-  "OpenIntent 2.0.1 and Hamina rejects the document as Invalid OpenIntent format.\n" +
-  "OpenIntent materials match Hamina-native keys (name, rf_properties, top_height, display_color):\n" +
-  "no itu_material_type, no bottom_height. Each ring vertex is pixels+meters+feet (Hamina export form).\n";
+  "Pixel and meter aspects are locked equal after the Esri snap (isotropic mpu).\n" +
+  "OpenIntent materials are only Building - One/Two/Five/Ten Floor (Hamina outdoor gold set).\n" +
+  "Foliage / Tree Trunk / Hotel podium names are clipboard-only — they silently emptied OI imports.\n" +
+  "Each ring vertex is pixels+meters+feet; materials omit itu_material_type and bottom_height.\n";
 
 /**
  * Skip Microsoft campus-merge blobs (one giant wrong polygon). Do NOT use a
@@ -192,11 +184,10 @@ const ALIGNMENT = [
   "Exact alignment (repeatable, any site):",
   "1. Import this zip in Hamina (Projects → Import → OpenIntent).",
   "   The zip’s meter dimensions ARE the JPEG’s geographic extent (widthM × lengthM).",
-  "   OpenIntent floorplans[].attenuation_areas[] carry buildings + tree pairs",
-  "   (stock Hamina names: Building - One/Five Floor, Hotel podium, Foliage - Heavy/Light, Tree Trunk).",
-  "   Extra files (alignment-overlay.svg, frame-lock.json, hamina-clipboard.json) are ignored on import.",
-  "2. Hamina 2026-09-01+ imports attenuating objects from OpenIntent. No clipboard paste.",
-  "3. hamina-clipboard.json inside the zip is a silent fallback for older Hamina builds only.",
+  "   OpenIntent attenuation_areas are buildings only, using Hamina outdoor names:",
+  "   Building - One / Two / Five / Ten Floor (matches Hamina’s own gold export catalog).",
+  "2. Paste hamina-clipboard.json for trees (Foliage / Tree Trunk) and exact measured heights.",
+  "3. Extra files (alignment-overlay.svg, frame-lock.json) are ignored on OpenIntent import.",
   "Clipboard meters use that same widthM × lengthM. Origin: " + CLIPBOARD_ORIGIN,
   "Do NOT use a Google Earth screenshot as the map — Hamina auto-scale will not",
   "match lon/lat footprints. Dual-scale nudges are a legacy escape hatch only.",
@@ -959,8 +950,10 @@ function buildClutter({
   const imgName = `${slug}.jpg`;
   const fp = footprintsToClutter(footprintsGeojson?.features || [], frame, affine);
   const veg = treePairsFromPoints(treePoints || [], frame, fp.aabbs, affine);
-  const trees = treesToOi(veg.oiAreas, frame.imgW, frame.imgH, frame.mpuX);
-  const uncapped = fp.oiAreas.concat(trees.areas);
+  // Trees stay on the clipboard only. Hamina's outdoor OI importer accepts the
+  // Building - One/Two/Five/Ten Floor catalog; Foliage / Tree Trunk names emptied
+  // every attenuation_area (Jerry gold zip vs OpenClutter emit).
+  const uncapped = fp.oiAreas;
   const capped = capAttenuationAreas(uncapped, fp.oiAreas.length);
   const areas = capped.areas;
   const clip = emptyClipboard();
@@ -971,10 +964,8 @@ function buildClutter({
       clip.attenuatingZoneTypes.push(t);
     }
   }
+  // Full building + tree clipboard; do not trim to the OI building count.
   clip.attenuatingZones = fp.clipZones.concat(veg.clipZones);
-  if (capped.dropped) {
-    clip.attenuatingZones = clip.attenuatingZones.slice(0, areas.length);
-  }
   const materials = catalogMaterials();
   let exactBuildingHeights = 0;
   let exactFoliageHeights = 0;
@@ -1008,7 +999,7 @@ function buildClutter({
     treesSource: treesSource || (veg.count ? "imagery-rgb" : "none"),
     zones: clip.attenuatingZones.length,
     areas: areas.length,
-    droppedInvalid: (fp.stats.droppedInvalid || 0) + trees.droppedInvalid,
+    droppedInvalid: fp.stats.droppedInvalid || 0,
     droppedAreasCap: capped.dropped,
     attenuationAreasEmitted: areas.length,
     openintentVersion: OPENINTENT_VERSION,

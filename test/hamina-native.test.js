@@ -6,23 +6,33 @@ const fs = require("fs");
 const path = require("path");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { buildClutter, expandOiCoordTriples, oiPixelCoords, validateOiCoords } = require("../netlify/lib/pipeline");
-const { catalogMaterials } = require("../netlify/lib/materials");
+const { catalogMaterials, OI_BUILDING_NAMES } = require("../netlify/lib/materials");
 
 const SAMPLE = JSON.parse(
   fs.readFileSync(path.join(__dirname, "fixtures/hamina-native/attenuation-area-sample.json"), "utf8")
 );
 
+const GOLD_BUILDING_NAMES = [
+  "Building - One Floor",
+  "Building - Two Floor",
+  "Building - Five Floor",
+  "Building - Ten Floor",
+];
+
 describe("Hamina-native OpenIntent gold shape", () => {
-  it("parses Jerry's Hamina export: triples, isotropic dims, material keys, empty markers", () => {
+  it("parses Jerry's Hamina export: triples, isotropic dims, Building-* only, empty markers", () => {
     assert.equal(SAMPLE.openintent_version, "2.0.1");
     assert.match(SAMPLE.map_uri, /^file:\/\/images\//);
     assert.deepEqual(SAMPLE.reference_markers, []);
     const px = SAMPLE.dimensions.find((d) => d.unit === "pixels");
     const m = SAMPLE.dimensions.find((d) => d.unit === "meters");
     assert.ok(Math.abs(px.width / px.length - m.width / m.length) < 1e-9);
+    const goldNames = SAMPLE.area_materials.map((mat) => mat.name);
+    assert.deepEqual(goldNames, GOLD_BUILDING_NAMES);
     for (const mat of SAMPLE.area_materials) {
       assert.deepEqual(Object.keys(mat), ["name", "rf_properties", "top_height", "display_color"]);
       assert.equal("itu_material_type" in mat, false);
+      assert.ok(GOLD_BUILDING_NAMES.includes(mat.name));
     }
     const coords = SAMPLE.attenuation_area.area.coordinates;
     assert.equal(coords.length % 3, 0);
@@ -38,7 +48,7 @@ describe("Hamina-native OpenIntent gold shape", () => {
     assert.ok(Math.abs(m0.y - p0.y * mpu) < 1e-4);
   });
 
-  it("emits the same coordinate triple pattern and material keys", () => {
+  it("emits OI materials ⊆ gold Building-* set; trees stay on clipboard", () => {
     const frame = geoFrame({
       west: -87.93,
       south: 42.89,
@@ -77,11 +87,19 @@ describe("Hamina-native OpenIntent gold shape", () => {
     });
     const fp = built.openintent.floorplans[0];
     assert.deepEqual(fp.reference_markers, []);
+    assert.deepEqual(
+      built.openintent.area_materials.map((m) => m.name),
+      OI_BUILDING_NAMES
+    );
+    assert.deepEqual(OI_BUILDING_NAMES, GOLD_BUILDING_NAMES);
+    assert.deepEqual(built.openintent.area_materials, catalogMaterials());
     for (const mat of built.openintent.area_materials) {
       assert.deepEqual(Object.keys(mat), ["name", "rf_properties", "top_height", "display_color"]);
+      assert.ok(GOLD_BUILDING_NAMES.includes(mat.name));
     }
-    assert.deepEqual(built.openintent.area_materials, catalogMaterials());
+    assert.equal(fp.attenuation_areas.length, 1);
     for (const a of fp.attenuation_areas) {
+      assert.ok(GOLD_BUILDING_NAMES.includes(a.area_material.name));
       const coords = a.area.coordinates;
       assert.equal(coords.length % 3, 0);
       assert.ok(coords.length >= 12);
@@ -96,5 +114,13 @@ describe("Hamina-native OpenIntent gold shape", () => {
       const again = expandOiCoordTriples(pixels, frame.mpuX);
       assert.equal(again.length, coords.length);
     }
+    const dumped = JSON.stringify(built.openintent);
+    assert.equal(/Foliage|Tree Trunk|Hotel podium/.test(dumped), false);
+    assert.ok(built.clipboard.attenuatingZones.length >= 3);
+    assert.ok(
+      built.clipboard.attenuatingZones.some(
+        (z) => z.typeId === "tree-trunk" || String(z.typeId).indexOf("foliage") === 0 || String(z.typeId).indexOf("trunk") === 0
+      )
+    );
   });
 });
