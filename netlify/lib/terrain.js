@@ -183,8 +183,9 @@ function parseDemSamples(body) {
   return out;
 }
 
-async function fetchDemSamples(frame, fetchFn) {
+async function fetchDemSamples(frame, fetchFn, opts) {
   const fetchImpl = fetchFn || fetch;
+  const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
   const geometry = JSON.stringify({
     xmin: +frame.west,
     ymin: +frame.south,
@@ -202,7 +203,7 @@ async function fetchDemSamples(frame, fetchFn) {
       interpolation: "RSP_BilinearInterpolation",
       f: "json",
     });
-  const res = await fetchImpl(url, { signal: AbortSignal.timeout(5000) });
+  const res = await fetchImpl(url, { signal });
   if (!res || res.ok === false) throw new Error("3DEP HTTP " + (res && res.status));
   const body = await res.json();
   if (body && body.error) throw new Error("3DEP " + (body.error.message || "query"));
