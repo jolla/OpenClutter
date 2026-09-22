@@ -741,10 +741,21 @@ function emitBuilding(ring, heightM, frame, affine, buckets) {
   // Clipboard meters follow the clipped OpenIntent ring, not the raw lon/lat
   // polygon. Footprints that cross the JPEG were landing at x=+8.4, y=+38,
   // y=-1999 against a south edge of -1919.
+  // OI rings are pixels+meters+feet triples — only the pixel vertices are an
+  // image grid. Treating meters/feet as pixels (PR #20) and clamping them
+  // inflated footprints and shoved them south/west of the aerial.
   const clipFromImage = [];
   if (!affine) {
-    for (let i = 0; i < oiCoords.length - 1; i++) {
-      const p = oiCoords[i].coordinate_xyz;
+    const pixelVerts = oiPixelCoords(oiCoords);
+    const n = pixelVerts.length;
+    const end =
+      n > 1 &&
+      pixelVerts[0].coordinate_xyz.x === pixelVerts[n - 1].coordinate_xyz.x &&
+      pixelVerts[0].coordinate_xyz.y === pixelVerts[n - 1].coordinate_xyz.y
+        ? n - 1
+        : n;
+    for (let i = 0; i < end; i++) {
+      const p = pixelVerts[i].coordinate_xyz;
       const m = pxToClipboard(p.x, p.y, frame);
       clipFromImage.push([
         Math.min(0, Math.max(-frame.widthM, m[0])),

@@ -266,7 +266,8 @@ describe("isotropic aspect lock after Esri N/S pad", () => {
     assert.ok(!isAspectLocked(snapped) || Math.abs(snapped.mpuX - snapped.mpuY) > 0.01);
     const locked = lockIsotropicImagery(snapped, jpeg);
     assert.equal(isAspectLocked(locked.frame), true);
-    assert.ok(Math.abs(locked.frame.mpuX - locked.frame.mpuY) / locked.frame.mpuX < 0.002);
+    assert.equal(locked.frame.mpuX, locked.frame.mpuY);
+    assert.ok(Math.abs(locked.frame.lengthM - locked.frame.imgH * locked.frame.mpu) < 1e-9);
     assert.ok(locked.resampled);
     const wh = jpegSize(locked.jpegBuf);
     assert.equal(wh.width, locked.frame.imgW);
@@ -297,6 +298,8 @@ describe("isotropic aspect lock after Esri N/S pad", () => {
     const jpeg = fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/imagery.jpg"));
     const locked = lockIsotropicImagery(anisotropic, jpeg);
     assert.equal(isAspectLocked(locked.frame), true);
+    assert.equal(locked.frame.mpuX, locked.frame.mpuY);
+    // Content resample (stretch), not letterbox — JPEG fills locked imgW×imgH.
     const haminaLenIfWrong = anisotropic.widthM * (anisotropic.imgH / anisotropic.imgW);
     assert.ok(locked.frame.lengthM > haminaLenIfWrong + 100);
   });

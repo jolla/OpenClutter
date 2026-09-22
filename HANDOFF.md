@@ -34,7 +34,7 @@ Hamina **2026-09-01** (docs.hamina.com): “OpenIntent import and export now sup
 
 Shared math lives in `netlify/lib/geo-frame.js`. Pipeline in `netlify/lib/pipeline.js`. HTTP in `netlify/functions/clutter.js`. Tests in `test/`.
 
-OpenIntent pixels (Y-up from SW) and clipboard meters (NE = 0,0) share the JPEG extent:
+OpenIntent pixels (Y-up from SW) and clipboard meters (NE = 0,0) share the JPEG extent. After Esri N/S pad, `lockIsotropicImagery` **resamples** the JPEG (stretch to fill — no letterbox) so `imgW/imgH == widthM/lengthM`, then `unifyFrameMpu` forces a single mpu (`lengthM = imgH * mpu`). Clipboard building rings are built from **OI pixel vertices only** (not the interleaved meters/feet triples); treating triples as pixels inflated footprints about NE=(0,0) and shoved them south/west. `scoreClipboardOverlayAlignment` fails on systematic south shift or scale&gt;1 vs `alignment-overlay.svg`.
 
 ```
 OpenIntent: SW → (0, 0) px ; NE → (imgW, imgH) px

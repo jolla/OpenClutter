@@ -29,8 +29,8 @@
 const fs = require("fs");
 const path = require("path");
 const { unzipStore } = require("../netlify/lib/zip-store");
-const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
 const { OI_BUILDING_NAMES } = require("../netlify/lib/materials");
+const { scoreClipboardOverlayAlignment } = require("../netlify/lib/overlay");
 
 const BBOX = {
   west: -87.92259693145752,
@@ -57,6 +57,25 @@ function parseVerify(text) {
     if (m) out[m[1]] = m[2];
   }
   return out;
+}
+
+/** Parse alignment-overlay.svg building polygons (JPEG Y-down) into Y-up rings. */
+function overlayRingsFromSvg(svgText, imgH) {
+  const rings = [];
+  const re = /<polygon\s+points="([^"]+)"/g;
+  let m;
+  while ((m = re.exec(svgText))) {
+    const pts = m[1]
+      .trim()
+      .split(/\s+/)
+      .map((pair) => {
+        const [x, y] = pair.split(",").map(Number);
+        return [x, imgH - y];
+      })
+      .filter((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+    if (pts.length >= 3) rings.push(pts);
+  }
+  return rings;
 }
 
 function checkZip(zipBuf) {
@@ -165,7 +184,9 @@ function checkZip(zipBuf) {
   }
   if (files["hamina-clipboard.json"] && oiName) {
     const clip = JSON.parse(files["hamina-clipboard.json"].toString("utf8"));
-    const meters = (JSON.parse(files[oiName].toString("utf8")).floorplans[0].dimensions || []).find((d) => d.unit === "meters");
+    const oi = JSON.parse(files[oiName].toString("utf8"));
+    const meters = (oi.floorplans[0].dimensions || []).find((d) => d.unit === "meters");
+    const pxDim = (oi.floorplans[0].dimensions || []).find((d) => d.unit === "pixels");
     let oob = 0;
     let minX = Infinity;
     let maxX = -Infinity;
@@ -184,6 +205,34 @@ function checkZip(zipBuf) {
     }
     clipboard = { zones: (clip.attenuatingZones || []).length, types: (clip.attenuatingZoneTypes || []).length, minX, maxX, minY, maxY, oob };
     if (oob) failures.push("clipboard vertices outside the meter frame: " + oob);
+    if (files["alignment-overlay.svg"] && meters && pxDim && pxDim.width > 0 && pxDim.length > 0) {
+      const mpu = meters.width / pxDim.width;
+      const frame = {
+        widthM: meters.width,
+        lengthM: meters.length,
+        imgW: pxDim.width,
+        imgH: pxDim.length,
+        mpuX: mpu,
+        mpuY: meters.length / pxDim.length,
+      };
+      if (Math.abs(frame.mpuX - frame.mpuY) / frame.mpuX > 0.002) {
+        failures.push("frame mpuX≠mpuY after isotropic lock");
+      }
+      const overlayRings = overlayRingsFromSvg(files["alignment-overlay.svg"].toString("utf8"), frame.imgH);
+      const bldgZones = (clip.attenuatingZones || []).filter(
+        (z) => z.typeId && String(z.typeId).indexOf("bldg") === 0
+      );
+      const align = scoreClipboardOverlayAlignment(frame, overlayRings, bldgZones);
+      clipboard.align = {
+        count: align.count,
+        meanScale: align.meanScale,
+        meanSouthShiftPx: align.meanSouthShiftPx,
+        meanErrPx: align.meanErrPx,
+      };
+      if (!align.ok) {
+        for (const f of align.failures) failures.push("clipboard↔overlay: " + f);
+      }
+    }
   }
   if (files["export-stats.json"]) {
     const stats = JSON.parse(files["export-stats.json"].toString("utf8"));
