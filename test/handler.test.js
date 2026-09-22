@@ -312,4 +312,57 @@ describe("optional sources cannot fail the export", () => {
     assert.equal(/esri/i.test(body.error), false);
     assert.equal(/smaller box/i.test(body.error), false);
   });
+
+  it("retries the aerial JPEG on a timeout and still exports", async () => {
+    let jpegCalls = 0;
+    global.fetch = async (url, init) => {
+      const u = urlOf(url);
+      if (u.includes("World_Imagery") && !u.includes("f=json")) {
+        jpegCalls++;
+        if (jpegCalls === 1) {
+          throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "AbortError" });
+        }
+        return { ok: true, arrayBuffer: async () => jpeg };
+      }
+      return coreFetch(u);
+    };
+    const t0 = Date.now();
+    const res = await handler({
+      httpMethod: "POST",
+      body: JSON.stringify({ ...WYNN, trees: [{ lon: -115.17, lat: 36.122 }], format: "bundle" }),
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(res.statusCode, 200);
+    assert.equal(jpegCalls, 2);
+    assert.ok(elapsed >= 400, "backoff " + elapsed);
+    assert.ok(elapsed < 5000, "elapsed " + elapsed);
+    const body = JSON.parse(res.body);
+    assert.ok(body.zipBase64);
+    assert.equal(/smaller box/i.test(body.error || ""), false);
+  });
+
+  it("starts the aerial JPEG without waiting out a slow imagery metadata response", async () => {
+    const calls = [];
+    const t0 = Date.now();
+    global.fetch = async (url, init) => {
+      const u = urlOf(url);
+      calls.push({ u, t: Date.now() - t0 });
+      if (u.includes("World_Imagery") && u.includes("f=json")) return hang(init && init.signal);
+      return coreFetch(u, init);
+    };
+    const res = await handler({
+      httpMethod: "POST",
+      body: JSON.stringify({ ...WYNN, trees: [{ lon: -115.17, lat: 36.122 }], format: "bundle" }),
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(res.statusCode, 200);
+    const jpeg = calls.find((c) => c.u.includes("World_Imagery") && !c.u.includes("f=json"));
+    const meta = calls.find((c) => c.u.includes("World_Imagery") && c.u.includes("f=json"));
+    assert.ok(jpeg && meta);
+    assert.ok(jpeg.t < 200, "jpeg start " + jpeg.t);
+    assert.ok(Math.abs(jpeg.t - meta.t) < 200, "jpeg " + jpeg.t + " meta " + meta.t);
+    assert.ok(elapsed < 6500, "elapsed " + elapsed);
+    const body = JSON.parse(res.body);
+    assert.ok(body.zipBase64);
+  });
 });
