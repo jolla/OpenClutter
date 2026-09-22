@@ -11,9 +11,11 @@
  * with the drawn bbox then stretches buildings off rooftops (Long Meadow).
  *
  * Clipboard meters use that same actual widthM × lengthM — never a second
- * auto-scale. After the Esri snap, lockIsotropicImagery resamples the JPEG so
- * imgW/imgH == widthM/lengthM (mpuX == mpuY). Hamina sizes the floorplan from
- * the JPEG aspect; leaving anisotropic mpu made clipboard paste spill south.
+ * auto-scale. After the Esri snap, lockIsotropicImagery keeps the Esri JPEG
+ * content pixel grid (downscale only if over maxSide) and unifyFrameMpu sets
+ * lengthM = imgH * (widthM/imgW) so Hamina's isotropic map meters match the
+ * image aspect. Stretching the aerial to geodesic aspect shifted footprints
+ * south of rooftops on Oak Creek.
  *
  * Two pixel conventions (unit-tested):
  *   OpenIntent / Y-up: (0,0) = SW, y increases north (oiconvert + Hamina OI)
@@ -274,8 +276,8 @@ function extentFromMeta(meta) {
  * Footprints, trees, OpenIntent, and clipboard must all use this, not the drawn box.
  *
  * Esri often pads N/S while keeping the requested pixel size, so mpuX ≠ mpuY
- * after this snap. Call lockIsotropicImagery next so Hamina sees matching
- * pixel and meter aspects (otherwise clipboard paste spills south of the map).
+ * after this snap. Call lockIsotropicImagery next to unify meters to the JPEG
+ * pixel aspect (keep content pixels; do not stretch the aerial).
  */
 function applyImageryMeta(frame, meta, jpegWH) {
   const ext = extentFromMeta(meta);
@@ -367,11 +369,11 @@ function resizeRgba(src, sw, sh, dstW, dstH) {
 }
 
 /**
- * After choosing integer imgW×imgH, force a single mpu so OpenIntent triples,
- * clipboard meters, and Hamina's width-derived isotropic scale agree exactly.
- * lengthM becomes imgH*mpu (within ~1 px of the geodesic length). Geographic
- * west/south/east/north stay the Esri JPEG extent for lon/lat → pixel mapping.
- * This is a resample of the full content (not letterbox padding).
+ * Force a single mpu so OpenIntent triples, clipboard meters, and Hamina's
+ * width-derived isotropic scale agree. lengthM becomes imgH*mpu (the meter
+ * height Hamina will infer from the JPEG aspect). Geographic west/south/east/
+ * north stay the Esri JPEG extent for lon/lat → pixel mapping onto the
+ * **content** pixel grid — do not stretch the aerial to fit geodesic meters.
  */
 function unifyFrameMpu(frame) {
   if (!frame || !(frame.imgW > 0) || !(frame.imgH > 0) || !(frame.widthM > 0)) return frame;
@@ -386,19 +388,15 @@ function unifyFrameMpu(frame) {
 }
 
 /**
- * Resample the Esri JPEG so imgW/imgH == widthM/lengthM (isotropic mpu).
- * Keeps the geographic extent of the snapped JPEG. Hamina sizes the floorplan
- * from the JPEG aspect; an anisotropic mpu made clipboard Y overshoot by ~450 m
- * on Oak Creek. Content is stretched to fill the canvas — no letterbox bars.
+ * Lock Hamina map meters to the Esri JPEG pixel aspect without distorting the
+ * aerial. Stretching the JPEG to geodesic aspect (PR #20) made footprints sit
+ * south/large of rooftops on Oak Creek — lon/lat was projected in a different
+ * pixel space than the final image content. Keep the content grid; only
+ * downscale when the long side exceeds maxSide (same aspect). Then unify mpu.
  */
 function lockIsotropicImagery(frame, jpegBuf, opts = {}) {
   const maxSide = opts.maxSide != null ? opts.maxSide : 1040;
-  const eps = opts.eps != null ? opts.eps : 0.002;
   if (!frame) return { frame, jpegBuf, resampled: false };
-  if (isAspectLocked(frame, eps) && Math.abs(frame.mpuX - frame.mpuY) / frame.mpuX < eps) {
-    return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
-  }
-  const { imgW, imgH } = isotropicPixelSize(frame.widthM, frame.lengthM, maxSide);
   if (!jpegBuf || jpegBuf.length < 100) {
     return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
   }
@@ -412,6 +410,28 @@ function lockIsotropicImagery(frame, jpegBuf, opts = {}) {
   if (!raw || !raw.data || !(raw.width > 0) || !(raw.height > 0)) {
     return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
   }
+  const longSide = Math.max(raw.width, raw.height);
+  let imgW = raw.width;
+  let imgH = raw.height;
+  let outBuf = jpegBuf;
+  let resampled = false;
+  if (longSide > maxSide) {
+    const k = maxSide / longSide;
+    imgW = Math.max(64, Math.round(raw.width * k));
+    imgH = Math.max(64, Math.round(raw.height * k));
+    const rgba = resizeRgba(raw.data, raw.width, raw.height, imgW, imgH);
+    try {
+      const jpeg = require("jpeg-js");
+      const enc = jpeg.encode(
+        { data: rgba, width: imgW, height: imgH },
+        opts.quality != null ? opts.quality : 85
+      );
+      outBuf = Buffer.from(enc.data);
+      resampled = true;
+    } catch {
+      return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
+    }
+  }
   const padM = Math.max(frame.widthM, frame.lengthM, 2500) * 2.5;
   const locked = unifyFrameMpu(
     geoFrame(
@@ -419,19 +439,7 @@ function lockIsotropicImagery(frame, jpegBuf, opts = {}) {
       { imgW, imgH, maxSpanM: padM, minSpanM: 1 }
     )
   );
-  const rgba =
-    raw.width === imgW && raw.height === imgH
-      ? raw.data
-      : resizeRgba(raw.data, raw.width, raw.height, imgW, imgH);
-  let outBuf;
-  try {
-    const jpeg = require("jpeg-js");
-    const enc = jpeg.encode({ data: rgba, width: imgW, height: imgH }, opts.quality != null ? opts.quality : 85);
-    outBuf = Buffer.from(enc.data);
-  } catch {
-    return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
-  }
-  return { frame: locked, jpegBuf: outBuf, resampled: true };
+  return { frame: locked, jpegBuf: outBuf, resampled };
 }
 
 const FP_PAGE_SIZE = 500;
