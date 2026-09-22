@@ -14,7 +14,8 @@ const {
   isAspectLocked,
 } = require("../netlify/lib/geo-frame");
 const { footprintsToClutter, buildClutter, oiPixelCoords } = require("../netlify/lib/pipeline");
-const { scoreClipboardOverlayAlignment } = require("../netlify/lib/overlay");
+const { conflateFootprints } = require("../netlify/lib/conflate");
+const { scoreClipboardOverlayAlignment, scoreOiContentGrid } = require("../netlify/lib/overlay");
 const { OI_BUILDING_NAMES } = require("../netlify/lib/materials");
 
 function squareFeature(lon0, lat0, lon1, lat1, props) {
@@ -191,10 +192,12 @@ describe("clipboard ↔ alignment-overlay scale", () => {
     assert.ok(align.meanSouthShiftPx <= 2.5, "south " + align.meanSouthShiftPx);
 
     // Aerial rooftop probes: overlay rings must cover known roofs (no stretch drift).
+    // Pavement probes are stale lot outlines; this unfiltered export still contains them.
     const roofPoints = JSON.parse(fs.readFileSync(path.join(dir, "roof-points.json"), "utf8"));
     const { llToPx } = require("../netlify/lib/geo-frame");
+    const roofProbes = roofPoints.points.filter((p) => p.role !== "pavement");
     let probeHits = 0;
-    for (const p of roofPoints.points) {
+    for (const p of roofProbes) {
       const [x, y] = llToPx(p.lon, p.lat, locked.frame);
       const hit = fp.overlayRings.some((ring) => {
         let inside = false;
@@ -210,6 +213,31 @@ describe("clipboard ↔ alignment-overlay scale", () => {
       });
       if (hit) probeHits++;
     }
-    assert.equal(probeHits, roofPoints.points.length, "aerial roof probes missed after lock");
+    assert.equal(probeHits, roofProbes.length, "aerial roof probes missed after lock");
+  });
+
+  it("capped OpenIntent rings stay on the Oak Creek content grid", () => {
+    const dir = path.join(__dirname, "fixtures/oak-creek-commercial");
+    const bbox = JSON.parse(fs.readFileSync(path.join(dir, "bbox.json"), "utf8"));
+    const meta = JSON.parse(fs.readFileSync(path.join(dir, "imagery-meta.json"), "utf8"));
+    const jpeg = fs.readFileSync(path.join(dir, "imagery.jpg"));
+    const footprints = JSON.parse(fs.readFileSync(path.join(dir, "footprints.geojson"), "utf8"));
+    const overture = JSON.parse(fs.readFileSync(path.join(dir, "overture.geojson"), "utf8"));
+    const locked = lockIsotropicImagery(applyImageryMeta(geoFrame(bbox), meta, jpegSize(jpeg)), jpeg);
+    const merged = conflateFootprints(footprints.features, overture.features, {
+      replaceGeometry: true,
+      rankHeight: true,
+    });
+    const fp = footprintsToClutter(merged.features, locked.frame, null);
+    const oiRings = fp.oiAreas.map((area) => {
+      const pix = oiPixelCoords(area.area.coordinates);
+      return pix.slice(0, -1).map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
+    });
+    const grid = scoreOiContentGrid(fp.overlayRings, oiRings);
+    assert.equal(grid.ok, true, grid.failures.join("; "));
+    assert.ok(grid.maxPx <= 3.5, "max drift " + grid.maxPx);
+    assert.ok(grid.meanPx <= 1.25, "mean drift " + grid.meanPx);
+    assert.ok(Math.abs(grid.meanDx) <= 1.25, "mean east " + grid.meanDx);
+    assert.ok(Math.abs(grid.meanDy) <= 1.25, "mean north " + grid.meanDy);
   });
 });

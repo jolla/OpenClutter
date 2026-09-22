@@ -149,6 +149,7 @@ function coverageStats(stats) {
     droppedInvalid: s.droppedInvalid || 0,
     droppedSpan: s.droppedSpan || 0,
     droppedVerts: s.droppedVerts || 0,
+    droppedPavement: s.droppedPavement || 0,
     droppedAreasCap: s.droppedAreasCap || 0,
     attenuationAreasEmitted: s.attenuationAreasEmitted != null ? s.attenuationAreasEmitted : s.areas || 0,
     globalFootprints: s.globalFootprints || 0,
@@ -190,6 +191,7 @@ function coverageSummary(stats) {
   if (c.droppedInvalid) drops.push("invalid " + c.droppedInvalid);
   if (c.droppedSpan) drops.push("span " + c.droppedSpan);
   if (c.droppedVerts) drops.push("verts " + c.droppedVerts);
+  if (c.droppedPavement) drops.push("pavement " + c.droppedPavement);
   if (c.droppedAreasCap) drops.push("areas-cap " + c.droppedAreasCap);
   const dropTxt = drops.length ? `; dropped ${drops.join(", ")}` : "";
   return (
@@ -799,6 +801,18 @@ function subsampleOpen(open, maxPts) {
   return thin;
 }
 
+function ringCentroidPx(pts) {
+  const open = uniqueOpenRing(pts);
+  if (!open.length) return null;
+  let sx = 0;
+  let sy = 0;
+  for (let i = 0; i < open.length; i++) {
+    sx += open[i][0];
+    sy += open[i][1];
+  }
+  return [sx / open.length, sy / open.length];
+}
+
 function ringSelfIntersectsPx(pts) {
   const open = uniqueOpenRing(pts);
   const n = open.length;
@@ -819,6 +833,14 @@ function ringSelfIntersectsPx(pts) {
  * unchanged (a bowtie stays a bowtie so validation can reject it). Longer
  * rings are Douglas–Peucker'd, then subsampled, then replaced with the
  * convex hull if a candidate would self-intersect.
+ *
+ * The first valid candidate is not always the one that stays on the roof.
+ * A coarse subsample of a 70-vert commercial ring moved the centroid ~15 px
+ * west and ~6 px north of the content-grid clip (Hamina then draws that
+ * shift; alignment-overlay.svg still showed the pre-cap ring). Among valid
+ * candidates, keep the one whose centroid stays on the content-grid ring.
+ * Area is the tie-break so a hull that recenters by swallowing the parking
+ * lot does not beat a simpler outline of the same roof.
  */
 function capOiRingPx(ring, maxPts) {
   const limit = Math.max(3, maxPts | 0);
@@ -836,12 +858,22 @@ function capOiRingPx(ring, maxPts) {
   candidates.push(subsampleOpen(open, limit));
   const hull = convexHullOpen(open);
   if (hull.length >= 3) candidates.push(hull.length > limit ? subsampleOpen(hull, limit) : hull);
+  const origin = ringCentroidPx(open);
+  const area0 = ringAreaPx(open);
+  let best = null;
   for (const c of candidates) {
-    if (c.length >= 3 && c.length <= limit && ringAreaPx(c) > 1e-4 && !ringSelfIntersectsPx(c)) {
-      return c.concat([c[0]]);
+    if (c.length < 3 || c.length > limit || ringAreaPx(c) <= 1e-4 || ringSelfIntersectsPx(c)) continue;
+    const cc = ringCentroidPx(c);
+    const drift =
+      origin && cc ? Math.hypot(cc[0] - origin[0], cc[1] - origin[1]) : 0;
+    const area = ringAreaPx(c);
+    const areaErr = area0 > 1e-6 ? Math.abs(area - area0) / area0 : 0;
+    const score = drift + areaErr * 6;
+    if (!best || score < best.score - 1e-6 || (Math.abs(score - best.score) <= 1e-6 && c.length > best.c.length)) {
+      best = { c, score };
     }
   }
-  return [];
+  return best ? best.c.concat([best.c[0]]) : [];
 }
 
 function ringToOi(pts, imgW, imgH, mpuX) {
@@ -1413,6 +1445,7 @@ function buildClutter({
     arcgisFootprints: footprintMeta && footprintMeta.arcgisFootprints ? footprintMeta.arcgisFootprints : 0,
     usaFootprints: footprintMeta && footprintMeta.usaFootprints ? footprintMeta.usaFootprints : 0,
     imageryRoofs: footprintMeta && footprintMeta.imageryRoofs ? footprintMeta.imageryRoofs : 0,
+    droppedPavement: footprintMeta && footprintMeta.droppedPavement ? footprintMeta.droppedPavement : 0,
     medianTrees: footprintMeta && footprintMeta.medianTrees ? footprintMeta.medianTrees : 0,
     overtureFootprints: footprintMeta && footprintMeta.overtureFootprints ? footprintMeta.overtureFootprints : 0,
     overtureAdded: footprintMeta && footprintMeta.overtureAdded ? footprintMeta.overtureAdded : 0,

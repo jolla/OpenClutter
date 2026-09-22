@@ -422,14 +422,20 @@ function scoreRoofTrees(treeLonLat, features) {
   };
 }
 
-/** Probe points (lon/lat) that must land inside an emitted building ring. */
+/**
+ * Probe points (lon/lat). Default role is a roof: the point must land inside
+ * an emitted building ring. role "pavement" is a stale outline on asphalt and
+ * must stay outside every emitted ring.
+ */
 function scoreRoofProbes(probes, overlayRings, frame) {
   const points = probes || [];
   let hit = 0;
   const missed = [];
   for (const p of points) {
     const px = llToPx(+p.lon, +p.lat, frame);
-    const ok = (overlayRings || []).some((ring) => pointInRing(px, ring));
+    const inside = (overlayRings || []).some((ring) => pointInRing(px, ring));
+    const wantInside = p.role !== "pavement";
+    const ok = wantInside ? inside : !inside;
     if (ok) hit++;
     else missed.push(p.id || `${p.lon},${p.lat}`);
   }
@@ -539,6 +545,26 @@ function evaluate(scores, thresholds) {
   const chm = scores.chm;
   if (chm && chm.required && chm.applied < t.minChmTrees) {
     failures.push(`chmTrees ${chm.applied} < ${t.minChmTrees}`);
+  }
+  const grid = scores.contentGrid;
+  if (grid && grid.required) {
+    if (!grid.jpegMatchesFrame) failures.push("JPEG size is not the content-grid frame");
+    if (!grid.mpuLocked) failures.push("floorplan mpu is not the JPEG content grid");
+    if (grid.drift && !grid.drift.ok) {
+      for (const f of grid.drift.failures) failures.push(f);
+    }
+    if (grid.geodesicMismatchPx < (grid.minGeodesicMismatchPx || 0)) {
+      failures.push(
+        `geodesic stretch collapsed content grid (${grid.geodesicMismatchPx.toFixed(1)} px < ${grid.minGeodesicMismatchPx})`
+      );
+    }
+  }
+  const pavF = scores.pavementFootprints;
+  if (pavF && pavF.required) {
+    if (pavF.kept > 0) failures.push(`pavementFootprints kept ${pavF.kept}`);
+    if (pavF.dropped < (pavF.minDropped || 0)) {
+      failures.push(`pavementFootprints dropped ${pavF.dropped} < ${pavF.minDropped}`);
+    }
   }
   const compat = scores.compatibility;
   if (compat && compat.required !== false) {

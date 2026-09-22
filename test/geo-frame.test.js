@@ -21,6 +21,7 @@ const {
   applyImageryMeta,
   lockIsotropicImagery,
   isAspectLocked,
+  geodesicPixelMismatchPx,
   msFootprintsUrl,
   fetchMsFootprints,
   padFootprintBbox,
@@ -305,6 +306,33 @@ describe("isotropic aspect lock after Esri N/S pad", () => {
     const haminaLen = anisotropic.widthM * (locked.frame.imgH / locked.frame.imgW);
     assert.ok(Math.abs(locked.frame.lengthM - haminaLen) < 1e-6);
     assert.ok(locked.frame.lengthM < anisotropic.lengthM - 100);
+  });
+
+  it("Oak Creek content grid is not the geodesic pixel grid", () => {
+    const fs = require("fs");
+    const path = require("path");
+    const jpeg = fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/imagery.jpg"));
+    const meta = JSON.parse(
+      fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/imagery-meta.json"), "utf8")
+    );
+    const bbox = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/bbox.json"), "utf8"));
+    const roofs = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/roof-points.json"), "utf8"));
+    const snapped = applyImageryMeta(geoFrame(bbox), meta, jpegSize(jpeg));
+    const locked = lockIsotropicImagery(snapped, jpeg);
+    const frame = locked.frame;
+    const wh = jpegSize(locked.jpegBuf);
+    assert.equal(wh.width, frame.imgW);
+    assert.equal(wh.height, frame.imgH);
+    // Reading content-grid Y on a geodesic-height image shifts the retail roof
+    // by tens of pixels. The export must keep that mismatch from happening:
+    // JPEG size is the content grid, so the shift is not applied.
+    for (const p of roofs.points) {
+      const miss = geodesicPixelMismatchPx(frame, p.lon, p.lat);
+      assert.ok(miss > 40, p.id + " geodesic mismatch " + miss.toFixed(1));
+      const [x, y] = llToImagePx(p.lon, p.lat, frame);
+      assert.ok(x > 1 && x < frame.imgW - 1, p.id + " x");
+      assert.ok(y > 1 && y < frame.imgH - 1, p.id + " y");
+    }
   });
 });
 
