@@ -236,8 +236,7 @@ document.getElementById("export").onclick = async () => {
     downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
     const summary = (data.stats && data.stats.summary) || "";
     setStatus(
-      "Import this zip in Hamina (Projects → Import → OpenIntent) for the map and buildings. " +
-        "Paste hamina-clipboard.json from the zip for trees." +
+      "Import this zip in Hamina (Projects → Import → OpenIntent)." +
         (summary ? "\n" + summary : "")
     );
   } catch (err) {

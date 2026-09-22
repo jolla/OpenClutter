@@ -4,7 +4,17 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { buildClutter, validateOiArea, MAX_ATTENUATION_AREAS } = require("../netlify/lib/pipeline");
-const { catalogMaterials, COMPATIBILITY_MODE, OI_BUILDING_NAMES, OI_BUILDING_TYPES } = require("../netlify/lib/materials");
+const {
+  catalogMaterials,
+  buildingCatalog,
+  COMPATIBILITY_MODE,
+  OI_BUILDING_NAMES,
+  OI_BUILDING_TYPES,
+  materialForVegetation,
+  stockFoliageMaterial,
+  isVegetationOiName,
+  isPoisonedOiName,
+} = require("../netlify/lib/materials");
 const { scoreMaterialCompatibility } = require("./eval/score");
 
 const BBOX = { west: -87.93, south: 42.89, east: -87.91, north: 42.91, name: "Compat" };
@@ -27,6 +37,190 @@ function square(lon, lat, dLon, dLat, height) {
 }
 
 describe("Hamina OpenIntent material compatibility", () => {
+  it("uses stock Foliage objects and measured-height customs, and rejects poisoned names", () => {
+    const heavyStock = materialForVegetation(0, "heavy");
+    const lightStock = materialForVegetation(0, "light");
+    assert.deepEqual(heavyStock, stockFoliageMaterial("heavy"));
+    assert.deepEqual(lightStock, stockFoliageMaterial("light"));
+    assert.equal(heavyStock.name, "Foliage - Heavy");
+    assert.equal(lightStock.name, "Foliage - Light");
+    assert.equal((heavyStock.top_height * 3.280839895).toFixed(2), "19.68");
+    assert.equal(lightStock.top_height, heavyStock.top_height);
+    assert.equal(heavyStock.rf_properties.attenuation_per_m, 2);
+    assert.equal(lightStock.rf_properties.attenuation_per_m, 1);
+    assert.equal(heavyStock.display_color, "#3F7D2A");
+    assert.equal(lightStock.display_color, "#6FA84A");
+    assert.equal(materialForVegetation(6, "heavy").name, "Foliage - Heavy");
+    const light = materialForVegetation(9, "light");
+    const heavy = materialForVegetation(14.2, "heavy");
+    assert.equal(light.name, "Foliage - Light 9.0");
+    assert.equal(light.top_height, 9);
+    assert.equal(light.rf_properties.attenuation_per_m, 1);
+    assert.equal(light.display_color, "#6FA84A");
+    assert.equal(heavy.name, "Foliage - Heavy 14.2");
+    assert.equal(heavy.top_height, 14.2);
+    assert.equal(heavy.rf_properties.attenuation_per_m, 2);
+    assert.equal(heavy.display_color, "#3F7D2A");
+    assert.notEqual(heavy.display_color, "#9AA5AC");
+    assert.notEqual(heavy.display_color, "#9A4159");
+    for (const mat of [heavyStock, lightStock, light, heavy]) {
+      assert.deepEqual(Object.keys(mat), ["name", "rf_properties", "top_height", "display_color"]);
+      assert.equal(isVegetationOiName(mat.name), true);
+      assert.equal(isPoisonedOiName(mat.name), false);
+      assert.equal("itu_material_type" in mat, false);
+      assert.equal("bottom_height" in mat, false);
+    }
+    const frame = { imgW: 100, imgH: 100 };
+    const coords = [
+      { coordinate_xyz: { x: 0, y: 0, unit: "pixels" } },
+      { coordinate_xyz: { x: 10, y: 0, unit: "pixels" } },
+      { coordinate_xyz: { x: 10, y: 10, unit: "pixels" } },
+      { coordinate_xyz: { x: 0, y: 0, unit: "pixels" } },
+    ];
+    const accepted = validateOiArea(
+      { area: { coordinates: coords }, area_material: heavyStock },
+      frame.imgW,
+      frame.imgH
+    );
+    assert.equal(accepted.ok, true);
+    const driftedStock = validateOiArea(
+      {
+        area: { coordinates: coords },
+        area_material: { ...heavyStock, top_height: 12 },
+      },
+      frame.imgW,
+      frame.imgH
+    );
+    assert.equal(driftedStock.ok, false);
+    assert.equal(driftedStock.reason, "material");
+    const drifted = validateOiArea(
+      {
+        area: { coordinates: coords },
+        area_material: { ...light, top_height: 14.2 },
+      },
+      frame.imgW,
+      frame.imgH
+    );
+    assert.equal(drifted.ok, false);
+    assert.equal(drifted.reason, "material");
+    for (const name of ["Tree Trunk", "Foliage 14.2 m", "Tree Trunk 8.0 m", "Building 6.4 m"]) {
+      const rejected = validateOiArea(
+        {
+          area: { coordinates: coords },
+          area_material: {
+            name,
+            rf_properties: { attenuation_per_m: 1 },
+            top_height: 12,
+            display_color: "#509D33",
+          },
+        },
+        frame.imgW,
+        frame.imgH
+      );
+      assert.equal(rejected.ok, false, name);
+      assert.equal(rejected.reason, "material");
+    }
+  });
+
+  it("keeps a buildings-only catalog identical to gold and adds customs only with trees", () => {
+    const frame = geoFrame(BBOX);
+    const dLon = (frame.east - frame.west) * 0.04;
+    const dLat = (frame.north - frame.south) * 0.03;
+    const lon0 = frame.west + (frame.east - frame.west) * 0.2;
+    const lat0 = frame.south + (frame.north - frame.south) * 0.2;
+    const footprintsGeojson = {
+      features: [square(lon0, lat0, dLon, dLat, 6.41)],
+    };
+    const bare = buildClutter({
+      frame,
+      footprintsGeojson,
+      treePoints: [],
+      name: "Bare",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    const withTrees = buildClutter({
+      frame,
+      footprintsGeojson,
+      treePoints: [{ lon: lon0 + dLon * 6, lat: lat0, pct: 70, heightM: 14.2 }],
+      name: "Bare",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    assert.deepEqual(bare.openintent.area_materials, buildingCatalog());
+    assert.equal(bare.stats.openIntentTreeAreas, 0);
+    assert.deepEqual(withTrees.openintent.area_materials.slice(0, 4), bare.openintent.area_materials);
+    const extra = withTrees.openintent.area_materials.slice(4).map((m) => m.name);
+    assert.deepEqual(extra, ["Foliage - Heavy 14.2"]);
+    const foliage = withTrees.openintent.floorplans[0].attenuation_areas.find(
+      (a) => a.area_material.name === "Foliage - Heavy 14.2"
+    );
+    assert.equal(foliage.area_material.top_height, 14.2);
+    assert.equal(foliage.area_material.rf_properties.attenuation_per_m, 2);
+    assert.equal(foliage.area_material.display_color, "#3F7D2A");
+    assert.ok(foliage.area.coordinates.length / 3 <= 40);
+    assert.equal(
+      withTrees.openintent.floorplans[0].attenuation_areas.some((a) => a.area_material.name === "Tree Trunk"),
+      false
+    );
+    const bareAreas = bare.openintent.floorplans[0].attenuation_areas;
+    const both = withTrees.openintent.floorplans[0].attenuation_areas;
+    assert.equal(bareAreas.length, 1);
+    assert.deepEqual(
+      both.slice(0, bareAreas.length).map((a) => a.area_material),
+      bareAreas.map((a) => a.area_material)
+    );
+    assert.ok(both.length > bareAreas.length);
+    for (const a of both.slice(bareAreas.length)) {
+      assert.equal(isVegetationOiName(a.area_material.name), true);
+      assert.deepEqual(Object.keys(a.area_material), ["name", "rf_properties", "top_height", "display_color"]);
+      const cat = withTrees.openintent.area_materials.find((m) => m.name === a.area_material.name);
+      assert.deepEqual(a.area_material, cat);
+    }
+    assert.ok(withTrees.openintent.area_materials.every((m) => !isPoisonedOiName(m.name)));
+  });
+
+  it("imports buildings and stock foliage together when height is unmeasured", () => {
+    const frame = geoFrame(BBOX);
+    const dLon = (frame.east - frame.west) * 0.04;
+    const dLat = (frame.north - frame.south) * 0.03;
+    const lon0 = frame.west + (frame.east - frame.west) * 0.2;
+    const lat0 = frame.south + (frame.north - frame.south) * 0.2;
+    const footprintsGeojson = {
+      features: [square(lon0, lat0, dLon, dLat, 6.41)],
+    };
+    const bare = buildClutter({
+      frame,
+      footprintsGeojson,
+      treePoints: [],
+      name: "Stock",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    const withTrees = buildClutter({
+      frame,
+      footprintsGeojson,
+      treePoints: [{ lon: lon0 + dLon * 6, lat: lat0, pct: 70 }],
+      name: "Stock",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    assert.deepEqual(bare.openintent.area_materials, buildingCatalog());
+    assert.deepEqual(withTrees.openintent.area_materials.slice(0, 4), bare.openintent.area_materials);
+    const extra = withTrees.openintent.area_materials.slice(4);
+    assert.equal(extra.length, 1);
+    assert.deepEqual(extra[0], stockFoliageMaterial("heavy"));
+    const areas = withTrees.openintent.floorplans[0].attenuation_areas;
+    const building = areas.find((a) => a.area_material.name === "Building - Two Floor");
+    const foliage = areas.find((a) => a.area_material.name === "Foliage - Heavy");
+    assert.ok(building);
+    assert.deepEqual(building.area_material, bare.openintent.floorplans[0].attenuation_areas[0].area_material);
+    assert.ok(foliage);
+    assert.deepEqual(foliage.area_material, extra[0]);
+    assert.equal("itu_material_type" in foliage.area_material, false);
+    assert.equal("bottom_height" in foliage.area_material, false);
+    assert.ok(foliage.area.coordinates.length / 3 <= 40);
+    assert.equal(areas.some((a) => a.area_material.name === "Tree Trunk"), false);
+    assert.ok(withTrees.stats.openIntentBuildingAreas >= 1);
+    assert.ok(withTrees.stats.openIntentTreeAreas >= 1);
+  });
+
   it("keeps the gold Building-* OI catalog and exact heights on the clipboard", () => {
     const frame = geoFrame(BBOX);
     const dLon = (frame.east - frame.west) * 0.04;
@@ -52,9 +246,15 @@ describe("Hamina OpenIntent material compatibility", () => {
       treesSource: "nlcd-canopy",
     });
     const names = built.openintent.area_materials.map((m) => m.name);
-    assert.deepEqual(names, OI_BUILDING_NAMES);
-    assert.equal(built.openintent.area_materials.length, 4);
-    assert.deepEqual(built.openintent.area_materials, catalogMaterials());
+    assert.deepEqual(names.slice(0, 4), OI_BUILDING_NAMES);
+    assert.deepEqual(built.openintent.area_materials.slice(0, 4), catalogMaterials());
+    const vegNames = names.slice(4);
+    assert.deepEqual(vegNames, [
+      "Foliage - Heavy 14.2",
+      "Foliage - Light 7.5",
+      "Foliage - Light 9.1",
+    ]);
+    assert.ok(vegNames.every((n) => isVegetationOiName(n)));
     for (let i = 0; i < OI_BUILDING_TYPES.length; i++) {
       assert.equal(built.openintent.area_materials[i].top_height, OI_BUILDING_TYPES[i].topEdge);
       assert.equal(
@@ -66,14 +266,15 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.equal(compat.mode, COMPATIBILITY_MODE);
     assert.equal(compat.stockOnly, true);
     assert.equal(compat.consistent, true);
-    assert.equal(compat.materials, 4);
+    assert.equal(compat.materials, 7);
+    assert.equal(compat.vegetationHeights, 3);
+    assert.equal(compat.vegetationAreas >= 3, true);
     assert.equal(built.stats.compatibilityMode, COMPATIBILITY_MODE);
-    assert.equal(built.stats.areaMaterials, 4);
-    const dumped = JSON.stringify(built.openintent);
-    assert.equal(/Building \d/.test(dumped), false);
-    assert.equal(/Foliage/.test(dumped), false);
-    assert.equal(/Tree Trunk/.test(dumped), false);
-    assert.equal(/Hotel podium/.test(dumped), false);
+    assert.equal(built.stats.areaMaterials, 7);
+    assert.ok(built.openintent.area_materials.every((m) => !isPoisonedOiName(m.name)));
+    assert.ok(names.some((n) => n.indexOf("Foliage - Heavy") === 0));
+    assert.ok(names.some((n) => n.indexOf("Foliage - Light") === 0));
+    assert.equal(names.includes("Tree Trunk"), false);
     const types = built.clipboard.attenuatingZoneTypes;
     assert.ok(types.some((t) => t.id === "bldg-m-6_4" && t.topEdge === 6.4));
     assert.ok(types.some((t) => t.id === "bldg-m-18_2" && t.topEdge === 18.2));
@@ -81,8 +282,13 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.ok(types.some((t) => t.id === "foliage-m-14_2" && t.topEdge === 14.2));
     assert.ok(built.stats.exactBuildingHeights >= 3);
     assert.ok(built.stats.exactFoliageHeights >= 3);
-    // OI is buildings only; trees are clipboard-only.
-    assert.equal(built.openintent.floorplans[0].attenuation_areas.length, 3);
+    // Buildings stay on the gold prefix. Tree rings use the custom vegetation objects.
+    assert.equal(built.stats.openIntentBuildingAreas, 3);
+    assert.ok(built.stats.openIntentTreeAreas >= 3);
+    assert.equal(
+      built.openintent.floorplans[0].attenuation_areas.length,
+      3 + built.stats.openIntentTreeAreas
+    );
     assert.ok(built.clipboard.attenuatingZones.length >= 3 + 3 * 2);
     assert.equal(built.openintent.openintent_version, "2.0.1");
     assert.deepEqual(Object.keys(built.openintent).sort(), [
@@ -116,7 +322,9 @@ describe("Hamina OpenIntent material compatibility", () => {
       const cat = built.openintent.area_materials.find((m) => m.name === a.area_material.name);
       assert.deepEqual(a.area_material, cat);
       assert.deepEqual(Object.keys(a.area_material), ["name", "rf_properties", "top_height", "display_color"]);
-      assert.ok(OI_BUILDING_NAMES.includes(a.area_material.name));
+      assert.ok(
+        OI_BUILDING_NAMES.includes(a.area_material.name) || isVegetationOiName(a.area_material.name)
+      );
       assert.equal("itu_material_type" in a.area_material, false);
       assert.equal("bottom_height" in a.area_material, false);
       const coords = a.area.coordinates;

@@ -12,7 +12,13 @@ const {
   emptyClipboard,
   clipZone,
 } = require("./hamina-clipboard");
-const { materialForBuilding, catalogMaterials, OI_BUILDING_NAMES } = require("./materials");
+const {
+  materialForBuilding,
+  canonicalAreaMaterial,
+  documentMaterials,
+  OI_BUILDING_NAMES,
+  COMPATIBILITY_MODE,
+} = require("./materials");
 const { treePairsFromPoints } = require("./vegetation");
 const { zipStore } = require("./zip-store");
 const { overlaySvg, frameLockJson } = require("./overlay");
@@ -26,7 +32,8 @@ const MIN_OI_SPAN_PX = 4;
 const MIN_OI_SPAN_M = 3;
 /**
  * Last Hamina import that showed clutter was 982 areas (PR #12, stock names).
- * Stay at that cap for buildings. Trees are clipboard-only (not OpenIntent).
+ * Buildings fill the cap first. Tree rings use stock Foliage - Heavy / Light,
+ * or a measured-height custom of that shape, and take whatever slots remain.
  */
 const MAX_ATTENUATION_AREAS = 982;
 const OPENINTENT_VERSION = "2.0.1";
@@ -34,27 +41,32 @@ const STOCK_MATERIAL_NAMES = OI_BUILDING_NAMES.slice();
 
 const ZIP_README =
   "Import this zip in Hamina (Projects → Import → OpenIntent).\n" +
-  "OpenIntent carries the map image + building attenuation_areas only.\n" +
-  "area_materials are Hamina's outdoor Building - One/Two/Five/Ten Floor names (gold export match).\n" +
-  "Trees and exact measured metres are in hamina-clipboard.json — paste that file after import for foliage.\n" +
+  "OpenIntent carries the map image plus building and tree attenuation_areas.\n" +
+  "Buildings use Hamina's outdoor Building - One/Two/Five/Ten Floor materials.\n" +
+  "Trees use Hamina's Foliage - Heavy (19.68 ft, 2 dB/m) and Foliage - Light (19.68 ft, 1 dB/m).\n" +
+  "A measured height that is not 19.68 ft is Foliage - Heavy 14.2 or Foliage - Light 7.5 (same color and dB/m).\n" +
+  "There is no Tree type, so OpenIntent does not emit trunks. Tree Trunk and Foliage N.N m stay off OpenIntent.\n" +
+  "hamina-clipboard.json is optional legacy paste for trunks and exact measured metres.\n" +
   "Schema: OpenIntent 2.0.1, pixels+meters+feet per vertex, isotropic meter/pixel aspect.\n" +
-  "(Optional) Unzip and open alignment-overlay.svg next to images/ to check rooftops.\n";
+  "(Optional) Unzip and open alignment-overlay.svg next to images/ to check rooftops and canopy.\n";
 
 const ZIP_TROUBLESHOOT =
   "\nTroubleshooting if Hamina shows the map but no attenuating objects:\n" +
   "If VERIFY.txt attenuation_areas > 0, generation succeeded. Hamina then either dropped the import\n" +
   "or failed to render (WebGL). Do this in order:\n" +
   "  1. Unzip and confirm VERIFY.txt attenuation_areas (same as openIntent_*.json length).\n" +
-  "     That count is buildings only — trees are not in OpenIntent.\n" +
+  "     openIntentBuildingAreas + openIntentTreeAreas equals that count.\n" +
   "  2. Open alignment-overlay.svg next to images/. Rooftops (red) and trees (green) should sit on the JPEG.\n" +
   "  3. In Hamina, check the Attenuating Objects sidebar count.\n" +
   "     0 = OpenIntent import dropped the areas. >0 = they imported but did not draw.\n" +
-  "  4. Paste hamina-clipboard.json for buildings + trees (required fallback if OI import is empty).\n" +
+  "  4. Optional: paste hamina-clipboard.json for Foliage / Tree Trunk names and exact metres.\n" +
   "  5. Console WebGL texSubImage2D / Rive warnings can hide objects after a successful import.\n" +
   "     Try Hamina’s 2D map view, and turn hardware acceleration off, then zoom the full extent.\n" +
   "Floorplan dimensions.height is Hamina outdoor 2.5 m (8.202 ft); meters match JPEG pixel aspect.\n" +
-  "OpenIntent materials are only Building - One/Two/Five/Ten Floor (Hamina outdoor gold set).\n" +
-  "Foliage / Tree Trunk / Hotel podium names are clipboard-only — they silently emptied OI imports.\n" +
+  "Building materials are the gold One/Two/Five/Ten Floor objects.\n" +
+  "Tree materials are stock Foliage - Heavy / Light, or Foliage - Heavy H.H / Foliage - Light H.H at the measured height.\n" +
+  "Each is name + rf_properties + top_height + display_color. No itu_material_type, no bottom_height.\n" +
+  "Tree Trunk and Foliage N.N m are clipboard-only.\n" +
   "Each ring vertex is pixels+meters+feet; materials omit itu_material_type and bottom_height.\n" +
   "Rings thinner than 4 px on one axis, or over the Hamina vertex cap, are omitted from OpenIntent\n" +
   "(VERIFY.txt warning) so one bad ring cannot drop the import. Those shapes stay on the clipboard.\n";
@@ -154,7 +166,9 @@ function coverageStats(stats) {
     terrainRaised: s.terrainRaised || 0,
     terrainSloped: s.terrainSloped || 0,
     areaMaterials: s.areaMaterials != null ? s.areaMaterials : STOCK_MATERIAL_NAMES.length,
-    compatibilityMode: s.compatibilityMode || "stock-openintent",
+    openIntentBuildingAreas: s.openIntentBuildingAreas || 0,
+    openIntentTreeAreas: s.openIntentTreeAreas || 0,
+    compatibilityMode: s.compatibilityMode || COMPATIBILITY_MODE,
     exactBuildingHeights: s.exactBuildingHeights || 0,
     exactFoliageHeights: s.exactFoliageHeights || 0,
     openintentVersion: s.openintentVersion || OPENINTENT_VERSION,
@@ -226,6 +240,8 @@ function verifyTxt(stats) {
   const c = coverageStats(stats);
   return (
     `attenuation_areas: ${c.attenuationAreasEmitted}\n` +
+    `openIntentBuildingAreas: ${c.openIntentBuildingAreas || 0}\n` +
+    `openIntentTreeAreas: ${c.openIntentTreeAreas || 0}\n` +
     `openintent_version: ${c.openintentVersion}\n` +
     `coordinate_unit: ${c.coordinateUnit}\n` +
     `coordinate_origin: ${c.coordinateOrigin}\n` +
@@ -250,11 +266,11 @@ const ALIGNMENT = [
   "Exact alignment (repeatable, any site):",
   "1. Import this zip in Hamina (Projects → Import → OpenIntent).",
   "   Floorplan meters match the JPEG pixel aspect (unified mpu; Esri content grid).",
-  "   dimensions.height is Hamina outdoor 2.5 m. OpenIntent areas are buildings only:",
-  "   Building - One / Two / Five / Ten Floor (matches Hamina’s own gold export catalog).",
-  "2. Paste hamina-clipboard.json for trees (Foliage / Tree Trunk) and exact measured heights.",
-  "   If OpenIntent import shows map-only, paste the clipboard for buildings + trees until",
-  "   Hamina outdoor OI import is confirmed.",
+  "   dimensions.height is Hamina outdoor 2.5 m. OpenIntent areas are buildings and trees.",
+  "   Buildings: Building - One / Two / Five / Ten Floor.",
+  "   Trees: Foliage - Heavy / Foliage - Light (19.68 ft). Measured heights use Foliage - Heavy H.H / Foliage - Light H.H.",
+  "2. hamina-clipboard.json is optional legacy paste for older Foliage / Tree Trunk names",
+  "   and exact measured heights. The import already includes canopy.",
   "3. Extra files (alignment-overlay.svg, frame-lock.json) are ignored on OpenIntent import.",
   "Clipboard meters use that same widthM × lengthM. Origin: " + CLIPBOARD_ORIGIN,
   "Do NOT use a Google Earth screenshot as the map — Hamina auto-scale will not",
@@ -669,11 +685,9 @@ function oiAreaMaterialName(mat) {
   return mat && mat.name ? mat.name : "";
 }
 
-/** Clone of the stock catalog entry for this name. Null when the name is not stock. */
+/** Gold building clone, or the canonical measured vegetation object. Null if it would not match the catalog. */
 function catalogMaterial(material) {
-  const name = oiAreaMaterialName(material);
-  const cat = catalogMaterials().find((m) => m.name === name);
-  return cat ? JSON.parse(JSON.stringify(cat)) : null;
+  return canonicalAreaMaterial(material);
 }
 
 function validateOiArea(area, imgW, imgH) {
@@ -681,8 +695,9 @@ function validateOiArea(area, imgW, imgH) {
   const mat = area.area_material;
   // OpenIntent 2.0.1 attenuation_area.area_material is a material object.
   // A catalog name string fails the whole document ("Invalid OpenIntent format",
-  // PR #18). The object must equal the stock catalog entry: stock name, stock
-  // top_height, no itu_material_type, no bottom_height.
+  // PR #18). The object must deep-equal its catalog entry: gold building, or
+  // Stock Foliage - Heavy / Light, or a measured-height custom. No itu_material_type,
+  // no bottom_height. Poisoned names fail closed and that ring is omitted.
   if (typeof mat !== "object" || mat == null || Array.isArray(mat)) return { ok: false, reason: "material" };
   if ("itu_material_type" in mat || "bottom_height" in mat) return { ok: false, reason: "material" };
   const cat = catalogMaterial(mat);
@@ -868,12 +883,13 @@ function emitIfValid(area, imgW, imgH) {
 }
 
 /** Buildings first, then complete canopy+trunk pairs so a cap never splits a tree. */
-function capAttenuationAreas(areas, buildingCount, max) {
+function capAttenuationAreas(areas, buildingCount, max, opts) {
   const limit = max == null ? MAX_ATTENUATION_AREAS : max;
+  const pairTail = !opts || opts.pairTail !== false;
   if (!areas || areas.length <= limit) return { areas: areas || [], dropped: 0 };
   const b = Math.min(buildingCount, limit);
   let rest = limit - b;
-  rest -= rest % 2;
+  if (pairTail) rest -= rest % 2;
   const kept = areas.slice(0, b + rest);
   return { areas: kept, dropped: areas.length - kept.length };
 }
@@ -1228,18 +1244,20 @@ function footprintsToClutter(features, frame, affine) {
 }
 
 function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
-  const out = [];
+  const areas = [];
+  const kinds = [];
   let droppedInvalid = 0;
-  for (const t of oiTreeAreas) {
+  for (const t of oiTreeAreas || []) {
     const coords = ringToOi(t.ringPx, imgW, imgH, mpuX);
     const area = emitIfValid(makeOiArea(coords, t.material), imgW, imgH);
     if (!area) {
       droppedInvalid++;
       continue;
     }
-    out.push(area);
+    areas.push(area);
+    kinds.push(t.kind === "trunk" ? "trunk" : "canopy");
   }
-  return { areas: out, droppedInvalid };
+  return { areas, kinds, droppedInvalid };
 }
 
 /** Hamina outdoor OpenIntent floorplan height (gold export + after-paste re-export). */
@@ -1284,7 +1302,7 @@ function buildOpenIntent(frame, name, imgName, areas, materials) {
     ],
     wall_materials: [],
     switches: [],
-    area_materials: catalogMaterials(),
+    area_materials: documentMaterials(areas),
     openintent_version: OPENINTENT_VERSION,
   };
 }
@@ -1300,16 +1318,29 @@ function buildClutter({
   footprintMeta,
   terrain,
   warnings,
+  canopyHits,
+  heightSample,
 }) {
   const { name, slug } = siteName(rawName);
   const imgName = `${slug}.jpg`;
   const fp = footprintsToClutter(footprintsGeojson?.features || [], frame, affine);
-  const veg = treePairsFromPoints(treePoints || [], frame, fp.aabbs, affine);
-  // Trees stay on the clipboard only. Hamina's outdoor OI importer accepts the
-  // Building - One/Two/Five/Ten Floor catalog; Foliage / Tree Trunk names emptied
-  // every attenuation_area (Jerry gold zip vs OpenClutter emit).
-  const uncapped = fp.oiAreas;
-  const capped = capAttenuationAreas(uncapped, fp.oiAreas.length);
+  const veg = treePairsFromPoints(treePoints || [], frame, fp.aabbs, affine, {
+    canopyHits,
+    heightSample,
+  });
+  // A poisoned or drifted vegetation material fails makeOiArea and that ring
+  // is omitted, so it cannot empty the buildings.
+  const treeOi = treesToOi(veg.oiAreas, frame.imgW, frame.imgH, frame.mpuX);
+  const canopies = [];
+  const trunks = [];
+  for (let i = 0; i < treeOi.areas.length; i++) {
+    if (treeOi.kinds[i] === "trunk") trunks.push(treeOi.areas[i]);
+    else canopies.push(treeOi.areas[i]);
+  }
+  const uncapped = fp.oiAreas.concat(canopies, trunks);
+  const capped = capAttenuationAreas(uncapped, fp.oiAreas.length, MAX_ATTENUATION_AREAS, {
+    pairTail: false,
+  });
   const areas = capped.areas;
   const clip = emptyClipboard();
   const seenTypes = new Set(clip.attenuatingZoneTypes.map((t) => t.id));
@@ -1321,7 +1352,7 @@ function buildClutter({
   }
   // Full building + tree clipboard; do not trim to the OI building count.
   clip.attenuatingZones = fp.clipZones.concat(veg.clipZones);
-  const materials = catalogMaterials();
+  const materials = documentMaterials(areas);
   let exactBuildingHeights = 0;
   let exactFoliageHeights = 0;
   for (const t of clip.attenuatingZoneTypes) {
@@ -1345,9 +1376,12 @@ function buildClutter({
     frame,
     imgName,
     buildingRingsYUp: fp.overlayRings,
-    treePointsYUp: treeOverlayPts,
+    treePointsYUp: veg.overlayPoints && veg.overlayPoints.length ? veg.overlayPoints : treeOverlayPts,
+    treeRingsYUp: veg.overlayRings,
   });
   const lock = frameLockJson(frame, imgName);
+  const buildingEmitted = Math.min(fp.oiAreas.length, areas.length);
+  const treeEmitted = areas.length - buildingEmitted;
   const stats = {
     ...fp.stats,
     trees: veg.count,
@@ -1355,8 +1389,11 @@ function buildClutter({
     zones: clip.attenuatingZones.length,
     areas: areas.length,
     droppedInvalid: fp.stats.droppedInvalid || 0,
+    droppedTreeRings: treeOi.droppedInvalid,
     droppedAreasCap: capped.dropped,
     attenuationAreasEmitted: areas.length,
+    openIntentBuildingAreas: buildingEmitted,
+    openIntentTreeAreas: treeEmitted,
     openintentVersion: OPENINTENT_VERSION,
     coordinateUnit: "pixels",
     coordinateOrigin: "Y-up from SW",
@@ -1379,7 +1416,7 @@ function buildClutter({
     terrainRaised: terrain && terrain.raised ? terrain.raised : 0,
     terrainSloped: terrain && terrain.sloped ? terrain.sloped : 0,
     areaMaterials: materials.length,
-    compatibilityMode: "stock-openintent",
+    compatibilityMode: COMPATIBILITY_MODE,
     exactBuildingHeights,
     exactFoliageHeights,
   };
