@@ -9,7 +9,7 @@ const {
   CLIPBOARD_COLLECTION_KEYS,
   pickBuildingTypeId,
 } = require("../netlify/lib/hamina-clipboard");
-const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, footprintsToClutter, ringVertexCount } = require("../netlify/lib/pipeline");
+const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS } = require("../netlify/lib/pipeline");
 const { OI_BUILDING_NAMES } = require("../netlify/lib/materials");
 const { zipStore, unzipStore } = require("../netlify/lib/zip-store");
 
@@ -547,6 +547,10 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(cap.stats.droppedClip, 0);
     assert.equal(cap.oiAreas[0].area_material.name, "Building - Ten Floor");
     assert.equal(covers(clipped, cap, -115.1621, 36.1216), true);
+    const { oiPixelCoords, validateOiCoords } = require("../netlify/lib/pipeline");
+    const spherePx = oiPixelCoords(cap.oiAreas[0].area.coordinates);
+    assert.ok(spherePx.length - 1 <= MAX_OI_RING_VERTS, `sphere OI verts ${spherePx.length - 1}`);
+    assert.equal(validateOiCoords(cap.oiAreas[0].area.coordinates, clipped.imgW, clipped.imgH).ok, true);
 
     // Bbox that includes the center keeps the full disk on the same material.
     const full = frameFor(36.119);
@@ -555,6 +559,71 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(disk.stats.droppedMega, 0);
     assert.equal(disk.oiAreas[0].area_material.name, "Building - Ten Floor");
     assert.equal(covers(full, disk, -115.16208, 36.12123), true);
+    const diskPx = oiPixelCoords(disk.oiAreas[0].area.coordinates);
+    assert.ok(diskPx.length - 1 <= MAX_OI_RING_VERTS, `full sphere OI verts ${diskPx.length - 1}`);
+  });
+
+  it("caps a 100+ vertex ring and drops a one-axis sliver from OpenIntent", () => {
+    const fs = require("fs");
+    const path = require("path");
+    const { oiPixelCoords, validateOiCoords, validateOiArea } = require("../netlify/lib/pipeline");
+    const lock = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/wynn-golf/frame-lock.json"), "utf8"));
+    const frame = geoFrame(
+      {
+        west: lock.extent.west,
+        south: lock.extent.south,
+        east: lock.extent.east,
+        north: lock.extent.north,
+        name: "Wynn Golf",
+      },
+      { imgW: lock.image.widthPx, imgH: lock.image.heightPx }
+    );
+    const midLon = (frame.west + frame.east) / 2;
+    const midLat = (frame.south + frame.north) / 2;
+    // ~90k m² sits in the #24 180-vert budget, under the mega cutoff, so the
+    // old path emitted the raw Overture detail (Jerry's zip hit 156).
+    const dense = wavyPodiumFeature(midLon, midLat, 90000, frame.mpd, 140);
+    assert.ok(ringVertexCount(dense.geometry.coordinates[0]) >= 100);
+    assert.ok(ringAreaM2(dense.geometry.coordinates[0], frame.mpd) > 20000);
+    assert.ok(ringAreaM2(dense.geometry.coordinates[0], frame.mpd) < MEGA_CAMPUS_M2);
+    const thinLen = 40 / frame.mpd.lon;
+    const thinWid = 2 / frame.mpd.lat;
+    const thinLon = frame.west + (frame.east - frame.west) * 0.12;
+    const thinLat = frame.south + (frame.north - frame.south) * 0.72;
+    const thin = squareFeature(thinLon, thinLat, thinLon + thinLen, thinLat + thinWid);
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [dense, thin] },
+      treePoints: [],
+      name: "Wynn Dense",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    assert.equal(built.stats.droppedSpan, 1);
+    assert.equal(built.stats.droppedVerts, 0);
+    assert.equal(areas.length, 1);
+    assert.equal(built.stats.buildingsKept, 1);
+    assert.equal(built.stats.droppedMega, 0);
+    assert.ok(built.clipboard.attenuatingZones.length >= 2, "clipboard keeps the exact sliver");
+    let maxVerts = 0;
+    for (const a of areas) {
+      assert.equal(validateOiArea(a, frame.imgW, frame.imgH).ok, true);
+      const px = oiPixelCoords(a.area.coordinates);
+      const n = px.length - 1;
+      if (n > maxVerts) maxVerts = n;
+      assert.ok(n <= MAX_OI_RING_VERTS, `emitted ${n} verts`);
+      assert.equal(validateOiCoords(a.area.coordinates, frame.imgW, frame.imgH).ok, true);
+      const xs = px.map((c) => c.coordinate_xyz.x);
+      const ys = px.map((c) => c.coordinate_xyz.y);
+      assert.ok(Math.max(...xs) - Math.min(...xs) >= 4 - 0.01);
+      assert.ok(Math.max(...ys) - Math.min(...ys) >= 4 - 0.01);
+    }
+    assert.ok(maxVerts >= 8, "capped ring still has a real outline");
+    const verify = unzipStore(built.zip)["VERIFY.txt"].toString();
+    assert.match(verify, /warning: omitted 1 thin-span and 0 over-vertex ring/);
+    const stats = JSON.parse(unzipStore(built.zip)["export-stats.json"].toString());
+    assert.equal(stats.droppedSpan, 1);
+    assert.equal(stats.attenuationAreasEmitted, 1);
   });
 
   it("skips trees that land inside a building AABB", () => {
@@ -757,6 +826,59 @@ describe("OpenIntent attenuation_areas", () => {
     const ys = expanded.filter((c) => c.coordinate_xyz.unit === "pixels").map((c) => c.coordinate_xyz.y);
     assert.ok(Math.max(...xs) - Math.min(...xs) >= 3);
     assert.ok(Math.max(...ys) - Math.min(...ys) >= 3);
+    const sliver = ensureMinSpan(
+      [
+        [10, 10],
+        [40, 10],
+        [40, 11],
+        [10, 11],
+      ],
+      w,
+      h,
+      4
+    );
+    assert.deepEqual(sliver, []);
+    assert.equal(
+      ringToOi(
+        [
+          [10, 10],
+          [40, 10],
+          [40, 11],
+          [10, 11],
+          [10, 10],
+        ],
+        w,
+        h,
+        1
+      ),
+      null
+    );
+    const thinCoords = [
+      { coordinate_xyz: { x: 10, y: 10, unit: "pixels" } },
+      { coordinate_xyz: { x: 40, y: 10, unit: "pixels" } },
+      { coordinate_xyz: { x: 40, y: 11, unit: "pixels" } },
+      { coordinate_xyz: { x: 10, y: 11, unit: "pixels" } },
+      { coordinate_xyz: { x: 10, y: 10, unit: "pixels" } },
+    ];
+    assert.equal(validateOiCoords(thinCoords, w, h).reason, "span");
+    const mild = ringToOi(
+      [
+        [10, 10],
+        [40, 10],
+        [40, 13],
+        [10, 13],
+        [10, 10],
+      ],
+      w,
+      h,
+      1
+    );
+    assert.ok(mild);
+    const mildPx = mild.filter((c) => c.coordinate_xyz.unit === "pixels");
+    const mildXs = mildPx.map((c) => c.coordinate_xyz.x);
+    const mildYs = mildPx.map((c) => c.coordinate_xyz.y);
+    assert.ok(Math.max(...mildXs) - Math.min(...mildXs) >= 4 - 0.01);
+    assert.ok(Math.max(...mildYs) - Math.min(...mildYs) >= 4 - 0.01);
   });
 
   it("keeps a valid building when a sibling ring is a bowtie", () => {
