@@ -2,7 +2,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { conflateFootprints, assembleFootprints, heightRank } = require("../netlify/lib/conflate");
+const { conflateFootprints, assembleFootprints, dedupeStackedFootprints, heightRank } = require("../netlify/lib/conflate");
 const { mergeFootprintFeatures } = require("../netlify/lib/ms-global");
 
 function box(west, south, east, north, props) {
@@ -89,5 +89,89 @@ describe("footprint conflation", () => {
     assert.equal(assembled.features.length, 2);
     assert.equal(assembled.heightSources.overture, 1);
     assert.equal(assembled.heightSources["ms-global"], 1);
+  });
+
+  it("drops a shifted duplicate outline of the same roof", () => {
+    const cos = Math.cos((42.9 * Math.PI) / 180);
+    const dLon = 14 / (111320 * cos);
+    const a = box(RING[0], RING[1], RING[2], RING[3], {
+      height: 9.1,
+      heightSource: "ms-global",
+      geomSource: "ms-global",
+    });
+    const b = box(RING[0] + dLon, RING[1] + 0.00002, RING[2] + dLon, RING[3] + 0.00002, {
+      height: 6,
+      heightSource: "fema",
+      geomSource: "usa",
+    });
+    const out = dedupeStackedFootprints([a, b]);
+    assert.equal(out.features.length, 1);
+    assert.equal(out.dropped + out.merged, 1);
+    assert.equal(out.features[0].properties.height, 9.1);
+    assert.equal(out.features[0].properties.geomSource, "ms-global");
+  });
+
+  it("keeps adjacent buildings that only share a wall", () => {
+    const cos = Math.cos((42.9 * Math.PI) / 180);
+    const lonSpan = 36 / (111320 * cos);
+    const latSpan = 28 / 110540;
+    const sliver = 0.25 / (111320 * cos);
+    const west = -87.92;
+    const south = 42.9;
+    const a = box(west, south, west + lonSpan, south + latSpan, {
+      height: 6,
+      heightSource: "ms-global",
+      geomSource: "ms-global",
+    });
+    const b = box(west + lonSpan - sliver, south, west + lonSpan * 2, south + latSpan, {
+      height: 5.5,
+      heightSource: "ms-global",
+      geomSource: "ms-global",
+    });
+    const out = dedupeStackedFootprints([a, b]);
+    assert.equal(out.features.length, 2);
+    assert.equal(out.dropped, 0);
+    assert.equal(out.cut, 0);
+  });
+
+  it("notches a neighbor that cuts across another roof instead of emitting both", () => {
+    const cos = Math.cos((42.9 * Math.PI) / 180);
+    const lonSpan = 70 / (111320 * cos);
+    const latSpan = 40 / 110540;
+    const overlap = 18 / (111320 * cos);
+    const west = -87.91;
+    const south = 42.895;
+    const a = box(west, south, west + lonSpan, south + latSpan, {
+      height: 11,
+      heightSource: "overture",
+      geomSource: "overture",
+    });
+    const b = box(west + lonSpan - overlap, south, west + lonSpan * 2 - overlap, south + latSpan, {
+      height: 8,
+      heightSource: "ms-global",
+      geomSource: "ms-global",
+    });
+    const out = dedupeStackedFootprints([a, b]);
+    assert.equal(out.features.length, 2);
+    assert.equal(out.dropped, 0);
+    assert.equal(out.cut, 1);
+    const polygonClipping = require("polygon-clipping");
+    const mx = 111320 * cos;
+    const my = 110540;
+    const toM = (ring) => {
+      const open = ring.slice(0, -1).map(([lon, lat]) => [(lon - west) * mx, (lat - south) * my]);
+      open.push(open[0]);
+      return open;
+    };
+    const inter = polygonClipping.intersection(
+      [[toM(out.features[0].geometry.coordinates[0])]],
+      [[toM(out.features[1].geometry.coordinates[0])]]
+    );
+    let area = 0;
+    for (const poly of inter) {
+      const r = poly[0];
+      for (let i = 0; i < r.length - 1; i++) area += r[i][0] * r[i + 1][1] - r[i + 1][0] * r[i][1];
+    }
+    assert.ok(Math.abs(area) / 2 < 5, `notched intersection ${Math.abs(area) / 2}`);
   });
 });

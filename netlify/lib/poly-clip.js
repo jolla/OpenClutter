@@ -552,6 +552,155 @@ function overlapsRing(ring, other, limit) {
   return intersectionAreaPx(ring, other) > (limit == null ? OVERLAP_DROP_PX2 : limit);
 }
 
+/** Polygon-clipping multipolygon → simple exteriors (holes opened, or dropped). */
+function simpleExteriorRings(multi) {
+  return openHoles(multi).filter((ring) => ring && ring.length >= 4);
+}
+
+function multiAreaPx(multi) {
+  let area = 0;
+  for (const poly of multi || []) {
+    if (!poly || !poly[0]) continue;
+    area += Math.abs(signedArea(poly[0]));
+    for (let i = 1; i < poly.length; i++) area -= Math.abs(signedArea(poly[i]));
+  }
+  return area > 0 ? area : 0;
+}
+
+function pieceBlocked(ring, clipSet) {
+  if (!clipSet) return false;
+  const bb = bounds(ring);
+  for (const b of clipSet.buildings) {
+    if (!bboxHit(bb, b.bbox, 0)) continue;
+    if (overlapsRing(ring, b.ring, OVERLAP_DROP_PX2)) return true;
+  }
+  for (const extra of clipSet.extras) {
+    if (!extra.ring || !bboxHit(bb, extra.bbox, 0)) continue;
+    if (overlapsRing(ring, extra.ring, OVERLAP_DROP_PX2)) return true;
+  }
+  return false;
+}
+
+function overlapKeptPx(ring, kept) {
+  const bb = bounds(ring);
+  let worst = 0;
+  for (const k of kept) {
+    if (!bboxHit(bb, k.bb, 0.5)) continue;
+    const ov = intersectionAreaPx(ring, k.ring);
+    if (ov > worst) worst = ov;
+  }
+  return worst;
+}
+
+/**
+ * Stop foliage rings stacking on each other. Larger canopies keep the shared
+ * ground; a crown that only crosses an edge is cut back. Building and water
+ * masks still reject a piece that lands on a roof. Rings stay within the
+ * Hamina vertex cap.
+ */
+function dissolveFoliageRings(areas, clipSet) {
+  const ranked = [];
+  for (const area of areas || []) {
+    const ring = orientPositive(area && area.ringPx);
+    if (ring.length < 4) continue;
+    const a = Math.abs(signedArea(ring));
+    // A crown on a 64 px Wynn frame is a fraction of a pixel. ringToOi grows
+    // that to the 4 px floor, so an untouched ring is kept at any positive area.
+    if (!(a > 0)) continue;
+    const name = (area.material && area.material.name) || "";
+    ranked.push({
+      area,
+      ring,
+      a,
+      heavy: name.indexOf("Heavy") >= 0 ? 1 : 0,
+      bb: bounds(ring),
+    });
+  }
+  ranked.sort((x, y) => y.a - x.a || y.heavy - x.heavy);
+  const kept = [];
+  const accept = (piece, item, touched) => {
+    if (!piece || pieceBlocked(piece, clipSet)) return;
+    const pa = Math.abs(signedArea(piece));
+    if (touched && pa < 8) return;
+    if (!touched && !(pa > 0)) return;
+    if (touched && pa < item.a * 0.12 && pa < 70) return;
+    if (overlapKeptPx(piece, kept) > 1.5) return;
+    kept.push({
+      ring: piece,
+      bb: bounds(piece),
+      material: item.area.material,
+      kind: item.area.kind || "canopy",
+      shape: touched ? "polygon" : item.area.shape || "polygon",
+    });
+  };
+  for (const item of ranked) {
+    let geom = [[item.ring]];
+    let touched = false;
+    let overlapped = false;
+    for (const k of kept) {
+      if (!bboxHit(item.bb, k.bb, 0.5)) continue;
+      let inter = 0;
+      try {
+        inter = multiAreaPx(polygonClipping.intersection(geom, [[k.ring]]));
+      } catch {
+        continue;
+      }
+      if (inter < 1.5) continue;
+      overlapped = true;
+      touched = true;
+      try {
+        geom = polygonClipping.difference(geom, [[k.ring]]);
+      } catch {
+        geom = [];
+        break;
+      }
+      if (!geom || !geom.length) break;
+    }
+    if (!overlapped) {
+      accept(item.ring, item, false);
+      continue;
+    }
+    if (!geom || !geom.length) continue;
+    for (const s of openHoles(geom)) {
+      const open = openRing(s);
+      if (open.length >= 3 && open.length <= MAX_FOLIAGE_VERTS && usablePiece(closeRing(open), MAX_FOLIAGE_VERTS)) {
+        accept(closeRing(open), item, touched);
+        continue;
+      }
+      for (const piece of piecesUnderCap(s, MAX_FOLIAGE_VERTS, touched ? 0.85 : 1.2)) {
+        if (overlapKeptPx(piece, kept) <= 1.5) {
+          accept(piece, item, touched);
+          continue;
+        }
+        let shaved = [[piece]];
+        let ok = true;
+        for (const k of kept) {
+          if (!bboxHit(bounds(piece), k.bb, 0.5)) continue;
+          try {
+            shaved = polygonClipping.difference(shaved, [[k.ring]]);
+          } catch {
+            ok = false;
+            break;
+          }
+        }
+        if (!ok || !shaved || !shaved.length) continue;
+        for (const s2 of openHoles(shaved)) {
+          const open2 = openRing(s2);
+          if (open2.length >= 3 && open2.length <= MAX_FOLIAGE_VERTS && usablePiece(closeRing(open2), MAX_FOLIAGE_VERTS)) {
+            accept(closeRing(open2), item, true);
+          }
+        }
+      }
+    }
+  }
+  return kept.map((k) => ({
+    ringPx: k.ring,
+    material: k.material,
+    kind: k.kind,
+    shape: k.shape,
+  }));
+}
+
 function clipFoliageRing(ring, clipSet) {
   const closed = orientPositive(ring);
   if (closed.length < 4) return [];
@@ -631,4 +780,6 @@ module.exports = {
   intersectionAreaPx,
   createClipSet,
   clipFoliageRing,
+  simpleExteriorRings,
+  dissolveFoliageRings,
 };

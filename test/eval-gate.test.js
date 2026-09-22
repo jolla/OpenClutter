@@ -34,10 +34,11 @@ describe("eval gate (cached fixtures, no Hamina)", () => {
       assert.ok(next.exportStats.buildings.largeRoofKeepRate === 1 || next.exportStats.buildings.largeRoofs === 0);
       assert.equal(next.exportStats.buildings.missingLargeRoofs, 0);
       if (site.id === "oak-creek-commercial") {
-        // Pavement rejection removes the asphalt rings (7 on this fixture) from the zip.
-        // The floor stays well above the MSBFP2-only export (48).
+        // Pavement rejection removes the asphalt rings from the zip. Stacked
+        // duplicates of one roof are one area now, so the count sits under the
+        // old double-counted floor and still well above the MSBFP2-only export (48).
         assert.ok(
-          next.exportStats.coverage.buildingsKept >= 76,
+          next.exportStats.coverage.buildingsKept >= 68,
           `Oak Creek repro kept ${next.exportStats.coverage.buildingsKept}, MSBFP2-only export kept 48`
         );
         assert.ok(

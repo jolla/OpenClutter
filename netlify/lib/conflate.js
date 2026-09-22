@@ -14,6 +14,13 @@
  *    stub inside a fuller outline (area at most 2.4×). A smaller stub never
  *    replaces a larger ring. Imagery roof fill still runs after this and does
  *    not invent rings.
+ * 4. Centroid-in-ring still misses the same roof drawn twice when the outlines
+ *    are shifted (Oak Creek duplicates sit 14–16 m apart, IoU ~0.7, and neither
+ *    centroid falls inside the other). dedupeStackedFootprints runs after the
+ *    layer merge and again at emit: a ring that is mostly covered by a better
+ *    outline is dropped; a real neighbor that only cuts across the edge is
+ *    notched so the shared patch is emitted once. A shared wall with almost
+ *    no area is left alone.
  *
  * Height, measured wins (higher rank replaces):
  *    overture explicit height > Microsoft Global ML height > FEMA HEIGHT
@@ -26,7 +33,9 @@
  *    are clipboard zone types only (materials.js, compatibilityMode stock-foliage).
  */
 
+const polygonClipping = require("polygon-clipping");
 const { exteriorRings, centroid, pointInRing, featureHeight, setFeatureHeight } = require("./ms-global");
+const { simpleExteriorRings } = require("./poly-clip");
 
 const HEIGHT_RANK = {
   overture: 40,
@@ -99,6 +108,29 @@ function cloneGeometry(geometry) {
 }
 
 const SAME_ROOF_M = 11;
+/** Intersection / candidate area above this is the same roof, not a neighbor. */
+const STACK_COVER = 0.55;
+/** Ignore a shared wall. Notch anything larger that still stacks. */
+const STACK_CUT_M2 = 12;
+const STACK_CUT_FRAC = 0.06;
+/** Same bands as pipeline isMegaCampus. A coarse campus hull is left for that filter. */
+const MEGA_CAMPUS_M2 = 150000;
+const HOTEL_MEGA_M2 = 400000;
+const MEGA_MIN_DETAIL_VERTS = 40;
+
+function coarseMega(area, verts) {
+  if (!(area > MEGA_CAMPUS_M2)) return false;
+  if (area > HOTEL_MEGA_M2) return true;
+  return !(verts >= MEGA_MIN_DETAIL_VERTS);
+}
+
+const SOURCE_RANK = {
+  overture: 50,
+  "ms-global": 40,
+  "imagery-roof": 35,
+  arcgis: 20,
+  usa: 10,
+};
 
 function centroidNear(c, ring) {
   const oc = centroid(ring);
@@ -243,9 +275,375 @@ function countHeightSources(features) {
   return counts;
 }
 
+function evidenceRank(feature) {
+  const src = heightSource(feature);
+  return HEIGHT_RANK[src] || 0;
+}
+
+function sourceRank(feature) {
+  const props = (feature && feature.properties) || {};
+  const name = props.geomSource || props.source || "";
+  return SOURCE_RANK[name] || 0;
+}
+
+function keepScore(item) {
+  return item.evidence * 1e9 + item.sourceRank * 1e6 + Math.min(item.verts, 160) * 1e3 + item.area;
+}
+
+function ringsForDedupe(geometry) {
+  if (!geometry || !geometry.coordinates) return [];
+  const polys =
+    geometry.type === "MultiPolygon"
+      ? geometry.coordinates
+      : geometry.type === "Polygon"
+        ? [geometry.coordinates]
+        : [];
+  const out = [];
+  for (const rings of polys) {
+    if (!rings || !rings[0] || rings[0].length < 4) continue;
+    out.push(rings[0]);
+    for (let i = 1; i < rings.length; i++) {
+      const ring = rings[i];
+      if (!ring || ring.length < 4) continue;
+      const c = centroid(ring);
+      if (c && pointInRing(c, rings[0])) continue;
+      out.push(ring);
+    }
+  }
+  return out;
+}
+
+function projectionFor(features) {
+  let lat = 0;
+  let n = 0;
+  let lon0 = 0;
+  let lat0 = 0;
+  let seeded = false;
+  for (const f of features) {
+    for (const ring of ringsForDedupe(f && f.geometry)) {
+      for (const p of ring) {
+        const x = +p[0];
+        const y = +p[1];
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        if (!seeded) {
+          lon0 = x;
+          lat0 = y;
+          seeded = true;
+        }
+        lat += y;
+        n++;
+      }
+    }
+  }
+  const mean = n ? lat / n : 0;
+  const cos = Math.cos((mean * Math.PI) / 180);
+  return { mx: 111320 * Math.max(0.2, cos), my: 110540, lon0, lat0 };
+}
+
+function meterArea(ring) {
+  let a = 0;
+  for (let i = 0; i < ring.length - 1; i++) {
+    a += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+  }
+  return Math.abs(a) / 2;
+}
+
+function multiArea(multi) {
+  let a = 0;
+  for (const poly of multi || []) {
+    if (!poly || !poly[0]) continue;
+    a += meterArea(poly[0]);
+    for (let i = 1; i < poly.length; i++) a -= meterArea(poly[i]);
+  }
+  return a > 0 ? a : 0;
+}
+
+function openPts(ring, tol) {
+  if (!ring || ring.length < 3) return [];
+  const closed =
+    ring.length >= 2 &&
+    ring[0][0] === ring[ring.length - 1][0] &&
+    ring[0][1] === ring[ring.length - 1][1];
+  const src = closed ? ring.slice(0, -1) : ring.slice();
+  const out = [];
+  for (const p of src) {
+    if (!p || !Number.isFinite(+p[0]) || !Number.isFinite(+p[1])) continue;
+    const last = out[out.length - 1];
+    if (last && Math.hypot(+p[0] - last[0], +p[1] - last[1]) < tol) continue;
+    out.push([+p[0], +p[1]]);
+  }
+  if (out.length >= 2 && Math.hypot(out[0][0] - out[out.length - 1][0], out[0][1] - out[out.length - 1][1]) < tol) {
+    out.pop();
+  }
+  return out;
+}
+
+function openMeters(ring) {
+  return openPts(ring, 0.05);
+}
+
+function closeMeters(open) {
+  if (!open || open.length < 3) return [];
+  const ring = open.slice();
+  if (signedMeter(ring) < 0) ring.reverse();
+  ring.push([ring[0][0], ring[0][1]]);
+  return ring;
+}
+
+function signedMeter(open) {
+  let a = 0;
+  for (let i = 0; i < open.length; i++) {
+    const p = open[i];
+    const q = open[(i + 1) % open.length];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return a / 2;
+}
+
+function toMeters(ring, proj) {
+  const open = openPts(ring, 1e-10);
+  if (open.length < 3) return [];
+  const pts = open.map(([lon, lat]) => [(lon - proj.lon0) * proj.mx, (lat - proj.lat0) * proj.my]);
+  return closeMeters(pts);
+}
+
+function fromMeters(ring, proj) {
+  const open = openMeters(ring);
+  if (open.length < 3) return [];
+  const pts = open.map(([x, y]) => [proj.lon0 + x / proj.mx, proj.lat0 + y / proj.my]);
+  pts.push([pts[0][0], pts[0][1]]);
+  return pts;
+}
+
+function meterBBox(ring) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of ring) {
+    if (p[0] < minX) minX = p[0];
+    if (p[1] < minY) minY = p[1];
+    if (p[0] > maxX) maxX = p[0];
+    if (p[1] > maxY) maxY = p[1];
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function meterHit(a, b) {
+  return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
+}
+
+function pieceWorthKeeping(area, original) {
+  if (!(area >= 22)) return false;
+  if (area >= original * 0.45) return true;
+  return area >= 90;
+}
+
+function cloneKept(item, meterRing, proj) {
+  const m = meterRing || item.m;
+  const lonLat = fromMeters(m, proj);
+  if (lonLat.length < 4) return null;
+  const feature = {
+    type: "Feature",
+    properties: JSON.parse(JSON.stringify((item.feature && item.feature.properties) || {})),
+    geometry: { type: "Polygon", coordinates: [lonLat] },
+  };
+  if (item.feature && item.feature.id != null) feature.id = item.feature.id;
+  return {
+    feature,
+    m,
+    area: meterArea(m),
+    bb: meterBBox(m),
+    verts: openMeters(m).length,
+  };
+}
+
+function overlapAgainst(item, kept) {
+  const targets = [];
+  for (const k of kept) {
+    if (meterHit(item.bb, k.bb)) targets.push(k);
+  }
+  if (!targets.length) return { inter: 0, targets, best: null };
+  let mask;
+  try {
+    mask = [[targets[0].m]];
+    for (let i = 1; i < targets.length; i++) mask = polygonClipping.union(mask, [[targets[i].m]]);
+  } catch {
+    return { inter: 0, targets, best: null };
+  }
+  let inter = 0;
+  try {
+    inter = multiArea(polygonClipping.intersection([[item.m]], mask));
+  } catch {
+    inter = 0;
+  }
+  let best = null;
+  let bestA = 0;
+  for (const k of targets) {
+    let a = 0;
+    try {
+      a = multiArea(polygonClipping.intersection([[item.m]], [[k.m]]));
+    } catch {
+      a = 0;
+    }
+    if (a > bestA) {
+      bestA = a;
+      best = k;
+    }
+  }
+  return { inter, targets, best };
+}
+
+function cutAgainst(item, targets, proj) {
+  let geom = [[item.m]];
+  for (const t of targets) {
+    try {
+      geom = polygonClipping.difference(geom, [[t.m]]);
+    } catch {
+      return null;
+    }
+  }
+  const rings = simpleExteriorRings(geom);
+  const pieces = [];
+  for (const ring of rings) {
+    const kept = cloneKept(item, ring, proj);
+    if (kept && kept.area >= 1) pieces.push(kept);
+  }
+  return pieces;
+}
+
+function unionInto(partner, item, proj) {
+  let geom;
+  try {
+    geom = polygonClipping.union([[partner.m]], [[item.m]]);
+  } catch {
+    return null;
+  }
+  const rings = simpleExteriorRings(geom);
+  let best = null;
+  for (const ring of rings) {
+    const piece = cloneKept(partner, ring, proj);
+    if (piece && (!best || piece.area > best.area)) best = piece;
+  }
+  if (!best || best.area < partner.area * 0.9) return null;
+  applyHeight(best.feature, item.feature, true);
+  applyHeight(best.feature, partner.feature, true);
+  return best;
+}
+
+/**
+ * One outline per roof. Shifted copies from MS / Overture / USA Structures
+ * survive the centroid test; this drops a ring that is mostly inside a better
+ * outline, and notches a neighbor that only shares a patch. Touching walls
+ * (a few square metres) stay as two buildings.
+ *
+ * @param {object[]} features
+ * @returns {{features: object[], dropped: number, cut: number, merged: number}}
+ */
+function dedupeStackedFootprints(features) {
+  const list = Array.isArray(features) ? features : [];
+  const proj = projectionFor(list);
+  const items = [];
+  for (const f of list) {
+    if (!f || !f.geometry) continue;
+    for (const ring of ringsForDedupe(f.geometry)) {
+      const m = toMeters(ring, proj);
+      if (m.length < 4) continue;
+      const area = meterArea(m);
+      if (!(area >= 1)) continue;
+      items.push({
+        feature: f,
+        m,
+        area,
+        bb: meterBBox(m),
+        verts: openPts(ring, 1e-10).length,
+        evidence: evidenceRank(f),
+        sourceRank: sourceRank(f),
+        mega: false,
+      });
+      const item = items[items.length - 1];
+      item.mega = coarseMega(item.area, item.verts);
+    }
+  }
+  items.sort((a, b) => keepScore(b) - keepScore(a));
+  const kept = [];
+  const megas = [];
+  let dropped = 0;
+  let cut = 0;
+  let merged = 0;
+  for (const item of items) {
+    if (item.mega) {
+      megas.push(item);
+      continue;
+    }
+    const hit = overlapAgainst(item, kept);
+    const cover = item.area > 0 ? hit.inter / item.area : 0;
+    if (hit.inter >= STACK_CUT_M2 && cover >= STACK_COVER && hit.best) {
+      let other = 0;
+      for (const t of hit.targets) {
+        if (t === hit.best) continue;
+        try {
+          other += multiArea(polygonClipping.intersection([[item.m]], [[t.m]]));
+        } catch {
+          /* a second partner that cannot be measured blocks the union */
+          other = item.area;
+        }
+      }
+      if (other < item.area * 0.15) {
+        const united = unionInto(hit.best, item, proj);
+        if (united) {
+          const idx = kept.indexOf(hit.best);
+          if (idx >= 0) kept[idx] = united;
+          merged++;
+          continue;
+        }
+      }
+      if (hit.best) applyHeight(hit.best.feature, item.feature, true);
+      const rescue = cutAgainst(item, hit.targets, proj);
+      const wing = rescue ? rescue.filter((p) => pieceWorthKeeping(p.area, item.area)) : null;
+      if (wing && wing.length) {
+        cut++;
+        for (const p of wing) kept.push(p);
+        continue;
+      }
+      dropped++;
+      continue;
+    }
+    if (hit.inter >= STACK_CUT_M2 && cover >= STACK_CUT_FRAC) {
+      const pieces = cutAgainst(item, hit.targets, proj);
+      const good = pieces ? pieces.filter((p) => pieceWorthKeeping(p.area, item.area)) : null;
+      if (!pieces) {
+        const copy = cloneKept(item, null, proj);
+        if (copy) kept.push(copy);
+        continue;
+      }
+      if (!good.length) {
+        if (cover >= 0.35 && hit.best) applyHeight(hit.best.feature, item.feature, true);
+        if (cover >= 0.35) dropped++;
+        else {
+          const copy = cloneKept(item, null, proj);
+          if (copy) kept.push(copy);
+        }
+        continue;
+      }
+      cut++;
+      for (const p of good) kept.push(p);
+      continue;
+    }
+    const copy = cloneKept(item, null, proj);
+    if (copy) kept.push(copy);
+  }
+  for (const item of megas) {
+    const copy = cloneKept(item, null, proj);
+    if (copy) kept.push(copy);
+  }
+  return { features: kept.map((k) => k.feature), dropped, cut, merged };
+}
+
 /**
  * Global ML, then Overture, then MSBFP2, then USA Structures.
  * Imagery roofs are applied by the caller after this.
+ * Stacked outlines of the same roof are removed before return.
  */
 function assembleFootprints({ global, overture, arcgis, usa }) {
   const g = tagLayer(global, "ms-global", "ms-global");
@@ -255,15 +653,18 @@ function assembleFootprints({ global, overture, arcgis, usa }) {
   const withOverture = conflateFootprints(g, o, { replaceGeometry: true, rankHeight: true });
   const withArc = conflateFootprints(withOverture.features, a, { replaceGeometry: true, rankHeight: true });
   const withUsa = conflateFootprints(withArc.features, u, { replaceGeometry: true, rankHeight: true });
+  const separated = dedupeStackedFootprints(withUsa.features);
   return {
-    features: withUsa.features,
+    features: separated.features,
     overtureAdded: withOverture.added,
     overtureUpgraded: withOverture.heightsUpgraded,
     geometriesReplaced:
       withOverture.geometriesReplaced + withArc.geometriesReplaced + withUsa.geometriesReplaced,
     heightsTransferred:
       withOverture.heightsTransferred + withArc.heightsTransferred + withUsa.heightsTransferred,
-    heightSources: countHeightSources(withUsa.features),
+    heightSources: countHeightSources(separated.features),
+    stackedDropped: separated.dropped,
+    stackedCut: separated.cut,
   };
 }
 
@@ -276,6 +677,7 @@ module.exports = {
   shouldReplaceGeometry,
   conflateFootprints,
   assembleFootprints,
+  dedupeStackedFootprints,
   countHeightSources,
   tagLayer,
 };

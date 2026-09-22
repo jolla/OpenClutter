@@ -5,7 +5,7 @@ const { clipZone } = require("./hamina-clipboard");
 const { measuredFoliageMaterial, measuredTrunkMaterial, materialForVegetation } = require("./materials");
 
 const { MAX_TREES, MAX_TREES_LARGE, maxTreesForBbox, pickStratified, canopyHeightM } = require("./tree-source");
-const { BUILDING_BUFFER_M, createClipSet, clipFoliageRing } = require("./poly-clip");
+const { BUILDING_BUFFER_M, createClipSet, clipFoliageRing, dissolveFoliageRings } = require("./poly-clip");
 const TRUNK_R_M = 0.5;
 
 function blobRingPx(cx, cy, rx, ry, n, jitter, seed) {
@@ -417,6 +417,16 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     const covered = polygons.some((poly) => pointInLonLatRing(p.lon, p.lat, poly.ringLonLat));
     if (covered || !canopyMat) continue;
     pushCanopy(canopyPx, canopyMat, "circle");
+  }
+  // #30 clips each ring against roofs and water. Rings still stacked on each
+  // other (a 30 m patch over a neighbor, or two crowns closer than their
+  // diameter). Dissolve after that clip so Hamina does not paint green on green.
+  const dissolved = dissolveFoliageRings(oiAreas, clipSet);
+  oiAreas.length = 0;
+  overlayRings.length = 0;
+  for (const area of dissolved) {
+    oiAreas.push(area);
+    if (area.ringPx) overlayRings.push(area.ringPx);
   }
   const overlayPoints = picked.map((p) => [p.x, p.y]);
   return {
