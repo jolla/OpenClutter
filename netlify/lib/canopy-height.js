@@ -170,13 +170,13 @@ function paintPartial(target, tile, frame) {
   }
 }
 
-async function fetchChmGrid(frame) {
+async function fetchChmGrid(frame, opts) {
   const keys = quadkeysForBbox(frame.west, frame.south, frame.east, frame.north, CHM_ZOOM);
   if (!keys.length || keys.length > MAX_TILES) return null;
   const geotiff = require("geotiff");
   const { width, height } = gridSize(frame);
   const values = new Uint8Array(width * height);
-  const signal = AbortSignal.timeout(7000);
+  const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
   for (const key of keys) {
     const tiff = await geotiff.fromUrl(chmUrl(key), { cacheSize: 16 }, signal);
     const image = await tiff.getImage();

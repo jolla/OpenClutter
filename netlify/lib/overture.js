@@ -136,6 +136,12 @@ function featuresFromRows(rows, bbox) {
   return features;
 }
 
+function failAborted() {
+  const err = new Error("The operation was aborted due to timeout");
+  err.name = "AbortError";
+  return err;
+}
+
 function loadReader() {
   const hp = require("hyparquet");
   const comp = require("hyparquet-compressors");
@@ -146,7 +152,7 @@ function loadReader() {
   };
 }
 
-async function fetchOvertureFootprints(frame) {
+async function fetchOvertureFootprints(frame, opts) {
   const bbox = {
     west: +frame.west,
     south: +frame.south,
@@ -164,12 +170,15 @@ async function fetchOvertureFootprints(frame) {
   const features = [];
   for (const [file, gs] of byFile) {
     const url = AZURE_PREFIX + file;
+    const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
+    if (signal.aborted) throw failAborted();
     const source = await asyncBufferFromUrl({
       url,
-      requestInit: { signal: AbortSignal.timeout(8000) },
+      requestInit: { signal },
     });
     gs.sort((a, b) => a.rowStart - b.rowStart);
     for (const g of gs) {
+      if (signal.aborted) throw failAborted();
       const rows = await parquetReadObjects({
         file: source,
         compressors,

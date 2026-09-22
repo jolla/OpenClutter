@@ -170,7 +170,7 @@ document.getElementById("export").onclick = async () => {
         (summary ? "\n" + summary : "")
     );
   } catch (err) {
-    setStatus(err.message + " — try a smaller box.", true);
+    setStatus(String(err && err.message ? err.message : "Export failed. Retry."), true);
   } finally {
     exportBtn.disabled = false;
   }
