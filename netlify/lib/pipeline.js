@@ -49,10 +49,10 @@ const ZIP_TROUBLESHOOT =
   "  2. Open alignment-overlay.svg next to images/. Rooftops (red) and trees (green) should sit on the JPEG.\n" +
   "  3. In Hamina, check the Attenuating Objects sidebar count.\n" +
   "     0 = OpenIntent import dropped the areas. >0 = they imported but did not draw.\n" +
-  "  4. Paste hamina-clipboard.json for trees and exact measured building heights.\n" +
+  "  4. Paste hamina-clipboard.json for buildings + trees (required fallback if OI import is empty).\n" +
   "  5. Console WebGL texSubImage2D / Rive warnings can hide objects after a successful import.\n" +
   "     Try Hamina’s 2D map view, and turn hardware acceleration off, then zoom the full extent.\n" +
-  "Pixel and meter aspects are locked equal after the Esri snap (isotropic mpu).\n" +
+  "Floorplan dimensions.height is Hamina outdoor 2.5 m (8.202 ft); meters match JPEG pixel aspect.\n" +
   "OpenIntent materials are only Building - One/Two/Five/Ten Floor (Hamina outdoor gold set).\n" +
   "Foliage / Tree Trunk / Hotel podium names are clipboard-only — they silently emptied OI imports.\n" +
   "Each ring vertex is pixels+meters+feet; materials omit itu_material_type and bottom_height.\n";
@@ -183,10 +183,12 @@ function verifyTxt(stats) {
 const ALIGNMENT = [
   "Exact alignment (repeatable, any site):",
   "1. Import this zip in Hamina (Projects → Import → OpenIntent).",
-  "   The zip’s meter dimensions ARE the JPEG’s geographic extent (widthM × lengthM).",
-  "   OpenIntent attenuation_areas are buildings only, using Hamina outdoor names:",
+  "   Floorplan meters match the JPEG pixel aspect (unified mpu; Esri content grid).",
+  "   dimensions.height is Hamina outdoor 2.5 m. OpenIntent areas are buildings only:",
   "   Building - One / Two / Five / Ten Floor (matches Hamina’s own gold export catalog).",
   "2. Paste hamina-clipboard.json for trees (Foliage / Tree Trunk) and exact measured heights.",
+  "   If OpenIntent import shows map-only, paste the clipboard for buildings + trees until",
+  "   Hamina outdoor OI import is confirmed.",
   "3. Extra files (alignment-overlay.svg, frame-lock.json) are ignored on OpenIntent import.",
   "Clipboard meters use that same widthM × lengthM. Origin: " + CLIPBOARD_ORIGIN,
   "Do NOT use a Google Earth screenshot as the map — Hamina auto-scale will not",
@@ -908,7 +910,12 @@ function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
   return { areas: out, droppedInvalid };
 }
 
+/** Hamina outdoor OpenIntent floorplan height (gold export + after-paste re-export). */
+const OI_FLOORPLAN_HEIGHT_M = 2.5;
+const OI_FLOORPLAN_HEIGHT_FT = 8.202;
+
 function buildOpenIntent(frame, name, imgName, areas, materials) {
+  const mpu = frame.mpuX || frame.mpu || frame.widthM / frame.imgW;
   return {
     floorplans: [
       {
@@ -921,14 +928,19 @@ function buildOpenIntent(frame, name, imgName, areas, materials) {
           {
             width: frame.imgW,
             length: frame.imgH,
-            height: 12 / frame.mpuY,
+            height: OI_FLOORPLAN_HEIGHT_M / mpu,
             unit: "pixels",
           },
-          { width: frame.widthM, length: frame.lengthM, height: 12, unit: "meters" },
+          {
+            width: frame.widthM,
+            length: frame.lengthM,
+            height: OI_FLOORPLAN_HEIGHT_M,
+            unit: "meters",
+          },
           {
             width: frame.widthM / 0.3048,
             length: frame.lengthM / 0.3048,
-            height: 12 / 0.3048,
+            height: OI_FLOORPLAN_HEIGHT_FT,
             unit: "feet",
           },
         ],
@@ -1090,6 +1102,8 @@ module.exports = {
   MIN_OI_SPAN_PX,
   MIN_OI_SPAN_M,
   OPENINTENT_VERSION,
+  OI_FLOORPLAN_HEIGHT_M,
+  OI_FLOORPLAN_HEIGHT_FT,
   STOCK_MATERIAL_NAMES,
   MEGA_CAMPUS_M2,
   megaCampusLimitM2,

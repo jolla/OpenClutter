@@ -34,7 +34,9 @@ Hamina **2026-09-01** (docs.hamina.com): “OpenIntent import and export now sup
 
 Shared math lives in `netlify/lib/geo-frame.js`. Pipeline in `netlify/lib/pipeline.js`. HTTP in `netlify/functions/clutter.js`. Tests in `test/`.
 
-OpenIntent pixels (Y-up from SW) and clipboard meters (NE = 0,0) share the JPEG extent. After Esri N/S pad, `lockIsotropicImagery` **resamples** the JPEG (stretch to fill — no letterbox) so `imgW/imgH == widthM/lengthM`, then `unifyFrameMpu` forces a single mpu (`lengthM = imgH * mpu`). Clipboard building rings are built from **OI pixel vertices only** (not the interleaved meters/feet triples); treating triples as pixels inflated footprints about NE=(0,0) and shoved them south/west. `scoreClipboardOverlayAlignment` fails on systematic south shift or scale>1 vs `alignment-overlay.svg`.
+OpenIntent pixels (Y-up from SW) and clipboard meters (NE = 0,0) share the JPEG extent. After Esri N/S pad, `lockIsotropicImagery` keeps the **Esri content pixel grid** (downscale only if over maxSide — no geodesic stretch) and `unifyFrameMpu` sets `lengthM = imgH * mpu` so Hamina’s isotropic map meters match the image aspect. Stretching the aerial to geodesic aspect made footprints sit south/large of rooftops. Clipboard building rings use **OI pixel vertices only**. Floorplan `dimensions[].height` is Hamina outdoor **2.5 m** / 8.202 ft (not 12 m). `scoreClipboardOverlayAlignment` fails on systematic south shift or scale>1 vs `alignment-overlay.svg`.
+
+If OpenIntent import still shows map-only after height=2.5 + gold Building-* materials, treat **clipboard paste as required for clutter** until Hamina confirms outdoor OI import; keep shipping both.
 
 ```
 OpenIntent: SW → (0, 0) px ; NE → (imgW, imgH) px

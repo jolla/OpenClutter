@@ -10,7 +10,7 @@ Hamina **2026-09-01** (docs.hamina.com release notes): “OpenIntent import and 
 
 One bbox drives everything:
 
-1. Esri World Imagery for that bbox (`bboxSR=4326`, `imageSR=4326`). **The frame is the JPEG’s actual `extent`**, which is often taller than the drawn box. After that snap the JPEG is resampled so pixel aspect equals meter aspect (isotropic mpu).
+1. Esri World Imagery for that bbox (`bboxSR=4326`, `imageSR=4326`). **The frame is the JPEG’s actual `extent`**, which is often taller than the drawn box. After that snap, meters are unified to the JPEG pixel aspect (`lengthM = imgH * widthM/imgW`) so Hamina’s isotropic map scale matches — the aerial content grid is kept (no geodesic stretch).
 2. Building footprints mapped through that actual extent: Microsoft Global ML (height used when the tile has one), Overture Buildings (`height` or `num_floors`), Esri MSBFP2, then FEMA USA Structures. One ring per roof; the best measured height wins.
 3. USFS/NLCD percent tree canopy as a density field (jitter + NMS; imagery RGB only if the canopy raster is missing/empty — **not** when NLCD is valid zeros on parking/lawn). A Meta/WRI canopy-height window sets foliage `top_height` when it returns; NLCD still decides where trees go.
 4. lon/lat → JPEG pixels with the actual west/south/east/north (OpenIntent Y-up / JPEG Y-down).
@@ -47,7 +47,7 @@ Trees come from **USFS/NLCD percent tree canopy** on the same extent (threshold 
 1. Search an address.
 2. Draw the site (under ~2 km on a side).
 3. **Export** — one `{site}-openintent.zip` download. Inside:
-   - `openIntent_<slug>.json` — OpenIntent 2.0.1 with `attenuation_areas` (buildings + tree pairs) at the JPEG’s geographic size
+   - `openIntent_<slug>.json` — OpenIntent 2.0.1 with building `attenuation_areas` (Building - One/Two/Five/Ten Floor) at the JPEG meter size; floorplan height 2.5 m (Hamina outdoor default)
    - `images/<slug>.jpg` — Esri aerial
    - `alignment-overlay.svg` — buildings (red) + trees (green) on that JPEG
    - `frame-lock.json` — pixel/meter corners for Hamina vs OpenIntent vs JPEG
@@ -58,7 +58,7 @@ Trees come from **USFS/NLCD percent tree canopy** on the same extent (threshold 
    - `export-stats.json` — same coverage numbers as machine-readable JSON, including `attenuationAreasEmitted`
    - `VERIFY.txt` — exact `attenuation_areas` length (same as `openIntent_*.json`)
 4. Hamina: **Projects → Import → OpenIntent**.
-5. Optional: unzip. Confirm `VERIFY.txt` `attenuation_areas` is a positive integer, then open `alignment-overlay.svg` next to `images/`. If that count is >0 but Hamina is empty, check the Attenuating Objects sidebar, paste `hamina-clipboard.json`, and try 2D view / hardware acceleration off. Zip `README.txt` has the full steps.
+5. Optional: unzip. Confirm `VERIFY.txt` `attenuation_areas` is a positive integer, then open `alignment-overlay.svg` next to `images/`. If that count is >0 but Hamina shows map-only after OpenIntent import, paste `hamina-clipboard.json` for clutter (buildings + trees) until Hamina confirms outdoor OI import; also try 2D view / hardware acceleration off. Zip `README.txt` has the full steps.
 
 The page has no extra options. Tree source (NLCD canopy, RGB fallback), OSM, and calibration are automatic or API-only.
 
