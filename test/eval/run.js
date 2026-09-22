@@ -13,6 +13,7 @@ const {
   esriImageryMetaUrl,
   fetchMsFootprints,
   applyImageryMeta,
+  lockIsotropicImagery,
   jpegSize,
 } = require("../../netlify/lib/geo-frame");
 const { buildClutter, footprintsToClutter } = require("../../netlify/lib/pipeline");
@@ -75,7 +76,10 @@ async function fetchLive(site) {
   const drawn = geoFrame(bbox);
   const meta = await (await fetchOk(esriImageryMetaUrl(drawn))).json();
   const jpeg = Buffer.from(await (await fetchOk(esriImageryUrl(drawn))).arrayBuffer());
-  const frame = applyImageryMeta(drawn, meta, jpegSize(jpeg));
+  const snapped = applyImageryMeta(drawn, meta, jpegSize(jpeg));
+  const locked = lockIsotropicImagery(snapped, jpeg);
+  const frame = locked.frame;
+  const jpegOut = locked.jpegBuf || jpeg;
   const arcgis = await fetchMsFootprints(frame, (url) => fetchOk(url), { pad: false });
   const globalPack = await fetchMsGlobalFootprints(frame, (url) => fetchOk(url)).catch(() => ({ features: [] }));
   const usaPack = await fetchUsaStructures(frame, (url) => fetchOk(url)).catch(() => ({ features: [] }));
@@ -90,7 +94,7 @@ async function fetchLive(site) {
     addedFromUsa: merged.added,
   };
   const tcc = await (await fetchOk(T.canopySamplesUrl(frame))).json();
-  return { site, bbox: { ...site }, meta, jpeg, footprints, tcc, roofPoints: null };
+  return { site, bbox: { ...site }, meta, jpeg: jpegOut, footprints, tcc, roofPoints: null };
 }
 
 function decodeJpeg(buf) {
@@ -146,8 +150,10 @@ function runLoaded(loaded, opts) {
   opts = opts || {};
   const rgbPolicy = opts.rgbPolicy || T.RGB_POLICY_PREFER_NLCD;
   const drawn = geoFrame(loaded.bbox);
-  const frame = applyImageryMeta(drawn, loaded.meta, jpegSize(loaded.jpeg));
-  const jpegDecoded = decodeJpeg(loaded.jpeg);
+  const snapped = applyImageryMeta(drawn, loaded.meta, jpegSize(loaded.jpeg));
+  const locked = lockIsotropicImagery(snapped, loaded.jpeg);
+  const frame = locked.frame;
+  const jpegDecoded = decodeJpeg(locked.jpegBuf || loaded.jpeg);
   const baseFeatures = loaded.footprints.features || [];
   const prefer = rgbPolicy === T.RGB_POLICY_PREFER_NLCD;
   let vectorFeatures = baseFeatures;
@@ -196,7 +202,7 @@ function runLoaded(loaded, opts) {
     footprintsGeojson: { type: "FeatureCollection", features: supplemented.features },
     treePoints,
     name: loaded.site.name || loaded.bbox.name || loaded.site.id,
-    imgBuf: loaded.jpeg,
+    imgBuf: locked.jpegBuf || loaded.jpeg,
     treesSource: resolved.source,
     terrain,
     footprintMeta: {

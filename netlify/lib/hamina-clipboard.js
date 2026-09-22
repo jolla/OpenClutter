@@ -129,16 +129,16 @@ function emptyClipboard(id) {
   return clip;
 }
 
-/** OpenIntent material keys Hamina has accepted (v0.3 export match + oiconvert).
- *  Do NOT emit bottom_height — Hamina reported "Invalid OpenIntent format".
+/** OpenIntent material keys match Hamina-native exports: name, rf_properties,
+ *  top_height, display_color. Do NOT emit itu_material_type or bottom_height —
+ *  Jerry's Hamina gold sample omits itu; bottom_height was "Invalid OpenIntent format".
  *  Clipboard types still keep bottomEdge; that path is HaminaClipboard JSON. */
 function oiMaterialFromType(type, topHeight) {
   return {
     name: type.name,
-    display_color: type.color,
-    top_height: topHeight != null ? +topHeight : type.topEdge,
-    itu_material_type: "ITU_R_UNKNOWN",
     rf_properties: { attenuation_per_m: type.attenuationDbPerMeter },
+    top_height: topHeight != null ? +topHeight : type.topEdge,
+    display_color: type.color,
   };
 }
 

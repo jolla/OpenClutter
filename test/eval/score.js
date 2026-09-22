@@ -367,13 +367,19 @@ function treePointsFromBuilt(built) {
     const trunkName = typeof a.area_material === "string" ? a.area_material : a.area_material && a.area_material.name;
     if (!mats.has(trunkName)) continue;
     const coords = a.area.coordinates || [];
-    if (coords.length < 3) continue;
+    const pixels = [];
+    for (let i = 0; i < coords.length; i++) {
+      const p = coords[i] && coords[i].coordinate_xyz;
+      if (!p || p.unit !== "pixels") continue;
+      pixels.push(p);
+    }
+    if (pixels.length < 3) continue;
     let sx = 0;
     let sy = 0;
-    const n = coords.length - 1;
+    const n = pixels.length - 1;
     for (let i = 0; i < n; i++) {
-      sx += coords[i].coordinate_xyz.x;
-      sy += coords[i].coordinate_xyz.y;
+      sx += pixels[i].x;
+      sy += pixels[i].y;
     }
     pts.push({ xUp: sx / n, yUp: sy / n });
   }

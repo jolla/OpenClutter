@@ -30,10 +30,9 @@ function idFor(prefix, h) {
 function oiMaterial(name, color, top, dbPerM) {
   return {
     name,
-    display_color: color,
-    top_height: top,
-    itu_material_type: "ITU_R_UNKNOWN",
     rf_properties: { attenuation_per_m: dbPerM },
+    top_height: top,
+    display_color: color,
   };
 }
 

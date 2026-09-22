@@ -55,15 +55,15 @@ const ZIP_TROUBLESHOOT =
   "  4. If stats>0 but Hamina is empty (sidebar 0 or objects invisible): paste hamina-clipboard.json into Hamina.\n" +
   "  5. Console WebGL texSubImage2D / Rive warnings can hide objects after a successful import.\n" +
   "     Try Hamina’s 2D map view, and turn hardware acceleration off, then zoom the full extent.\n" +
-  "Pixel vs meter aspect can differ after Esri N/S pad (non-square mpu). Overlay still locks image-space;\n" +
-  "that does not hide objects by itself.\n" +
+  "Pixel and meter aspects are locked equal after the Esri snap (isotropic mpu). Overlay locks image-space;\n" +
+  "clipboard meters then sit on the same map Hamina builds from the JPEG aspect.\n" +
   "The last OpenIntent import that showed clutter was 982 areas. This zip emits at most " +
   MAX_ATTENUATION_AREAS +
   " areas (buildings first). Invalid/open/NaN/self-intersecting rings are dropped per-polygon.\n" +
   "Each attenuation area embeds a copy of its area_materials catalog entry. A name string is not\n" +
   "OpenIntent 2.0.1 and Hamina rejects the document as Invalid OpenIntent format.\n" +
-  "OpenIntent materials omit bottom_height (Hamina rejected it as Invalid OpenIntent format) and use\n" +
-  "stock names, stock heights, and itu_material_type ITU_R_UNKNOWN.\n";
+  "OpenIntent materials match Hamina-native keys (name, rf_properties, top_height, display_color):\n" +
+  "no itu_material_type, no bottom_height. Each ring vertex is pixels+meters+feet (Hamina export form).\n";
 
 /**
  * Skip Microsoft campus-merge blobs (one giant wrong polygon). Do NOT use a
@@ -281,14 +281,56 @@ function simplifyRing(ring, maxPts = 32) {
   return out;
 }
 
-function xyz(x, y) {
+function xyz(x, y, unit) {
   return {
     coordinate_xyz: {
-      x: +Math.max(0, x).toFixed(3),
-      y: +Math.max(0, y).toFixed(3),
-      unit: "pixels",
+      x: +Math.max(0, x).toFixed(6),
+      y: +Math.max(0, y).toFixed(6),
+      unit: unit || "pixels",
     },
   };
+}
+
+/**
+ * Hamina-native attenuation rings interleave pixels, meters, feet per vertex
+ * (Jerry's gold OpenIntent export). Meters are Y-up from SW: x_m = x_px * mpu.
+ */
+function expandOiCoordTriples(pixelCoords, mpu) {
+  const m = Number(mpu);
+  if (!(m > 0) || !pixelCoords || !pixelCoords.length) return null;
+  const out = [];
+  for (const c of pixelCoords) {
+    const p = c && c.coordinate_xyz;
+    if (!p || p.unit !== "pixels") return null;
+    const xm = p.x * m;
+    const ym = p.y * m;
+    out.push(xyz(p.x, p.y, "pixels"));
+    out.push(xyz(xm, ym, "meters"));
+    out.push(xyz(xm / 0.3048, ym / 0.3048, "feet"));
+  }
+  return out;
+}
+
+/** Pixel-only vertices from a Hamina triple ring or a legacy pixels-only ring. */
+function oiPixelCoords(coords) {
+  if (!coords || !coords.length) return [];
+  const u0 = coords[0] && coords[0].coordinate_xyz && coords[0].coordinate_xyz.unit;
+  if (u0 === "pixels" && coords.length >= 3) {
+    const u1 = coords[1] && coords[1].coordinate_xyz && coords[1].coordinate_xyz.unit;
+    if (u1 === "meters") {
+      const out = [];
+      if (coords.length % 3 !== 0) return [];
+      for (let i = 0; i < coords.length; i += 3) {
+        const p = coords[i] && coords[i].coordinate_xyz;
+        const m = coords[i + 1] && coords[i + 1].coordinate_xyz;
+        const f = coords[i + 2] && coords[i + 2].coordinate_xyz;
+        if (!p || p.unit !== "pixels" || !m || m.unit !== "meters" || !f || f.unit !== "feet") return [];
+        out.push(coords[i]);
+      }
+      return out;
+    }
+  }
+  return coords.slice();
 }
 
 function lerp(a, b, t) {
@@ -410,11 +452,12 @@ function segsIntersectProper(a, b, c, d) {
 }
 
 function oiSelfIntersects(coords) {
-  const n = coords.length - 1;
+  const pixels = oiPixelCoords(coords);
+  const n = pixels.length - 1;
   if (n < 4) return false;
   const pts = [];
   for (let i = 0; i < n; i++) {
-    const p = coords[i].coordinate_xyz;
+    const p = pixels[i].coordinate_xyz;
     pts.push([p.x, p.y]);
   }
   for (let i = 0; i < n; i++) {
@@ -431,42 +474,46 @@ function oiSelfIntersects(coords) {
 }
 
 function signedAreaOi(coords) {
+  const pixels = oiPixelCoords(coords);
   let a = 0;
-  for (let i = 0; i < coords.length - 1; i++) {
-    const p = coords[i].coordinate_xyz;
-    const q = coords[i + 1].coordinate_xyz;
+  for (let i = 0; i < pixels.length - 1; i++) {
+    const p = pixels[i].coordinate_xyz;
+    const q = pixels[i + 1].coordinate_xyz;
     a += p.x * q.y - q.x * p.y;
   }
   return a / 2;
 }
 
 /**
- * OpenIntent 2.0.1 / Hamina import: closed ring, ≥3 unique vertices, unit pixels,
- * x,y ≥ 0 and inside the JPEG, finite, no consecutive duplicates, non-zero area.
- * One bad ring historically wiped the entire attenuation_areas import.
+ * Hamina-native rings use pixels+meters+feet triples per vertex. Validate the
+ * pixel vertices (closed, in-bounds) and the triple interleave when present.
  */
 function validateOiCoords(coords, imgW, imgH) {
-  if (!coords || coords.length < 4) return { ok: false, reason: "too-few" };
-  for (const c of coords) {
+  const pixels = oiPixelCoords(coords);
+  if (!pixels || pixels.length < 4) return { ok: false, reason: "too-few" };
+  if (coords.length !== pixels.length) {
+    if (coords.length !== pixels.length * 3) return { ok: false, reason: "triple" };
+  }
+  for (const c of pixels) {
     const p = c && c.coordinate_xyz;
     if (!p) return { ok: false, reason: "missing-xyz" };
     if (p.unit !== "pixels") return { ok: false, reason: "unit" };
     if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return { ok: false, reason: "nan" };
     if (p.x < 0 || p.y < 0 || p.x > imgW || p.y > imgH) return { ok: false, reason: "bounds" };
   }
-  const first = coords[0].coordinate_xyz;
-  const last = coords[coords.length - 1].coordinate_xyz;
+  const first = pixels[0].coordinate_xyz;
+  const last = pixels[pixels.length - 1].coordinate_xyz;
   if (first.x !== last.x || first.y !== last.y) return { ok: false, reason: "open" };
   const seen = new Set();
-  for (let i = 0; i < coords.length - 1; i++) {
-    const p = coords[i].coordinate_xyz;
-    const q = coords[i + 1].coordinate_xyz;
+  for (let i = 0; i < pixels.length - 1; i++) {
+    const p = pixels[i].coordinate_xyz;
+    const q = pixels[i + 1].coordinate_xyz;
     if (p.x === q.x && p.y === q.y) return { ok: false, reason: "duplicate" };
     seen.add(p.x + "," + p.y);
   }
   if (seen.size < 3) return { ok: false, reason: "degenerate" };
-  if (Math.abs(signedAreaOi(coords)) < 1e-6) return { ok: false, reason: "zero-area" };
-  if (oiSelfIntersects(coords)) return { ok: false, reason: "self-intersect" };
+  if (Math.abs(signedAreaOi(pixels)) < 1e-6) return { ok: false, reason: "zero-area" };
+  if (oiSelfIntersects(pixels)) return { ok: false, reason: "self-intersect" };
   return { ok: true };
 }
 
@@ -488,8 +535,9 @@ function validateOiArea(area, imgW, imgH) {
   // OpenIntent 2.0.1 attenuation_area.area_material is a material object.
   // A catalog name string fails the whole document ("Invalid OpenIntent format",
   // PR #18). The object must equal the stock catalog entry: stock name, stock
-  // top_height, ITU_R_UNKNOWN, no bottom_height.
+  // top_height, no itu_material_type, no bottom_height.
   if (typeof mat !== "object" || mat == null || Array.isArray(mat)) return { ok: false, reason: "material" };
+  if ("itu_material_type" in mat || "bottom_height" in mat) return { ok: false, reason: "material" };
   const cat = catalogMaterial(mat);
   if (!cat || JSON.stringify(mat) !== JSON.stringify(cat)) return { ok: false, reason: "material" };
   return validateOiCoords(area.area.coordinates, imgW, imgH);
@@ -500,11 +548,11 @@ function finalizeOiCoords(rawPts, imgW, imgH) {
   const pts = [];
   for (const p of rawPts || []) {
     if (!p || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) continue;
-    const c = xyz(Math.min(imgW, Math.max(0, p[0])), Math.min(imgH, Math.max(0, p[1])));
-    // toFixed(3) rounds imgW-epsilon back up to imgW. A point on the far edge
+    const c = xyz(Math.min(imgW, Math.max(0, p[0])), Math.min(imgH, Math.max(0, p[1])), "pixels");
+    // toFixed can round imgW-epsilon back up to imgW. A point on the far edge
     // is outside a strict < dimension check and one such ring drops the import.
-    if (imgW > 0 && c.coordinate_xyz.x >= imgW) c.coordinate_xyz.x = Math.round((imgW - 0.002) * 1000) / 1000;
-    if (imgH > 0 && c.coordinate_xyz.y >= imgH) c.coordinate_xyz.y = Math.round((imgH - 0.002) * 1000) / 1000;
+    if (imgW > 0 && c.coordinate_xyz.x >= imgW) c.coordinate_xyz.x = Math.round((imgW - 0.002) * 1e6) / 1e6;
+    if (imgH > 0 && c.coordinate_xyz.y >= imgH) c.coordinate_xyz.y = Math.round((imgH - 0.002) * 1e6) / 1e6;
     const xyzc = c.coordinate_xyz;
     if (!Number.isFinite(xyzc.x) || !Number.isFinite(xyzc.y)) continue;
     const last = pts[pts.length - 1];
@@ -561,10 +609,13 @@ function ringToOi(pts, imgW, imgH, mpuX) {
   clipped = ensureMinSpan(clipped, imgW, imgH, minOiSpanPx(mpuX));
   if (!clipped || clipped.length < 3) return null;
   if (ringAreaPx(clipped) < 1e-6) return null;
-  const out = finalizeOiCoords(clipped, imgW, imgH);
-  if (!out) return null;
-  const check = validateOiCoords(out, imgW, imgH);
-  return check.ok ? out : null;
+  const pixels = finalizeOiCoords(clipped, imgW, imgH);
+  if (!pixels) return null;
+  const check = validateOiCoords(pixels, imgW, imgH);
+  if (!check.ok) return null;
+  const triples = expandOiCoordTriples(pixels, mpuX);
+  if (!triples) return null;
+  return validateOiCoords(triples, imgW, imgH).ok ? triples : null;
 }
 
 function makeOiArea(coords, material) {
@@ -881,12 +932,7 @@ function buildOpenIntent(frame, name, imgName, areas, materials) {
         ],
         attenuation_areas: areas,
         coverage_areas: [],
-        reference_markers: [
-          { name: "OC-SW", coordinate_xyz: { x: 0, y: 0, unit: "pixels" } },
-          { name: "OC-SE", coordinate_xyz: { x: frame.imgW, y: 0, unit: "pixels" } },
-          { name: "OC-NW", coordinate_xyz: { x: 0, y: frame.imgH, unit: "pixels" } },
-          { name: "OC-NE", coordinate_xyz: { x: frame.imgW, y: frame.imgH, unit: "pixels" } },
-        ],
+        reference_markers: [],
         closets: [],
       },
     ],
@@ -1063,6 +1109,8 @@ module.exports = {
   validateOiCoords,
   validateOiArea,
   oiAreaMaterialName,
+  oiPixelCoords,
+  expandOiCoordTriples,
   emitIfValid,
   capAttenuationAreas,
   ensureMinSpan,

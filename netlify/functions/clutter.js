@@ -20,7 +20,7 @@ const IMAGERY_BUDGET_MS = 8500;
 const META_MS = 4000;
 const OPTIONAL_MS = 2000;
 const SKIP_OPTIONAL_AFTER_MS = 5000;
-const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta } = require("../lib/geo-frame");
+const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
@@ -300,7 +300,12 @@ exports.handler = async (event) => {
     globalFeatures = (fetched[1] && fetched[1].features) || [];
     usaFeatures = (fetched[2] && fetched[2].features) || [];
     imgBuf = fetched[3];
-    if (imgBuf) frame = applyImageryMeta(frame, imgMeta, jpegSize(imgBuf));
+    if (imgBuf) {
+      frame = applyImageryMeta(frame, imgMeta, jpegSize(imgBuf));
+      const locked = lockIsotropicImagery(frame, imgBuf);
+      frame = locked.frame;
+      imgBuf = locked.jpegBuf;
+    }
     const canopy = fetched[4];
     if (canopy && canopy.parsed && canopy.parsed.hits && canopy.parsed.hits.length) {
       serverCanopyHits = canopy.parsed.hits;
