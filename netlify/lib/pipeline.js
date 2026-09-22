@@ -472,14 +472,16 @@ function validateOiCoords(coords, imgW, imgH) {
 function validateOiArea(area, imgW, imgH) {
   if (!area || !area.area || !area.area_material) return { ok: false, reason: "shape" };
   const mat = area.area_material;
-  if (typeof mat.name !== "string" || mat.name.length < 3 || mat.name.length > 48) {
-    return { ok: false, reason: "material" };
-  }
+  // PR #12 imports (558 and 982 areas) used only these six names at the stock
+  // top_height. A custom name or a stock name with a different height made
+  // Hamina drop every attenuation_area (Jerry: 1377 emitted, 0 imported).
+  const spec = ZONE_TYPES.find((t) => t.name === mat.name);
+  if (!spec) return { ok: false, reason: "material" };
+  if (mat.top_height !== spec.topEdge) return { ok: false, reason: "material" };
   if (Object.prototype.hasOwnProperty.call(mat, "bottom_height")) return { ok: false, reason: "bottom_height" };
   if (mat.itu_material_type !== "ITU_R_UNKNOWN") return { ok: false, reason: "itu" };
-  if (!(mat.top_height > 0)) return { ok: false, reason: "height" };
   const db = mat.rf_properties && mat.rf_properties.attenuation_per_m;
-  if (!(db > 0)) return { ok: false, reason: "attenuation" };
+  if (db !== spec.attenuationDbPerMeter) return { ok: false, reason: "attenuation" };
   if (mat.display_color && !/^#[0-9A-Fa-f]{6}$/.test(mat.display_color)) {
     return { ok: false, reason: "color" };
   }

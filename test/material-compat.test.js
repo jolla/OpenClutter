@@ -4,7 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
-const { buildClutter } = require("../netlify/lib/pipeline");
+const { buildClutter, validateOiArea, MAX_ATTENUATION_AREAS } = require("../netlify/lib/pipeline");
 const { catalogMaterials, COMPATIBILITY_MODE } = require("../netlify/lib/materials");
 const { scoreMaterialCompatibility } = require("./eval/score");
 
@@ -81,5 +81,56 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.ok(built.stats.exactBuildingHeights >= 3);
     assert.ok(built.stats.exactFoliageHeights >= 3);
     assert.ok(built.openintent.floorplans[0].attenuation_areas.length >= 3);
+  });
+
+  it("rejects the custom catalog that Hamina dropped, and treats 1377 areas as a full emit", () => {
+    const buildings = 129;
+    const trees = 624;
+    const areas = buildings + trees * 2;
+    assert.equal(areas, 1377);
+    assert.ok(areas < MAX_ATTENUATION_AREAS);
+    assert.ok(areas > 982);
+    const frame = { imgW: 100, imgH: 100 };
+    const coords = [
+      { coordinate_xyz: { x: 0, y: 0, unit: "pixels" } },
+      { coordinate_xyz: { x: 10, y: 0, unit: "pixels" } },
+      { coordinate_xyz: { x: 10, y: 10, unit: "pixels" } },
+      { coordinate_xyz: { x: 0, y: 0, unit: "pixels" } },
+    ];
+    const custom = validateOiArea(
+      {
+        area: { coordinates: coords },
+        area_material: {
+          name: "Building 6.4 m",
+          display_color: "#C4C4C4",
+          top_height: 6.4,
+          itu_material_type: "ITU_R_UNKNOWN",
+          rf_properties: { attenuation_per_m: 5 },
+        },
+      },
+      frame.imgW,
+      frame.imgH
+    );
+    assert.equal(custom.ok, false);
+    assert.equal(custom.reason, "material");
+    const drifted = validateOiArea(
+      {
+        area: { coordinates: coords },
+        area_material: {
+          name: "Building - One Floor",
+          display_color: "#C4C4C4",
+          top_height: 6.4,
+          itu_material_type: "ITU_R_UNKNOWN",
+          rf_properties: { attenuation_per_m: 5 },
+        },
+      },
+      frame.imgW,
+      frame.imgH
+    );
+    assert.equal(drifted.ok, false);
+    assert.equal(drifted.reason, "material");
+    const stock = catalogMaterials().find((m) => m.name === "Building - One Floor");
+    const ok = validateOiArea({ area: { coordinates: coords }, area_material: stock }, frame.imgW, frame.imgH);
+    assert.equal(ok.ok, true);
   });
 });
