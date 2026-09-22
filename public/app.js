@@ -60,7 +60,7 @@ function hideAreaChip() {
 }
 
 function showAreaChip(bounds) {
-  const label = OpenClutterArea.formatBboxSqFt(chipBbox(bounds));
+  const label = OpenClutterArea.formatBboxFeet(chipBbox(bounds));
   if (!label) {
     hideAreaChip();
     return;
@@ -81,7 +81,7 @@ function showAreaChip(bounds) {
 function onDrawPointerMove(e) {
   if (!rectDrawer || !rectDrawer._isDrawing || !rectDrawer._startLatLng || !e.latlng) return;
   const bounds = L.latLngBounds(rectDrawer._startLatLng, e.latlng);
-  if (!OpenClutterArea.formatBboxSqFt(chipBbox(bounds))) return;
+  if (!OpenClutterArea.formatBboxFeet(chipBbox(bounds))) return;
   showAreaChip(bounds);
 }
 
