@@ -37,6 +37,7 @@ const { fetchDemSamples, terrainFromSamples } = require("../lib/terrain");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
 const { surfaceMasksFromImage } = require("../lib/surface-mask");
+const { rejectPavementFootprints } = require("../lib/pavement");
 const { detectMedianTrees, appendTreePoints } = require("../lib/tree-source");
 
 function json(status, cors, obj) {
@@ -446,6 +447,9 @@ exports.handler = async (event) => {
       const sup = supplementFootprints(decoded, frame, features);
       features = sup.features;
       footprintMeta.imageryRoofs = sup.imageryRoofs;
+      const pav = rejectPavementFootprints(decoded, frame, features);
+      features = pav.features;
+      footprintMeta.droppedPavement = pav.dropped;
     } catch {
       // Imagery roof fill is optional. Vector footprints still export.
     }

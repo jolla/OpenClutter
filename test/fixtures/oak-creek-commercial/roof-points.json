@@ -1,9 +1,9 @@
 {
-  "note": "Points on large roofs in the repro corridor (877x1046). MSBFP2 returns 49 footprints and misses the white retail roofs; Global ML covers those. usa-nw-commercial and usa-center-large are FEMA USA Structures roofs that neither Microsoft layer contains. Eval fails if emit drops them.",
+  "note": "Roof probes must land inside an emitted building. big-white-retail and ne-white-roof are bright retail membranes Global ML covers and MSBFP2 misses. usa-nw-commercial is a FEMA USA Structures roof neither Microsoft layer contains. usa-center-large is a stale USA/Overture outline on the Oak Creek parking lot (aerial luma ~129, asphalt fraction >0.6, bright-roof fraction <0.06). role pavement must stay outside emitted rings. The bright roof ~44 px south of that point is a different building and stays covered.",
   "points": [
     { "id": "big-white-retail", "lon": -87.91482, "lat": 42.89849 },
     { "id": "ne-white-roof", "lon": -87.91572, "lat": 42.90066 },
     { "id": "usa-nw-commercial", "lon": -87.92041, "lat": 42.90074 },
-    { "id": "usa-center-large", "lon": -87.9198, "lat": 42.89908 }
+    { "id": "usa-center-large", "lon": -87.9198, "lat": 42.89908, "role": "pavement" }
   ]
 }

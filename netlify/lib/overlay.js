@@ -120,6 +120,56 @@ function scoreClipboardOverlayAlignment(frame, overlayRingsYUp, clipZones, opts 
   };
 }
 
+/**
+ * OpenIntent pixel rings must stay on the content-grid clip (lon/lat → the
+ * same JPEG pixel grid as the floorplan). Ring capping used to move a dense
+ * outline's centroid west/north of that grid; Hamina draws the capped ring.
+ * Mean and max centroid error are in Y-up pixels. Positive dx is east.
+ */
+function scoreOiContentGrid(overlayRingsYUp, oiRingsYUp, opts = {}) {
+  const maxPx = opts.maxPx != null ? opts.maxPx : 3.5;
+  const maxMeanPx = opts.maxMeanPx != null ? opts.maxMeanPx : 1.25;
+  const overlay = overlayRingsYUp || [];
+  const oi = oiRingsYUp || [];
+  const n = Math.min(overlay.length, oi.length);
+  let sum = 0;
+  let sumDx = 0;
+  let sumDy = 0;
+  let max = 0;
+  let count = 0;
+  for (let i = 0; i < n; i++) {
+    const a = ringCentroid(overlay[i]);
+    const b = ringCentroid(oi[i]);
+    if (!a || !b) continue;
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const err = Math.hypot(dx, dy);
+    sum += err;
+    sumDx += dx;
+    sumDy += dy;
+    if (err > max) max = err;
+    count++;
+  }
+  const meanPx = count ? sum / count : 0;
+  const failures = [];
+  if (count < 1) failures.push("no rings for content-grid drift check");
+  if (meanPx > maxMeanPx) {
+    failures.push("mean content-grid drift " + meanPx.toFixed(2) + " px > " + maxMeanPx);
+  }
+  if (max > maxPx) {
+    failures.push("max content-grid drift " + max.toFixed(2) + " px > " + maxPx);
+  }
+  return {
+    count,
+    meanPx,
+    maxPx: max,
+    meanDx: count ? sumDx / count : 0,
+    meanDy: count ? sumDy / count : 0,
+    ok: failures.length === 0,
+    failures,
+  };
+}
+
 function ringToSvgPoints(ringYUp, frame) {
   return ringYUp
     .map(([x, y]) => `${esc(x)},${esc(yUpToImage(y, frame))}`)
@@ -224,4 +274,5 @@ module.exports = {
   frameLockJson,
   ringCentroid,
   scoreClipboardOverlayAlignment,
+  scoreOiContentGrid,
 };

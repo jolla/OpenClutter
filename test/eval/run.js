@@ -15,8 +15,9 @@ const {
   applyImageryMeta,
   lockIsotropicImagery,
   jpegSize,
+  geodesicPixelMismatchPx,
 } = require("../../netlify/lib/geo-frame");
-const { buildClutter, footprintsToClutter, oiPixelCoords } = require("../../netlify/lib/pipeline");
+const { buildClutter, footprintsToClutter, oiPixelCoords, featureExteriorRings } = require("../../netlify/lib/pipeline");
 const T = require("../../netlify/lib/tree-source");
 const { treeHitsBuilding } = require("../../netlify/lib/vegetation");
 const { fetchMsGlobalFootprints, mergeFootprintFeatures } = require("../../netlify/lib/ms-global");
@@ -28,7 +29,8 @@ const { isVegetationOiName } = require("../../netlify/lib/materials");
 const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, scoreMeasuredHeights, scoreMaterialCompatibility, scoreFoliageBuildingOverlap, evaluate, pointInRing, THRESHOLDS } = require("./score");
 const { surfaceMasksFromImage } = require("../../netlify/lib/surface-mask");
 const { supplementFootprints } = require("../../netlify/lib/roof-mask");
-const { featureExteriorRings } = require("../../netlify/lib/pipeline");
+const { rejectPavementFootprints } = require("../../netlify/lib/pavement");
+const { scoreOiContentGrid } = require("../../netlify/lib/overlay");
 
 const ROOT = path.join(__dirname, "..", "..");
 const FIXTURES = path.join(ROOT, "test", "fixtures");
@@ -184,7 +186,14 @@ function runLoaded(loaded, opts) {
   const supplemented = prefer
     ? supplementFootprints(jpegDecoded, frame, vectorFeatures)
     : { features: baseFeatures, imageryRoofs: 0, droppedStubs: 0 };
-  const fp = footprintsToClutter(supplemented.features, frame);
+  const pavement = prefer && jpegDecoded
+    ? rejectPavementFootprints(jpegDecoded, frame, supplemented.features)
+    : { features: supplemented.features, dropped: 0 };
+  const emittedFeatures = pavement.features;
+  const pavementLeft = prefer && jpegDecoded
+    ? rejectPavementFootprints(jpegDecoded, frame, emittedFeatures).dropped
+    : 0;
+  const fp = footprintsToClutter(emittedFeatures, frame);
   const { canopy, resolved, parsed } = resolveFromSources(
     frame,
     loaded.tcc,
@@ -219,7 +228,7 @@ function runLoaded(loaded, opts) {
       : { waterRings: [], pavementPolygons: [], waterM2: 0, pavementM2: 0 };
   const built = buildClutter({
     frame,
-    footprintsGeojson: { type: "FeatureCollection", features: supplemented.features },
+    footprintsGeojson: { type: "FeatureCollection", features: emittedFeatures },
     treePoints,
     name: loaded.site.name || loaded.bbox.name || loaded.site.id,
     imgBuf: locked.jpegBuf || loaded.jpeg,
@@ -229,6 +238,7 @@ function runLoaded(loaded, opts) {
     maskPolygons: surface.pavementPolygons,
     footprintMeta: {
       imageryRoofs: supplemented.imageryRoofs || 0,
+      droppedPavement: pavement.dropped || 0,
       medianTrees: medianKept,
       overtureFootprints: loaded.overture && loaded.overture.features ? loaded.overture.features.length : 0,
       overtureAdded: overtureMerge ? overtureMerge.added : 0,
@@ -241,9 +251,9 @@ function runLoaded(loaded, opts) {
     canopyHits: resolved.source === "nlcd-canopy" && parsed && parsed.hits ? parsed.hits : [],
     heightSample: prefer && loaded.chm ? (lon, lat) => sampleChmGrid(loaded.chm, lon, lat) : null,
   });
-  const buildings = scoreBuildings(vectorFeatures, fp.overlayRings, frame);
+  const buildings = scoreBuildings(emittedFeatures, fp.overlayRings, frame);
   const trees = scoreTrees(treePoints, frame, jpegDecoded, loaded.tcc, resolved.source);
-  Object.assign(trees, scoreRoofTrees(treePoints, supplemented.features));
+  Object.assign(trees, scoreRoofTrees(treePoints, emittedFeatures));
   const probes = (loaded.roofPoints && loaded.roofPoints.points) || [];
   const roofProbes = probes.length ? scoreRoofProbes(probes, fp.overlayRings, frame) : null;
   if (roofProbes) buildings.roofProbes = roofProbes;
@@ -296,6 +306,38 @@ function runLoaded(loaded, opts) {
     applied: chmApplied,
   };
   const foliageOverlap = scoreFoliageBuildingOverlap(vegetationRingsFromOi(built.openintent), fp.overlayRings, frame);
+  const oiRings = (fp.oiAreas || []).map((area) => {
+    const pix = oiPixelCoords(area.area.coordinates);
+    const pts = [];
+    for (let i = 0; i < pix.length - 1; i++) {
+      pts.push([pix[i].coordinate_xyz.x, pix[i].coordinate_xyz.y]);
+    }
+    return pts;
+  });
+  const drift = scoreOiContentGrid(fp.overlayRings, oiRings);
+  const jpegWH = jpegSize(locked.jpegBuf || loaded.jpeg);
+  const retail = (probes || []).find((p) => p.id === "big-white-retail") || { lon: frame.west, lat: frame.south };
+  const geodesicMismatchPx = geodesicPixelMismatchPx(frame, retail.lon, retail.lat);
+  const contentGrid = {
+    required: prefer,
+    jpegMatchesFrame: !!(jpegWH && jpegWH.width === frame.imgW && jpegWH.height === frame.imgH),
+    mpuLocked: frame.mpuX === frame.mpuY && Math.abs(frame.lengthM - frame.imgH * frame.mpuX) < 1e-6,
+    geodesicMismatchPx,
+    // Oak Creek's Esri JPEG is degree-linear. A geodesic imgH would make this ~0
+    // and put footprints on a different pixel grid than the aerial.
+    minGeodesicMismatchPx: loaded.site.id === "oak-creek-commercial" ? 40 : 0,
+    drift,
+    ok:
+      drift.ok &&
+      !!(jpegWH && jpegWH.width === frame.imgW && jpegWH.height === frame.imgH) &&
+      frame.mpuX === frame.mpuY,
+  };
+  const pavementFootprints = {
+    required: prefer,
+    dropped: pavement.dropped || 0,
+    kept: pavementLeft,
+    minDropped: loaded.site.id === "oak-creek-commercial" ? 4 : 0,
+  };
   const gate = evaluate({
     buildings,
     trees,
@@ -309,6 +351,8 @@ function runLoaded(loaded, opts) {
     compatibility,
     openIntentTrees,
     foliageOverlap,
+    contentGrid,
+    pavementFootprints,
   });
   const exportStats = {
     site: loaded.site.id,
@@ -351,6 +395,8 @@ function runLoaded(loaded, opts) {
       pavementRings: surface.pavementPolygons.length,
       pavementM2: surface.pavementM2 || 0,
     },
+    contentGrid,
+    pavementFootprints,
     gate,
     thresholds: THRESHOLDS,
     canopyReason: canopy.reason,

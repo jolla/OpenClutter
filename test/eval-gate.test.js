@@ -34,8 +34,10 @@ describe("eval gate (cached fixtures, no Hamina)", () => {
       assert.ok(next.exportStats.buildings.largeRoofKeepRate === 1 || next.exportStats.buildings.largeRoofs === 0);
       assert.equal(next.exportStats.buildings.missingLargeRoofs, 0);
       if (site.id === "oak-creek-commercial") {
+        // Pavement rejection removes the asphalt rings (7 on this fixture) from the zip.
+        // The floor stays well above the MSBFP2-only export (48).
         assert.ok(
-          next.exportStats.coverage.buildingsKept >= 78,
+          next.exportStats.coverage.buildingsKept >= 76,
           `Oak Creek repro kept ${next.exportStats.coverage.buildingsKept}, MSBFP2-only export kept 48`
         );
         assert.ok(
@@ -58,6 +60,13 @@ describe("eval gate (cached fixtures, no Hamina)", () => {
         assert.equal(next.exportStats.compatibility.consistent, true);
         assert.ok(next.exportStats.openIntentTrees.custom >= 1);
         assert.equal(next.exportStats.imageryRecovery.hit, true);
+        assert.ok(next.exportStats.contentGrid.ok, next.exportStats.contentGrid.drift.failures.join("; "));
+        assert.ok(next.exportStats.contentGrid.geodesicMismatchPx > 40);
+        assert.ok(
+          next.exportStats.pavementFootprints.dropped >= 4,
+          "pavement dropped " + next.exportStats.pavementFootprints.dropped
+        );
+        assert.equal(next.exportStats.pavementFootprints.kept, 0);
         assert.ok(next.exportStats.medians.kept >= 8);
       }
     }
