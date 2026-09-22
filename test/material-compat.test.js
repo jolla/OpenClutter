@@ -81,9 +81,51 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.ok(built.stats.exactBuildingHeights >= 3);
     assert.ok(built.stats.exactFoliageHeights >= 3);
     assert.ok(built.openintent.floorplans[0].attenuation_areas.length >= 3);
+    assert.equal(built.openintent.openintent_version, "2.0.1");
+    assert.deepEqual(Object.keys(built.openintent).sort(), [
+      "area_materials",
+      "floorplans",
+      "openintent_version",
+      "switches",
+      "wall_materials",
+    ]);
+    const fp = built.openintent.floorplans[0];
+    assert.deepEqual(Object.keys(fp).sort(), [
+      "attenuation_areas",
+      "closets",
+      "coverage_areas",
+      "dimensions",
+      "floor_id",
+      "map_uri",
+      "name",
+      "project_name",
+      "reference_markers",
+      "rotation",
+    ]);
+    assert.match(fp.map_uri, /^file:\/\/images\//);
+    assert.deepEqual(
+      fp.dimensions.map((d) => d.unit),
+      ["pixels", "meters", "feet"]
+    );
+    assert.deepEqual(
+      fp.reference_markers.map((m) => m.name),
+      ["OC-SW", "OC-SE", "OC-NW", "OC-NE"]
+    );
+    for (const a of fp.attenuation_areas) {
+      assert.deepEqual(Object.keys(a).sort(), ["area", "area_material"]);
+      const cat = built.openintent.area_materials.find((m) => m.name === a.area_material.name);
+      assert.deepEqual(a.area_material, cat);
+      assert.deepEqual(Object.keys(a.area_material).sort(), [
+        "display_color",
+        "itu_material_type",
+        "name",
+        "rf_properties",
+        "top_height",
+      ]);
+    }
   });
 
-  it("rejects embedded materials and caps at the last import that showed clutter", () => {
+  it("embeds catalog materials and caps at the last import that showed clutter", () => {
     const buildings = 129;
     const trees = 624;
     const areas = buildings + trees * 2;
@@ -131,9 +173,19 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.equal(drifted.reason, "material");
     const stock = catalogMaterials().find((m) => m.name === "Building - One Floor");
     const embedded = validateOiArea({ area: { coordinates: coords }, area_material: stock }, frame.imgW, frame.imgH);
-    assert.equal(embedded.ok, false);
-    assert.equal(embedded.reason, "material");
-    const ok = validateOiArea({ area: { coordinates: coords }, area_material: stock.name }, frame.imgW, frame.imgH);
-    assert.equal(ok.ok, true);
+    assert.equal(embedded.ok, true);
+    const named = validateOiArea({ area: { coordinates: coords }, area_material: stock.name }, frame.imgW, frame.imgH);
+    assert.equal(named.ok, false);
+    assert.equal(named.reason, "material");
+    const withBottom = validateOiArea(
+      {
+        area: { coordinates: coords },
+        area_material: { ...stock, bottom_height: 0 },
+      },
+      frame.imgW,
+      frame.imgH
+    );
+    assert.equal(withBottom.ok, false);
+    assert.equal(withBottom.reason, "material");
   });
 });

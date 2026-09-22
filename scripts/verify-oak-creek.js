@@ -18,9 +18,12 @@
  *     --max-time 12 \
  *     -d '{"west":-87.92259693145752,"south":42.89043196008693,"east":-87.91184663772584,"north":42.90325386116256,"name":"Oak Creek WI commercial","trees":[],"format":"bundle"}'
  *
- * Pass: HTTP 200, wall clock under 10s, attenuation_areas > 0 (this corridor
- * is about 1000+), exactly the six stock area_materials, JPEG SOI, and
- * VERIFY.txt / export-stats.json agreeing with that length.
+ * Pass: HTTP 200, wall clock under 10s, attenuation_areas > 0 and ≤ 982,
+ * exactly the six stock area_materials, every area_material a catalog-equal
+ * object (a name string is Invalid OpenIntent format), JPEG SOI, clipboard
+ * vertices inside the meter frame, and VERIFY.txt / export-stats.json
+ * agreeing with that length. When ajv is installed, the OpenIntent JSON is
+ * also checked against google/openintent 2.0.1.
  */
 
 const fs = require("fs");
@@ -75,17 +78,38 @@ function checkZip(zipBuf) {
     const oi = JSON.parse(files[oiName].toString("utf8"));
     areas = (oi.floorplans && oi.floorplans[0] && oi.floorplans[0].attenuation_areas && oi.floorplans[0].attenuation_areas.length) || 0;
     materials = (oi.area_materials || []).map((m) => m.name);
-    const areaRefs = ((oi.floorplans[0] && oi.floorplans[0].attenuation_areas) || []).map((a) => a.area_material);
+    const areaList = (oi.floorplans[0] && oi.floorplans[0].attenuation_areas) || [];
+    const byName = new Map((oi.area_materials || []).map((m) => [m.name, m]));
+    let strings = 0;
+    let mismatches = 0;
+    for (const a of areaList) {
+      const m = a && a.area_material;
+      if (typeof m === "string") {
+        strings++;
+        continue;
+      }
+      const cat = m && byName.get(m.name);
+      if (!cat || JSON.stringify(m) !== JSON.stringify(cat) || "bottom_height" in m) mismatches++;
+    }
     if (!(areas > 0)) failures.push("attenuation_areas.length is " + areas);
     if (areas > 982) failures.push("attenuation_areas " + areas + " above the last accepted import (982)");
     if (materials.length !== 6) failures.push("area_materials count " + materials.length);
     const custom = materials.filter((n) => /Building \d/.test(n) || /Foliage \d/.test(n) || !STOCK_NAMES.includes(n));
     if (custom.length) failures.push("non-stock materials: " + custom.join(", "));
     if (STOCK_NAMES.some((n) => !materials.includes(n))) failures.push("stock set mismatch: " + materials.join(" | "));
-    const embedded = areaRefs.filter((m) => typeof m !== "string");
-    if (embedded.length) failures.push("embedded area_material objects: " + embedded.length);
-    const unknownRef = areaRefs.filter((m) => typeof m === "string" && !STOCK_NAMES.includes(m));
-    if (unknownRef.length) failures.push("unknown area_material names: " + unknownRef.slice(0, 4).join(", "));
+    if (strings) failures.push("string area_material (Invalid OpenIntent format): " + strings);
+    if (mismatches) failures.push("area_material not equal to catalog entry: " + mismatches);
+    const fp = oi.floorplans[0] || {};
+    const rootKeys = Object.keys(oi).sort().join(",");
+    if (rootKeys !== "area_materials,floorplans,openintent_version,switches,wall_materials") {
+      failures.push("root keys " + rootKeys);
+    }
+    if (oi.openintent_version !== "2.0.1") failures.push("openintent_version " + oi.openintent_version);
+    if (!String(fp.map_uri || "").startsWith("file://images/")) failures.push("map_uri " + fp.map_uri);
+    const sample = areaList[0] && areaList[0].area_material;
+    if (sample && (sample.itu_material_type !== "ITU_R_UNKNOWN" || "bottom_height" in sample)) {
+      failures.push("sample material drifted from the known-good object");
+    }
   }
   if (jpegName) {
     const jpeg = files[jpegName];
@@ -139,9 +163,51 @@ function checkZip(zipBuf) {
     jpegName: jpegName || null,
     jpegBytes: jpegName ? files[jpegName].length : 0,
     oiName: oiName || null,
+    oi: oiName ? JSON.parse(files[oiName].toString("utf8")) : null,
     warnings: files["export-warnings.json"] ? JSON.parse(files["export-warnings.json"].toString("utf8")).warnings : [],
     clipboard,
   };
+}
+
+const OI_SCHEMA_URL =
+  "https://raw.githubusercontent.com/google/openintent/2.0.1/release/2.0.0/models/oi-wifi.schema.json";
+
+function loadAjv() {
+  const roots = [path.join(__dirname, "..", "node_modules"), "/tmp/oi-ajv/node_modules"];
+  for (const root of roots) {
+    try {
+      return {
+        Ajv: require(path.join(root, "ajv/dist/2020")),
+        addFormats: require(path.join(root, "ajv-formats")),
+      };
+    } catch {
+      /* try the next install */
+    }
+  }
+  return null;
+}
+
+async function loadOiSchema() {
+  const cached = "/tmp/oi-schema/oi-wifi.schema.json";
+  if (fs.existsSync(cached)) return JSON.parse(fs.readFileSync(cached, "utf8"));
+  const res = await fetch(OI_SCHEMA_URL, { signal: AbortSignal.timeout(20000) });
+  if (!res.ok) throw new Error("schema HTTP " + res.status);
+  const text = await res.text();
+  fs.mkdirSync(path.dirname(cached), { recursive: true });
+  fs.writeFileSync(cached, text);
+  return JSON.parse(text);
+}
+
+async function schemaCheck(oi) {
+  const loaded = loadAjv();
+  if (!loaded) return { ok: false, error: "ajv not installed" };
+  const schema = await loadOiSchema();
+  const ajv = new loaded.Ajv({ allErrors: true, strict: false });
+  loaded.addFormats(ajv);
+  const validate = ajv.compile(schema);
+  const ok = validate(oi);
+  const errors = (validate.errors || []).slice(0, 12).map((e) => (e.instancePath || "/") + " " + e.message);
+  return { ok: !!ok, errors, schema: "google/openintent 2.0.1 oi-wifi" };
 }
 
 async function requestLocal() {
@@ -196,6 +262,19 @@ async function main() {
     report.jpeg = { name: zip.jpegName, bytes: zip.jpegBytes };
     report.warnings = zip.warnings;
     report.clipboard = zip.clipboard;
+    if (zip.oi) {
+      try {
+        report.schema = await schemaCheck(zip.oi);
+        if (!report.schema.ok) {
+          report.failures.push(
+            "OpenIntent schema: " + (report.schema.error || (report.schema.errors || []).slice(0, 4).join("; "))
+          );
+        }
+      } catch (e) {
+        report.schema = { ok: false, error: e.message };
+        report.failures.push("OpenIntent schema: " + e.message);
+      }
+    }
     report.statsSummary = parsed.stats && parsed.stats.summary;
     report.buildings = parsed.stats && parsed.stats.buildingsKept;
     report.trees = parsed.stats && parsed.stats.treesKept;
