@@ -87,6 +87,12 @@ describe("Hamina-native OpenIntent gold shape", () => {
     });
     const fp = built.openintent.floorplans[0];
     assert.deepEqual(fp.reference_markers, []);
+    const meters = fp.dimensions.find((d) => d.unit === "meters");
+    const pixels = fp.dimensions.find((d) => d.unit === "pixels");
+    const feet = fp.dimensions.find((d) => d.unit === "feet");
+    assert.equal(meters.height, 2.5);
+    assert.equal(feet.height, 8.202);
+    assert.ok(Math.abs(pixels.height - 2.5 / frame.mpuX) < 1e-9);
     assert.deepEqual(
       built.openintent.area_materials.map((m) => m.name),
       OI_BUILDING_NAMES

@@ -148,6 +148,17 @@ function checkZip(zipBuf) {
         aspectFail = true;
         failures.push("aspect px " + pixelAspect.toFixed(4) + " != m " + meterAspect.toFixed(4));
       }
+      if (Math.abs(meters.height - 2.5) > 1e-9) {
+        failures.push("floorplan height_m " + meters.height + " (want Hamina outdoor 2.5)");
+      }
+      const feet = (fp.dimensions || []).find((d) => d.unit === "feet");
+      if (feet && Math.abs(feet.height - 8.202) > 1e-6) {
+        failures.push("floorplan height_ft " + feet.height + " (want 8.202)");
+      }
+      const mpu = meters.width / px.width;
+      if (px && Math.abs(px.height - 2.5 / mpu) > 1e-6) {
+        failures.push("floorplan height_px " + px.height + " != 2.5/mpu");
+      }
     }
     if (fp.reference_markers && fp.reference_markers.length) {
       failures.push("reference_markers should be empty (Hamina-native)");

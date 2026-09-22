@@ -174,6 +174,10 @@ describe("clipboard ↔ alignment-overlay scale", () => {
     assert.ok(Math.abs(px.width / px.length - meters.width / meters.length) < 0.002);
     assert.equal(meters.width, locked.frame.widthM);
     assert.equal(meters.length, locked.frame.lengthM);
+    assert.equal(meters.height, 2.5);
+    const feet = built.openintent.floorplans[0].dimensions.find((d) => d.unit === "feet");
+    assert.equal(feet.height, 8.202);
+    assert.ok(Math.abs(px.height - 2.5 / locked.frame.mpuX) < 1e-9);
 
     const fp = footprintsToClutter(footprints.features, locked.frame, null);
     const bldgZones = built.clipboard.attenuatingZones.filter(
@@ -185,5 +189,27 @@ describe("clipboard ↔ alignment-overlay scale", () => {
     assert.ok(align.count >= 10, "pairs " + align.count);
     assert.ok(align.meanScale <= 1.02, "scale " + align.meanScale);
     assert.ok(align.meanSouthShiftPx <= 2.5, "south " + align.meanSouthShiftPx);
+
+    // Aerial rooftop probes: overlay rings must cover known roofs (no stretch drift).
+    const roofPoints = JSON.parse(fs.readFileSync(path.join(dir, "roof-points.json"), "utf8"));
+    const { llToPx } = require("../netlify/lib/geo-frame");
+    let probeHits = 0;
+    for (const p of roofPoints.points) {
+      const [x, y] = llToPx(p.lon, p.lat, locked.frame);
+      const hit = fp.overlayRings.some((ring) => {
+        let inside = false;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          const xi = ring[i][0];
+          const yi = ring[i][1];
+          const xj = ring[j][0];
+          const yj = ring[j][1];
+          const inter = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-12) + xi;
+          if (inter) inside = !inside;
+        }
+        return inside;
+      });
+      if (hit) probeHits++;
+    }
+    assert.equal(probeHits, roofPoints.points.length, "aerial roof probes missed after lock");
   });
 });

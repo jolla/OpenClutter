@@ -253,7 +253,7 @@ describe("Esri export extent snap (Long Meadow rooftop lock)", () => {
 });
 
 describe("isotropic aspect lock after Esri N/S pad", () => {
-  it("resamples the JPEG so meter aspect equals pixel aspect", () => {
+  it("unifies meters to the Esri JPEG pixel aspect without stretching content", () => {
     const fs = require("fs");
     const path = require("path");
     const jpeg = fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/imagery.jpg"));
@@ -268,10 +268,12 @@ describe("isotropic aspect lock after Esri N/S pad", () => {
     assert.equal(isAspectLocked(locked.frame), true);
     assert.equal(locked.frame.mpuX, locked.frame.mpuY);
     assert.ok(Math.abs(locked.frame.lengthM - locked.frame.imgH * locked.frame.mpu) < 1e-9);
-    assert.ok(locked.resampled);
+    // Content grid preserved (fixture long side 1046 → downscale to 1040) — never
+    // stretch to geodesic aspect (that shoved footprints south of rooftops).
     const wh = jpegSize(locked.jpegBuf);
     assert.equal(wh.width, locked.frame.imgW);
     assert.equal(wh.height, locked.frame.imgH);
+    assert.ok(Math.abs(wh.width / wh.height - snapped.imgW / snapped.imgH) < 0.01);
     // Known roof stays inside the locked frame in clipboard meters.
     const roof = { lon: -87.91482, lat: 42.89849 };
     const clip = llToClipboard(roof.lon, roof.lat, locked.frame);
@@ -279,7 +281,7 @@ describe("isotropic aspect lock after Esri N/S pad", () => {
     assert.ok(clip[1] > -locked.frame.lengthM - 0.05 && clip[1] < 0.05);
   });
 
-  it("fixes Jerry's Oak Creek anisotropic frame (px 0.696 vs m 0.514)", () => {
+  it("fixes Jerry's Oak Creek anisotropic frame without geodesic stretch", () => {
     // Repro numbers from Jerry's failing zip frame-lock.json.
     const anisotropic = geoFrame(
       {
@@ -299,9 +301,10 @@ describe("isotropic aspect lock after Esri N/S pad", () => {
     const locked = lockIsotropicImagery(anisotropic, jpeg);
     assert.equal(isAspectLocked(locked.frame), true);
     assert.equal(locked.frame.mpuX, locked.frame.mpuY);
-    // Content resample (stretch), not letterbox — JPEG fills locked imgW×imgH.
-    const haminaLenIfWrong = anisotropic.widthM * (anisotropic.imgH / anisotropic.imgW);
-    assert.ok(locked.frame.lengthM > haminaLenIfWrong + 100);
+    // Meter length follows JPEG aspect (not geodesic) so Hamina paste stays on-map.
+    const haminaLen = anisotropic.widthM * (locked.frame.imgH / locked.frame.imgW);
+    assert.ok(Math.abs(locked.frame.lengthM - haminaLen) < 1e-6);
+    assert.ok(locked.frame.lengthM < anisotropic.lengthM - 100);
   });
 });
 
