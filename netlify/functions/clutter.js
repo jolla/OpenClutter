@@ -6,7 +6,11 @@ const UA = "openclutter/0.14.2 (https://github.com/jolla/OpenClutter)";
 // Esri export and used to be awaited for up to 7s before that download began,
 // so a slow meta response left no time for the JPEG. Meta is now capped and
 // overlapped with the JPEG. Footprints keep their own 7s clock and are not
-// aborted when the JPEG aborts. Optional sources still start only after core.
+// aborted when the JPEG aborts. Canopy height and 3DEP still start only after
+// core. Overture starts with the JPEG, before the Global ML gzip. A finished
+// read is kept even if core passed 5s; a read still in flight gets up to 1.5s
+// more (hard cap 9s). Aborting at 5s dropped the Las Vegas Sphere (Overture
+// only — absent from MS Global and USA Structures).
 const CORE_FETCH_MS = 7000;
 const IMAGERY_ATTEMPT_MS = 8500;
 const IMAGERY_ATTEMPTS = 2;
@@ -20,7 +24,7 @@ const IMAGERY_BUDGET_MS = 8500;
 const META_MS = 4000;
 const OPTIONAL_MS = 2000;
 const SKIP_OPTIONAL_AFTER_MS = 5000;
-const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery } = require("../lib/geo-frame");
+const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, padFootprintBbox } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
@@ -137,41 +141,101 @@ function describeCoreFailure(e) {
 
 const TIMED_OUT = Symbol("timed-out");
 
-async function runOptional(warnings, started, label, fn) {
-  const elapsed = Date.now() - started;
-  if (elapsed >= SKIP_OPTIONAL_AFTER_MS) {
-    warnings.push(label + " omitted: export budget spent on the map and footprints");
-    return null;
-  }
-  const budget = Math.min(OPTIONAL_MS, Math.max(400, SKIP_OPTIONAL_AFTER_MS - elapsed));
+/**
+ * Start an optional fetch on its own abort signal. Call this during the core
+ * phase (Overture), then joinOptional after core. Do not pass the imagery
+ * signal — a parquet hang must not cancel the JPEG.
+ */
+function beginOptional(fn) {
   const ctrl = new AbortController();
-  let timer;
   let workError = null;
-  const timeout = new Promise((resolve) => {
-    timer = setTimeout(() => {
-      ctrl.abort();
-      resolve(TIMED_OUT);
-    }, budget);
-  });
+  let settled = false;
   const work = Promise.resolve()
     .then(() => fn(ctrl.signal))
-    .then((value) => (ctrl.signal.aborted ? TIMED_OUT : value))
+    .then((value) => {
+      settled = true;
+      if (ctrl.signal.aborted) return TIMED_OUT;
+      return value;
+    })
     .catch((e) => {
+      settled = true;
       workError = e;
       return TIMED_OUT;
     });
-  try {
-    const result = await Promise.race([work, timeout]);
+  return {
+    ctrl,
+    work,
+    isSettled: () => settled,
+    error: () => workError,
+  };
+}
+
+function optionalMissWarning(label, job) {
+  const err = job.error();
+  const msg = err ? String(err.message || err) : "";
+  const timedOut = !err || job.ctrl.signal.aborted || isTimeout(err);
+  return label + (timedOut ? " omitted: timed out" : " omitted: " + msg);
+}
+
+/**
+ * Collect a fetch started with beginOptional.
+ * A read that already finished is kept even when the core phase used the
+ * 5s optional-start budget — discarding it dropped the Las Vegas Sphere,
+ * which is in Overture and absent from MS Global / USA Structures.
+ * Work still running after that budget is aborted unless opts.graceMs allows
+ * a short wait that must end by opts.hardMs.
+ */
+async function joinOptional(warnings, started, label, job, opts) {
+  const graceMs = opts && opts.graceMs > 0 ? opts.graceMs : 0;
+  const hardMs = opts && opts.hardMs > 0 ? opts.hardMs : 9000;
+  if (job.isSettled()) {
+    const result = await job.work;
     if (result === TIMED_OUT) {
-      const msg = workError ? String(workError.message || workError) : "";
-      const timedOut = !workError || ctrl.signal.aborted || isTimeout(workError);
-      warnings.push(label + (timedOut ? " omitted: timed out" : " omitted: " + msg));
+      warnings.push(optionalMissWarning(label, job));
+      return null;
+    }
+    return result;
+  }
+  const elapsed = Date.now() - started;
+  let budget = 0;
+  if (elapsed < SKIP_OPTIONAL_AFTER_MS) {
+    budget = Math.min(OPTIONAL_MS, Math.max(400, SKIP_OPTIONAL_AFTER_MS - elapsed));
+  } else if (graceMs) {
+    // In-flight read that started with the JPEG. Global ML often finishes
+    // within a second of the Overture row group; aborting at 5s drops it.
+    budget = Math.min(graceMs, Math.max(0, hardMs - elapsed));
+  }
+  if (budget < 200) {
+    job.ctrl.abort();
+    warnings.push(label + " omitted: export budget spent on the map and footprints");
+    return null;
+  }
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      job.ctrl.abort();
+      resolve(TIMED_OUT);
+    }, budget);
+  });
+  try {
+    const result = await Promise.race([job.work, timeout]);
+    if (result === TIMED_OUT) {
+      warnings.push(optionalMissWarning(label, job));
       return null;
     }
     return result;
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function runOptional(warnings, started, label, fn) {
+  const elapsed = Date.now() - started;
+  if (elapsed >= SKIP_OPTIONAL_AFTER_MS) {
+    warnings.push(label + " omitted: export budget spent on the map and footprints");
+    return null;
+  }
+  return joinOptional(warnings, started, label, beginOptional(fn));
 }
 
 function parseFormat(body) {
@@ -272,9 +336,24 @@ exports.handler = async (event) => {
   let chmGrid = null;
   const warnings = [];
   const started = Date.now();
+  let overtureJob = null;
   try {
-    // JPEG first. Meta may snap the footprint query, but it must not gate the image.
+    // JPEG and Overture together. Meta may snap the footprint query, but it
+    // must not gate the image or the Overture read — the Las Vegas row group
+    // loses if it starts only after metadata, behind the Global ML gzip.
     const imageryJob = needImage ? fetchImageryJpeg(imgUrl) : Promise.resolve(null);
+    const overtureFrame = {
+      west: frame.west,
+      south: frame.south,
+      east: frame.east,
+      north: frame.north,
+    };
+    // Row groups from the request bbox (one Vegas group). Keep features in the
+    // same latitude pad MSBFP2 uses, so an Esri N/S snap does not drop roofs
+    // the row group already contains.
+    overtureJob = beginOptional((signal) =>
+      fetchOvertureFootprints(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
+    );
     if (needImage) {
       imgMeta = await fetchImageryMeta(imgMetaUrl);
       if (imgMeta) frame = applyImageryMeta(frame, imgMeta, null);
@@ -317,11 +396,14 @@ exports.handler = async (event) => {
       treesSource = "nlcd-canopy";
     }
   } catch (e) {
+    if (overtureJob) overtureJob.ctrl.abort();
     return json(502, cors, { error: describeCoreFailure(e) });
   }
 
   const optional = await Promise.all([
-    runOptional(warnings, started, "Overture buildings", (signal) => fetchOvertureFootprints(frame, { signal })),
+    overtureJob
+      ? joinOptional(warnings, started, "Overture buildings", overtureJob, { graceMs: 1500, hardMs: 9000 })
+      : Promise.resolve(null),
     runOptional(warnings, started, "Terrain", (signal) => fetchDemSamples(frame, null, { signal })),
     needImage
       ? runOptional(warnings, started, "Canopy height", (signal) => fetchChmGrid(frame, { signal }))
@@ -478,3 +560,6 @@ exports.handler = async (event) => {
     warnings,
   });
 };
+
+exports.beginOptional = beginOptional;
+exports.joinOptional = joinOptional;

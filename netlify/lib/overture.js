@@ -159,6 +159,7 @@ async function fetchOvertureFootprints(frame, opts) {
     east: +frame.east,
     north: +frame.north,
   };
+  const filter = opts && opts.filter ? opts.filter : bbox;
   const groups = groupsForBbox(bbox.west, bbox.south, bbox.east, bbox.north);
   if (!groups.length) return { features: [], rowGroups: 0, release: RELEASE };
   const { asyncBufferFromUrl, parquetReadObjects, compressors } = loadReader();
@@ -186,7 +187,7 @@ async function fetchOvertureFootprints(frame, opts) {
         rowStart: g.rowStart,
         rowEnd: g.rowStart + g.rowCount,
       });
-      const chunk = featuresFromRows(rows, bbox);
+      const chunk = featuresFromRows(rows, filter);
       for (const f of chunk) features.push(f);
     }
   }

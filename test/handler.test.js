@@ -2,7 +2,7 @@
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
-const { handler } = require("../netlify/functions/clutter");
+const { handler, beginOptional, joinOptional } = require("../netlify/functions/clutter");
 const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
 const { unzipStore } = require("../netlify/lib/zip-store");
 
@@ -365,5 +365,83 @@ describe("optional sources cannot fail the export", () => {
     assert.ok(elapsed < 6500, "elapsed " + elapsed);
     const body = JSON.parse(res.body);
     assert.ok(body.zipBase64);
+  });
+
+  it("starts Overture during the core footprint fetch, not after it", async () => {
+    const calls = [];
+    const t0 = Date.now();
+    global.fetch = async (url, init) => {
+      const u = urlOf(url);
+      const t = Date.now() - t0;
+      calls.push({ u, t, phase: "start" });
+      if (u.includes("bfppub") || u.includes("global-buildings")) {
+        await new Promise((resolve) => setTimeout(resolve, 280));
+        calls.push({ u, t: Date.now() - t0, phase: "end" });
+        return { ok: true, arrayBuffer: async () => new ArrayBuffer(8) };
+      }
+      return coreFetch(u, init);
+    };
+    const res = await handler({
+      httpMethod: "POST",
+      body: JSON.stringify({ ...WYNN, trees: [{ lon: -115.17, lat: 36.122 }], format: "bundle" }),
+    });
+    assert.equal(res.statusCode, 200);
+    const overtureStart = calls.find((c) => c.phase === "start" && (c.u.includes("overturemaps") || c.u.includes("/release/")));
+    const globalEnd = calls.find((c) => c.phase === "end" && (c.u.includes("bfppub") || c.u.includes("global-buildings")));
+    assert.ok(overtureStart, "overture fetch did not start");
+    assert.ok(globalEnd, "global fetch did not finish");
+    assert.ok(overtureStart.t < globalEnd.t, `overture ${overtureStart.t} global end ${globalEnd.t}`);
+  });
+});
+
+describe("Overture join keeps a finished read after the core budget", () => {
+  it("returns features that finished before the 5s mark even if core ran longer", async () => {
+    const warnings = [];
+    const job = beginOptional(async () => ({ features: [{ type: "Feature" }] }));
+    await job.work;
+    const result = await joinOptional(warnings, Date.now() - 6000, "Overture buildings", job);
+    assert.equal(result.features.length, 1);
+    assert.equal(warnings.length, 0);
+  });
+
+  it("uses a short grace so an in-flight Overture read can finish after 5s", async () => {
+    const warnings = [];
+    const job = beginOptional(
+      () => new Promise((resolve) => setTimeout(() => resolve({ features: [{ type: "Feature" }] }), 350))
+    );
+    const t0 = Date.now();
+    const result = await joinOptional(warnings, Date.now() - 6000, "Overture buildings", job, {
+      graceMs: 1500,
+      hardMs: 9000,
+    });
+    const waited = Date.now() - t0;
+    assert.equal(result.features.length, 1);
+    assert.equal(warnings.length, 0);
+    assert.ok(waited >= 300 && waited < 1200, "waited " + waited);
+  });
+
+  it("aborts Overture immediately once the core budget is spent and it is still running", async () => {
+    const warnings = [];
+    let aborted = false;
+    const job = beginOptional(
+      (signal) =>
+        new Promise((resolve, reject) => {
+          if (signal.aborted) {
+            aborted = true;
+            reject(Object.assign(new Error("The operation was aborted due to timeout"), { name: "AbortError" }));
+            return;
+          }
+          signal.addEventListener("abort", () => {
+            aborted = true;
+            reject(Object.assign(new Error("The operation was aborted due to timeout"), { name: "AbortError" }));
+          });
+        })
+    );
+    const t0 = Date.now();
+    const result = await joinOptional(warnings, Date.now() - 6000, "Overture buildings", job);
+    assert.equal(result, null);
+    assert.ok(Date.now() - t0 < 400, "waited " + (Date.now() - t0));
+    assert.match(warnings[0], /Overture buildings omitted: export budget spent/);
+    assert.equal(aborted, true);
   });
 });
