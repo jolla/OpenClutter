@@ -70,16 +70,22 @@ function checkZip(zipBuf) {
   let statsAreas = null;
   let statsMaterials = null;
   let compatibilityMode = null;
+  let clipboard = null;
   if (oiName) {
     const oi = JSON.parse(files[oiName].toString("utf8"));
     areas = (oi.floorplans && oi.floorplans[0] && oi.floorplans[0].attenuation_areas && oi.floorplans[0].attenuation_areas.length) || 0;
     materials = (oi.area_materials || []).map((m) => m.name);
+    const areaRefs = ((oi.floorplans[0] && oi.floorplans[0].attenuation_areas) || []).map((a) => a.area_material);
     if (!(areas > 0)) failures.push("attenuation_areas.length is " + areas);
-    if (areas < 1000) failures.push("attenuation_areas " + areas + " below the ~1000+ Oak Creek corridor");
+    if (areas > 982) failures.push("attenuation_areas " + areas + " above the last accepted import (982)");
     if (materials.length !== 6) failures.push("area_materials count " + materials.length);
     const custom = materials.filter((n) => /Building \d/.test(n) || /Foliage \d/.test(n) || !STOCK_NAMES.includes(n));
     if (custom.length) failures.push("non-stock materials: " + custom.join(", "));
     if (STOCK_NAMES.some((n) => !materials.includes(n))) failures.push("stock set mismatch: " + materials.join(" | "));
+    const embedded = areaRefs.filter((m) => typeof m !== "string");
+    if (embedded.length) failures.push("embedded area_material objects: " + embedded.length);
+    const unknownRef = areaRefs.filter((m) => typeof m === "string" && !STOCK_NAMES.includes(m));
+    if (unknownRef.length) failures.push("unknown area_material names: " + unknownRef.slice(0, 4).join(", "));
   }
   if (jpegName) {
     const jpeg = files[jpegName];
@@ -90,6 +96,28 @@ function checkZip(zipBuf) {
     verifyAreas = Number(v.attenuation_areas);
     if (verifyAreas !== areas) failures.push("VERIFY attenuation_areas " + verifyAreas + " != JSON " + areas);
     if (Number(v.area_materials) !== 6) failures.push("VERIFY area_materials " + v.area_materials);
+  }
+  if (files["hamina-clipboard.json"] && oiName) {
+    const clip = JSON.parse(files["hamina-clipboard.json"].toString("utf8"));
+    const meters = (JSON.parse(files[oiName].toString("utf8")).floorplans[0].dimensions || []).find((d) => d.unit === "meters");
+    let oob = 0;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const z of clip.attenuatingZones || []) {
+      const ring = z.area && z.area.coordinates && z.area.coordinates[0];
+      if (!ring) continue;
+      for (const [x, y] of ring) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        if (meters && (x < -meters.width - 0.05 || x > 0.05 || y < -meters.length - 0.05 || y > 0.05)) oob++;
+      }
+    }
+    clipboard = { zones: (clip.attenuatingZones || []).length, types: (clip.attenuatingZoneTypes || []).length, minX, maxX, minY, maxY, oob };
+    if (oob) failures.push("clipboard vertices outside the meter frame: " + oob);
   }
   if (files["export-stats.json"]) {
     const stats = JSON.parse(files["export-stats.json"].toString("utf8"));
@@ -112,6 +140,7 @@ function checkZip(zipBuf) {
     jpegBytes: jpegName ? files[jpegName].length : 0,
     oiName: oiName || null,
     warnings: files["export-warnings.json"] ? JSON.parse(files["export-warnings.json"].toString("utf8")).warnings : [],
+    clipboard,
   };
 }
 
@@ -166,6 +195,7 @@ async function main() {
     report.compatibilityMode = zip.compatibilityMode;
     report.jpeg = { name: zip.jpegName, bytes: zip.jpegBytes };
     report.warnings = zip.warnings;
+    report.clipboard = zip.clipboard;
     report.statsSummary = parsed.stats && parsed.stats.summary;
     report.buildings = parsed.stats && parsed.stats.buildingsKept;
     report.trees = parsed.stats && parsed.stats.treesKept;
