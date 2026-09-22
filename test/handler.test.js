@@ -133,8 +133,9 @@ describe("clutter handler (mocked Esri)", () => {
     assert.match(files["VERIFY.txt"].toString(), new RegExp(`^attenuation_areas: ${exportStats.attenuationAreasEmitted}$`, "m"));
     assert.equal(
       oi.floorplans[0].attenuation_areas.length,
-      body.stats.buildings + body.stats.trees * 2
+      body.stats.buildings
     );
+    assert.ok(clip.attenuatingZones.length >= body.stats.buildings + body.stats.trees * 2);
     assert.ok(!urls.some((u) => u.includes("overpass")));
     assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("bboxSR=4326") && u.includes("imageSR=4326")));
     assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("f=json")));

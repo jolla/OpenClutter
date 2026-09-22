@@ -1,14 +1,51 @@
 "use strict";
 
 /**
- * OpenIntent uses only the six stock Hamina names, with the stock top_height
- * and attenuation. Hamina drops every attenuation_area when the catalog
- * contains invented names (Building 6.4 m, Foliage 14.2 m) or when an area's
- * material differs from the catalog entry. Exact metres stay on the clipboard
- * zone types. compatibilityMode is "stock-openintent".
+ * OpenIntent area_materials must match Hamina's outdoor building stock.
+ * Jerry's gold Hamina export only catalogs:
+ *   Building - One / Two / Five / Ten Floor
+ * Names like Foliage - Heavy, Tree Trunk, or Hotel podium still cause a
+ * silent all-or-nothing drop of every attenuation_area. Trees and exact
+ * measured heights stay on hamina-clipboard.json (paste fallback).
+ * compatibilityMode is "stock-openintent".
  */
 
 const { ZONE_TYPES, TYPE_BY_ID, oiMaterialFromType, pickBuildingTypeId } = require("./hamina-clipboard");
+
+/** Hamina-native outdoor building materials (from Jerry's gold OpenIntent zip). */
+const OI_BUILDING_TYPES = [
+  {
+    id: "bldg-one",
+    name: "Building - One Floor",
+    color: "#9AA5AC",
+    topEdge: 4.5,
+    attenuationDbPerMeter: 5,
+  },
+  {
+    id: "bldg-two",
+    name: "Building - Two Floor",
+    color: "#9A4159",
+    topEdge: 7.620092660326749,
+    attenuationDbPerMeter: 5,
+  },
+  {
+    id: "bldg-five",
+    name: "Building - Five Floor",
+    color: "#9AA5AC",
+    topEdge: 15.240185320653499,
+    attenuationDbPerMeter: 5,
+  },
+  {
+    id: "bldg-ten",
+    name: "Building - Ten Floor",
+    color: "#9AA5AC",
+    topEdge: 32,
+    attenuationDbPerMeter: 5,
+  },
+];
+
+const OI_BUILDING_BY_ID = Object.fromEntries(OI_BUILDING_TYPES.map((t) => [t.id, t]));
+const OI_BUILDING_NAMES = OI_BUILDING_TYPES.map((t) => t.name);
 
 function roundHeightM(heightM) {
   const n = Number(heightM);
@@ -95,18 +132,40 @@ function measuredTrunkMaterial(heightM) {
 const COMPATIBILITY_MODE = "stock-openintent";
 
 /**
- * OpenIntent material is always a stock type. Measured height only chooses
- * the bucket (one floor / five floor / hotel) and is copied onto the clipboard
- * type so paste can keep the real metres.
+ * Bucket measured/estimated height into Hamina's four outdoor building materials.
+ * Clipboard still uses ZONE_TYPES (incl. foliage / Hotel podium) via pickBuildingTypeId.
+ */
+function pickOiBuildingTypeId(areaM2, heightM) {
+  const h =
+    heightM > 2
+      ? heightM
+      : areaM2 >= 6000
+        ? 40
+        : areaM2 >= 1200
+          ? 16
+          : areaM2 >= 400
+            ? 8
+            : 4.5;
+  if (h >= 24) return "bldg-ten";
+  if (h >= 11) return "bldg-five";
+  if (h >= 6) return "bldg-two";
+  return "bldg-one";
+}
+
+/**
+ * OpenIntent material is always one of the four Hamina Building-* types.
+ * Measured height only picks the bucket and is copied onto the clipboard type.
  */
 function materialForBuilding(heightM, areaM2) {
   const exact = measuredBuildingMaterial(heightM);
-  const typeId = pickBuildingTypeId(areaM2, exact ? exact.material.top_height : 0);
-  const type = TYPE_BY_ID[typeId];
+  const h = exact ? exact.material.top_height : 0;
+  const oiId = pickOiBuildingTypeId(areaM2, h);
+  const oiType = OI_BUILDING_BY_ID[oiId];
+  const clipTypeId = pickBuildingTypeId(areaM2, h);
   return {
-    material: oiMaterialFromType(type),
+    material: oiMaterialFromType(oiType),
     clipType: exact ? exact.clipType : null,
-    typeId: exact ? exact.typeId : typeId,
+    typeId: exact ? exact.typeId : clipTypeId,
     measured: !!exact,
     exactHeight: exact ? exact.material.top_height : 0,
   };
@@ -116,9 +175,9 @@ function stockMaterials() {
   return ZONE_TYPES.map((t) => oiMaterialFromType(t));
 }
 
-/** Hamina-safe catalog. Extras are ignored on purpose. */
+/** OpenIntent catalog: Hamina outdoor Building-* set only. */
 function catalogMaterials() {
-  return stockMaterials();
+  return OI_BUILDING_TYPES.map((t) => oiMaterialFromType(t));
 }
 
 module.exports = {
@@ -128,7 +187,10 @@ module.exports = {
   measuredFoliageMaterial,
   measuredTrunkMaterial,
   materialForBuilding,
+  pickOiBuildingTypeId,
   stockMaterials,
   catalogMaterials,
+  OI_BUILDING_TYPES,
+  OI_BUILDING_NAMES,
   COMPATIBILITY_MODE,
 };

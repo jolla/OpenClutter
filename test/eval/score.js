@@ -8,7 +8,7 @@
  */
 
 const { llToPx, llToImagePx, metersPerDeg } = require("../../netlify/lib/geo-frame");
-const { ZONE_TYPES } = require("../../netlify/lib/hamina-clipboard");
+const { OI_BUILDING_NAMES, catalogMaterials } = require("../../netlify/lib/materials");
 const {
   featureExteriorRings,
   ringAreaM2,
@@ -524,10 +524,10 @@ function evaluate(scores, thresholds) {
   }
   const compat = scores.compatibility;
   if (compat && compat.required !== false) {
-    if (compat.materials !== ZONE_TYPES.length) {
-      failures.push(`openIntentMaterials ${compat.materials} !== ${ZONE_TYPES.length}`);
+    if (compat.materials !== OI_BUILDING_NAMES.length) {
+      failures.push(`openIntentMaterials ${compat.materials} !== ${OI_BUILDING_NAMES.length}`);
     }
-    if (!compat.stockOnly) failures.push("OpenIntent material is not a stock Hamina name");
+    if (!compat.stockOnly) failures.push("OpenIntent material is not a Hamina outdoor Building-* name");
     if (!compat.consistent) failures.push("area material does not match the catalog entry");
   }
   return { ok: failures.length === 0, failures };
@@ -538,7 +538,7 @@ function scoreMaterialCompatibility(openintent) {
   const areas =
     (openintent && openintent.floorplans && openintent.floorplans[0] && openintent.floorplans[0].attenuation_areas) ||
     [];
-  const expected = ZONE_TYPES.map((t) => t.name);
+  const expected = catalogMaterials().map((m) => m.name);
   const names = mats.map((m) => m && m.name);
   const stockOnly = names.length === expected.length && names.every((n, i) => n === expected[i]);
   const byName = new Map(mats.map((m) => [m.name, m]));
@@ -548,6 +548,10 @@ function scoreMaterialCompatibility(openintent) {
     const name = typeof m === "string" ? m : m && m.name;
     const cat = name && byName.get(name);
     if (!cat || typeof m !== "object" || m == null || JSON.stringify(m) !== JSON.stringify(cat)) {
+      consistent = false;
+      break;
+    }
+    if (!OI_BUILDING_NAMES.includes(name)) {
       consistent = false;
       break;
     }

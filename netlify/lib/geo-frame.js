@@ -367,36 +367,57 @@ function resizeRgba(src, sw, sh, dstW, dstH) {
 }
 
 /**
+ * After choosing integer imgW×imgH, force a single mpu so OpenIntent triples,
+ * clipboard meters, and Hamina's width-derived isotropic scale agree exactly.
+ * lengthM becomes imgH*mpu (within ~1 px of the geodesic length). Geographic
+ * west/south/east/north stay the Esri JPEG extent for lon/lat → pixel mapping.
+ * This is a resample of the full content (not letterbox padding).
+ */
+function unifyFrameMpu(frame) {
+  if (!frame || !(frame.imgW > 0) || !(frame.imgH > 0) || !(frame.widthM > 0)) return frame;
+  const mpu = frame.widthM / frame.imgW;
+  const lengthM = mpu * frame.imgH;
+  return Object.assign({}, frame, {
+    lengthM,
+    mpuX: mpu,
+    mpuY: mpu,
+    mpu,
+  });
+}
+
+/**
  * Resample the Esri JPEG so imgW/imgH == widthM/lengthM (isotropic mpu).
- * Keeps the true geographic meters from the snapped extent. Hamina sizes the
- * floorplan from the JPEG aspect; an anisotropic mpu made clipboard Y overshoot
- * by ~450 m on Oak Creek (spill south onto white canvas).
+ * Keeps the geographic extent of the snapped JPEG. Hamina sizes the floorplan
+ * from the JPEG aspect; an anisotropic mpu made clipboard Y overshoot by ~450 m
+ * on Oak Creek. Content is stretched to fill the canvas — no letterbox bars.
  */
 function lockIsotropicImagery(frame, jpegBuf, opts = {}) {
   const maxSide = opts.maxSide != null ? opts.maxSide : 1040;
   const eps = opts.eps != null ? opts.eps : 0.002;
   if (!frame) return { frame, jpegBuf, resampled: false };
-  if (isAspectLocked(frame, eps)) {
-    return { frame, jpegBuf, resampled: false };
+  if (isAspectLocked(frame, eps) && Math.abs(frame.mpuX - frame.mpuY) / frame.mpuX < eps) {
+    return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
   }
   const { imgW, imgH } = isotropicPixelSize(frame.widthM, frame.lengthM, maxSide);
   if (!jpegBuf || jpegBuf.length < 100) {
-    return { frame, jpegBuf, resampled: false };
+    return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
   }
   let raw;
   try {
     const jpeg = require("jpeg-js");
     raw = jpeg.decode(jpegBuf, { useTArray: true, maxResolutionInMP: 20, formatAsRGBA: true });
   } catch {
-    return { frame, jpegBuf, resampled: false };
+    return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
   }
   if (!raw || !raw.data || !(raw.width > 0) || !(raw.height > 0)) {
-    return { frame, jpegBuf, resampled: false };
+    return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
   }
   const padM = Math.max(frame.widthM, frame.lengthM, 2500) * 2.5;
-  const locked = geoFrame(
-    { west: frame.west, south: frame.south, east: frame.east, north: frame.north },
-    { imgW, imgH, maxSpanM: padM, minSpanM: 1 }
+  const locked = unifyFrameMpu(
+    geoFrame(
+      { west: frame.west, south: frame.south, east: frame.east, north: frame.north },
+      { imgW, imgH, maxSpanM: padM, minSpanM: 1 }
+    )
   );
   const rgba =
     raw.width === imgW && raw.height === imgH
@@ -408,7 +429,7 @@ function lockIsotropicImagery(frame, jpegBuf, opts = {}) {
     const enc = jpeg.encode({ data: rgba, width: imgW, height: imgH }, opts.quality != null ? opts.quality : 85);
     outBuf = Buffer.from(enc.data);
   } catch {
-    return { frame, jpegBuf, resampled: false };
+    return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
   }
   return { frame: locked, jpegBuf: outBuf, resampled: true };
 }
@@ -583,6 +604,7 @@ module.exports = {
   isAspectLocked,
   isotropicPixelSize,
   resizeRgba,
+  unifyFrameMpu,
   lockIsotropicImagery,
   FP_PAGE_SIZE,
   FP_CAP,

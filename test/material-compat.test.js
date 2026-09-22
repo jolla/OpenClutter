@@ -3,9 +3,8 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const { geoFrame } = require("../netlify/lib/geo-frame");
-const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
 const { buildClutter, validateOiArea, MAX_ATTENUATION_AREAS } = require("../netlify/lib/pipeline");
-const { catalogMaterials, COMPATIBILITY_MODE } = require("../netlify/lib/materials");
+const { catalogMaterials, COMPATIBILITY_MODE, OI_BUILDING_NAMES, OI_BUILDING_TYPES } = require("../netlify/lib/materials");
 const { scoreMaterialCompatibility } = require("./eval/score");
 
 const BBOX = { west: -87.93, south: 42.89, east: -87.91, north: 42.91, name: "Compat" };
@@ -28,7 +27,7 @@ function square(lon, lat, dLon, dLat, height) {
 }
 
 describe("Hamina OpenIntent material compatibility", () => {
-  it("keeps a six-name stock catalog and exact heights on the clipboard", () => {
+  it("keeps the gold Building-* OI catalog and exact heights on the clipboard", () => {
     const frame = geoFrame(BBOX);
     const dLon = (frame.east - frame.west) * 0.04;
     const dLat = (frame.north - frame.south) * 0.03;
@@ -53,26 +52,28 @@ describe("Hamina OpenIntent material compatibility", () => {
       treesSource: "nlcd-canopy",
     });
     const names = built.openintent.area_materials.map((m) => m.name);
-    assert.deepEqual(names, ZONE_TYPES.map((t) => t.name));
-    assert.equal(built.openintent.area_materials.length, 6);
+    assert.deepEqual(names, OI_BUILDING_NAMES);
+    assert.equal(built.openintent.area_materials.length, 4);
     assert.deepEqual(built.openintent.area_materials, catalogMaterials());
-    for (let i = 0; i < ZONE_TYPES.length; i++) {
-      assert.equal(built.openintent.area_materials[i].top_height, ZONE_TYPES[i].topEdge);
+    for (let i = 0; i < OI_BUILDING_TYPES.length; i++) {
+      assert.equal(built.openintent.area_materials[i].top_height, OI_BUILDING_TYPES[i].topEdge);
       assert.equal(
         built.openintent.area_materials[i].rf_properties.attenuation_per_m,
-        ZONE_TYPES[i].attenuationDbPerMeter
+        OI_BUILDING_TYPES[i].attenuationDbPerMeter
       );
     }
     const compat = scoreMaterialCompatibility(built.openintent);
     assert.equal(compat.mode, COMPATIBILITY_MODE);
     assert.equal(compat.stockOnly, true);
     assert.equal(compat.consistent, true);
-    assert.equal(compat.materials, 6);
+    assert.equal(compat.materials, 4);
     assert.equal(built.stats.compatibilityMode, COMPATIBILITY_MODE);
-    assert.equal(built.stats.areaMaterials, 6);
+    assert.equal(built.stats.areaMaterials, 4);
     const dumped = JSON.stringify(built.openintent);
     assert.equal(/Building \d/.test(dumped), false);
-    assert.equal(/Foliage \d/.test(dumped), false);
+    assert.equal(/Foliage/.test(dumped), false);
+    assert.equal(/Tree Trunk/.test(dumped), false);
+    assert.equal(/Hotel podium/.test(dumped), false);
     const types = built.clipboard.attenuatingZoneTypes;
     assert.ok(types.some((t) => t.id === "bldg-m-6_4" && t.topEdge === 6.4));
     assert.ok(types.some((t) => t.id === "bldg-m-18_2" && t.topEdge === 18.2));
@@ -80,7 +81,9 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.ok(types.some((t) => t.id === "foliage-m-14_2" && t.topEdge === 14.2));
     assert.ok(built.stats.exactBuildingHeights >= 3);
     assert.ok(built.stats.exactFoliageHeights >= 3);
-    assert.ok(built.openintent.floorplans[0].attenuation_areas.length >= 3);
+    // OI is buildings only; trees are clipboard-only.
+    assert.equal(built.openintent.floorplans[0].attenuation_areas.length, 3);
+    assert.ok(built.clipboard.attenuatingZones.length >= 3 + 3 * 2);
     assert.equal(built.openintent.openintent_version, "2.0.1");
     assert.deepEqual(Object.keys(built.openintent).sort(), [
       "area_materials",
@@ -113,6 +116,7 @@ describe("Hamina OpenIntent material compatibility", () => {
       const cat = built.openintent.area_materials.find((m) => m.name === a.area_material.name);
       assert.deepEqual(a.area_material, cat);
       assert.deepEqual(Object.keys(a.area_material), ["name", "rf_properties", "top_height", "display_color"]);
+      assert.ok(OI_BUILDING_NAMES.includes(a.area_material.name));
       assert.equal("itu_material_type" in a.area_material, false);
       assert.equal("bottom_height" in a.area_material, false);
       const coords = a.area.coordinates;

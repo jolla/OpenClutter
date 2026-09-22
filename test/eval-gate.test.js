@@ -49,7 +49,7 @@ describe("eval gate (cached fixtures, no Hamina)", () => {
         assert.ok(next.exportStats.heights.uniqueBuildingHeights >= 8);
         assert.ok(next.exportStats.heights.matchedFrac >= 0.9);
         assert.ok(next.exportStats.heights.uniqueFoliageHeights >= 4);
-        assert.equal(next.exportStats.compatibility.materials, 6);
+        assert.equal(next.exportStats.compatibility.materials, 4);
         assert.equal(next.exportStats.compatibility.stockOnly, true);
         assert.equal(next.exportStats.compatibility.consistent, true);
         assert.equal(next.exportStats.imageryRecovery.hit, true);
