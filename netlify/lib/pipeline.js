@@ -55,7 +55,9 @@ const ZIP_TROUBLESHOOT =
   "Floorplan dimensions.height is Hamina outdoor 2.5 m (8.202 ft); meters match JPEG pixel aspect.\n" +
   "OpenIntent materials are only Building - One/Two/Five/Ten Floor (Hamina outdoor gold set).\n" +
   "Foliage / Tree Trunk / Hotel podium names are clipboard-only — they silently emptied OI imports.\n" +
-  "Each ring vertex is pixels+meters+feet; materials omit itu_material_type and bottom_height.\n";
+  "Each ring vertex is pixels+meters+feet; materials omit itu_material_type and bottom_height.\n" +
+  "Rings thinner than 4 px on one axis, or over the Hamina vertex cap, are omitted from OpenIntent\n" +
+  "(VERIFY.txt warning) so one bad ring cannot drop the import. Those shapes stay on the clipboard.\n";
 
 /**
  * Skip Microsoft campus-merge blobs (one giant wrong polygon). Do NOT use a
@@ -73,6 +75,23 @@ const MEGA_CAMPUS_M2 = 150000;
 const HOTEL_MEGA_M2 = 400000;
 /** After simplify, coarse MS hulls stay ~20–32 verts; real large roofs keep ≥40. */
 const MEGA_MIN_DETAIL_VERTS = 40;
+/**
+ * Hamina outdoor OpenIntent rings top out near 21 vertices. A project
+ * re-exported after clipboard paste tops out near 41. Emit at most this many
+ * open vertices so one dense Overture ring cannot invalidate the import.
+ * Mega classification still uses the detailed simplify (#24 budgets, including
+ * 56 for large roofs) before this cap: the podium is kept, then simplified
+ * under the import ceiling.
+ */
+const MAX_OI_RING_VERTS = 40;
+/** Image-edge rounding shaves ~0.002 px; do not treat that as a sub-4 px sliver. */
+const OI_SPAN_SLACK_PX = 0.005;
+/**
+ * A short side under half the minimum is a sliver: drop it from OpenIntent.
+ * A nearer miss (coarse pixels, a 3 px wing) is expanded out to the floor so
+ * the ring stays valid without inventing a wide wall from a 1 px edge.
+ */
+const OI_SLIVER_FRACTION = 0.5;
 
 function megaCampusLimitM2() {
   return HOTEL_MEGA_M2;
@@ -115,6 +134,8 @@ function coverageStats(stats) {
     droppedClip: s.droppedClip || 0,
     droppedCap: s.droppedCap || 0,
     droppedInvalid: s.droppedInvalid || 0,
+    droppedSpan: s.droppedSpan || 0,
+    droppedVerts: s.droppedVerts || 0,
     droppedAreasCap: s.droppedAreasCap || 0,
     attenuationAreasEmitted: s.attenuationAreasEmitted != null ? s.attenuationAreasEmitted : s.areas || 0,
     globalFootprints: s.globalFootprints || 0,
@@ -150,6 +171,8 @@ function coverageSummary(stats) {
   if (c.droppedClip) drops.push("clip " + c.droppedClip);
   if (c.droppedCap) drops.push("cap " + c.droppedCap);
   if (c.droppedInvalid) drops.push("invalid " + c.droppedInvalid);
+  if (c.droppedSpan) drops.push("span " + c.droppedSpan);
+  if (c.droppedVerts) drops.push("verts " + c.droppedVerts);
   if (c.droppedAreasCap) drops.push("areas-cap " + c.droppedAreasCap);
   const dropTxt = drops.length ? `; dropped ${drops.join(", ")}` : "";
   return (
@@ -192,6 +215,8 @@ function zipReadme(stats) {
     `droppedClip: ${c.droppedClip}\n` +
     `droppedCap: ${c.droppedCap}\n` +
     `droppedInvalid: ${c.droppedInvalid}\n` +
+    `droppedSpan: ${c.droppedSpan}\n` +
+    `droppedVerts: ${c.droppedVerts}\n` +
     `droppedAreasCap: ${c.droppedAreasCap}\n` +
     ZIP_TROUBLESHOOT
   );
@@ -207,7 +232,17 @@ function verifyTxt(stats) {
     `area_materials: ${c.areaMaterials != null ? c.areaMaterials : STOCK_MATERIAL_NAMES.length}\n` +
     `buildingsKept: ${c.buildingsKept}\n` +
     `treesKept: ${c.treesKept}\n` +
-    `attenuationAreasEmitted: ${c.attenuationAreasEmitted}\n`
+    `attenuationAreasEmitted: ${c.attenuationAreasEmitted}\n` +
+    verifyOmitWarning(c)
+  );
+}
+
+function verifyOmitWarning(c) {
+  const span = c.droppedSpan || 0;
+  const verts = c.droppedVerts || 0;
+  if (!span && !verts) return "";
+  return (
+    `warning: omitted ${span} thin-span and ${verts} over-vertex ring(s) from OpenIntent so one invalid ring cannot drop the import\n`
   );
 }
 
@@ -447,20 +482,95 @@ function minOiSpanPx(mpuX) {
 }
 
 /**
+ * "ok" — both axes clear the floor.
+ * "thin" — one axis is a sliver. Do not expand (that invents a building) and
+ * do not emit (Hamina may drop every area if one ring is degenerate).
+ * "collapsed" — both axes are tiny (tree-trunk scale). Expand to a square.
+ */
+function ringSpanClass(pts, minSpan) {
+  if (!pts || pts.length < 3) return "collapsed";
+  const span = minSpan == null ? MIN_OI_SPAN_PX : minSpan;
+  const b = ringBBox(pts);
+  const floor = span - OI_SPAN_SLACK_PX;
+  const xOk = b.w >= floor;
+  const yOk = b.h >= floor;
+  if (xOk && yOk) return "ok";
+  if (xOk || yOk) return "thin";
+  return "collapsed";
+}
+
+function thinSliverDrop(pts, minSpan) {
+  if (ringSpanClass(pts, minSpan) !== "thin") return false;
+  const b = ringBBox(pts);
+  const span = minSpan == null ? MIN_OI_SPAN_PX : minSpan;
+  return Math.min(b.w, b.h) < span * OI_SLIVER_FRACTION;
+}
+
+/** Stretch only the short axis out to `span`, keeping the ring inside the image. */
+function expandShortAxis(pts, imgW, imgH, span) {
+  const b = ringBBox(pts);
+  let minX = b.minX;
+  let maxX = b.maxX;
+  let minY = b.minY;
+  let maxY = b.maxY;
+  if (b.w < span) {
+    const cx = (b.minX + b.maxX) / 2;
+    minX = cx - span / 2;
+    maxX = cx + span / 2;
+    if (minX < 0) {
+      maxX -= minX;
+      minX = 0;
+    }
+    if (maxX > imgW) {
+      minX -= maxX - imgW;
+      maxX = imgW;
+    }
+    minX = Math.max(0, minX);
+    maxX = Math.min(imgW, maxX);
+  }
+  if (b.h < span) {
+    const cy = (b.minY + b.maxY) / 2;
+    minY = cy - span / 2;
+    maxY = cy + span / 2;
+    if (minY < 0) {
+      maxY -= minY;
+      minY = 0;
+    }
+    if (maxY > imgH) {
+      minY -= maxY - imgH;
+      maxY = imgH;
+    }
+    minY = Math.max(0, minY);
+    maxY = Math.min(imgH, maxY);
+  }
+  const floor = span - OI_SPAN_SLACK_PX;
+  if (maxX - minX < floor || maxY - minY < floor) return [];
+  const sx = b.w > 1e-9 ? (maxX - minX) / b.w : 1;
+  const sy = b.h > 1e-9 ? (maxY - minY) / b.h : 1;
+  const out = [];
+  for (const p of pts) out.push([minX + (p[0] - b.minX) * sx, minY + (p[1] - b.minY) * sy]);
+  return out;
+}
+
+/**
  * Sub-pixel tree trunks used to emit near-degenerate hexagons. After toFixed(3)
  * those can be duplicate/NaN-adjacent and Hamina then dropped every area.
- * Expand only collapsed blobs — not thin real building slivers.
+ * Expand collapsed blobs and near-miss short sides. Drop one-axis slivers.
  */
 function ensureMinSpan(pts, imgW, imgH, minSpan) {
   if (!pts || pts.length < 3) return pts;
   const span = minSpan == null ? MIN_OI_SPAN_PX : minSpan;
+  const klass = ringSpanClass(pts, span);
+  if (klass === "ok") return pts;
+  if (klass === "thin") {
+    if (thinSliverDrop(pts, span)) return [];
+    return expandShortAxis(pts, imgW, imgH, span);
+  }
   const b = ringBBox(pts);
-  if (b.w >= span && b.h >= span) return pts;
-  if (b.w >= span || b.h >= span) return pts;
   const cx = (b.minX + b.maxX) / 2;
   const cy = (b.minY + b.maxY) / 2;
   const square = fitSquareInImage(cx, cy, Math.max(span, b.w, b.h), imgW, imgH);
-  return square.length ? square : pts;
+  return square.length ? square : [];
 }
 
 function ccw(a, b, c) {
@@ -525,6 +635,19 @@ function validateOiCoords(coords, imgW, imgH) {
     if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return { ok: false, reason: "nan" };
     if (p.x < 0 || p.y < 0 || p.x > imgW || p.y > imgH) return { ok: false, reason: "bounds" };
   }
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < pixels.length; i++) {
+    const p = pixels[i].coordinate_xyz;
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const spanFloor = MIN_OI_SPAN_PX - OI_SPAN_SLACK_PX;
+  if (maxX - minX < spanFloor || maxY - minY < spanFloor) return { ok: false, reason: "span" };
   const first = pixels[0].coordinate_xyz;
   const last = pixels[pixels.length - 1].coordinate_xyz;
   if (first.x !== last.x || first.y !== last.y) return { ok: false, reason: "open" };
@@ -626,12 +749,94 @@ function clipRingToRect(ring, w, h) {
   return pts;
 }
 
+function cross(o, a, b) {
+  return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+}
+
+function convexHullOpen(points) {
+  const pts = points.slice().sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+  if (pts.length < 3) return pts.slice();
+  const lower = [];
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
+}
+
+function subsampleOpen(open, maxPts) {
+  if (open.length <= maxPts) return open.slice();
+  const step = Math.ceil(open.length / maxPts);
+  const thin = [];
+  for (let i = 0; i < open.length && thin.length < maxPts; i += step) thin.push(open[i]);
+  return thin;
+}
+
+function ringSelfIntersectsPx(pts) {
+  const open = uniqueOpenRing(pts);
+  const n = open.length;
+  if (n < 4) return false;
+  for (let i = 0; i < n; i++) {
+    const a = open[i];
+    const b = open[(i + 1) % n];
+    for (let j = i + 1; j < n; j++) {
+      if (Math.abs(i - j) <= 1 || (i === 0 && j === n - 1)) continue;
+      if (segsIntersectProper(a, b, open[j], open[(j + 1) % n])) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * OpenIntent vertex ceiling. Rings already under the budget are returned
+ * unchanged (a bowtie stays a bowtie so validation can reject it). Longer
+ * rings are Douglas–Peucker'd, then subsampled, then replaced with the
+ * convex hull if a candidate would self-intersect.
+ */
+function capOiRingPx(ring, maxPts) {
+  const limit = Math.max(3, maxPts | 0);
+  const open = uniqueOpenRing(ring);
+  if (open.length < 3) return [];
+  if (open.length <= limit) return open.concat([open[0]]);
+  const candidates = [];
+  let eps = 0.35;
+  for (let i = 0; i < 14; i++) {
+    const simplified = simplifyRing(open.concat([open[0]]), limit, eps);
+    const next = uniqueOpenRing(simplified);
+    if (next.length >= 3 && next.length <= limit && next.length < open.length) candidates.push(next);
+    eps *= 1.65;
+  }
+  candidates.push(subsampleOpen(open, limit));
+  const hull = convexHullOpen(open);
+  if (hull.length >= 3) candidates.push(hull.length > limit ? subsampleOpen(hull, limit) : hull);
+  for (const c of candidates) {
+    if (c.length >= 3 && c.length <= limit && ringAreaPx(c) > 1e-4 && !ringSelfIntersectsPx(c)) {
+      return c.concat([c[0]]);
+    }
+  }
+  return [];
+}
+
 function ringToOi(pts, imgW, imgH, mpuX) {
   if (!pts || pts.length < 3) return null;
   let clipped = clipRingToRect(pts, imgW, imgH);
   if (clipped.length < 3) return null;
-  clipped = ensureMinSpan(clipped, imgW, imgH, minOiSpanPx(mpuX));
+  const span = minOiSpanPx(mpuX);
+  if (thinSliverDrop(clipped, span)) return null;
+  clipped = ensureMinSpan(clipped, imgW, imgH, span);
   if (!clipped || clipped.length < 3) return null;
+  if (ringSpanClass(clipped, span) !== "ok") return null;
+  clipped = capOiRingPx(clipped, MAX_OI_RING_VERTS);
+  if (!clipped || ringVertexCount(clipped) < 3 || ringVertexCount(clipped) > MAX_OI_RING_VERTS) return null;
   if (ringAreaPx(clipped) < 1e-6) return null;
   const pixels = finalizeOiCoords(clipped, imgW, imgH);
   if (!pixels) return null;
@@ -740,7 +945,10 @@ function featureExteriorRings(geometry) {
 function emitBuilding(ring, heightM, frame, affine, buckets) {
   const amRaw = ringAreaM2(ring, frame.mpd);
   // Large detailed roofs (Wynn casino) self-intersect if Douglas–Peucker is too
-  // aggressive; try a tighter pass before giving up as clip.
+  // aggressive; try a tighter pass before giving up as clip. These budgets
+  // stay high so isMegaCampus can see ≥40 detail verts (#24, including the
+  // 56-vert large-roof pass). ringToOi then caps the emitted ring to
+  // MAX_OI_RING_VERTS — the detail count is not the OpenIntent vertex count.
   const budgets =
     amRaw > 80000
       ? [
@@ -763,8 +971,9 @@ function emitBuilding(ring, heightM, frame, affine, buckets) {
   for (const [maxPts, eps] of budgets) {
     const result = emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps);
     if (result === "keep") return "keep";
-    // Tiny clipped area will not grow with more verts.
-    if (result === "tiny") return "tiny";
+    // Tiny clipped area will not grow with more verts. A one-axis sliver
+    // will not grow a short side either — do not retry and double-count it.
+    if (result === "tiny" || result === "span") return result;
     // Mega from a coarse simplify may clear once detail verts are preserved.
     if (result === "mega") {
       lastFail = "mega";
@@ -773,6 +982,36 @@ function emitBuilding(ring, heightM, frame, affine, buckets) {
     lastFail = result;
   }
   return lastFail;
+}
+
+/** Overlay uses the detailed clip. Clipboard uses clipPx (exact sliver, or the OI ring on the keep path). */
+function stashBuilding(buckets, frame, affine, clipRing, overlayPts, clipPx, picked) {
+  if (picked.clipType) buckets.clipTypes.push(picked.clipType);
+  if (picked.measured) buckets.measured++;
+  const clipFromImage = [];
+  if (!affine) {
+    const open = uniqueOpenRing(clipPx);
+    for (const p of open) {
+      const m = pxToClipboard(p[0], p[1], frame);
+      clipFromImage.push([
+        Math.min(0, Math.max(-frame.widthM, m[0])),
+        Math.min(0, Math.max(-frame.lengthM, m[1])),
+      ]);
+    }
+  }
+  const z = clipZone(picked.typeId, affine ? clipRing : clipFromImage);
+  if (z) buckets.clipZones.push(z);
+  const src = overlayPts && overlayPts.length ? overlayPts : clipPx;
+  const cxs = src.map((p) => p[0]);
+  const cys = src.map((p) => p[1]);
+  buckets.aabbs.push({
+    minX: Math.min(...cxs),
+    maxX: Math.max(...cxs),
+    minY: Math.min(...cys),
+    maxY: Math.max(...cys),
+  });
+  buckets.overlayRings.push(src);
+  buckets.overlayHeights.push(picked.exactHeight || (picked.material && picked.material.top_height) || 0);
 }
 
 function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps) {
@@ -802,8 +1041,19 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
   const am = pxRingAreaM2(clippedPts, frame.mpuX, frame.mpuY);
   if (isMegaCampus(am, detailVerts)) return "mega";
   if (am < MIN_AREA_M2) return "tiny";
+  const minSpan = minOiSpanPx(frame.mpuX);
+  if (thinSliverDrop(clippedPts, minSpan)) {
+    // Clipboard keeps the exact sliver. OpenIntent must not, or Hamina drops
+    // every attenuating object.
+    const pickedThin = materialForBuilding(heightM, am);
+    stashBuilding(buckets, frame, affine, clipRing, clippedPts, clippedPts, pickedThin);
+    return "span";
+  }
   const oiCoords = ringToOi(clippedPts, frame.imgW, frame.imgH, frame.mpuX);
-  if (!oiCoords) return "clip";
+  if (!oiCoords) {
+    if (ringVertexCount(clippedPts) > MAX_OI_RING_VERTS) return "verts";
+    return "clip";
+  }
   const picked = materialForBuilding(heightM, am);
   const area = emitIfValid(makeOiArea(oiCoords, picked.material), frame.imgW, frame.imgH);
   if (!area) return "invalid";
@@ -929,6 +1179,8 @@ function footprintsToClutter(features, frame, affine) {
     droppedClip: 0,
     droppedCap: 0,
     droppedInvalid: 0,
+    droppedSpan: 0,
+    droppedVerts: 0,
   };
   const buckets = {
     oiAreas,
@@ -958,6 +1210,8 @@ function footprintsToClutter(features, frame, affine) {
       else if (result === "tiny") stats.droppedTiny++;
       else if (result === "clip") stats.droppedClip++;
       else if (result === "invalid") stats.droppedInvalid++;
+      else if (result === "span") stats.droppedSpan++;
+      else if (result === "verts") stats.droppedVerts++;
     }
   }
   stats.measuredBuildings = buckets.measured;
@@ -1186,6 +1440,7 @@ module.exports = {
   MEGA_CAMPUS_M2,
   HOTEL_MEGA_M2,
   MEGA_MIN_DETAIL_VERTS,
+  MAX_OI_RING_VERTS,
   megaCampusLimitM2,
   isMegaCampus,
   ringVertexCount,
@@ -1213,4 +1468,6 @@ module.exports = {
   capAttenuationAreas,
   ensureMinSpan,
   minOiSpanPx,
+  capOiRingPx,
+  ringSpanClass,
 };
