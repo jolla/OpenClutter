@@ -48,7 +48,7 @@ describe("Hamina-native OpenIntent gold shape", () => {
     assert.ok(Math.abs(m0.y - p0.y * mpu) < 1e-4);
   });
 
-  it("emits OI materials ⊆ gold Building-* set; trees stay on clipboard", () => {
+  it("emits tree areas on the gold Building-* set and keeps foliage names on the clipboard", () => {
     const frame = geoFrame({
       west: -87.93,
       south: 42.89,
@@ -103,7 +103,9 @@ describe("Hamina-native OpenIntent gold shape", () => {
       assert.deepEqual(Object.keys(mat), ["name", "rf_properties", "top_height", "display_color"]);
       assert.ok(GOLD_BUILDING_NAMES.includes(mat.name));
     }
-    assert.equal(fp.attenuation_areas.length, 1);
+    assert.equal(built.stats.openIntentBuildingAreas, 1);
+    assert.ok(built.stats.openIntentTreeAreas >= 1);
+    assert.equal(fp.attenuation_areas.length, 1 + built.stats.openIntentTreeAreas);
     for (const a of fp.attenuation_areas) {
       assert.ok(GOLD_BUILDING_NAMES.includes(a.area_material.name));
       const coords = a.area.coordinates;

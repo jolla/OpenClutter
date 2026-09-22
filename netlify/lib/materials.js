@@ -4,9 +4,14 @@
  * OpenIntent area_materials must match Hamina's outdoor building stock.
  * Jerry's gold Hamina export only catalogs:
  *   Building - One / Two / Five / Ten Floor
- * Names like Foliage - Heavy, Tree Trunk, or Hotel podium still cause a
- * silent all-or-nothing drop of every attenuation_area. Trees and exact
- * measured heights stay on hamina-clipboard.json (paste fallback).
+ * Those four objects import. Names outside that set — Foliage - Heavy,
+ * Foliage - Light, Tree Trunk, Foliage N.N m, Tree Trunk N.N m, Hotel podium,
+ * Building N.N m — silently drop every attenuation_area. The docs clipboard
+ * example "Tree Foliage" is not in the gold export or the Hamina client
+ * bundle, so it is not emitted either.
+ * Tree rings reuse the gold object for their height bucket (same keys:
+ * name, rf_properties, top_height, display_color). Exact foliage names and
+ * measured metres stay on hamina-clipboard.json (optional legacy paste).
  * compatibilityMode is "stock-openintent".
  */
 
@@ -171,6 +176,16 @@ function materialForBuilding(heightM, areaM2) {
   };
 }
 
+/**
+ * Canopy and trunk rings in OpenIntent. Height only picks a gold Building-*
+ * bucket. Returning a foliage name here would empty the whole import.
+ */
+function materialForVegetation(heightM) {
+  const h = roundHeightM(heightM);
+  const oiId = pickOiBuildingTypeId(0, h || 9);
+  return oiMaterialFromType(OI_BUILDING_BY_ID[oiId]);
+}
+
 function stockMaterials() {
   return ZONE_TYPES.map((t) => oiMaterialFromType(t));
 }
@@ -187,6 +202,7 @@ module.exports = {
   measuredFoliageMaterial,
   measuredTrunkMaterial,
   materialForBuilding,
+  materialForVegetation,
   pickOiBuildingTypeId,
   stockMaterials,
   catalogMaterials,

@@ -19,7 +19,7 @@
  *     -d '{"west":-87.92259693145752,"south":42.89043196008693,"east":-87.91184663772584,"north":42.90325386116256,"name":"Oak Creek WI commercial","trees":[],"format":"bundle"}'
  *
  * Pass: HTTP 200, wall clock under 10s, attenuation_areas > 0 and ≤ 982,
- * exactly the six stock area_materials, every area_material a catalog-equal
+ * the gold Building - One/Two/Five/Ten Floor area_materials, every area_material a catalog-equal
  * object (a name string is Invalid OpenIntent format), JPEG SOI, clipboard
  * vertices inside the meter frame, and VERIFY.txt / export-stats.json
  * agreeing with that length. When ajv is installed, the OpenIntent JSON is

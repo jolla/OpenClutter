@@ -181,7 +181,10 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(built.stats.treesKept, 1);
     assert.match(built.stats.summary, /Buildings 1 kept \(1 fetched\)/);
     const areas = built.openintent.floorplans[0].attenuation_areas;
-    assert.equal(areas.length, built.stats.buildings);
+    assert.equal(built.stats.openIntentBuildingAreas, 1);
+    assert.ok(built.stats.openIntentTreeAreas >= 1);
+    assert.equal(areas.length, built.stats.openIntentBuildingAreas + built.stats.openIntentTreeAreas);
+    assert.equal(/Foliage|Tree Trunk/.test(JSON.stringify(built.openintent)), false);
     assert.equal(built.clipboard.attenuatingZones.length, built.stats.buildings + built.stats.trees * 2);
     assert.equal(built.stats.areas, areas.length);
     const stock = new Set(OI_BUILDING_NAMES);
@@ -659,7 +662,12 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.ok(ids.has("foliage-heavy") || ids.has("foliage-light"));
     assert.equal(built.stats.trees, 1);
     assert.equal(built.clipboard.attenuatingZones.length, 2);
-    assert.equal(built.openintent.floorplans[0].attenuation_areas.length, 0);
+    assert.ok(built.stats.openIntentTreeAreas >= 1);
+    assert.equal(built.stats.openIntentBuildingAreas, 0);
+    const treeOi = built.openintent.floorplans[0].attenuation_areas;
+    assert.equal(treeOi.length, built.stats.openIntentTreeAreas);
+    assert.ok(treeOi.every((a) => OI_BUILDING_NAMES.includes(a.area_material.name)));
+    assert.equal(/Foliage|Tree Trunk/.test(JSON.stringify(built.openintent)), false);
   });
 
   it("zip dimensions and clipboard origin stay one shared frame", () => {
@@ -676,7 +684,8 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(built.frame.clipboardCorners.ne[1], 0);
     assert.match(built.alignment, /Import this zip in Hamina/);
     assert.match(built.alignment, /Google Earth/);
-    assert.match(built.alignment, /Paste hamina-clipboard\.json for trees/i);
+    assert.match(built.alignment, /optional legacy paste/i);
+    assert.equal(/Paste hamina-clipboard\.json for trees/i.test(built.alignment), false);
     assert.ok(!/click the map, paste/i.test(built.alignment));
   });
 });
@@ -730,7 +739,9 @@ describe("OpenIntent attenuation_areas", () => {
     assert.equal(oi.dimensions.find((d) => d.unit === "meters").length, frame.lengthM);
     assert.equal(built.stats.buildings, 2);
     assert.equal(built.stats.trees, 3);
-    assert.equal(oi.attenuation_areas.length, 2);
+    assert.equal(built.stats.openIntentBuildingAreas, 2);
+    assert.ok(built.stats.openIntentTreeAreas >= 1);
+    assert.equal(oi.attenuation_areas.length, built.stats.openIntentBuildingAreas + built.stats.openIntentTreeAreas);
     assert.equal(built.clipboard.attenuatingZones.length, 2 + 3 * 2);
     const names = oi.attenuation_areas.map((a) => a.area_material.name);
     assert.ok(names.every((n) => OI_BUILDING_NAMES.includes(n)));
@@ -741,7 +752,7 @@ describe("OpenIntent attenuation_areas", () => {
     assert.ok(zipped["alignment-overlay.svg"]);
     assert.match(zipped["alignment-overlay.svg"].toString(), /polygon /);
     const fromZip = JSON.parse(zipped[`openIntent_${built.slug}.json`].toString());
-    assert.equal(fromZip.floorplans[0].attenuation_areas.length, 2);
+    assert.equal(fromZip.floorplans[0].attenuation_areas.length, oi.attenuation_areas.length);
     const clip = JSON.parse(zipped["hamina-clipboard.json"].toString());
     assert.ok(clip.attenuatingZones.some((z) => z.typeId === "tree-trunk" || String(z.typeId).indexOf("foliage") >= 0 || String(z.typeId).indexOf("trunk") >= 0));
   });
@@ -956,7 +967,9 @@ describe("OpenIntent attenuation_areas", () => {
     assert.equal("bottom_height" in cat, false);
     assert.equal(built.stats.compatibilityMode, "stock-openintent");
     assert.equal(built.stats.areaMaterials, OI_BUILDING_NAMES.length);
-    assert.equal(areas.length, 1);
+    assert.equal(built.stats.openIntentBuildingAreas, 1);
+    assert.ok(built.stats.openIntentTreeAreas >= 1);
+    assert.equal(areas.length, 1 + built.stats.openIntentTreeAreas);
     assert.ok(!areas.some((a) => /Foliage|Tree Trunk/.test(a.area_material.name)));
     assert.ok(built.clipboard.attenuatingZoneTypes.some((t) => t.id === "bldg-m-6_4" && t.topEdge === 6.4));
     assert.ok(built.clipboard.attenuatingZones.length >= 1 + 2);
@@ -1010,18 +1023,18 @@ describe("building type pick", () => {
   });
 });
 
-describe("main UI: import buildings, paste trees", () => {
+describe("main UI: import buildings and trees", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const root = path.join(__dirname, "..", "public");
 
-  it("index and app copy tell the user to import OpenIntent then paste clipboard for trees", () => {
+  it("index and app copy tell the user to import OpenIntent for map, buildings, and trees", () => {
     const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
     const app = fs.readFileSync(path.join(root, "app.js"), "utf8");
-    assert.match(html, /Import OpenIntent for map \+ buildings/i);
-    assert.match(html, /paste hamina-clipboard\.json for trees/i);
+    assert.match(html, /Import OpenIntent for the map, buildings, and trees/i);
+    assert.equal(/paste hamina-clipboard\.json for trees/i.test(html), false);
     assert.match(app, /Import this zip in Hamina \(Projects → Import → OpenIntent\)/);
-    assert.match(app, /Paste hamina-clipboard\.json from the zip for trees/i);
+    assert.equal(/Paste hamina-clipboard\.json from the zip for trees/i.test(app), false);
     assert.match(app, /stats\.summary/);
   });
 });

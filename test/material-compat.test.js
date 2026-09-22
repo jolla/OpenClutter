@@ -4,7 +4,13 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { buildClutter, validateOiArea, MAX_ATTENUATION_AREAS } = require("../netlify/lib/pipeline");
-const { catalogMaterials, COMPATIBILITY_MODE, OI_BUILDING_NAMES, OI_BUILDING_TYPES } = require("../netlify/lib/materials");
+const {
+  catalogMaterials,
+  COMPATIBILITY_MODE,
+  OI_BUILDING_NAMES,
+  OI_BUILDING_TYPES,
+  materialForVegetation,
+} = require("../netlify/lib/materials");
 const { scoreMaterialCompatibility } = require("./eval/score");
 
 const BBOX = { west: -87.93, south: 42.89, east: -87.91, north: 42.91, name: "Compat" };
@@ -27,6 +33,39 @@ function square(lon, lat, dLon, dLat, height) {
 }
 
 describe("Hamina OpenIntent material compatibility", () => {
+  it("maps vegetation onto a gold Building object and rejects foliage names", () => {
+    const light = materialForVegetation(9);
+    const heavy = materialForVegetation(14.2);
+    assert.equal(light.name, "Building - Two Floor");
+    assert.equal(heavy.name, "Building - Five Floor");
+    assert.deepEqual(light, catalogMaterials().find((m) => m.name === light.name));
+    assert.deepEqual(heavy, catalogMaterials().find((m) => m.name === heavy.name));
+    const frame = { imgW: 100, imgH: 100 };
+    const coords = [
+      { coordinate_xyz: { x: 0, y: 0, unit: "pixels" } },
+      { coordinate_xyz: { x: 10, y: 0, unit: "pixels" } },
+      { coordinate_xyz: { x: 10, y: 10, unit: "pixels" } },
+      { coordinate_xyz: { x: 0, y: 0, unit: "pixels" } },
+    ];
+    for (const name of ["Foliage - Heavy", "Tree Trunk", "Tree Foliage", "Foliage 14.2 m"]) {
+      const rejected = validateOiArea(
+        {
+          area: { coordinates: coords },
+          area_material: {
+            name,
+            rf_properties: { attenuation_per_m: 1 },
+            top_height: 12,
+            display_color: "#509D33",
+          },
+        },
+        frame.imgW,
+        frame.imgH
+      );
+      assert.equal(rejected.ok, false, name);
+      assert.equal(rejected.reason, "material");
+    }
+  });
+
   it("keeps the gold Building-* OI catalog and exact heights on the clipboard", () => {
     const frame = geoFrame(BBOX);
     const dLon = (frame.east - frame.west) * 0.04;
@@ -81,8 +120,13 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.ok(types.some((t) => t.id === "foliage-m-14_2" && t.topEdge === 14.2));
     assert.ok(built.stats.exactBuildingHeights >= 3);
     assert.ok(built.stats.exactFoliageHeights >= 3);
-    // OI is buildings only; trees are clipboard-only.
-    assert.equal(built.openintent.floorplans[0].attenuation_areas.length, 3);
+    // Buildings and trees share the gold catalog. Clipboard still has exact foliage names.
+    assert.equal(built.stats.openIntentBuildingAreas, 3);
+    assert.ok(built.stats.openIntentTreeAreas >= 3);
+    assert.equal(
+      built.openintent.floorplans[0].attenuation_areas.length,
+      3 + built.stats.openIntentTreeAreas
+    );
     assert.ok(built.clipboard.attenuatingZones.length >= 3 + 3 * 2);
     assert.equal(built.openintent.openintent_version, "2.0.1");
     assert.deepEqual(Object.keys(built.openintent).sort(), [

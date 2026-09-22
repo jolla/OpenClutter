@@ -1,8 +1,8 @@
 "use strict";
 
 const { llToPx, pxToClipboard, applyAffine } = require("./geo-frame");
-const { clipZone, TYPE_BY_ID, oiMaterialFromType } = require("./hamina-clipboard");
-const { measuredFoliageMaterial, measuredTrunkMaterial } = require("./materials");
+const { clipZone } = require("./hamina-clipboard");
+const { measuredFoliageMaterial, measuredTrunkMaterial, materialForVegetation } = require("./materials");
 
 const { MAX_TREES, MAX_TREES_LARGE, maxTreesForBbox, pickStratified, canopyHeightM } = require("./tree-source");
 const CANOPY_R_M = 5.2;
@@ -137,8 +137,10 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine) {
     const canopyStockId = heavy ? "foliage-heavy" : "foliage-light";
     const canopyId = foliage ? foliage.typeId : canopyStockId;
     const trunkId = trunk ? trunk.typeId : "tree-trunk";
-    const canopyMat = oiMaterialFromType(TYPE_BY_ID[canopyStockId]);
-    const trunkMat = oiMaterialFromType(TYPE_BY_ID["tree-trunk"]);
+    // Clipboard keeps Foliage / Tree Trunk. OpenIntent must not: those names
+    // drop every attenuation_area. Height picks a gold Building-* object.
+    const canopyMat = materialForVegetation(foliage ? foliage.material.top_height : heavy ? 12 : 9);
+    const trunkMat = materialForVegetation(trunk ? trunk.material.top_height : 8);
     const rCanopy = (CANOPY_R_M + (n % 4) * 0.4) / frame.mpuX;
     const rTrunk = TRUNK_R_M / frame.mpuX;
     const ryCanopy = (CANOPY_R_M + (n % 4) * 0.4) / frame.mpuY;

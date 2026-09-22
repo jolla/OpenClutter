@@ -232,6 +232,12 @@ function runLoaded(loaded, opts) {
     built.clipboard
   );
   const compatibility = scoreMaterialCompatibility(built.openintent);
+  const openIntentTrees = {
+    required: treePoints.length > 0,
+    placed: treePoints.length,
+    emitted: built.stats.openIntentTreeAreas || 0,
+    buildingAreas: built.stats.openIntentBuildingAreas || 0,
+  };
   const recovery = prefer ? imageryRecovery(jpegDecoded, frame, vectorFeatures, probes) : { required: false, hit: true };
   const medians = {
     required: prefer && loaded.site.id === "oak-creek-commercial",
@@ -268,6 +274,7 @@ function runLoaded(loaded, opts) {
     terrain: terrainScore,
     chm,
     compatibility,
+    openIntentTrees,
   });
   const exportStats = {
     site: loaded.site.id,
@@ -297,6 +304,7 @@ function runLoaded(loaded, opts) {
     trees,
     heights,
     compatibility,
+    openIntentTrees,
     imageryRecovery: recovery,
     medians,
     overture,

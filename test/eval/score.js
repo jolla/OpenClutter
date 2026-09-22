@@ -535,6 +535,13 @@ function evaluate(scores, thresholds) {
     if (!compat.stockOnly) failures.push("OpenIntent material is not a Hamina outdoor Building-* name");
     if (!compat.consistent) failures.push("area material does not match the catalog entry");
   }
+  const oiTrees = scores.openIntentTrees;
+  if (oiTrees && oiTrees.required) {
+    if (oiTrees.emitted < 1) failures.push(`openIntentTreeAreas ${oiTrees.emitted} < 1`);
+    if (oiTrees.placed > 0 && oiTrees.emitted > oiTrees.placed * 2) {
+      failures.push(`openIntentTreeAreas ${oiTrees.emitted} > ${oiTrees.placed * 2}`);
+    }
+  }
   return { ok: failures.length === 0, failures };
 }
 
