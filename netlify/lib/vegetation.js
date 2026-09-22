@@ -70,7 +70,15 @@ function toClipRing(ringPx, frame, affine, lonLatHint) {
       y0 + (y - cy) * frame.mpuY,
     ]);
   }
-  return ringPx.map(([x, y]) => pxToClipboard(x, y, frame));
+  return ringPx.map(([x, y]) => {
+    const cx = Math.min(frame.imgW, Math.max(0, x));
+    const cy = Math.min(frame.imgH, Math.max(0, y));
+    const m = pxToClipboard(cx, cy, frame);
+    return [
+      Math.min(0, Math.max(-frame.widthM, m[0])),
+      Math.min(0, Math.max(-frame.lengthM, m[1])),
+    ];
+  });
 }
 
 /**
