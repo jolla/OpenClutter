@@ -36,6 +36,7 @@ const { fetchChmGrid, applyChmToTrees, sampleChmGrid } = require("../lib/canopy-
 const { fetchDemSamples, terrainFromSamples } = require("../lib/terrain");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
+const { surfaceMasksFromImage } = require("../lib/surface-mask");
 const { detectMedianTrees, appendTreePoints } = require("../lib/tree-source");
 
 function json(status, cors, obj) {
@@ -500,6 +501,19 @@ exports.handler = async (event) => {
     }
   }
 
+  let maskRings = [];
+  let maskPolygons = [];
+  if (decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH) {
+    try {
+      const masks = surfaceMasksFromImage(decoded, frame);
+      maskRings = masks.waterRings;
+      maskPolygons = masks.pavementPolygons;
+    } catch {
+      maskRings = [];
+      maskPolygons = [];
+    }
+  }
+
   const built = buildClutter({
     frame,
     footprintsGeojson: gj,
@@ -513,6 +527,8 @@ exports.handler = async (event) => {
     warnings,
     canopyHits: placeHits,
     heightSample: chmGrid ? (lon, lat) => sampleChmGrid(chmGrid, lon, lat) : null,
+    maskRings,
+    maskPolygons,
   });
 
   const frameHeaders = {

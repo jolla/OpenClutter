@@ -24,6 +24,7 @@ const {
   ringVertexCount,
 } = require("../../netlify/lib/pipeline");
 const T = require("../../netlify/lib/tree-source");
+const { intersectionAreaPx } = require("../../netlify/lib/poly-clip");
 
 const THRESHOLDS = {
   minCentroidHitRate: 0.85,
@@ -43,6 +44,7 @@ const THRESHOLDS = {
   minOvertureExplicit: 8,
   minChmTrees: 8,
   minTerrainPolygons: 1,
+  maxFoliageBuildingOverlapM2: 5,
 };
 
 function luma(r, g, b) {
@@ -528,6 +530,12 @@ function evaluate(scores, thresholds) {
     if (!terrain.separateFromOpenIntent) failures.push("terrain leaked into OpenIntent");
     if (!terrain.mainClipboardFlat) failures.push("main hamina clipboard gained terrain zones");
   }
+  const foliageOverlap = scores.foliageOverlap;
+  if (foliageOverlap && foliageOverlap.overlapM2 > t.maxFoliageBuildingOverlapM2) {
+    failures.push(
+      `foliageBuildingOverlapM2 ${foliageOverlap.overlapM2.toFixed(1)} > ${t.maxFoliageBuildingOverlapM2}`
+    );
+  }
   const chm = scores.chm;
   if (chm && chm.required && chm.applied < t.minChmTrees) {
     failures.push(`chmTrees ${chm.applied} < ${t.minChmTrees}`);
@@ -669,6 +677,20 @@ function scoreMeasuredHeights(features, overlayRings, overlayHeights, frame, ope
   };
 }
 
+function scoreFoliageBuildingOverlap(vegRings, buildingRings, frame) {
+  let px = 0;
+  const veg = vegRings || [];
+  const buildings = buildingRings || [];
+  for (let i = 0; i < veg.length; i++) {
+    for (let j = 0; j < buildings.length; j++) {
+      px += intersectionAreaPx(veg[i], buildings[j]);
+    }
+  }
+  const mpuX = frame && frame.mpuX ? frame.mpuX : 1;
+  const mpuY = frame && frame.mpuY ? frame.mpuY : 1;
+  return { overlapPx2: px, overlapM2: px * mpuX * mpuY };
+}
+
 function scoreSite({ built, frame, footprints, jpegDecoded, tcc, treePoints, treesSource }) {
   const buildings = scoreBuildings(footprints.features || [], built._overlayRings || [], frame);
   // overlay rings are not on built; caller may pass overlayRings
@@ -699,5 +721,6 @@ module.exports = {
   treePointsFromBuilt,
   evaluate,
   scoreSite,
+  scoreFoliageBuildingOverlap,
   nearestTccPct,
 };
