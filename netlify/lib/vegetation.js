@@ -2,22 +2,10 @@
 
 const { llToPx, pxToClipboard, applyAffine } = require("./geo-frame");
 const { clipZone } = require("./hamina-clipboard");
-const { measuredFoliageMaterial, measuredTrunkMaterial, materialForVegetation } = require("./materials");
+const { measuredFoliageMaterial, materialForVegetation } = require("./materials");
 
-const { MAX_TREES, MAX_TREES_LARGE, maxTreesForBbox, pickStratified, canopyHeightM } = require("./tree-source");
+const { MAX_TREES, maxTreesForBbox, canopyHeightM } = require("./tree-source");
 const { BUILDING_BUFFER_M, createClipSet, clipFoliageRing, dissolveFoliageRings } = require("./poly-clip");
-const TRUNK_R_M = 0.5;
-
-function blobRingPx(cx, cy, rx, ry, n, jitter, seed) {
-  const pts = [];
-  for (let i = 0; i < n; i++) {
-    const a = (2 * Math.PI * i) / n;
-    const rr = 1 + jitter * Math.sin(i * 1.7 + seed);
-    pts.push([cx + rx * rr * Math.cos(a), cy + ry * rr * Math.sin(a)]);
-  }
-  pts.push(pts[0]);
-  return pts;
-}
 
 function pointInAabb(x, y, boxes, pad) {
   for (const b of boxes) {
@@ -121,20 +109,6 @@ function inferCanopyCell(hits, frame) {
   return { lon: dx, lat: dy };
 }
 
-function pointInLonLatRing(lon, lat, ring) {
-  if (!ring || ring.length < 3) return false;
-  let inside = false;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const xi = ring[i][0];
-    const yi = ring[i][1];
-    const xj = ring[j][0];
-    const yj = ring[j][1];
-    const intersect = yi > lat !== yj > lat && lon < ((xj - xi) * (lat - yi)) / (yj - yi || 1e-12) + xi;
-    if (intersect) inside = !inside;
-  }
-  return inside;
-}
-
 function ringAbsArea(ring) {
   let a = 0;
   for (let i = 0; i < ring.length - 1; i++) {
@@ -201,8 +175,7 @@ function chainBoundary(edges) {
 
 /**
  * Connected NLCD cells above the canopy threshold become one outline per
- * height band. A single cell stays a point (circle). Circles are not used
- * for a multi-cell patch.
+ * height band. A single cell is not emitted as its own crown circle.
  */
 function canopyPolygonsFromHits(hits, frame, buildingAabbs, heightSample) {
   const cell = inferCanopyCell(hits, frame);
@@ -296,56 +269,27 @@ function canopyPolygonsFromHits(hits, frame, buildingAabbs, heightSample) {
   return polygons;
 }
 
-function crownRadiusM(heightM, pct) {
-  const h = heightM > 2 ? heightM : 9;
-  const dense = pct != null && Number.isFinite(+pct) ? 0.85 + 0.3 * Math.min(1, +pct / 100) : 1;
-  return Math.max(3, Math.min(11, h * 0.28 * dense));
+/** Clipboard type for a canopy polygon. Stock picker ids, or a measured foliage-m-* type. No trunks. */
+function clipboardForCanopy(material) {
+  if (!material || !material.name) return null;
+  if (material.name === "Foliage - Heavy") return { typeId: "foliage-heavy" };
+  if (material.name === "Foliage - Light") return { typeId: "foliage-light" };
+  const measured = measuredFoliageMaterial(material.top_height);
+  if (!measured) return null;
+  return { typeId: measured.typeId, clipType: measured.clipType };
 }
 
 /**
- * Imagery vegetation points (lon/lat) → canopy rings.
- * Multi-cell NLCD patches become canopy polygons. Circles are only for
- * point-like trees (a single cell, a median, RGB, or OSM).
- * OpenIntent uses stock Foliage - Heavy / Light, or a measured-height custom.
- * Clipboard still carries a trunk zone. OSM rings are never generated here.
+ * Connected NLCD canopy → foliage rings.
+ * Multi-cell patches become canopy polygons. Individual tree points, median
+ * dots, and crown circles are not emitted. OpenIntent uses stock Foliage -
+ * Heavy / Light, or a measured-height custom. Clipboard gets the same canopy
+ * polygons and no trunks. OSM rings are never generated here.
+ * `treePoints` is accepted so callers can keep passing placed points; they
+ * do not become attenuation areas.
  */
 function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
-  const pts = normalizeTreePoints(treePoints);
-  const pad = 2 / Math.max(frame.mpuX, 0.01);
-  const candidates = [];
-  for (const p of pts) {
-    const [x, y] = llToPx(p.lon, p.lat, frame);
-    if (x < 0 || y < 0 || x > frame.imgW || y > frame.imgH) continue;
-    if (buildingAabbs && pointInAabb(x, y, buildingAabbs, pad)) continue;
-    candidates.push({
-      lon: p.lon,
-      lat: p.lat,
-      x,
-      y,
-      pct: p.pct != null && Number.isFinite(+p.pct) ? +p.pct : null,
-      heightM: p.heightM != null && Number.isFinite(+p.heightM) ? +p.heightM : null,
-      score: Number.isFinite(+p.pct) ? +p.pct / 100 : Number.isFinite(+p.score) ? +p.score : 0.5,
-      seed: x * 0.13 + y * 0.07,
-    });
-  }
-  // Points are already jittered + NMS'd by the canopy placer. Do not snap
-  // them back onto a pixel lattice (that re-creates the orchard grid).
-  // Callers already NMS. Keep an intentional median supplement instead of
-  // clipping back to the NLCD-only budget. Still stop at the large-map cap.
-  const maxTrees = Math.min(MAX_TREES_LARGE, Math.max(maxTreesForBbox(frame), candidates.length));
-  const bins = Math.max(8, Math.min(16, Math.round(Math.sqrt(maxTrees / 3.5))));
-  const picked = pickStratified(
-    candidates,
-    maxTrees,
-    (c) => [c.x, c.y],
-    0,
-    0,
-    frame.imgW,
-    frame.imgH,
-    bins,
-    bins
-  );
-
+  void treePoints;
   const oiAreas = [];
   const clipZones = [];
   const clipTypes = [];
@@ -379,64 +323,31 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     }
   };
   for (const poly of polygons) pushCanopy(poly.ringPx, poly.material, "polygon");
-  for (let n = 0; n < picked.length; n++) {
-    const p = picked[n];
-    const measuredH = p.heightM > 2 ? p.heightM : 0;
-    const clipHeight =
-      measuredH > 2 ? measuredH : p.pct != null ? canopyHeightM(p.pct, p.lon, p.lat) : 0;
-    const foliage = clipHeight ? measuredFoliageMaterial(clipHeight) : null;
-    const trunk = clipHeight ? measuredTrunkMaterial(clipHeight) : null;
-    const heavy =
-      measuredH > 2 ? measuredH >= 12 : p.pct != null ? p.pct >= 50 : n % 12 !== 0;
-    const canopyStockId = heavy ? "foliage-heavy" : "foliage-light";
-    const canopyId = foliage ? foliage.typeId : canopyStockId;
-    const trunkId = trunk ? trunk.typeId : "tree-trunk";
-    const canopyMat = materialForVegetation(measuredH, heavy ? "heavy" : "light");
-    const radiusM = crownRadiusM(measuredH || clipHeight, p.pct);
-    const rCanopy = radiusM / frame.mpuX;
-    const rTrunk = TRUNK_R_M / frame.mpuX;
-    const ryCanopy = radiusM / frame.mpuY;
-    const ryTrunk = TRUNK_R_M / frame.mpuY;
-    const canopyPx = blobRingPx(p.x, p.y, rCanopy, ryCanopy, 10, 0.08, p.seed);
-    const trunkPx = blobRingPx(p.x, p.y, rTrunk, ryTrunk, 6, 0.06, p.seed + 1);
-    const hint = { lon: p.lon, lat: p.lat };
-    const canopyM = toClipRing(canopyPx, frame, affine, hint);
-    const trunkM = toClipRing(trunkPx, frame, affine, hint);
-    const canopyZ = clipZone(canopyId, canopyM);
-    const trunkZ = clipZone(trunkId, trunkM);
-    if (canopyZ) clipZones.push(canopyZ);
-    if (trunkZ) clipZones.push(trunkZ);
-    if (foliage && !seenClip.has(foliage.clipType.id)) {
-      seenClip.add(foliage.clipType.id);
-      clipTypes.push(foliage.clipType);
-    }
-    if (trunk && !seenClip.has(trunk.clipType.id)) {
-      seenClip.add(trunk.clipType.id);
-      clipTypes.push(trunk.clipType);
-    }
-    const covered = polygons.some((poly) => pointInLonLatRing(p.lon, p.lat, poly.ringLonLat));
-    if (covered || !canopyMat) continue;
-    pushCanopy(canopyPx, canopyMat, "circle");
-  }
-  // #30 clips each ring against roofs and water. Rings still stacked on each
-  // other (a 30 m patch over a neighbor, or two crowns closer than their
-  // diameter). Dissolve after that clip so Hamina does not paint green on green.
+  // Clip against roofs and water, then dissolve so two patches do not paint
+  // green on green. Clipboard follows the dissolved rings, not tree points.
   const dissolved = dissolveFoliageRings(oiAreas, clipSet);
   oiAreas.length = 0;
   overlayRings.length = 0;
   for (const area of dissolved) {
     oiAreas.push(area);
     if (area.ringPx) overlayRings.push(area.ringPx);
+    const clip = clipboardForCanopy(area.material);
+    if (!clip) continue;
+    if (clip.clipType && !seenClip.has(clip.clipType.id)) {
+      seenClip.add(clip.clipType.id);
+      clipTypes.push(clip.clipType);
+    }
+    const zone = clipZone(clip.typeId, toClipRing(area.ringPx, frame, affine, null));
+    if (zone) clipZones.push(zone);
   }
-  const overlayPoints = picked.map((p) => [p.x, p.y]);
   return {
     oiAreas,
     clipZones,
     clipTypes,
     materials,
-    count: picked.length,
+    count: oiAreas.length,
     polygons: polygons.length,
-    overlayPoints,
+    overlayPoints: [],
     overlayRings,
   };
 }
@@ -444,7 +355,6 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
 module.exports = {
   MAX_TREES,
   maxTreesForBbox,
-  blobRingPx,
   pointInAabb,
   treeHitsBuilding,
   normalizeTreePoints,

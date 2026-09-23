@@ -514,7 +514,7 @@ function evaluate(scores, thresholds) {
     if (h.matchedFrac < t.minMatchedHeightFrac) {
       failures.push(`matchedHeightFrac ${h.matchedFrac.toFixed(3)} < ${t.minMatchedHeightFrac}`);
     }
-    if (h.uniqueFoliageHeights < t.minUniqueFoliageHeights) {
+    if (scores.includeFoliage && h.uniqueFoliageHeights < t.minUniqueFoliageHeights) {
       failures.push(`uniqueFoliageHeights ${h.uniqueFoliageHeights} < ${t.minUniqueFoliageHeights}`);
     }
   }
@@ -540,8 +540,9 @@ function evaluate(scores, thresholds) {
     if (!terrain.separateFromOpenIntent) failures.push("terrain leaked into OpenIntent");
     if (!terrain.mainClipboardFlat) failures.push("main hamina clipboard gained terrain zones");
   }
+  const foliageOn = scores.includeFoliage === true;
   const foliageOverlap = scores.foliageOverlap;
-  if (foliageOverlap && foliageOverlap.overlapM2 > t.maxFoliageBuildingOverlapM2) {
+  if (foliageOn && foliageOverlap && foliageOverlap.overlapM2 > t.maxFoliageBuildingOverlapM2) {
     failures.push(
       `foliageBuildingOverlapM2 ${foliageOverlap.overlapM2.toFixed(1)} > ${t.maxFoliageBuildingOverlapM2}`
     );
@@ -556,7 +557,7 @@ function evaluate(scores, thresholds) {
     }
   }
   const foliageSelf = scores.foliageSelfOverlap;
-  if (foliageSelf) {
+  if (foliageOn && foliageSelf) {
     if (foliageSelf.overlapM2 > t.maxFoliageSelfOverlapM2) {
       failures.push(`foliageSelfOverlapM2 ${foliageSelf.overlapM2.toFixed(1)} > ${t.maxFoliageSelfOverlapM2}`);
     }
@@ -596,7 +597,10 @@ function evaluate(scores, thresholds) {
     if (!compat.consistent) failures.push("area material does not match the catalog entry");
   }
   const oiTrees = scores.openIntentTrees;
-  if (oiTrees && oiTrees.required) {
+  if (!foliageOn && oiTrees && oiTrees.emitted > 0) {
+    failures.push(`openIntentTreeAreas ${oiTrees.emitted} emitted with Include foliage off`);
+  }
+  if (foliageOn && oiTrees && oiTrees.required) {
     if (oiTrees.emitted < 1) failures.push(`openIntentTreeAreas ${oiTrees.emitted} < 1`);
     if (oiTrees.custom < 1) failures.push("tree attenuation areas are not on a custom vegetation material");
     if (oiTrees.placed > 0 && oiTrees.emitted > oiTrees.placed * 2) {

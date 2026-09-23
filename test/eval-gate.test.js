@@ -51,15 +51,17 @@ describe("eval gate (cached fixtures, no Hamina)", () => {
         assert.ok(next.exportStats.heights.applicable);
         assert.ok(next.exportStats.heights.uniqueBuildingHeights >= 8);
         assert.ok(next.exportStats.heights.matchedFrac >= 0.9);
-        assert.ok(next.exportStats.heights.uniqueFoliageHeights >= 4);
+        assert.equal(next.exportStats.includeFoliage, false);
+        assert.equal(next.exportStats.openIntentTrees.emitted, 0);
+        assert.equal(next.exportStats.openIntentTrees.required, false);
         assert.equal(next.exportStats.compatibility.buildingsExact, true);
         assert.equal(next.exportStats.compatibility.customsOk, true);
-        assert.ok(next.exportStats.compatibility.materials > 4);
-        assert.ok(next.exportStats.compatibility.vegetationAreas >= 1);
-        assert.ok(next.exportStats.compatibility.vegetationHeights >= 3);
+        assert.equal(next.exportStats.compatibility.materials, 4);
+        assert.equal(next.exportStats.compatibility.vegetationAreas, 0);
         assert.equal(next.exportStats.compatibility.stockOnly, true);
         assert.equal(next.exportStats.compatibility.consistent, true);
-        assert.ok(next.exportStats.openIntentTrees.custom >= 1);
+        assert.equal(next.built.stats.includeFoliage, false);
+        assert.equal(next.built.stats.treesSource, "none");
         assert.equal(next.exportStats.imageryRecovery.hit, true);
         assert.ok(next.exportStats.contentGrid.ok, next.exportStats.contentGrid.drift.failures.join("; "));
         assert.ok(next.exportStats.contentGrid.geodesicMismatchPx > 40);
@@ -81,8 +83,54 @@ describe("eval gate (cached fixtures, no Hamina)", () => {
     assert.ok(files["alignment-overlay.svg"]);
     assert.ok(files["export-stats.json"]);
     assert.ok(files["VERIFY.txt"]);
-    assert.match(files["alignment-overlay.svg"].toString(), /<polygon |<circle /);
+    assert.match(files["alignment-overlay.svg"].toString(), /<polygon /);
+    assert.equal(/<circle /.test(files["alignment-overlay.svg"].toString()), false);
     assert.match(files["VERIFY.txt"].toString(), /^attenuation_areas: \d+$/m);
+    assert.match(files["VERIFY.txt"].toString(), /^includeFoliage: false$/m);
+    assert.match(files["README.txt"].toString(), /Include foliage is off by default/);
+  });
+});
+
+describe("eval gate with Include foliage on", () => {
+  it("emits canopy polygons only and keeps foliage overlap guards", () => {
+    const { isVegetationOiName } = require("../netlify/lib/materials");
+    for (const site of loadSitesIndex()) {
+      const loaded = loadFixture(site);
+      const next = runLoaded(loaded, { rgbPolicy: T.RGB_POLICY_PREFER_NLCD, includeFoliage: true });
+      assert.equal(
+        next.gate.ok,
+        true,
+        `${site.id}: ${next.exportStats.gate.failures.join("; ")}`
+      );
+      assert.equal(next.exportStats.includeFoliage, true);
+      assert.ok(next.exportStats.openIntentTrees.emitted >= 1, site.id);
+      assert.ok(
+        next.exportStats.openIntentTrees.emitted < next.exportStats.trees.treesPlaced,
+        `${site.id}: canopy areas ${next.exportStats.openIntentTrees.emitted} should be fewer than tree points ${next.exportStats.trees.treesPlaced}`
+      );
+      const areas = next.built.openintent.floorplans[0].attenuation_areas;
+      const veg = areas.filter((a) => isVegetationOiName(a.area_material && a.area_material.name));
+      assert.equal(veg.length, next.exportStats.openIntentTrees.emitted);
+      assert.equal(
+        next.built.clipboard.attenuatingZones.some(
+          (z) => z.typeId === "tree-trunk" || String(z.typeId).indexOf("trunk") === 0
+        ),
+        false
+      );
+      const { unzipStore } = require("../netlify/lib/zip-store");
+      const files = unzipStore(next.built.zip);
+      const svg = files["alignment-overlay.svg"].toString();
+      assert.match(svg, /<polygon /);
+      assert.equal(/<circle /.test(svg), false, site.id + " overlay has tree-point circles");
+      assert.ok(next.exportStats.foliageOverlap.overlapM2 <= 5, site.id);
+      assert.ok(next.exportStats.foliageSelfOverlap.overlapM2 <= 80, site.id);
+      if (site.id === "oak-creek-commercial") {
+        assert.ok(next.exportStats.heights.uniqueFoliageHeights >= 4);
+        assert.ok(next.exportStats.compatibility.vegetationAreas >= 1);
+        assert.ok(next.exportStats.openIntentTrees.custom >= 1);
+        assert.ok(next.exportStats.compatibility.materials > 4);
+      }
+    }
   });
 });
 

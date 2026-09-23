@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>OpenClutter</title>
-  <meta name="description" content="OpenClutter: search, draw, export one OpenIntent zip. Import in Hamina for the map, buildings, and trees." />
+  <meta name="description" content="OpenClutter: search, draw, export one OpenIntent zip. Import in Hamina for the map and buildings. Include foliage adds canopy." />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23238636'/><text x='8' y='12' text-anchor='middle' font-size='10' fill='white'>OC</text></svg>" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
@@ -31,6 +31,11 @@
     }
     button.secondary { background: #21262d; border: 1px solid #30363d; }
     button:disabled { opacity: .5; cursor: not-allowed; }
+    .check {
+      display: flex; align-items: center; gap: 8px; margin-top: 10px;
+      font-size: 13px; color: #e8eaed; user-select: none; cursor: pointer;
+    }
+    .check input { width: 16px; height: 16px; margin: 0; accent-color: #238636; }
     .row { display: flex; gap: 8px; margin-top: 10px; }
     .row button { flex: 1; }
     #status { margin-top: 10px; font-size: 12px; color: #8b949e; min-height: 16px; white-space: pre-wrap; }
@@ -62,7 +67,7 @@
   <div id="map"></div>
   <div class="panel">
     <h1>OpenClutter</h1>
-    <div class="sub">One zip. Import OpenIntent for the map, buildings, and trees.</div>
+    <div class="sub">One zip. Import OpenIntent for the map and buildings.</div>
     <form id="search">
       <input type="search" id="q" placeholder="Address" required />
       <button type="submit">Go</button>
@@ -71,6 +76,10 @@
       <button type="button" id="draw" class="secondary">Draw</button>
       <button type="button" id="export" disabled>Export</button>
     </div>
+    <label class="check" for="include-foliage">
+      <input type="checkbox" id="include-foliage" />
+      Include foliage
+    </label>
     <div id="status">Search, then draw the site.</div>
     <div class="foot">
       <span id="env-badge">dev</span>

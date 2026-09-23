@@ -7,6 +7,7 @@ const path = require("path");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { buildClutter, expandOiCoordTriples, oiPixelCoords, validateOiCoords } = require("../netlify/lib/pipeline");
 const { buildingCatalog, OI_BUILDING_NAMES, isVegetationOiName, isPoisonedOiName } = require("../netlify/lib/materials");
+const { canopyHitsGrid } = require("./canopy-grid");
 
 const SAMPLE = JSON.parse(
   fs.readFileSync(path.join(__dirname, "fixtures/hamina-native/attenuation-area-sample.json"), "utf8")
@@ -81,9 +82,11 @@ describe("Hamina-native OpenIntent gold shape", () => {
           },
         ],
       },
-      treePoints: [{ lon: lon0 + dLon * 2, lat: lat0 + dLat * 2, pct: 50 }],
+      treePoints: [{ lon: lon0 + dLon * 2, lat: lat0 + dLat * 2, pct: 50, median: true }],
+      canopyHits: canopyHitsGrid(frame, lon0 + dLon * 2, lat0 + dLat * 2, { pct: 50 }),
       name: "Native",
       imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      includeFoliage: true,
     });
     const fp = built.openintent.floorplans[0];
     assert.deepEqual(fp.reference_markers, []);
@@ -131,11 +134,11 @@ describe("Hamina-native OpenIntent gold shape", () => {
     assert.ok(dumped.includes("Foliage - Heavy"));
     assert.equal(dumped.includes("Tree Trunk"), false);
     assert.equal(dumped.includes("Tree Wood"), false);
-    assert.ok(built.clipboard.attenuatingZones.length >= 3);
-    assert.ok(
-      built.clipboard.attenuatingZones.some(
-        (z) => z.typeId === "tree-trunk" || String(z.typeId).indexOf("foliage") === 0 || String(z.typeId).indexOf("trunk") === 0
-      )
+    assert.ok(built.clipboard.attenuatingZones.length >= 2);
+    assert.ok(built.clipboard.attenuatingZones.some((z) => String(z.typeId).indexOf("foliage") === 0));
+    assert.equal(
+      built.clipboard.attenuatingZones.some((z) => z.typeId === "tree-trunk" || String(z.typeId).indexOf("trunk") === 0),
+      false
     );
   });
 });

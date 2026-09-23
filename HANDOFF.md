@@ -14,7 +14,7 @@ Do **not** use an X Grok bot. It cannot push to GitHub.
 
 **OpenClutter** — search, draw a rectangle, export. Clutter lines up with the map in Hamina Planner, every time, for any site.
 
-**UI (must stay this simple):** address search → draw rectangle → one Export → **one `.zip` download**. No source picker, OSM checkbox, calibration textarea, or format choosers on the page. Canopy (NLCD) with silent RGB fallback. OSM / `controlPoints` stay API-only.
+**UI (must stay this simple):** address search → draw rectangle → one Export → **one `.zip` download**. One checkbox, **Include foliage**, unchecked by default. No source picker, OSM checkbox, calibration textarea, or format choosers on the page. With the box off, the zip is map + buildings. With it on, canopy polygons are added (no individual tree-point circles, no trunks). OSM / `controlPoints` stay API-only.
 
 **Happy path:** import the zip. Status copy: “Import this zip in Hamina (Projects → Import → OpenIntent).” No paste instructions in the main UI. Clipboard paste is optional legacy.
 
@@ -24,13 +24,13 @@ Do **not** use an X Grok bot. It cannot push to GitHub.
 |---|---|---|
 | Map image | Esri World Imagery export | `bboxSR=4326` `imageSR=4326`; **snap frame to the export’s actual `extent` + JPEG size** (Esri often pads N/S) |
 | Buildings | Microsoft **Global ML** (zoom-9 quadkey gzip, bbox-clipped, `height` when above 2 m) then **Overture Buildings** `2026-08-19.0` (`height`, else `num_floors` × 3 m), then Esri MSBFP2, then FEMA **USA Structures**. One ring per roof. MSBFP2 paginated to 2000 | same **actual** west/south/east/north as the JPEG |
-| Trees | **USFS/NLCD percent tree canopy** as a **density field** (jittered NMS, not the 30 m sample lattice). **Meta/WRI CHM v2** sets `top_height` from a windowed COG when the pixel is above 2 m | same extent; ≥18% canopy. **Imagery RGB** only if canopy is missing/nodata (true gaps). Valid NLCD zeros/sparse stay NLCD — do not RGB-paint parking. Canopy **polygons** are differenced against building footprints (4 m buffer) and imagery water before OpenIntent emit, so a 30 m cell cannot blanket a roof or a pond. OSM nodes optional, **off**. |
+| Trees | **Off unless Include foliage is checked.** When on: **USFS/NLCD percent tree canopy** as connected canopy polygons (not per-point crown circles, not median dots). **Meta/WRI CHM v2** sets `top_height` from a windowed COG when the pixel is above 2 m | same extent; ≥18% canopy, patches of two or more cells. **Imagery RGB** only if canopy is missing/nodata (true gaps), and even then point crowns are not emitted. Valid NLCD zeros/sparse stay NLCD — do not RGB-paint parking. Canopy **polygons** are differenced against building footprints (4 m buffer) and imagery water before OpenIntent emit, so a 30 m cell cannot blanket a roof or a pond. Clipboard matches: no foliage or trunks when the toggle is off. OSM nodes optional, **off**. |
 | Map size | OpenIntent zip `dimensions` meters | `widthM` × `lengthM` from the **snapped JPEG extent** |
-| Objects | OpenIntent buildings on Building - One/Two/Five/Ten Floor; trees on Foliage - Heavy / Light | exact foliage metres + trunks on optional `hamina-clipboard.json` |
+| Objects | OpenIntent buildings on Building - One/Two/Five/Ten Floor. Foliage only when Include foliage is on: canopy polygons on Foliage - Heavy / Light | clipboard matches the toggle. Foliage on: canopy polygons and measured `foliage-m-*`. No trunks. Foliage off: buildings only |
 
 Hamina **2026-09-01** (docs.hamina.com): “OpenIntent import and export now supports attenuating objects!” Support matrix: Attenuating Objects ✅ import/export. Clipboard paste was the workaround from when import dropped areas.
 
-`hamina-clipboard.json` still carries **Tree Trunk** and exact measured heights. Import OpenIntent for the map, buildings, and tree rings. Buildings stay on the gold Building set. Trees use stock `Foliage - Heavy` / `Foliage - Light` (19.68 ft, 2 and 1 dB/m). A measured height that is not that stock height uses `Foliage - Heavy H.H` / `Foliage - Light H.H`. Do not emit `Foliage N.N m` or `Tree Trunk` on OpenIntent — those emptied every attenuation area.
+`hamina-clipboard.json` follows Include foliage. Off: buildings only, so paste does not put trunks or canopy back. On: the same canopy polygons and exact measured foliage heights, not trunks and not tree-point circles. Import OpenIntent for the map and buildings, plus canopy when the toggle was on. Buildings stay on the gold Building set. Canopy uses stock `Foliage - Heavy` / `Foliage - Light` (19.68 ft, 2 and 1 dB/m). A measured height that is not that stock height uses `Foliage - Heavy H.H` / `Foliage - Light H.H`. Do not emit `Foliage N.N m` or `Tree Trunk` on OpenIntent — those emptied every attenuation area.
 
 Shared math lives in `netlify/lib/geo-frame.js`. Pipeline in `netlify/lib/pipeline.js`. HTTP in `netlify/functions/clutter.js`. Tests in `test/`.
 
@@ -101,7 +101,7 @@ RGB fallback: reject smooth lawn and gray pavement (low local luma variance, hig
 
 **Eval (no Hamina, no Jerry):** `npm run eval` scores cached fixtures in `test/fixtures/` (Oak Creek commercial + Long Meadow). Image-space overlay + `export-stats.json`. `--legacy` / `--compare-legacy` replays RGB-carpet. `--live` hits Esri/NLCD. Exit non-zero on over-trees or dropped large roofs.
 
-**UX (Jerry):** super simple tool. Search → Draw → Export → **one `.zip`**. Hide OSM checkbox, control-points textarea, format choosers. One status line (“Building map + clutter…”). After export: “Import this zip in Hamina (Projects → Import → OpenIntent).” plus coverage stats (buildings kept/fetched/drops, trees kept). OSM/`controlPoints` remain API escape hatches for tests only.
+**UX (Jerry):** super simple tool. Search → Draw → Export → **one `.zip`**. One checkbox: **Include foliage**, default off (buildings only). Hide OSM checkbox, control-points textarea, format choosers. One status line (“Building map + buildings…”). After export: “Import this zip in Hamina (Projects → Import → OpenIntent).” plus coverage stats (buildings kept/fetched/drops, foliage on/off, trees kept). OSM/`controlPoints` remain API escape hatches for tests only.
 
 ## How to work
 

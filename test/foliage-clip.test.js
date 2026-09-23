@@ -97,6 +97,7 @@ describe("foliage rings stay off buildings and water", () => {
       treesSource: "nlcd-canopy",
       canopyHits: hits,
       heightSample: () => 14.2,
+      includeFoliage: true,
     });
     const emitted = oiFoliageRings(built.openintent);
     assert.ok(emitted.length >= 1);
@@ -223,23 +224,28 @@ describe("foliage rings stay off buildings and water", () => {
   });
 
   it("does not stack two crowns that overlap each other", () => {
-    const cos = Math.cos((42.9 * Math.PI) / 180);
-    const lon = (frame.west + frame.east) / 2;
-    const lat = (frame.south + frame.north) / 2;
-    const dLon = 5 / (111320 * cos);
+    const { hits } = canopyHits();
     const built = buildClutter({
       frame,
       footprintsGeojson: { features: [] },
       treePoints: [
-        { lon, lat, pct: 80, heightM: 14.2 },
-        { lon: lon + dLon, lat, pct: 78, heightM: 13.4 },
+        { lon: hits[0].lon, lat: hits[0].lat, pct: 80, heightM: 14.2, median: true },
+        { lon: hits[1].lon, lat: hits[1].lat, pct: 78, heightM: 13.4, median: true },
       ],
+      canopyHits: hits,
       name: "Crowns",
       imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
       treesSource: "nlcd-canopy",
+      includeFoliage: true,
+      heightSample: () => 14,
     });
     const foliage = oiFoliageRings(built.openintent);
     assert.ok(foliage.length >= 1);
+    assert.equal(built.stats.includeFoliage, true);
+    assert.equal(
+      built.clipboard.attenuatingZones.some((z) => z.typeId === "tree-trunk"),
+      false
+    );
     let pair = 0;
     for (let i = 0; i < foliage.length; i++) {
       for (let j = i + 1; j < foliage.length; j++) pair += intersectionAreaPx(foliage[i], foliage[j]);

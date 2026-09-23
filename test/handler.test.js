@@ -132,23 +132,28 @@ describe("clutter handler (mocked Esri)", () => {
     assert.equal(exportStats.attenuationAreasEmitted, oi.floorplans[0].attenuation_areas.length);
     assert.match(files["VERIFY.txt"].toString(), new RegExp(`^attenuation_areas: ${exportStats.attenuationAreasEmitted}$`, "m"));
     assert.equal(body.stats.openIntentBuildingAreas, body.stats.buildings);
-    assert.ok(body.stats.openIntentTreeAreas >= 1);
+    assert.equal(body.stats.includeFoliage, false);
+    assert.equal(body.stats.openIntentTreeAreas, 0);
     assert.equal(
       oi.floorplans[0].attenuation_areas.length,
       body.stats.openIntentBuildingAreas + body.stats.openIntentTreeAreas
     );
-    assert.ok(clip.attenuatingZones.length >= body.stats.buildings + body.stats.trees * 2);
+    assert.equal(
+      clip.attenuatingZones.some((z) => z.typeId === "tree-trunk" || String(z.typeId).indexOf("foliage") === 0 || String(z.typeId).indexOf("trunk") === 0),
+      false
+    );
     assert.ok(!urls.some((u) => u.includes("overpass")));
     assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("bboxSR=4326") && u.includes("imageSR=4326")));
     assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("f=json")));
     assert.ok(urls.some((u) => u.includes("MSBFP2")));
     assert.ok(urls.some((u) => u.includes("MSBFP2") && u.includes("orderByFields=OBJECTID")));
     assert.ok(urls.some((u) => u.includes("MSBFP2") && u.includes("resultOffset=")));
-    assert.ok(body.stats.trees >= 1);
+    assert.equal(body.stats.trees, 0);
     assert.ok(body.stats.fetched >= 1);
     assert.match(body.stats.summary, /Buildings /);
+    assert.match(body.stats.summary, /Foliage off/);
     assert.match(body.stats.summary, /Trees /);
-    assert.equal(body.stats.treesSource, "imagery-rgb");
+    assert.equal(body.stats.treesSource, "none");
     assert.ok(!urls.some((u) => u.includes("USFS_EDW_NLCD_TCC")));
   });
 
@@ -162,7 +167,7 @@ describe("clutter handler (mocked Esri)", () => {
     const clip = JSON.parse(res.body);
     assert.equal(clip.header.type, "HaminaClipboard");
     assert.ok(!urls.some((u) => u.includes("World_Imagery")));
-    assert.ok(urls.some((u) => u.includes("USFS_EDW_NLCD_TCC")));
+    assert.ok(!urls.some((u) => u.includes("USFS_EDW_NLCD_TCC")));
     assert.equal(res.headers["x-hamina-alignment"], "import-openintent-zip");
     assert.ok(Number(res.headers["x-hamina-width-m"]) > 2000);
   });
@@ -188,13 +193,28 @@ describe("clutter handler (mocked Esri)", () => {
         ...WYNN,
         trees: [{ lon: -115.17, lat: 36.122, pct: 72 }],
         treesSource: "nlcd-canopy",
+        includeFoliage: true,
+        canopyHits: [
+          { lon: -115.17, lat: 36.122, pct: 72 },
+          { lon: -115.1697, lat: 36.122, pct: 72 },
+          { lon: -115.17, lat: 36.12225, pct: 72 },
+          { lon: -115.1697, lat: 36.12225, pct: 80 },
+        ],
         format: "bundle",
       }),
     });
     assert.equal(res.statusCode, 200);
     const body = JSON.parse(res.body);
+    assert.equal(body.stats.includeFoliage, true);
     assert.equal(body.stats.treesSource, "nlcd-canopy");
     assert.ok(body.stats.trees >= 1);
+    assert.ok(body.stats.openIntentTreeAreas >= 1);
+    const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+    const oi = JSON.parse(files["openIntent_Wynn-Golf.json"].toString());
+    const veg = oi.floorplans[0].attenuation_areas.filter((a) => String(a.area_material.name).indexOf("Foliage") === 0);
+    assert.ok(veg.length >= 1);
+    const clip = JSON.parse(files["hamina-clipboard.json"].toString());
+    assert.equal(clip.attenuatingZones.some((z) => z.typeId === "tree-trunk"), false);
     assert.ok(!urls.some((u) => u.includes("USFS_EDW_NLCD_TCC")));
   });
 });
@@ -267,7 +287,7 @@ describe("optional sources cannot fail the export", () => {
     const t0 = Date.now();
     const res = await handler({
       httpMethod: "POST",
-      body: JSON.stringify({ ...WYNN, trees: [{ lon: -115.17, lat: 36.122 }], format: "bundle" }),
+      body: JSON.stringify({ ...WYNN, trees: [{ lon: -115.17, lat: 36.122 }], includeFoliage: true, format: "bundle" }),
     });
     const elapsed = Date.now() - t0;
     assert.equal(res.statusCode, 200);
