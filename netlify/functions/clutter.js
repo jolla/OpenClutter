@@ -6,9 +6,11 @@ const UA = "openclutter/0.14.2 (https://github.com/jolla/OpenClutter)";
 // Esri export and used to be awaited for up to 7s before that download began,
 // so a slow meta response left no time for the JPEG. Meta is now capped and
 // overlapped with the JPEG. Footprints keep their own 7s clock and are not
-// aborted when the JPEG aborts. Canopy height and 3DEP still start only after
-// core. Overture starts with the JPEG, before the Global ML gzip. A finished
-// read is kept even if core passed 5s; a read still in flight gets up to 1.5s
+// aborted when the JPEG aborts. Canopy height still starts only after core.
+// 3DEP starts once imagery metadata has snapped the extent, overlapping the
+// JPEG, so a slow aerial download does not skip the DEM. Overture starts with
+// the JPEG, before the Global ML gzip. A finished read is kept even if core
+// passed 5s; a read still in flight gets up to 1.5s
 // more (hard cap 9s). Aborting at 5s dropped the Las Vegas Sphere (Overture
 // only — absent from MS Global and USA Structures).
 const CORE_FETCH_MS = 7000;
@@ -33,7 +35,7 @@ const { fetchUsaStructures } = require("../lib/usa-structures");
 const { assembleFootprints } = require("../lib/conflate");
 const { fetchOvertureFootprints } = require("../lib/overture");
 const { fetchChmGrid, applyChmToTrees, sampleChmGrid } = require("../lib/canopy-height");
-const { fetchDemSamples, terrainFromSamples } = require("../lib/terrain");
+const { fetchDemSamples, terrainFromSamples, terrainBundleFields, noteMissingTerrain } = require("../lib/terrain");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
 const { surfaceMasksFromImage } = require("../lib/surface-mask");
@@ -349,6 +351,7 @@ exports.handler = async (event) => {
   const warnings = [];
   const started = Date.now();
   let overtureJob = null;
+  let terrainJob = null;
   try {
     // JPEG and Overture together. Meta may snap the footprint query, but it
     // must not gate the image or the Overture read — the Las Vegas row group
@@ -369,6 +372,9 @@ exports.handler = async (event) => {
     if (needImage) {
       imgMeta = await fetchImageryMeta(imgMetaUrl);
       if (imgMeta) frame = applyImageryMeta(frame, imgMeta, null);
+      // Same lon/lat extent the JPEG will lock. Meters are applied later with
+      // the isotropic frame, so pads line up with hamina-clipboard.json.
+      terrainJob = beginOptional((signal) => fetchDemSamples(frame, null, { signal }));
     }
     const globalJob = fetchMsGlobalFootprints(frame, (url) =>
       fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(CORE_FETCH_MS) })
@@ -410,6 +416,7 @@ exports.handler = async (event) => {
     }
   } catch (e) {
     if (overtureJob) overtureJob.ctrl.abort();
+    if (terrainJob) terrainJob.ctrl.abort();
     return json(502, cors, { error: describeCoreFailure(e) });
   }
 
@@ -417,7 +424,9 @@ exports.handler = async (event) => {
     overtureJob
       ? joinOptional(warnings, started, "Overture buildings", overtureJob, { graceMs: 1500, hardMs: 9000 })
       : Promise.resolve(null),
-    runOptional(warnings, started, "Terrain", (signal) => fetchDemSamples(frame, null, { signal })),
+    terrainJob
+      ? joinOptional(warnings, started, "Terrain", terrainJob, { graceMs: 1500, hardMs: 9000 })
+      : Promise.resolve(null),
     includeFoliage && needImage
       ? runOptional(warnings, started, "Canopy height", (signal) => fetchChmGrid(frame, { signal }))
       : Promise.resolve(null),
@@ -515,6 +524,7 @@ exports.handler = async (event) => {
       terrain = null;
     }
   }
+  if (needImage) noteMissingTerrain(terrain, warnings);
 
   let maskRings = [];
   let maskPolygons = [];
@@ -584,6 +594,7 @@ exports.handler = async (event) => {
     };
   }
 
+  const terrainFields = terrainBundleFields(built.terrain, warnings);
   return json(200, cors, {
     ok: true,
     alignment: ALIGNMENT,
@@ -591,6 +602,9 @@ exports.handler = async (event) => {
     stats: built.stats,
     zipFilename: `${built.slug}-openintent.zip`,
     zipBase64: built.zip.toString("base64"),
+    terrainFilename: terrainFields.terrainFilename,
+    terrainClipboard: terrainFields.terrainClipboard,
+    terrainStatus: terrainFields.terrainStatus,
     warnings,
   });
 };
