@@ -216,10 +216,11 @@ const TERRAIN_README =
   "terrain-clipboard.json. OpenIntent does not support raised or sloped floors.\n" +
   "1. Unzip terrain-clipboard.json. Do not import that file as OpenIntent.\n" +
   "2. In Hamina Planner Plus, open the map and paste the file contents.\n" +
-  "3. raisedFloorZones are flat pads (xy meters, NE origin, same frame as hamina-clipboard.json).\n" +
+  "3. raisedFloorZones are flat pads (open xy quads, NE origin, same frame as hamina-clipboard.json).\n" +
   "   height is meters above the lowest DEM sample. slabOnly is true. attenuationDbPerMeter is 0\n" +
   "   so the ground slab is not a second clutter wall.\n" +
-  "4. slopedFloors are triangles with xyz vertices (z = meters above that same low point).\n" +
+  "4. slopedFloors are open xyz quads (z = meters above that same low point).\n" +
+  "   The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
   "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
   "The OpenIntent zip import is unchanged either way.\n";
 

@@ -7,7 +7,13 @@
  *
  * Clipboard meters match hamina-clipboard.js: NE is (0, 0), SW is
  * (−widthM, −lengthM). z on sloped floors is meters above the lowest sample.
- * The DEM is simplified to a 2×2 or 3×3 lattice (at most 18 facets).
+ * The DEM is simplified to a 2×2 or 3×3 lattice (at most 9 pads or ramps).
+ *
+ * Hamina clipboard rings are open: the first vertex is not repeated.
+ * raisedFloorZones are xy quads. slopedFloors are xyz quads whose first edge
+ * is the low side and whose opposite edge is the high side (one z per edge).
+ * A closed triangle has no opposite edges and repeats a vertex, which Planner
+ * Plus rejects as "Sloped floor coordinates are not valid!".
  */
 
 const { llToClipboard } = require("./geo-frame");
@@ -53,13 +59,30 @@ function round3(n) {
   return Math.round(n * 1000) / 1000;
 }
 
-function closeRing(ring) {
-  const out = ring.map((p) => p.slice());
-  const a = out[0];
-  const b = out[out.length - 1];
-  const same = a.length === b.length && a.every((v, i) => v === b[i]);
-  if (!same) out.push(a.slice());
-  return out;
+function sameXy(a, b) {
+  return a[0] === b[0] && a[1] === b[1];
+}
+
+/**
+ * Pasteable Hamina quad: exactly 4 corners, open ring, strictly convex, CCW
+ * in clipboard meters (y north). Collinear, zero-area, and bowtie rings are
+ * rejected — those are the degenerate facets a slope validator throws on.
+ */
+function pasteableQuad(ring) {
+  if (!ring || ring.length !== 4) return false;
+  for (let i = 0; i < 4; i++) {
+    const p = ring[i];
+    if (!p || p.some((v) => !Number.isFinite(v))) return false;
+    if (sameXy(p, ring[(i + 1) % 4])) return false;
+  }
+  for (let i = 0; i < 4; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % 4];
+    const c = ring[(i + 2) % 4];
+    const cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+    if (!(cross > 1e-4)) return false;
+  }
+  return true;
 }
 
 function chooseGrid(relief) {
@@ -97,12 +120,64 @@ function xy(n) {
   return [n.x, n.y];
 }
 
-function xyz(n) {
-  return [n.x, n.y, n.zRel];
+function zoneArea(ring) {
+  return { type: "Polygon", coordinates: [ring.map((p) => p.slice())] };
 }
 
-function zoneArea(ring) {
-  return { type: "Polygon", coordinates: [closeRing(ring)] };
+function raisedZone(sw, se, ne, nw, height) {
+  const ring = [xy(sw), xy(se), xy(ne), xy(nw)];
+  if (!pasteableQuad(ring)) return null;
+  return {
+    area: zoneArea(ring),
+    height,
+    attenuationDbPerMeter: 0,
+    slabOnly: true,
+  };
+}
+
+function xyzAt(n, z) {
+  return [n.x, n.y, z];
+}
+
+/**
+ * One ramp per cell, along the stronger axis. Hamina stores a sloped floor as
+ * a low edge (two vertices, one z) and the opposite high edge — not a triangle
+ * and not an independent z on every corner.
+ */
+function slopedRing(sw, se, ne, nw) {
+  const zS = round1((sw.zRel + se.zRel) / 2);
+  const zN = round1((nw.zRel + ne.zRel) / 2);
+  const zW = round1((sw.zRel + nw.zRel) / 2);
+  const zE = round1((se.zRel + ne.zRel) / 2);
+  const ns = Math.abs(zN - zS);
+  const ew = Math.abs(zE - zW);
+  if (ns >= ew && zN !== zS) {
+    return zS <= zN
+      ? [xyzAt(sw, zS), xyzAt(se, zS), xyzAt(ne, zN), xyzAt(nw, zN)]
+      : [xyzAt(ne, zN), xyzAt(nw, zN), xyzAt(sw, zS), xyzAt(se, zS)];
+  }
+  if (zE !== zW) {
+    return zW <= zE
+      ? [xyzAt(nw, zW), xyzAt(sw, zW), xyzAt(se, zE), xyzAt(ne, zE)]
+      : [xyzAt(se, zE), xyzAt(ne, zE), xyzAt(nw, zW), xyzAt(sw, zW)];
+  }
+  return null;
+}
+
+function slopedZone(ring) {
+  if (!pasteableQuad(ring)) return null;
+  if (ring.some((p) => p.length !== 3)) return null;
+  if (ring[0][2] !== ring[1][2] || ring[2][2] !== ring[3][2]) return null;
+  if (!(ring[2][2] > ring[0][2])) return null;
+  return {
+    area: zoneArea(ring),
+    attenuationDbPerMeter: 0,
+    crowdEnabled: false,
+    drawStairs: false,
+    slabOnly: true,
+    crowdHeight: 0,
+    crowdAttenuationDbPerMeter: 0,
+  };
 }
 
 /**
@@ -134,33 +209,17 @@ function terrainFromSamples(samples, frame) {
       const zs = [sw.zRel, se.zRel, ne.zRel, nw.zRel];
       const z0 = Math.min(...zs);
       const z1 = Math.max(...zs);
+      const height = round1((z0 + z1) / 2);
       if (z1 - z0 < FLAT_M) {
-        const height = round1((z0 + z1) / 2);
-        raised.push({
-          area: zoneArea([xy(sw), xy(se), xy(ne), xy(nw)]),
-          height,
-          attenuationDbPerMeter: 0,
-          slabOnly: true,
-        });
+        const pad = raisedZone(sw, se, ne, nw, height);
+        if (pad) raised.push(pad);
       } else {
-        sloped.push({
-          area: zoneArea([xyz(sw), xyz(se), xyz(ne)]),
-          attenuationDbPerMeter: 0,
-          crowdEnabled: false,
-          drawStairs: false,
-          slabOnly: true,
-          crowdHeight: 0,
-          crowdAttenuationDbPerMeter: 0,
-        });
-        sloped.push({
-          area: zoneArea([xyz(sw), xyz(ne), xyz(nw)]),
-          attenuationDbPerMeter: 0,
-          crowdEnabled: false,
-          drawStairs: false,
-          slabOnly: true,
-          crowdHeight: 0,
-          crowdAttenuationDbPerMeter: 0,
-        });
+        const ramp = slopedZone(slopedRing(sw, se, ne, nw));
+        if (ramp) sloped.push(ramp);
+        else {
+          const pad = raisedZone(sw, se, ne, nw, height);
+          if (pad) raised.push(pad);
+        }
       }
     }
   }
