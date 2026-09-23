@@ -45,6 +45,8 @@ let gestureCommitted = false;
 let areaChip = null;
 const statusEl = document.getElementById("status");
 const exportBtn = document.getElementById("export");
+const copyTerrainBtn = document.getElementById("copy-terrain");
+let terrainPasteJson = "";
 
 function chipBbox(bounds) {
   return {
@@ -181,6 +183,27 @@ function b64ToBlob(b64, type) {
   return new Blob([bytes], { type });
 }
 
+function rememberTerrain(data) {
+  const clip = data && data.terrainClipboard;
+  const raised = clip && clip.raisedFloorZones ? clip.raisedFloorZones.length : 0;
+  const sloped = clip && clip.slopedFloors ? clip.slopedFloors.length : 0;
+  terrainPasteJson = raised || sloped ? JSON.stringify(clip) : "";
+  if (copyTerrainBtn) copyTerrainBtn.hidden = !terrainPasteJson;
+  return terrainPasteJson;
+}
+
+if (copyTerrainBtn) {
+  copyTerrainBtn.onclick = async () => {
+    if (!terrainPasteJson) return;
+    try {
+      await navigator.clipboard.writeText(terrainPasteJson);
+      setStatus("Copied terrain-clipboard.json. Paste it in Planner Plus. Do not import it as OpenIntent.");
+    } catch (e) {
+      setStatus("Could not copy. Use the downloaded terrain-clipboard.json and paste it in Planner Plus.", true);
+    }
+  };
+}
+
 async function exportOnce(trees, treesSource, canopyHits, includeFoliage) {
   const foliage = includeFoliage === true;
   const r = await fetch("/api/clutter", {
@@ -242,9 +265,18 @@ document.getElementById("export").onclick = async () => {
       data = await exportOnce(trees, treesSource, canopyHits, includeFoliage);
     }
     downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
+    const terrainJson = rememberTerrain(data);
+    if (terrainJson) {
+      downloadBlob(
+        new Blob([terrainJson], { type: "application/json" }),
+        data.terrainFilename || "terrain-clipboard.json"
+      );
+    }
     const summary = (data.stats && data.stats.summary) || "";
+    const terrainNote = data.terrainStatus || "";
     setStatus(
       "Import this zip in Hamina (Projects → Import → OpenIntent)." +
+        (terrainNote ? "\n" + terrainNote : "") +
         (summary ? "\n" + summary : "")
     );
   } catch (err) {
