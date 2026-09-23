@@ -181,16 +181,18 @@ function b64ToBlob(b64, type) {
   return new Blob([bytes], { type });
 }
 
-async function exportOnce(trees, treesSource, canopyHits) {
+async function exportOnce(trees, treesSource, canopyHits, includeFoliage) {
+  const foliage = includeFoliage === true;
   const r = await fetch("/api/clutter", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       ...bbox,
       name: document.getElementById("q").value || "Site",
-      trees,
-      treesSource,
-      canopyHits: canopyHits && canopyHits.length ? canopyHits : undefined,
+      includeFoliage: foliage,
+      trees: foliage ? trees : [],
+      treesSource: foliage ? treesSource : "none",
+      canopyHits: foliage && canopyHits && canopyHits.length ? canopyHits : undefined,
       format: "bundle",
     }),
   });
@@ -202,36 +204,42 @@ async function exportOnce(trees, treesSource, canopyHits) {
 document.getElementById("export").onclick = async () => {
   if (!bbox) return;
   exportBtn.disabled = true;
-  setStatus("Building map + clutter…");
+  const includeFoliage = document.getElementById("include-foliage").checked;
+  setStatus(includeFoliage ? "Building map + buildings + canopy…" : "Building map + buildings…");
   try {
-    const T = globalThis.OpenClutterTrees;
-    const budget = T.maxTreesForBbox(bbox);
-    let canopy = null;
-    try {
-      canopy = await detectCanopyTrees(bbox);
-    } catch (e) {
-      canopy = { trees: [], source: null, reason: "fetch-failed", parsed: { samples: 0, validCount: 0, hits: [] } };
-    }
-    let rgb = [];
-    if (T.rgbFillNeeded(canopy, bbox, { maxTrees: budget })) {
+    let trees = [];
+    let treesSource = "none";
+    let canopyHits = null;
+    if (includeFoliage) {
+      const T = globalThis.OpenClutterTrees;
+      const budget = T.maxTreesForBbox(bbox);
+      let canopy = null;
       try {
-        rgb = await detectRgbTrees(bbox);
+        canopy = await detectCanopyTrees(bbox);
       } catch (e) {
-        rgb = [];
+        canopy = { trees: [], source: null, reason: "fetch-failed", parsed: { samples: 0, validCount: 0, hits: [] } };
       }
+      let rgb = [];
+      if (T.rgbFillNeeded(canopy, bbox, { maxTrees: budget })) {
+        try {
+          rgb = await detectRgbTrees(bbox);
+        } catch (e) {
+          rgb = [];
+        }
+      }
+      const resolved = T.resolveTrees(bbox, canopy, rgb, { maxTrees: budget });
+      trees = resolved.trees;
+      treesSource = resolved.source;
+      canopyHits =
+        treesSource === "nlcd-canopy" && canopy && canopy.parsed && canopy.parsed.hits
+          ? canopy.parsed.hits
+          : null;
     }
-    const resolved = T.resolveTrees(bbox, canopy, rgb, { maxTrees: budget });
-    const trees = resolved.trees;
-    const treesSource = resolved.source;
-    const canopyHits =
-      treesSource === "nlcd-canopy" && canopy && canopy.parsed && canopy.parsed.hits
-        ? canopy.parsed.hits
-        : null;
     let data;
     try {
-      data = await exportOnce(trees, treesSource, canopyHits);
+      data = await exportOnce(trees, treesSource, canopyHits, includeFoliage);
     } catch (e) {
-      data = await exportOnce(trees, treesSource, canopyHits);
+      data = await exportOnce(trees, treesSource, canopyHits, includeFoliage);
     }
     downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
     const summary = (data.stats && data.stats.summary) || "";

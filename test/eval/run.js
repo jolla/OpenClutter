@@ -226,30 +226,32 @@ function runLoaded(loaded, opts) {
     jpegDecoded && jpegDecoded.width === frame.imgW && jpegDecoded.height === frame.imgH
       ? surfaceMasksFromImage(jpegDecoded, frame)
       : { waterRings: [], pavementPolygons: [], waterM2: 0, pavementM2: 0 };
+  const includeFoliage = opts.includeFoliage === true;
   const built = buildClutter({
     frame,
     footprintsGeojson: { type: "FeatureCollection", features: emittedFeatures },
-    treePoints,
+    treePoints: includeFoliage ? treePoints : [],
     name: loaded.site.name || loaded.bbox.name || loaded.site.id,
     imgBuf: locked.jpegBuf || loaded.jpeg,
-    treesSource: resolved.source,
+    treesSource: includeFoliage ? resolved.source : "none",
     terrain,
     maskRings: surface.waterRings,
     maskPolygons: surface.pavementPolygons,
     footprintMeta: {
       imageryRoofs: supplemented.imageryRoofs || 0,
       droppedPavement: pavement.dropped || 0,
-      medianTrees: medianKept,
+      medianTrees: includeFoliage ? medianKept : 0,
       overtureFootprints: loaded.overture && loaded.overture.features ? loaded.overture.features.length : 0,
       overtureAdded: overtureMerge ? overtureMerge.added : 0,
       msHeights: heightSources["ms-global"] || 0,
       overtureHeights: heightSources.overture || 0,
       femaHeights: heightSources.fema || 0,
       floorHeights: heightSources["overture-floors"] || 0,
-      chmTrees: chmApplied,
+      chmTrees: includeFoliage ? chmApplied : 0,
     },
-    canopyHits: resolved.source === "nlcd-canopy" && parsed && parsed.hits ? parsed.hits : [],
-    heightSample: prefer && loaded.chm ? (lon, lat) => sampleChmGrid(loaded.chm, lon, lat) : null,
+    canopyHits: includeFoliage && resolved.source === "nlcd-canopy" && parsed && parsed.hits ? parsed.hits : [],
+    heightSample: includeFoliage && prefer && loaded.chm ? (lon, lat) => sampleChmGrid(loaded.chm, lon, lat) : null,
+    includeFoliage,
   });
   const buildings = scoreBuildings(emittedFeatures, fp.overlayRings, frame);
   const trees = scoreTrees(treePoints, frame, jpegDecoded, loaded.tcc, resolved.source);
@@ -274,11 +276,12 @@ function runLoaded(loaded, opts) {
     if (isVegetationOiName(name)) customTreeAreas++;
   }
   const openIntentTrees = {
-    required: treePoints.length > 0,
+    required: includeFoliage && treePoints.length > 0,
     placed: treePoints.length,
     emitted: built.stats.openIntentTreeAreas || 0,
     custom: customTreeAreas,
     buildingAreas: built.stats.openIntentBuildingAreas || 0,
+    canopyOnly: includeFoliage,
   };
   const recovery = prefer ? imageryRecovery(jpegDecoded, frame, vectorFeatures, probes) : { required: false, hit: true };
   const medians = {
@@ -358,6 +361,7 @@ function runLoaded(loaded, opts) {
     foliageSelfOverlap,
     contentGrid,
     pavementFootprints,
+    includeFoliage,
   });
   const exportStats = {
     site: loaded.site.id,
@@ -404,6 +408,7 @@ function runLoaded(loaded, opts) {
     },
     contentGrid,
     pavementFootprints,
+    includeFoliage,
     gate,
     thresholds: THRESHOLDS,
     canopyReason: canopy.reason,
@@ -461,6 +466,7 @@ function formatRow(stats) {
     `roof ${stats.trees.roofTreeFrac == null ? "n/a" : stats.trees.roofTreeFrac.toFixed(3)} ` +
     `canopy ${rec} ` +
     `trees ${stats.trees.treesPlaced} (${stats.trees.treesSource}) ` +
+    `foliage ${stats.includeFoliage ? "on" : "off"} ` +
     `h ${stats.heights && stats.heights.uniqueBuildingHeights != null ? stats.heights.uniqueBuildingHeights : "-"} ` +
     `fol ${stats.heights && stats.heights.uniqueFoliageHeights != null ? stats.heights.uniqueFoliageHeights : "-"} ` +
     `med ${stats.medians ? stats.medians.kept : "-"} ` +

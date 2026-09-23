@@ -264,6 +264,13 @@ function wantOsm(body) {
   return body.osmTrees === true || body.osm === true;
 }
 
+/** Include foliage is off unless the body or query explicitly turns it on. */
+function wantFoliage(event, body) {
+  const q = (event && event.queryStringParameters) || {};
+  const raw = body && body.includeFoliage != null ? body.includeFoliage : q.includeFoliage;
+  return raw === true || raw === 1 || raw === "1" || raw === "true";
+}
+
 /** Client-supplied NLCD hits, capped. Used to re-place trees off rooftops. */
 function normalizeCanopyHits(raw) {
   if (!Array.isArray(raw)) return [];
@@ -321,11 +328,14 @@ exports.handler = async (event) => {
   const needImage = format !== "hamina-clipboard";
   const imgUrl = esriImageryUrl(frame);
   const imgMetaUrl = esriImageryMetaUrl(frame);
+  const includeFoliage = wantFoliage(event, body);
 
-  let treePoints = Array.isArray(body.trees) ? body.trees.slice() : [];
-  let treesSource = ["nlcd-canopy", "imagery-rgb", "none"].includes(body.treesSource)
+  let treePoints = includeFoliage && Array.isArray(body.trees) ? body.trees.slice() : [];
+  let treesSource = includeFoliage && ["nlcd-canopy", "imagery-rgb", "none"].includes(body.treesSource)
     ? body.treesSource
-    : null;
+    : includeFoliage
+      ? null
+      : "none";
 
   let imgBuf = null;
   let gj;
@@ -366,8 +376,9 @@ exports.handler = async (event) => {
     const usaJob = fetchUsaStructures(frame, (url) =>
       fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(CORE_FETCH_MS) })
     ).catch(() => ({ features: [] }));
+    const clientHitsEarly = includeFoliage ? normalizeCanopyHits(body.canopyHits) : [];
     const canopyJob =
-      !treePoints.length
+      includeFoliage && !clientHitsEarly.length
         ? fetchCanopyTrees(frame, (url) => fetchOk(url, "canopy"), { maxTrees: maxTreesForBbox(frame) }).catch(() => null)
         : null;
     const fetched = await Promise.all([
@@ -407,7 +418,7 @@ exports.handler = async (event) => {
       ? joinOptional(warnings, started, "Overture buildings", overtureJob, { graceMs: 1500, hardMs: 9000 })
       : Promise.resolve(null),
     runOptional(warnings, started, "Terrain", (signal) => fetchDemSamples(frame, null, { signal })),
-    needImage
+    includeFoliage && needImage
       ? runOptional(warnings, started, "Canopy height", (signal) => fetchChmGrid(frame, { signal }))
       : Promise.resolve(null),
   ]);
@@ -463,7 +474,7 @@ exports.handler = async (event) => {
       : treesSource === "nlcd-canopy"
         ? normalizeCanopyHits(serverCanopyHits)
         : [];
-  if (placeHits.length && treesSource === "nlcd-canopy") {
+  if (includeFoliage && placeHits.length && treesSource === "nlcd-canopy") {
     const preview = footprintsToClutter(features, frame);
     treePoints = pickCanopyTrees(placeHits, frame, {
       maxTrees: maxTreesForBbox(frame),
@@ -481,13 +492,13 @@ exports.handler = async (event) => {
       });
     }
   }
-  if (chmGrid && treePoints.length) {
+  if (includeFoliage && chmGrid && treePoints.length) {
     const applied = applyChmToTrees(treePoints, (lon, lat) => sampleChmGrid(chmGrid, lon, lat));
     treePoints = applied.trees;
     footprintMeta.chmTrees = applied.applied;
   }
 
-  if (wantOsm(body)) {
+  if (includeFoliage && wantOsm(body)) {
     try {
       const osm = await fetchOsmTreeNodes(frame.west, frame.south, frame.east, frame.north, UA);
       treePoints = treePoints.concat(osm);
@@ -533,6 +544,7 @@ exports.handler = async (event) => {
     heightSample: chmGrid ? (lon, lat) => sampleChmGrid(chmGrid, lon, lat) : null,
     maskRings,
     maskPolygons,
+    includeFoliage,
   });
 
   const frameHeaders = {

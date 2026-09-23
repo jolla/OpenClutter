@@ -32,22 +32,19 @@ describe("canopy height grid", () => {
     assert.equal(applied.trees[1].heightM, undefined);
   });
 
-  it("uses the CHM height as foliage top_height and still places from the point", () => {
+  it("does not turn a lone CHM point or a median dot into a crown circle", () => {
     const frame = geoFrame({ west: -87.93, south: 42.89, east: -87.91, north: 42.91, name: "C" });
     const lon = frame.west + (frame.east - frame.west) * 0.2;
     const lat = frame.south + (frame.north - frame.south) * 0.2;
-    const pairs = treePairsFromPoints([{ lon, lat, pct: 70, heightM: 14.2 }], frame, []);
-    const canopy = pairs.oiAreas.find((a) => a.kind === "canopy");
-    assert.equal(canopy.shape, "circle");
-    assert.equal(canopy.material.name, "Foliage - Heavy 14.2");
-    assert.equal(canopy.material.top_height, 14.2);
-    assert.ok(canopy.material.rf_properties.attenuation_per_m > 0.5);
-    assert.ok(canopy.material.rf_properties.attenuation_per_m < 3);
-    assert.notEqual(canopy.material.display_color, "#9AA5AC");
-    assert.notEqual(canopy.material.display_color, "#9A4159");
-    assert.equal("bottom_height" in canopy.material, false);
-    assert.equal("itu_material_type" in canopy.material, false);
-    assert.ok(pairs.clipTypes.some((t) => t.id === "foliage-m-14_2" && t.topEdge === 14.2));
+    const pairs = treePairsFromPoints([{ lon, lat, pct: 70, heightM: 14.2, median: true }], frame, []);
+    assert.equal(pairs.oiAreas.length, 0);
+    assert.equal(pairs.overlayPoints.length, 0);
+    assert.equal(pairs.clipZones.length, 0);
+    assert.equal(pairs.oiAreas.some((a) => a.shape === "circle"), false);
+    assert.equal(
+      pairs.clipZones.some((z) => z.typeId === "tree-trunk" || String(z.typeId).indexOf("trunk") === 0),
+      false
+    );
   });
 
   it("traces a multi-cell NLCD patch as one canopy polygon at the measured height", () => {
