@@ -22,6 +22,7 @@ const {
 const { treePairsFromPoints } = require("./vegetation");
 const { dedupeStackedFootprints } = require("./conflate");
 const { zipStore } = require("./zip-store");
+const { TERRAIN_FILENAME } = require("./terrain");
 const { overlaySvg, frameLockJson } = require("./overlay");
 
 const MIN_AREA_M2 = 25;
@@ -1522,7 +1523,7 @@ function buildClutter({
     ];
     if (terrain && terrain.clipboard && (terrain.raised || terrain.sloped)) {
       zipFiles.push({
-        name: "terrain-clipboard.json",
+        name: TERRAIN_FILENAME,
         data: Buffer.from(JSON.stringify(terrain.clipboard)),
       });
     }

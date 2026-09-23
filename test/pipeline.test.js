@@ -1115,5 +1115,11 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /includeFoliage/);
     assert.equal(/Paste hamina-clipboard\.json from the zip for trees/i.test(app), false);
     assert.match(app, /stats\.summary/);
+    assert.match(app, /terrainClipboard/);
+    assert.match(app, /terrain-clipboard\.json/);
+    assert.match(html, /id="copy-terrain"[^>]*hidden/);
+    assert.match(html, /Copy terrain/);
+    assert.equal(/<select/i.test(html), false);
+    assert.equal(/DEM source|3DEP source/i.test(html + app), false);
   });
 });

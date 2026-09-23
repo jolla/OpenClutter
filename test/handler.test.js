@@ -106,6 +106,12 @@ describe("clutter handler (mocked Esri)", () => {
     assert.ok(body.zipBase64);
     assert.equal(body.clipboard, undefined);
     assert.equal(body.clipboardFilename, undefined);
+    assert.equal(body.terrainFilename, "terrain-clipboard.json");
+    assert.equal(body.terrainClipboard.header.type, "HaminaClipboard");
+    assert.ok(body.terrainClipboard.raisedFloorZones.length + body.terrainClipboard.slopedFloors.length >= 1);
+    assert.match(body.terrainStatus, /terrain-clipboard\.json/);
+    assert.match(body.terrainStatus, /Planner Plus/);
+    assert.equal(body.terrainClipboard.attenuatingZones.length, 0);
     assert.match(body.zipFilename, /\.zip$/);
     const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
     assert.ok(files["openIntent_Wynn-Golf.json"]);
@@ -124,6 +130,15 @@ describe("clutter handler (mocked Esri)", () => {
     const clip = JSON.parse(files["hamina-clipboard.json"].toString());
     assert.equal(clip.header.type, "HaminaClipboard");
     assert.ok(clip.attenuatingZones.length >= 1);
+    assert.equal(clip.raisedFloorZones.length, 0);
+    assert.equal(clip.slopedFloors.length, 0);
+    assert.ok(files["terrain-clipboard.json"]);
+    const terrainFile = JSON.parse(files["terrain-clipboard.json"].toString());
+    assert.deepEqual(terrainFile.raisedFloorZones, body.terrainClipboard.raisedFloorZones);
+    assert.deepEqual(terrainFile.slopedFloors, body.terrainClipboard.slopedFloors);
+    const oiText = files["openIntent_Wynn-Golf.json"].toString();
+    assert.equal(oiText.includes("raisedFloorZones"), false);
+    assert.equal(oiText.includes("slopedFloors"), false);
     assert.deepEqual(body.frame.clipboardCorners.ne, [0, 0]);
     assert.match(body.alignment, /Import this zip in Hamina/);
     assert.match(files["README.txt"].toString(), /Import this zip in Hamina \(Projects → Import → OpenIntent\)/);
@@ -305,6 +320,62 @@ describe("optional sources cannot fail the export", () => {
     assert.equal(/esri/i.test(text), false);
     assert.equal(/smaller box/i.test(text + body.warnings.join(" ")), false);
     assert.equal(files["terrain-clipboard.json"], undefined);
+    assert.equal(body.terrainClipboard, null);
+    assert.equal(body.terrainFilename, null);
+    assert.match(body.terrainStatus, /Terrain omitted/);
+    assert.match(body.terrainStatus, /OpenIntent zip is unchanged/);
+  });
+
+  it("keeps a finished 3DEP grid when the aerial JPEG passes 5s", async () => {
+    const samples = [];
+    for (let r = 0; r < 6; r++) {
+      for (let c = 0; c < 6; c++) {
+        samples.push({
+          location: {
+            x: WYNN.west + ((c + 0.5) / 6) * (WYNN.east - WYNN.west),
+            y: WYNN.south + ((r + 0.5) / 6) * (WYNN.north - WYNN.south),
+          },
+          value: "640",
+        });
+      }
+    }
+    global.fetch = async (url, init) => {
+      const u = urlOf(url);
+      if (u.includes("elevation.nationalmap.gov")) {
+        return { ok: true, json: async () => ({ samples }) };
+      }
+      if (u.includes("overturemaps") || u.includes("blob.core.windows.net") || u.includes("dataforgood-fb-data")) {
+        return { ok: true, json: async () => ({ features: [] }) };
+      }
+      if (u.includes("World_Imagery") && !u.includes("f=json")) {
+        await new Promise((resolve) => setTimeout(resolve, 5200));
+        return { ok: true, arrayBuffer: async () => jpeg };
+      }
+      return coreFetch(u, init);
+    };
+    const t0 = Date.now();
+    const res = await handler({
+      httpMethod: "POST",
+      body: JSON.stringify({ ...WYNN, format: "bundle" }),
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(res.statusCode, 200);
+    assert.ok(elapsed >= 5000, "jpeg " + elapsed);
+    assert.ok(elapsed < 7500, "elapsed " + elapsed);
+    const body = JSON.parse(res.body);
+    assert.ok(body.zipBase64);
+    assert.equal(body.terrainFilename, "terrain-clipboard.json");
+    assert.ok(body.terrainClipboard.raisedFloorZones.length >= 1);
+    assert.equal(body.terrainClipboard.slopedFloors.length, 0);
+    const pad = body.terrainClipboard.raisedFloorZones[0];
+    assert.deepEqual(Object.keys(pad), ["area", "height", "attenuationDbPerMeter", "slabOnly"]);
+    assert.equal(pad.area.coordinates[0][0].length, 2);
+    assert.equal(pad.slabOnly, true);
+    assert.equal(pad.attenuationDbPerMeter, 0);
+    const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+    assert.ok(files["terrain-clipboard.json"]);
+    assert.equal(files["openIntent_Wynn-Golf.json"].toString().includes("raisedFloorZones"), false);
+    assert.equal(body.stats.includeFoliage, false);
   });
 
   it("does not call an imagery timeout Esri or a smaller box", async () => {

@@ -14,8 +14,20 @@ const { llToClipboard } = require("./geo-frame");
 const { emptyClipboard } = require("./hamina-clipboard");
 
 const DEM_URL = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/getSamples";
+const TERRAIN_FILENAME = "terrain-clipboard.json";
 const FLAT_M = 0.5;
 const SAMPLE_COUNT = 36;
+
+const RAISED_KEYS = ["area", "height", "attenuationDbPerMeter", "slabOnly"];
+const SLOPED_KEYS = [
+  "area",
+  "attenuationDbPerMeter",
+  "crowdEnabled",
+  "drawStairs",
+  "slabOnly",
+  "crowdHeight",
+  "crowdAttenuationDbPerMeter",
+];
 
 function idw(samples, lon, lat) {
   let wsum = 0;
@@ -167,6 +179,46 @@ function terrainFromSamples(samples, frame) {
   };
 }
 
+/**
+ * Bundle fields for the export API. The OpenIntent zip stays the import.
+ * terrain-clipboard.json is a second Planner Plus paste, or null when 3DEP misses.
+ */
+function terrainBundleFields(terrain, warnings) {
+  const ready = !!(
+    terrain &&
+    terrain.clipboard &&
+    ((terrain.raised || 0) > 0 || (terrain.sloped || 0) > 0)
+  );
+  if (ready) {
+    return {
+      terrainFilename: TERRAIN_FILENAME,
+      terrainClipboard: terrain.clipboard,
+      terrainStatus:
+        TERRAIN_FILENAME +
+        " ready (" +
+        terrain.raised +
+        " raised, " +
+        terrain.sloped +
+        " sloped). Paste it in Planner Plus. Do not import it as OpenIntent.",
+    };
+  }
+  const omitted = (warnings || []).map(String).find((w) => /terrain omitted/i.test(w));
+  const why = omitted || "Terrain omitted: USGS 3DEP did not return a usable grid";
+  const tail = /openintent zip is unchanged/i.test(why) ? "" : " OpenIntent zip is unchanged.";
+  return {
+    terrainFilename: null,
+    terrainClipboard: null,
+    terrainStatus: why.replace(/\.\s*$/, "") + "." + tail,
+  };
+}
+
+function noteMissingTerrain(terrain, warnings) {
+  const ready = !!(terrain && ((terrain.raised || 0) > 0 || (terrain.sloped || 0) > 0));
+  if (ready) return;
+  if ((warnings || []).some((w) => /terrain omitted/i.test(String(w)))) return;
+  warnings.push("Terrain omitted: USGS 3DEP did not return a usable grid");
+}
+
 function parseDemSamples(body) {
   const samples = body && Array.isArray(body.samples) ? body.samples : [];
   const out = [];
@@ -212,9 +264,14 @@ async function fetchDemSamples(frame, fetchFn, opts) {
 
 module.exports = {
   DEM_URL,
+  TERRAIN_FILENAME,
   FLAT_M,
   SAMPLE_COUNT,
+  RAISED_KEYS,
+  SLOPED_KEYS,
   terrainFromSamples,
+  terrainBundleFields,
+  noteMissingTerrain,
   parseDemSamples,
   fetchDemSamples,
   chooseGrid,
