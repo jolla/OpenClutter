@@ -8,12 +8,48 @@ const {
   parseDemSamples,
   terrainBundleFields,
   noteMissingTerrain,
+  chooseGrid,
   RAISED_KEYS,
   SLOPED_KEYS,
   TERRAIN_FILENAME,
 } = require("../netlify/lib/terrain");
 const { buildClutter } = require("../netlify/lib/pipeline");
 const { unzipStore } = require("../netlify/lib/zip-store");
+const pasteSample = require("./fixtures/hamina-raised-sloped-clipboard-sample.json");
+
+function signedArea(ring) {
+  let a = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const p = ring[i];
+    const q = ring[(i + 1) % ring.length];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return a / 2;
+}
+
+/** Jerry's working Planner Plus paste: open convex CCW quads, not closed GeoJSON rings. */
+function assertOpenQuad(ring, dim) {
+  assert.equal(ring.length, 4);
+  for (let i = 0; i < 4; i++) {
+    const p = ring[i];
+    const q = ring[(i + 1) % 4];
+    assert.equal(p.length, dim);
+    assert.ok(p[0] !== q[0] || p[1] !== q[1]);
+    const r = ring[(i + 2) % 4];
+    const cross = (q[0] - p[0]) * (r[1] - q[1]) - (q[1] - p[1]) * (r[0] - q[0]);
+    assert.ok(cross > 0, "convex CCW corner");
+  }
+  assert.ok(signedArea(ring) > 0);
+}
+
+/** Sloped floors are ramps: first edge one z, opposite edge a higher z. */
+function assertSlopedRamp(ring) {
+  assertOpenQuad(ring, 3);
+  assert.equal(ring[0][2], ring[1][2]);
+  assert.equal(ring[2][2], ring[3][2]);
+  assert.ok(ring[2][2] > ring[0][2]);
+  for (const p of ring) assert.ok(p[2] >= 0);
+}
 
 function gridSamples(frame, zAt) {
   const samples = [];
@@ -53,8 +89,9 @@ describe("3DEP terrain clipboard", () => {
     const terrain = terrainFromSamples(gridSamples(frame, () => 214.2), frame);
     assert.ok(terrain);
     assert.equal(terrain.sloped, 0);
-    assert.ok(terrain.raised >= 1);
-    assert.ok(terrain.raised <= 4);
+    const [cols, rows] = chooseGrid(terrain.reliefM);
+    assert.equal(terrain.raised, cols * rows);
+    assert.ok(terrain.raised <= 9);
     assert.equal(terrain.reliefM, 0);
     assert.equal(terrain.clipboard.header.type, "HaminaClipboard");
     assert.equal(terrain.clipboard.attenuatingZones.length, 0);
@@ -65,10 +102,7 @@ describe("3DEP terrain clipboard", () => {
       assert.equal(z.height, 0);
       assert.equal(z.attenuationDbPerMeter, 0);
       assert.equal(z.slabOnly, true);
-      const ring = z.area.coordinates[0];
-      assert.ok(ring.length >= 4);
-      assert.deepEqual(ring[0], ring[ring.length - 1]);
-      for (const p of ring) assert.equal(p.length, 2);
+      assertOpenQuad(z.area.coordinates[0], 2);
     }
     assertFrameSpan(terrain.clipboard.raisedFloorZones, frame);
     const fields = terrainBundleFields(terrain, []);
@@ -87,8 +121,9 @@ describe("3DEP terrain clipboard", () => {
     assert.ok(terrain);
     assert.ok(terrain.reliefM > 2);
     assert.equal(terrain.raised, 0);
-    assert.ok(terrain.sloped >= 2);
-    assert.ok(terrain.sloped <= 18);
+    const [cols, rows] = chooseGrid(terrain.reliefM);
+    assert.equal(terrain.sloped, cols * rows);
+    assert.ok(terrain.sloped <= 9);
     assert.equal(terrain.clipboard.raisedFloorZones.length, 0);
     for (const z of terrain.clipboard.slopedFloors) {
       assert.deepEqual(Object.keys(z), SLOPED_KEYS);
@@ -99,13 +134,11 @@ describe("3DEP terrain clipboard", () => {
       assert.equal(z.slabOnly, true);
       assert.equal(z.crowdHeight, 0);
       assert.equal(z.crowdAttenuationDbPerMeter, 0);
+      assertSlopedRamp(z.area.coordinates[0]);
       const ring = z.area.coordinates[0];
-      assert.equal(ring[0].length, 3);
-      assert.deepEqual(ring[0], ring[ring.length - 1]);
-      for (const p of ring) {
-        assert.equal(p.length, 3);
-        assert.ok(p[2] >= 0);
-      }
+      const lowY = Math.min(ring[0][1], ring[1][1]);
+      const highY = Math.min(ring[2][1], ring[3][1]);
+      assert.ok(lowY < highY, "north-rising slope starts on the south edge");
     }
     assertFrameSpan(terrain.clipboard.slopedFloors, frame);
   });
@@ -139,13 +172,12 @@ describe("3DEP terrain clipboard", () => {
     assert.ok(terrain);
     assert.ok(terrain.reliefM > 2);
     assert.ok(terrain.sloped >= 1);
-    assert.ok(terrain.raised + terrain.sloped <= 18);
+    assert.ok(terrain.raised + terrain.sloped <= 9);
     assert.equal(terrain.clipboard.header.type, "HaminaClipboard");
     assert.equal(terrain.clipboard.attenuatingZones.length, 0);
     for (const z of terrain.clipboard.slopedFloors) {
       const ring = z.area.coordinates[0];
-      assert.equal(ring[0].length, 3);
-      assert.equal(ring[0][0], ring[ring.length - 1][0]);
+      assertSlopedRamp(ring);
       assert.equal(z.slabOnly, true);
       assert.equal(z.crowdEnabled, false);
       assert.equal(z.drawStairs, false);
@@ -153,13 +185,66 @@ describe("3DEP terrain clipboard", () => {
       for (const p of ring) {
         assert.ok(p[0] <= 0.001 && p[0] >= -frame.widthM - 0.01);
         assert.ok(p[1] <= 0.001 && p[1] >= -frame.lengthM - 0.01);
-        assert.ok(p[2] >= 0);
       }
     }
     for (const z of terrain.clipboard.raisedFloorZones) {
-      assert.equal(z.area.coordinates[0][0].length, 2);
+      assertOpenQuad(z.area.coordinates[0], 2);
       assert.equal(z.slabOnly, true);
       assert.ok(z.height >= 0);
+    }
+  });
+
+  it("uses the same open-quad conventions as a paste that Planner Plus accepts", () => {
+    for (const z of pasteSample.raisedFloorZones) {
+      assert.deepEqual(Object.keys(z), RAISED_KEYS);
+      assertOpenQuad(z.area.coordinates[0], 2);
+    }
+    for (const z of pasteSample.slopedFloors) {
+      assert.deepEqual(Object.keys(z), SLOPED_KEYS);
+      assertSlopedRamp(z.area.coordinates[0]);
+    }
+    const frame = geoFrame({ west: -87.922, south: 42.89, east: -87.912, north: 42.903, name: "EW" });
+    const terrain = terrainFromSamples(
+      gridSamples(frame, (r, c) => 150 + c * 3),
+      frame
+    );
+    assert.equal(terrain.raised, 0);
+    const [cols, rows] = chooseGrid(terrain.reliefM);
+    assert.equal(terrain.sloped, cols * rows);
+    assert.ok(terrain.sloped <= 9);
+    for (const z of terrain.clipboard.slopedFloors) {
+      assert.deepEqual(Object.keys(z), SLOPED_KEYS);
+      const ring = z.area.coordinates[0];
+      assertSlopedRamp(ring);
+      const lowX = Math.min(ring[0][0], ring[1][0]);
+      const highX = Math.min(ring[2][0], ring[3][0]);
+      assert.ok(lowX < highX, "east-rising slope starts on the west edge");
+    }
+    for (const z of terrain.clipboard.raisedFloorZones) assertOpenQuad(z.area.coordinates[0], 2);
+
+    const towardWest = terrainFromSamples(
+      gridSamples(frame, (r, c) => 400 - c * 4),
+      frame
+    );
+    assert.equal(towardWest.raised, 0);
+    for (const z of towardWest.clipboard.slopedFloors) {
+      const ring = z.area.coordinates[0];
+      assertSlopedRamp(ring);
+      const lowX = (ring[0][0] + ring[1][0]) / 2;
+      const highX = (ring[2][0] + ring[3][0]) / 2;
+      assert.ok(lowX > highX, "low edge is the east side");
+    }
+    const towardSouth = terrainFromSamples(
+      gridSamples(frame, (r) => 400 - r * 4),
+      frame
+    );
+    assert.equal(towardSouth.raised, 0);
+    for (const z of towardSouth.clipboard.slopedFloors) {
+      const ring = z.area.coordinates[0];
+      assertSlopedRamp(ring);
+      const lowY = (ring[0][1] + ring[1][1]) / 2;
+      const highY = (ring[2][1] + ring[3][1]) / 2;
+      assert.ok(lowY > highY, "low edge is the north side");
     }
   });
 
