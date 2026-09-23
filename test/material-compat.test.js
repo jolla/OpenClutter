@@ -16,6 +16,7 @@ const {
   isPoisonedOiName,
 } = require("../netlify/lib/materials");
 const { scoreMaterialCompatibility } = require("./eval/score");
+const { canopyHitsGrid } = require("./canopy-grid");
 
 const BBOX = { west: -87.93, south: 42.89, east: -87.91, north: 42.91, name: "Compat" };
 
@@ -138,12 +139,16 @@ describe("Hamina OpenIntent material compatibility", () => {
       name: "Bare",
       imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
     });
+    const treeLon = lon0 + dLon * 6;
     const withTrees = buildClutter({
       frame,
       footprintsGeojson,
-      treePoints: [{ lon: lon0 + dLon * 6, lat: lat0, pct: 70, heightM: 14.2 }],
+      treePoints: [{ lon: treeLon, lat: lat0, pct: 70, heightM: 14.2, median: true }],
+      canopyHits: canopyHitsGrid(frame, treeLon, lat0, { pct: 70 }),
       name: "Bare",
       imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      includeFoliage: true,
+      heightSample: () => 14.2,
     });
     assert.deepEqual(bare.openintent.area_materials, buildingCatalog());
     assert.equal(bare.stats.openIntentTreeAreas, 0);
@@ -194,12 +199,15 @@ describe("Hamina OpenIntent material compatibility", () => {
       name: "Stock",
       imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
     });
+    const treeLon = lon0 + dLon * 6;
     const withTrees = buildClutter({
       frame,
       footprintsGeojson,
-      treePoints: [{ lon: lon0 + dLon * 6, lat: lat0, pct: 70 }],
+      treePoints: [{ lon: treeLon, lat: lat0, pct: 70, median: true }],
+      canopyHits: canopyHitsGrid(frame, treeLon, lat0, { pct: 70 }),
       name: "Stock",
       imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      includeFoliage: true,
     });
     assert.deepEqual(bare.openintent.area_materials, buildingCatalog());
     assert.deepEqual(withTrees.openintent.area_materials.slice(0, 4), bare.openintent.area_materials);
@@ -237,13 +245,23 @@ describe("Hamina OpenIntent material compatibility", () => {
         ],
       },
       treePoints: [
-        { lon: lon0 + dLon * 8, lat: lat0, pct: 40, heightM: 7.5 },
-        { lon: lon0 + dLon * 8, lat: lat0 + dLat * 3, pct: 80, heightM: 14.2 },
-        { lon: lon0 + dLon * 8, lat: lat0 + dLat * 6, pct: 55, heightM: 9.1 },
+        { lon: lon0 + dLon * 8, lat: lat0, pct: 40, heightM: 7.5, median: true },
+        { lon: lon0 + dLon * 8, lat: lat0 + dLat * 3, pct: 80, heightM: 14.2, median: true },
+        { lon: lon0 + dLon * 8, lat: lat0 + dLat * 6, pct: 55, heightM: 9.1, median: true },
       ],
+      canopyHits: []
+        .concat(canopyHitsGrid(frame, lon0 + dLon * 8, lat0, { pct: 40 }))
+        .concat(canopyHitsGrid(frame, lon0 + dLon * 8, lat0 + dLat * 3, { pct: 80 }))
+        .concat(canopyHitsGrid(frame, lon0 + dLon * 8, lat0 + dLat * 6, { pct: 55 })),
       name: "Compat",
       imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
       treesSource: "nlcd-canopy",
+      includeFoliage: true,
+      heightSample: (lon, lat) => {
+        if (lat >= lat0 + dLat * 5) return 9.1;
+        if (lat >= lat0 + dLat * 2) return 14.2;
+        return 7.5;
+      },
     });
     const names = built.openintent.area_materials.map((m) => m.name);
     assert.deepEqual(names.slice(0, 4), OI_BUILDING_NAMES);
@@ -289,7 +307,11 @@ describe("Hamina OpenIntent material compatibility", () => {
       built.openintent.floorplans[0].attenuation_areas.length,
       3 + built.stats.openIntentTreeAreas
     );
-    assert.ok(built.clipboard.attenuatingZones.length >= 3 + 3 * 2);
+    assert.ok(built.clipboard.attenuatingZones.length >= 3 + 3);
+    assert.equal(
+      built.clipboard.attenuatingZones.some((z) => z.typeId === "tree-trunk" || String(z.typeId).indexOf("trunk") === 0),
+      false
+    );
     assert.equal(built.openintent.openintent_version, "2.0.1");
     assert.deepEqual(Object.keys(built.openintent).sort(), [
       "area_materials",
