@@ -20,29 +20,28 @@ L.tileLayer(
   { opacity: 0.85, maxZoom: 19, attribution: "Esri" }
 ).addTo(map);
 
+const OUTLINE = {
+  color: "#3fb950",
+  weight: 2,
+  fillColor: "#3fb950",
+  fillOpacity: 0.2,
+  interactive: false,
+};
+
 const drawn = new L.FeatureGroup();
 map.addLayer(drawn);
-const drawControl = new L.Control.Draw({
-  draw: {
-    polygon: false,
-    polyline: false,
-    circle: false,
-    circlemarker: false,
-    marker: false,
-    rectangle: {
-      shapeOptions: { color: "#3fb950", weight: 2 },
-      showArea: false,
-    },
-  },
-  edit: { featureGroup: drawn },
-});
 
 let bbox = null;
-let rectDrawer = null;
-/** Finished rectangle; the chip returns here if a redraw is cancelled. */
+/** Finished outline; the chip returns here if a redraw is cancelled. */
 let committedBounds = null;
-let gestureCommitted = false;
+/** Null uses the box L×W chip. A string is the polygon sq ft chip. */
+let committedLabel = null;
 let areaChip = null;
+let sketchHidden = false;
+let rubber = null;
+let vertexMarks = [];
+let activePointer = null;
+const drawSession = OpenClutterDraw.createSession();
 const statusEl = document.getElementById("status");
 const exportBtn = document.getElementById("export");
 const copyTerrainBtn = document.getElementById("copy-terrain");
@@ -58,12 +57,15 @@ function chipBbox(bounds) {
 }
 
 function hideAreaChip() {
-  if (areaChip && map.hasLayer(areaChip)) map.removeLayer(areaChip);
+  if (!areaChip) return;
+  if (map.hasLayer(areaChip)) map.removeLayer(areaChip);
+  const el = areaChip.getElement && areaChip.getElement();
+  if (el && el.parentNode) el.parentNode.removeChild(el);
 }
 
-function showAreaChip(bounds) {
-  const label = OpenClutterArea.formatBboxFeet(chipBbox(bounds));
-  if (!label) {
+function showAreaChip(bounds, label) {
+  const text = label == null ? OpenClutterArea.formatBboxFeet(chipBbox(bounds)) : label;
+  if (!text) {
     hideAreaChip();
     return;
   }
@@ -76,52 +78,260 @@ function showAreaChip(bounds) {
       interactive: false,
     });
   }
-  areaChip.setLatLng(bounds.getCenter()).setContent(label);
+  areaChip.setLatLng(bounds.getCenter()).setContent(text);
   if (!map.hasLayer(areaChip)) areaChip.addTo(map);
 }
-
-function onDrawPointerMove(e) {
-  if (!rectDrawer || !rectDrawer._isDrawing || !rectDrawer._startLatLng || !e.latlng) return;
-  const bounds = L.latLngBounds(rectDrawer._startLatLng, e.latlng);
-  if (!OpenClutterArea.formatBboxFeet(chipBbox(bounds))) return;
-  showAreaChip(bounds);
-}
-
-map.on("mousemove", onDrawPointerMove);
-map.on("touchmove", onDrawPointerMove);
-map.on(L.Draw.Event.DRAWSTART, () => {
-  gestureCommitted = false;
-});
-map.on(L.Draw.Event.DRAWSTOP, () => {
-  if (gestureCommitted) return;
-  if (committedBounds) showAreaChip(committedBounds);
-  else hideAreaChip();
-});
 
 function setStatus(msg, err) {
   statusEl.textContent = msg;
   statusEl.className = err ? "err" : "";
 }
 
-map.on(L.Draw.Event.CREATED, (e) => {
-  gestureCommitted = true;
-  drawn.clearLayers();
-  drawn.addLayer(e.layer);
-  const b = e.layer.getBounds();
-  committedBounds = b;
-  bbox = chipBbox(b);
-  showAreaChip(b);
+function clearRubber() {
+  if (rubber) {
+    map.removeLayer(rubber);
+    rubber = null;
+  }
+  for (let i = 0; i < vertexMarks.length; i++) map.removeLayer(vertexMarks[i]);
+  vertexMarks = [];
+}
+
+function concealCommitted() {
+  if (!sketchHidden && map.hasLayer(drawn)) {
+    map.removeLayer(drawn);
+    sketchHidden = true;
+  }
+}
+
+function restoreCommitted() {
+  clearRubber();
+  if (!map.hasLayer(drawn)) map.addLayer(drawn);
+  sketchHidden = false;
+  if (committedBounds) showAreaChip(committedBounds, committedLabel);
+  else hideAreaChip();
+}
+
+function syncDrawMode() {
+  const container = map.getContainer();
+  if (drawSession.armed) {
+    map.dragging.disable();
+    if (map.doubleClickZoom) map.doubleClickZoom.disable();
+    container.style.cursor = "crosshair";
+  } else {
+    map.dragging.enable();
+    if (map.doubleClickZoom) map.doubleClickZoom.enable();
+    container.style.cursor = "";
+    activePointer = null;
+  }
+}
+
+function applyExtent(bounds, label) {
+  committedBounds = bounds;
+  committedLabel = label == null ? null : label;
+  bbox = chipBbox(bounds);
+  showAreaChip(bounds, committedLabel);
   const w = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.south, bbox.east));
   const h = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.north, bbox.west));
   exportBtn.disabled = w > 2500 || h > 2500 || w < 40 || h < 40;
   if (exportBtn.disabled) setStatus("Area must be between 40 m and 2.5 km on a side.", true);
   else setStatus("Ready to export.");
+}
+
+function commitBox(start, end) {
+  clearRubber();
+  const bounds = L.latLngBounds([start.lat, start.lng], [end.lat, end.lng]);
+  drawn.clearLayers();
+  drawn.addLayer(L.rectangle(bounds, OUTLINE));
+  if (!map.hasLayer(drawn)) map.addLayer(drawn);
+  sketchHidden = false;
+  applyExtent(bounds, null);
+  syncDrawMode();
+}
+
+function commitPolygon(vertices) {
+  clearRubber();
+  const latlngs = [];
+  for (let i = 0; i < vertices.length; i++) latlngs.push([vertices[i].lat, vertices[i].lng]);
+  drawn.clearLayers();
+  const layer = L.polygon(latlngs, OUTLINE);
+  drawn.addLayer(layer);
+  if (!map.hasLayer(drawn)) map.addLayer(drawn);
+  sketchHidden = false;
+  applyExtent(layer.getBounds(), OpenClutterArea.formatPolygonSqFt(vertices));
+  syncDrawMode();
+}
+
+function showDragPreview(start, end) {
+  concealCommitted();
+  const bounds = L.latLngBounds([start.lat, start.lng], [end.lat, end.lng]);
+  if (rubber && typeof rubber.setBounds === "function") rubber.setBounds(bounds);
+  else {
+    clearRubber();
+    rubber = L.rectangle(bounds, OUTLINE).addTo(map);
+  }
+  showAreaChip(bounds);
+}
+
+function showVertexPreview(vertices) {
+  concealCommitted();
+  clearRubber();
+  const latlngs = [];
+  for (let i = 0; i < vertices.length; i++) latlngs.push([vertices[i].lat, vertices[i].lng]);
+  if (latlngs.length >= 3) {
+    rubber = L.polygon(latlngs, {
+      color: OUTLINE.color,
+      weight: 2,
+      fillColor: OUTLINE.fillColor,
+      fillOpacity: 0.08,
+      dashArray: "5 6",
+      interactive: false,
+    }).addTo(map);
+  } else if (latlngs.length === 2) {
+    rubber = L.polyline(latlngs, { color: OUTLINE.color, weight: 2, interactive: false }).addTo(map);
+  }
+  for (let i = 0; i < latlngs.length; i++) {
+    vertexMarks.push(
+      L.circleMarker(latlngs[i], {
+        radius: 4,
+        color: "#3fb950",
+        weight: 2,
+        fillColor: "#3fb950",
+        fillOpacity: 1,
+        interactive: false,
+      }).addTo(map)
+    );
+  }
+  if (vertices.length >= 3) {
+    showAreaChip(L.latLngBounds(latlngs), OpenClutterArea.formatPolygonSqFt(vertices));
+  } else {
+    hideAreaChip();
+  }
+}
+
+function handleDraw(result) {
+  if (!result || result.type === "ignore" || result.type === "down" || result.type === "abort-press") return;
+  if (result.type === "drag") {
+    showDragPreview(result.start, result.end);
+    return;
+  }
+  if (result.type === "vertex") {
+    showVertexPreview(result.vertices);
+    const n = result.vertices.length;
+    if (n < 3) setStatus("Corner " + n + ". Click the next corner. Right-click finishes, Esc cancels.");
+    else setStatus("Corner " + n + ". Right-click to finish, Esc to cancel.");
+    return;
+  }
+  if (result.type === "commit-box") {
+    commitBox(result.start, result.end);
+    return;
+  }
+  if (result.type === "commit-polygon") {
+    commitPolygon(result.vertices);
+    return;
+  }
+  if (result.type === "discard") {
+    restoreCommitted();
+    syncDrawMode();
+    setStatus(
+      bbox
+        ? "Need at least 3 corners. The previous site is unchanged."
+        : "Need at least 3 corners to close a polygon."
+    );
+    return;
+  }
+  if (result.type === "cancel") {
+    restoreCommitted();
+    syncDrawMode();
+    if (!bbox) setStatus("Search, then draw the site.");
+    else if (exportBtn.disabled) setStatus("Area must be between 40 m and 2.5 km on a side.", true);
+    else setStatus("Ready to export.");
+  }
+}
+
+function pointFromEvent(ev) {
+  const rect = map.getContainer().getBoundingClientRect();
+  const x = ev.clientX - rect.left;
+  const y = ev.clientY - rect.top;
+  const ll = map.containerPointToLatLng(L.point(x, y));
+  return { x: x, y: y, lat: ll.lat, lng: ll.lng, button: ev.button, ctrlKey: !!ev.ctrlKey };
+}
+
+const mapEl = map.getContainer();
+mapEl.addEventListener(
+  "pointerdown",
+  (ev) => {
+    if (!drawSession.armed || activePointer != null) return;
+    if (ev.button !== 0 || ev.ctrlKey) return;
+    if (ev.target.closest && ev.target.closest(".leaflet-control")) return;
+    activePointer = ev.pointerId;
+    try {
+      mapEl.setPointerCapture(ev.pointerId);
+    } catch (e) {
+      /* capture is optional; the container still receives the gesture */
+    }
+    ev.preventDefault();
+    handleDraw(OpenClutterDraw.pointerDown(drawSession, pointFromEvent(ev)));
+  },
+  { passive: false }
+);
+
+mapEl.addEventListener(
+  "pointermove",
+  (ev) => {
+    if (ev.pointerId !== activePointer) return;
+    ev.preventDefault();
+    handleDraw(OpenClutterDraw.pointerMove(drawSession, pointFromEvent(ev)));
+  },
+  { passive: false }
+);
+
+mapEl.addEventListener("pointerup", (ev) => {
+  if (ev.pointerId !== activePointer) return;
+  activePointer = null;
+  handleDraw(OpenClutterDraw.pointerUp(drawSession, pointFromEvent(ev)));
+});
+
+mapEl.addEventListener("pointercancel", (ev) => {
+  if (ev.pointerId !== activePointer) return;
+  activePointer = null;
+  OpenClutterDraw.abortPress(drawSession);
+  if (drawSession.vertices.length) showVertexPreview(drawSession.vertices.map((v) => ({ lat: v.lat, lng: v.lng })));
+  else restoreCommitted();
+});
+
+mapEl.addEventListener("contextmenu", (ev) => {
+  ev.preventDefault();
+  if (!drawSession.armed) return;
+  handleDraw(OpenClutterDraw.finish(drawSession));
+});
+
+window.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape") return;
+  const result = OpenClutterDraw.cancel(drawSession);
+  if (result.type !== "cancel") return;
+  activePointer = null;
+  ev.preventDefault();
+  handleDraw(result);
+});
+
+map.on("zoomend", () => {
+  if (!drawSession.vertices.length) return;
+  const pixels = [];
+  for (let i = 0; i < drawSession.vertices.length; i++) {
+    const v = drawSession.vertices[i];
+    const p = map.latLngToContainerPoint([v.lat, v.lng]);
+    pixels.push({ x: p.x, y: p.y });
+  }
+  OpenClutterDraw.setVertexPixels(drawSession, pixels);
 });
 
 document.getElementById("draw").onclick = () => {
-  if (rectDrawer && rectDrawer.enabled()) rectDrawer.disable();
-  rectDrawer = new L.Draw.Rectangle(map, drawControl.options.draw.rectangle);
-  rectDrawer.enable();
+  activePointer = null;
+  clearRubber();
+  OpenClutterDraw.arm(drawSession);
+  restoreCommitted();
+  syncDrawMode();
+  setStatus("Drag a box, or click corners. Right-click finishes the polygon.");
 };
 
 document.getElementById("search").onsubmit = async (e) => {
@@ -210,6 +420,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
+      // A polygon exports as this axis-aligned box. The API frame is west/south/east/north.
       ...bbox,
       name: document.getElementById("q").value || "Site",
       includeFoliage: foliage,

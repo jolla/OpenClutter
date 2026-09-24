@@ -62,6 +62,46 @@
     return width + " × " + length + " ft";
   }
 
+  /**
+   * Polygon area in square metres, equirectangular at the ring’s mean latitude
+   * (same meters-per-degree as a bbox chip). A repeated closing vertex is ignored.
+   */
+  function ringAreaM2(vertices) {
+    if (!Array.isArray(vertices) || vertices.length < 3) return null;
+    const pts = [];
+    for (let i = 0; i < vertices.length; i++) {
+      const v = vertices[i];
+      if (!v) return null;
+      const lat = +v.lat;
+      const lng = +(v.lng != null ? v.lng : v.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+      pts.push({ lat: lat, lng: lng });
+    }
+    const closed =
+      pts.length >= 2 && pts[0].lat === pts[pts.length - 1].lat && pts[0].lng === pts[pts.length - 1].lng;
+    const n = closed ? pts.length - 1 : pts.length;
+    if (n < 3) return null;
+    let latSum = 0;
+    for (let i = 0; i < n; i++) latSum += pts[i].lat;
+    const mpd = metersPerDeg(latSum / n);
+    let twice = 0;
+    for (let i = 0; i < n; i++) {
+      const p = pts[i];
+      const q = pts[(i + 1) % n];
+      twice += p.lng * mpd.lon * (q.lat * mpd.lat) - q.lng * mpd.lon * (p.lat * mpd.lat);
+    }
+    return Math.abs(twice) / 2;
+  }
+
+  /** Polygon chip: area in square feet, not the box’s L×W. */
+  function formatPolygonSqFt(vertices) {
+    const m2 = ringAreaM2(vertices);
+    if (!Number.isFinite(m2)) return "";
+    const text = formatFeet(m2 * FEET_PER_M * FEET_PER_M);
+    if (!text) return "";
+    return text + " sq ft";
+  }
+
   return {
     FEET_PER_M: FEET_PER_M,
     metersPerDeg: metersPerDeg,
@@ -69,5 +109,7 @@
     bboxSidesFt: bboxSidesFt,
     formatFeet: formatFeet,
     formatBboxFeet: formatBboxFeet,
+    ringAreaM2: ringAreaM2,
+    formatPolygonSqFt: formatPolygonSqFt,
   };
 });
