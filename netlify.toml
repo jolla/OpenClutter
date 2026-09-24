@@ -1,4 +1,5 @@
 [build]
+  command = "node scripts/stamp-version.js"
   publish = "public"
   functions = "netlify/functions"
 

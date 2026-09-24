@@ -1,6 +1,6 @@
 "use strict";
 
-const UA = "openclutter/0.14.2 (https://github.com/jolla/OpenClutter)";
+const { userAgent: UA } = require("../lib/version");
 // Netlify hobby kills the function around 10s. The JPEG is the long pole
 // (Oak Creek ~6s) and must start immediately. Imagery metadata is the same
 // Esri export and used to be awaited for up to 7s before that download began,
@@ -656,6 +656,7 @@ exports.handler = async (event) => {
   });
 };
 
+exports.UA = UA;
 exports.beginOptional = beginOptional;
 exports.joinOptional = joinOptional;
 exports.OVERTURE_GRACE_MS = OVERTURE_GRACE_MS;
