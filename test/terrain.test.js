@@ -18,6 +18,7 @@ const {
 } = require("../netlify/lib/terrain");
 const { buildClutter } = require("../netlify/lib/pipeline");
 const { unzipStore } = require("../netlify/lib/zip-store");
+const { canopyHitsGrid } = require("./canopy-grid");
 const pasteSample = require("./fixtures/hamina-raised-sloped-clipboard-sample.json");
 
 function signedArea(ring) {
@@ -409,5 +410,121 @@ describe("building height from floor on a slope", () => {
     assert.equal(hillType.topEdge, Math.round((hillType.bottomEdge + 6.4) * 10) / 10);
     assert.ok(hillType.topEdge > hillType.bottomEdge);
     assert.equal(built.stats.buildingsLifted, 1);
+  });
+});
+
+describe("foliage height from floor on a slope", () => {
+  const frame = geoFrame({ west: -89.7, south: 44.91, east: -89.684, north: 44.926, name: "Granite Peak" });
+
+  function buildFoliage(zAt, hits, heightSample) {
+    const terrain = terrainFromSamples(gridSamples(frame, zAt), frame);
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [] },
+      treePoints: [],
+      name: "Granite Peak",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain,
+      canopyHits: hits,
+      heightSample,
+      includeFoliage: true,
+    });
+    return { terrain, built };
+  }
+
+  it("leaves foliage on the floor when relief is below the ski-hill gate", () => {
+    const span = frame.north - frame.south;
+    const spanLon = frame.east - frame.west;
+    const lat = frame.south + span * 0.7;
+    const lon = frame.west + spanLon * 0.4;
+    const { terrain, built } = buildFoliage(
+      (r, c, lon0, lat0) => 400 + ((lat0 - frame.south) / span) * 12,
+      canopyHitsGrid(frame, lon, lat, { pct: 80 }),
+      () => 14.2
+    );
+    assert.ok(terrain.reliefM < LIFT_RELIEF_M);
+    assert.equal(siteWarrantsLift(terrain), false);
+    assert.equal(built.stats.foliageLifted, 0);
+    assert.equal(built.stats.includeFoliage, true);
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    assert.ok(areas.length >= 1);
+    for (const area of areas) {
+      assert.equal(area.area_material.name, "Foliage - Heavy 14.2");
+      assert.equal("bottom_height" in area.area_material, false);
+      assert.equal(area.area_material.top_height, 14.2);
+    }
+    const zone = built.clipboard.attenuatingZones[0];
+    const type = built.clipboard.attenuatingZoneTypes.find((t) => t.id === zone.typeId);
+    assert.equal(type.id.indexOf("foliage-m-"), 0);
+    assert.equal(type.bottomEdge, 3.5);
+    assert.equal(type.topEdge, 14.2);
+    assert.equal(built.openintent.area_materials.slice(0, 4).some((m) => "bottom_height" in m), false);
+  });
+
+  it("sets foliage bottom height from floor to the slope top and top height to bottom plus canopy height", () => {
+    const span = frame.north - frame.south;
+    const spanLon = frame.east - frame.west;
+    const valleyHits = canopyHitsGrid(frame, frame.west + spanLon * 0.2, frame.south + span * 0.05, { pct: 40 });
+    const stockHill = canopyHitsGrid(frame, frame.west + spanLon * 0.25, frame.south + span * 0.78, { pct: 40 });
+    const measuredHill = canopyHitsGrid(frame, frame.west + spanLon * 0.7, frame.south + span * 0.78, { pct: 80 });
+    const { terrain, built } = buildFoliage(
+      (r, c, lon, lat) => {
+        const t = (lat - frame.south) / span;
+        return t < 0.35 ? 300 : 300 + ((t - 0.35) / 0.65) * 180;
+      },
+      valleyHits.concat(stockHill, measuredHill),
+      (lon, lat) => {
+        if ((lat - frame.south) / span < 0.35) return 14.2;
+        return (lon - frame.west) / spanLon < 0.45 ? 6 : 14.2;
+      }
+    );
+    assert.ok(terrain.reliefM >= LIFT_RELIEF_M);
+    assert.equal(siteWarrantsLift(terrain), true);
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    const valley = areas.filter((a) => a.area_material.name === "Foliage - Heavy 14.2");
+    const hill = areas.filter((a) => String(a.area_material.name).indexOf("Foliage - Light @ ") === 0);
+    const thick = areas.filter((a) => String(a.area_material.name).indexOf("Foliage - Heavy 14.2 @ ") === 0);
+    assert.ok(valley.length >= 1, "valley canopy stays on the floor");
+    assert.ok(hill.length >= 1, "uphill stock canopy is lifted");
+    assert.ok(thick.length >= 1, "uphill measured canopy is lifted");
+    for (const area of valley) {
+      assert.equal("bottom_height" in area.area_material, false);
+      assert.equal(area.area_material.top_height, 14.2);
+    }
+    const stockTop = 19.68 / 3.280839895;
+    const hillMat = hill[0].area_material;
+    assert.ok(hillMat.bottom_height >= 50, "bottom " + hillMat.bottom_height);
+    assert.equal(hillMat.top_height, Math.round((hillMat.bottom_height + stockTop) * 10) / 10);
+    assert.equal(hillMat.name, "Foliage - Light @ " + hillMat.bottom_height.toFixed(1));
+    assert.deepEqual(Object.keys(hillMat), ["name", "rf_properties", "top_height", "bottom_height", "display_color"]);
+    assert.equal(hillMat.rf_properties.attenuation_per_m, 1);
+    assert.equal(hillMat.display_color, "#6FA84A");
+    const gold = built.openintent.area_materials.slice(0, 4).map((m) => m.name);
+    assert.deepEqual(gold, ["Building - One Floor", "Building - Two Floor", "Building - Five Floor", "Building - Ten Floor"]);
+    assert.ok(built.openintent.area_materials.some((m) => m.name === hillMat.name));
+    const hillZone = built.clipboard.attenuatingZones.find((z) => String(z.typeId).indexOf("foliage-light-b") === 0);
+    const hillType = built.clipboard.attenuatingZoneTypes.find((t) => t.id === hillZone.typeId);
+    assert.equal(hillType.bottomEdge, hillMat.bottom_height);
+    assert.equal(hillType.topEdge, hillMat.top_height);
+    assert.ok(hillType.topEdge > hillType.bottomEdge);
+    assert.equal(hillType.transparencyEnabled, true);
+    const stockLight = built.clipboard.attenuatingZoneTypes.find((t) => t.id === "foliage-light");
+    assert.equal(stockLight, undefined);
+    const thickMat = thick[0].area_material;
+    assert.ok(thickMat.bottom_height >= 50);
+    assert.equal(thickMat.top_height, Math.round((thickMat.bottom_height + 14.2) * 10) / 10);
+    assert.equal(thickMat.name, "Foliage - Heavy 14.2 @ " + thickMat.bottom_height.toFixed(1));
+    assert.equal(thickMat.rf_properties.attenuation_per_m, 2);
+    const thickZone = built.clipboard.attenuatingZones.find((z) => String(z.typeId).indexOf("foliage-m-14_2-b") === 0);
+    const thickType = built.clipboard.attenuatingZoneTypes.find((t) => t.id === thickZone.typeId);
+    assert.equal(thickType.bottomEdge, thickMat.bottom_height);
+    assert.equal(thickType.topEdge, thickMat.top_height);
+    const valleyZone = built.clipboard.attenuatingZones.find((z) => z.typeId === "foliage-m-14_2");
+    const valleyType = built.clipboard.attenuatingZoneTypes.find((t) => t.id === valleyZone.typeId);
+    assert.equal(valleyType.bottomEdge, 3.5);
+    assert.equal(valleyType.topEdge, 14.2);
+    assert.equal(built.stats.foliageLifted, hill.length + thick.length);
+    assert.equal(built.stats.buildingsLifted, 0);
+    assert.equal(JSON.stringify(built.openintent).includes("Foliage 14.2 m"), false);
   });
 });

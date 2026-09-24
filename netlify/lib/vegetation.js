@@ -1,8 +1,8 @@
 "use strict";
 
-const { llToPx, pxToClipboard, applyAffine } = require("./geo-frame");
+const { llToPx, pxToLl, pxToClipboard, applyAffine } = require("./geo-frame");
 const { clipZone } = require("./hamina-clipboard");
-const { measuredFoliageMaterial, materialForVegetation } = require("./materials");
+const { measuredFoliageMaterial, materialForVegetation, liftFoliagePair } = require("./materials");
 
 const { MAX_TREES, maxTreesForBbox, canopyHeightM } = require("./tree-source");
 const { BUILDING_BUFFER_M, createClipSet, clipFoliageRing, dissolveFoliageRings } = require("./poly-clip");
@@ -328,10 +328,22 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
   const dissolved = dissolveFoliageRings(oiAreas, clipSet);
   oiAreas.length = 0;
   overlayRings.length = 0;
+  const slopeTop = opts && typeof opts.slopeTop === "function" ? opts.slopeTop : null;
+  let foliageLifted = 0;
   for (const area of dissolved) {
+    let clip = null;
+    if (slopeTop && area.ringPx && area.ringPx.length >= 3) {
+      const ll = area.ringPx.map((p) => pxToLl(p[0], p[1], frame));
+      const lifted = liftFoliagePair(area.material, slopeTop(ll));
+      if (lifted) {
+        area.material = lifted.material;
+        clip = { typeId: lifted.typeId, clipType: lifted.clipType };
+        foliageLifted++;
+      }
+    }
     oiAreas.push(area);
     if (area.ringPx) overlayRings.push(area.ringPx);
-    const clip = clipboardForCanopy(area.material);
+    if (!clip) clip = clipboardForCanopy(area.material);
     if (!clip) continue;
     if (clip.clipType && !seenClip.has(clip.clipType.id)) {
       seenClip.add(clip.clipType.id);
@@ -346,6 +358,7 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     clipTypes,
     materials,
     count: oiAreas.length,
+    foliageLifted,
     polygons: polygons.length,
     overlayPoints: [],
     overlayRings,

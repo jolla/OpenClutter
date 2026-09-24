@@ -77,9 +77,10 @@ const ZIP_TROUBLESHOOT =
   "or Foliage - Heavy H.H / Foliage - Light H.H at the measured height.\n" +
   "Each is name + rf_properties + top_height + display_color. No itu_material_type.\n" +
   "Flat sites omit bottom_height, so bottom height from floor stays the floor (about 0)\n" +
-  "and top height from floor stays the building height. Do not write bottom_height: 0.\n" +
-  "When the DEM rises at least 20 m, a building sets bottom_height to the slope top\n" +
-  "under that footprint and top_height to that bottom plus the building height.\n" +
+  "and top height from floor stays the building or canopy height. Do not write bottom_height: 0.\n" +
+  "When the DEM rises at least 20 m, a building or canopy polygon sets bottom_height\n" +
+  "to the slope top under that footprint and top_height to that bottom plus the\n" +
+  "building height or the foliage height.\n" +
   "Tree Trunk and Foliage N.N m stay off OpenIntent. Clipboard foliage types are canopy polygons only.\n" +
   "Each ring vertex is pixels+meters+feet. Materials omit itu_material_type.\n" +
   "Rings thinner than 4 px on one axis, or over the Hamina vertex cap, are omitted from OpenIntent\n" +
@@ -181,6 +182,7 @@ function coverageStats(stats) {
     terrainRaised: s.terrainRaised || 0,
     terrainSloped: s.terrainSloped || 0,
     buildingsLifted: s.buildingsLifted || 0,
+    foliageLifted: s.foliageLifted || 0,
     areaMaterials: s.areaMaterials != null ? s.areaMaterials : STOCK_MATERIAL_NAMES.length,
     openIntentBuildingAreas: s.openIntentBuildingAreas || 0,
     openIntentTreeAreas: s.openIntentTreeAreas || 0,
@@ -237,10 +239,13 @@ const TERRAIN_README =
   "Building attenuating objects stay in this OpenIntent zip. On a ski-hill DEM their\n" +
   "bottom_height is bottom height from floor (slope top under the footprint) and\n" +
   "top_height is top height from floor (that bottom plus the building height).\n" +
+  "With Include foliage on, canopy polygons use the same pair: bottom_height is the\n" +
+  "slope top under that canopy, and top_height is that bottom plus the foliage height.\n" +
   "Clipboard zone types use the same pair as bottomEdge and topEdge. Flatter sites\n" +
   "omit bottom_height so the bottom stays on the floor.\n" +
   "Retest Granite Peak: Import this zip (Projects → Import → OpenIntent), Copy terrain,\n" +
-  "paste it in Planner Plus, then check 3D. Buildings should sit on the slope.\n";
+  "paste it in Planner Plus, then check 3D. Buildings should sit on the slope.\n" +
+  "With Include foliage on, import again and Copy terrain: canopy should sit on the slope.\n";
 
 function zipReadme(stats) {
   const c = coverageStats(stats);
@@ -735,13 +740,13 @@ function validateOiArea(area, imgW, imgH) {
   // OpenIntent 2.0.1 attenuation_area.area_material is a material object.
   // A catalog name string fails the whole document ("Invalid OpenIntent format",
   // PR #18). The object must deep-equal its catalog entry: gold building, or
-  // Stock Foliage - Heavy / Light, or a measured-height custom. No itu_material_type,
-  // no bottom_height. Poisoned names fail closed and that ring is omitted.
+  // Stock Foliage - Heavy / Light, or a measured-height custom. No itu_material_type.
+  // Poisoned names fail closed and that ring is omitted.
   if (typeof mat !== "object" || mat == null || Array.isArray(mat)) return { ok: false, reason: "material" };
   if ("itu_material_type" in mat) return { ok: false, reason: "material" };
   // bottom_height: 0 on a gold name is still rejected inside catalogMaterial.
-  // A ski-hill building carries bottom_height (bottom height from floor) and a
-  // raised top_height (top height from floor).
+  // A ski-hill building or canopy carries bottom_height (bottom height from floor)
+  // and a raised top_height (top height from floor).
   const cat = catalogMaterial(mat);
   if (!cat || JSON.stringify(mat) !== JSON.stringify(cat)) return { ok: false, reason: "material" };
   return validateOiCoords(area.area.coordinates, imgW, imgH);
@@ -1424,6 +1429,7 @@ function buildClutter({
         buildingRings: fp.overlayRings,
         maskRings,
         maskPolygons,
+        slopeTop,
       })
     : {
         oiAreas: [],
@@ -1431,6 +1437,7 @@ function buildClutter({
         clipTypes: [],
         materials: [],
         count: 0,
+        foliageLifted: 0,
         polygons: 0,
         overlayPoints: [],
         overlayRings: [],
@@ -1503,6 +1510,7 @@ function buildClutter({
     trees: veg.count,
     treesSource: foliageOn ? treesSource || (veg.count ? "nlcd-canopy" : "none") : "none",
     includeFoliage: foliageOn,
+    foliageLifted: veg.foliageLifted || 0,
     zones: clip.attenuatingZones.length,
     areas: areas.length,
     droppedInvalid: fp.stats.droppedInvalid || 0,
