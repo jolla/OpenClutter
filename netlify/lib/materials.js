@@ -5,7 +5,10 @@
  * Canopy uses the stock outdoor foliage objects from the Attenuating Objects
  * picker, with the same four keys as those buildings:
  *   name, rf_properties.attenuation_per_m, top_height, display_color
- * No itu_material_type, no bottom_height (OpenIntent rejected both).
+ * No itu_material_type. bottom_height is omitted on flat sites (Hamina rejected
+ * bottom_height: 0 on a gold material as "Invalid OpenIntent format").
+ * Ski-hill sites set it: bottom height from floor is the slope top under the
+ * footprint, and top_height is that bottom plus the building height.
  *
  * Picker (2026-09): Foliage - Heavy is 19.68 ft / 2 dB/m, Foliage - Light is
  * 19.68 ft / 1 dB/m. There is no Tree type, so OpenIntent does not emit trunks.
@@ -18,6 +21,7 @@
  */
 
 const { ZONE_TYPES, TYPE_BY_ID, oiMaterialFromType, pickBuildingTypeId } = require("./hamina-clipboard");
+const { LIFT_LOCAL_M } = require("./terrain");
 
 /** Hamina-native outdoor building materials (from Jerry's gold OpenIntent zip). */
 const OI_BUILDING_TYPES = [
@@ -94,6 +98,85 @@ function oiMaterial(name, color, top, dbPerM) {
     rf_properties: { attenuation_per_m: dbPerM },
     top_height: top,
     display_color: color,
+  };
+}
+
+function roundTenths(n) {
+  return Math.round(Number(n) * 10) / 10;
+}
+
+/** "Building - One Floor 86.4" — the number is bottom height from floor, not the poisoned "Building N.N m". */
+const LIFTED_BUILDING_NAME = /^Building - (One|Two|Five|Ten) Floor (\d+\.\d)$/;
+
+function isLiftedBuildingName(name) {
+  return LIFTED_BUILDING_NAME.test(name || "");
+}
+
+/**
+ * OpenIntent material for one building on a slope.
+ * bottom_height = bottom height from floor (slope top under the footprint).
+ * top_height = that bottom + the stock building height (top height from floor).
+ * The name stays a Building - * Floor prefix so it is not "Building N.N m".
+ */
+function liftedBuildingMaterial(stock, bottomM) {
+  if (!stock || !stock.name || !OI_BUILDING_NAMES.includes(stock.name)) return null;
+  const bottom = roundTenths(bottomM);
+  if (!(bottom >= LIFT_LOCAL_M)) return null;
+  const top = roundTenths(bottom + Number(stock.top_height));
+  return {
+    name: stock.name + " " + bottom.toFixed(1),
+    rf_properties: { attenuation_per_m: stock.rf_properties.attenuation_per_m },
+    top_height: top,
+    bottom_height: bottom,
+    display_color: stock.display_color,
+  };
+}
+
+/**
+ * Clipboard type uses the same pair: bottomEdge / topEdge are Hamina's
+ * bottom height from floor and top height from floor. Thickness is the
+ * measured clipboard height when we have one, otherwise the stock topEdge.
+ */
+function liftPickedBuilding(picked, bottomM) {
+  if (!picked || !picked.material) return picked;
+  const mat = liftedBuildingMaterial(picked.material, bottomM);
+  if (!mat) return picked;
+  const bottom = mat.bottom_height;
+  const baseClip = picked.clipType;
+  const stockClip = TYPE_BY_ID[picked.typeId];
+  const thickness =
+    baseClip && baseClip.topEdge > 0
+      ? baseClip.topEdge
+      : stockClip && stockClip.topEdge > 0
+        ? stockClip.topEdge
+        : roundTenths(mat.top_height - bottom);
+  const idBase = baseClip && baseClip.id ? baseClip.id : picked.typeId;
+  const baseName = baseClip && baseClip.name ? baseClip.name : stockClip && stockClip.name ? stockClip.name : picked.material.name;
+  const color = baseClip && baseClip.color ? baseClip.color : stockClip && stockClip.color ? stockClip.color : picked.material.display_color;
+  const db =
+    baseClip && baseClip.attenuationDbPerMeter != null
+      ? baseClip.attenuationDbPerMeter
+      : stockClip && stockClip.attenuationDbPerMeter != null
+        ? stockClip.attenuationDbPerMeter
+        : picked.material.rf_properties.attenuation_per_m;
+  return {
+    material: mat,
+    clipType: {
+      id: idBase + "-b" + bottom.toFixed(1).replace(".", "_"),
+      name: baseName + " " + bottom.toFixed(1),
+      color,
+      shortcutKey: "",
+      topEdge: roundTenths(bottom + thickness),
+      bottomEdge: bottom,
+      attenuationDbPerMeter: db,
+      ituRModelEnabled: true,
+      transparencyEnabled: !!(baseClip && baseClip.transparencyEnabled),
+    },
+    typeId: idBase + "-b" + bottom.toFixed(1).replace(".", "_"),
+    measured: picked.measured,
+    exactHeight: picked.exactHeight,
+    buildingHeight: picked.exactHeight || picked.material.top_height,
+    lifted: true,
   };
 }
 
@@ -263,9 +346,25 @@ function stockFoliageMaterial(kind) {
  * Gold building object, exact stock foliage, or the canonical measured custom.
  * A drifted top_height or a poisoned name returns null so that ring is omitted.
  */
+function canonicalLiftedBuilding(material) {
+  if (!material || typeof material !== "object" || Array.isArray(material)) return null;
+  if ("itu_material_type" in material || !("bottom_height" in material)) return null;
+  const keys = Object.keys(material);
+  if (keys.length !== 5) return null;
+  if (!keys.every((k) => ["name", "rf_properties", "top_height", "bottom_height", "display_color"].includes(k))) return null;
+  const parsed = LIFTED_BUILDING_NAME.exec(material.name || "");
+  if (!parsed) return null;
+  const stock = OI_BUILDING_TYPES.find((t) => t.name === "Building - " + parsed[1] + " Floor");
+  if (!stock) return null;
+  const canon = liftedBuildingMaterial(oiMaterialFromType(stock), material.bottom_height);
+  if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
+  return canon;
+}
+
 function canonicalAreaMaterial(material) {
   if (!material || typeof material !== "object" || Array.isArray(material)) return null;
-  if ("itu_material_type" in material || "bottom_height" in material) return null;
+  if ("itu_material_type" in material) return null;
+  if ("bottom_height" in material) return canonicalLiftedBuilding(material);
   const name = material.name;
   if (OI_BUILDING_NAMES.includes(name)) {
     const cat = buildingCatalog().find((m) => m.name === name);
@@ -312,17 +411,30 @@ function vegetationSortKey(name) {
 
 function documentMaterials(areas) {
   const veg = new Map();
+  const lifted = new Map();
   for (const a of areas || []) {
     const mat = a && a.area_material;
-    if (!mat || typeof mat !== "object" || !isVegetationOiName(mat.name)) continue;
-    if (!veg.has(mat.name)) veg.set(mat.name, JSON.parse(JSON.stringify(mat)));
+    if (!mat || typeof mat !== "object") continue;
+    if (isVegetationOiName(mat.name)) {
+      if (!veg.has(mat.name)) veg.set(mat.name, JSON.parse(JSON.stringify(mat)));
+      continue;
+    }
+    if (!isLiftedBuildingName(mat.name)) continue;
+    const canon = canonicalLiftedBuilding(mat);
+    if (!canon) continue;
+    const key = canon.name;
+    if (!lifted.has(key)) lifted.set(key, canon);
   }
+  const slope = Array.from(lifted.values()).sort((a, b) => {
+    if (a.bottom_height !== b.bottom_height) return a.bottom_height - b.bottom_height;
+    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+  });
   const extra = Array.from(veg.values()).sort((a, b) => {
     const ka = vegetationSortKey(a.name);
     const kb = vegetationSortKey(b.name);
     return ka < kb ? -1 : ka > kb ? 1 : 0;
   });
-  return buildingCatalog().concat(extra);
+  return buildingCatalog().concat(slope, extra);
 }
 
 module.exports = {
@@ -332,6 +444,9 @@ module.exports = {
   measuredFoliageMaterial,
   measuredTrunkMaterial,
   materialForBuilding,
+  liftPickedBuilding,
+  liftedBuildingMaterial,
+  isLiftedBuildingName,
   materialForVegetation,
   stockFoliageMaterial,
   canonicalAreaMaterial,
