@@ -289,6 +289,77 @@ describe("clipboard ↔ alignment-overlay scale", () => {
     assert.equal(inside, true, "Sphere center left the content-grid ring");
   });
 
+  it("Sphere-site 50–80 ft miss is south of the dome, not an east nudge", () => {
+    // octest-sphere2: Sphere AO on the dome; other roofs ~50–80 ft off on a
+    // north-up aerial. A meter-square draw whose footprints still use the
+    // drawn box (metadata never applied) puts a roof 100 m south and 40 m
+    // east of the dome ~61 ft south of the JPEG and 0 ft east. The content
+    // grid puts that roof back. A constant +18 m east correction would miss
+    // the JPEG and slide the Sphere off the dome.
+    const lat = 36.1214;
+    const lon = -115.1623;
+    const mLon = 111320 * Math.cos((lat * Math.PI) / 180);
+    const mLat = 110540;
+    const dLon = 450 / mLon;
+    const dLat = 450 / mLat;
+    const drawn = geoFrame({
+      west: lon - dLon,
+      south: lat - dLat,
+      east: lon + dLon,
+      north: lat + dLat,
+    });
+    const requestBbox = { west: drawn.west, south: drawn.south, east: drawn.east, north: drawn.north };
+    const content = applyImageryMeta(drawn, null, { width: drawn.imgW, height: drawn.imgH }, { requestBbox });
+    const drawnGrid = geoFrame(requestBbox, { imgW: drawn.imgW, imgH: drawn.imgH, maxSpanM: 10000, minSpanM: 1 });
+    const { llToImagePx } = require("../netlify/lib/geo-frame");
+    const roofLon = lon + 40 / mLon;
+    const roofLat = lat - 100 / mLat;
+    const wrong = llToImagePx(roofLon, roofLat, drawnGrid);
+    const right = llToImagePx(roofLon, roofLat, content);
+    const eastFt = (wrong[0] - right[0]) * 3.280839895;
+    const southFt = (wrong[1] - right[1]) * 3.280839895;
+    assert.ok(Math.abs(eastFt) < 1, `drawn-box east ${eastFt.toFixed(1)} ft`);
+    assert.ok(southFt > 50 && southFt < 80, `drawn-box south ${southFt.toFixed(1)} ft`);
+
+    const halfLat = 20 / mLat;
+    const halfLon = 20 / mLon;
+    const feature = squareFeature(
+      roofLon - halfLon,
+      roofLat - halfLat,
+      roofLon + halfLon,
+      roofLat + halfLat,
+      { height: 12 }
+    );
+    const fp = footprintsToClutter([feature], content, null);
+    const pix = oiPixelCoords(fp.oiAreas[0].area.coordinates);
+    const xs = pix.map((c) => c.coordinate_xyz.x);
+    const ys = pix.map((c) => c.coordinate_xyz.y);
+    const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+    const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const { llToPx } = require("../netlify/lib/geo-frame");
+    const [expectX, expectY] = llToPx(roofLon, roofLat, content);
+    assert.ok(Math.abs(cx - expectX) < 1.5, `content-grid east ${cx - expectX} px`);
+    assert.ok(Math.abs(cy - expectY) < 1.5, `content-grid north ${cy - expectY} px`);
+
+    const sphere = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/wynn-golf/sphere-overture.geojson"), "utf8"));
+    const onDrawn = footprintsToClutter([sphere], drawnGrid, null);
+    const onContent = footprintsToClutter([sphere], content, null);
+    function centroid(area) {
+      const pts = oiPixelCoords(area.area.coordinates);
+      let sx = 0;
+      let sy = 0;
+      for (const c of pts) {
+        sx += c.coordinate_xyz.x;
+        sy += c.coordinate_xyz.y;
+      }
+      return [sx / pts.length, sy / pts.length];
+    }
+    const a = centroid(onDrawn.oiAreas[0]);
+    const b = centroid(onContent.oiAreas[0]);
+    const sphereFt = Math.hypot(a[0] - b[0], a[1] - b[1]) * 3.280839895;
+    assert.ok(sphereFt < 15, `Sphere moved ${sphereFt.toFixed(1)} ft between drawn box and content grid`);
+  });
+
   it("capped OpenIntent rings stay on the Oak Creek content grid", () => {
     const dir = path.join(__dirname, "fixtures/oak-creek-commercial");
     const bbox = JSON.parse(fs.readFileSync(path.join(dir, "bbox.json"), "utf8"));

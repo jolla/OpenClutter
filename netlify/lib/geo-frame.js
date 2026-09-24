@@ -277,10 +277,13 @@ function extentFromMeta(meta) {
  * The service keeps the requested pixel size and expands whichever degree
  * axis is short so (east−west)/(north−south) = imgW/imgH, centered on the
  * request. On a meter-square Las Vegas draw that is a latitude pad of about
- * 1/cos φ (~23%). Projecting footprints with the drawn box then scales Y
- * about the site center: a centered Sphere stays put and every other roof
- * walks off the JPEG. export?f=json repeats this same extent; this function
- * is that extent when the JSON does not arrive.
+ * 1/cos φ (~23%). Longitude is unchanged. Projecting footprints with the
+ * drawn box then scales Y about the site center: the Sphere stays on the
+ * dome, and a roof 80–120 m south of it lands 49–73 ft south of the JPEG
+ * (0 ft east). That is the octest-sphere2 “~50–80 ft” miss. It is not a
+ * constant southeast translation — an east pre-shift would move the Sphere
+ * with every other roof. export?f=json repeats this same extent; this
+ * function is that extent when the JSON does not arrive.
  */
 function esriContentExtent(bbox, imgW, imgH) {
   const west = +bbox.west;
