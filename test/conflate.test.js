@@ -2,7 +2,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { conflateFootprints, assembleFootprints, dedupeStackedFootprints, heightRank } = require("../netlify/lib/conflate");
+const { conflateFootprints, assembleFootprints, dedupeStackedFootprints, heightRank, ringAreaM2 } = require("../netlify/lib/conflate");
 const { mergeFootprintFeatures } = require("../netlify/lib/ms-global");
 
 function box(west, south, east, north, props) {
@@ -173,5 +173,47 @@ describe("footprint conflation", () => {
       for (let i = 0; i < r.length - 1; i++) area += r[i][0] * r[i + 1][1] - r[i + 1][0] * r[i][1];
     }
     assert.ok(Math.abs(area) / 2 < 5, `notched intersection ${Math.abs(area) / 2}`);
+  });
+
+  function metersBox(lon, lat, widthM, heightM, props) {
+    const mx = 111320 * Math.cos((lat * Math.PI) / 180);
+    const dLon = widthM / mx;
+    const dLat = heightM / 110540;
+    return box(lon - dLon / 2, lat - dLat / 2, lon + dLon / 2, lat + dLat / 2, props);
+  }
+
+  it("replaces a concentric center stub with the fuller roof above the 2.4× cap", () => {
+    const lon = -115.156;
+    const lat = 36.1204;
+    const stub = metersBox(lon, lat, 40, 34, { geomSource: "overture", height: 12, heightSource: "overture" });
+    const full = metersBox(lon, lat, 100, 83, { geomSource: "overture", height: 18, heightSource: "overture" });
+    const merged = conflateFootprints([stub], [full], { replaceGeometry: true, rankHeight: true });
+    assert.equal(merged.features.length, 1);
+    assert.equal(merged.geometriesReplaced, 1);
+    const area = ringAreaM2(merged.features[0].geometry.coordinates[0]);
+    assert.ok(area > 7000 && area < 10000, `full roof area ${area}`);
+  });
+
+  it("does not let a coarse mega hull hide a detailed roof that emit would keep", () => {
+    const { geoFrame } = require("../netlify/lib/geo-frame");
+    const { footprintsToClutter } = require("../netlify/lib/pipeline");
+    const lon = -115.164;
+    const lat = 36.124;
+    const mega = metersBox(lon, lat, 520, 450, { geomSource: "ms-global", height: 10, heightSource: "ms-global" });
+    const detail = metersBox(lon - 0.0004, lat + 0.0003, 90, 180, {
+      geomSource: "overture",
+      height: 22,
+      heightSource: "overture",
+    });
+    const merged = conflateFootprints([mega], [detail], { replaceGeometry: true, rankHeight: true });
+    assert.equal(merged.added, 1, "detailed roof must not be covered by a coarse mega hull");
+    assert.equal(merged.features.length, 2);
+    const frame = geoFrame(
+      { west: lon - 0.006, south: lat - 0.004, east: lon + 0.006, north: lat + 0.004, name: "mega" },
+      { imgW: 800, imgH: 600 }
+    );
+    const built = footprintsToClutter(merged.features, frame, null);
+    assert.equal(built.stats.droppedMega, 1);
+    assert.equal(built.stats.buildings, 1);
   });
 });
