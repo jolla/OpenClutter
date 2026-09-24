@@ -16,6 +16,14 @@ const zlib = require("zlib");
 
 const INDEX = require("./ms-buildings-index.json");
 const QUADKEY_ZOOM = 9;
+/**
+ * Zoom-9 quadkeys are one gzip for a whole tile, not the drawn box.
+ * Oak Creek is ~39 MB and Las Vegas ~60 MB; both still download.
+ * The Los Angeles tile (Universal Hollywood) is ~179 MB. Reading it
+ * holds a decompressed copy near the function memory limit and runs
+ * past the gateway clock. Skip that file and keep the other sources.
+ */
+const MAX_GZIP_BYTES = 80 * 1024 * 1024;
 
 function lonLatToTile(lon, lat, zoom) {
   const n = 2 ** zoom;
@@ -247,6 +255,21 @@ function mergeFootprintFeatures(primary, secondary) {
   return { features: base, added, heightsTransferred };
 }
 
+function contentLength(res) {
+  const headers = res && res.headers;
+  if (!headers || typeof headers.get !== "function") return 0;
+  const n = Number(headers.get("content-length") || 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+async function releaseBody(res) {
+  try {
+    if (res && res.body && typeof res.body.cancel === "function") await res.body.cancel();
+  } catch {
+    /* the socket is already closed */
+  }
+}
+
 async function fetchMsGlobalFootprints(frame, fetchFn) {
   const { keys, urls } = urlsForBbox(frame.west, frame.south, frame.east, frame.north);
   const bbox = {
@@ -256,16 +279,58 @@ async function fetchMsGlobalFootprints(frame, fetchFn) {
     north: +frame.north,
   };
   const features = [];
+  let skipped = 0;
+  let skippedBytes = 0;
   for (const item of urls) {
     const res = await fetchFn(item.url);
     if (!res || res.ok === false) {
       throw new Error("global footprints HTTP " + (res && res.status));
     }
+    const len = contentLength(res);
+    if (len > MAX_GZIP_BYTES) {
+      skipped++;
+      skippedBytes += len;
+      await releaseBody(res);
+      continue;
+    }
     const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > MAX_GZIP_BYTES) {
+      skipped++;
+      skippedBytes += buf.length;
+      continue;
+    }
     const chunk = featuresFromGzip(buf, bbox);
     for (const f of chunk) features.push(f);
   }
-  return { features, quadkeys: keys, files: urls.length };
+  return { features, quadkeys: keys, files: urls.length, skipped, skippedBytes };
+}
+
+function megabytes(bytes) {
+  return Math.max(1, Math.round((bytes || 0) / (1024 * 1024)));
+}
+
+function globalSkipWarning(pack) {
+  if (!pack || !pack.skipped) return "";
+  const mb = megabytes(pack.skippedBytes);
+  const limit = megabytes(MAX_GZIP_BYTES);
+  if (pack.features && pack.features.length) {
+    return (
+      "Microsoft building footprints partial: kept " +
+      pack.features.length +
+      " and left out a " +
+      mb +
+      " MB tile (limit " +
+      limit +
+      " MB). Other building sources are included."
+    );
+  }
+  return (
+    "Microsoft building footprints omitted: the footprint tile is " +
+    mb +
+    " MB, over the " +
+    limit +
+    " MB export limit. Other building sources are included."
+  );
 }
 
 module.exports = {
@@ -277,7 +342,9 @@ module.exports = {
   spanNeedles,
   featuresFromGzip,
   mergeFootprintFeatures,
+  MAX_GZIP_BYTES,
   fetchMsGlobalFootprints,
+  globalSkipWarning,
   exteriorRings,
   pointInRing,
   centroid,

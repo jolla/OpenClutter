@@ -35,12 +35,25 @@ const SKIP_OPTIONAL_AFTER_MS = 5000;
 // is only in that read. Grace continues until this ceiling, which stays under
 // a ~26s platform kill when core itself returns.
 const OVERTURE_GRACE_MS = 4500;
+// A dense campus row group (Universal Hollywood, ~23k rows) still needs about
+// 14s after a fast core. The short grace stays for smaller draws so a hung
+// read cannot stretch Oak Creek. hardMs still cuts a slow core at 23s.
+const OVERTURE_LARGE_GRACE_MS = 15000;
+const LARGE_DRAW_SIDE_M = 1500;
 const OVERTURE_HARD_MS = 23000;
+// Roof fill scans every footprint. On a dense draw that already spent 10s
+// fetching, skip it and emit the vector buildings.
+const DENSE_FEATURES = 1500;
+// OpenIntent triples plus the clipboard and overlay for every roof on a
+// campus blow past the response limit (Hollywood at 982 areas was ~6.5 MB).
+// Stay under it so the zip actually downloads.
+const ZIP_FIT_BYTES = 4200000;
+const ZIP_SHRINK_STEPS = [640, 400, 240];
 const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, padFootprintBbox } = require("../lib/geo-frame");
-const { buildClutter, ALIGNMENT, footprintsToClutter } = require("../lib/pipeline");
+const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
-const { fetchMsGlobalFootprints } = require("../lib/ms-global");
+const { fetchMsGlobalFootprints, globalSkipWarning } = require("../lib/ms-global");
 const { fetchUsaStructures } = require("../lib/usa-structures");
 const { assembleFootprints } = require("../lib/conflate");
 const { fetchOvertureFootprints } = require("../lib/overture");
@@ -238,11 +251,14 @@ async function joinOptional(warnings, started, label, job, opts) {
   }
   const elapsed = Date.now() - started;
   let budget = 0;
-  if (elapsed < SKIP_OPTIONAL_AFTER_MS) {
+  if (graceMs > SKIP_OPTIONAL_AFTER_MS) {
+    // A dense campus read is allowed to outlast a fast core. The short
+    // optional window (grace at or under 5s) still aborts quickly so a hung
+    // read on a small draw cannot eat the export. hardMs ends either wait.
+    budget = Math.min(graceMs, Math.max(0, hardMs - elapsed));
+  } else if (elapsed < SKIP_OPTIONAL_AFTER_MS) {
     budget = Math.min(OPTIONAL_MS, Math.max(400, SKIP_OPTIONAL_AFTER_MS - elapsed));
   } else if (graceMs) {
-    // In-flight read that started with the JPEG. Global ML often finishes
-    // within a second of the Overture row group; aborting at 5s drops it.
     budget = Math.min(graceMs, Math.max(0, hardMs - elapsed));
   }
   if (budget < 200) {
@@ -306,6 +322,34 @@ function decodeImagery(imgBuf) {
   } catch {
     return null;
   }
+}
+
+function featureAreaM2(feature, mpd) {
+  const rings = featureExteriorRings(feature && feature.geometry);
+  let area = 0;
+  for (let i = 0; i < rings.length; i++) area += ringAreaM2(rings[i], mpd);
+  return area;
+}
+
+/** Largest roofs first. A shortened campus export should keep the big halls. */
+function largestFeatures(features, n, mpd) {
+  const list = Array.isArray(features) ? features : [];
+  const scored = [];
+  for (let i = 0; i < list.length; i++) scored.push({ feature: list[i], area: featureAreaM2(list[i], mpd) });
+  scored.sort((a, b) => b.area - a.area);
+  const keep = Math.max(0, n | 0);
+  const out = [];
+  for (let i = 0; i < scored.length && out.length < keep; i++) out.push(scored[i].feature);
+  return out;
+}
+
+function overtureWait(frame) {
+  const side = Math.max(+frame.widthM || 0, +frame.lengthM || 0);
+  const large = side >= LARGE_DRAW_SIDE_M;
+  return {
+    graceMs: large ? OVERTURE_LARGE_GRACE_MS : OVERTURE_GRACE_MS,
+    hardMs: OVERTURE_HARD_MS,
+  };
 }
 
 function wantOsm(body) {
@@ -438,24 +482,41 @@ exports.handler = async (event) => {
     const globalJob = fetchMsGlobalFootprints(frame, (url) =>
       fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(CORE_FETCH_MS) })
     ).catch(() => ({ features: [] }));
+    const usaCtrl = new AbortController();
+    const usaTimer = setTimeout(() => usaCtrl.abort(), CORE_FETCH_MS);
     const usaJob = fetchUsaStructures(frame, (url) =>
-      fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(CORE_FETCH_MS) })
-    ).catch(() => ({ features: [] }));
+      fetch(url, { headers: { "user-agent": UA }, signal: usaCtrl.signal })
+    )
+      .catch(() => ({ features: [] }))
+      .finally(() => clearTimeout(usaTimer));
     const clientHitsEarly = includeFoliage ? normalizeCanopyHits(body.canopyHits) : [];
     const canopyJob =
       includeFoliage && !clientHitsEarly.length
         ? fetchCanopyTrees(frame, (url) => fetchOk(url, "canopy"), { maxTrees: maxTreesForBbox(frame) }).catch(() => null)
         : null;
     const fetched = await Promise.all([
-      fetchMsFootprints(frame, (url) => fetchOk(url, "footprints"), { pad: false }),
+      fetchMsFootprints(frame, (url) => fetchOk(url, "footprints"), { pad: false, budgetMs: CORE_FETCH_MS }),
       globalJob,
       usaJob,
       imageryJob,
       canopyJob,
     ]);
     gj = fetched[0];
-    globalFeatures = (fetched[1] && fetched[1].features) || [];
+    const globalPack = fetched[1] || { features: [] };
+    globalFeatures = globalPack.features || [];
+    const globalNote = globalSkipWarning(globalPack);
+    if (globalNote) warnings.push(globalNote);
+    if (gj && gj.partial) {
+      warnings.push(
+        "Building footprints partial: kept " + (gj.features || []).length + " before the export budget."
+      );
+    }
     usaFeatures = (fetched[2] && fetched[2].features) || [];
+    if (fetched[2] && fetched[2].partial) {
+      warnings.push(
+        "USA Structures partial: kept " + usaFeatures.length + " footprints before the export budget."
+      );
+    }
     imgBuf = fetched[3];
     if (imgBuf) {
       frame = applyImageryMeta(frame, imgMeta, jpegSize(imgBuf), { requestBbox });
@@ -481,10 +542,7 @@ exports.handler = async (event) => {
 
   const optional = await Promise.all([
     overtureJob
-      ? joinOptional(warnings, started, "Overture buildings", overtureJob, {
-          graceMs: OVERTURE_GRACE_MS,
-          hardMs: OVERTURE_HARD_MS,
-        })
+      ? joinOptional(warnings, started, "Overture buildings", overtureJob, overtureWait(frame))
       : Promise.resolve(null),
     terrainJob
       ? joinOptional(warnings, started, "Terrain", terrainJob, { graceMs: 1500, hardMs: 9000 })
@@ -501,11 +559,16 @@ exports.handler = async (event) => {
 
   const arcgisFeatures = (gj && gj.features) || [];
   const overtureFeatures = (overturePack && overturePack.features) || [];
+  // Conflation is pairwise. A dense row group can return several thousand
+  // rings; keep the largest 2000 from each source before that pass. The zip
+  // cannot carry more than that anyway.
+  const SOURCE_CAP = 2000;
+  const capSource = (list) => (list.length > SOURCE_CAP ? largestFeatures(list, SOURCE_CAP, frame.mpd) : list);
   const assembled = assembleFootprints({
-    global: globalFeatures,
-    overture: overtureFeatures,
-    arcgis: arcgisFeatures,
-    usa: usaFeatures,
+    global: capSource(globalFeatures),
+    overture: capSource(overtureFeatures),
+    arcgis: capSource(arcgisFeatures),
+    usa: capSource(usaFeatures),
   });
   let features = assembled.features;
   const sources = assembled.heightSources || {};
@@ -523,7 +586,13 @@ exports.handler = async (event) => {
     medianTrees: 0,
     chmTrees: 0,
   };
-  const decoded = needImage ? decodeImagery(imgBuf) : null;
+  // Imagery roof fill walks every footprint. A campus that already has the
+  // vector layers does not get that pass; Oak Creek (far fewer roofs) still does.
+  const skipRoofFill = features.length > DENSE_FEATURES;
+  const decoded = needImage && !skipRoofFill ? decodeImagery(imgBuf) : null;
+  if (skipRoofFill) {
+    warnings.push("Imagery roof fill omitted: this draw already has a full set of building footprints.");
+  }
   if (decoded) {
     try {
       const sup = supplementFootprints(decoded, frame, features);
@@ -590,7 +659,13 @@ exports.handler = async (event) => {
 
   let maskRings = [];
   let maskPolygons = [];
-  if (decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH) {
+  if (
+    includeFoliage &&
+    decoded &&
+    frame &&
+    decoded.width === frame.imgW &&
+    decoded.height === frame.imgH
+  ) {
     try {
       const masks = surfaceMasksFromImage(decoded, frame);
       maskRings = masks.waterRings;
@@ -601,23 +676,49 @@ exports.handler = async (event) => {
     }
   }
 
-  const built = buildClutter({
-    frame,
-    footprintsGeojson: gj,
-    treePoints,
-    affine,
-    name: body.name,
-    imgBuf,
-    treesSource,
-    footprintMeta,
-    terrain,
-    warnings,
-    canopyHits: placeHits,
-    heightSample: chmGrid ? (lon, lat) => sampleChmGrid(chmGrid, lon, lat) : null,
-    maskRings,
-    maskPolygons,
-    includeFoliage,
-  });
+  function emitClutter(list, extraWarnings) {
+    return buildClutter({
+      frame,
+      footprintsGeojson: { type: "FeatureCollection", features: list },
+      treePoints,
+      affine,
+      name: body.name,
+      imgBuf,
+      treesSource,
+      footprintMeta,
+      terrain,
+      warnings: extraWarnings ? warnings.concat(extraWarnings) : warnings,
+      canopyHits: placeHits,
+      heightSample: chmGrid ? (lon, lat) => sampleChmGrid(chmGrid, lon, lat) : null,
+      maskRings,
+      maskPolygons,
+      includeFoliage,
+    });
+  }
+
+  function noteShrink(n) {
+    for (let i = warnings.length - 1; i >= 0; i--) {
+      if (/^Kept the \d+ largest roofs/.test(warnings[i])) warnings.splice(i, 1);
+    }
+    warnings.push(
+      "Kept the " + n + " largest roofs so the zip can download. Draw a smaller area for the rest of this campus."
+    );
+  }
+
+  let exportFeatures = features;
+  if (exportFeatures.length > ZIP_SHRINK_STEPS[0]) {
+    exportFeatures = largestFeatures(exportFeatures, ZIP_SHRINK_STEPS[0], frame.mpd);
+    noteShrink(exportFeatures.length);
+  }
+  let built = emitClutter(exportFeatures);
+  if (built.zip && built.zip.length > ZIP_FIT_BYTES) {
+    for (let i = 1; i < ZIP_SHRINK_STEPS.length; i++) {
+      exportFeatures = largestFeatures(features, ZIP_SHRINK_STEPS[i], frame.mpd);
+      noteShrink(exportFeatures.length);
+      built = emitClutter(exportFeatures);
+      if (built.zip && built.zip.length <= ZIP_FIT_BYTES) break;
+    }
+  }
 
   const frameHeaders = {
     "x-hamina-width-m": String(frame.widthM),
@@ -640,7 +741,11 @@ exports.handler = async (event) => {
   }
 
   if (!built.zip) return json(500, cors, { error: "zip missing" });
-  if (built.zip.length > 4500000) return json(413, cors, { error: "zip too large" });
+  if (built.zip.length > 4500000) {
+    return json(413, cors, {
+      error: "This area is too large to export in one zip. Draw a smaller area and try again.",
+    });
+  }
 
   if (format === "zip") {
     return {
@@ -675,4 +780,9 @@ exports.UA = UA;
 exports.beginOptional = beginOptional;
 exports.joinOptional = joinOptional;
 exports.OVERTURE_GRACE_MS = OVERTURE_GRACE_MS;
+exports.OVERTURE_LARGE_GRACE_MS = OVERTURE_LARGE_GRACE_MS;
+exports.LARGE_DRAW_SIDE_M = LARGE_DRAW_SIDE_M;
 exports.OVERTURE_HARD_MS = OVERTURE_HARD_MS;
+exports.overtureWait = overtureWait;
+exports.largestFeatures = largestFeatures;
+exports.ZIP_FIT_BYTES = ZIP_FIT_BYTES;

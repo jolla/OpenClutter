@@ -188,6 +188,7 @@ function coverageStats(stats) {
     openclutterVersion: s.openclutterVersion || OPENCLUTTER_VERSION,
     coordinateUnit: s.coordinateUnit || "pixels",
     coordinateOrigin: s.coordinateOrigin || "Y-up from SW",
+    warnings: Array.isArray(s.warnings) ? s.warnings.filter(Boolean).map(String) : [],
   };
 }
 
@@ -1509,6 +1510,7 @@ function buildClutter({
     exactFoliageHeights,
     waterMaskRings: (maskRings || []).length,
     pavementMaskRings: (maskPolygons || []).length,
+    warnings: (warnings || []).filter(Boolean).map(String),
   };
   stats.summary = coverageSummary(stats);
   Object.assign(stats, coverageStats(stats));
