@@ -20,6 +20,7 @@ const {
   TERRAIN_RESOLUTIONS,
   ABSOLUTE_MAX_GRID,
   ABSOLUTE_MAX_SAMPLES,
+  MIN_CELL_M,
   LIFT_RELIEF_M,
   siteWarrantsLift,
 } = require("../netlify/lib/terrain");
@@ -168,7 +169,7 @@ describe("3DEP terrain clipboard", () => {
     const [cols, rows] = chooseGrid(terrain.reliefM, frame);
     assert.equal(terrain.raised + terrain.sloped, cols * rows);
     assert.ok(terrain.sloped > 9);
-    assert.ok(terrain.sloped <= MAX_GRID * MAX_GRID);
+    assert.ok(terrain.sloped <= ABSOLUTE_MAX_GRID * ABSOLUTE_MAX_GRID);
     for (const z of terrain.clipboard.slopedFloors) {
       assert.deepEqual(Object.keys(z), SLOPED_KEYS);
       assert.equal(z.area.type, "Polygon");
@@ -416,7 +417,7 @@ describe("building height from floor on a slope", () => {
     assert.ok(terrain.reliefM >= LIFT_RELIEF_M);
     assert.equal(siteWarrantsLift(terrain), true);
     assert.ok(terrain.sloped > 9);
-    assert.ok(terrain.sloped <= MAX_GRID * MAX_GRID);
+    assert.ok(terrain.sloped <= ABSOLUTE_MAX_GRID * ABSOLUTE_MAX_GRID);
     for (const z of terrain.clipboard.slopedFloors) assertSlopedRamp(z.area.coordinates[0]);
     const areas = built.openintent.floorplans[0].attenuation_areas;
     assert.equal(areas.length, 2);
@@ -568,17 +569,20 @@ describe("foliage height from floor on a slope", () => {
   });
 });
 
-function metersBox(lat, widthM, lengthM, name) {
+function metersBox(lat, widthM, lengthM, name, opts) {
   const mpdLon = 111320 * Math.cos((lat * Math.PI) / 180);
   const west = -89.72;
   const south = lat;
-  return geoFrame({
-    west,
-    south,
-    east: west + widthM / mpdLon,
-    north: south + lengthM / 110540,
-    name: name || "Box",
-  });
+  return geoFrame(
+    {
+      west,
+      south,
+      east: west + widthM / mpdLon,
+      north: south + lengthM / 110540,
+      name: name || "Box",
+    },
+    opts || {}
+  );
 }
 
 describe("terrain resolution presets", () => {
@@ -603,14 +607,19 @@ describe("terrain resolution presets", () => {
     assert.ok(TERRAIN_RESOLUTIONS.finest.sampleCount <= ABSOLUTE_MAX_SAMPLES);
     assert.equal(ABSOLUTE_MAX_GRID, 20);
     assert.equal(ABSOLUTE_MAX_SAMPLES, 625);
-    assert.equal(normalizeTerrainResolution(undefined).id, "default");
+    assert.equal(normalizeTerrainResolution(undefined).id, "auto");
+    assert.equal(normalizeTerrainResolution("").id, "auto");
+    assert.equal(normalizeTerrainResolution(" AUTO ").id, "auto");
     assert.equal(normalizeTerrainResolution(" FINE ").id, "fine");
-    assert.equal(normalizeTerrainResolution("nope").id, "default");
+    assert.equal(normalizeTerrainResolution("nope").id, "auto");
+    assert.equal(normalizeTerrainResolution("default").id, "default");
+    assert.equal(TERRAIN_RESOLUTIONS.auto.maxGrid, ABSOLUTE_MAX_GRID);
+    assert.equal(TERRAIN_RESOLUTIONS.auto.cellM, null);
   });
 
   it("leaves flat, mild, and medium ladders unchanged at every preset", () => {
     const frame = metersBox(44.91, 900, 700, "Mild");
-    for (const id of [undefined, "default", "fine", "finest"]) {
+    for (const id of [undefined, "auto", "default", "fine", "finest"]) {
       assert.deepEqual(chooseGrid(0.4, frame, id), [2, 2]);
       assert.deepEqual(chooseGrid(5, frame, id), [4, 3]);
       assert.deepEqual(chooseGrid(15, frame, id), [6, 5]);
@@ -627,11 +636,11 @@ describe("terrain resolution presets", () => {
       ];
     };
     const wide = metersBox(44.91, 1800, 1400, "Wide hill");
-    assert.deepEqual(chooseGrid(200, wide), legacy(wide));
+    assert.deepEqual(chooseGrid(200, wide, "default"), legacy(wide));
     assert.deepEqual(chooseGrid(200, wide, "default"), [12, 12]);
     assert.deepEqual(chooseGrid(200, wide, "fine"), [16, 16]);
     assert.deepEqual(chooseGrid(200, wide, "finest"), [20, 20]);
-    assert.deepEqual(chooseGrid(200), legacy(null));
+    assert.deepEqual(chooseGrid(200, null, "default"), legacy(null));
     const small = metersBox(44.91, 480, 480, "Small hill");
     const [dC, dR] = chooseGrid(200, small, "default");
     const [fC, fR] = chooseGrid(200, small, "fine");
@@ -649,7 +658,7 @@ describe("terrain resolution presets", () => {
     const frame = metersBox(44.91, 1800, 1400, "Granite Peak");
     const zAt = (r, c, lon, lat) => 300 + ((lat - frame.south) / (frame.north - frame.south)) * 200;
     const samples = gridSamples(frame, zAt);
-    const coarse = terrainFromSamples(samples, frame);
+    const coarse = terrainFromSamples(samples, frame, { terrainResolution: "default" });
     const fine = terrainFromSamples(samples, frame, { terrainResolution: "fine" });
     const finest = terrainFromSamples(samples, frame, { terrainResolution: "finest" });
     assert.equal(coarse.terrainResolution, "default");
@@ -713,15 +722,112 @@ describe("terrain resolution presets", () => {
     await fetchDemSamples(frame, fetchFn, { terrainResolution: "fine" });
     await fetchDemSamples(frame, fetchFn, { terrainResolution: "finest" });
     await fetchDemSamples(frame, fetchFn, { terrainResolution: "ultra" });
-    assert.match(seen[0], /sampleCount=144(?:&|$)/);
+    assert.match(seen[0], /sampleCount=576(?:&|$)/);
     assert.match(seen[1], /sampleCount=144(?:&|$)/);
     assert.match(seen[2], /sampleCount=324(?:&|$)/);
     assert.match(seen[3], /sampleCount=576(?:&|$)/);
-    assert.match(seen[4], /sampleCount=144(?:&|$)/);
+    assert.match(seen[4], /sampleCount=576(?:&|$)/);
     for (const url of seen) {
       const n = Number(new URL(url).searchParams.get("sampleCount"));
       assert.ok(n <= ABSOLUTE_MAX_SAMPLES);
       assert.ok(n >= 144);
     }
+  });
+
+  it("sizes Auto from the draw and keeps manuals as fixed overrides", () => {
+    const box20 = metersBox(44.91, 20, 20, "Tiny hill", { minSpanM: 1 });
+    const [c20, r20] = chooseGrid(200, box20, "auto");
+    assert.deepEqual([c20, r20], [20, 20]);
+    const cell20 = (box20.widthM / c20 + box20.lengthM / r20) / 2;
+    assert.ok(cell20 >= 0.95 && cell20 <= 1.2, "20 m cell " + cell20);
+    assert.ok(c20 * r20 <= ABSOLUTE_MAX_GRID * ABSOLUTE_MAX_GRID);
+
+    const box40 = metersBox(44.91, 40, 40, "Small hill", { minSpanM: 1 });
+    const [c40, r40] = chooseGrid(200, box40, "auto");
+    assert.deepEqual([c40, r40], [20, 20]);
+    const cell40 = (box40.widthM / c40 + box40.lengthM / r40) / 2;
+    assert.ok(cell40 >= 1.8 && cell40 <= 2.2, "40 m cell " + cell40);
+
+    const box200 = metersBox(44.91, 200, 200, "200");
+    const [c200, r200] = chooseGrid(200, box200, "auto");
+    assert.deepEqual([c200, r200], [20, 20]);
+    const cell200 = box200.widthM / c200;
+    assert.ok(Math.abs(cell200 - 10) < 0.6, "200 m cell " + cell200);
+
+    const box800 = metersBox(44.91, 800, 800, "800");
+    const [c800, r800] = chooseGrid(200, box800, "auto");
+    assert.deepEqual([c800, r800], [20, 20]);
+    assert.ok(Math.abs(box800.widthM / c800 - 40) < 1, "800 m cell " + box800.widthM / c800);
+
+    const wide = metersBox(44.91, 1800, 1400, "Granite Peak");
+    const [cW, rW] = chooseGrid(200, wide, "auto");
+    assert.deepEqual([cW, rW], [20, 20]);
+    assert.ok(wide.widthM / cW > 80);
+    assert.ok(cW <= ABSOLUTE_MAX_GRID && rW <= ABSOLUTE_MAX_GRID);
+
+    const tiny = metersBox(44.91, 4, 4, "Too small for 6", { minSpanM: 1 });
+    const [tC, tR] = chooseGrid(200, tiny, "auto");
+    assert.ok(tC < 6 && tR < 6, "tiny grid " + tC + "x" + tR);
+    assert.ok(tiny.widthM / tC >= MIN_CELL_M - 0.05);
+    assert.ok(tC * tR <= ABSOLUTE_MAX_GRID * ABSOLUTE_MAX_GRID);
+
+    assert.deepEqual(chooseGrid(0.2, box20, "auto"), [2, 2]);
+    assert.deepEqual(chooseGrid(4, box40, "auto"), [4, 3]);
+    assert.deepEqual(chooseGrid(12, wide, "auto"), [6, 5]);
+    assert.deepEqual(chooseGrid(200, box40, "default"), [6, 6]);
+    assert.deepEqual(chooseGrid(200, box40, "finest"), [6, 6]);
+
+    const zAt = (r, c, lon, lat) => 300 + ((lat - box40.south) / (box40.north - box40.south)) * 80;
+    const autoTerrain = terrainFromSamples(gridSamples(box40, zAt), box40);
+    assert.equal(autoTerrain.terrainResolution, "auto");
+    assert.deepEqual([autoTerrain.gridCols, autoTerrain.gridRows], [20, 20]);
+    assert.ok(autoTerrain.cellM >= 1.8 && autoTerrain.cellM <= 2.2);
+    const zones = autoTerrain.clipboard.raisedFloorZones.concat(autoTerrain.clipboard.slopedFloors);
+    assert.equal(zones.length, 20 * 20);
+    assert.ok(zones.every((z) => z.slabOnly === false));
+    assert.match(terrainBundleFields(autoTerrain, []).terrainStatus, /Auto ~2 m/);
+
+    const flat = terrainFromSamples(gridSamples(box800, () => 214.2), box800);
+    assert.equal(flat.terrainResolution, "auto");
+    assert.equal(flat.raised, 4);
+    assert.equal(flat.sloped, 0);
+    assert.ok(flat.clipboard.raisedFloorZones.every((z) => z.slabOnly === false));
+    assert.match(terrainBundleFields(flat, []).terrainStatus, /Auto \(relief under 20 m keeps the coarse mesh\)/);
+
+    const manual = terrainFromSamples(gridSamples(wide, (r, c, lon, lat) => 300 + ((lat - wide.south) / (wide.north - wide.south)) * 200), wide, {
+      terrainResolution: "default",
+    });
+    assert.equal(manual.terrainResolution, "default");
+    assert.deepEqual([manual.gridCols, manual.gridRows], [12, 12]);
+    assert.match(terrainBundleFields(manual, []).terrainStatus, /Default ~80 m/);
+
+    const largeAuto = terrainFromSamples(
+      gridSamples(wide, (r, c, lon, lat) => 300 + ((lat - wide.south) / (wide.north - wide.south)) * 200),
+      wide
+    );
+    assert.equal(largeAuto.terrainResolution, "auto");
+    assert.deepEqual([largeAuto.gridCols, largeAuto.gridRows], [20, 20]);
+    assert.ok(largeAuto.cellM > 70);
+    assert.match(terrainBundleFields(largeAuto, []).terrainStatus, /Auto ~/);
+    assert.ok(largeAuto.clipboard.slopedFloors.concat(largeAuto.clipboard.raisedFloorZones).every((z) => z.slabOnly === false));
+  });
+
+  it("scales Auto's 3DEP sample count with the mesh and leaves manuals fixed", async () => {
+    const seen = [];
+    const fetchFn = async (url) => {
+      seen.push(String(url));
+      return { ok: true, json: async () => ({ samples: [] }) };
+    };
+    const small = metersBox(44.91, 8, 8, "8 m", { minSpanM: 1 });
+    const [cols, rows] = chooseGrid(LIFT_RELIEF_M, small, "auto");
+    assert.ok(cols < ABSOLUTE_MAX_GRID);
+    await fetchDemSamples(small, fetchFn, { terrainResolution: "auto" });
+    await fetchDemSamples(small, fetchFn, { terrainResolution: "default" });
+    const autoN = Number(new URL(seen[0]).searchParams.get("sampleCount"));
+    const defaultN = Number(new URL(seen[1]).searchParams.get("sampleCount"));
+    assert.equal(defaultN, 144);
+    assert.ok(autoN > (cols + 1) * (rows + 1), "denser than paste nodes");
+    assert.ok(autoN < 576, "smaller mesh than a full 20×20 Auto box");
+    assert.ok(autoN <= ABSOLUTE_MAX_SAMPLES);
   });
 });
