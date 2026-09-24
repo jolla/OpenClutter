@@ -690,6 +690,7 @@ exports.handler = async (event) => {
       warnings: extraWarnings ? warnings.concat(extraWarnings) : warnings,
       canopyHits: placeHits,
       heightSample: chmGrid ? (lon, lat) => sampleChmGrid(chmGrid, lon, lat) : null,
+      chmGrid,
       maskRings,
       maskPolygons,
       includeFoliage,

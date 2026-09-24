@@ -378,7 +378,7 @@ describe("optional sources cannot fail the export", () => {
     const pad = body.terrainClipboard.raisedFloorZones[0];
     assert.deepEqual(Object.keys(pad), ["area", "height", "attenuationDbPerMeter", "slabOnly"]);
     assert.equal(pad.area.coordinates[0][0].length, 2);
-    assert.equal(pad.slabOnly, true);
+    assert.equal(pad.slabOnly, false);
     assert.equal(pad.attenuationDbPerMeter, 0);
     const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
     assert.ok(files["terrain-clipboard.json"]);

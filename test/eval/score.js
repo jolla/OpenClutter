@@ -603,8 +603,10 @@ function evaluate(scores, thresholds) {
   if (foliageOn && oiTrees && oiTrees.required) {
     if (oiTrees.emitted < 1) failures.push(`openIntentTreeAreas ${oiTrees.emitted} < 1`);
     if (oiTrees.custom < 1) failures.push("tree attenuation areas are not on a custom vegetation material");
-    if (oiTrees.placed > 0 && oiTrees.emitted > oiTrees.placed * 2) {
-      failures.push(`openIntentTreeAreas ${oiTrees.emitted} > ${oiTrees.placed * 2}`);
+    // CHM crowns can outnumber the NLCD point sample. A pixel scatter would
+    // blow past this ceiling; individual crowns stay under it.
+    if (oiTrees.emitted > 1200) {
+      failures.push(`openIntentTreeAreas ${oiTrees.emitted} > 1200`);
     }
   }
   return { ok: failures.length === 0, failures };

@@ -5,6 +5,7 @@ const { clipZone } = require("./hamina-clipboard");
 const { measuredFoliageMaterial, materialForVegetation, liftFoliagePair } = require("./materials");
 
 const { MAX_TREES, maxTreesForBbox, canopyHeightM } = require("./tree-source");
+const { crownsFromChm } = require("./canopy-height");
 const { BUILDING_BUFFER_M, createClipSet, clipFoliageRing, dissolveFoliageRings } = require("./poly-clip");
 
 function pointInAabb(x, y, boxes, pad) {
@@ -269,6 +270,60 @@ function canopyPolygonsFromHits(hits, frame, buildingAabbs, heightSample) {
   return polygons;
 }
 
+function metersAt(lat) {
+  const r = (lat * Math.PI) / 180;
+  return { lon: 111320 * Math.cos(r), lat: 110540 };
+}
+
+/**
+ * NLCD hits are the ≥18% cells only. A short CHM spike far from every one of
+ * those cells is pavement noise. A tall crown, or a crown inside the canopy
+ * field, stays. With no NLCD coverage, the CHM itself is the mask.
+ */
+function crownSupported(crown, hits) {
+  if (!hits || hits.length < 4) return true;
+  const m = metersAt(crown.peakLat || 0);
+  let best = Infinity;
+  for (let i = 0; i < hits.length; i++) {
+    const h = hits[i];
+    const pct = h.pct != null ? +h.pct : (h.score || 0) * 100;
+    if (!(pct >= 18)) continue;
+    const dx = (h.lon - crown.peakLon) * m.lon;
+    const dy = (h.lat - crown.peakLat) * m.lat;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < best) best = d2;
+  }
+  if (!(best < Infinity) || best <= 55 * 55) return true;
+  return crown.heightM >= 8;
+}
+
+/**
+ * CHM crowns as foliage polygons. One ring per resolved crown, measured
+ * height, no circles. Empty when the grid does not resolve canopy.
+ */
+function chmCrownPolygons(grid, frame, buildingAabbs, hits) {
+  const crowns = crownsFromChm(grid);
+  const polygons = [];
+  for (let i = 0; i < crowns.length; i++) {
+    const c = crowns[i];
+    if (!crownSupported(c, hits)) continue;
+    if (frame && treeHitsBuilding(c.peakLon, c.peakLat, frame, buildingAabbs)) continue;
+    const ringPx = c.ringLonLat.map(([lon, lat]) => llToPx(lon, lat, frame));
+    if (ringPx.length < 4) continue;
+    const tier = c.heightM >= 12 ? "heavy" : "light";
+    const material = materialForVegetation(c.heightM, tier);
+    if (!material) continue;
+    polygons.push({
+      ringPx,
+      ringLonLat: c.ringLonLat,
+      material,
+      kind: "canopy",
+      shape: "polygon",
+    });
+  }
+  return polygons;
+}
+
 /** Clipboard type for a canopy polygon. Stock picker ids, or a measured foliage-m-* type. No trunks. */
 function clipboardForCanopy(material) {
   if (!material || !material.name) return null;
@@ -280,11 +335,12 @@ function clipboardForCanopy(material) {
 }
 
 /**
- * Connected NLCD canopy → foliage rings.
- * Multi-cell patches become canopy polygons. Individual tree points, median
- * dots, and crown circles are not emitted. OpenIntent uses stock Foliage -
- * Heavy / Light, or a measured-height custom. Clipboard gets the same canopy
- * polygons and no trunks. OSM rings are never generated here.
+ * Foliage rings for OpenIntent.
+ * When a CHM grid is present, each resolved crown is its own polygon: the
+ * ring is the canopy footprint and the material height is the CHM top.
+ * Otherwise multi-cell NLCD patches become canopy polygons. Tree points,
+ * median dots, and crown circles are not emitted. There is no Tree type, so
+ * trunks stay off OpenIntent. Clipboard gets the same polygons and no trunks.
  * `treePoints` is accepted so callers can keep passing placed points; they
  * do not become attenuation areas.
  */
@@ -296,12 +352,21 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
   const materials = [];
   const overlayRings = [];
   const seenClip = new Set();
-  const polygons = canopyPolygonsFromHits(
-    opts && opts.canopyHits,
-    frame,
-    buildingAabbs,
-    opts && opts.heightSample
-  );
+  let foliageGeometry = "none";
+  let polygons = [];
+  if (opts && opts.chmGrid) {
+    polygons = chmCrownPolygons(opts.chmGrid, frame, buildingAabbs, opts && opts.canopyHits);
+    if (polygons.length) foliageGeometry = "chm-crown";
+  }
+  if (!polygons.length) {
+    polygons = canopyPolygonsFromHits(
+      opts && opts.canopyHits,
+      frame,
+      buildingAabbs,
+      opts && opts.heightSample
+    );
+    if (polygons.length) foliageGeometry = "nlcd-polygon";
+  }
   const bufferM = opts && opts.buildingBufferM > 0 ? opts.buildingBufferM : BUILDING_BUFFER_M;
   const clipSet = createClipSet(
     opts && opts.buildingRings,
@@ -359,6 +424,7 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     materials,
     count: oiAreas.length,
     foliageLifted,
+    foliageGeometry,
     polygons: polygons.length,
     overlayPoints: [],
     overlayRings,

@@ -105,7 +105,7 @@ describe("3DEP terrain clipboard", () => {
       assert.equal(z.area.type, "Polygon");
       assert.equal(z.height, 0);
       assert.equal(z.attenuationDbPerMeter, 0);
-      assert.equal(z.slabOnly, true);
+      assert.equal(z.slabOnly, false);
       assertOpenQuad(z.area.coordinates[0], 2);
     }
     assertFrameSpan(terrain.clipboard.raisedFloorZones, frame);
@@ -116,6 +116,38 @@ describe("3DEP terrain clipboard", () => {
     assert.match(fields.terrainStatus, /paste it in Planner Plus/);
     assert.match(fields.terrainStatus, /Do not import it as OpenIntent/);
     assert.equal(/terrain-clipboard\.json/.test(fields.terrainStatus), false);
+  });
+
+  it("requests solid floors, not slab-only, on pads and sloped ramps", () => {
+    assert.equal(pasteSample.raisedFloorZones[0].slabOnly, false);
+    assert.equal(pasteSample.slopedFloors[0].slabOnly, false);
+    const frame = geoFrame({ west: -87.922, south: 42.89, east: -87.912, north: 42.903, name: "Solid" });
+    const flat = terrainFromSamples(gridSamples(frame, () => 200), frame);
+    const sloped = terrainFromSamples(gridSamples(frame, (r) => 180 + r * 8), frame);
+    assert.ok(flat.clipboard.raisedFloorZones.length >= 1);
+    assert.equal(flat.clipboard.slopedFloors.length, 0);
+    for (const z of flat.clipboard.raisedFloorZones) assert.equal(z.slabOnly, false);
+    assert.ok(sloped.clipboard.slopedFloors.length >= 1);
+    for (const z of sloped.clipboard.slopedFloors) {
+      assert.equal(z.slabOnly, false);
+      assertSlopedRamp(z.area.coordinates[0]);
+    }
+    for (const z of sloped.clipboard.raisedFloorZones) assert.equal(z.slabOnly, false);
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [] },
+      treePoints: [],
+      name: "Solid",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain: sloped,
+    });
+    const readme = unzipStore(built.zip)["README.txt"].toString();
+    assert.match(readme, /slabOnly is false/);
+    assert.match(readme, /solid floor/);
+    const clip = JSON.parse(unzipStore(built.zip)["terrain-clipboard.json"].toString());
+    const zones = clip.raisedFloorZones.concat(clip.slopedFloors);
+    assert.ok(zones.length >= 1);
+    assert.ok(zones.every((z) => z.slabOnly === false));
   });
 
   it("turns a sloped DEM into slopedFloors with xyz vertices", () => {
@@ -136,7 +168,7 @@ describe("3DEP terrain clipboard", () => {
       assert.equal(z.attenuationDbPerMeter, 0);
       assert.equal(z.crowdEnabled, false);
       assert.equal(z.drawStairs, false);
-      assert.equal(z.slabOnly, true);
+      assert.equal(z.slabOnly, false);
       assert.equal(z.crowdHeight, 0);
       assert.equal(z.crowdAttenuationDbPerMeter, 0);
       assertSlopedRamp(z.area.coordinates[0]);
@@ -185,7 +217,7 @@ describe("3DEP terrain clipboard", () => {
     for (const z of terrain.clipboard.slopedFloors) {
       const ring = z.area.coordinates[0];
       assertSlopedRamp(ring);
-      assert.equal(z.slabOnly, true);
+      assert.equal(z.slabOnly, false);
       assert.equal(z.crowdEnabled, false);
       assert.equal(z.drawStairs, false);
       assert.equal(z.attenuationDbPerMeter, 0);
@@ -196,7 +228,7 @@ describe("3DEP terrain clipboard", () => {
     }
     for (const z of terrain.clipboard.raisedFloorZones) {
       assertOpenQuad(z.area.coordinates[0], 2);
-      assert.equal(z.slabOnly, true);
+      assert.equal(z.slabOnly, false);
       assert.ok(z.height >= 0);
     }
   });
