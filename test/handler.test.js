@@ -109,8 +109,9 @@ describe("clutter handler (mocked Esri)", () => {
     assert.equal(body.terrainFilename, "terrain-clipboard.json");
     assert.equal(body.terrainClipboard.header.type, "HaminaClipboard");
     assert.ok(body.terrainClipboard.raisedFloorZones.length + body.terrainClipboard.slopedFloors.length >= 1);
-    assert.match(body.terrainStatus, /terrain-clipboard\.json/);
+    assert.match(body.terrainStatus, /Copy terrain/);
     assert.match(body.terrainStatus, /Planner Plus/);
+    assert.equal(/terrain-clipboard\.json/.test(body.terrainStatus), false);
     assert.equal(body.terrainClipboard.attenuatingZones.length, 0);
     assert.match(body.zipFilename, /\.zip$/);
     const files = unzipStore(Buffer.from(body.zipBase64, "base64"));

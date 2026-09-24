@@ -197,9 +197,9 @@ if (copyTerrainBtn) {
     if (!terrainPasteJson) return;
     try {
       await navigator.clipboard.writeText(terrainPasteJson);
-      setStatus("Copied terrain-clipboard.json. Paste it in Planner Plus. Do not import it as OpenIntent.");
+      setStatus("Copied terrain. Paste it in Planner Plus. Do not import it as OpenIntent.");
     } catch (e) {
-      setStatus("Could not copy. Use the downloaded terrain-clipboard.json and paste it in Planner Plus.", true);
+      setStatus("Could not copy terrain. Allow clipboard access and try Copy terrain again.", true);
     }
   };
 }
@@ -265,13 +265,7 @@ document.getElementById("export").onclick = async () => {
       data = await exportOnce(trees, treesSource, canopyHits, includeFoliage);
     }
     downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
-    const terrainJson = rememberTerrain(data);
-    if (terrainJson) {
-      downloadBlob(
-        new Blob([terrainJson], { type: "application/json" }),
-        data.terrainFilename || "terrain-clipboard.json"
-      );
-    }
+    rememberTerrain(data);
     const summary = (data.stats && data.stats.summary) || "";
     const terrainNote = data.terrainStatus || "";
     setStatus(

@@ -108,8 +108,10 @@ describe("3DEP terrain clipboard", () => {
     const fields = terrainBundleFields(terrain, []);
     assert.equal(fields.terrainFilename, TERRAIN_FILENAME);
     assert.equal(fields.terrainClipboard.raisedFloorZones.length, terrain.raised);
-    assert.match(fields.terrainStatus, /Paste it in Planner Plus/);
+    assert.match(fields.terrainStatus, /Copy terrain/);
+    assert.match(fields.terrainStatus, /paste it in Planner Plus/);
     assert.match(fields.terrainStatus, /Do not import it as OpenIntent/);
+    assert.equal(/terrain-clipboard\.json/.test(fields.terrainStatus), false);
   });
 
   it("turns a sloped DEM into slopedFloors with xyz vertices", () => {

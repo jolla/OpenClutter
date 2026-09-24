@@ -212,15 +212,16 @@ function coverageSummary(stats) {
 
 const TERRAIN_README =
   "\nOptional Planner Plus terrain (not part of the OpenIntent import):\n" +
-  "USGS 3DEP bare-earth elevations are simplified to a few pads and facets in\n" +
-  "terrain-clipboard.json. OpenIntent does not support raised or sloped floors.\n" +
-  "1. Unzip terrain-clipboard.json. Do not import that file as OpenIntent.\n" +
-  "2. In Hamina Planner Plus, open the map and paste the file contents.\n" +
-  "3. raisedFloorZones are flat pads (open xy quads, NE origin, same frame as hamina-clipboard.json).\n" +
-  "   height is meters above the lowest DEM sample. slabOnly is true. attenuationDbPerMeter is 0\n" +
-  "   so the ground slab is not a second clutter wall.\n" +
-  "4. slopedFloors are open xyz quads (z = meters above that same low point).\n" +
-  "   The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
+  "USGS 3DEP bare-earth elevations are simplified to a few pads and facets.\n" +
+  "OpenIntent does not support raised or sloped floors. On the OpenClutter page,\n" +
+  "Copy terrain pastes this JSON into Planner Plus. The same JSON is\n" +
+  "terrain-clipboard.json in this zip when the DEM returned a grid. Do not import\n" +
+  "that file as OpenIntent.\n" +
+  "raisedFloorZones are flat pads (open xy quads, NE origin, same frame as hamina-clipboard.json).\n" +
+  "height is meters above the lowest DEM sample. slabOnly is true. attenuationDbPerMeter is 0\n" +
+  "so the ground slab is not a second clutter wall.\n" +
+  "slopedFloors are open xyz quads (z = meters above that same low point).\n" +
+  "The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
   "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
   "The OpenIntent zip import is unchanged either way.\n";
 
