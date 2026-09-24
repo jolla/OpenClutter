@@ -127,6 +127,46 @@ describe("Overture buildings", () => {
     assert.ok(pack.features[0].geometry.coordinates[0].length >= 30);
   });
 
+  it("keeps the Sphere when the southern row group is read first and aborts", async () => {
+    const fs = require("fs");
+    const path = require("path");
+    // Center sits in the southern neighbor only, so that group is first and
+    // the Sphere group (ymin 36.1161) is second. A sequential read that dies
+    // on group 1 never opens the dome.
+    const frame = { west: -115.17, south: 36.105, east: -115.15, north: 36.123 };
+    const sphere = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/wynn-golf/sphere-overture.geojson"), "utf8"));
+    const groups = groupsForBbox(frame.west, frame.south, frame.east, frame.north);
+    assert.ok(groups.length >= 2);
+    const mid = (frame.south + frame.north) / 2;
+    assert.ok(!(groups[0].ymin <= 36.1212 && groups[0].ymax >= 36.1212), "first group should not be the Sphere group");
+    assert.ok(groups[0].ymin <= mid && groups[0].ymax >= mid);
+    const sphereGroup = groups.find((g) => g.ymin <= 36.1212 && g.ymax >= 36.1212);
+    assert.ok(sphereGroup);
+    const reader = {
+      compressors: {},
+      asyncBufferFromUrl: async () => ({}),
+      parquetReadObjects: async (opts) => {
+        if (opts.rowStart === groups[0].rowStart) {
+          throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "AbortError" });
+        }
+        return [
+          {
+            height: sphere.properties.height,
+            num_floors: null,
+            is_underground: false,
+            bbox: { xmin: frame.west, xmax: frame.east, ymin: frame.south, ymax: frame.north },
+            geometry: sphere.geometry,
+          },
+        ];
+      },
+    };
+    const pack = await fetchOvertureFootprints(frame, { reader, signal: new AbortController().signal });
+    assert.equal(pack.partial, true);
+    assert.equal(pack.features.length, 1);
+    assert.equal(pack.features[0].properties.height, 112);
+    assert.equal(pack.groupsRead, 1);
+  });
+
   it("bbox page filter overlaps the query on every side", () => {
     const filter = bboxRowFilter({ west: -115.17, south: 36.11, east: -115.15, north: 36.13 });
     const keys = filter.$and.map((clause) => Object.keys(clause)[0]);
