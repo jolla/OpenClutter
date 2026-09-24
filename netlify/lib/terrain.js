@@ -212,7 +212,9 @@ function raisedZone(sw, se, ne, nw, height) {
     area: zoneArea(ring),
     height,
     attenuationDbPerMeter: 0,
-    slabOnly: true,
+    // false matches a Hamina-native paste: Planner Plus draws a solid floor.
+    // true is the thin "slab only" sheet. Attenuation stays 0 either way.
+    slabOnly: false,
   };
 }
 
@@ -255,7 +257,8 @@ function slopedZone(ring) {
     attenuationDbPerMeter: 0,
     crowdEnabled: false,
     drawStairs: false,
-    slabOnly: true,
+    // Solid volume, same flag as the native sloped-floor paste. Open quads stay.
+    slabOnly: false,
     crowdHeight: 0,
     crowdAttenuationDbPerMeter: 0,
   };

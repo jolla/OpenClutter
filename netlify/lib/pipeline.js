@@ -47,9 +47,14 @@ const ZIP_README =
   "Import this zip in Hamina (Projects → Import → OpenIntent).\n" +
   "OpenIntent carries the map image and building attenuation_areas.\n" +
   "Include foliage is off by default: the zip is buildings only, with no tree attenuation_areas.\n" +
-  "When Include foliage was checked, canopy is connected NLCD polygons only\n" +
-  "(Foliage - Heavy / Foliage - Light, or Foliage - Heavy H.H / Foliage - Light H.H at a measured height).\n" +
-  "Individual tree-point circles and trunks are not emitted.\n" +
+  "When Include foliage was checked, foliage is individual canopy crowns from the\n" +
+  "Meta/WRI canopy-height model when that grid resolves them: each crown is the\n" +
+  "measured outline and height, not a circle and not one coarse NLCD blob.\n" +
+  "If the height model is missing, canopy falls back to connected NLCD polygons.\n" +
+  "Materials are Foliage - Heavy / Foliage - Light, or Foliage - Heavy H.H /\n" +
+  "Foliage - Light H.H at the measured height.\n" +
+  "Individual tree-point circles and trunks are not emitted. OpenIntent has no Tree type,\n" +
+  "so trunks cannot be imported that way.\n" +
   "Buildings use Hamina's outdoor Building - One/Two/Five/Ten Floor materials.\n" +
   "Canopy rings are cut around building footprints (4 m buffer) and imagery water, so foliage does not cover roofs or ponds.\n" +
   "There is no Tree type, so OpenIntent does not emit trunks. Tree Trunk and Foliage N.N m stay off OpenIntent.\n" +
@@ -192,6 +197,7 @@ function coverageStats(stats) {
     includeFoliage: s.includeFoliage === true,
     waterMaskRings: s.waterMaskRings || 0,
     pavementMaskRings: s.pavementMaskRings || 0,
+    foliageGeometry: s.foliageGeometry || "none",
     openintentVersion: s.openintentVersion || OPENINTENT_VERSION,
     openclutterVersion: s.openclutterVersion || OPENCLUTTER_VERSION,
     coordinateUnit: s.coordinateUnit || "pixels",
@@ -231,8 +237,9 @@ const TERRAIN_README =
   "terrain-clipboard.json in this zip when the DEM returned a grid. Do not import\n" +
   "that file as OpenIntent.\n" +
   "raisedFloorZones are flat pads (open xy quads, NE origin, same frame as hamina-clipboard.json).\n" +
-  "height is meters above the lowest DEM sample. slabOnly is true. attenuationDbPerMeter is 0\n" +
-  "so the ground slab is not a second clutter wall.\n" +
+  "height is meters above the lowest DEM sample. slabOnly is false, so Planner Plus\n" +
+  "draws a solid floor rather than a thin slab. attenuationDbPerMeter is 0\n" +
+  "so the solid floor is not a second clutter wall.\n" +
   "slopedFloors are open xyz quads (z = meters above that same low point).\n" +
   "The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
   "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
@@ -309,7 +316,7 @@ const ALIGNMENT = [
   "1. Import this zip in Hamina (Projects → Import → OpenIntent).",
   "   Floorplan meters match the JPEG pixel aspect (unified mpu; Esri content grid).",
   "   dimensions.height is Hamina outdoor 2.5 m. OpenIntent areas are buildings.",
-  "   Include foliage is off by default. Checked, it adds canopy polygons only.",
+  "   Include foliage is off by default. Checked, it adds canopy crowns (CHM outlines when the height model resolves them, otherwise NLCD polygons).",
   "   Buildings: Building - One / Two / Five / Ten Floor.",
   "   Canopy: Foliage - Heavy / Foliage - Light (19.68 ft). Measured heights use Foliage - Heavy H.H / Foliage - Light H.H.",
   "   Individual tree-point circles and trunks are not emitted.",
@@ -1416,6 +1423,7 @@ function buildClutter({
   maskRings,
   maskPolygons,
   includeFoliage,
+  chmGrid,
 }) {
   const { name, slug } = siteName(rawName);
   const imgName = `${slug}.jpg`;
@@ -1426,6 +1434,7 @@ function buildClutter({
     ? treePairsFromPoints(treePoints || [], frame, fp.aabbs, affine, {
         canopyHits,
         heightSample,
+        chmGrid,
         buildingRings: fp.overlayRings,
         maskRings,
         maskPolygons,
@@ -1438,6 +1447,7 @@ function buildClutter({
         materials: [],
         count: 0,
         foliageLifted: 0,
+        foliageGeometry: "none",
         polygons: 0,
         overlayPoints: [],
         overlayRings: [],
@@ -1511,6 +1521,7 @@ function buildClutter({
     treesSource: foliageOn ? treesSource || (veg.count ? "nlcd-canopy" : "none") : "none",
     includeFoliage: foliageOn,
     foliageLifted: veg.foliageLifted || 0,
+    foliageGeometry: foliageOn ? veg.foliageGeometry || "none" : "none",
     zones: clip.attenuatingZones.length,
     areas: areas.length,
     droppedInvalid: fp.stats.droppedInvalid || 0,
