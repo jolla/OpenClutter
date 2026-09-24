@@ -2,7 +2,15 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { groupsForBbox, featureFromRow, featuresFromRows, RELEASE } = require("../netlify/lib/overture");
+const {
+  groupsForBbox,
+  orderGroups,
+  bboxRowFilter,
+  featureFromRow,
+  featuresFromRows,
+  fetchOvertureFootprints,
+  RELEASE,
+} = require("../netlify/lib/overture");
 
 const OAK = {
   west: -87.92259693145752,
@@ -58,5 +66,72 @@ describe("Overture buildings", () => {
     assert.equal(features[1].properties.heightSource, "overture-floors");
     assert.equal(features[1].properties.height, 9);
     assert.equal(featureFromRow(underground, OAK), null);
+  });
+
+  it("reads the Las Vegas Sphere row group before the southern neighbor", () => {
+    const lat = 36.1206;
+    const lon = -115.1614;
+    const dLon = 450 / (111320 * Math.cos((lat * Math.PI) / 180));
+    const dLat = 450 / 110540;
+    const bbox = { west: lon - dLon, south: lat - dLat, east: lon + dLon, north: lat + dLat };
+    const groups = groupsForBbox(bbox.west, bbox.south, bbox.east, bbox.north);
+    assert.ok(groups.length >= 2, "expected the Sphere group and its southern neighbor");
+    const center = groups[0];
+    assert.ok(center.ymin <= lat && center.ymax >= lat, "first group must contain the Sphere");
+    assert.ok(center.xmin <= lon && center.xmax >= lon);
+    const south = groups.find((g) => g.ymax < lat);
+    assert.ok(south, "southern neighbor group missing");
+    assert.ok(center.rowStart > south.rowStart, "center group is the later row range; do not sort by rowStart");
+    const reversed = orderGroups([south, center], bbox);
+    assert.equal(reversed[0].rowStart, center.rowStart);
+  });
+
+  it("keeps a Sphere-height ring when the southern row group aborts", async () => {
+    const fs = require("fs");
+    const path = require("path");
+    const lat = 36.1206;
+    const lon = -115.1614;
+    const dLon = 450 / (111320 * Math.cos((lat * Math.PI) / 180));
+    const dLat = 450 / 110540;
+    const frame = { west: lon - dLon, south: lat - dLat, east: lon + dLon, north: lat + dLat };
+    const sphere = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/wynn-golf/sphere-overture.geojson"), "utf8"));
+    const groups = groupsForBbox(frame.west, frame.south, frame.east, frame.north);
+    const calls = [];
+    const reader = {
+      compressors: {},
+      asyncBufferFromUrl: async () => ({}),
+      parquetReadObjects: async (opts) => {
+        calls.push(opts.rowStart);
+        assert.equal(opts.usePageIndex, true);
+        assert.ok(opts.filter && opts.filter.$and);
+        if (opts.rowStart !== groups[0].rowStart) {
+          throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "AbortError" });
+        }
+        return [
+          {
+            height: sphere.properties.height,
+            num_floors: null,
+            is_underground: false,
+            bbox: { xmin: frame.west, xmax: frame.east, ymin: frame.south, ymax: frame.north },
+            geometry: sphere.geometry,
+          },
+        ];
+      },
+    };
+    const pack = await fetchOvertureFootprints(frame, { reader, signal: new AbortController().signal });
+    assert.equal(calls[0], groups[0].rowStart);
+    assert.equal(pack.partial, true);
+    assert.equal(pack.features.length, 1);
+    assert.equal(pack.features[0].properties.height, 112);
+    assert.equal(pack.features[0].properties.heightSource, "overture");
+    assert.ok(pack.features[0].geometry.coordinates[0].length >= 30);
+  });
+
+  it("bbox page filter overlaps the query on every side", () => {
+    const filter = bboxRowFilter({ west: -115.17, south: 36.11, east: -115.15, north: 36.13 });
+    const keys = filter.$and.map((clause) => Object.keys(clause)[0]);
+    assert.deepEqual(keys, ["bbox.xmax", "bbox.xmin", "bbox.ymax", "bbox.ymin"]);
+    assert.equal(filter.$and[0]["bbox.xmax"].$gte, -115.17);
+    assert.equal(filter.$and[2]["bbox.ymax"].$gte, 36.11);
   });
 });
