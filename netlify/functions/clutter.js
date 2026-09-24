@@ -10,9 +10,11 @@ const UA = "openclutter/0.14.2 (https://github.com/jolla/OpenClutter)";
 // 3DEP starts once imagery metadata has snapped the extent, overlapping the
 // JPEG, so a slow aerial download does not skip the DEM. Overture starts with
 // the JPEG, before the Global ML gzip. A finished read is kept even if core
-// passed 5s; a read still in flight gets up to 1.5s
-// more (hard cap 9s). Aborting at 5s dropped the Las Vegas Sphere (Overture
-// only — absent from MS Global and USA Structures).
+// passed 5s. A read still in flight keeps a grace window until OVERTURE_HARD_MS.
+// The live Sphere export spent ~18s on imagery and the other footprint layers;
+// a 9s hard cap then aborted Overture, which is the only source of that ring
+// (absent from MS Global and USA Structures). Page-index pruning reads the
+// center row group first so a late abort can still keep footprints already parsed.
 const CORE_FETCH_MS = 7000;
 const IMAGERY_ATTEMPT_MS = 8500;
 const IMAGERY_ATTEMPTS = 2;
@@ -26,6 +28,12 @@ const IMAGERY_BUDGET_MS = 8500;
 const META_MS = 4000;
 const OPTIONAL_MS = 2000;
 const SKIP_OPTIONAL_AFTER_MS = 5000;
+// Live dev (dev--openclutter) still had Overture in flight after an ~18s core
+// phase and aborted it because the old hard cap was 9s. The Sphere row group
+// is only in that read. Grace continues until this ceiling, which stays under
+// a ~26s platform kill when core itself returns.
+const OVERTURE_GRACE_MS = 4500;
+const OVERTURE_HARD_MS = 23000;
 const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, padFootprintBbox } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
@@ -158,7 +166,12 @@ function beginOptional(fn) {
     .then(() => fn(ctrl.signal))
     .then((value) => {
       settled = true;
-      if (ctrl.signal.aborted) return TIMED_OUT;
+      if (ctrl.signal.aborted) {
+        // A center row group may already be parsed when the abort fires.
+        // Dropping it is how the Sphere disappeared behind a slow map fetch.
+        if (value && Array.isArray(value.features) && value.features.length) return value;
+        return TIMED_OUT;
+      }
       return value;
     })
     .catch((e) => {
@@ -181,13 +194,34 @@ function optionalMissWarning(label, job) {
   return label + (timedOut ? " omitted: timed out" : " omitted: " + msg);
 }
 
+function keptFootprints(result) {
+  if (!result || result === TIMED_OUT) return null;
+  if (Array.isArray(result.features) && result.features.length) return result;
+  return null;
+}
+
+/** After an abort, keep rows the reader already returned (center group first). */
+async function flushOptional(job, waitMs) {
+  if (job.isSettled()) return keptFootprints(await job.work);
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(TIMED_OUT), waitMs);
+  });
+  try {
+    return keptFootprints(await Promise.race([job.work, timeout]));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Collect a fetch started with beginOptional.
  * A read that already finished is kept even when the core phase used the
  * 5s optional-start budget — discarding it dropped the Las Vegas Sphere,
  * which is in Overture and absent from MS Global / USA Structures.
  * Work still running after that budget is aborted unless opts.graceMs allows
- * a short wait that must end by opts.hardMs.
+ * a wait that must end by opts.hardMs. Overture's hard cap stays past a slow
+ * Netlify core (~18s); a 9s cap aborted the Sphere read while it was in flight.
  */
 async function joinOptional(warnings, started, label, job, opts) {
   const graceMs = opts && opts.graceMs > 0 ? opts.graceMs : 0;
@@ -211,6 +245,11 @@ async function joinOptional(warnings, started, label, job, opts) {
   }
   if (budget < 200) {
     job.ctrl.abort();
+    const flushed = await flushOptional(job, 1200);
+    if (flushed) {
+      warnings.push(label + " partial: kept " + flushed.features.length + " footprints already read");
+      return flushed;
+    }
     warnings.push(label + " omitted: export budget spent on the map and footprints");
     return null;
   }
@@ -224,6 +263,11 @@ async function joinOptional(warnings, started, label, job, opts) {
   try {
     const result = await Promise.race([job.work, timeout]);
     if (result === TIMED_OUT) {
+      const flushed = await flushOptional(job, 1500);
+      if (flushed) {
+        warnings.push(label + " partial: kept " + flushed.features.length + " footprints already read");
+        return flushed;
+      }
       warnings.push(optionalMissWarning(label, job));
       return null;
     }
@@ -422,7 +466,10 @@ exports.handler = async (event) => {
 
   const optional = await Promise.all([
     overtureJob
-      ? joinOptional(warnings, started, "Overture buildings", overtureJob, { graceMs: 1500, hardMs: 9000 })
+      ? joinOptional(warnings, started, "Overture buildings", overtureJob, {
+          graceMs: OVERTURE_GRACE_MS,
+          hardMs: OVERTURE_HARD_MS,
+        })
       : Promise.resolve(null),
     terrainJob
       ? joinOptional(warnings, started, "Terrain", terrainJob, { graceMs: 1500, hardMs: 9000 })
@@ -611,3 +658,5 @@ exports.handler = async (event) => {
 
 exports.beginOptional = beginOptional;
 exports.joinOptional = joinOptional;
+exports.OVERTURE_GRACE_MS = OVERTURE_GRACE_MS;
+exports.OVERTURE_HARD_MS = OVERTURE_HARD_MS;

@@ -2,7 +2,7 @@
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
-const { handler, beginOptional, joinOptional } = require("../netlify/functions/clutter");
+const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_HARD_MS } = require("../netlify/functions/clutter");
 const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
 const { unzipStore } = require("../netlify/lib/zip-store");
 
@@ -537,5 +537,42 @@ describe("Overture join keeps a finished read after the core budget", () => {
     assert.ok(Date.now() - t0 < 400, "waited " + (Date.now() - t0));
     assert.match(warnings[0], /Overture buildings omitted: export budget spent/);
     assert.equal(aborted, true);
+  });
+
+  it("keeps an in-flight Overture read after core has already passed 9s", async () => {
+    assert.ok(OVERTURE_HARD_MS > 18000, "Sphere read must outlast a slow Netlify core");
+    assert.ok(OVERTURE_GRACE_MS >= 4000);
+    const warnings = [];
+    const job = beginOptional(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ features: [{ type: "Feature", properties: { height: 112 } }] }), 400)
+        )
+    );
+    const started = Date.now() - 14000;
+    const result = await joinOptional(warnings, started, "Overture buildings", job, {
+      graceMs: OVERTURE_GRACE_MS,
+      hardMs: OVERTURE_HARD_MS,
+    });
+    assert.equal(result.features[0].properties.height, 112);
+    assert.equal(warnings.length, 0);
+  });
+
+  it("keeps footprints already parsed when the Overture abort fires", async () => {
+    const warnings = [];
+    const job = beginOptional(
+      (signal) =>
+        new Promise((resolve) => {
+          const done = () => resolve({ features: [{ type: "Feature", properties: { height: 112 } }], partial: true });
+          if (signal.aborted) done();
+          else signal.addEventListener("abort", done);
+        })
+    );
+    const result = await joinOptional(warnings, Date.now() - (OVERTURE_HARD_MS + 2000), "Overture buildings", job, {
+      graceMs: OVERTURE_GRACE_MS,
+      hardMs: OVERTURE_HARD_MS,
+    });
+    assert.equal(result.features.length, 1);
+    assert.match(warnings[0], /partial: kept 1 footprints/);
   });
 });
