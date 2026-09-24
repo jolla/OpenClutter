@@ -7,7 +7,6 @@
   <meta name="description" content="OpenClutter: search, draw, export one OpenIntent zip. Import in Hamina for the map and buildings. Include foliage adds canopy." />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23238636'/><text x='8' y='12' text-anchor='middle' font-size='10' fill='white'>OC</text></svg>" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
   <style>
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
@@ -39,6 +38,7 @@
     #copy-terrain { width: 100%; margin-top: 10px; }
     .row { display: flex; gap: 8px; margin-top: 10px; }
     .row button { flex: 1; }
+    .hint { margin: 8px 0 0; font-size: 11px; line-height: 1.35; color: #6e7681; }
     #status { margin-top: 10px; font-size: 12px; color: #8b949e; min-height: 16px; white-space: pre-wrap; }
     #status.err { color: #f85149; }
     .foot {
@@ -77,6 +77,7 @@
       <button type="button" id="draw" class="secondary">Draw</button>
       <button type="button" id="export" disabled>Export</button>
     </div>
+    <p id="draw-hint" class="hint">Drag a box. Click corners, then right-click to finish a polygon. Esc cancels.</p>
     <label class="check" for="include-foliage">
       <input type="checkbox" id="include-foliage" />
       Include foliage
@@ -89,9 +90,9 @@
     </div>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script src="/tree-detect.js"></script>
   <script src="/bbox-area.js"></script>
+  <script src="/site-draw.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

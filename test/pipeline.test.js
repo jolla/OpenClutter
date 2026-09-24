@@ -1142,4 +1142,26 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.equal(/<select/i.test(html), false);
     assert.equal(/DEM source|3DEP source/i.test(html + app), false);
   });
+
+  it("distinguishes a drag box from a click polygon and still exports one bbox", () => {
+    const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
+    const app = fs.readFileSync(path.join(root, "app.js"), "utf8");
+    assert.match(html, /id="draw-hint"/);
+    assert.match(html, /Drag a box\. Click corners, then right-click to finish a polygon\. Esc cancels\./);
+    assert.match(html, /src="\/site-draw\.js"/);
+    assert.equal(/leaflet-draw/.test(html), false);
+    assert.equal(/<dialog/i.test(html), false);
+    assert.equal(/<select/i.test(html), false);
+    assert.match(app, /formatBboxFeet/);
+    assert.match(app, /formatPolygonSqFt/);
+    assert.match(app, /contextmenu/);
+    assert.match(app, /Escape/);
+    assert.match(app, /commit-box/);
+    assert.match(app, /commit-polygon/);
+    assert.match(app, /\/api\/clutter/);
+    assert.match(app, /\.\.\.bbox/);
+    assert.equal(/\/api\/clutter-polygon/.test(app), false);
+    assert.match(app, /OpenClutterDraw/);
+    assert.equal(/L\.Draw/.test(app), false);
+  });
 });
