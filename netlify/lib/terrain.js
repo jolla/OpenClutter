@@ -8,9 +8,13 @@
  *
  * Clipboard meters match hamina-clipboard.js: NE is (0, 0), SW is
  * (−widthM, −lengthM). z on sloped floors is meters above the lowest sample.
- * Flat ground stays a 2×2 pad. A mild rise uses a 4×3 lattice. Ski-hill relief
- * (about 20 m or more, Granite Peak scale) uses ~80 m quads, at most 12×12,
- * from a denser 3DEP sample so the paste is not one coarse 3×3 sheet.
+ * Flat ground stays a 2×2 pad. A mild rise uses a 4×3 lattice. Medium relief
+ * under 20 m stays 6×5. Ski-hill relief (about 20 m or more, Granite Peak
+ * scale) uses the export's terrain resolution. Default is ~80 m quads, at
+ * most 12×12, from 144 3DEP samples. Fine is ~40 m, at most 16×16, from 324
+ * samples. Finest is ~25 m, at most 20×20, from 576 samples. The sample grid
+ * stays denser than the paste nodes so a finer mesh is not a stretched 144-point
+ * surface. The paste cap is 20×20 quads.
  *
  * Hamina clipboard rings are open: the first vertex is not repeated.
  * raisedFloorZones are xy quads. slopedFloors are xyz quads whose first edge
@@ -25,10 +29,29 @@ const { emptyClipboard } = require("./hamina-clipboard");
 const DEM_URL = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/getSamples";
 const TERRAIN_FILENAME = "terrain-clipboard.json";
 const FLAT_M = 0.5;
-const SAMPLE_COUNT = 144;
-/** Quads per side on a ski-hill lattice. 12×12 is the paste cap. */
-const MAX_GRID = 12;
-const TARGET_CELL_M = 80;
+/**
+ * Ski-hill paste presets. Default matches the v1.1.5 lattice. Fine and Finest
+ * only change relief at or above LIFT_RELIEF_M. Flat, mild, and medium ladders
+ * stay 2×2, 4×3, and 6×5. sampleCount is the 3DEP getSamples request: a square
+ * count denser than (maxGrid+1)² so bilinear is not stretching a sparse DEM.
+ * ABSOLUTE_MAX_GRID / ABSOLUTE_MAX_SAMPLES refuse anything past Finest.
+ */
+const TERRAIN_RESOLUTIONS = {
+  default: { id: "default", label: "Default", cellM: 80, maxGrid: 12, sampleCount: 144 },
+  fine: { id: "fine", label: "Fine", cellM: 40, maxGrid: 16, sampleCount: 324 },
+  finest: { id: "finest", label: "Finest", cellM: 25, maxGrid: 20, sampleCount: 576 },
+};
+const ABSOLUTE_MAX_GRID = 20;
+const ABSOLUTE_MAX_SAMPLES = 625;
+const SAMPLE_COUNT = TERRAIN_RESOLUTIONS.default.sampleCount;
+/** Quads per side on the default ski-hill lattice. Finest cannot pass ABSOLUTE_MAX_GRID. */
+const MAX_GRID = TERRAIN_RESOLUTIONS.default.maxGrid;
+const TARGET_CELL_M = TERRAIN_RESOLUTIONS.default.cellM;
+
+function normalizeTerrainResolution(id) {
+  const key = String(id == null ? "" : id).trim().toLowerCase();
+  return TERRAIN_RESOLUTIONS[key] || TERRAIN_RESOLUTIONS.default;
+}
 /**
  * Lift building bottoms only when the DEM rises this far above its lowest
  * sample. Oak Creek (~6 m), Long Meadow (~15 m), and the Las Vegas Sphere
@@ -159,16 +182,19 @@ function pasteableQuad(ring) {
   return true;
 }
 
-function chooseGrid(relief, frame) {
+function chooseGrid(relief, frame, resolution) {
   if (!(relief >= 1)) return [2, 2];
   if (relief < 8) return [4, 3];
   if (relief < LIFT_RELIEF_M) return [6, 5];
+  const preset = normalizeTerrainResolution(resolution);
+  const cellM = preset.cellM > 0 ? preset.cellM : TARGET_CELL_M;
+  const cap = Math.max(6, Math.min(ABSOLUTE_MAX_GRID, preset.maxGrid | 0));
   const width = frame && frame.widthM > 0 ? frame.widthM : 800;
   const length = frame && frame.lengthM > 0 ? frame.lengthM : 800;
-  let cols = Math.round(width / TARGET_CELL_M);
-  let rows = Math.round(length / TARGET_CELL_M);
-  cols = Math.max(6, Math.min(MAX_GRID, cols));
-  rows = Math.max(6, Math.min(MAX_GRID, rows));
+  let cols = Math.round(width / cellM);
+  let rows = Math.round(length / cellM);
+  cols = Math.max(6, Math.min(cap, cols));
+  rows = Math.max(6, Math.min(cap, rows));
   return [cols, rows];
 }
 
@@ -267,8 +293,9 @@ function slopedZone(ring) {
 /**
  * @param {{lon:number,lat:number,z:number}[]} samples
  * @param {object} frame geo frame with west/south/east/north and meter scale
+ * @param {{terrainResolution?: string}} [opts]
  */
-function terrainFromSamples(samples, frame) {
+function terrainFromSamples(samples, frame, opts) {
   const pts = (samples || []).filter(
     (s) => s && Number.isFinite(+s.lon) && Number.isFinite(+s.lat) && Number.isFinite(+s.z)
   );
@@ -280,7 +307,8 @@ function terrainFromSamples(samples, frame) {
     if (s.z < minS) minS = s.z;
     if (s.z > maxS) maxS = s.z;
   }
-  const [cols, rows] = chooseGrid(maxS - minS, frame);
+  const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
+  const [cols, rows] = chooseGrid(maxS - minS, frame, preset.id);
   const elevationAt = buildElevation(clean);
   const grid = lattice(clean, frame, cols, rows, elevationAt);
   const raised = [];
@@ -320,6 +348,9 @@ function terrainFromSamples(samples, frame) {
     reliefM: Math.round((maxS - minS) * 10) / 10,
     minZ: Math.round(minS * 10) / 10,
     maxZ: Math.round(maxS * 10) / 10,
+    terrainResolution: preset.id,
+    gridCols: cols,
+    gridRows: rows,
     // z = 0 on sloped floors is the lowest lattice node, not the raw sample min.
     datumZ: grid.minZ,
     samples: clean,
@@ -378,6 +409,13 @@ function terrainBundleFields(terrain, warnings) {
     ((terrain.raised || 0) > 0 || (terrain.sloped || 0) > 0)
   );
   if (ready) {
+    const preset = normalizeTerrainResolution(terrain.terrainResolution);
+    let mesh = "";
+    if (terrain.reliefM >= LIFT_RELIEF_M) {
+      mesh = ", " + preset.label + " ~" + preset.cellM + " m";
+    } else if (preset.id !== "default") {
+      mesh = ", " + preset.label + " (relief under 20 m keeps the coarse mesh)";
+    }
     return {
       terrainFilename: TERRAIN_FILENAME,
       terrainClipboard: terrain.clipboard,
@@ -386,7 +424,9 @@ function terrainBundleFields(terrain, warnings) {
         terrain.raised +
         " raised, " +
         terrain.sloped +
-        " sloped). Use Copy terrain and paste it in Planner Plus. Do not import it as OpenIntent.",
+        " sloped" +
+        mesh +
+        "). Use Copy terrain and paste it in Planner Plus. Do not import it as OpenIntent.",
     };
   }
   const omitted = (warnings || []).map(String).find((w) => /terrain omitted/i.test(w));
@@ -425,6 +465,8 @@ function parseDemSamples(body) {
 async function fetchDemSamples(frame, fetchFn, opts) {
   const fetchImpl = fetchFn || fetch;
   const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
+  const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
+  const sampleCount = Math.max(4, Math.min(ABSOLUTE_MAX_SAMPLES, preset.sampleCount | 0));
   const geometry = JSON.stringify({
     xmin: +frame.west,
     ymin: +frame.south,
@@ -438,7 +480,7 @@ async function fetchDemSamples(frame, fetchFn, opts) {
     new URLSearchParams({
       geometry,
       geometryType: "esriGeometryEnvelope",
-      sampleCount: String(SAMPLE_COUNT),
+      sampleCount: String(sampleCount),
       interpolation: "RSP_BilinearInterpolation",
       f: "json",
     });
@@ -456,6 +498,9 @@ module.exports = {
   SAMPLE_COUNT,
   MAX_GRID,
   TARGET_CELL_M,
+  TERRAIN_RESOLUTIONS,
+  ABSOLUTE_MAX_GRID,
+  ABSOLUTE_MAX_SAMPLES,
   LIFT_RELIEF_M,
   LIFT_LOCAL_M,
   RAISED_KEYS,
@@ -469,4 +514,5 @@ module.exports = {
   parseDemSamples,
   fetchDemSamples,
   chooseGrid,
+  normalizeTerrainResolution,
 };

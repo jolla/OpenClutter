@@ -9,10 +9,17 @@ const {
   terrainBundleFields,
   noteMissingTerrain,
   chooseGrid,
+  fetchDemSamples,
+  normalizeTerrainResolution,
   RAISED_KEYS,
   SLOPED_KEYS,
   TERRAIN_FILENAME,
   MAX_GRID,
+  TARGET_CELL_M,
+  SAMPLE_COUNT,
+  TERRAIN_RESOLUTIONS,
+  ABSOLUTE_MAX_GRID,
+  ABSOLUTE_MAX_SAMPLES,
   LIFT_RELIEF_M,
   siteWarrantsLift,
 } = require("../netlify/lib/terrain");
@@ -558,5 +565,163 @@ describe("foliage height from floor on a slope", () => {
     assert.equal(built.stats.foliageLifted, hill.length + thick.length);
     assert.equal(built.stats.buildingsLifted, 0);
     assert.equal(JSON.stringify(built.openintent).includes("Foliage 14.2 m"), false);
+  });
+});
+
+function metersBox(lat, widthM, lengthM, name) {
+  const mpdLon = 111320 * Math.cos((lat * Math.PI) / 180);
+  const west = -89.72;
+  const south = lat;
+  return geoFrame({
+    west,
+    south,
+    east: west + widthM / mpdLon,
+    north: south + lengthM / 110540,
+    name: name || "Box",
+  });
+}
+
+describe("terrain resolution presets", () => {
+  it("keeps Default at the v1.1.5 ski-hill lattice and sample count", () => {
+    assert.equal(TARGET_CELL_M, 80);
+    assert.equal(MAX_GRID, 12);
+    assert.equal(SAMPLE_COUNT, 144);
+    assert.deepEqual(TERRAIN_RESOLUTIONS.default, {
+      id: "default",
+      label: "Default",
+      cellM: 80,
+      maxGrid: 12,
+      sampleCount: 144,
+    });
+    assert.equal(TERRAIN_RESOLUTIONS.fine.cellM, 40);
+    assert.equal(TERRAIN_RESOLUTIONS.fine.maxGrid, 16);
+    assert.equal(TERRAIN_RESOLUTIONS.fine.sampleCount, 324);
+    assert.equal(TERRAIN_RESOLUTIONS.finest.cellM, 25);
+    assert.equal(TERRAIN_RESOLUTIONS.finest.maxGrid, 20);
+    assert.equal(TERRAIN_RESOLUTIONS.finest.sampleCount, 576);
+    assert.ok(TERRAIN_RESOLUTIONS.finest.maxGrid <= ABSOLUTE_MAX_GRID);
+    assert.ok(TERRAIN_RESOLUTIONS.finest.sampleCount <= ABSOLUTE_MAX_SAMPLES);
+    assert.equal(ABSOLUTE_MAX_GRID, 20);
+    assert.equal(ABSOLUTE_MAX_SAMPLES, 625);
+    assert.equal(normalizeTerrainResolution(undefined).id, "default");
+    assert.equal(normalizeTerrainResolution(" FINE ").id, "fine");
+    assert.equal(normalizeTerrainResolution("nope").id, "default");
+  });
+
+  it("leaves flat, mild, and medium ladders unchanged at every preset", () => {
+    const frame = metersBox(44.91, 900, 700, "Mild");
+    for (const id of [undefined, "default", "fine", "finest"]) {
+      assert.deepEqual(chooseGrid(0.4, frame, id), [2, 2]);
+      assert.deepEqual(chooseGrid(5, frame, id), [4, 3]);
+      assert.deepEqual(chooseGrid(15, frame, id), [6, 5]);
+    }
+  });
+
+  it("densifies only the ski-hill lattice, and caps a huge draw at 20×20", () => {
+    const legacy = (frame) => {
+      const width = frame && frame.widthM > 0 ? frame.widthM : 800;
+      const length = frame && frame.lengthM > 0 ? frame.lengthM : 800;
+      return [
+        Math.max(6, Math.min(12, Math.round(width / 80))),
+        Math.max(6, Math.min(12, Math.round(length / 80))),
+      ];
+    };
+    const wide = metersBox(44.91, 1800, 1400, "Wide hill");
+    assert.deepEqual(chooseGrid(200, wide), legacy(wide));
+    assert.deepEqual(chooseGrid(200, wide, "default"), [12, 12]);
+    assert.deepEqual(chooseGrid(200, wide, "fine"), [16, 16]);
+    assert.deepEqual(chooseGrid(200, wide, "finest"), [20, 20]);
+    assert.deepEqual(chooseGrid(200), legacy(null));
+    const small = metersBox(44.91, 480, 480, "Small hill");
+    const [dC, dR] = chooseGrid(200, small, "default");
+    const [fC, fR] = chooseGrid(200, small, "fine");
+    const [xC, xR] = chooseGrid(200, small, "finest");
+    assert.ok(fC * fR > dC * dR);
+    assert.ok(xC * xR > fC * fR);
+    assert.ok(xC <= 20 && xR <= 20);
+    const capped = metersBox(44.91, 2400, 2400, "Cap");
+    const [cC, cR] = chooseGrid(200, capped, "finest");
+    assert.deepEqual([cC, cR], [20, 20]);
+    assert.ok(cC * cR <= ABSOLUTE_MAX_GRID * ABSOLUTE_MAX_GRID);
+  });
+
+  it("builds a denser paste for Fine and Finest and keeps solid floors", () => {
+    const frame = metersBox(44.91, 1800, 1400, "Granite Peak");
+    const zAt = (r, c, lon, lat) => 300 + ((lat - frame.south) / (frame.north - frame.south)) * 200;
+    const samples = gridSamples(frame, zAt);
+    const coarse = terrainFromSamples(samples, frame);
+    const fine = terrainFromSamples(samples, frame, { terrainResolution: "fine" });
+    const finest = terrainFromSamples(samples, frame, { terrainResolution: "finest" });
+    assert.equal(coarse.terrainResolution, "default");
+    assert.deepEqual([coarse.gridCols, coarse.gridRows], [12, 12]);
+    assert.equal(coarse.raised + coarse.sloped, 12 * 12);
+    assert.equal(fine.terrainResolution, "fine");
+    assert.equal(fine.raised + fine.sloped, 16 * 16);
+    assert.equal(finest.terrainResolution, "finest");
+    assert.equal(finest.raised + finest.sloped, 20 * 20);
+    assert.ok(finest.sloped > fine.sloped);
+    assert.ok(fine.sloped > coarse.sloped);
+    for (const terrain of [coarse, fine, finest]) {
+      assert.ok(terrain.reliefM >= LIFT_RELIEF_M);
+      const zones = terrain.clipboard.raisedFloorZones.concat(terrain.clipboard.slopedFloors);
+      assert.ok(zones.length <= ABSOLUTE_MAX_GRID * ABSOLUTE_MAX_GRID);
+      assert.ok(zones.every((z) => z.slabOnly === false));
+      for (const z of terrain.clipboard.slopedFloors) assertSlopedRamp(z.area.coordinates[0]);
+    }
+    const fields = terrainBundleFields(finest, []);
+    assert.match(fields.terrainStatus, /Finest ~25 m/);
+    assert.match(fields.terrainStatus, /Copy terrain/);
+    const flat = terrainFromSamples(gridSamples(frame, () => 214.2), frame, { terrainResolution: "finest" });
+    assert.equal(flat.raised, 4);
+    assert.equal(flat.sloped, 0);
+    assert.match(terrainBundleFields(flat, []).terrainStatus, /keeps the coarse mesh/);
+    const mild = terrainFromSamples(
+      gridSamples(frame, (r, c, lon, lat) => 200 + ((lat - frame.south) / (frame.north - frame.south)) * 4),
+      frame,
+      { terrainResolution: "finest" }
+    );
+    assert.ok(mild.reliefM < 8);
+    assert.equal(mild.raised + mild.sloped, 4 * 3);
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [] },
+      treePoints: [],
+      name: "Resolution",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain: finest,
+      terrainResolution: "finest",
+    });
+    const readme = unzipStore(built.zip)["README.txt"].toString();
+    assert.match(readme, /about 40 m quads, at most 16×16/);
+    assert.match(readme, /about 25 m quads, at most 20×20/);
+    assert.match(readme, /^terrainResolution: finest$/m);
+    assert.match(readme, /slabOnly is false/);
+    const clip = JSON.parse(unzipStore(built.zip)["terrain-clipboard.json"].toString());
+    assert.equal(clip.slopedFloors.length + clip.raisedFloorZones.length, 20 * 20);
+    assert.ok(clip.slopedFloors.concat(clip.raisedFloorZones).every((z) => z.slabOnly === false));
+  });
+
+  it("requests a denser DEM sample count for Fine and Finest", async () => {
+    const frame = metersBox(44.91, 600, 500, "Samples");
+    const seen = [];
+    const fetchFn = async (url) => {
+      seen.push(String(url));
+      return { ok: true, json: async () => ({ samples: [] }) };
+    };
+    await fetchDemSamples(frame, fetchFn);
+    await fetchDemSamples(frame, fetchFn, { terrainResolution: "default" });
+    await fetchDemSamples(frame, fetchFn, { terrainResolution: "fine" });
+    await fetchDemSamples(frame, fetchFn, { terrainResolution: "finest" });
+    await fetchDemSamples(frame, fetchFn, { terrainResolution: "ultra" });
+    assert.match(seen[0], /sampleCount=144(?:&|$)/);
+    assert.match(seen[1], /sampleCount=144(?:&|$)/);
+    assert.match(seen[2], /sampleCount=324(?:&|$)/);
+    assert.match(seen[3], /sampleCount=576(?:&|$)/);
+    assert.match(seen[4], /sampleCount=144(?:&|$)/);
+    for (const url of seen) {
+      const n = Number(new URL(url).searchParams.get("sampleCount"));
+      assert.ok(n <= ABSOLUTE_MAX_SAMPLES);
+      assert.ok(n >= 144);
+    }
   });
 });

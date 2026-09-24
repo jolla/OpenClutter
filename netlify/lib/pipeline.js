@@ -23,7 +23,7 @@ const {
 const { treePairsFromPoints } = require("./vegetation");
 const { dedupeStackedFootprints } = require("./conflate");
 const { zipStore } = require("./zip-store");
-const { TERRAIN_FILENAME, slopeTopUnderRing, siteWarrantsLift } = require("./terrain");
+const { TERRAIN_FILENAME, slopeTopUnderRing, siteWarrantsLift, normalizeTerrainResolution } = require("./terrain");
 const { overlaySvg, frameLockJson } = require("./overlay");
 const { version: OPENCLUTTER_VERSION } = require("./version");
 
@@ -186,6 +186,7 @@ function coverageStats(stats) {
     chmTrees: s.chmTrees || 0,
     terrainRaised: s.terrainRaised || 0,
     terrainSloped: s.terrainSloped || 0,
+    terrainResolution: normalizeTerrainResolution(s.terrainResolution).id,
     buildingsLifted: s.buildingsLifted || 0,
     foliageLifted: s.foliageLifted || 0,
     areaMaterials: s.areaMaterials != null ? s.areaMaterials : STOCK_MATERIAL_NAMES.length,
@@ -230,8 +231,12 @@ function coverageSummary(stats) {
 const TERRAIN_README =
   "\nOptional Planner Plus terrain (not part of the OpenIntent import):\n" +
   "USGS 3DEP bare-earth elevations become open quads on the same meter frame.\n" +
-  "Flat ground is a 2×2 pad. A mild rise is a 4×3 lattice. A ski hill (DEM relief\n" +
-  "at least 20 m, Granite Peak scale) uses about 80 m quads, at most 12×12.\n" +
+  "Flat ground is a 2×2 pad. A mild rise is a 4×3 lattice. Relief under 20 m\n" +
+  "stays 6×5. A ski hill (DEM relief at least 20 m, Granite Peak scale) uses the\n" +
+  "terrain resolution chosen on export. Default is about 80 m quads, at most 12×12\n" +
+  "(144 DEM samples). Fine is about 40 m quads, at most 16×16 (324 samples).\n" +
+  "Finest is about 25 m quads, at most 20×20 (576 samples). The paste never exceeds\n" +
+  "20×20 quads.\n" +
   "OpenIntent does not support raised or sloped floors. On the OpenClutter page,\n" +
   "Copy terrain pastes this JSON into Planner Plus. The same JSON is\n" +
   "terrain-clipboard.json in this zip when the DEM returned a grid. Do not import\n" +
@@ -265,6 +270,7 @@ function zipReadme(stats) {
     "\n" +
     `buildingsKept: ${c.buildingsKept}\n` +
     `includeFoliage: ${c.includeFoliage ? "true" : "false"}\n` +
+    `terrainResolution: ${c.terrainResolution}\n` +
     `treesKept: ${c.treesKept}\n` +
     `treesSource: ${c.treesSource}\n` +
     `attenuationAreasEmitted: ${c.attenuationAreasEmitted}\n` +
@@ -1424,6 +1430,7 @@ function buildClutter({
   maskPolygons,
   includeFoliage,
   chmGrid,
+  terrainResolution,
 }) {
   const { name, slug } = siteName(rawName);
   const imgName = `${slug}.jpg`;
@@ -1553,6 +1560,9 @@ function buildClutter({
     chmTrees: footprintMeta && footprintMeta.chmTrees ? footprintMeta.chmTrees : 0,
     terrainRaised: terrain && terrain.raised ? terrain.raised : 0,
     terrainSloped: terrain && terrain.sloped ? terrain.sloped : 0,
+    terrainResolution: normalizeTerrainResolution(
+      terrainResolution || (terrain && terrain.terrainResolution)
+    ).id,
     areaMaterials: materials.length,
     compatibilityMode: COMPATIBILITY_MODE,
     exactBuildingHeights,

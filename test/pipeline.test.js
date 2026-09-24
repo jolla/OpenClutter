@@ -1145,6 +1145,21 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(html, /Copy terrain/);
     assert.equal(/<select/i.test(html), false);
     assert.equal(/DEM source|3DEP source/i.test(html + app), false);
+    assert.match(html, /id="terrain-resolution"[^>]*hidden/);
+    assert.match(html, /Terrain resolution/);
+    assert.match(html, /id="terrain-resolution-range"/);
+    assert.match(html, /value="0"/);
+    assert.match(html, /Default · ~80 m/);
+    assert.match(html, />Default</);
+    assert.match(html, />Fine</);
+    assert.match(html, />Finest</);
+    assert.match(html, /Ski hills only/);
+    assert.match(app, /terrainRes\.hidden = false/);
+    assert.match(app, /id: "default", readout: "Default · ~80 m"/);
+    assert.match(app, /id: "fine", readout: "Fine · ~40 m"/);
+    assert.match(app, /id: "finest", readout: "Finest · ~25 m"/);
+    assert.match(app, /terrainResolution: selectedTerrainResolution\(\) \|\| undefined/);
+    assert.match(app, /if \(!wrap \|\| wrap\.hidden\) return null/);
   });
 
   it("distinguishes a drag box from a click polygon and still exports one bbox", () => {
