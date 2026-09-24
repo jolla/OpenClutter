@@ -8,7 +8,9 @@
  *
  * Clipboard meters match hamina-clipboard.js: NE is (0, 0), SW is
  * (−widthM, −lengthM). z on sloped floors is meters above the lowest sample.
- * The DEM is simplified to a 2×2 or 3×3 lattice (at most 9 pads or ramps).
+ * Flat ground stays a 2×2 pad. A mild rise uses a 4×3 lattice. Ski-hill relief
+ * (about 20 m or more, Granite Peak scale) uses ~80 m quads, at most 12×12,
+ * from a denser 3DEP sample so the paste is not one coarse 3×3 sheet.
  *
  * Hamina clipboard rings are open: the first vertex is not repeated.
  * raisedFloorZones are xy quads. slopedFloors are xyz quads whose first edge
@@ -23,7 +25,18 @@ const { emptyClipboard } = require("./hamina-clipboard");
 const DEM_URL = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/getSamples";
 const TERRAIN_FILENAME = "terrain-clipboard.json";
 const FLAT_M = 0.5;
-const SAMPLE_COUNT = 36;
+const SAMPLE_COUNT = 144;
+/** Quads per side on a ski-hill lattice. 12×12 is the paste cap. */
+const MAX_GRID = 12;
+const TARGET_CELL_M = 80;
+/**
+ * Lift building bottoms only when the DEM rises this far above its lowest
+ * sample. Oak Creek (~6 m), Long Meadow (~15 m), and the Las Vegas Sphere
+ * box (~17 m) stay on the floor. Granite Peak (~200 m) lifts.
+ */
+const LIFT_RELIEF_M = 20;
+/** Local ground under this is bottom height from floor ≈ 0 (field omitted). */
+const LIFT_LOCAL_M = 1;
 
 const RAISED_KEYS = ["area", "height", "attenuationDbPerMeter", "slabOnly"];
 const SLOPED_KEYS = [
@@ -50,6 +63,66 @@ function idw(samples, lon, lat) {
     zsum += s.z * w;
   }
   return wsum ? zsum / wsum : samples[0].z;
+}
+
+function coordKey(n) {
+  return Math.round(n * 1e7) / 1e7;
+}
+
+/**
+ * Bilinear on a 3DEP sample lattice when the points form a grid. Clamping to
+ * the outer samples keeps the frame edge from extrapolating a reverse slope.
+ * Scattered points fall back to IDW inside that same hull.
+ */
+function buildElevation(samples) {
+  const lonMap = new Map();
+  const latMap = new Map();
+  for (let i = 0; i < samples.length; i++) {
+    lonMap.set(coordKey(samples[i].lon), samples[i].lon);
+    latMap.set(coordKey(samples[i].lat), samples[i].lat);
+  }
+  const lons = Array.from(lonMap.values()).sort((a, b) => a - b);
+  const lats = Array.from(latMap.values()).sort((a, b) => a - b);
+  const cells = lons.length * lats.length;
+  let grid = null;
+  if (lons.length >= 2 && lats.length >= 2 && samples.length >= cells * 0.9) {
+    grid = new Map();
+    for (let i = 0; i < samples.length; i++) {
+      grid.set(coordKey(samples[i].lon) + "," + coordKey(samples[i].lat), samples[i].z);
+    }
+    for (let j = 0; j < lats.length; j++) {
+      for (let i = 0; i < lons.length; i++) {
+        const k = coordKey(lons[i]) + "," + coordKey(lats[j]);
+        if (!grid.has(k)) grid.set(k, idw(samples, lons[i], lats[j]));
+      }
+    }
+  }
+  const bounds = {
+    west: lons[0],
+    east: lons[lons.length - 1],
+    south: lats[0],
+    north: lats[lats.length - 1],
+  };
+  return function elevationAt(lon, lat) {
+    const x = Math.min(bounds.east, Math.max(bounds.west, lon));
+    const y = Math.min(bounds.north, Math.max(bounds.south, lat));
+    if (!grid) return idw(samples, x, y);
+    let i = 0;
+    while (i < lons.length - 2 && lons[i + 1] < x) i++;
+    let j = 0;
+    while (j < lats.length - 2 && lats[j + 1] < y) j++;
+    const x0 = lons[i];
+    const x1 = lons[Math.min(lons.length - 1, i + 1)];
+    const y0 = lats[j];
+    const y1 = lats[Math.min(lats.length - 1, j + 1)];
+    const z00 = grid.get(coordKey(x0) + "," + coordKey(y0));
+    const z10 = grid.get(coordKey(x1) + "," + coordKey(y0));
+    const z01 = grid.get(coordKey(x0) + "," + coordKey(y1));
+    const z11 = grid.get(coordKey(x1) + "," + coordKey(y1));
+    const tx = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
+    const ty = y1 === y0 ? 0 : (y - y0) / (y1 - y0);
+    return z00 + (z10 - z00) * tx + (z01 - z00) * ty + (z00 - z10 - z01 + z11) * tx * ty;
+  };
 }
 
 function round1(n) {
@@ -86,19 +159,26 @@ function pasteableQuad(ring) {
   return true;
 }
 
-function chooseGrid(relief) {
-  if (relief < 1) return [2, 2];
-  if (relief < 4) return [3, 2];
-  return [3, 3];
+function chooseGrid(relief, frame) {
+  if (!(relief >= 1)) return [2, 2];
+  if (relief < 8) return [4, 3];
+  if (relief < LIFT_RELIEF_M) return [6, 5];
+  const width = frame && frame.widthM > 0 ? frame.widthM : 800;
+  const length = frame && frame.lengthM > 0 ? frame.lengthM : 800;
+  let cols = Math.round(width / TARGET_CELL_M);
+  let rows = Math.round(length / TARGET_CELL_M);
+  cols = Math.max(6, Math.min(MAX_GRID, cols));
+  rows = Math.max(6, Math.min(MAX_GRID, rows));
+  return [cols, rows];
 }
 
-function lattice(samples, frame, cols, rows) {
+function lattice(samples, frame, cols, rows, elevationAt) {
   const nodes = [];
   for (let r = 0; r <= rows; r++) {
     for (let c = 0; c <= cols; c++) {
       const lon = frame.west + (c / cols) * (frame.east - frame.west);
       const lat = frame.south + (r / rows) * (frame.north - frame.south);
-      const z = idw(samples, lon, lat);
+      const z = elevationAt(lon, lat);
       const [x, y] = llToClipboard(lon, lat, frame);
       nodes.push({ x: round3(x), y: round3(y), z });
     }
@@ -197,8 +277,9 @@ function terrainFromSamples(samples, frame) {
     if (s.z < minS) minS = s.z;
     if (s.z > maxS) maxS = s.z;
   }
-  const [cols, rows] = chooseGrid(maxS - minS);
-  const grid = lattice(clean, frame, cols, rows);
+  const [cols, rows] = chooseGrid(maxS - minS, frame);
+  const elevationAt = buildElevation(clean);
+  const grid = lattice(clean, frame, cols, rows, elevationAt);
   const raised = [];
   const sloped = [];
   for (let r = 0; r < rows; r++) {
@@ -236,7 +317,50 @@ function terrainFromSamples(samples, frame) {
     reliefM: Math.round((maxS - minS) * 10) / 10,
     minZ: Math.round(minS * 10) / 10,
     maxZ: Math.round(maxS * 10) / 10,
+    // z = 0 on sloped floors is the lowest lattice node, not the raw sample min.
+    datumZ: grid.minZ,
+    samples: clean,
+    elevationAt,
   };
+}
+
+/** Meters above the terrain clipboard's z = 0. Same datum as sloped-floor z. */
+function terrainGroundM(terrain, lon, lat) {
+  if (!terrain || !Number.isFinite(terrain.datumZ)) return 0;
+  const z = terrain.elevationAt ? terrain.elevationAt(+lon, +lat) : terrain.samples ? idw(terrain.samples, +lon, +lat) : NaN;
+  if (!Number.isFinite(z)) return 0;
+  return Math.max(0, round1(z - terrain.datumZ));
+}
+
+/**
+ * Top of the slope under a lon/lat ring: the highest DEM sample on the
+ * vertices and the centroid, in terrain-clipboard meters.
+ */
+function slopeTopUnderRing(terrain, ring) {
+  if (!terrain || !ring || ring.length < 3) return 0;
+  const closed =
+    ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1];
+  const end = closed ? ring.length - 1 : ring.length;
+  let max = 0;
+  let sx = 0;
+  let sy = 0;
+  for (let i = 0; i < end; i++) {
+    const z = terrainGroundM(terrain, ring[i][0], ring[i][1]);
+    if (z > max) max = z;
+    sx += +ring[i][0];
+    sy += +ring[i][1];
+  }
+  if (end > 0) {
+    const zc = terrainGroundM(terrain, sx / end, sy / end);
+    if (zc > max) max = zc;
+  }
+  return max;
+}
+
+/** True when this export's terrain clipboard is a ski-hill-scale DEM. */
+function siteWarrantsLift(terrain) {
+  if (!terrain || !(terrain.reliefM >= LIFT_RELIEF_M)) return false;
+  return (terrain.raised || 0) + (terrain.sloped || 0) > 0;
 }
 
 /**
@@ -327,9 +451,16 @@ module.exports = {
   TERRAIN_FILENAME,
   FLAT_M,
   SAMPLE_COUNT,
+  MAX_GRID,
+  TARGET_CELL_M,
+  LIFT_RELIEF_M,
+  LIFT_LOCAL_M,
   RAISED_KEYS,
   SLOPED_KEYS,
   terrainFromSamples,
+  terrainGroundM,
+  slopeTopUnderRing,
+  siteWarrantsLift,
   terrainBundleFields,
   noteMissingTerrain,
   parseDemSamples,

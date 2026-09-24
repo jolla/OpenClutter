@@ -12,6 +12,9 @@ const {
   RAISED_KEYS,
   SLOPED_KEYS,
   TERRAIN_FILENAME,
+  MAX_GRID,
+  LIFT_RELIEF_M,
+  siteWarrantsLift,
 } = require("../netlify/lib/terrain");
 const { buildClutter } = require("../netlify/lib/pipeline");
 const { unzipStore } = require("../netlify/lib/zip-store");
@@ -91,7 +94,7 @@ describe("3DEP terrain clipboard", () => {
     assert.equal(terrain.sloped, 0);
     const [cols, rows] = chooseGrid(terrain.reliefM);
     assert.equal(terrain.raised, cols * rows);
-    assert.ok(terrain.raised <= 9);
+    assert.ok(terrain.raised <= 4);
     assert.equal(terrain.reliefM, 0);
     assert.equal(terrain.clipboard.header.type, "HaminaClipboard");
     assert.equal(terrain.clipboard.attenuatingZones.length, 0);
@@ -122,11 +125,10 @@ describe("3DEP terrain clipboard", () => {
     );
     assert.ok(terrain);
     assert.ok(terrain.reliefM > 2);
-    assert.equal(terrain.raised, 0);
-    const [cols, rows] = chooseGrid(terrain.reliefM);
-    assert.equal(terrain.sloped, cols * rows);
-    assert.ok(terrain.sloped <= 9);
-    assert.equal(terrain.clipboard.raisedFloorZones.length, 0);
+    const [cols, rows] = chooseGrid(terrain.reliefM, frame);
+    assert.equal(terrain.raised + terrain.sloped, cols * rows);
+    assert.ok(terrain.sloped > 9);
+    assert.ok(terrain.sloped <= MAX_GRID * MAX_GRID);
     for (const z of terrain.clipboard.slopedFloors) {
       assert.deepEqual(Object.keys(z), SLOPED_KEYS);
       assert.equal(z.area.type, "Polygon");
@@ -142,7 +144,7 @@ describe("3DEP terrain clipboard", () => {
       const highY = Math.min(ring[2][1], ring[3][1]);
       assert.ok(lowY < highY, "north-rising slope starts on the south edge");
     }
-    assertFrameSpan(terrain.clipboard.slopedFloors, frame);
+    assertFrameSpan(terrain.clipboard.slopedFloors.concat(terrain.clipboard.raisedFloorZones), frame);
   });
 
   it("notes a soft miss without a terrain file", () => {
@@ -174,7 +176,9 @@ describe("3DEP terrain clipboard", () => {
     assert.ok(terrain);
     assert.ok(terrain.reliefM > 2);
     assert.ok(terrain.sloped >= 1);
-    assert.ok(terrain.raised + terrain.sloped <= 9);
+    const [mildCols, mildRows] = chooseGrid(terrain.reliefM, frame);
+    assert.equal(terrain.raised + terrain.sloped, mildCols * mildRows);
+    assert.ok(terrain.raised + terrain.sloped <= MAX_GRID * MAX_GRID);
     assert.equal(terrain.clipboard.header.type, "HaminaClipboard");
     assert.equal(terrain.clipboard.attenuatingZones.length, 0);
     for (const z of terrain.clipboard.slopedFloors) {
@@ -211,9 +215,10 @@ describe("3DEP terrain clipboard", () => {
       frame
     );
     assert.equal(terrain.raised, 0);
-    const [cols, rows] = chooseGrid(terrain.reliefM);
+    const [cols, rows] = chooseGrid(terrain.reliefM, frame);
     assert.equal(terrain.sloped, cols * rows);
-    assert.ok(terrain.sloped <= 9);
+    assert.ok(terrain.sloped > 9);
+    assert.ok(terrain.sloped <= MAX_GRID * MAX_GRID);
     for (const z of terrain.clipboard.slopedFloors) {
       assert.deepEqual(Object.keys(z), SLOPED_KEYS);
       const ring = z.area.coordinates[0];
@@ -228,7 +233,7 @@ describe("3DEP terrain clipboard", () => {
       gridSamples(frame, (r, c) => 400 - c * 4),
       frame
     );
-    assert.equal(towardWest.raised, 0);
+    assert.ok(towardWest.sloped > 9);
     for (const z of towardWest.clipboard.slopedFloors) {
       const ring = z.area.coordinates[0];
       assertSlopedRamp(ring);
@@ -240,7 +245,7 @@ describe("3DEP terrain clipboard", () => {
       gridSamples(frame, (r) => 400 - r * 4),
       frame
     );
-    assert.equal(towardSouth.raised, 0);
+    assert.ok(towardSouth.sloped > 9);
     for (const z of towardSouth.clipboard.slopedFloors) {
       const ring = z.area.coordinates[0];
       assertSlopedRamp(ring);
@@ -284,9 +289,125 @@ describe("3DEP terrain clipboard", () => {
     const oi = JSON.stringify(built.openintent);
     assert.equal(oi.includes("raisedFloorZones"), false);
     assert.match(files["README.txt"].toString(), /terrain-clipboard\.json/);
-    assert.match(files["README.txt"].toString(), /OpenIntent zip import is unchanged/);
+    assert.match(files["README.txt"].toString(), /bottom height from floor/);
+    assert.match(files["README.txt"].toString(), /Do not import/);
     const clip = JSON.parse(files["terrain-clipboard.json"].toString());
     assert.ok(clip.raisedFloorZones.length + clip.slopedFloors.length >= 1);
     assert.equal(clip.header.type, "HaminaClipboard");
+  });
+});
+
+function squareFeature(west, south, east, north, props) {
+  return {
+    type: "Feature",
+    properties: props || {},
+    geometry: {
+      type: "Polygon",
+      coordinates: [[[west, south], [east, south], [east, north], [west, north], [west, south]]],
+    },
+  };
+}
+
+describe("building height from floor on a slope", () => {
+  const frame = geoFrame({ west: -89.7, south: 44.91, east: -89.684, north: 44.926, name: "Granite Peak" });
+
+  function buildOn(zAt, features) {
+    const terrain = terrainFromSamples(gridSamples(frame, zAt), frame);
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features },
+      treePoints: [],
+      name: "Granite Peak",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain,
+    });
+    return { terrain, built };
+  }
+
+  it("keeps bottom height on the floor when relief is below the ski-hill gate", () => {
+    const span = frame.north - frame.south;
+    const spanLon = frame.east - frame.west;
+    const lat0 = frame.south + span * 0.7;
+    const lon0 = frame.west + spanLon * 0.4;
+    const lat1 = lat0 + span * 0.012;
+    const lon1 = lon0 + spanLon * 0.012;
+    const { terrain, built } = buildOn(
+      (r, c, lon, lat) => 400 + ((lat - frame.south) / span) * 12,
+      [squareFeature(lon0, lat0, lon1, lat1)]
+    );
+    assert.ok(terrain.reliefM < LIFT_RELIEF_M);
+    assert.equal(siteWarrantsLift(terrain), false);
+    assert.equal(built.stats.buildingsLifted, 0);
+    const area = built.openintent.floorplans[0].attenuation_areas[0];
+    assert.equal(area.area_material.name, "Building - One Floor");
+    assert.equal("bottom_height" in area.area_material, false);
+    assert.equal(area.area_material.top_height, 4.5);
+    const zone = built.clipboard.attenuatingZones[0];
+    const type = built.clipboard.attenuatingZoneTypes.find((t) => t.id === zone.typeId);
+    assert.equal(type.bottomEdge, null);
+    assert.equal(type.topEdge, 4.5);
+    assert.ok(terrain.raised + terrain.sloped > 9);
+    for (const z of terrain.clipboard.slopedFloors) assertSlopedRamp(z.area.coordinates[0]);
+    for (const z of terrain.clipboard.raisedFloorZones) assertOpenQuad(z.area.coordinates[0], 2);
+  });
+
+  it("sets bottom height from floor to the slope top and top height to bottom plus building height", () => {
+    const span = frame.north - frame.south;
+    const spanLon = frame.east - frame.west;
+    const dLat = span * 0.012;
+    const dLon = spanLon * 0.012;
+    const southB = squareFeature(
+      frame.west + spanLon * 0.2,
+      frame.south + span * 0.02,
+      frame.west + spanLon * 0.2 + dLon,
+      frame.south + span * 0.02 + dLat
+    );
+    const northB = squareFeature(
+      frame.west + spanLon * 0.5,
+      frame.south + span * 0.75,
+      frame.west + spanLon * 0.5 + dLon,
+      frame.south + span * 0.75 + dLat,
+      { height: 6.4 }
+    );
+    const { terrain, built } = buildOn((r, c, lon, lat) => {
+      const t = (lat - frame.south) / span;
+      return t < 0.35 ? 300 : 300 + ((t - 0.35) / 0.65) * 180;
+    }, [southB, northB]);
+    assert.ok(terrain.reliefM >= LIFT_RELIEF_M);
+    assert.equal(siteWarrantsLift(terrain), true);
+    assert.ok(terrain.sloped > 9);
+    assert.ok(terrain.sloped <= MAX_GRID * MAX_GRID);
+    for (const z of terrain.clipboard.slopedFloors) assertSlopedRamp(z.area.coordinates[0]);
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    assert.equal(areas.length, 2);
+    const valley = areas.find((a) => a.area_material.name === "Building - One Floor");
+    const hill = areas.find((a) => String(a.area_material.name).indexOf("Building - Two Floor ") === 0);
+    assert.ok(valley, "valley building stays on the floor");
+    assert.equal("bottom_height" in valley.area_material, false);
+    assert.equal(valley.area_material.top_height, 4.5);
+    assert.ok(hill);
+    assert.ok(hill.area_material.bottom_height >= 50, "bottom " + hill.area_material.bottom_height);
+    assert.equal(
+      hill.area_material.top_height,
+      Math.round((hill.area_material.bottom_height + 7.620092660326749) * 10) / 10
+    );
+    assert.equal(hill.area_material.name, "Building - Two Floor " + hill.area_material.bottom_height.toFixed(1));
+    assert.deepEqual(Object.keys(hill.area_material), [
+      "name",
+      "rf_properties",
+      "top_height",
+      "bottom_height",
+      "display_color",
+    ]);
+    const gold = built.openintent.area_materials.slice(0, 4).map((m) => m.name);
+    assert.deepEqual(gold, ["Building - One Floor", "Building - Two Floor", "Building - Five Floor", "Building - Ten Floor"]);
+    assert.ok(built.openintent.area_materials.some((m) => m.name === hill.area_material.name));
+    assert.equal(JSON.stringify(built.openintent).includes("raisedFloorZones"), false);
+    const hillZone = built.clipboard.attenuatingZones.find((z) => String(z.typeId).indexOf("-b") > 0);
+    const hillType = built.clipboard.attenuatingZoneTypes.find((t) => t.id === hillZone.typeId);
+    assert.equal(hillType.bottomEdge, hill.area_material.bottom_height);
+    assert.equal(hillType.topEdge, Math.round((hillType.bottomEdge + 6.4) * 10) / 10);
+    assert.ok(hillType.topEdge > hillType.bottomEdge);
+    assert.equal(built.stats.buildingsLifted, 1);
   });
 });

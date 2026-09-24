@@ -14,6 +14,7 @@ const {
 } = require("./hamina-clipboard");
 const {
   materialForBuilding,
+  liftPickedBuilding,
   canonicalAreaMaterial,
   documentMaterials,
   OI_BUILDING_NAMES,
@@ -22,7 +23,7 @@ const {
 const { treePairsFromPoints } = require("./vegetation");
 const { dedupeStackedFootprints } = require("./conflate");
 const { zipStore } = require("./zip-store");
-const { TERRAIN_FILENAME } = require("./terrain");
+const { TERRAIN_FILENAME, slopeTopUnderRing, siteWarrantsLift } = require("./terrain");
 const { overlaySvg, frameLockJson } = require("./overlay");
 const { version: OPENCLUTTER_VERSION } = require("./version");
 
@@ -74,9 +75,13 @@ const ZIP_TROUBLESHOOT =
   "Building materials are the gold One/Two/Five/Ten Floor objects.\n" +
   "Tree materials, only when Include foliage was on, are stock Foliage - Heavy / Light,\n" +
   "or Foliage - Heavy H.H / Foliage - Light H.H at the measured height.\n" +
-  "Each is name + rf_properties + top_height + display_color. No itu_material_type, no bottom_height.\n" +
+  "Each is name + rf_properties + top_height + display_color. No itu_material_type.\n" +
+  "Flat sites omit bottom_height, so bottom height from floor stays the floor (about 0)\n" +
+  "and top height from floor stays the building height. Do not write bottom_height: 0.\n" +
+  "When the DEM rises at least 20 m, a building sets bottom_height to the slope top\n" +
+  "under that footprint and top_height to that bottom plus the building height.\n" +
   "Tree Trunk and Foliage N.N m stay off OpenIntent. Clipboard foliage types are canopy polygons only.\n" +
-  "Each ring vertex is pixels+meters+feet; materials omit itu_material_type and bottom_height.\n" +
+  "Each ring vertex is pixels+meters+feet. Materials omit itu_material_type.\n" +
   "Rings thinner than 4 px on one axis, or over the Hamina vertex cap, are omitted from OpenIntent\n" +
   "(VERIFY.txt warning) so one bad ring cannot drop the import. Those shapes stay on the clipboard.\n";
 
@@ -175,6 +180,7 @@ function coverageStats(stats) {
     chmTrees: s.chmTrees || 0,
     terrainRaised: s.terrainRaised || 0,
     terrainSloped: s.terrainSloped || 0,
+    buildingsLifted: s.buildingsLifted || 0,
     areaMaterials: s.areaMaterials != null ? s.areaMaterials : STOCK_MATERIAL_NAMES.length,
     openIntentBuildingAreas: s.openIntentBuildingAreas || 0,
     openIntentTreeAreas: s.openIntentTreeAreas || 0,
@@ -215,7 +221,9 @@ function coverageSummary(stats) {
 
 const TERRAIN_README =
   "\nOptional Planner Plus terrain (not part of the OpenIntent import):\n" +
-  "USGS 3DEP bare-earth elevations are simplified to a few pads and facets.\n" +
+  "USGS 3DEP bare-earth elevations become open quads on the same meter frame.\n" +
+  "Flat ground is a 2×2 pad. A mild rise is a 4×3 lattice. A ski hill (DEM relief\n" +
+  "at least 20 m, Granite Peak scale) uses about 80 m quads, at most 12×12.\n" +
   "OpenIntent does not support raised or sloped floors. On the OpenClutter page,\n" +
   "Copy terrain pastes this JSON into Planner Plus. The same JSON is\n" +
   "terrain-clipboard.json in this zip when the DEM returned a grid. Do not import\n" +
@@ -226,7 +234,13 @@ const TERRAIN_README =
   "slopedFloors are open xyz quads (z = meters above that same low point).\n" +
   "The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
   "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
-  "The OpenIntent zip import is unchanged either way.\n";
+  "Building attenuating objects stay in this OpenIntent zip. On a ski-hill DEM their\n" +
+  "bottom_height is bottom height from floor (slope top under the footprint) and\n" +
+  "top_height is top height from floor (that bottom plus the building height).\n" +
+  "Clipboard zone types use the same pair as bottomEdge and topEdge. Flatter sites\n" +
+  "omit bottom_height so the bottom stays on the floor.\n" +
+  "Retest Granite Peak: Import this zip (Projects → Import → OpenIntent), Copy terrain,\n" +
+  "paste it in Planner Plus, then check 3D. Buildings should sit on the slope.\n";
 
 function zipReadme(stats) {
   const c = coverageStats(stats);
@@ -724,7 +738,10 @@ function validateOiArea(area, imgW, imgH) {
   // Stock Foliage - Heavy / Light, or a measured-height custom. No itu_material_type,
   // no bottom_height. Poisoned names fail closed and that ring is omitted.
   if (typeof mat !== "object" || mat == null || Array.isArray(mat)) return { ok: false, reason: "material" };
-  if ("itu_material_type" in mat || "bottom_height" in mat) return { ok: false, reason: "material" };
+  if ("itu_material_type" in mat) return { ok: false, reason: "material" };
+  // bottom_height: 0 on a gold name is still rejected inside catalogMaterial.
+  // A ski-hill building carries bottom_height (bottom height from floor) and a
+  // raised top_height (top height from floor).
   const cat = catalogMaterial(mat);
   if (!cat || JSON.stringify(mat) !== JSON.stringify(cat)) return { ok: false, reason: "material" };
   return validateOiCoords(area.area.coordinates, imgW, imgH);
@@ -1013,7 +1030,13 @@ function featureExteriorRings(geometry) {
   return out;
 }
 
-function emitBuilding(ring, heightM, frame, affine, buckets) {
+function pickedForRing(ring, heightM, areaM2, slopeTop) {
+  const picked = materialForBuilding(heightM, areaM2);
+  if (typeof slopeTop !== "function") return picked;
+  return liftPickedBuilding(picked, slopeTop(ring));
+}
+
+function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop) {
   const amRaw = ringAreaM2(ring, frame.mpd);
   // Large detailed roofs (Wynn casino) self-intersect if Douglas–Peucker is too
   // aggressive; try a tighter pass before giving up as clip. These budgets
@@ -1040,7 +1063,7 @@ function emitBuilding(ring, heightM, frame, affine, buckets) {
 
   let lastFail = "skip";
   for (const [maxPts, eps] of budgets) {
-    const result = emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps);
+    const result = emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop);
     if (result === "keep") return "keep";
     // Tiny clipped area will not grow with more verts. A one-axis sliver
     // will not grow a short side either — do not retry and double-count it.
@@ -1082,10 +1105,12 @@ function stashBuilding(buckets, frame, affine, clipRing, overlayPts, clipPx, pic
     maxY: Math.max(...cys),
   });
   buckets.overlayRings.push(src);
-  buckets.overlayHeights.push(picked.exactHeight || (picked.material && picked.material.top_height) || 0);
+  buckets.overlayHeights.push(
+    picked.buildingHeight || picked.exactHeight || (picked.material && picked.material.top_height) || 0
+  );
 }
 
-function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps) {
+function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop) {
   const simple = simplifyRing(ring, maxPts, eps);
   if (!simple || simple.length < 4) return "skip";
   const detailVerts = ringVertexCount(simple);
@@ -1116,7 +1141,8 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
   if (thinSliverDrop(clippedPts, minSpan)) {
     // Clipboard keeps the exact sliver. OpenIntent must not, or Hamina drops
     // every attenuating object.
-    const pickedThin = materialForBuilding(heightM, am);
+    const pickedThin = pickedForRing(ring, heightM, am, slopeTop);
+    if (pickedThin.lifted) buckets.lifted++;
     stashBuilding(buckets, frame, affine, clipRing, clippedPts, clippedPts, pickedThin);
     return "span";
   }
@@ -1125,7 +1151,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     if (ringVertexCount(clippedPts) > MAX_OI_RING_VERTS) return "verts";
     return "clip";
   }
-  const picked = materialForBuilding(heightM, am);
+  const picked = pickedForRing(ring, heightM, am, slopeTop);
   const area = emitIfValid(makeOiArea(oiCoords, picked.material), frame.imgW, frame.imgH);
   if (!area) return "invalid";
   buckets.oiAreas.push(area);
@@ -1168,7 +1194,8 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     maxY: Math.max(...cys),
   });
   buckets.overlayRings.push(clippedPts);
-  buckets.overlayHeights.push(picked.exactHeight || picked.material.top_height);
+  buckets.overlayHeights.push(picked.buildingHeight || picked.exactHeight || picked.material.top_height);
+  if (picked.lifted) buckets.lifted++;
   return "keep";
 }
 
@@ -1235,7 +1262,7 @@ function borrowNearbyHeights(features, frame) {
   return n;
 }
 
-function footprintsToClutter(features, frame, affine) {
+function footprintsToClutter(features, frame, affine, slopeTop) {
   const separated = dedupeStackedFootprints(features || []);
   const list = separated.features;
   borrowNearbyHeights(list, frame);
@@ -1266,6 +1293,7 @@ function footprintsToClutter(features, frame, affine) {
     clipTypes: [],
     materials: [],
     measured: 0,
+    lifted: 0,
   };
   for (const f of list) {
     const g = f.geometry;
@@ -1279,7 +1307,7 @@ function footprintsToClutter(features, frame, affine) {
         stats.droppedCap++;
         continue;
       }
-      const result = emitBuilding(ring, heightM, frame, affine, buckets);
+      const result = emitBuilding(ring, heightM, frame, affine, buckets, slopeTop);
       if (result === "keep") stats.buildings++;
       else if (result === "mega") stats.droppedMega++;
       else if (result === "tiny") stats.droppedTiny++;
@@ -1290,6 +1318,7 @@ function footprintsToClutter(features, frame, affine) {
     }
   }
   stats.measuredBuildings = buckets.measured;
+  stats.buildingsLifted = buckets.lifted;
   return {
     oiAreas,
     clipZones,
@@ -1385,7 +1414,8 @@ function buildClutter({
 }) {
   const { name, slug } = siteName(rawName);
   const imgName = `${slug}.jpg`;
-  const fp = footprintsToClutter(footprintsGeojson?.features || [], frame, affine);
+  const slopeTop = siteWarrantsLift(terrain) ? (ring) => slopeTopUnderRing(terrain, ring) : null;
+  const fp = footprintsToClutter(footprintsGeojson?.features || [], frame, affine, slopeTop);
   const foliageOn = includeFoliage === true;
   const veg = foliageOn
     ? treePairsFromPoints(treePoints || [], frame, fp.aabbs, affine, {
