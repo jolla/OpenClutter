@@ -463,6 +463,14 @@ describe("optional sources cannot fail the export", () => {
     assert.ok(elapsed < 6500, "elapsed " + elapsed);
     const body = JSON.parse(res.body);
     assert.ok(body.zipBase64);
+    // Metadata never arrived. The JPEG is still Esri's padded content grid.
+    // Projecting the drawn box shifts every roof except the draw center.
+    assert.ok(body.frame.south < WYNN.south - 1e-5, "south " + body.frame.south);
+    assert.ok(body.frame.north > WYNN.north + 1e-5, "north " + body.frame.north);
+    assert.equal(body.frame.west, WYNN.west);
+    assert.equal(body.frame.east, WYNN.east);
+    assert.ok(jpeg.u.includes(String(WYNN.south)), "imagery URL must stay the drawn box");
+    assert.equal(jpeg.u.includes(String(body.frame.south)), false);
   });
 
   it("starts Overture during the core footprint fetch, not after it", async () => {

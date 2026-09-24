@@ -23,8 +23,10 @@ const IMAGERY_BACKOFF_MS = 400;
 // failure leaves at least 1.2s under this ceiling (fast reset, not a 8.5s hang).
 const IMAGERY_BUDGET_MS = 8500;
 // Live Oak Creek metadata was ~3.0s and pads latitude by ~500 m at the same
-// pixel size. 2.5s dropped that snap and clipped the corridor. 4s still
-// overlaps the JPEG instead of running before it.
+// pixel size. The content extent is derived from the drawn box and the JPEG
+// pixel size (the same pad export?f=json returns), so a slow JSON cannot
+// leave footprints on the drawn box. 4s still overlaps the JPEG; metadata
+// replaces that derived extent when it arrives.
 const META_MS = 4000;
 const OPTIONAL_MS = 2000;
 const SKIP_OPTIONAL_AFTER_MS = 5000;
@@ -397,25 +399,38 @@ exports.handler = async (event) => {
   let overtureJob = null;
   let terrainJob = null;
   try {
-    // JPEG and Overture together. Meta may snap the footprint query, but it
+    // JPEG and Overture together. Meta may confirm the footprint query, but it
     // must not gate the image or the Overture read — the Las Vegas row group
     // loses if it starts only after metadata, behind the Global ML gzip.
+    // The JPEG URL stays the drawn box (Esri pads that request). The frame
+    // footprints are projected in is the content grid, derived here so a
+    // metadata timeout cannot bake rings onto the drawn box. That timeout
+    // is a Y scale about the draw center: the Sphere stays, other roofs move.
+    const requestBbox = {
+      west: frame.west,
+      south: frame.south,
+      east: frame.east,
+      north: frame.north,
+    };
     const imageryJob = needImage ? fetchImageryJpeg(imgUrl) : Promise.resolve(null);
+    if (needImage) {
+      frame = applyImageryMeta(frame, null, { width: frame.imgW, height: frame.imgH }, { requestBbox });
+    }
     const overtureFrame = {
       west: frame.west,
       south: frame.south,
       east: frame.east,
       north: frame.north,
     };
-    // Row groups from the request bbox (one Vegas group). Keep features in the
-    // same latitude pad MSBFP2 uses, so an Esri N/S snap does not drop roofs
-    // the row group already contains.
+    // Content-grid bbox (same center as the draw, so the Sphere row group is
+    // still first). Latitude pad matches the JPEG so an Esri N/S snap does
+    // not drop roofs the row group already contains.
     overtureJob = beginOptional((signal) =>
       fetchOvertureFootprints(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
     );
     if (needImage) {
       imgMeta = await fetchImageryMeta(imgMetaUrl);
-      if (imgMeta) frame = applyImageryMeta(frame, imgMeta, null);
+      if (imgMeta) frame = applyImageryMeta(frame, imgMeta, null, { requestBbox });
       // Same lon/lat extent the JPEG will lock. Meters are applied later with
       // the isotropic frame, so pads line up with hamina-clipboard.json.
       terrainJob = beginOptional((signal) => fetchDemSamples(frame, null, { signal }));
@@ -443,7 +458,7 @@ exports.handler = async (event) => {
     usaFeatures = (fetched[2] && fetched[2].features) || [];
     imgBuf = fetched[3];
     if (imgBuf) {
-      frame = applyImageryMeta(frame, imgMeta, jpegSize(imgBuf));
+      frame = applyImageryMeta(frame, imgMeta, jpegSize(imgBuf), { requestBbox });
       const locked = lockIsotropicImagery(frame, imgBuf);
       frame = locked.frame;
       imgBuf = locked.jpegBuf;
