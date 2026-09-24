@@ -272,37 +272,77 @@ function extentFromMeta(meta) {
 }
 
 /**
+ * Geographic extent of an Esri World Imagery export with imageSR=4326.
+ *
+ * The service keeps the requested pixel size and expands whichever degree
+ * axis is short so (east−west)/(north−south) = imgW/imgH, centered on the
+ * request. On a meter-square Las Vegas draw that is a latitude pad of about
+ * 1/cos φ (~23%). Projecting footprints with the drawn box then scales Y
+ * about the site center: a centered Sphere stays put and every other roof
+ * walks off the JPEG. export?f=json repeats this same extent; this function
+ * is that extent when the JSON does not arrive.
+ */
+function esriContentExtent(bbox, imgW, imgH) {
+  const west = +bbox.west;
+  const south = +bbox.south;
+  const east = +bbox.east;
+  const north = +bbox.north;
+  const lonSpan = east - west;
+  const latSpan = north - south;
+  if (!(imgW > 0) || !(imgH > 0) || !(lonSpan > 0) || !(latSpan > 0)) {
+    return { west, south, east, north };
+  }
+  const target = imgW / imgH;
+  const current = lonSpan / latSpan;
+  if (Math.abs(current - target) <= Math.abs(target) * 1e-9) {
+    return { west, south, east, north };
+  }
+  if (current > target) {
+    const newLat = lonSpan / target;
+    const mid = (south + north) / 2;
+    return { west, east, south: mid - newLat / 2, north: mid + newLat / 2 };
+  }
+  const newLon = latSpan * target;
+  const mid = (west + east) / 2;
+  return { south, north, west: mid - newLon / 2, east: mid + newLon / 2 };
+}
+
+function requestSeed(opts, frame) {
+  const seed = opts && opts.requestBbox;
+  if (seed && [seed.west, seed.south, seed.east, seed.north].every(Number.isFinite)) return seed;
+  return frame;
+}
+
+/**
  * Rebuild the frame from the JPEG Esri actually returned.
  * Footprints, trees, OpenIntent, and clipboard must all use this, not the drawn box.
  *
  * Esri often pads N/S while keeping the requested pixel size, so mpuX ≠ mpuY
  * after this snap. Call lockIsotropicImagery next to unify meters to the JPEG
  * pixel aspect (keep content pixels; do not stretch the aerial).
+ *
+ * When export?f=json has no extent, the frame is still the content grid
+ * (esriContentExtent). Leaving the drawn box in place is the Sphere-site
+ * shift: roofs scale away from the draw center on the padded JPEG.
+ * opts.requestBbox is the rectangle sent to Esri, so a second snap does not
+ * expand an extent that was already padded.
  */
-function applyImageryMeta(frame, meta, jpegWH) {
+function applyImageryMeta(frame, meta, jpegWH, opts) {
   const ext = extentFromMeta(meta);
   const wh = jpegWH && jpegWH.width > 0 && jpegWH.height > 0 ? jpegWH : null;
   const imgW = (wh && wh.width) || (meta && +meta.width) || frame.imgW;
   const imgH = (wh && wh.height) || (meta && +meta.height) || frame.imgH;
   if (!(imgW > 0 && imgH > 0)) return frame;
-  const bbox = ext || {
-    west: frame.west,
-    south: frame.south,
-    east: frame.east,
-    north: frame.north,
-  };
-  const padM = Math.max(frame.widthM, frame.lengthM, 2500) * 2.5;
+  const seed = requestSeed(opts, frame);
+  const bbox = ext || esriContentExtent(seed, imgW, imgH);
+  const padM = Math.max(frame.widthM, frame.lengthM, seed.widthM || 0, 2500) * 2.5;
+  const size = { imgW, imgH, maxSpanM: padM, minSpanM: 1 };
   try {
-    return geoFrame(bbox, { imgW, imgH, maxSpanM: padM, minSpanM: 1 });
+    return geoFrame(bbox, size);
   } catch {
     return geoFrame(
-      {
-        west: frame.west,
-        south: frame.south,
-        east: frame.east,
-        north: frame.north,
-      },
-      { imgW, imgH, maxSpanM: padM, minSpanM: 1 }
+      { west: seed.west, south: seed.south, east: seed.east, north: seed.north },
+      size
     );
   }
 }
@@ -630,6 +670,7 @@ module.exports = {
   esriImageryMetaUrl,
   jpegSize,
   extentFromMeta,
+  esriContentExtent,
   applyImageryMeta,
   aspectMismatch,
   isAspectLocked,
