@@ -2,7 +2,8 @@
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
-const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_HARD_MS } = require("../netlify/functions/clutter");
+const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures } = require("../netlify/functions/clutter");
+const { geoFrame } = require("../netlify/lib/geo-frame");
 const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
 const { unzipStore } = require("../netlify/lib/zip-store");
 const { version: APP_VERSION } = require("../netlify/lib/version");
@@ -311,7 +312,9 @@ describe("optional sources cannot fail the export", () => {
     });
     const elapsed = Date.now() - t0;
     assert.equal(res.statusCode, 200);
-    assert.ok(elapsed < 4500, "elapsed " + elapsed);
+    // Wynn is a large draw, so a hung Overture read may use the long grace.
+    // It still has to return a zip well inside the gateway clock.
+    assert.ok(elapsed < 20000, "elapsed " + elapsed);
     const body = JSON.parse(res.body);
     assert.ok(body.zipBase64);
     assert.equal(body.stats.fetched >= 1, true);
@@ -434,7 +437,7 @@ describe("optional sources cannot fail the export", () => {
     assert.equal(res.statusCode, 200);
     assert.equal(jpegCalls, 2);
     assert.ok(elapsed >= 400, "backoff " + elapsed);
-    assert.ok(elapsed < 5000, "elapsed " + elapsed);
+    assert.ok(elapsed < 20000, "elapsed " + elapsed);
     const body = JSON.parse(res.body);
     assert.ok(body.zipBase64);
     assert.equal(/smaller box/i.test(body.error || ""), false);
@@ -460,7 +463,7 @@ describe("optional sources cannot fail the export", () => {
     assert.ok(jpeg && meta);
     assert.ok(jpeg.t < 200, "jpeg start " + jpeg.t);
     assert.ok(Math.abs(jpeg.t - meta.t) < 200, "jpeg " + jpeg.t + " meta " + meta.t);
-    assert.ok(elapsed < 6500, "elapsed " + elapsed);
+    assert.ok(elapsed < 22000, "elapsed " + elapsed);
     const body = JSON.parse(res.body);
     assert.ok(body.zipBase64);
     // Metadata never arrived. The JPEG is still Esri's padded content grid.
@@ -471,6 +474,41 @@ describe("optional sources cannot fail the export", () => {
     assert.equal(body.frame.east, WYNN.east);
     assert.ok(jpeg.u.includes(String(WYNN.south)), "imagery URL must stay the drawn box");
     assert.equal(jpeg.u.includes(String(body.frame.south)), false);
+  });
+
+  it("aborts a hung Overture read quickly on a small draw", async () => {
+    const small = {
+      west: -115.16,
+      south: 36.12,
+      east: -115.158,
+      north: 36.122,
+      name: "Small lot",
+    };
+    global.fetch = async (url, init) => {
+      const u = urlOf(url);
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: small.west, ymin: small.south, xmax: small.east, ymax: small.north },
+          }),
+        };
+      }
+      return coreFetch(url, init);
+    };
+    const t0 = Date.now();
+    const res = await handler({
+      httpMethod: "POST",
+      body: JSON.stringify({ ...small, format: "bundle" }),
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(res.statusCode, 200);
+    assert.ok(elapsed < 8000, "elapsed " + elapsed);
+    const body = JSON.parse(res.body);
+    assert.ok(body.zipBase64);
+    assert.equal(/smaller box/i.test((body.warnings || []).join(" ")), false);
   });
 
   it("starts Overture during the core footprint fetch, not after it", async () => {
@@ -586,5 +624,131 @@ describe("Overture join keeps a finished read after the core budget", () => {
     });
     assert.equal(result.features.length, 1);
     assert.match(warnings[0], /partial: kept 1 footprints/);
+  });
+
+  it("keeps an in-flight Overture read when a long grace outlasts a fast core", async () => {
+    const warnings = [];
+    const job = beginOptional(
+      () => new Promise((resolve) => setTimeout(() => resolve({ features: [{ type: "Feature" }] }), 250))
+    );
+    const t0 = Date.now();
+    const result = await joinOptional(warnings, Date.now() - 1000, "Overture buildings", job, {
+      graceMs: OVERTURE_LARGE_GRACE_MS,
+      hardMs: OVERTURE_HARD_MS,
+    });
+    assert.equal(result.features.length, 1);
+    assert.equal(warnings.length, 0);
+    assert.ok(Date.now() - t0 < 2000, "waited " + (Date.now() - t0));
+  });
+
+  it("uses the long Overture grace only for a draw at least 1.5 km on a side", () => {
+    const large = overtureWait(geoFrame(WYNN));
+    assert.equal(large.graceMs, OVERTURE_LARGE_GRACE_MS);
+    assert.equal(large.hardMs, OVERTURE_HARD_MS);
+    const small = overtureWait(
+      geoFrame({ west: -115.16, south: 36.12, east: -115.158, north: 36.122 })
+    );
+    assert.equal(small.graceMs, OVERTURE_GRACE_MS);
+  });
+
+  it("keeps the largest roofs when a campus zip has to be shortened", () => {
+    const mpd = { lon: 90000, lat: 110540 };
+    const small = {
+      type: "Feature",
+      geometry: {
+        type: "Polygon",
+        coordinates: [[[-115.16, 36.12], [-115.1599, 36.12], [-115.1599, 36.1201], [-115.16, 36.1201], [-115.16, 36.12]]],
+      },
+    };
+    const big = {
+      type: "Feature",
+      geometry: {
+        type: "Polygon",
+        coordinates: [[[-115.17, 36.12], [-115.16, 36.12], [-115.16, 36.13], [-115.17, 36.13], [-115.17, 36.12]]],
+      },
+    };
+    const kept = largestFeatures([small, big, small], 1, mpd);
+    assert.equal(kept.length, 1);
+    assert.equal(kept[0], big);
+  });
+});
+
+describe("oversized Microsoft footprint tile", () => {
+  const orig = global.fetch;
+  after(() => {
+    global.fetch = orig;
+  });
+
+  it("exports the other building sources and records the skip", async () => {
+    let bodyReads = 0;
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("bfppub") || u.includes("global-buildings")) {
+        return {
+          ok: true,
+          headers: {
+            get: (name) => (String(name).toLowerCase() === "content-length" ? String(179 * 1024 * 1024) : null),
+          },
+          arrayBuffer: async () => {
+            bodyReads++;
+            return new ArrayBuffer(8);
+          },
+          body: { cancel: async () => {} },
+        };
+      }
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: WYNN.west, ymin: WYNN.south, xmax: WYNN.east, ymax: WYNN.north },
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+      if (u.includes("MSBFP2")) {
+        return {
+          ok: true,
+          json: async () => ({
+            features: [{
+              type: "Feature",
+              properties: {},
+              geometry: {
+                type: "Polygon",
+                coordinates: [[[-115.165, 36.126], [-115.164, 36.126], [-115.164, 36.127], [-115.165, 36.127], [-115.165, 36.126]]],
+              },
+            }],
+          }),
+        };
+      }
+      if (u.includes("USA_Structures") || u.includes("services2.arcgis.com")) {
+        return { ok: true, json: async () => ({ objectIds: [], features: [] }) };
+      }
+      throw new Error("skip " + u);
+    };
+    const t0 = Date.now();
+    const res = await handler({
+      httpMethod: "POST",
+      body: JSON.stringify({ ...WYNN, format: "bundle" }),
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(bodyReads, 0);
+    assert.ok(elapsed < 8000, "elapsed " + elapsed);
+    const body = JSON.parse(res.body);
+    const notes = (body.warnings || []).join("\n");
+    const tileNote = (body.warnings || []).find((w) => /Microsoft building footprints/.test(w)) || "";
+    assert.match(tileNote, /omitted/);
+    assert.match(tileNote, /179 MB/);
+    assert.equal(/smaller box/i.test(tileNote), false);
+    assert.equal(/esri/i.test(tileNote), false);
+    assert.ok(body.zipBase64);
+    const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+    const stats = JSON.parse(files["export-stats.json"].toString());
+    assert.match(stats.warnings.join("\n"), /179 MB/);
+    const zipNotes = JSON.parse(files["export-warnings.json"].toString());
+    assert.match(zipNotes.warnings.join("\n"), /omitted/);
+    assert.ok(stats.attenuationAreasEmitted >= 1);
   });
 });
