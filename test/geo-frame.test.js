@@ -18,6 +18,7 @@ const {
   esriImageryUrl,
   esriImageryMetaUrl,
   jpegSize,
+  esriContentExtent,
   applyImageryMeta,
   lockIsotropicImagery,
   isAspectLocked,
@@ -244,6 +245,23 @@ describe("Esri export extent snap (Long Meadow rooftop lock)", () => {
     assert.ok(clipSouth[1] < clipNorth[1]);
     assert.ok(clipSouth[1] > -live.lengthM + 50);
     assert.ok(clipNorth[1] < -50);
+  });
+
+  it("infers the Esri content extent when export metadata never arrives", () => {
+    const drawn = geoFrame(LONG_MEADOW_DRAWN);
+    const content = applyImageryMeta(drawn, null, { width: 571, height: 741 }, {
+      requestBbox: LONG_MEADOW_DRAWN,
+    });
+    const live = applyImageryMeta(drawn, LONG_MEADOW_EXPORT, { width: 571, height: 741 });
+    assert.ok(Math.abs(content.south - live.south) < 1e-9, content.south + " vs " + live.south);
+    assert.ok(Math.abs(content.north - live.north) < 1e-9, content.north + " vs " + live.north);
+    assert.equal(content.west, live.west);
+    assert.equal(content.east, live.east);
+    assert.equal(content.imgW, 571);
+    assert.equal(content.imgH, 741);
+    const direct = esriContentExtent(LONG_MEADOW_DRAWN, 571, 741);
+    assert.ok(Math.abs(direct.south - live.south) < 1e-9);
+    assert.ok(Math.abs(direct.north - live.north) < 1e-9);
   });
 
   it("reads JPEG SOF size without jpeg-js", () => {
