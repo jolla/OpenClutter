@@ -1,9 +1,10 @@
 "use strict";
 
 /**
- * USGS 3DEP bare-earth DEM → a second HaminaClipboard JSON.
- * OpenIntent has no raisedFloorZones / slopedFloors. This file is paste-only
- * for Planner Plus and is not the OpenIntent import.
+ * USGS 3DEP bare-earth DEM → a HaminaClipboard JSON for Planner Plus paste.
+ * OpenIntent has no raisedFloorZones / slopedFloors. Copy terrain is the paste
+ * path. The same JSON is stored in the OpenIntent zip when 3DEP hits; Export
+ * does not download it as a second file.
  *
  * Clipboard meters match hamina-clipboard.js: NE is (0, 0), SW is
  * (−widthM, −lengthM). z on sloped floors is meters above the lowest sample.
@@ -239,8 +240,9 @@ function terrainFromSamples(samples, frame) {
 }
 
 /**
- * Bundle fields for the export API. The OpenIntent zip stays the import.
- * terrain-clipboard.json is a second Planner Plus paste, or null when 3DEP misses.
+ * Bundle fields for the export API. The OpenIntent zip stays the only download.
+ * terrainClipboard is the in-memory Planner Plus paste for Copy terrain.
+ * terrainFilename names that JSON inside the zip, or both are null when 3DEP misses.
  */
 function terrainBundleFields(terrain, warnings) {
   const ready = !!(
@@ -253,12 +255,11 @@ function terrainBundleFields(terrain, warnings) {
       terrainFilename: TERRAIN_FILENAME,
       terrainClipboard: terrain.clipboard,
       terrainStatus:
-        TERRAIN_FILENAME +
-        " ready (" +
+        "Terrain ready (" +
         terrain.raised +
         " raised, " +
         terrain.sloped +
-        " sloped). Paste it in Planner Plus. Do not import it as OpenIntent.",
+        " sloped). Use Copy terrain and paste it in Planner Plus. Do not import it as OpenIntent.",
     };
   }
   const omitted = (warnings || []).map(String).find((w) => /terrain omitted/i.test(w));

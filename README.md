@@ -83,14 +83,14 @@ With **Include foliage** checked, canopy comes from **USFS/NLCD percent tree can
 1. Search an address.
 2. Draw the site (under ~2 km on a side).
 3. **Include foliage** — leave unchecked for buildings only. Check it to add canopy polygons.
-4. **Export** — `{site}-openintent.zip`. A 3DEP grid also downloads `terrain-clipboard.json` (same file is inside the zip) and shows **Copy terrain** for Planner Plus paste. A DEM miss does not block the zip. Inside:
+4. **Export** — `{site}-openintent.zip` only. When USGS 3DEP returns a grid, **Copy terrain** pastes pads and slopes into Planner Plus. A DEM miss does not block the zip. Inside:
    - `openIntent_<slug>.json` — OpenIntent 2.0.1 with building `attenuation_areas` (gold Building materials). With Include foliage on, canopy polygons use Foliage - Heavy / Light, or a measured-height custom. Floorplan height 2.5 m (Hamina outdoor default)
    - `images/<slug>.jpg` — Esri aerial
    - `alignment-overlay.svg` — buildings (red). Canopy polygons (green) only when Include foliage was on. No tree-point circles
    - `frame-lock.json` — pixel/meter corners for Hamina vs OpenIntent vs JPEG
    - `export-warnings.json`
    - `hamina-clipboard.json` — optional legacy paste. Buildings only by default. With Include foliage on, the same canopy polygons (no trunks, no tree-point circles). Raised and sloped floors stay empty here
-   - `terrain-clipboard.json` — optional USGS 3DEP pads and sloped facets for Planner Plus paste, same NE-origin meter frame. Absent when the DEM request fails. Do not import this file as OpenIntent.
+   - `terrain-clipboard.json` — the same Planner Plus JSON as **Copy terrain**, stored in the zip when 3DEP returns a grid. Absent when the DEM request fails. Export does not download this as a second file. Do not import it as OpenIntent.
    - `README.txt` — import-only instructions, coverage stats, terrain paste steps, and troubleshooting if Hamina shows the map but no objects
    - `export-stats.json` — same coverage numbers as machine-readable JSON, including `attenuationAreasEmitted`
    - `VERIFY.txt` — exact `attenuation_areas` length (same as `openIntent_*.json`)
@@ -116,7 +116,7 @@ The page has one extra control: **Include foliage**, unchecked by default. Tree 
 ```
 
 - `includeFoliage` — default `false`. `false` exports buildings only (tree points and canopy hits are ignored). `true` adds connected canopy polygons and skips individual tree-point circles. Query `includeFoliage=true` is the same switch.
-- `format: "bundle"` (default) — JSON with `zipBase64`, `frame`, `stats`, `alignment`, `terrainStatus`. When 3DEP returns a grid, `terrainFilename` is `terrain-clipboard.json` and `terrainClipboard` is the Planner Plus paste. Otherwise both are null and `terrainStatus` says the DEM was omitted. `stats` includes `includeFoliage`, `buildingsKept`, `treesKept`, `treesSource`, `fetched`, and drop reasons. With foliage off, `treesSource` is `"none"` and `treesKept` is 0.
+- `format: "bundle"` (default) — JSON with `zipBase64`, `frame`, `stats`, `alignment`, `terrainStatus`. When 3DEP returns a grid, `terrainClipboard` is the Planner Plus paste (**Copy terrain**) and `terrainFilename` is the zip member `terrain-clipboard.json`. The page downloads only the OpenIntent zip. Otherwise both fields are null and `terrainStatus` says the DEM was omitted. `stats` includes `includeFoliage`, `buildingsKept`, `treesKept`, `treesSource`, `fetched`, and drop reasons. With foliage off, `treesSource` is `"none"` and `treesKept` is 0.
 - `format: "zip"` — same OpenIntent zip bytes
 - `format: "hamina-clipboard"` — clipboard JSON only (skips imagery fetch; old-Hamina fallback)
 
