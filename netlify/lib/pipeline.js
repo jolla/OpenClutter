@@ -24,6 +24,7 @@ const { dedupeStackedFootprints } = require("./conflate");
 const { zipStore } = require("./zip-store");
 const { TERRAIN_FILENAME } = require("./terrain");
 const { overlaySvg, frameLockJson } = require("./overlay");
+const { version: OPENCLUTTER_VERSION } = require("./version");
 
 const MIN_AREA_M2 = 25;
 const MAX_AREA_M2 = 40000;
@@ -184,6 +185,7 @@ function coverageStats(stats) {
     waterMaskRings: s.waterMaskRings || 0,
     pavementMaskRings: s.pavementMaskRings || 0,
     openintentVersion: s.openintentVersion || OPENINTENT_VERSION,
+    openclutterVersion: s.openclutterVersion || OPENCLUTTER_VERSION,
     coordinateUnit: s.coordinateUnit || "pixels",
     coordinateOrigin: s.coordinateOrigin || "Y-up from SW",
   };
@@ -239,6 +241,7 @@ function zipReadme(stats) {
     `treesKept: ${c.treesKept}\n` +
     `treesSource: ${c.treesSource}\n` +
     `attenuationAreasEmitted: ${c.attenuationAreasEmitted}\n` +
+    `openclutter_version: ${c.openclutterVersion}\n` +
     `openintent_version: ${c.openintentVersion}\n` +
     `fetched: ${c.fetched}\n` +
     `droppedMega: ${c.droppedMega}\n` +
@@ -260,6 +263,7 @@ function verifyTxt(stats) {
     `openIntentBuildingAreas: ${c.openIntentBuildingAreas || 0}\n` +
     `openIntentTreeAreas: ${c.openIntentTreeAreas || 0}\n` +
     `includeFoliage: ${c.includeFoliage ? "true" : "false"}\n` +
+    `openclutter_version: ${c.openclutterVersion}\n` +
     `openintent_version: ${c.openintentVersion}\n` +
     `coordinate_unit: ${c.coordinateUnit}\n` +
     `coordinate_origin: ${c.coordinateOrigin}\n` +
@@ -1477,6 +1481,7 @@ function buildClutter({
     openIntentBuildingAreas: buildingEmitted,
     openIntentTreeAreas: treeEmitted,
     openintentVersion: OPENINTENT_VERSION,
+    openclutterVersion: OPENCLUTTER_VERSION,
     coordinateUnit: "pixels",
     coordinateOrigin: "Y-up from SW",
     calibrated: Boolean(affine),

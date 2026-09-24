@@ -31,11 +31,12 @@ const { surfaceMasksFromImage } = require("../../netlify/lib/surface-mask");
 const { supplementFootprints } = require("../../netlify/lib/roof-mask");
 const { rejectPavementFootprints } = require("../../netlify/lib/pavement");
 const { scoreOiContentGrid } = require("../../netlify/lib/overlay");
+const { version: APP_VERSION } = require("../../netlify/lib/version");
 
 const ROOT = path.join(__dirname, "..", "..");
 const FIXTURES = path.join(ROOT, "test", "fixtures");
 const DEFAULT_OUT = path.join(ROOT, "test", "eval", "out");
-const UA = "openclutter/0.12.0-eval (https://github.com/jolla/OpenClutter)";
+const UA = `openclutter/${APP_VERSION}-eval (https://github.com/jolla/OpenClutter)`;
 
 function loadSitesIndex() {
   return JSON.parse(fs.readFileSync(path.join(FIXTURES, "sites.json"), "utf8")).sites;

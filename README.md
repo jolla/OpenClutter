@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.0** on `dev` — foliage toggle, terrain Copy, Sphere/Overture timing. The page title and the export zip (`openclutter_version`) both read this from `package.json`.
+
 Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/dev · Source: https://github.com/jolla/OpenClutter
 
 ## Production vs Dev
@@ -15,7 +17,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The UI shows a small **dev** badge there.
+- Hack on **https://openclutter.netlify.app/dev**. The title row shows a **dev** badge and the build version (`dev · v1.1.0`).
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 
@@ -92,8 +94,8 @@ With **Include foliage** checked, canopy comes from **USFS/NLCD percent tree can
    - `hamina-clipboard.json` — optional legacy paste. Buildings only by default. With Include foliage on, the same canopy polygons (no trunks, no tree-point circles). Raised and sloped floors stay empty here
    - `terrain-clipboard.json` — the same Planner Plus JSON as **Copy terrain**, stored in the zip when 3DEP returns a grid. Absent when the DEM request fails. Export does not download this as a second file. Do not import it as OpenIntent.
    - `README.txt` — import-only instructions, coverage stats, terrain paste steps, and troubleshooting if Hamina shows the map but no objects
-   - `export-stats.json` — same coverage numbers as machine-readable JSON, including `attenuationAreasEmitted`
-   - `VERIFY.txt` — exact `attenuation_areas` length (same as `openIntent_*.json`)
+   - `export-stats.json` — same coverage numbers as machine-readable JSON, including `attenuationAreasEmitted` and `openclutterVersion`
+   - `VERIFY.txt` — exact `attenuation_areas` length (same as `openIntent_*.json`) and `openclutter_version`
 5. Hamina: **Projects → Import → OpenIntent**.
 6. Optional: unzip. Confirm `VERIFY.txt` `attenuation_areas` is a positive integer. `openIntentTreeAreas` is 0 unless Include foliage was on. Open `alignment-overlay.svg` next to `images/`. If that count is >0 but Hamina shows map-only, paste `hamina-clipboard.json` and try 2D view / hardware acceleration off. Zip `README.txt` has the full steps.
 
