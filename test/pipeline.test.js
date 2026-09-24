@@ -1116,7 +1116,13 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.equal(/Paste hamina-clipboard\.json from the zip for trees/i.test(app), false);
     assert.match(app, /stats\.summary/);
     assert.match(app, /terrainClipboard/);
-    assert.match(app, /terrain-clipboard\.json/);
+    assert.match(app, /Copied terrain\. Paste it in Planner Plus/);
+    const afterDownloadFn = app.split("function downloadBlob")[1] || "";
+    assert.equal((afterDownloadFn.match(/downloadBlob\(/g) || []).length, 1);
+    assert.match(app, /downloadBlob\(b64ToBlob\(data\.zipBase64/);
+    assert.equal(/terrain-clipboard\.json/.test(app), false);
+    assert.equal(/terrainFilename/.test(app), false);
+    assert.equal(/downloaded terrain/i.test(app), false);
     assert.match(html, /id="copy-terrain"[^>]*hidden/);
     assert.match(html, /Copy terrain/);
     assert.equal(/<select/i.test(html), false);
