@@ -8,12 +8,16 @@
  * 2. Overture, then Esri MSBFP2, then FEMA USA Structures are considered in
  *    that order. A candidate is the same building when its exterior centroid
  *    sits inside a kept ring, or within 11 m of that ring's centroid (a second
- *    outline of the same roof). It is not emitted twice.
+ *    outline of the same roof). It is not emitted twice. A coarse mega hull
+ *    (over 150000 m² and under 40 vertices) does not count: emit drops that
+ *    hull, so using it as a mask deletes the detailed roofs inside it.
  * 3. Replace the kept ring only when the candidate is a single exterior and
  *    either has more vertices at a similar area, or the kept ring is a partial
- *    stub inside a fuller outline (area at most 2.4×). A smaller stub never
- *    replaces a larger ring. Imagery roof fill still runs after this and does
- *    not invent rings.
+ *    stub inside a fuller outline. A stub up to 2.4× smaller is replaced when
+ *    it sits inside the fuller ring. A center stub up to 8× smaller is replaced
+ *    only when each centroid lies inside the other ring (the same roof, not a
+ *    house inside a campus). A smaller stub never replaces a larger ring.
+ *    Imagery roof fill still runs after this and does not invent rings.
  * 4. Centroid-in-ring still misses the same roof drawn twice when the outlines
  *    are shifted (Oak Creek duplicates sit 14–16 m apart, IoU ~0.7, and neither
  *    centroid falls inside the other). dedupeStackedFootprints runs after the
@@ -108,6 +112,15 @@ function cloneGeometry(geometry) {
 }
 
 const SAME_ROOF_M = 11;
+/** Fuller outline may replace a stub up to this area ratio. */
+const STUB_RATIO_MAX = 2.4;
+/**
+ * A concentric center stub (each centroid inside the other ring) may be up to
+ * this many times smaller than the full roof. Vegas east of the Sphere: a
+ * 1355 m² fragment sits in an 8246 m² hall (ratio ~6). A campus centroid does
+ * not fall inside a house, so this does not promote a hull over a real roof.
+ */
+const CONCENTRIC_STUB_RATIO_MAX = 8;
 /** Intersection / candidate area above this is the same roof, not a neighbor. */
 const STACK_COVER = 0.55;
 /** Ignore a shared wall. Notch anything larger that still stacks. */
@@ -155,9 +168,23 @@ function shouldReplaceGeometry(owner, candidate) {
   if (!(aa > 1) || !(ab > 1) || !(va >= 3) || !(vb >= 3)) return false;
   const ratio = ab / aa;
   if (vb >= va + 2 && ratio >= 0.65 && ratio <= 1.5) return true;
-  const c = centroid(ownerRing);
-  if (ratio >= 1.35 && ratio <= 2.4 && vb + 1 >= va && c && pointInRing(c, candRing)) return true;
+  const ownerC = centroid(ownerRing);
+  if (!(ownerC && pointInRing(ownerC, candRing) && vb + 1 >= va && ratio >= 1.35)) return false;
+  if (ratio <= STUB_RATIO_MAX) return true;
+  const candC = centroid(candRing);
+  if (
+    ratio <= CONCENTRIC_STUB_RATIO_MAX &&
+    ab < MEGA_CAMPUS_M2 &&
+    candC &&
+    pointInRing(candC, ownerRing)
+  ) {
+    return true;
+  }
   return false;
+}
+
+function ringIsCoarseMega(ring) {
+  return coarseMega(ringAreaM2(ring), ringVertexCount(ring));
 }
 
 function similarFootprint(owner, candidate) {
@@ -226,9 +253,11 @@ function conflateFootprints(primary, secondary, opts) {
     const seen = new Set();
     for (const ring of ex) {
       const c = centroid(ring);
+      const blocks = (o) => !ringIsCoarseMega(o.ring);
       const owner =
         c &&
-        (owners.find((o) => pointInRing(c, o.ring)) || owners.find((o) => centroidNear(c, o.ring)));
+        (owners.find((o) => blocks(o) && pointInRing(c, o.ring)) ||
+          owners.find((o) => blocks(o) && centroidNear(c, o.ring)));
       if (!owner) {
         covered = false;
         continue;

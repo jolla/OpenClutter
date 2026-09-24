@@ -4,7 +4,7 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
-**v1.1.0** on `dev` — foliage toggle, terrain Copy, Sphere/Overture timing. The page title and the export zip (`openclutter_version`) both read this from `package.json`.
+**v1.1.1** on `dev` — foliage toggle, terrain Copy, Sphere-area roofs. The page title and the export zip (`openclutter_version`) both read this from `package.json`.
 
 Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/dev · Source: https://github.com/jolla/OpenClutter
 
@@ -17,7 +17,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The title row shows a **dev** badge and the build version (`dev · v1.1.0`).
+- Hack on **https://openclutter.netlify.app/dev**. The title row shows a **dev** badge and the build version (`dev · v1.1.1`).
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 

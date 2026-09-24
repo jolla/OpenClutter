@@ -239,23 +239,40 @@ async function fetchOvertureFootprints(frame, opts) {
   }
   const features = [];
   let groupsRead = 0;
+  let partial = false;
   const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
   const rowFilter = bboxRowFilter(filterBox);
   try {
     for (const [file, gs] of byFile) {
-      if (signal.aborted) break;
+      if (signal.aborted) {
+        partial = true;
+        break;
+      }
       const url = AZURE_PREFIX + file;
       const source = await reader.asyncBufferFromUrl({
         url,
         requestInit: { signal },
       });
-      for (const g of gs) {
-        if (signal.aborted) break;
-        const rows = await readGroupRows(reader, source, g, rowFilter, signal);
-        const chunk = featuresFromRows(rows, filterBox);
-        for (const f of chunk) features.push(f);
-        groupsRead++;
-      }
+      // Same-file row groups in parallel. A south-heavy Vegas box reads the
+      // southern neighbor first; waiting for it to finish before the Sphere
+      // group is how a late abort drops the dome. A group that aborts does
+      // not cancel a sibling that already parsed.
+      const results = await Promise.all(
+        gs.map(async (g) => {
+          if (signal.aborted) return "abort";
+          try {
+            const rows = await readGroupRows(reader, source, g, rowFilter, signal);
+            const chunk = featuresFromRows(rows, filterBox);
+            for (const f of chunk) features.push(f);
+            groupsRead++;
+            return "ok";
+          } catch (e) {
+            if (signal.aborted || isAbortError(e)) return "abort";
+            throw e;
+          }
+        })
+      );
+      if (results.some((r) => r === "abort")) partial = true;
     }
   } catch (e) {
     if (features.length && (signal.aborted || isAbortError(e))) {
@@ -263,10 +280,10 @@ async function fetchOvertureFootprints(frame, opts) {
     }
     throw e;
   }
-  if (signal.aborted && features.length) {
+  if ((partial || signal.aborted) && features.length) {
     return { features, rowGroups: groups.length, groupsRead, release: RELEASE, partial: true };
   }
-  if (signal.aborted) throw failAborted();
+  if (signal.aborted || partial) throw failAborted();
   return { features, rowGroups: groups.length, groupsRead, release: RELEASE };
 }
 
