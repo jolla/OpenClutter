@@ -176,6 +176,37 @@ describe("clutter handler (mocked Esri)", () => {
     assert.match(body.stats.summary, /Trees /);
     assert.equal(body.stats.treesSource, "none");
     assert.ok(!urls.some((u) => u.includes("USFS_EDW_NLCD_TCC")));
+    const dem = urls.find((u) => u.includes("elevation.nationalmap.gov") && u.includes("getSamples"));
+    assert.ok(dem);
+    assert.equal(new URL(dem).searchParams.get("sampleCount"), "144");
+    assert.equal(body.stats.terrainResolution, "default");
+  });
+
+  it("asks 3DEP for a denser sample count when terrain resolution is Fine or Finest", async () => {
+    async function sampleCountFor(terrainResolution) {
+      urls.length = 0;
+      const payload = { ...WYNN, format: "bundle" };
+      if (terrainResolution != null) payload.terrainResolution = terrainResolution;
+      const res = await handler({
+        httpMethod: "POST",
+        body: JSON.stringify(payload),
+      });
+      assert.equal(res.statusCode, 200);
+      const body = JSON.parse(res.body);
+      assert.equal(
+        body.stats.terrainResolution,
+        terrainResolution === "fine" || terrainResolution === "finest" ? terrainResolution : "default"
+      );
+      assert.equal(body.stats.includeFoliage, false);
+      const hit = urls.find((u) => u.includes("elevation.nationalmap.gov") && u.includes("getSamples"));
+      assert.ok(hit);
+      return new URL(hit).searchParams.get("sampleCount");
+    }
+    assert.equal(await sampleCountFor(undefined), "144");
+    assert.equal(await sampleCountFor("default"), "144");
+    assert.equal(await sampleCountFor("fine"), "324");
+    assert.equal(await sampleCountFor("finest"), "576");
+    assert.equal(await sampleCountFor("ultra"), "144");
   });
 
   it("clipboard-only skips imagery and still uses shared widthM", async () => {

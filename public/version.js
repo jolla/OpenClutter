@@ -1,1 +1,1 @@
-window.OPENCLUTTER_VERSION = "1.1.5";
+window.OPENCLUTTER_VERSION = "1.1.6";

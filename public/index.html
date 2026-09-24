@@ -40,6 +40,20 @@
     }
     .check input { width: 16px; height: 16px; margin: 0; accent-color: #238636; }
     #copy-terrain { width: 100%; margin-top: 10px; }
+    .terrain-res { margin-top: 10px; }
+    .terrain-res[hidden] { display: none; }
+    .terrain-res-head {
+      display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+      font-size: 13px;
+    }
+    .terrain-res-head label { cursor: pointer; }
+    #terrain-resolution-readout { color: #8b949e; font-size: 12px; font-variant-numeric: tabular-nums; }
+    #terrain-resolution-range {
+      width: 100%; margin: 8px 0 2px; accent-color: #238636; cursor: pointer;
+    }
+    .terrain-res-stops {
+      display: flex; justify-content: space-between; font-size: 11px; color: #6e7681;
+    }
     .row { display: flex; gap: 8px; margin-top: 10px; }
     .row button { flex: 1; }
     .hint { margin: 8px 0 0; font-size: 11px; line-height: 1.35; color: #6e7681; }
@@ -76,7 +90,7 @@
 <body>
   <div id="map"></div>
   <div class="panel">
-    <h1>OpenClutter <span id="env-badge">dev</span><span id="app-version">v1.1.5</span></h1>
+    <h1>OpenClutter <span id="env-badge">dev</span><span id="app-version">v1.1.6</span></h1>
     <div class="sub">One zip. Import OpenIntent for the map and buildings.</div>
     <form id="search">
       <input type="search" id="q" placeholder="Address" required />
@@ -91,6 +105,30 @@
       <input type="checkbox" id="include-foliage" />
       Include foliage
     </label>
+    <div id="terrain-resolution" class="terrain-res" hidden>
+      <div class="terrain-res-head">
+        <label for="terrain-resolution-range">Terrain resolution</label>
+        <span id="terrain-resolution-readout">Default · ~80 m</span>
+      </div>
+      <input
+        type="range"
+        id="terrain-resolution-range"
+        min="0"
+        max="2"
+        step="1"
+        value="0"
+        aria-valuemin="0"
+        aria-valuemax="2"
+        aria-valuenow="0"
+        aria-label="Terrain resolution"
+      />
+      <div class="terrain-res-stops" aria-hidden="true">
+        <span>Default</span>
+        <span>Fine</span>
+        <span>Finest</span>
+      </div>
+      <p class="hint">Ski hills only. Flatter ground keeps the same mesh.</p>
+    </div>
     <button type="button" id="copy-terrain" class="secondary" hidden>Copy terrain</button>
     <div id="status">Search, then draw the site.</div>
   </div>
