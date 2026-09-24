@@ -4,7 +4,7 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
-**v1.1.3** on `dev` — ski-hill terrain quads and building height from floor. The page title and the export zip (`openclutter_version`) both read this from `package.json`.
+**v1.1.4** on `dev` — ski-hill foliage height from floor. The page title and the export zip (`openclutter_version`) both read this from `package.json`.
 
 Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/dev · Source: https://github.com/jolla/OpenClutter
 
@@ -17,7 +17,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The title row shows a **dev** badge and the build version (`dev · v1.1.3`).
+- Hack on **https://openclutter.netlify.app/dev**. The title row shows a **dev** badge and the build version (`dev · v1.1.4`).
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 
@@ -106,11 +106,11 @@ Terrain still cannot go in the OpenIntent zip. **Copy terrain** pastes open quad
 Hamina’s attenuating-object fields are **bottom height from floor** and **top height from floor**. On a ski-hill DEM those are OpenIntent `bottom_height` and `top_height` (clipboard `bottomEdge` and `topEdge`):
 
 - Bottom height from floor = the slope top under that footprint (meters above the lowest DEM sample, same zero as the terrain paste).
-- Top height from floor = that bottom + the building height.
+- Top height from floor = that bottom + the building height. With Include foliage on, canopy uses that bottom + the foliage height (the same thickness already stored on the vegetation material).
 
-The material name is `Building - One Floor 86.4` (the number is the bottom). It is not the poisoned `Building N.N m` form, and it is not `bottom_height: 0` on a gold object. Oak Creek (~6 m), Long Meadow (~15 m), and the Las Vegas Sphere box (~17 m) stay below the 20 m gate, so `bottom_height` is omitted and the top stays the stock building height (bottom ≈ 0).
+The building material name is `Building - One Floor 86.4` (the number is the bottom). A lifted canopy is `Foliage - Heavy @ 86.4`, or `Foliage - Heavy 14.2 @ 86.4` when 14.2 m is the canopy thickness. Those are not the poisoned `Building N.N m` / `Foliage N.N m` forms, and they are not `bottom_height: 0` on a gold object. Oak Creek (~6 m), Long Meadow (~15 m), and the Las Vegas Sphere box (~17 m) stay below the 20 m gate, so `bottom_height` is omitted and the top stays the stock height (bottom ≈ 0). Include foliage stays off unless checked.
 
-Retest Granite Peak / Rib Mountain, Wausau WI: draw the ski hill (under ~2 km on a side), Export, Import the zip, Copy terrain and paste it in Planner Plus, then check 3D. Uphill buildings should sit on the slope, not under it. A valley building whose ground is under 1 m stays on the floor.
+Retest Granite Peak / Rib Mountain, Wausau WI: draw the ski hill (under ~2 km on a side), Export, Import the zip, Copy terrain and paste it in Planner Plus, then check 3D. Uphill buildings should sit on the slope, not under it. Check Include foliage, export again, Import and Copy terrain: foliage should be visible on the slope in 3D. A valley object whose ground is under 1 m stays on the floor.
 
 The page has one extra control: **Include foliage**, unchecked by default. Tree source (NLCD canopy polygons when that box is checked), OSM, and calibration stay automatic or API-only.
 
