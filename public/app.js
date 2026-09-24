@@ -8,6 +8,8 @@
     path.startsWith("/dev/");
   const badge = document.getElementById("env-badge");
   if (badge && isDev) badge.classList.add("on");
+  const ver = document.getElementById("app-version");
+  if (ver && window.OPENCLUTTER_VERSION) ver.textContent = "v" + window.OPENCLUTTER_VERSION;
 })();
 
 const map = L.map("map").setView([36.128, -115.16], 15);

@@ -12,6 +12,7 @@ const {
 const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS } = require("../netlify/lib/pipeline");
 const { OI_BUILDING_NAMES, isVegetationOiName, isPoisonedOiName } = require("../netlify/lib/materials");
 const { zipStore, unzipStore } = require("../netlify/lib/zip-store");
+const { version: APP_VERSION } = require("../netlify/lib/version");
 const { canopyHitsGrid } = require("./canopy-grid");
 
 const WYNN = {
@@ -281,9 +282,12 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(exportStats.treesSource, "none");
     assert.equal(exportStats.attenuationAreasEmitted, areas.length);
     assert.equal(exportStats.openintentVersion, "2.0.1");
+    assert.equal(exportStats.openclutterVersion, APP_VERSION);
+    assert.match(readme, new RegExp(`^openclutter_version: ${APP_VERSION}$`, "m"));
     assert.ok(zipped["VERIFY.txt"]);
     const verify = zipped["VERIFY.txt"].toString();
     assert.match(verify, new RegExp(`^attenuation_areas: ${areas.length}$`, "m"));
+    assert.match(verify, new RegExp(`^openclutter_version: ${APP_VERSION}$`, "m"));
     assert.match(readme, /VERIFY\.txt/);
     assert.match(readme, /alignment-overlay\.svg/);
     assert.match(readme, /hamina-clipboard\.json/);

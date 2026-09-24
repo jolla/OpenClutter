@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_HARD_MS } = require("../netlify/functions/clutter");
 const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
 const { unzipStore } = require("../netlify/lib/zip-store");
+const { version: APP_VERSION } = require("../netlify/lib/version");
 
 const WYNN = {
   west: -115.1735,
@@ -146,7 +147,10 @@ describe("clutter handler (mocked Esri)", () => {
     const oi = JSON.parse(files["openIntent_Wynn-Golf.json"].toString());
     assert.ok(oi.floorplans[0].attenuation_areas.length >= 1);
     assert.equal(exportStats.attenuationAreasEmitted, oi.floorplans[0].attenuation_areas.length);
+    assert.equal(exportStats.openclutterVersion, APP_VERSION);
+    assert.match(files["README.txt"].toString(), new RegExp(`^openclutter_version: ${APP_VERSION}$`, "m"));
     assert.match(files["VERIFY.txt"].toString(), new RegExp(`^attenuation_areas: ${exportStats.attenuationAreasEmitted}$`, "m"));
+    assert.match(files["VERIFY.txt"].toString(), new RegExp(`^openclutter_version: ${APP_VERSION}$`, "m"));
     assert.equal(body.stats.openIntentBuildingAreas, body.stats.buildings);
     assert.equal(body.stats.includeFoliage, false);
     assert.equal(body.stats.openIntentTreeAreas, 0);

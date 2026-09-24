@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
 const T = require("../netlify/lib/tree-source");
+const { version: APP_VERSION } = require("../netlify/lib/version");
 const { loadSitesIndex, loadFixture, runLoaded } = require("./eval/run");
 
 describe("eval gate (cached fixtures, no Hamina)", () => {
@@ -87,6 +88,7 @@ describe("eval gate (cached fixtures, no Hamina)", () => {
     assert.equal(/<circle /.test(files["alignment-overlay.svg"].toString()), false);
     assert.match(files["VERIFY.txt"].toString(), /^attenuation_areas: \d+$/m);
     assert.match(files["VERIFY.txt"].toString(), /^includeFoliage: false$/m);
+    assert.match(files["VERIFY.txt"].toString(), new RegExp(`^openclutter_version: ${APP_VERSION}$`, "m"));
     assert.match(files["README.txt"].toString(), /Include foliage is off by default/);
   });
 });

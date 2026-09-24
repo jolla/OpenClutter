@@ -1,4 +1,4 @@
-const UA = "openclutter/0.1 (https://github.com/jolla/OpenClutter)";
+const { userAgent: UA } = require("../lib/version");
 
 exports.handler = async (event) => {
   const cors = {

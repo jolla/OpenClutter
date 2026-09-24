@@ -14,10 +14,14 @@
     #map { position: absolute; inset: 0; }
     .panel {
       position: absolute; z-index: 1000; top: 12px; left: 12px; width: min(360px, calc(100% - 24px));
+      max-height: calc(100% - 24px); overflow: auto;
       background: #161b22ee; border: 1px solid #30363d; border-radius: 12px; padding: 14px 16px;
       backdrop-filter: blur(8px);
     }
-    h1 { font-size: 16px; margin: 0 0 4px; font-weight: 650; }
+    h1 {
+      font-size: 16px; margin: 0 0 4px; font-weight: 650;
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
     .sub { color: #8b949e; font-size: 12px; margin-bottom: 12px; }
     form { display: flex; gap: 8px; }
     input[type=search] {
@@ -41,16 +45,21 @@
     .hint { margin: 8px 0 0; font-size: 11px; line-height: 1.35; color: #6e7681; }
     #status { margin-top: 10px; font-size: 12px; color: #8b949e; min-height: 16px; white-space: pre-wrap; }
     #status.err { color: #f85149; }
-    .foot {
-      margin-top: 12px; padding-top: 10px; border-top: 1px solid #30363d;
-      font-size: 11px; color: #6e7681; display: flex; align-items: center; gap: 8px;
-    }
     #env-badge {
       display: none; font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
       text-transform: uppercase; color: #0d1117; background: #d29922;
       border-radius: 4px; padding: 2px 6px;
     }
     #env-badge.on { display: inline-block; }
+    #app-version {
+      font-size: 13px; font-weight: 700; color: #e8eaed; letter-spacing: 0.01em;
+    }
+    #env-badge.on + #app-version::before {
+      content: "·";
+      margin: 0 6px 0 2px;
+      font-weight: 600;
+      color: #8b949e;
+    }
     .leaflet-tooltip.area-chip {
       background: #161b22ee;
       border: 1px solid #3fb950;
@@ -67,7 +76,7 @@
 <body>
   <div id="map"></div>
   <div class="panel">
-    <h1>OpenClutter</h1>
+    <h1>OpenClutter <span id="env-badge">dev</span><span id="app-version">v1.1.0</span></h1>
     <div class="sub">One zip. Import OpenIntent for the map and buildings.</div>
     <form id="search">
       <input type="search" id="q" placeholder="Address" required />
@@ -84,15 +93,12 @@
     </label>
     <button type="button" id="copy-terrain" class="secondary" hidden>Copy terrain</button>
     <div id="status">Search, then draw the site.</div>
-    <div class="foot">
-      <span id="env-badge">dev</span>
-      <span id="app-version">v1.0.0</span>
-    </div>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/tree-detect.js"></script>
   <script src="/bbox-area.js"></script>
   <script src="/site-draw.js"></script>
+  <script src="/version.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
