@@ -56,6 +56,31 @@ function groupArea(g) {
   return Math.max(0, g.xmax - g.xmin) * Math.max(0, g.ymax - g.ymin);
 }
 
+function groupContainsPoint(g, lon, lat) {
+  return g.xmin <= lon && lon <= g.xmax && g.ymin <= lat && lat <= g.ymax;
+}
+
+/**
+ * Row groups that cover the site center are read first. A Las Vegas Sphere
+ * bbox overlaps a southern neighbor group (lower rowStart, ymax just south of
+ * the building) and the group that actually contains the ring. Sorting by
+ * rowStart reads the empty neighbor first; if the abort lands on the second
+ * group the Sphere is gone.
+ */
+function orderGroups(groups, bbox) {
+  const lon = (+bbox.west + +bbox.east) / 2;
+  const lat = (+bbox.south + +bbox.north) / 2;
+  return (groups || []).slice().sort((a, b) => {
+    const ca = groupContainsPoint(a, lon, lat) ? 0 : 1;
+    const cb = groupContainsPoint(b, lon, lat) ? 0 : 1;
+    if (ca !== cb) return ca - cb;
+    const aa = groupArea(a);
+    const ab = groupArea(b);
+    if (aa !== ab) return aa - ab;
+    return a.rowStart - b.rowStart;
+  });
+}
+
 function groupsForBbox(west, south, east, north) {
   const idx = parsedIndex();
   const w = +west - QUERY_PAD_DEG;
@@ -81,9 +106,37 @@ function groupsForBbox(west, south, east, north) {
       ymax,
     });
   }
-  if (hits.length <= MAX_GROUPS) return hits;
-  hits.sort((a, b) => groupArea(a) - groupArea(b));
-  return hits.slice(0, MAX_GROUPS);
+  const bbox = { west: +west, south: +south, east: +east, north: +north };
+  const ordered = orderGroups(hits, bbox);
+  if (ordered.length <= MAX_GROUPS) return ordered;
+  const lon = (bbox.west + bbox.east) / 2;
+  const lat = (bbox.south + bbox.north) / 2;
+  const center = [];
+  const rest = [];
+  for (const g of ordered) {
+    if (groupContainsPoint(g, lon, lat)) center.push(g);
+    else rest.push(g);
+  }
+  rest.sort((a, b) => groupArea(a) - groupArea(b));
+  return orderGroups(center.concat(rest).slice(0, MAX_GROUPS), bbox);
+}
+
+/** Struct bbox overlap. Page stats skip GeoParquet pages that miss the site. */
+function bboxRowFilter(bbox) {
+  return {
+    $and: [
+      { "bbox.xmax": { $gte: +bbox.west } },
+      { "bbox.xmin": { $lte: +bbox.east } },
+      { "bbox.ymax": { $gte: +bbox.south } },
+      { "bbox.ymin": { $lte: +bbox.north } },
+    ],
+  };
+}
+
+function isAbortError(err) {
+  if (!err) return false;
+  if (err.name === "AbortError") return true;
+  return /abort|timeout/i.test(String(err.message || err));
 }
 
 function asGeometry(value) {
@@ -152,6 +205,22 @@ function loadReader() {
   };
 }
 
+async function readGroupRows(reader, source, group, filter, signal) {
+  const base = {
+    file: source,
+    compressors: reader.compressors,
+    columns: ["height", "num_floors", "bbox", "geometry", "is_underground"],
+    rowStart: group.rowStart,
+    rowEnd: group.rowStart + group.rowCount,
+  };
+  try {
+    return await reader.parquetReadObjects({ ...base, filter, usePageIndex: true });
+  } catch (e) {
+    if (signal.aborted || isAbortError(e)) throw e;
+    return reader.parquetReadObjects(base);
+  }
+}
+
 async function fetchOvertureFootprints(frame, opts) {
   const bbox = {
     west: +frame.west,
@@ -159,39 +228,46 @@ async function fetchOvertureFootprints(frame, opts) {
     east: +frame.east,
     north: +frame.north,
   };
-  const filter = opts && opts.filter ? opts.filter : bbox;
+  const filterBox = opts && opts.filter ? opts.filter : bbox;
   const groups = groupsForBbox(bbox.west, bbox.south, bbox.east, bbox.north);
-  if (!groups.length) return { features: [], rowGroups: 0, release: RELEASE };
-  const { asyncBufferFromUrl, parquetReadObjects, compressors } = loadReader();
+  if (!groups.length) return { features: [], rowGroups: 0, groupsRead: 0, release: RELEASE };
+  const reader = (opts && opts.reader) || loadReader();
   const byFile = new Map();
   for (const g of groups) {
     if (!byFile.has(g.file)) byFile.set(g.file, []);
     byFile.get(g.file).push(g);
   }
   const features = [];
-  for (const [file, gs] of byFile) {
-    const url = AZURE_PREFIX + file;
-    const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
-    if (signal.aborted) throw failAborted();
-    const source = await asyncBufferFromUrl({
-      url,
-      requestInit: { signal },
-    });
-    gs.sort((a, b) => a.rowStart - b.rowStart);
-    for (const g of gs) {
-      if (signal.aborted) throw failAborted();
-      const rows = await parquetReadObjects({
-        file: source,
-        compressors,
-        columns: ["height", "num_floors", "bbox", "geometry", "is_underground"],
-        rowStart: g.rowStart,
-        rowEnd: g.rowStart + g.rowCount,
+  let groupsRead = 0;
+  const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
+  const rowFilter = bboxRowFilter(filterBox);
+  try {
+    for (const [file, gs] of byFile) {
+      if (signal.aborted) break;
+      const url = AZURE_PREFIX + file;
+      const source = await reader.asyncBufferFromUrl({
+        url,
+        requestInit: { signal },
       });
-      const chunk = featuresFromRows(rows, filter);
-      for (const f of chunk) features.push(f);
+      for (const g of gs) {
+        if (signal.aborted) break;
+        const rows = await readGroupRows(reader, source, g, rowFilter, signal);
+        const chunk = featuresFromRows(rows, filterBox);
+        for (const f of chunk) features.push(f);
+        groupsRead++;
+      }
     }
+  } catch (e) {
+    if (features.length && (signal.aborted || isAbortError(e))) {
+      return { features, rowGroups: groups.length, groupsRead, release: RELEASE, partial: true };
+    }
+    throw e;
   }
-  return { features, rowGroups: groups.length, release: RELEASE };
+  if (signal.aborted && features.length) {
+    return { features, rowGroups: groups.length, groupsRead, release: RELEASE, partial: true };
+  }
+  if (signal.aborted) throw failAborted();
+  return { features, rowGroups: groups.length, groupsRead, release: RELEASE };
 }
 
 module.exports = {
@@ -200,6 +276,8 @@ module.exports = {
   GROUP_STRIDE,
   MAX_GROUPS,
   groupsForBbox,
+  orderGroups,
+  bboxRowFilter,
   featureFromRow,
   featuresFromRows,
   fetchOvertureFootprints,

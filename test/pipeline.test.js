@@ -570,6 +570,20 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(covers(full, disk, -115.16208, 36.12123), true);
     const diskPx = oiPixelCoords(disk.oiAreas[0].area.coordinates);
     assert.ok(diskPx.length - 1 <= MAX_OI_RING_VERTS, `full sphere OI verts ${diskPx.length - 1}`);
+    const xs = disk.overlayRings[0].map((p) => p[0]);
+    const ys = disk.overlayRings[0].map((p) => p[1]);
+    const wM = (Math.max(...xs) - Math.min(...xs)) * full.mpuX;
+    const hM = (Math.max(...ys) - Math.min(...ys)) * full.mpuY;
+    assert.ok(wM > 140 && hM > 140, `sphere span ${wM} x ${hM}`);
+    const aspect = wM / hM;
+    assert.ok(aspect > 0.8 && aspect < 1.25, `sphere aspect ${aspect}`);
+    let areaPx = 0;
+    const ring = disk.overlayRings[0];
+    for (let i = 0; i < ring.length - 1; i++) {
+      areaPx += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+    }
+    const areaM2 = (Math.abs(areaPx) / 2) * full.mpuX * full.mpuY;
+    assert.ok(areaM2 > 15000 && areaM2 < 40000, `emitted sphere area ${areaM2}`);
   });
 
   it("caps a 100+ vertex ring and drops a one-axis sliver from OpenIntent", () => {
