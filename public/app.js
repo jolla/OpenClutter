@@ -8,9 +8,45 @@
     path.startsWith("/dev/");
   const badge = document.getElementById("env-badge");
   if (badge && isDev) badge.classList.add("on");
+  const terrainRes = document.getElementById("terrain-resolution");
+  if (terrainRes && isDev) terrainRes.hidden = false;
   const ver = document.getElementById("app-version");
   if (ver && window.OPENCLUTTER_VERSION) ver.textContent = "v" + window.OPENCLUTTER_VERSION;
 })();
+
+const TERRAIN_STOPS = [
+  { id: "default", readout: "Default · ~80 m" },
+  { id: "fine", readout: "Fine · ~40 m" },
+  { id: "finest", readout: "Finest · ~25 m" },
+];
+
+function terrainStopIndex() {
+  const input = document.getElementById("terrain-resolution-range");
+  const n = input ? Number(input.value) : 0;
+  if (n === 1 || n === 2) return n;
+  return 0;
+}
+
+function syncTerrainResolutionReadout() {
+  const input = document.getElementById("terrain-resolution-range");
+  const readout = document.getElementById("terrain-resolution-readout");
+  const stop = TERRAIN_STOPS[terrainStopIndex()];
+  if (readout && stop) readout.textContent = stop.readout;
+  if (input) input.setAttribute("aria-valuenow", String(terrainStopIndex()));
+}
+
+function selectedTerrainResolution() {
+  const wrap = document.getElementById("terrain-resolution");
+  if (!wrap || wrap.hidden) return null;
+  const stop = TERRAIN_STOPS[terrainStopIndex()];
+  return stop ? stop.id : "default";
+}
+
+const terrainResolutionRange = document.getElementById("terrain-resolution-range");
+if (terrainResolutionRange) {
+  terrainResolutionRange.addEventListener("input", syncTerrainResolutionReadout);
+  syncTerrainResolutionReadout();
+}
 
 const map = L.map("map").setView([36.128, -115.16], 15);
 L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
@@ -437,6 +473,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage) {
       ...bbox,
       name: document.getElementById("q").value || "Site",
       includeFoliage: foliage,
+      terrainResolution: selectedTerrainResolution() || undefined,
       trees: foliage ? trees : [],
       treesSource: foliage ? treesSource : "none",
       canopyHits: foliage && canopyHits && canopyHits.length ? canopyHits : undefined,

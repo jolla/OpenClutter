@@ -58,7 +58,13 @@ const { fetchUsaStructures } = require("../lib/usa-structures");
 const { assembleFootprints } = require("../lib/conflate");
 const { fetchOvertureFootprints } = require("../lib/overture");
 const { fetchChmGrid, applyChmToTrees, sampleChmGrid } = require("../lib/canopy-height");
-const { fetchDemSamples, terrainFromSamples, terrainBundleFields, noteMissingTerrain } = require("../lib/terrain");
+const {
+  fetchDemSamples,
+  terrainFromSamples,
+  terrainBundleFields,
+  noteMissingTerrain,
+  normalizeTerrainResolution,
+} = require("../lib/terrain");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
 const { surfaceMasksFromImage } = require("../lib/surface-mask");
@@ -418,6 +424,7 @@ exports.handler = async (event) => {
 
   const format = parseFormat(body);
   const needImage = format !== "hamina-clipboard";
+  const terrainResolution = normalizeTerrainResolution(body.terrainResolution).id;
   const imgUrl = esriImageryUrl(frame);
   const imgMetaUrl = esriImageryMetaUrl(frame);
   const includeFoliage = wantFoliage(event, body);
@@ -477,7 +484,9 @@ exports.handler = async (event) => {
       if (imgMeta) frame = applyImageryMeta(frame, imgMeta, null, { requestBbox });
       // Same lon/lat extent the JPEG will lock. Meters are applied later with
       // the isotropic frame, so pads line up with hamina-clipboard.json.
-      terrainJob = beginOptional((signal) => fetchDemSamples(frame, null, { signal }));
+      terrainJob = beginOptional((signal) =>
+        fetchDemSamples(frame, null, { signal, terrainResolution })
+      );
     }
     const globalJob = fetchMsGlobalFootprints(frame, (url) =>
       fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(CORE_FETCH_MS) })
@@ -650,7 +659,7 @@ exports.handler = async (event) => {
   let terrain = null;
   if (demSamples && demSamples.length && frame) {
     try {
-      terrain = terrainFromSamples(demSamples, frame);
+      terrain = terrainFromSamples(demSamples, frame, { terrainResolution });
     } catch {
       terrain = null;
     }
@@ -694,6 +703,7 @@ exports.handler = async (event) => {
       maskRings,
       maskPolygons,
       includeFoliage,
+      terrainResolution,
     });
   }
 
