@@ -252,6 +252,7 @@ function runLoaded(loaded, opts) {
     },
     canopyHits: includeFoliage && resolved.source === "nlcd-canopy" && parsed && parsed.hits ? parsed.hits : [],
     heightSample: includeFoliage && prefer && loaded.chm ? (lon, lat) => sampleChmGrid(loaded.chm, lon, lat) : null,
+    chmGrid: includeFoliage && prefer && loaded.chm ? loaded.chm : null,
     includeFoliage,
   });
   const buildings = scoreBuildings(emittedFeatures, fp.overlayRings, frame);

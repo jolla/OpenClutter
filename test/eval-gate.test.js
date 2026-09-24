@@ -106,9 +106,11 @@ describe("eval gate with Include foliage on", () => {
       );
       assert.equal(next.exportStats.includeFoliage, true);
       assert.ok(next.exportStats.openIntentTrees.emitted >= 1, site.id);
+      assert.ok(next.exportStats.openIntentTrees.emitted <= 1200, site.id);
+      assert.equal(next.built.stats.foliageGeometry, "chm-crown", site.id);
       assert.ok(
-        next.exportStats.openIntentTrees.emitted < next.exportStats.trees.treesPlaced,
-        `${site.id}: canopy areas ${next.exportStats.openIntentTrees.emitted} should be fewer than tree points ${next.exportStats.trees.treesPlaced}`
+        next.exportStats.openIntentTrees.emitted >= 8,
+        `${site.id}: expected individual CHM crowns, got ${next.exportStats.openIntentTrees.emitted}`
       );
       const areas = next.built.openintent.floorplans[0].attenuation_areas;
       const veg = areas.filter((a) => isVegetationOiName(a.area_material && a.area_material.name));
