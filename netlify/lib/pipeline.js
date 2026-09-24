@@ -233,7 +233,9 @@ const TERRAIN_README =
   "USGS 3DEP bare-earth elevations become open quads on the same meter frame.\n" +
   "Flat ground is a 2×2 pad. A mild rise is a 4×3 lattice. Relief under 20 m\n" +
   "stays 6×5. A ski hill (DEM relief at least 20 m, Granite Peak scale) uses the\n" +
-  "terrain resolution chosen on export. Default is about 80 m quads, at most 12×12\n" +
+  "terrain resolution chosen on export. Auto is the default: cell size follows the\n" +
+  "draw, about 1 m on a small hill and coarser on a large one, at most 20×20 quads,\n" +
+  "with a 3DEP sample count denser than that mesh (at most 625). Default is about 80 m quads, at most 12×12\n" +
   "(144 DEM samples). Fine is about 40 m quads, at most 16×16 (324 samples).\n" +
   "Finest is about 25 m quads, at most 20×20 (576 samples). The paste never exceeds\n" +
   "20×20 quads.\n" +

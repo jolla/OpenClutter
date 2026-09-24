@@ -362,6 +362,21 @@ function wantOsm(body) {
   return body.osmTrees === true || body.osm === true;
 }
 
+/**
+ * Body wins when it names a resolution. Otherwise the query string. Empty or
+ * unknown values normalize to auto.
+ */
+function terrainResolutionFromRequest(event, body) {
+  const q = (event && event.queryStringParameters) || {};
+  let raw = "";
+  if (body && body.terrainResolution != null && String(body.terrainResolution).trim() !== "") {
+    raw = body.terrainResolution;
+  } else if (q.terrainResolution != null && String(q.terrainResolution).trim() !== "") {
+    raw = q.terrainResolution;
+  }
+  return normalizeTerrainResolution(raw).id;
+}
+
 /** Include foliage is off unless the body or query explicitly turns it on. */
 function wantFoliage(event, body) {
   const q = (event && event.queryStringParameters) || {};
@@ -424,7 +439,7 @@ exports.handler = async (event) => {
 
   const format = parseFormat(body);
   const needImage = format !== "hamina-clipboard";
-  const terrainResolution = normalizeTerrainResolution(body.terrainResolution).id;
+  const terrainResolution = terrainResolutionFromRequest(event, body);
   const imgUrl = esriImageryUrl(frame);
   const imgMetaUrl = esriImageryMetaUrl(frame);
   const includeFoliage = wantFoliage(event, body);

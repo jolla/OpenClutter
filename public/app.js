@@ -15,23 +15,57 @@
 })();
 
 const TERRAIN_STOPS = [
+  { id: "auto", readout: "Auto · from draw" },
   { id: "default", readout: "Default · ~80 m" },
   { id: "fine", readout: "Fine · ~40 m" },
   { id: "finest", readout: "Finest · ~25 m" },
 ];
+// Same paste budget and 1 m floor as autoAxisCount in netlify/lib/terrain.js.
+const TERRAIN_AUTO_MAX_GRID = 20;
+const TERRAIN_AUTO_MIN_CELL_M = 1;
 
 function terrainStopIndex() {
   const input = document.getElementById("terrain-resolution-range");
   const n = input ? Number(input.value) : 0;
-  if (n === 1 || n === 2) return n;
+  if (n >= 1 && n < TERRAIN_STOPS.length && n === Math.round(n)) return n;
   return 0;
+}
+
+function autoAxisCountUi(spanM) {
+  const span = spanM > 0 ? spanM : 800;
+  const cellM = Math.max(TERRAIN_AUTO_MIN_CELL_M, span / TERRAIN_AUTO_MAX_GRID);
+  let n = Math.round(span / cellM);
+  if (!Number.isFinite(n)) n = TERRAIN_AUTO_MAX_GRID;
+  n = Math.max(1, Math.min(TERRAIN_AUTO_MAX_GRID, n));
+  while (n > 1 && span / n < TERRAIN_AUTO_MIN_CELL_M - 0.05) n -= 1;
+  if (span >= 6 * TERRAIN_AUTO_MIN_CELL_M) n = Math.max(6, Math.min(TERRAIN_AUTO_MAX_GRID, n));
+  return n;
+}
+
+function formatCellMUi(m) {
+  const n = Number(m);
+  if (!(n > 0)) return "1";
+  const tenth = Math.round(n * 10) / 10;
+  if (Math.abs(tenth - Math.round(tenth)) < 1e-6) return String(Math.round(tenth));
+  return tenth.toFixed(1);
+}
+
+function autoReadout() {
+  if (!bbox || typeof L === "undefined") return "Auto · from draw";
+  const w = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.south, bbox.east));
+  const h = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.north, bbox.west));
+  if (!(w > 0) || !(h > 0)) return "Auto · from draw";
+  const cols = autoAxisCountUi(w);
+  const rows = autoAxisCountUi(h);
+  const cell = (w / cols + h / rows) / 2;
+  return "Auto · ~" + formatCellMUi(cell) + " m";
 }
 
 function syncTerrainResolutionReadout() {
   const input = document.getElementById("terrain-resolution-range");
   const readout = document.getElementById("terrain-resolution-readout");
   const stop = TERRAIN_STOPS[terrainStopIndex()];
-  if (readout && stop) readout.textContent = stop.readout;
+  if (readout && stop) readout.textContent = stop.id === "auto" ? autoReadout() : stop.readout;
   if (input) input.setAttribute("aria-valuenow", String(terrainStopIndex()));
 }
 
@@ -39,9 +73,10 @@ function selectedTerrainResolution() {
   const wrap = document.getElementById("terrain-resolution");
   if (!wrap || wrap.hidden) return null;
   const stop = TERRAIN_STOPS[terrainStopIndex()];
-  return stop ? stop.id : "default";
+  return stop ? stop.id : "auto";
 }
 
+let bbox = null;
 const terrainResolutionRange = document.getElementById("terrain-resolution-range");
 if (terrainResolutionRange) {
   terrainResolutionRange.addEventListener("input", syncTerrainResolutionReadout);
@@ -69,7 +104,6 @@ const OUTLINE = {
 const drawn = new L.FeatureGroup();
 map.addLayer(drawn);
 
-let bbox = null;
 /** Finished outline; the chip returns here if a redraw is cancelled. */
 let committedBounds = null;
 /** Null uses the box L×W chip. A string is the polygon sq ft chip. */
@@ -173,6 +207,7 @@ function applyExtent(bounds, label) {
   exportBtn.disabled = w > 2500 || h > 2500 || w < 40 || h < 40;
   if (exportBtn.disabled) setStatus("Area must be between 40 m and 2.5 km on a side.", true);
   else setStatus("Ready to export.");
+  syncTerrainResolutionReadout();
 }
 
 function commitBox(start, end) {

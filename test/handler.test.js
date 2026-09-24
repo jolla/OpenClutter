@@ -178,35 +178,35 @@ describe("clutter handler (mocked Esri)", () => {
     assert.ok(!urls.some((u) => u.includes("USFS_EDW_NLCD_TCC")));
     const dem = urls.find((u) => u.includes("elevation.nationalmap.gov") && u.includes("getSamples"));
     assert.ok(dem);
-    assert.equal(new URL(dem).searchParams.get("sampleCount"), "144");
-    assert.equal(body.stats.terrainResolution, "default");
+    assert.equal(new URL(dem).searchParams.get("sampleCount"), "576");
+    assert.equal(body.stats.terrainResolution, "auto");
+    assert.match(files["README.txt"].toString(), /Auto is the default/);
   });
 
   it("asks 3DEP for a denser sample count when terrain resolution is Fine or Finest", async () => {
-    async function sampleCountFor(terrainResolution) {
+    async function sampleCountFor(terrainResolution, query) {
       urls.length = 0;
       const payload = { ...WYNN, format: "bundle" };
       if (terrainResolution != null) payload.terrainResolution = terrainResolution;
       const res = await handler({
         httpMethod: "POST",
+        queryStringParameters: query || undefined,
         body: JSON.stringify(payload),
       });
       assert.equal(res.statusCode, 200);
       const body = JSON.parse(res.body);
-      assert.equal(
-        body.stats.terrainResolution,
-        terrainResolution === "fine" || terrainResolution === "finest" ? terrainResolution : "default"
-      );
       assert.equal(body.stats.includeFoliage, false);
       const hit = urls.find((u) => u.includes("elevation.nationalmap.gov") && u.includes("getSamples"));
       assert.ok(hit);
-      return new URL(hit).searchParams.get("sampleCount");
+      return { count: new URL(hit).searchParams.get("sampleCount"), id: body.stats.terrainResolution };
     }
-    assert.equal(await sampleCountFor(undefined), "144");
-    assert.equal(await sampleCountFor("default"), "144");
-    assert.equal(await sampleCountFor("fine"), "324");
-    assert.equal(await sampleCountFor("finest"), "576");
-    assert.equal(await sampleCountFor("ultra"), "144");
+    assert.deepEqual(await sampleCountFor(undefined), { count: "576", id: "auto" });
+    assert.deepEqual(await sampleCountFor("default"), { count: "144", id: "default" });
+    assert.deepEqual(await sampleCountFor("fine"), { count: "324", id: "fine" });
+    assert.deepEqual(await sampleCountFor("finest"), { count: "576", id: "finest" });
+    assert.deepEqual(await sampleCountFor("ultra"), { count: "576", id: "auto" });
+    assert.deepEqual(await sampleCountFor(undefined, { terrainResolution: "fine" }), { count: "324", id: "fine" });
+    assert.deepEqual(await sampleCountFor("default", { terrainResolution: "finest" }), { count: "144", id: "default" });
   });
 
   it("clipboard-only skips imagery and still uses shared widthM", async () => {
