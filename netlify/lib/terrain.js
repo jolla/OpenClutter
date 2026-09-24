@@ -10,11 +10,13 @@
  * (−widthM, −lengthM). z on sloped floors is meters above the lowest sample.
  * Flat ground stays a 2×2 pad. A mild rise uses a 4×3 lattice. Medium relief
  * under 20 m stays 6×5. Ski-hill relief (about 20 m or more, Granite Peak
- * scale) uses the export's terrain resolution. Default is ~80 m quads, at
- * most 12×12, from 144 3DEP samples. Fine is ~40 m, at most 16×16, from 324
+ * scale) uses the export's terrain resolution. Auto is the default: cell size
+ * follows the draw, about 1 m on a small hill and coarser on a large one, at
+ * most 20×20, with a 3DEP count denser than that mesh. Default is ~80 m quads,
+ * at most 12×12, from 144 samples. Fine is ~40 m, at most 16×16, from 324
  * samples. Finest is ~25 m, at most 20×20, from 576 samples. The sample grid
- * stays denser than the paste nodes so a finer mesh is not a stretched 144-point
- * surface. The paste cap is 20×20 quads.
+ * stays denser than the paste nodes so a finer mesh is not a stretched
+ * 144-point surface. The paste cap is 20×20 quads.
  *
  * Hamina clipboard rings are open: the first vertex is not repeated.
  * raisedFloorZones are xy quads. slopedFloors are xyz quads whose first edge
@@ -30,19 +32,24 @@ const DEM_URL = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElev
 const TERRAIN_FILENAME = "terrain-clipboard.json";
 const FLAT_M = 0.5;
 /**
- * Ski-hill paste presets. Default matches the v1.1.5 lattice. Fine and Finest
- * only change relief at or above LIFT_RELIEF_M. Flat, mild, and medium ladders
- * stay 2×2, 4×3, and 6×5. sampleCount is the 3DEP getSamples request: a square
- * count denser than (maxGrid+1)² so bilinear is not stretching a sparse DEM.
- * ABSOLUTE_MAX_GRID / ABSOLUTE_MAX_SAMPLES refuse anything past Finest.
+ * Ski-hill paste presets. Auto is the default and sizes cells from the draw.
+ * Default matches the v1.1.5 lattice. Fine and Finest are fixed manual
+ * overrides. Only relief at or above LIFT_RELIEF_M changes. Flat, mild, and
+ * medium ladders stay 2×2, 4×3, and 6×5. sampleCount is the 3DEP getSamples
+ * request: a square count denser than the paste nodes so bilinear is not
+ * stretching a sparse DEM. ABSOLUTE_MAX_GRID / ABSOLUTE_MAX_SAMPLES refuse
+ * anything past the Hamina paste cap.
  */
+const ABSOLUTE_MAX_GRID = 20;
+const ABSOLUTE_MAX_SAMPLES = 625;
+/** Auto will not paste cells smaller than this, even on a tiny hill. */
+const MIN_CELL_M = 1;
 const TERRAIN_RESOLUTIONS = {
+  auto: { id: "auto", label: "Auto", cellM: null, maxGrid: ABSOLUTE_MAX_GRID, sampleCount: null },
   default: { id: "default", label: "Default", cellM: 80, maxGrid: 12, sampleCount: 144 },
   fine: { id: "fine", label: "Fine", cellM: 40, maxGrid: 16, sampleCount: 324 },
   finest: { id: "finest", label: "Finest", cellM: 25, maxGrid: 20, sampleCount: 576 },
 };
-const ABSOLUTE_MAX_GRID = 20;
-const ABSOLUTE_MAX_SAMPLES = 625;
 const SAMPLE_COUNT = TERRAIN_RESOLUTIONS.default.sampleCount;
 /** Quads per side on the default ski-hill lattice. Finest cannot pass ABSOLUTE_MAX_GRID. */
 const MAX_GRID = TERRAIN_RESOLUTIONS.default.maxGrid;
@@ -50,8 +57,58 @@ const TARGET_CELL_M = TERRAIN_RESOLUTIONS.default.cellM;
 
 function normalizeTerrainResolution(id) {
   const key = String(id == null ? "" : id).trim().toLowerCase();
-  return TERRAIN_RESOLUTIONS[key] || TERRAIN_RESOLUTIONS.default;
+  return TERRAIN_RESOLUTIONS[key] || TERRAIN_RESOLUTIONS.auto;
 }
+
+/**
+ * Quads along one side for Auto on a ski hill. Fill the 20×20 paste budget,
+ * but keep cells at least MIN_CELL_M. A span that can hold the historical
+ * 6-quad floor at that size still does. A tinier span stays near 1 m instead
+ * of inventing oversized cells to force 6×6.
+ */
+function autoAxisCount(spanM) {
+  const span = spanM > 0 ? spanM : 800;
+  const cellM = Math.max(MIN_CELL_M, span / ABSOLUTE_MAX_GRID);
+  let n = Math.round(span / cellM);
+  if (!Number.isFinite(n)) n = ABSOLUTE_MAX_GRID;
+  n = Math.max(1, Math.min(ABSOLUTE_MAX_GRID, n));
+  // Rounding onto the paste cap can land a hair under 1 m. Keep that quad.
+  // A span that cannot hold the count at about 1 m steps down instead.
+  while (n > 1 && span / n < MIN_CELL_M - 0.05) n -= 1;
+  if (span >= 6 * MIN_CELL_M) n = Math.max(6, Math.min(ABSOLUTE_MAX_GRID, n));
+  return n;
+}
+
+/** Square 3DEP count for Auto: denser than the paste nodes, never past the cap. */
+function autoSampleCount(cols, rows) {
+  const nodes = (cols + 1) * (rows + 1);
+  const long = Math.max(cols | 0, rows | 0, 1);
+  let side = long + 4;
+  let count = side * side;
+  if (count <= nodes) {
+    side += 1;
+    count = side * side;
+  }
+  return Math.max(4, Math.min(ABSOLUTE_MAX_SAMPLES, count));
+}
+
+function sampleCountForResolution(resolution, frame) {
+  const preset = normalizeTerrainResolution(resolution);
+  if (preset.id !== "auto") {
+    return Math.max(4, Math.min(ABSOLUTE_MAX_SAMPLES, preset.sampleCount | 0));
+  }
+  const [cols, rows] = chooseGrid(LIFT_RELIEF_M, frame, "auto");
+  return autoSampleCount(cols, rows);
+}
+
+function formatCellM(m) {
+  const n = Number(m);
+  if (!(n > 0)) return "1";
+  const tenth = Math.round(n * 10) / 10;
+  if (Math.abs(tenth - Math.round(tenth)) < 1e-6) return String(Math.round(tenth));
+  return tenth.toFixed(1);
+}
+
 /**
  * Lift building bottoms only when the DEM rises this far above its lowest
  * sample. Oak Creek (~6 m), Long Meadow (~15 m), and the Las Vegas Sphere
@@ -187,10 +244,11 @@ function chooseGrid(relief, frame, resolution) {
   if (relief < 8) return [4, 3];
   if (relief < LIFT_RELIEF_M) return [6, 5];
   const preset = normalizeTerrainResolution(resolution);
-  const cellM = preset.cellM > 0 ? preset.cellM : TARGET_CELL_M;
-  const cap = Math.max(6, Math.min(ABSOLUTE_MAX_GRID, preset.maxGrid | 0));
   const width = frame && frame.widthM > 0 ? frame.widthM : 800;
   const length = frame && frame.lengthM > 0 ? frame.lengthM : 800;
+  if (preset.id === "auto") return [autoAxisCount(width), autoAxisCount(length)];
+  const cellM = preset.cellM > 0 ? preset.cellM : TARGET_CELL_M;
+  const cap = Math.max(6, Math.min(ABSOLUTE_MAX_GRID, preset.maxGrid | 0));
   let cols = Math.round(width / cellM);
   let rows = Math.round(length / cellM);
   cols = Math.max(6, Math.min(cap, cols));
@@ -308,7 +366,14 @@ function terrainFromSamples(samples, frame, opts) {
     if (s.z > maxS) maxS = s.z;
   }
   const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
-  const [cols, rows] = chooseGrid(maxS - minS, frame, preset.id);
+  const reliefM = maxS - minS;
+  const [cols, rows] = chooseGrid(reliefM, frame, preset.id);
+  const widthM = frame && frame.widthM > 0 ? frame.widthM : 800;
+  const lengthM = frame && frame.lengthM > 0 ? frame.lengthM : 800;
+  const cellM =
+    preset.id === "auto" && reliefM >= LIFT_RELIEF_M
+      ? (widthM / cols + lengthM / rows) / 2
+      : preset.cellM;
   const elevationAt = buildElevation(clean);
   const grid = lattice(clean, frame, cols, rows, elevationAt);
   const raised = [];
@@ -349,6 +414,7 @@ function terrainFromSamples(samples, frame, opts) {
     minZ: Math.round(minS * 10) / 10,
     maxZ: Math.round(maxS * 10) / 10,
     terrainResolution: preset.id,
+    cellM,
     gridCols: cols,
     gridRows: rows,
     // z = 0 on sloped floors is the lowest lattice node, not the raw sample min.
@@ -412,7 +478,8 @@ function terrainBundleFields(terrain, warnings) {
     const preset = normalizeTerrainResolution(terrain.terrainResolution);
     let mesh = "";
     if (terrain.reliefM >= LIFT_RELIEF_M) {
-      mesh = ", " + preset.label + " ~" + preset.cellM + " m";
+      const shown = preset.id === "auto" && terrain.cellM > 0 ? terrain.cellM : preset.cellM;
+      mesh = ", " + preset.label + " ~" + formatCellM(shown) + " m";
     } else if (preset.id !== "default") {
       mesh = ", " + preset.label + " (relief under 20 m keeps the coarse mesh)";
     }
@@ -465,8 +532,7 @@ function parseDemSamples(body) {
 async function fetchDemSamples(frame, fetchFn, opts) {
   const fetchImpl = fetchFn || fetch;
   const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
-  const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
-  const sampleCount = Math.max(4, Math.min(ABSOLUTE_MAX_SAMPLES, preset.sampleCount | 0));
+  const sampleCount = sampleCountForResolution(opts && opts.terrainResolution, frame);
   const geometry = JSON.stringify({
     xmin: +frame.west,
     ymin: +frame.south,
@@ -501,6 +567,7 @@ module.exports = {
   TERRAIN_RESOLUTIONS,
   ABSOLUTE_MAX_GRID,
   ABSOLUTE_MAX_SAMPLES,
+  MIN_CELL_M,
   LIFT_RELIEF_M,
   LIFT_LOCAL_M,
   RAISED_KEYS,
@@ -515,4 +582,7 @@ module.exports = {
   fetchDemSamples,
   chooseGrid,
   normalizeTerrainResolution,
+  sampleCountForResolution,
+  formatCellM,
+  autoAxisCount,
 };
