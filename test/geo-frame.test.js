@@ -391,4 +391,41 @@ describe("MSBFP2 pagination", () => {
     assert.equal(FP_PAGE_SIZE, 500);
     assert.equal(FP_CAP, 2000);
   });
+
+  it("does not start another page once the footprint budget is spent", async () => {
+    const frame = geoFrame(WYNN);
+    let calls = 0;
+    const fetchFn = async () => {
+      calls++;
+      return {
+        ok: true,
+        json: async () => ({
+          features: Array.from({ length: 30 }, (_, i) => ({ type: "Feature", id: i })),
+        }),
+      };
+    };
+    const gj = await fetchMsFootprints(frame, fetchFn, { pageSize: 30, cap: 200, pad: false, budgetMs: 0 });
+    assert.equal(calls, 1);
+    assert.equal(gj.features.length, 30);
+    assert.equal(gj.partial, true);
+  });
+
+  it("keeps the first page when a later page times out", async () => {
+    const frame = geoFrame(WYNN);
+    const fetchFn = async (url) => {
+      const offset = +new URL(url).searchParams.get("resultOffset") || 0;
+      if (offset > 0) {
+        throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "AbortError" });
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          features: Array.from({ length: 30 }, (_, i) => ({ type: "Feature", id: i })),
+        }),
+      };
+    };
+    const gj = await fetchMsFootprints(frame, fetchFn, { pageSize: 30, cap: 90, pad: false, budgetMs: 7000 });
+    assert.equal(gj.features.length, 30);
+    assert.equal(gj.partial, true);
+  });
 });

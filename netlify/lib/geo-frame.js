@@ -544,33 +544,84 @@ function msFootprintsUrl(frame, recordCount = FP_PAGE_SIZE, resultOffset = 0) {
   );
 }
 
+function footprintAbort(err) {
+  if (!err) return false;
+  if (err.name === "AbortError") return true;
+  return /abort|timeout/i.test(String(err.message || err));
+}
+
+async function readFootprintPage(frame, fetchFn, offset, want) {
+  const url = msFootprintsUrl(frame, want, offset);
+  const res = await fetchFn(url);
+  const gj = await res.json();
+  return gj && Array.isArray(gj.features) ? gj.features : [];
+}
+
 /**
  * Paginate MSBFP2 until the service is exhausted or FP_CAP (2000) features.
  * resultRecordCount alone (historically 300) truncates large campus/golf bboxes.
+ * The first page is alone. Further pages run together so four dense pages
+ * cannot add up to four timeouts. opts.budgetMs (default 7s) is the wall
+ * clock for the whole query; a full first page and no time left returns
+ * that page with partial set.
  */
 async function fetchMsFootprints(frame, fetchFn, opts = {}) {
   const pageSize = opts.pageSize || FP_PAGE_SIZE;
   const cap = opts.cap || FP_CAP;
+  const budgetMs = opts.budgetMs == null ? 7000 : opts.budgetMs;
   const queryFrame = opts.pad === false ? frame : padFootprintBbox(frame);
-  const features = [];
-  let offset = 0;
-  let pages = 0;
-  while (features.length < cap && pages < 8) {
-    const want = Math.min(pageSize, cap - features.length);
-    const url = msFootprintsUrl(queryFrame, want, offset);
-    const res = await fetchFn(url);
-    const gj = await res.json();
-    const chunk = gj && Array.isArray(gj.features) ? gj.features : [];
-    features.push.apply(features, chunk);
-    pages++;
-    offset += chunk.length;
-    if (chunk.length < want) break;
+  const started = Date.now();
+  const maxPages = Math.min(8, Math.max(1, Math.ceil(cap / pageSize)));
+  const timeLeft = () => budgetMs - (Date.now() - started);
+  const firstWant = Math.min(pageSize, cap);
+  const first = await readFootprintPage(queryFrame, fetchFn, 0, firstWant);
+  const features = first.slice();
+  let pages = 1;
+  let partial = false;
+  if (first.length < firstWant || features.length >= cap || pages >= maxPages) {
+    return packFootprints(features, cap, pages, false);
   }
+  if (timeLeft() < 400) {
+    return packFootprints(features, cap, pages, true);
+  }
+  const jobs = [];
+  let offset = first.length;
+  while (offset < cap && pages + jobs.length < maxPages && timeLeft() >= 400) {
+    const want = Math.min(pageSize, cap - offset);
+    const pageOffset = offset;
+    jobs.push(
+      readFootprintPage(queryFrame, fetchFn, pageOffset, want).then(
+        (chunk) => ({ offset: pageOffset, chunk, want }),
+        (err) => {
+          if (footprintAbort(err)) return { offset: pageOffset, chunk: null, want, aborted: true };
+          throw err;
+        }
+      )
+    );
+    offset += want;
+  }
+  const parts = await Promise.all(jobs);
+  parts.sort((a, b) => a.offset - b.offset);
+  for (const part of parts) {
+    pages++;
+    if (!part.chunk || part.aborted) {
+      partial = true;
+      break;
+    }
+    features.push.apply(features, part.chunk);
+    if (part.chunk.length < part.want) break;
+  }
+  return packFootprints(features, cap, pages, partial);
+}
+
+function packFootprints(features, cap, pages, partial) {
+  const kept = features.slice(0, cap);
   return {
     type: "FeatureCollection",
-    features: features.slice(0, cap),
-    fetched: Math.min(features.length, cap),
+    features: kept,
+    fetched: kept.length,
     pages,
+    partial: !!partial,
   };
 }
 

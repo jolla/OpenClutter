@@ -416,6 +416,17 @@ if (copyTerrainBtn) {
   };
 }
 
+function exportError(status, data) {
+  if (status === 504 || status === 408) {
+    const err = new Error("This area is too large to finish in one export. Draw a smaller area and try again.");
+    err.noRetry = true;
+    return err;
+  }
+  const err = new Error((data && data.error) || "Export failed (" + status + ")");
+  err.noRetry = status === 400 || status === 413;
+  return err;
+}
+
 async function exportOnce(trees, treesSource, canopyHits, includeFoliage) {
   const foliage = includeFoliage === true;
   const r = await fetch("/api/clutter", {
@@ -432,8 +443,8 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage) {
       format: "bundle",
     }),
   });
-  const data = await r.json().catch(() => ({ error: r.status + " " + r.statusText }));
-  if (!r.ok) throw new Error(data.error || "Export failed (" + r.status + ")");
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw exportError(r.status, data);
   return data;
 }
 
@@ -475,16 +486,19 @@ document.getElementById("export").onclick = async () => {
     try {
       data = await exportOnce(trees, treesSource, canopyHits, includeFoliage);
     } catch (e) {
+      if (e && e.noRetry) throw e;
       data = await exportOnce(trees, treesSource, canopyHits, includeFoliage);
     }
     downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
     rememberTerrain(data);
     const summary = (data.stats && data.stats.summary) || "";
     const terrainNote = data.terrainStatus || "";
+    const warnLines = Array.isArray(data.warnings) ? data.warnings.filter(Boolean) : [];
     setStatus(
       "Import this zip in Hamina (Projects → Import → OpenIntent)." +
         (terrainNote ? "\n" + terrainNote : "") +
-        (summary ? "\n" + summary : "")
+        (summary ? "\n" + summary : "") +
+        (warnLines.length ? "\n" + warnLines.join("\n") : "")
     );
   } catch (err) {
     setStatus(String(err && err.message ? err.message : "Export failed. Retry."), true);
