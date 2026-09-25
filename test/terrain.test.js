@@ -2,13 +2,25 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { geoFrame, cornerClipboard, llToClipboard } = require("../netlify/lib/geo-frame");
+const {
+  geoFrame,
+  cornerClipboard,
+  llToClipboard,
+  metersPerDeg,
+  esriContentExtent,
+  lockIsotropicImagery,
+  geodesicSpans,
+  IMAGERY_MAX_SIDE_DEV,
+} = require("../netlify/lib/geo-frame");
 const {
   terrainFromSamples,
   parseDemSamples,
   terrainBundleFields,
   noteMissingTerrain,
   chooseGrid,
+  pastePlanQuadBudget,
+  squareMeterAxes,
+  formatCellM,
   fetchDemSamples,
   fetchTerrainDem,
   isDevDemHost,
@@ -2003,5 +2015,161 @@ describe("Finland terrain does not wait on 3DEP", () => {
         }),
       /did not return a usable grid/
     );
+  });
+});
+
+describe("Finland paste quads are square ground meters", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+
+  function lockedHamina(halfM) {
+    const jpeg = require("jpeg-js");
+    const lat = 60.5694;
+    const lon = 27.1975;
+    const mpd = metersPerDeg(lat);
+    const box = {
+      west: lon - halfM / mpd.lon,
+      south: lat - halfM / mpd.lat,
+      east: lon + halfM / mpd.lon,
+      north: lat + halfM / mpd.lat,
+    };
+    const drawn = geoFrame(box, { maxSide: IMAGERY_MAX_SIDE_DEV });
+    const content = esriContentExtent(box, drawn.imgW, drawn.imgH);
+    const snapped = geoFrame(content, {
+      imgW: drawn.imgW,
+      imgH: drawn.imgH,
+      maxSpanM: 10000,
+      minSpanM: 1,
+    });
+    const data = Buffer.alloc(snapped.imgW * snapped.imgH * 4, 90);
+    const jpegBuf = Buffer.from(jpeg.encode({ data, width: snapped.imgW, height: snapped.imgH }, 40).data);
+    const locked = lockIsotropicImagery(snapped, jpegBuf, { maxSide: IMAGERY_MAX_SIDE_DEV });
+    assert.equal(locked.groundMeters, true);
+    assert.equal(locked.resampled, true);
+    const geo = geodesicSpans(locked.frame);
+    assert.ok(Math.abs(locked.frame.widthM - geo.widthM) / geo.widthM < 0.02);
+    assert.ok(Math.abs(locked.frame.lengthM - geo.lengthM) / geo.lengthM < 0.02);
+    assert.ok(locked.frame.lengthM / locked.frame.widthM > 1.8, "padded N–S ground meters");
+    return locked.frame;
+  }
+
+  function rampSamples(frame, relief) {
+    const samples = [];
+    const n = 8;
+    for (let r = 0; r < n; r++) {
+      for (let c = 0; c < n; c++) {
+        const lon = frame.west + ((c + 0.5) / n) * (frame.east - frame.west);
+        const lat = frame.south + ((r + 0.5) / n) * (frame.north - frame.south);
+        const t = (lat - frame.south) / (frame.north - frame.south);
+        samples.push({ lon, lat, z: 8 + t * relief });
+      }
+    }
+    return samples;
+  }
+
+  function quadEdges(terrain) {
+    const zones = terrain.clipboard.slopedFloors.concat(terrain.clipboard.raisedFloorZones);
+    assert.equal(zones.length, terrain.gridCols * terrain.gridRows);
+    let sumW = 0;
+    let sumH = 0;
+    let n = 0;
+    const step = Math.max(1, Math.floor(zones.length / 12));
+    for (let i = 0; i < zones.length; i += step) {
+      const ring = zones[i].area.coordinates[0];
+      const e01 = Math.hypot(ring[1][0] - ring[0][0], ring[1][1] - ring[0][1]);
+      const e12 = Math.hypot(ring[2][0] - ring[1][0], ring[2][1] - ring[1][1]);
+      const alongX = Math.abs(ring[1][0] - ring[0][0]) >= Math.abs(ring[1][1] - ring[0][1]);
+      sumW += alongX ? e01 : e12;
+      sumH += alongX ? e12 : e01;
+      n += 1;
+    }
+    return { ew: sumW / n, ns: sumH / n };
+  }
+
+  function assertSquareMeters(terrain, frame) {
+    const q = quadEdges(terrain);
+    const aspect = Math.max(q.ew, q.ns) / Math.min(q.ew, q.ns);
+    assert.ok(aspect < 1.12, "aspect " + aspect.toFixed(3) + " edges " + q.ew.toFixed(2) + "×" + q.ns.toFixed(2));
+    assert.ok(Math.abs(q.ew * terrain.gridCols - frame.widthM) / frame.widthM < 0.03, "east " + q.ew);
+    assert.ok(Math.abs(q.ns * terrain.gridRows - frame.lengthM) / frame.lengthM < 0.03, "north " + q.ns);
+    assert.ok(Math.abs(q.ew - terrain.cellM) / terrain.cellM < 0.08, "cell ew " + q.ew + " vs " + terrain.cellM);
+    assert.ok(Math.abs(q.ns - terrain.cellM) / terrain.cellM < 0.08, "cell ns " + q.ns + " vs " + terrain.cellM);
+    assert.ok(q.ew < 200 && q.ns < 200, "not a degree-stretched slab " + q.ew.toFixed(1) + "×" + q.ns.toFixed(1));
+    const status = terrainBundleFields(terrain, []).terrainStatus;
+    const shown = formatCellM(terrain.cellM).replace(".", "\\.");
+    assert.match(status, new RegExp("~" + shown + " m"));
+    assert.match(status, new RegExp(terrain.gridCols + "×" + terrain.gridRows));
+    assert.equal(/keeps the coarse mesh/.test(status), false);
+    assert.equal(/500×500/.test(status), false);
+    return q;
+  }
+
+  const frame = lockedHamina(400);
+
+  it("plans a 1 m town under 20 m of relief as square meter cells, finer than native GLO-30", () => {
+    const planned = chooseGrid(12, frame, "1");
+    assert.ok(!(planned[0] === 6 && planned[1] === 5), "1 m must not stay on the 6×5 ladder");
+    const terrain = terrainFromSamples(rampSamples(frame, 12), frame, {
+      terrainResolution: "1",
+      kind: "surface",
+      attribution: GLO30_CREDIT,
+    });
+    assert.equal(terrain.kind, "surface");
+    assert.ok(terrain.reliefM < LIFT_RELIEF_M, "relief " + terrain.reliefM);
+    assert.ok(terrain.clipboard);
+    const q = assertSquareMeters(terrain, frame);
+    assert.ok(q.ew < 30 && q.ns < 30, "interpolated under the ~30 m GLO-30 posting, got " + q.ew);
+    assert.ok(q.ew > 4 && q.ns > 4);
+    assert.equal(terrain.pasteOmitted, undefined);
+    assert.equal(terrain.clipboard.slopedFloors.concat(terrain.clipboard.raisedFloorZones).every((z) => z.slabOnly === false), true);
+    const notes = terrainResolutionNotes(terrain, frame).join("\n");
+    assert.match(notes, /not 1 m/);
+    assert.match(terrainBundleFields(terrain, []).terrainStatus, /Copy terrain/);
+  });
+
+  it("keeps Auto on that town square and inside 20×20", () => {
+    const terrain = terrainFromSamples(rampSamples(frame, 12), frame, {
+      terrainResolution: "auto",
+      kind: "surface",
+    });
+    const q = assertSquareMeters(terrain, frame);
+    assert.ok(terrain.gridCols <= PASTE_SOFT_GRID && terrain.gridRows <= PASTE_SOFT_GRID);
+    assert.ok(q.ew > 40 && q.ew < 120, "auto cell " + q.ew);
+    const long = Math.max(frame.widthM, frame.lengthM);
+    const expect = long / PASTE_SOFT_GRID;
+    assert.ok(Math.abs(q.ew - expect) / expect < 0.15, q.ew + " vs " + expect);
+  });
+
+  it("keeps a high-relief 1 m Finland mesh square after the paste budget", () => {
+    const terrain = terrainFromSamples(rampSamples(frame, 40), frame, {
+      terrainResolution: "1",
+      kind: "surface",
+    });
+    assert.ok(terrain.reliefM >= LIFT_RELIEF_M);
+    const q = assertSquareMeters(terrain, frame);
+    assert.ok(q.ew < 30);
+    assert.equal(terrain.pasteReduced, true);
+  });
+
+  it("leaves a US 1 m site on the relief ladder and the 500 cap", () => {
+    const mild = metersBox(44.91, 800, 800, "US town");
+    assert.deepEqual(chooseGrid(12, mild, "1"), [6, 5]);
+    assert.deepEqual(chooseGrid(12, mild, "auto"), [6, 5]);
+    const peak = metersBox(44.91, 1800, 1400, "Granite Peak");
+    assert.deepEqual(chooseGrid(200, peak, "1"), [500, 500]);
+    assert.deepEqual(chooseGrid(200, peak, "auto"), [20, 20]);
+    const us = terrainFromSamples(rampSamples(mild, 12), mild, { terrainResolution: "1" });
+    assert.match(terrainBundleFields(us, []).terrainStatus, /keeps the coarse mesh/);
+  });
+
+  it("locks the slider quad budget to the export's first-pass paste cap", () => {
+    const budget = pastePlanQuadBudget();
+    assert.equal(budget, Math.min(PASTE_BUILD_MAX_QUADS, Math.floor(TERRAIN_PASTE_JSON_MAX / 240)));
+    const app = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
+    assert.match(app, new RegExp("TERRAIN_PASTE_QUAD_BUDGET = " + budget));
+    assert.match(app, /requested " \+ stop\.cellM \+ " m stepped up to fit/);
+    const [cols, rows] = squareMeterAxes(frame.widthM, frame.lengthM, 1, 500);
+    assert.ok(Math.max(cols, rows) <= 500);
+    assert.ok(Math.abs(frame.widthM / cols - frame.lengthM / rows) / (frame.widthM / cols) < 0.08);
   });
 });

@@ -1160,7 +1160,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(html, />10</);
     assert.match(html, />5</);
     assert.match(html, />1</);
-    assert.match(html, /Ski hills only/);
+    assert.match(html, /ground-meter cell size of the mesh that pastes/);
     assert.match(html, /past 20×20/);
     assert.match(app, /terrainRes\.hidden = false/);
     assert.match(app, /id: "auto", label: "Auto", cellM: null, maxGrid: 20, readout: "Auto · from draw"/);

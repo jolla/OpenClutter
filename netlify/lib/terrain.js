@@ -18,10 +18,15 @@
  * Clipboard meters match hamina-clipboard.js: NE is (0, 0), SW is
  * (−widthM, −lengthM). z on sloped floors is meters above the lowest sample.
  * Flat ground stays a 2×2 pad. A mild rise uses a 4×3 lattice. Medium relief
- * under 20 m stays 6×5. Ski-hill relief (about 20 m or more, Granite Peak
- * scale) uses the export's terrain resolution. Auto is the default: cell size
- * follows the draw, about 1 m on a small hill and coarser on a large one, at
- * most 20×20, with a 3DEP count denser than that mesh. Default is ~80 m quads,
+ * under 20 m stays 6×5. That ladder is the US bare-earth hill. At Finland
+ * latitudes the paste is planned in the same ground meters as the aerial, so
+ * each quad is square. Auto and the 20–1 m stops use that cell size even when
+ * relief is under 20 m. A draw that cannot hold the requested cell steps up
+ * to a coarser square lattice, and the status reports that size. Ski-hill
+ * relief (about 20 m or more, Granite Peak scale) uses the export's terrain
+ * resolution. Auto is the default: cell size follows the draw, about 1 m on a
+ * small hill and coarser on a large one, at most 20×20, with a 3DEP count
+ * denser than that mesh. Default is ~80 m quads,
  * at most 12×12, from 144 samples. Fine is ~40 m, at most 16×16, from 324
  * samples. Finest is ~25 m, at most 20×20, from 576 samples. Stops at 20, 15,
  * 10, 5, and 1 m may paste past that 20×20 expectation so a large hill can
@@ -38,7 +43,7 @@
  * Plus rejects as "Sloped floor coordinates are not valid!".
  */
 
-const { llToClipboard } = require("./geo-frame");
+const { llToClipboard, needsGroundMeterImage } = require("./geo-frame");
 const { emptyClipboard } = require("./hamina-clipboard");
 const { fetchCopernicusDemSamples, GLO30_CREDIT } = require("./copernicus-dem");
 
@@ -502,22 +507,136 @@ function fitPasteAxes(wantCols, wantRows, maxQuads) {
   return [cols, rows];
 }
 
-function chooseGrid(relief, frame, resolution) {
+function frameCenterLat(frame) {
+  if (!frame) return NaN;
+  return ((+frame.south) + (+frame.north)) / 2;
+}
+
+/** True when the aerial is resampled onto ground meters (Finland, not CONUS). */
+function highLatMeterFrame(frame) {
+  const lat = frameCenterLat(frame);
+  if (!Number.isFinite(lat)) return false;
+  return needsGroundMeterImage(lat);
+}
+
+/**
+ * cols×rows of about cellM on both axes, in the frame's ground meters.
+ * A side past cap scales both axes so the cells stay square.
+ */
+function squareMeterAxes(widthM, lengthM, cellM, cap) {
+  const width = widthM > 0 ? widthM : 800;
+  const length = lengthM > 0 ? lengthM : 800;
+  const cell = cellM > 0 ? cellM : 1;
+  let cols = Math.max(1, Math.round(width / cell));
+  let rows = Math.max(1, Math.round(length / cell));
+  const limit = Math.max(1, cap | 0);
+  if (Math.max(cols, rows) > limit) {
+    const scale = limit / Math.max(cols, rows);
+    cols = Math.max(1, Math.round(cols * scale));
+    rows = Math.max(1, Math.round(rows * scale));
+    while ((cols > limit || rows > limit) && cols * rows > 1) {
+      if (cols >= rows && cols > 1) cols -= 1;
+      else if (rows > 1) rows -= 1;
+      else break;
+    }
+  }
+  return [cols, rows];
+}
+
+/** US relief ladder. Null once the site is a ski hill and the slider applies. */
+function reliefLadder(relief) {
   if (!(relief >= 1)) return [2, 2];
   if (relief < 8) return [4, 3];
   if (relief < LIFT_RELIEF_M) return [6, 5];
-  const preset = normalizeTerrainResolution(resolution);
+  return null;
+}
+
+/**
+ * Same quad budget as the relief ladder, on the ground-meter aspect.
+ * A 6×5 index grid on a degree-square Finland extent is about 2:1 in meters.
+ */
+function squareReliefAxes(relief, widthM, lengthM) {
+  const base = reliefLadder(relief);
+  if (!base) return null;
+  const quads = base[0] * base[1];
+  const width = widthM > 0 ? widthM : 800;
+  const length = lengthM > 0 ? lengthM : 800;
+  let bestC = 1;
+  let bestR = Math.max(1, quads);
+  let bestErr = Infinity;
+  for (let cols = 1; cols <= quads; cols++) {
+    const rows = Math.max(1, Math.round(quads / cols));
+    const cellW = width / cols;
+    const cellH = length / rows;
+    const cellErr = Math.abs(cellW - cellH) / Math.max(cellW, cellH);
+    const countErr = Math.abs(cols * rows - quads) / quads;
+    const err = cellErr * 4 + countErr;
+    if (err < bestErr) {
+      bestErr = err;
+      bestC = cols;
+      bestR = rows;
+    }
+  }
+  return [bestC, bestR];
+}
+
+function meterAxes(frame, preset, squareCells) {
   const width = frame && frame.widthM > 0 ? frame.widthM : 800;
   const length = frame && frame.lengthM > 0 ? frame.lengthM : 800;
-  if (preset.id === "auto") return [autoAxisCount(width), autoAxisCount(length)];
+  if (preset.id === "auto") {
+    if (!squareCells) return [autoAxisCount(width), autoAxisCount(length)];
+    const cell = Math.max(MIN_CELL_M, Math.max(width, length) / PASTE_SOFT_GRID);
+    return squareMeterAxes(width, length, cell, PASTE_SOFT_GRID);
+  }
   const cellM = preset.cellM > 0 ? preset.cellM : TARGET_CELL_M;
   const hard = preset.experimental ? ABSOLUTE_MAX_GRID : PASTE_SOFT_GRID;
   const cap = Math.max(6, Math.min(hard, preset.maxGrid | 0));
-  let cols = Math.round(width / cellM);
-  let rows = Math.round(length / cellM);
-  cols = Math.max(6, Math.min(cap, cols));
-  rows = Math.max(6, Math.min(cap, rows));
-  return [cols, rows];
+  if (!squareCells) {
+    let cols = Math.round(width / cellM);
+    let rows = Math.round(length / cellM);
+    cols = Math.max(6, Math.min(cap, cols));
+    rows = Math.max(6, Math.min(cap, rows));
+    return [cols, rows];
+  }
+  return squareMeterAxes(width, length, cellM, cap);
+}
+
+/**
+ * Quads that fit the first-pass paste budget: the build cap, and a rough
+ * bytes-per-quad reading of the JSON ceiling. The byte loop still confirms.
+ */
+function pastePlanQuadBudget(jsonMax) {
+  const max =
+    jsonMax != null && jsonMax !== "" && Number.isFinite(+jsonMax) ? Math.max(0, +jsonMax) : TERRAIN_PASTE_JSON_MAX;
+  const rough = Math.max(1, Math.floor(max / 240));
+  return Math.min(PASTE_BUILD_MAX_QUADS, rough);
+}
+
+function reportedCellM(preset, reliefM, highLat, widthM, lengthM, cols, rows) {
+  const effective =
+    highLat || ((preset.id === "auto" || preset.experimental) && reliefM >= LIFT_RELIEF_M);
+  if (effective && cols > 0 && rows > 0 && widthM > 0 && lengthM > 0) {
+    return (widthM / cols + lengthM / rows) / 2;
+  }
+  return preset.cellM;
+}
+
+function chooseGrid(relief, frame, resolution) {
+  const preset = normalizeTerrainResolution(resolution);
+  const highLat = highLatMeterFrame(frame);
+  const width = frame && frame.widthM > 0 ? frame.widthM : 800;
+  const length = frame && frame.lengthM > 0 ? frame.lengthM : 800;
+  // Finland Auto and the meter stops follow the slider on a town, not only
+  // on a 20 m ski hill. US bare earth keeps the relief ladder.
+  const honorMeters = highLat && (preset.id === "auto" || preset.experimental);
+  if (!honorMeters) {
+    const ladder = reliefLadder(relief);
+    if (ladder) {
+      if (highLat) return squareReliefAxes(relief, width, length);
+      return ladder;
+    }
+  }
+  return meterAxes(frame, preset, highLat);
 }
 
 function pasteReducedNote(terrain) {
@@ -555,7 +674,9 @@ function terrainResolutionNotes(terrain, frame) {
   if (!terrain) return notes;
   const preset = normalizeTerrainResolution(terrain.terrainResolution);
   if (!preset.experimental) return notes;
-  if (!(terrain.reliefM >= LIFT_RELIEF_M)) return notes;
+  // High latitude still names a stepped cell when the town is under 20 m.
+  // A US flat site keeps the relief ladder and has no experimental mesh note.
+  if (!(terrain.reliefM >= LIFT_RELIEF_M) && !highLatMeterFrame(frame)) return notes;
   const cols = terrain.gridCols | 0;
   const rows = terrain.gridRows | 0;
   const width = frame && frame.widthM > 0 ? frame.widthM : 0;
@@ -817,7 +938,10 @@ function terrainFromSamples(samples, frame, opts) {
   let [cols, rows] = chooseGrid(reliefM, frame, preset.id);
   const requestedCols = cols;
   const requestedRows = rows;
-  const skiExperimental = !!(preset.experimental && reliefM >= LIFT_RELIEF_M);
+  const highLat = highLatMeterFrame(frame);
+  // A Finland 1 m town is experimental even under 20 m of relief, so the
+  // paste budget still coarsens it instead of building a 500-wide lattice.
+  const skiExperimental = !!(preset.experimental && (reliefM >= LIFT_RELIEF_M || highLat));
   const widthM = frame && frame.widthM > 0 ? frame.widthM : 800;
   const lengthM = frame && frame.lengthM > 0 ? frame.lengthM : 800;
   const kind = opts && opts.kind === "surface" ? "surface" : "bare-earth";
@@ -848,8 +972,7 @@ function terrainFromSamples(samples, frame, opts) {
   // the JSON ceiling so a 200×200 request is never built. A tight ceiling may
   // land coarser than 20×20. The byte loop below still confirms the clipboard.
   if (skiExperimental && jsonMax > 0) {
-    const rough = Math.max(1, Math.floor(jsonMax / 240));
-    const cap = Math.min(PASTE_BUILD_MAX_QUADS, rough);
+    const cap = pastePlanQuadBudget(jsonMax);
     if (cols * rows > cap) {
       const fitted = fitPasteAxes(cols, rows, cap);
       cols = fitted[0];
@@ -898,10 +1021,7 @@ function terrainFromSamples(samples, frame, opts) {
       guard += 1;
     }
   }
-  const cellM =
-    (preset.id === "auto" || preset.experimental) && reliefM >= LIFT_RELIEF_M
-      ? (widthM / cols + lengthM / rows) / 2
-      : preset.cellM;
+  const cellM = reportedCellM(preset, reliefM, highLat, widthM, lengthM, cols, rows);
   const pasteReduced = skiExperimental && (cols !== requestedCols || rows !== requestedRows);
   return {
     reliefM: Math.round((maxS - minS) * 10) / 10,
@@ -930,10 +1050,15 @@ function terrainFromSamples(samples, frame, opts) {
 function omittedPaste(src) {
   const widthM = src.frame && src.frame.widthM > 0 ? src.frame.widthM : 800;
   const lengthM = src.frame && src.frame.lengthM > 0 ? src.frame.lengthM : 800;
-  const cellM =
-    (src.preset.id === "auto" || src.preset.experimental) && src.reliefM >= LIFT_RELIEF_M
-      ? (widthM / src.cols + lengthM / src.rows) / 2
-      : src.preset.cellM;
+  const cellM = reportedCellM(
+    src.preset,
+    src.reliefM,
+    highLatMeterFrame(src.frame),
+    widthM,
+    lengthM,
+    src.cols,
+    src.rows
+  );
   return {
     reliefM: Math.round(src.reliefM * 10) / 10,
     minZ: Math.round(src.minS * 10) / 10,
@@ -1212,13 +1337,25 @@ function terrainBundleFields(terrain, warnings) {
   );
   if (ready) {
     const preset = normalizeTerrainResolution(terrain.terrainResolution);
+    const cols = terrain.gridCols | 0;
+    const rows = terrain.gridRows | 0;
+    const highLat = highLatMeterFrame(terrain.frame);
+    const showMeters =
+      terrain.reliefM >= LIFT_RELIEF_M || (highLat && (preset.id === "auto" || preset.experimental));
     let mesh = "";
-    if (terrain.reliefM >= LIFT_RELIEF_M) {
+    if (showMeters) {
       const shown =
-        preset.experimental || (preset.id === "auto" && terrain.cellM > 0) ? terrain.cellM : preset.cellM;
+        (highLat && terrain.cellM > 0) ||
+        preset.experimental ||
+        (preset.id === "auto" && terrain.cellM > 0)
+          ? terrain.cellM
+          : preset.cellM;
       mesh = ", " + preset.label + " ~" + formatCellM(shown) + " m";
-      if (preset.experimental && (terrain.gridCols > PASTE_SOFT_GRID || terrain.gridRows > PASTE_SOFT_GRID)) {
-        mesh += " (" + terrain.gridCols + "×" + terrain.gridRows + ", past 20×20)";
+      const past = preset.experimental && (cols > PASTE_SOFT_GRID || rows > PASTE_SOFT_GRID);
+      if (past || (highLat && cols > 0 && rows > 0)) {
+        mesh += " (" + cols + "×" + rows;
+        if (past) mesh += ", past 20×20";
+        mesh += ")";
       }
     } else if (preset.id !== "default") {
       mesh = ", " + preset.label + " (relief under 20 m keeps the coarse mesh)";
@@ -1460,6 +1597,9 @@ module.exports = {
   DEP3_PROBE_SAMPLES,
   chooseGrid,
   fitPasteAxes,
+  pastePlanQuadBudget,
+  squareMeterAxes,
+  highLatMeterFrame,
   normalizeTerrainResolution,
   sampleCountForResolution,
   terrainResolutionNotes,
