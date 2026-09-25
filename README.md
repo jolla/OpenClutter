@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.26** on `dev` — A polygon closes without a right-click. After three corners, double-click, click the first corner, or **Finish shape**. Export commits that open polygon. A ring of one or two corners blocks export instead of sending the previous outline. Esc still drops only the open corners. The badge stays (`dev · v1.1.26`).
+
 **v1.1.25** on `dev` — The Terrain resolution control is gone. Terrain stays a checkbox, on by default. When it is on, export uses the densest mesh that still fits (about 1 m cells, stepped coarser only when that grid will not fit the response). When it is off, that export skips the DEM and Copy terrain. The subtitle and muted badge stay (`dev · v1.1.25`).
 
 **v1.1.24** on `dev` — Include foliage wears an Experimental tag and stays off unless checked. A Terrain checkbox sits next to it, on by default. Turn it off and that export skips the DEM and Copy terrain. Terrain resolution stays hidden while Terrain is off. The subtitle and muted badge stay (`dev · v1.1.24`).
@@ -25,7 +27,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.25`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, export uses the densest mesh that still fits. There is no resolution control.
+- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.26`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, export uses the densest mesh that still fits. There is no resolution control.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 
