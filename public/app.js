@@ -30,6 +30,11 @@ const TERRAIN_STOPS = [
 const TERRAIN_AUTO_MAX_GRID = 20;
 const TERRAIN_AUTO_MIN_CELL_M = 1;
 const TERRAIN_PASTE_SOFT_GRID = 20;
+// Same first-pass quad budget as pastePlanQuadBudget() in netlify/lib/terrain.js
+// (min of the 12000 build cap and floor(paste JSON ceiling / 240)).
+const TERRAIN_PASTE_QUAD_BUDGET = 9429;
+// Matches GROUND_METER_STRETCH in netlify/lib/geo-frame.js (~54°N).
+const GROUND_METER_STRETCH_UI = 1.7;
 
 function terrainStopIndex() {
   const input = document.getElementById("terrain-resolution-range");
@@ -65,16 +70,106 @@ function drawSpans() {
   return { w: w, h: h };
 }
 
-function autoReadout() {
+function uiMetersPerDeg(lat) {
+  const rad = (lat * Math.PI) / 180;
+  return { lon: 111320 * Math.cos(rad), lat: 110540 };
+}
+
+/**
+ * Ground-meter size of the paste. At high latitude Esri's degree grid pads
+ * the short axis until pixels are square in degrees, which is the frame the
+ * aerial resample and the terrain lattice share.
+ */
+function pasteSpans() {
   const draw = drawSpans();
-  if (!draw) return "Auto · from draw";
-  const cols = autoAxisCountUi(draw.w);
-  const rows = autoAxisCountUi(draw.h);
-  const cell = (draw.w / cols + draw.h / rows) / 2;
-  return "Auto · ~" + formatCellMUi(cell) + " m";
+  if (!draw || !bbox) return null;
+  const lat = (bbox.south + bbox.north) / 2;
+  const mpd = uiMetersPerDeg(lat);
+  const stretch = mpd.lon > 0 ? mpd.lat / mpd.lon : 1;
+  let w = draw.w;
+  let h = draw.h;
+  if (stretch >= GROUND_METER_STRETCH_UI) {
+    const lonSpan = bbox.east - bbox.west;
+    const latSpan = bbox.north - bbox.south;
+    const target = draw.w / draw.h;
+    const current = lonSpan / latSpan;
+    if (target > 0 && current > target) h = (lonSpan / target) * mpd.lat;
+    else if (current > 0 && target > current) w = latSpan * target * mpd.lon;
+  }
+  return { w: w, h: h, highLat: stretch >= GROUND_METER_STRETCH_UI };
+}
+
+function squareMeterAxesUi(width, length, cell, cap) {
+  let cols = Math.max(1, Math.round(width / cell));
+  let rows = Math.max(1, Math.round(length / cell));
+  const limit = Math.max(1, cap | 0);
+  if (Math.max(cols, rows) > limit) {
+    const scale = limit / Math.max(cols, rows);
+    cols = Math.max(1, Math.round(cols * scale));
+    rows = Math.max(1, Math.round(rows * scale));
+    while ((cols > limit || rows > limit) && cols * rows > 1) {
+      if (cols >= rows && cols > 1) cols -= 1;
+      else if (rows > 1) rows -= 1;
+      else break;
+    }
+  }
+  return [cols, rows];
+}
+
+function fitPasteAxesUi(wantCols, wantRows, maxQuads) {
+  const wantC = Math.max(1, wantCols | 0);
+  const wantR = Math.max(1, wantRows | 0);
+  const cap = Math.max(1, maxQuads | 0);
+  if (wantC * wantR <= cap) return [wantC, wantR];
+  const aspect = wantC / wantR;
+  const scale = Math.sqrt(cap / (wantC * wantR));
+  let cols = Math.max(1, Math.min(wantC, Math.floor(wantC * scale)));
+  let rows = Math.max(1, Math.min(wantR, Math.floor(wantR * scale)));
+  while (true) {
+    const canC = cols < wantC && (cols + 1) * rows <= cap;
+    const canR = rows < wantR && cols * (rows + 1) <= cap;
+    if (!canC && !canR) break;
+    if (canC && canR) {
+      const errC = Math.abs((cols + 1) / rows - aspect);
+      const errR = Math.abs(cols / (rows + 1) - aspect);
+      if (errC <= errR) cols += 1;
+      else rows += 1;
+    } else if (canC) cols += 1;
+    else rows += 1;
+  }
+  return [cols, rows];
+}
+
+function autoReadout() {
+  const paste = pasteSpans();
+  if (!paste) return "Auto · from draw";
+  if (paste.highLat) {
+    const cell = Math.max(TERRAIN_AUTO_MIN_CELL_M, Math.max(paste.w, paste.h) / TERRAIN_AUTO_MAX_GRID);
+    const axes = squareMeterAxesUi(paste.w, paste.h, cell, TERRAIN_AUTO_MAX_GRID);
+    const effective = (paste.w / axes[0] + paste.h / axes[1]) / 2;
+    return "Auto · ~" + formatCellMUi(effective) + " m · " + axes[0] + "×" + axes[1];
+  }
+  const cols = autoAxisCountUi(paste.w);
+  const rows = autoAxisCountUi(paste.h);
+  const shown = (paste.w / cols + paste.h / rows) / 2;
+  return "Auto · ~" + formatCellMUi(shown) + " m";
 }
 
 function manualReadout(stop) {
+  const paste = pasteSpans();
+  if (paste && paste.highLat && stop.cellM > 0 && stop.maxGrid > TERRAIN_PASTE_SOFT_GRID) {
+    let axes = squareMeterAxesUi(paste.w, paste.h, stop.cellM, stop.maxGrid);
+    axes = fitPasteAxesUi(axes[0], axes[1], TERRAIN_PASTE_QUAD_BUDGET);
+    const cols = axes[0];
+    const rows = axes[1];
+    const cell = (paste.w / cols + paste.h / rows) / 2;
+    let text = "~" + formatCellMUi(cell) + " m · " + cols + "×" + rows;
+    if (cols > TERRAIN_PASTE_SOFT_GRID || rows > TERRAIN_PASTE_SOFT_GRID) text += " · past 20×20";
+    const wantC = Math.max(1, Math.round(paste.w / stop.cellM));
+    const wantR = Math.max(1, Math.round(paste.h / stop.cellM));
+    if (wantC > cols || wantR > rows) text += " · requested " + stop.cellM + " m stepped up to fit";
+    return text;
+  }
   const draw = drawSpans();
   if (!draw || !(stop.cellM > 0)) {
     if (stop.maxGrid > TERRAIN_PASTE_SOFT_GRID && stop.cellM > 0) {
