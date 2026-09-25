@@ -4,7 +4,7 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
-**v1.1.11** on `dev` — when USGS 3DEP returns no usable grid, the dev host reads Copernicus DEM GLO-30 (public AWS COG, surface DSM, EGM2008) and still pastes `terrain-clipboard.json`. Building and foliage objects sit on that surface: bottom height from floor is the DEM under the footprint, and top height from floor is that bottom plus the object height. The bare-earth 20 m ski-hill gate stays off for this surface model. A 3DEP hit is unchanged. Production stays 3DEP only. The v1.1.9 ramp axis (steeper rise/run) and Auto terrain resolution stay. The page title and the export zip (`openclutter_version`) both read this from `package.json`.
+**v1.1.13** on `dev` — outside USGS 3DEP coverage the dev host gives up on that request quickly and reads Copernicus DEM GLO-30 (public AWS COG, surface DSM, EGM2008), using a coarser grid when little time is left, and still pastes `terrain-clipboard.json`. Building and foliage objects sit on that surface: bottom height from floor is the DEM under the footprint, and top height from floor is that bottom plus the object height. The bare-earth 20 m ski-hill gate stays off for this surface model. A US 3DEP hit is unchanged. Production stays 3DEP only. Hamina NLS lidar heights from v1.1.12 stay. The v1.1.9 ramp axis (steeper rise/run) and Auto terrain resolution stay. The page title and the export zip (`openclutter_version`) both read this from `package.json`.
 
 Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/dev · Source: https://github.com/jolla/OpenClutter
 
@@ -17,7 +17,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The title row shows a **dev** badge and the build version (`dev · v1.1.11`). The same dev host shows **Terrain resolution** (Auto / Default / Fine / Finest) next to Include foliage. Auto is selected by default.
+- Hack on **https://openclutter.netlify.app/dev**. The title row shows a **dev** badge and the build version (`dev · v1.1.13`). The same dev host shows **Terrain resolution** (Auto / Default / Fine / Finest) next to Include foliage. Auto is selected by default.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 

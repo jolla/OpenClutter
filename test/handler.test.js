@@ -804,12 +804,29 @@ describe("dev-host Copernicus fallback", () => {
     global.fetch = orig;
   });
 
-  function installFetch(samplesBody) {
+  function installFetch(samplesBody, extent) {
+    const box = extent || TRAFALGAR;
     const urls = [];
-    global.fetch = async (url) => {
+    global.fetch = async (url, init) => {
       const u = String(url && url.url ? url.url : url);
       urls.push(u);
-      if (u.includes("getSamples")) {
+      if (u.includes("getSamples") && u.includes("elevation.nationalmap.gov")) {
+        if (samplesBody === "hang") {
+          return await new Promise((resolve, reject) => {
+            const signal = init && init.signal;
+            const fail = () => {
+              const err = new Error("The operation was aborted");
+              err.name = "AbortError";
+              reject(err);
+            };
+            if (signal && signal.aborted) fail();
+            else if (signal) signal.addEventListener("abort", fail, { once: true });
+            else {
+              const timer = setTimeout(fail, 15000);
+              if (timer.unref) timer.unref();
+            }
+          });
+        }
         return { ok: true, json: async () => samplesBody };
       }
       if (u.includes("copernicus-dem")) {
@@ -823,10 +840,10 @@ describe("dev-host Copernicus fallback", () => {
               width: 64,
               height: 64,
               extent: {
-                xmin: TRAFALGAR.west,
-                ymin: TRAFALGAR.south,
-                xmax: TRAFALGAR.east,
-                ymax: TRAFALGAR.north,
+                xmin: box.west,
+                ymin: box.south,
+                xmax: box.east,
+                ymax: box.north,
                 spatialReference: { wkid: 4326 },
               },
             }),
@@ -911,5 +928,138 @@ describe("dev-host Copernicus fallback", () => {
     assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
     assert.equal(body.terrainClipboard, null);
     assert.match(body.terrainStatus, /Terrain omitted/);
+  });
+
+  const HAMINA = {
+    west: 27.18,
+    south: 60.565,
+    east: 27.2,
+    north: 60.578,
+    name: "Hamina",
+  };
+
+  it("fails a hanging 3DEP fast for Hamina and still requests GLO-30 on the dev host", async () => {
+    const urls = installFetch("hang", HAMINA);
+    const t0 = Date.now();
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...HAMINA, format: "bundle", includeFoliage: false }),
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(res.statusCode, 200, res.body);
+    assert.ok(elapsed < 2500, "elapsed " + elapsed);
+    const body = JSON.parse(res.body);
+    const dep = urls.find((u) => u.includes("elevation.nationalmap.gov") && u.includes("getSamples"));
+    assert.ok(dep);
+    assert.equal(new URL(dep).searchParams.get("sampleCount"), "4");
+    const glo = urls.filter((u) => u.includes("copernicus-dem"));
+    assert.equal(glo.length >= 1, true);
+    assert.match(glo[0], /Copernicus_DSM_COG_10_N60_00_E027_00_DEM\.tif/);
+    assert.equal(/timed out/i.test(body.terrainStatus), false);
+    assert.match(body.terrainStatus, /Terrain omitted/);
+    assert.match(body.terrainStatus, /did not return a usable grid/);
+  });
+
+  it("warns timed out for Hamina only when GLO-30 is aborted as well", async () => {
+    const urls = [];
+    global.fetch = async (url, init) => {
+      const u = String(url && url.url ? url.url : url);
+      urls.push(u);
+      if (
+        (u.includes("elevation.nationalmap.gov") && u.includes("getSamples")) ||
+        u.includes("copernicus-dem")
+      ) {
+        return await new Promise((resolve, reject) => {
+          const signal = init && init.signal;
+          const fail = () => {
+            const err = new Error("The operation was aborted");
+            err.name = "AbortError";
+            reject(err);
+          };
+          if (signal && signal.aborted) fail();
+          else if (signal) signal.addEventListener("abort", fail, { once: true });
+          else {
+            const timer = setTimeout(fail, 15000);
+            if (timer.unref) timer.unref();
+          }
+        });
+      }
+      if (u.includes("World_Imagery")) {
+        if (u.includes("f=json")) {
+          return {
+            ok: true,
+            json: async () => ({
+              width: 64,
+              height: 64,
+              extent: {
+                xmin: HAMINA.west,
+                ymin: HAMINA.south,
+                xmax: HAMINA.east,
+                ymax: HAMINA.north,
+                spatialReference: { wkid: 4326 },
+              },
+            }),
+          };
+        }
+        return { ok: true, arrayBuffer: async () => jpeg };
+      }
+      return { ok: true, json: async () => ({ features: [], objectIds: [] }), arrayBuffer: async () => new ArrayBuffer(0) };
+    };
+    const t0 = Date.now();
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...HAMINA, format: "bundle", includeFoliage: false }),
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(res.statusCode, 200, res.body);
+    assert.ok(elapsed < 8000, "elapsed " + elapsed);
+    const body = JSON.parse(res.body);
+    assert.equal(urls.some((u) => u.includes("copernicus-dem")), true);
+    assert.match(body.terrainStatus, /Terrain omitted: timed out/);
+    assert.equal(body.terrainClipboard, null);
+  });
+
+  it("does not call GLO-30 for Hamina on production", async () => {
+    const urls = installFetch({ error: { message: "Invalid or missing input parameters" } }, HAMINA);
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "openclutter.netlify.app" },
+      body: JSON.stringify({ ...HAMINA, format: "bundle", includeFoliage: false }),
+    });
+    assert.equal(res.statusCode, 200, res.body);
+    const body = JSON.parse(res.body);
+    assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
+    assert.equal(urls.some((u) => u.includes("elevation.nationalmap.gov")), true);
+    assert.equal(body.terrainClipboard, null);
+    assert.match(body.terrainStatus, /Terrain omitted/);
+  });
+
+  it("keeps the full 3DEP sample count for a US frame on the dev host", async () => {
+    const samples = [];
+    for (let i = 0; i < 4; i++) {
+      samples.push({
+        location: {
+          x: WYNN.west + ((i % 2) + 0.5) * ((WYNN.east - WYNN.west) / 2),
+          y: WYNN.south + (Math.floor(i / 2) + 0.5) * ((WYNN.north - WYNN.south) / 2),
+        },
+        value: "640",
+      });
+    }
+    const urls = installFetch({ samples }, WYNN);
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...WYNN, format: "bundle", includeFoliage: false }),
+    });
+    assert.equal(res.statusCode, 200, res.body);
+    const body = JSON.parse(res.body);
+    const dem = urls.find((u) => u.includes("elevation.nationalmap.gov") && u.includes("getSamples"));
+    assert.ok(dem);
+    assert.equal(new URL(dem).searchParams.get("sampleCount"), "576");
+    assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
+    assert.match(body.terrainStatus, /USGS 3DEP bare-earth/);
+    assert.equal(body.terrainFilename, "terrain-clipboard.json");
   });
 });
