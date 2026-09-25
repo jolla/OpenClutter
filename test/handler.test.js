@@ -2,7 +2,7 @@
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
-const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures, imageryAttemptMs, IMAGERY_ATTEMPT_MS, IMAGERY_ATTEMPT_MS_DEV } = require("../netlify/functions/clutter");
+const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures, imageryAttemptMs, IMAGERY_ATTEMPT_MS, IMAGERY_ATTEMPT_MS_DEV, lambdaPayloadBytes, EXPORT_PAYLOAD_BUDGET, LAMBDA_SYNC_PAYLOAD_MAX } = require("../netlify/functions/clutter");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
 const { unzipStore } = require("../netlify/lib/zip-store");
@@ -1140,5 +1140,128 @@ describe("dev-host Copernicus fallback", () => {
     assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
     assert.match(body.terrainStatus, /USGS 3DEP bare-earth/);
     assert.equal(body.terrainFilename, "terrain-clipboard.json");
+  });
+});
+
+describe("campus terrain paste stays inside the synchronous response", () => {
+  const prev = global.fetch;
+  const heavyJpeg = Buffer.concat([
+    Buffer.from([0xff, 0xd8]),
+    Buffer.alloc(3600000, 7),
+    Buffer.from([0xff, 0xd9]),
+  ]);
+
+  function campusBox() {
+    const lat = 44.91;
+    const widthM = 2140;
+    const lengthM = 1780;
+    const mpdLon = 111320 * Math.cos((lat * Math.PI) / 180);
+    const west = -89.72;
+    const south = lat;
+    return {
+      west,
+      south,
+      east: west + widthM / mpdLon,
+      north: south + lengthM / 110540,
+      name: "Campus",
+    };
+  }
+
+  function install(box, jpegBuf) {
+    global.fetch = async (url) => {
+      const u = String(url && url.url ? url.url : url);
+      if (u.includes("getSamples") || u.includes("USFS_EDW_NLCD")) {
+        const samples = [];
+        const n = 12;
+        for (let r = 0; r < n; r++) {
+          for (let c = 0; c < n; c++) {
+            const lon = box.west + ((c + 0.5) / n) * (box.east - box.west);
+            const lat = box.south + ((r + 0.5) / n) * (box.north - box.south);
+            samples.push({
+              location: { x: lon, y: lat },
+              value: 200 + ((lat - box.south) / (box.north - box.south)) * 80,
+            });
+          }
+        }
+        return { ok: true, json: async () => ({ samples }) };
+      }
+      if (u.includes("World_Imagery")) {
+        if (u.includes("f=json")) {
+          return {
+            ok: true,
+            json: async () => ({
+              width: 64,
+              height: 48,
+              extent: {
+                xmin: box.west,
+                ymin: box.south,
+                xmax: box.east,
+                ymax: box.north,
+                spatialReference: { wkid: 4326 },
+              },
+            }),
+          };
+        }
+        return { ok: true, arrayBuffer: async () => jpegBuf };
+      }
+      return { ok: true, json: async () => ({ features: [], objectIds: [] }), arrayBuffer: async () => new ArrayBuffer(0) };
+    };
+  }
+
+  after(() => {
+    global.fetch = prev;
+  });
+
+  async function exportCampus(resolution, jpegBuf) {
+    const box = campusBox();
+    install(box, jpegBuf);
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      path: "/dev",
+      body: JSON.stringify({
+        ...box,
+        format: "bundle",
+        includeFoliage: false,
+        terrainResolution: resolution,
+      }),
+    });
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
+    const payload = lambdaPayloadBytes(res);
+    assert.ok(payload <= EXPORT_PAYLOAD_BUDGET, "payload " + payload);
+    assert.ok(payload <= LAMBDA_SYNC_PAYLOAD_MAX);
+    const body = JSON.parse(res.body);
+    assert.ok(body.zipBase64);
+    const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+    assert.ok(Object.keys(files).some((name) => name.startsWith("openIntent_")));
+    return body;
+  }
+
+  it("returns zip plus Copy terrain for 10 m and 1 m on a heavy aerial", async () => {
+    for (const stop of ["10", "1"]) {
+      const body = await exportCampus(stop, heavyJpeg);
+      assert.ok(body.terrainClipboard, body.terrainStatus);
+      assert.match(body.terrainStatus, /reduced from/);
+      assert.match(body.terrainStatus, /Copy terrain/);
+      assert.equal(/omitted/.test(body.terrainStatus), false);
+      const quads =
+        body.terrainClipboard.slopedFloors.length + body.terrainClipboard.raisedFloorZones.length;
+      assert.ok(quads < 214 * 178, stop + " quads " + quads);
+      assert.ok(quads >= 6 * 5, stop + " quads " + quads);
+      const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+      assert.ok(files["terrain-clipboard.json"]);
+    }
+  });
+
+  it("keeps Auto on its 20×20 mesh when the aerial is already large", async () => {
+    const body = await exportCampus("auto", heavyJpeg);
+    assert.ok(body.terrainClipboard, body.terrainStatus);
+    assert.match(body.terrainStatus, /Copy terrain/);
+    assert.equal(/reduced from/.test(body.terrainStatus), false);
+    assert.equal(/omitted/.test(body.terrainStatus), false);
+    const quads =
+      body.terrainClipboard.slopedFloors.length + body.terrainClipboard.raisedFloorZones.length;
+    assert.ok(quads <= 20 * 20);
+    assert.ok(quads >= 6 * 5);
   });
 });

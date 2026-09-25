@@ -24,9 +24,11 @@
  * at most 12×12, from 144 samples. Fine is ~40 m, at most 16×16, from 324
  * samples. Finest is ~25 m, at most 20×20, from 576 samples. Stops at 20, 15,
  * 10, 5, and 1 m may paste past that 20×20 expectation so a large hill can
- * keep the cell size. A mesh that will not fit in the export is coarsened to
- * the densest grid that still fits, and that reduction is named in the export
- * status. DEM samples for those stops step down when the budget is short.
+ * keep the cell size. A mesh that will not fit beside the zip in one response
+ * is coarsened until Copy terrain still returns with the download, and that
+ * reduction is named in the export status. If it still cannot, the paste is
+ * left out and the zip still returns. DEM samples for those stops step down
+ * when the budget is short.
  *
  * Hamina clipboard rings are open: the first vertex is not repeated.
  * raisedFloorZones are xy quads. slopedFloors are xyz quads whose first edge
@@ -64,17 +66,79 @@ const ABSOLUTE_MAX_GRID = 500;
 /** DEM samples. 625 was the old hard ceiling (Finest uses 576). */
 const ABSOLUTE_MAX_SAMPLES = 2500;
 /**
- * Uncompressed clipboard JSON that can ride along with the zip in one
- * response. This is the hard limit for Copy terrain. A requested mesh past
- * it is coarsened until the JSON fits. It is not dropped.
+ * Lambda rejects a synchronous response above 6 MiB. The runtime error cites
+ * 6291556 bytes. A decimal reading of "6 MB" is 6000000. Crossing either one
+ * is a gateway 502 with an empty body, which the page shows as Export failed
+ * (502). Stay under both.
  */
-const TERRAIN_PASTE_JSON_MAX = 3500000;
+const LAMBDA_SYNC_PAYLOAD_MAX = 6 * 1024 * 1024;
+const EXPORT_PAYLOAD_BUDGET = 5800000;
 /**
- * Do not allocate a lattice denser than this. It sits under the JSON limit
- * for a sloped mesh, so planning can stop here and the byte check still
- * confirms the built clipboard fits.
+ * Bundle keys, frame, stats, and warnings, plus slack so the estimate is
+ * not tighter than JSON.stringify of the function return.
+ */
+const BUNDLE_ENVELOPE_BYTES = 64 * 1024;
+/**
+ * One clipboard byte is stored in the zip (then base64'd by 4/3) and repeated
+ * in the bundle body. Lambda JSON-encodes that body, so each quote grows by a
+ * byte. Sloped quads are about 7.5% quotes; 1.08 leaves a little slack.
+ */
+const PASTE_RESPONSE_BYTE_COST = 4 / 3 + 1.08;
+
+/**
+ * Clipboard JSON bytes that can sit beside the rest of the zip without
+ * pushing the synchronous response over EXPORT_PAYLOAD_BUDGET.
+ * companionZipBytes is the zip with the terrain member removed.
+ */
+function maxPasteJsonForCompanion(companionZipBytes, extraBodyBytes) {
+  const other = Math.max(0, companionZipBytes | 0);
+  const extra =
+    extraBodyBytes != null && extraBodyBytes !== "" && Number.isFinite(+extraBodyBytes)
+      ? Math.max(0, +extraBodyBytes)
+      : BUNDLE_ENVELOPE_BYTES;
+  const b64Other = 4 * Math.ceil(other / 3);
+  const room = EXPORT_PAYLOAD_BUDGET - b64Other - extra;
+  if (!(room > 0)) return 0;
+  return Math.max(0, Math.floor(room / PASTE_RESPONSE_BYTE_COST));
+}
+
+/**
+ * Largest clipboard that still fits beside a small aerial (~200 KB). The
+ * handler passes a tighter pasteJsonMax when the real zip is heavier.
+ * A mesh past this is coarsened. The handler drops the paste only when even
+ * that smaller grid cannot ride along with the zip.
+ */
+const TERRAIN_PASTE_JSON_MAX = maxPasteJsonForCompanion(200 * 1024);
+/**
+ * Do not allocate a lattice denser than this. The byte check is the hard
+ * response budget; this only stops a 200×200 request from being built first.
  */
 const PASTE_BUILD_MAX_QUADS = 12000;
+
+function pasteJsonCeiling(opts) {
+  if (opts && opts.pasteJsonMax != null && opts.pasteJsonMax !== "" && Number.isFinite(+opts.pasteJsonMax)) {
+    return Math.max(0, Math.floor(+opts.pasteJsonMax));
+  }
+  return TERRAIN_PASTE_JSON_MAX;
+}
+
+/** Estimated Lambda payload for a bundle that repeats clipboardJson beside the zip. */
+function estimateBundlePayload(zipLength, clipboardJson) {
+  const b64 = 4 * Math.ceil(Math.max(0, zipLength | 0) / 3);
+  let quotes = 0;
+  const clip = clipboardJson || "";
+  for (let i = 0; i < clip.length; i++) {
+    const c = clip.charCodeAt(i);
+    if (c === 34 || c === 92) quotes++;
+  }
+  return b64 + clip.length + quotes + BUNDLE_ENVELOPE_BYTES;
+}
+
+/** Bytes Lambda counts: JSON.stringify of the function's return value. */
+function lambdaPayloadBytes(handlerResult) {
+  if (!handlerResult) return 0;
+  return Buffer.byteLength(JSON.stringify(handlerResult), "utf8");
+}
 /** Auto will not paste cells smaller than this, even on a tiny hill. */
 const MIN_CELL_M = 1;
 const TERRAIN_RESOLUTIONS = {
@@ -753,20 +817,44 @@ function terrainFromSamples(samples, frame, opts) {
   const requestedCols = cols;
   const requestedRows = rows;
   const skiExperimental = !!(preset.experimental && reliefM >= LIFT_RELIEF_M);
-  // Plan against the allocation cap first so a 200×200 request is never built.
-  // The byte limit below is the hard response budget; if the built JSON is
-  // still over it, replan coarser until emit succeeds.
-  if (skiExperimental && cols * rows > PASTE_BUILD_MAX_QUADS) {
-    const fitted = fitPasteAxes(cols, rows, PASTE_BUILD_MAX_QUADS);
-    cols = fitted[0];
-    rows = fitted[1];
-  }
   const widthM = frame && frame.widthM > 0 ? frame.widthM : 800;
   const lengthM = frame && frame.lengthM > 0 ? frame.lengthM : 800;
   const kind = opts && opts.kind === "surface" ? "surface" : "bare-earth";
   const attribution =
     (opts && opts.attribution) || (kind === "surface" ? GLO30_CREDIT : USGS_3DEP_ATTRIBUTION);
   const elevationAt = buildElevation(clean);
+  const jsonMax = pasteJsonCeiling(opts);
+  // A zero ceiling means the zip already fills the response. Skip the lattice.
+  if (skiExperimental && jsonMax <= 0 && cols * rows > PASTE_SOFT_GRID * PASTE_SOFT_GRID) {
+    return omittedPaste({
+      clean,
+      frame,
+      preset,
+      reliefM,
+      minS,
+      maxS,
+      cols,
+      rows,
+      elevationAt,
+      kind,
+      attribution,
+      mesh: null,
+      requestedCols,
+      requestedRows,
+    });
+  }
+  // Plan under the allocation cap and under a rough bytes-per-quad reading of
+  // the JSON ceiling so a 200×200 request is never built. A tight ceiling may
+  // land coarser than 20×20. The byte loop below still confirms the clipboard.
+  if (skiExperimental && jsonMax > 0) {
+    const rough = Math.max(1, Math.floor(jsonMax / 240));
+    const cap = Math.min(PASTE_BUILD_MAX_QUADS, rough);
+    if (cols * rows > cap) {
+      const fitted = fitPasteAxes(cols, rows, cap);
+      cols = fitted[0];
+      rows = fitted[1];
+    }
+  }
   let mesh = buildTerrainClipboard(clean, frame, cols, rows, elevationAt);
   if (!mesh) return null;
   function omitFields() {
@@ -787,14 +875,14 @@ function terrainFromSamples(samples, frame, opts) {
       requestedRows,
     };
   }
-  if (skiExperimental && cols * rows > PASTE_SOFT_GRID * PASTE_SOFT_GRID) {
+  if (skiExperimental) {
     let guard = 0;
     let jsonLen = JSON.stringify(mesh.clip).length;
-    while (jsonLen > TERRAIN_PASTE_JSON_MAX) {
-      if (guard >= 8) {
+    while (jsonLen > jsonMax) {
+      if (guard >= 8 || !(jsonMax > 0)) {
         return omittedPaste(omitFields());
       }
-      const ratio = TERRAIN_PASTE_JSON_MAX / jsonLen;
+      const ratio = jsonMax / jsonLen;
       let nextMax = Math.floor(cols * rows * ratio * 0.98);
       if (!(nextMax < cols * rows)) nextMax = cols * rows - 1;
       const fitted = fitPasteAxes(cols, rows, Math.max(1, nextMax));
@@ -1165,6 +1253,12 @@ module.exports = {
   ABSOLUTE_MAX_SAMPLES,
   TERRAIN_PASTE_JSON_MAX,
   PASTE_BUILD_MAX_QUADS,
+  LAMBDA_SYNC_PAYLOAD_MAX,
+  EXPORT_PAYLOAD_BUDGET,
+  BUNDLE_ENVELOPE_BYTES,
+  maxPasteJsonForCompanion,
+  estimateBundlePayload,
+  lambdaPayloadBytes,
   MIN_CELL_M,
   LIFT_RELIEF_M,
   LIFT_LOCAL_M,

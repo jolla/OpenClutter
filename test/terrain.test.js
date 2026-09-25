@@ -28,6 +28,10 @@ const {
   ABSOLUTE_MAX_SAMPLES,
   PASTE_BUILD_MAX_QUADS,
   TERRAIN_PASTE_JSON_MAX,
+  LAMBDA_SYNC_PAYLOAD_MAX,
+  EXPORT_PAYLOAD_BUDGET,
+  estimateBundlePayload,
+  maxPasteJsonForCompanion,
   MIN_CELL_M,
   terrainResolutionNotes,
   fitPasteAxes,
@@ -1072,6 +1076,8 @@ describe("terrain resolution presets", () => {
     assert.ok(90 * 70 <= PASTE_BUILD_MAX_QUADS);
     const fit10 = fitPasteAxes(180, 140, PASTE_BUILD_MAX_QUADS);
     const fit1 = fitPasteAxes(500, 500, PASTE_BUILD_MAX_QUADS);
+    assert.ok(fit1[0] * fit1[1] <= PASTE_BUILD_MAX_QUADS);
+    assert.ok(fit1[0] < 500 && fit1[1] < 500);
     assert.ok(fit10[0] * fit10[1] <= PASTE_BUILD_MAX_QUADS);
     assert.ok((fit10[0] + 1) * fit10[1] > PASTE_BUILD_MAX_QUADS);
     assert.ok(fit10[0] * (fit10[1] + 1) > PASTE_BUILD_MAX_QUADS);
@@ -1101,21 +1107,31 @@ describe("terrain resolution presets", () => {
 
     const m15 = terrainFromSamples(samples, peak, { terrainResolution: "15" });
     assert.equal(m15.pasteOmitted, undefined);
-    assert.equal(m15.pasteReduced, undefined);
-    assert.deepEqual([m15.gridCols, m15.gridRows], [120, 93]);
+    assert.ok(m15.clipboard);
     assert.ok(JSON.stringify(m15.clipboard).length <= TERRAIN_PASTE_JSON_MAX);
     assert.match(terrainBundleFields(m15, []).terrainStatus, /Copy terrain/);
+    const m15Json = JSON.stringify(m15.clipboard);
+    if (m15.pasteReduced) {
+      assert.ok(m15.gridCols * m15.gridRows < 120 * 93);
+      assert.match(terrainBundleFields(m15, []).terrainStatus, /reduced from 120×93/);
+    } else {
+      assert.deepEqual([m15.gridCols, m15.gridRows], [120, 93]);
+    }
+    assert.ok(estimateBundlePayload(200 * 1024 + m15Json.length, m15Json) <= EXPORT_PAYLOAD_BUDGET);
 
-    function assertFittedPaste(terrain, frame, fromCols, fromRows, fitted) {
+    function assertFittedPaste(terrain, frame, fromCols, fromRows) {
       assert.equal(terrain.pasteOmitted, undefined);
       assert.equal(terrain.pasteReduced, true);
       assert.ok(terrain.clipboard);
       assert.deepEqual([terrain.requestedGridCols, terrain.requestedGridRows], [fromCols, fromRows]);
-      assert.deepEqual([terrain.gridCols, terrain.gridRows], fitted);
-      assert.equal(terrain.raised + terrain.sloped, fitted[0] * fitted[1]);
-      assert.ok(JSON.stringify(terrain.clipboard).length <= TERRAIN_PASTE_JSON_MAX);
+      assert.ok(terrain.gridCols * terrain.gridRows < fromCols * fromRows);
+      assert.ok(terrain.gridCols * terrain.gridRows <= PASTE_BUILD_MAX_QUADS);
+      assert.equal(terrain.raised + terrain.sloped, terrain.gridCols * terrain.gridRows);
+      const json = JSON.stringify(terrain.clipboard);
+      assert.ok(json.length <= TERRAIN_PASTE_JSON_MAX);
+      assert.ok(estimateBundlePayload(200 * 1024 + json.length, json) <= EXPORT_PAYLOAD_BUDGET);
       assert.ok(terrain.clipboard.slopedFloors.concat(terrain.clipboard.raisedFloorZones).every((z) => z.slabOnly === false));
-      const note = "reduced from " + fromCols + "×" + fromRows + " to " + fitted[0] + "×" + fitted[1];
+      const note = "reduced from " + fromCols + "×" + fromRows + " to " + terrain.gridCols + "×" + terrain.gridRows;
       const notes = terrainResolutionNotes(terrain, frame).join("\n");
       assert.match(notes, new RegExp(note));
       assert.match(notes, /OpenIntent zip is unchanged/);
@@ -1127,7 +1143,7 @@ describe("terrain resolution presets", () => {
     }
 
     const m10 = terrainFromSamples(samples, peak, { terrainResolution: "10" });
-    assertFittedPaste(m10, peak, 180, 140, fit10);
+    assertFittedPaste(m10, peak, 180, 140);
     assert.ok(m10.cellM > 10);
     const warnings = [];
     noteMissingTerrain(m10, warnings);
@@ -1135,10 +1151,39 @@ describe("terrain resolution presets", () => {
 
     const campusSamples = gridSamples(campus, (r, c, lon, lat) => 200 + ((lat - campus.south) / (campus.north - campus.south)) * 80);
     const campus10 = terrainFromSamples(campusSamples, campus, { terrainResolution: "10" });
-    assertFittedPaste(campus10, campus, 214, 178, fitCampus);
+    assertFittedPaste(campus10, campus, 214, 178);
+    const uncapped = terrainFromSamples(campusSamples, campus, {
+      terrainResolution: "10",
+      pasteJsonMax: 3500000,
+    });
+    const fat = JSON.stringify(uncapped.clipboard);
+    assert.ok(uncapped.gridCols * uncapped.gridRows > campus10.gridCols * campus10.gridRows);
+    assert.ok(estimateBundlePayload(900000 + fat.length, fat) > LAMBDA_SYNC_PAYLOAD_MAX);
+    const aerialMax = maxPasteJsonForCompanion(900000);
+    const withAerial = terrainFromSamples(campusSamples, campus, {
+      terrainResolution: "10",
+      pasteJsonMax: aerialMax,
+    });
+    const aerialJson = JSON.stringify(withAerial.clipboard);
+    assert.ok(withAerial.clipboard);
+    assert.ok(aerialJson.length <= aerialMax);
+    assert.ok(estimateBundlePayload(900000 + aerialJson.length, aerialJson) <= EXPORT_PAYLOAD_BUDGET);
+    const heavyMax = maxPasteJsonForCompanion(4200000);
+    assert.ok(heavyMax < TERRAIN_PASTE_JSON_MAX);
+    const heavy = terrainFromSamples(campusSamples, campus, {
+      terrainResolution: "10",
+      pasteJsonMax: heavyMax,
+    });
+    assert.equal(heavy.pasteOmitted, undefined);
+    assert.ok(heavy.clipboard);
+    const heavyJson = JSON.stringify(heavy.clipboard);
+    assert.ok(heavyJson.length <= heavyMax);
+    assert.ok(estimateBundlePayload(4200000 + heavyJson.length, heavyJson) <= EXPORT_PAYLOAD_BUDGET);
+    assert.match(terrainBundleFields(heavy, []).terrainStatus, /Copy terrain/);
+    assert.match(terrainBundleFields(heavy, []).terrainStatus, /reduced from 214×178/);
 
     const m1 = terrainFromSamples(samples, peak, { terrainResolution: "1" });
-    assertFittedPaste(m1, peak, 500, 500, fit1);
+    assertFittedPaste(m1, peak, 500, 500);
     const notes1 = terrainResolutionNotes(m1, peak);
     assert.match(notes1.join("\n"), /not 1 m/);
     assert.match(notes1.join("\n"), /covers about 500×500 m/);
