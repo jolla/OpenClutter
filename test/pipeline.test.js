@@ -1125,6 +1125,7 @@ describe("main UI: import buildings, optional foliage", () => {
     const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
     const app = fs.readFileSync(path.join(root, "app.js"), "utf8");
     assert.match(html, /Import OpenIntent for the map and buildings/i);
+    assert.equal(/One zip\./i.test(html), false);
     assert.match(html, /Include foliage/);
     assert.match(html, /id="include-foliage"/);
     assert.equal(/checked/.test(html.split("include-foliage")[1].slice(0, 80)), false);
@@ -1160,7 +1161,10 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(html, />10</);
     assert.match(html, />5</);
     assert.match(html, />1</);
+    assert.equal(/Ski hills only/i.test(html), false);
     assert.match(html, /ground-meter cell size of the mesh that pastes/);
+    assert.match(html, /class="build"/);
+    assert.equal(/<h1>[^<]*id="app-version"/.test(html), false);
     assert.match(html, /past 20×20/);
     assert.match(app, /terrainRes\.hidden = false/);
     assert.match(app, /id: "auto", label: "Auto", cellM: null, maxGrid: 20, readout: "Auto · from draw"/);

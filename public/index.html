@@ -18,10 +18,7 @@
       background: #161b22ee; border: 1px solid #30363d; border-radius: 12px; padding: 14px 16px;
       backdrop-filter: blur(8px);
     }
-    h1 {
-      font-size: 16px; margin: 0 0 4px; font-weight: 650;
-      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    }
+    h1 { font-size: 16px; margin: 0 0 4px; font-weight: 650; }
     .sub { color: #8b949e; font-size: 12px; margin-bottom: 12px; }
     form { display: flex; gap: 8px; }
     input[type=search] {
@@ -63,20 +60,18 @@
     .hint { margin: 8px 0 0; font-size: 11px; line-height: 1.35; color: #6e7681; }
     #status { margin-top: 10px; font-size: 12px; color: #8b949e; min-height: 16px; white-space: pre-wrap; }
     #status.err { color: #f85149; }
-    #env-badge {
-      display: none; font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
-      text-transform: uppercase; color: #0d1117; background: #d29922;
-      border-radius: 4px; padding: 2px 6px;
+    .build {
+      float: right; margin: 3px 0 0 12px;
+      font-size: 10px; line-height: 1.2; font-weight: 500; color: #6e7681;
     }
-    #env-badge.on { display: inline-block; }
-    #app-version {
-      font-size: 13px; font-weight: 700; color: #e8eaed; letter-spacing: 0.01em;
-    }
+    #env-badge { display: none; }
+    #env-badge.on { display: inline; }
+    #app-version { font-size: inherit; font-weight: inherit; color: inherit; }
     #env-badge.on + #app-version::before {
       content: "·";
-      margin: 0 6px 0 2px;
-      font-weight: 600;
-      color: #8b949e;
+      margin: 0 4px;
+      font-weight: 500;
+      color: #6e7681;
     }
     .leaflet-tooltip.area-chip {
       background: #161b22ee;
@@ -94,8 +89,9 @@
 <body>
   <div id="map"></div>
   <div class="panel">
-    <h1>OpenClutter <span id="env-badge">dev</span><span id="app-version">v1.1.21</span></h1>
-    <div class="sub">One zip. Import OpenIntent for the map and buildings.</div>
+    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.22</span></p>
+    <h1>OpenClutter</h1>
+    <div class="sub">Import OpenIntent for the map and buildings.</div>
     <form id="search">
       <input type="search" id="q" placeholder="Address" required />
       <button type="submit">Go</button>
