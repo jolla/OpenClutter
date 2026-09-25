@@ -18,6 +18,11 @@
  * top_height. That is not "Foliage 14.2 m".
  * Still off OpenIntent: Tree Trunk, Hotel podium, "Foliage N.N m",
  * "Tree Trunk N.N m", "Building N.N m".
+ * A laser-measured building height uses the same custom shape as foliage:
+ * "Building - 8.3" (thickness, top_height 8.3). On a slope it is
+ * "Building - 8.3 @ 3.2": thickness, then bottom height from floor.
+ * That is not "Building N.N m". Stock One/Two/Five/Ten names stay exact
+ * catalog objects; a stock name with a different top_height is rejected.
  * compatibilityMode is stock-foliage.
  */
 
@@ -70,6 +75,8 @@ const FOLIAGE_HEAVY_NAME = "Foliage - Heavy";
 const FOLIAGE_LIGHT_NAME = "Foliage - Light";
 const FOLIAGE_HEAVY_COLOR = "#3F7D2A";
 const FOLIAGE_LIGHT_COLOR = "#6FA84A";
+/** Same gray as Building - One Floor. Continuous metres stay in that family. */
+const MEASURED_BUILDING_COLOR = "#9AA5AC";
 
 const OI_VEGETATION_NAMES = [FOLIAGE_HEAVY_NAME, FOLIAGE_LIGHT_NAME];
 
@@ -115,6 +122,10 @@ const LIFTED_BUILDING_NAME = /^Building - (One|Two|Five|Ten) Floor (\d+\.\d)$/;
  * is still the unlifted canopy thickness, not a slope bottom.
  */
 const LIFTED_FOLIAGE_NAME = /^Foliage - (Heavy|Light)(?: (\d+\.\d))? @ (\d+\.\d)$/;
+/** Unlifted laser height. The number is the building thickness, not a slope bottom. */
+const MEASURED_BUILDING_NAME = /^Building - (\d+\.\d)$/;
+/** "Building - 8.3 @ 3.2" — thickness, then bottom height from floor. */
+const LIFTED_MEASURED_BUILDING_NAME = /^Building - (\d+\.\d) @ (\d+\.\d)$/;
 
 function isLiftedBuildingName(name) {
   return LIFTED_BUILDING_NAME.test(name || "");
@@ -122,6 +133,44 @@ function isLiftedBuildingName(name) {
 
 function isLiftedFoliageName(name) {
   return LIFTED_FOLIAGE_NAME.test(name || "");
+}
+
+function isMeasuredBuildingOiName(name) {
+  return MEASURED_BUILDING_NAME.test(name || "");
+}
+
+function isLiftedMeasuredBuildingName(name) {
+  return LIFTED_MEASURED_BUILDING_NAME.test(name || "");
+}
+
+/**
+ * OpenIntent object for a measured building thickness.
+ * Name is "Building - H.H", the foliage custom shape, not "Building N.N m".
+ */
+function measuredOiBuildingMaterial(heightM) {
+  const h = roundHeightM(heightM);
+  if (!h) return null;
+  const name = "Building - " + h.toFixed(1);
+  if (!isMeasuredBuildingOiName(name) || isPoisonedOiName(name)) return null;
+  return oiMaterial(name, MEASURED_BUILDING_COLOR, h, 5);
+}
+
+/** Slope pair for a measured thickness. Null when the bottom stays under 1 m. */
+function liftedMeasuredBuildingMaterial(base, bottomM) {
+  if (!base || !isMeasuredBuildingOiName(base.name)) return null;
+  const parsed = MEASURED_BUILDING_NAME.exec(base.name);
+  const thickness = parsed ? Number(parsed[1]) : 0;
+  if (!(thickness > 2)) return null;
+  const bottom = roundTenths(bottomM);
+  if (!(bottom >= LIFT_LOCAL_M)) return null;
+  const top = roundTenths(bottom + thickness);
+  return {
+    name: base.name + " @ " + bottom.toFixed(1),
+    rf_properties: { attenuation_per_m: base.rf_properties.attenuation_per_m },
+    top_height: top,
+    bottom_height: bottom,
+    display_color: base.display_color,
+  };
 }
 
 /**
@@ -151,6 +200,34 @@ function liftedBuildingMaterial(stock, bottomM) {
  */
 function liftPickedBuilding(picked, bottomM) {
   if (!picked || !picked.material) return picked;
+  const measuredMat = liftedMeasuredBuildingMaterial(picked.material, bottomM);
+  if (measuredMat) {
+    const bottom = measuredMat.bottom_height;
+    const thickness = roundTenths(measuredMat.top_height - bottom);
+    const baseClip = picked.clipType;
+    const idBase = baseClip && baseClip.id ? baseClip.id : picked.typeId;
+    return {
+      material: measuredMat,
+      clipType: baseClip
+        ? {
+            id: idBase + "-b" + bottom.toFixed(1).replace(".", "_"),
+            name: measuredMat.name,
+            color: measuredMat.display_color,
+            shortcutKey: "",
+            topEdge: measuredMat.top_height,
+            bottomEdge: bottom,
+            attenuationDbPerMeter: measuredMat.rf_properties.attenuation_per_m,
+            ituRModelEnabled: true,
+            transparencyEnabled: !!(baseClip && baseClip.transparencyEnabled),
+          }
+        : null,
+      typeId: idBase + "-b" + bottom.toFixed(1).replace(".", "_"),
+      measured: true,
+      exactHeight: thickness,
+      buildingHeight: thickness,
+      lifted: true,
+    };
+  }
   const mat = liftedBuildingMaterial(picked.material, bottomM);
   if (!mat) return picked;
   const bottom = mat.bottom_height;
@@ -363,17 +440,19 @@ function pickOiBuildingTypeId(areaM2, heightM) {
 }
 
 /**
- * OpenIntent material is always one of the four Hamina Building-* types.
- * Measured height only picks the bucket and is copied onto the clipboard type.
+ * OpenIntent material is one of the four Hamina Building-* types, unless
+ * opts.exactMetres is set (NLS laser). Then it is "Building - H.H" at the
+ * measured top_height. Clipboard still keeps the bldg-m-* type either way.
  */
-function materialForBuilding(heightM, areaM2) {
+function materialForBuilding(heightM, areaM2, opts) {
   const exact = measuredBuildingMaterial(heightM);
   const h = exact ? exact.material.top_height : 0;
   const oiId = pickOiBuildingTypeId(areaM2, h);
   const oiType = OI_BUILDING_BY_ID[oiId];
   const clipTypeId = pickBuildingTypeId(areaM2, h);
+  const exactOi = opts && opts.exactMetres ? measuredOiBuildingMaterial(h) : null;
   return {
-    material: oiMaterialFromType(oiType),
+    material: exactOi || oiMaterialFromType(oiType),
     clipType: exact ? exact.clipType : null,
     typeId: exact ? exact.typeId : clipTypeId,
     measured: !!exact,
@@ -439,14 +518,44 @@ function canonicalLiftedFoliage(material) {
   return canon;
 }
 
+function canonicalMeasuredBuilding(material) {
+  if (!material || typeof material !== "object" || Array.isArray(material)) return null;
+  if ("itu_material_type" in material || "bottom_height" in material) return null;
+  const keys = Object.keys(material);
+  if (keys.length !== 4) return null;
+  if (!keys.every((k) => ["name", "rf_properties", "top_height", "display_color"].includes(k))) return null;
+  const parsed = MEASURED_BUILDING_NAME.exec(material.name || "");
+  if (!parsed) return null;
+  const canon = measuredOiBuildingMaterial(Number(parsed[1]));
+  if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
+  return cloneMaterial(canon);
+}
+
+function canonicalLiftedMeasuredBuilding(material) {
+  if (!material || typeof material !== "object" || Array.isArray(material)) return null;
+  if ("itu_material_type" in material || !("bottom_height" in material)) return null;
+  const keys = Object.keys(material);
+  if (keys.length !== 5) return null;
+  if (!keys.every((k) => ["name", "rf_properties", "top_height", "bottom_height", "display_color"].includes(k))) return null;
+  const parsed = LIFTED_MEASURED_BUILDING_NAME.exec(material.name || "");
+  if (!parsed) return null;
+  const base = measuredOiBuildingMaterial(Number(parsed[1]));
+  if (!base) return null;
+  const canon = liftedMeasuredBuildingMaterial(base, material.bottom_height);
+  if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
+  return cloneMaterial(canon);
+}
+
 function canonicalAreaMaterial(material) {
   if (!material || typeof material !== "object" || Array.isArray(material)) return null;
   if ("itu_material_type" in material) return null;
   if ("bottom_height" in material) {
     if (isLiftedFoliageName(material.name)) return canonicalLiftedFoliage(material);
+    if (isLiftedMeasuredBuildingName(material.name)) return canonicalLiftedMeasuredBuilding(material);
     return canonicalLiftedBuilding(material);
   }
   const name = material.name;
+  if (isMeasuredBuildingOiName(name)) return canonicalMeasuredBuilding(material);
   if (OI_BUILDING_NAMES.includes(name)) {
     const cat = buildingCatalog().find((m) => m.name === name);
     if (!cat || JSON.stringify(material) !== JSON.stringify(cat)) return null;
@@ -490,9 +599,15 @@ function vegetationSortKey(name) {
   return (m[1] === "Heavy" ? "0" : "1") + Number(m[2]).toFixed(1).padStart(6, "0");
 }
 
+function measuredBuildingSortKey(name) {
+  const m = /^Building - (\d+\.\d)/.exec(name || "");
+  return m ? Number(m[1]) : 0;
+}
+
 function documentMaterials(areas) {
   const veg = new Map();
   const lifted = new Map();
+  const measured = new Map();
   for (const a of areas || []) {
     const mat = a && a.area_material;
     if (!mat || typeof mat !== "object") continue;
@@ -500,15 +615,27 @@ function documentMaterials(areas) {
       if (!veg.has(mat.name)) veg.set(mat.name, JSON.parse(JSON.stringify(mat)));
       continue;
     }
+    if (isMeasuredBuildingOiName(mat.name)) {
+      const canon = canonicalMeasuredBuilding(mat);
+      if (canon && !measured.has(canon.name)) measured.set(canon.name, canon);
+      continue;
+    }
     const canon = isLiftedBuildingName(mat.name)
       ? canonicalLiftedBuilding(mat)
-      : isLiftedFoliageName(mat.name)
-        ? canonicalLiftedFoliage(mat)
-        : null;
+      : isLiftedMeasuredBuildingName(mat.name)
+        ? canonicalLiftedMeasuredBuilding(mat)
+        : isLiftedFoliageName(mat.name)
+          ? canonicalLiftedFoliage(mat)
+          : null;
     if (!canon) continue;
     const key = canon.name;
     if (!lifted.has(key)) lifted.set(key, canon);
   }
+  const measuredList = Array.from(measured.values()).sort((a, b) => {
+    const d = measuredBuildingSortKey(a.name) - measuredBuildingSortKey(b.name);
+    if (d) return d;
+    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+  });
   const slope = Array.from(lifted.values()).sort((a, b) => {
     if (a.bottom_height !== b.bottom_height) return a.bottom_height - b.bottom_height;
     return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
@@ -518,7 +645,7 @@ function documentMaterials(areas) {
     const kb = vegetationSortKey(b.name);
     return ka < kb ? -1 : ka > kb ? 1 : 0;
   });
-  return buildingCatalog().concat(slope, extra);
+  return buildingCatalog().concat(measuredList, slope, extra);
 }
 
 module.exports = {
@@ -528,6 +655,10 @@ module.exports = {
   measuredFoliageMaterial,
   measuredTrunkMaterial,
   materialForBuilding,
+  measuredOiBuildingMaterial,
+  liftedMeasuredBuildingMaterial,
+  isMeasuredBuildingOiName,
+  isLiftedMeasuredBuildingName,
   liftPickedBuilding,
   liftedBuildingMaterial,
   liftedFoliageMaterial,
