@@ -23,6 +23,9 @@ const {
   lockIsotropicImagery,
   isAspectLocked,
   geodesicPixelMismatchPx,
+  IMAGERY_MAX_SIDE,
+  IMAGERY_MAX_SIDE_DEV,
+  imageryMaxSide,
   msFootprintsUrl,
   fetchMsFootprints,
   padFootprintBbox,
@@ -60,8 +63,43 @@ describe("shared geo frame", () => {
       north: 42.90325386116256,
     });
     const longSide = Math.max(frame.imgW, frame.imgH);
+    assert.equal(imageryMaxSide(false), IMAGERY_MAX_SIDE);
+    assert.equal(IMAGERY_MAX_SIDE, 1040);
     assert.ok(longSide <= 1040, String(longSide));
     assert.ok(longSide >= 900, String(longSide));
+  });
+
+  it("keeps a campus near 1 m/px when the dev long side is 1600", () => {
+    const oak = {
+      west: -87.92259693145752,
+      south: 42.89043196008693,
+      east: -87.91184663772584,
+      north: 42.90325386116256,
+    };
+    assert.equal(IMAGERY_MAX_SIDE_DEV, 1600);
+    assert.equal(imageryMaxSide(true), 1600);
+    // decodeImagery refuses above 6 MP. 1600² stays under that.
+    assert.ok(IMAGERY_MAX_SIDE_DEV * IMAGERY_MAX_SIDE_DEV < 6e6);
+    const prod = geoFrame(oak);
+    const dev = geoFrame(oak, { maxSide: imageryMaxSide(true) });
+    assert.ok(Math.max(prod.imgW, prod.imgH) <= 1040);
+    const devSide = Math.max(dev.imgW, dev.imgH);
+    assert.ok(devSide > 1040, String(devSide));
+    assert.ok(devSide <= 1600, String(devSide));
+    assert.ok(Math.abs(dev.mpuX - 1) < 0.02, String(dev.mpuX));
+    assert.ok(Math.abs(dev.mpuY - 1) < 0.02, String(dev.mpuY));
+    assert.ok(Math.abs(dev.imgW / dev.imgH - dev.widthM / dev.lengthM) < 0.02);
+  });
+
+  it("caps a large box at 1600 on the dev side and 1040 in production", () => {
+    const prod = geoFrame(WYNN);
+    const dev = geoFrame(WYNN, { maxSide: imageryMaxSide(true) });
+    assert.equal(Math.max(prod.imgW, prod.imgH), 1040);
+    assert.equal(Math.max(dev.imgW, dev.imgH), 1600);
+    assert.ok(dev.mpuX < prod.mpuX);
+    assert.ok(Math.abs(dev.imgW / dev.imgH - dev.widthM / dev.lengthM) < 0.02);
+    assert.match(esriImageryUrl(dev), /size=1600,/);
+    assert.match(esriImageryUrl(prod), /size=1040,/);
   });
 
   it("uses geographic aspect (not a square image)", () => {
@@ -351,6 +389,50 @@ describe("isotropic aspect lock after Esri N/S pad", () => {
       assert.ok(x > 1 && x < frame.imgW - 1, p.id + " x");
       assert.ok(y > 1 && y < frame.imgH - 1, p.id + " y");
     }
+  });
+
+  it("keeps a JPEG between 1040 and 1600 px on the dev cap and still locks mpu", () => {
+    const fs = require("fs");
+    const path = require("path");
+    const jpeg = fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/imagery.jpg"));
+    const meta = JSON.parse(
+      fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/imagery-meta.json"), "utf8")
+    );
+    const bbox = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/bbox.json"), "utf8"));
+    const snapped = applyImageryMeta(geoFrame(bbox, { maxSide: IMAGERY_MAX_SIDE_DEV }), meta, jpegSize(jpeg));
+    const locked = lockIsotropicImagery(snapped, jpeg, { maxSide: IMAGERY_MAX_SIDE_DEV });
+    const wh = jpegSize(locked.jpegBuf);
+    assert.equal(locked.resampled, false);
+    assert.equal(wh.width, 877);
+    assert.equal(wh.height, 1046);
+    assert.equal(wh.width, locked.frame.imgW);
+    assert.equal(wh.height, locked.frame.imgH);
+    assert.equal(isAspectLocked(locked.frame), true);
+    assert.equal(locked.frame.mpuX, locked.frame.mpuY);
+    assert.ok(Math.abs(locked.frame.lengthM - locked.frame.imgH * locked.frame.mpu) < 1e-6);
+    const roof = { lon: -87.91482, lat: 42.89849 };
+    const clip = llToClipboard(roof.lon, roof.lat, locked.frame);
+    assert.ok(clip[0] > -locked.frame.widthM - 0.05 && clip[0] < 0.05);
+    assert.ok(clip[1] > -locked.frame.lengthM - 0.05 && clip[1] < 0.05);
+  });
+
+  it("downscales a JPEG past 1600 px without changing aspect or mpu", () => {
+    const jpeg = require("jpeg-js");
+    const w = 1610;
+    const h = 900;
+    const data = Buffer.alloc(w * h * 4, 140);
+    const enc = jpeg.encode({ data, width: w, height: h }, 40);
+    const frame = geoFrame(WYNN, { imgW: w, imgH: h, maxSpanM: 10000, minSpanM: 1 });
+    const locked = lockIsotropicImagery(frame, Buffer.from(enc.data), { maxSide: IMAGERY_MAX_SIDE_DEV });
+    assert.equal(locked.resampled, true);
+    assert.equal(Math.max(locked.frame.imgW, locked.frame.imgH), 1600);
+    assert.equal(isAspectLocked(locked.frame), true);
+    assert.equal(locked.frame.mpuX, locked.frame.mpuY);
+    assert.ok(Math.abs(locked.frame.lengthM - locked.frame.imgH * locked.frame.mpu) < 1e-6);
+    const wh = jpegSize(locked.jpegBuf);
+    assert.equal(wh.width, locked.frame.imgW);
+    assert.equal(wh.height, locked.frame.imgH);
+    assert.ok(Math.abs(wh.width / wh.height - w / h) < 0.02);
   });
 });
 
