@@ -6,8 +6,9 @@
  * returns no usable grid. A frame outside 3DEP coverage (Finland and the
  * rest of Europe) only probes 3DEP briefly, with a tiny sample count, so
  * the rest of the DEM budget can finish a GLO-30 grid — coarser when little
- * time is left. GLO-30 is a surface DSM. kind "surface" does not use the
- * bare-earth 20 m ski-hill gate. Attenuating objects still take bottom
+ * time is left. The handler can skip that probe on a follow-up read and pass
+ * budgetMs for the slice still left after the aerial. GLO-30 is a surface DSM.
+ * kind "surface" does not use the bare-earth 20 m ski-hill gate. Attenuating objects still take bottom
  * height from the DEM under the footprint. Production callers leave that
  * fallback off and never call GLO-30. A US 3DEP hit is still preferred.
  * OpenIntent has no raisedFloorZones / slopedFloors. Copy terrain is the paste
@@ -1338,20 +1339,26 @@ function isDevDemHost(eventOrHeaders) {
 async function fetchTerrainDem(frame, fetchFn, opts) {
   const allowSurface = !!(opts && opts.allowSurfaceFallback);
   const parent = opts && opts.signal;
+  const outside = allowSurface && !frameHas3dep(frame);
+  // The Finland follow-up already probed 3DEP. A second probe would spend
+  // the reserved slice on a request that cannot succeed.
+  const skipProbe = outside && !!(opts && opts.skip3depProbe);
   // Outside coverage a full getSamples often hangs until the shared abort,
   // which used to cancel GLO-30 before it started. Probe briefly instead.
-  const probe = allowSurface && !frameHas3dep(frame) ? linkAbort(parent, DEP3_OUTSIDE_MS) : null;
+  const probe = outside && !skipProbe ? linkAbort(parent, DEP3_OUTSIDE_MS) : null;
   let samples = [];
-  try {
-    const demOpts = probe
-      ? Object.assign({}, opts, { signal: probe.signal, sampleCount: DEP3_PROBE_SAMPLES })
-      : opts;
-    samples = await fetchDemSamples(frame, fetchFn, demOpts);
-  } catch (e) {
-    if (parent && parent.aborted) throw e;
-    if (!allowSurface) throw e;
-  } finally {
-    if (probe) probe.done();
+  if (!skipProbe) {
+    try {
+      const demOpts = probe
+        ? Object.assign({}, opts, { signal: probe.signal, sampleCount: DEP3_PROBE_SAMPLES })
+        : opts;
+      samples = await fetchDemSamples(frame, fetchFn, demOpts);
+    } catch (e) {
+      if (parent && parent.aborted) throw e;
+      if (!allowSurface) throw e;
+    } finally {
+      if (probe) probe.done();
+    }
   }
   const usable = usableDemSamples(samples);
   if (usable.length >= 4) {
@@ -1372,10 +1379,8 @@ async function fetchTerrainDem(frame, fetchFn, opts) {
     err.name = "AbortError";
     throw err;
   }
-  const plan = glo30SamplePlan(
-    sampleCountForResolution(opts && opts.terrainResolution, frame),
-    demRemainingMs(opts)
-  );
+  const requested = sampleCountForResolution(opts && opts.terrainResolution, frame);
+  const plan = glo30SamplePlan(requested, demRemainingMs(opts));
   try {
     const glo = await fetchCopernicusDemSamples(frame, {
       signal: parent,
@@ -1386,12 +1391,21 @@ async function fetchTerrainDem(frame, fetchFn, opts) {
     const gloUsable = usableDemSamples(glo);
     if (gloUsable.length < 4) throw new Error("GLO-30 short");
     const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
-    const note = demDensityNote(preset, frame, gloUsable.length);
+    const notes = [];
+    const density = demDensityNote(preset, frame, gloUsable.length);
+    if (density) notes.push(density);
+    else if (plan.sampleCount < requested) {
+      notes.push(
+        "DEM samples stepped down to " +
+          gloUsable.length +
+          " so the elevation read can finish. Elevations between samples are interpolated."
+      );
+    }
     return {
       samples: gloUsable,
       kind: "surface",
       attribution: GLO30_CREDIT,
-      notes: note ? [note] : [],
+      notes,
     };
   } catch (e) {
     if (parent && parent.aborted) throw e;

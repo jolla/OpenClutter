@@ -2,7 +2,7 @@
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
-const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures, imageryAttemptMs, IMAGERY_ATTEMPT_MS, IMAGERY_ATTEMPT_MS_DEV, lambdaPayloadBytes, EXPORT_PAYLOAD_BUDGET, LAMBDA_SYNC_PAYLOAD_MAX } = require("../netlify/functions/clutter");
+const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures, imageryAttemptMs, IMAGERY_ATTEMPT_MS, IMAGERY_ATTEMPT_MS_DEV, lambdaPayloadBytes, EXPORT_PAYLOAD_BUDGET, LAMBDA_SYNC_PAYLOAD_MAX, terrainSettleMs, terrainRescueBudget, TERRAIN_RESERVE_MS, TERRAIN_HARD_MS, setFetchTerrainDemForTests } = require("../netlify/functions/clutter");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
 const { unzipStore } = require("../netlify/lib/zip-store");
@@ -665,6 +665,62 @@ describe("Overture join keeps a finished read after the core budget", () => {
     assert.match(warnings[0], /partial: kept 1 footprints/);
   });
 
+  function demPack() {
+    return {
+      samples: [
+        { lon: 27.181, lat: 60.566, z: 4 },
+        { lon: 27.19, lat: 60.566, z: 6 },
+        { lon: 27.181, lat: 60.575, z: 9 },
+        { lon: 27.19, lat: 60.575, z: 12 },
+      ],
+      kind: "surface",
+      attribution: "glo",
+    };
+  }
+
+  it("keeps a DEM grid that resolves as the terrain abort fires", async () => {
+    const warnings = [];
+    const job = beginOptional(
+      (signal) =>
+        new Promise((resolve) => {
+          const done = () => resolve(demPack());
+          if (signal.aborted) done();
+          else signal.addEventListener("abort", done, { once: true });
+        })
+    );
+    const result = await joinOptional(warnings, Date.now() - (TERRAIN_HARD_MS + 500), "Terrain", job, {
+      graceMs: 1500,
+      hardMs: TERRAIN_HARD_MS,
+    });
+    assert.equal(result.samples.length, 4);
+    assert.equal(result.kind, "surface");
+    assert.equal(warnings.length, 0);
+  });
+
+  it("waits out a reserved terrain slice after the 9s cap", async () => {
+    const warnings = [];
+    const job = beginOptional(() => new Promise((resolve) => setTimeout(() => resolve(demPack()), 350)));
+    const started = Date.now() - 10000;
+    const t0 = Date.now();
+    const result = await joinOptional(warnings, started, "Terrain", job, {
+      graceMs: TERRAIN_RESERVE_MS,
+      hardMs: 10000 + TERRAIN_RESERVE_MS + 400,
+      reserveMs: TERRAIN_RESERVE_MS,
+    });
+    assert.equal(result.samples.length, 4);
+    assert.equal(warnings.length, 0);
+    assert.ok(Date.now() - t0 >= 300 && Date.now() - t0 < 2000, "waited " + (Date.now() - t0));
+  });
+
+  it("budgets a coarser Finland follow-up after the aerial cap is gone", () => {
+    assert.equal(terrainSettleMs(100), 2000);
+    assert.equal(terrainSettleMs(8000), 1000);
+    assert.equal(terrainSettleMs(9500), 0);
+    assert.equal(terrainRescueBudget(100), TERRAIN_RESERVE_MS);
+    assert.equal(terrainRescueBudget(10000), TERRAIN_RESERVE_MS);
+    assert.equal(terrainRescueBudget(19600), 0);
+  });
+
   it("keeps an in-flight Overture read when a long grace outlasts a fast core", async () => {
     const warnings = [];
     const job = beginOptional(
@@ -881,6 +937,7 @@ describe("dev-host Copernicus fallback", () => {
 
   after(() => {
     global.fetch = orig;
+    setFetchTerrainDemForTests(null);
   });
 
   function installFetch(samplesBody, extent) {
@@ -1093,7 +1150,7 @@ describe("dev-host Copernicus fallback", () => {
     });
     const elapsed = Date.now() - t0;
     assert.equal(res.statusCode, 200, res.body);
-    assert.ok(elapsed < 8000, "elapsed " + elapsed);
+    assert.ok(elapsed < 12000, "elapsed " + elapsed);
     const body = JSON.parse(res.body);
     assert.equal(urls.some((u) => u.includes("copernicus-dem")), true);
     assert.match(body.terrainStatus, /Terrain omitted: timed out/);
@@ -1185,6 +1242,117 @@ describe("dev-host Copernicus fallback", () => {
       assert.equal(missBody.error, undefined);
     } finally {
       setNlsGridPathForTests(null);
+    }
+  });
+
+  function haminaSamples(frame) {
+    const samples = [];
+    for (let r = 0; r < 4; r++) {
+      for (let c = 0; c < 4; c++) {
+        samples.push({
+          lon: frame.west + ((c + 0.5) / 4) * (frame.east - frame.west),
+          lat: frame.south + ((r + 0.5) / 4) * (frame.north - frame.south),
+          z: 4 + r * 3 + c * 0.2,
+        });
+      }
+    }
+    return {
+      samples,
+      kind: "surface",
+      attribution: "Copernicus DEM GLO-30",
+    };
+  }
+
+  it("returns Copy terrain for Hamina when the first GLO-30 read is still open after the aerial", async () => {
+    const calls = [];
+    setFetchTerrainDemForTests((frame, _fetchFn, opts) => {
+      calls.push({
+        budgetMs: opts && opts.budgetMs,
+        skip3depProbe: !!(opts && opts.skip3depProbe),
+      });
+      if (!(opts && opts.skip3depProbe)) {
+        return new Promise((resolve, reject) => {
+          const fail = () =>
+            reject(Object.assign(new Error("The operation was aborted due to timeout"), { name: "AbortError" }));
+          const signal = opts && opts.signal;
+          if (signal && signal.aborted) fail();
+          else if (signal) signal.addEventListener("abort", fail, { once: true });
+        });
+      }
+      return haminaSamples(frame);
+    });
+    installFetch({ error: { message: "no 3dep" } }, HAMINA);
+    try {
+      const t0 = Date.now();
+      const res = await handler({
+        httpMethod: "POST",
+        headers: { host: "dev--openclutter.netlify.app" },
+        body: JSON.stringify({ ...HAMINA, format: "bundle", includeFoliage: false }),
+      });
+      const elapsed = Date.now() - t0;
+      assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
+      assert.ok(elapsed < 8000, "elapsed " + elapsed);
+      const body = JSON.parse(res.body);
+      assert.equal(calls.length, 2);
+      assert.equal(calls[0].skip3depProbe, false);
+      assert.equal(calls[1].skip3depProbe, true);
+      assert.ok(calls[1].budgetMs >= 800 && calls[1].budgetMs <= TERRAIN_RESERVE_MS, "budget " + calls[1].budgetMs);
+      assert.match(body.terrainStatus, /Copy terrain/);
+      assert.match(body.terrainStatus, /Copernicus DEM GLO-30/);
+      assert.equal(/timed out/i.test(body.terrainStatus), false);
+      assert.ok(body.terrainClipboard);
+      assert.equal(body.terrainFilename, "terrain-clipboard.json");
+    } finally {
+      setFetchTerrainDemForTests(null);
+    }
+  });
+
+  it("keeps a Finland GLO-30 grid that finished during the aerial", async () => {
+    const calls = [];
+    setFetchTerrainDemForTests((frame, _fetchFn, opts) => {
+      calls.push(!!(opts && opts.skip3depProbe));
+      return haminaSamples(frame);
+    });
+    installFetch({ error: { message: "no 3dep" } }, HAMINA);
+    try {
+      const res = await handler({
+        httpMethod: "POST",
+        headers: { host: "dev--openclutter.netlify.app" },
+        body: JSON.stringify({ ...HAMINA, format: "bundle", includeFoliage: false, terrainResolution: "auto" }),
+      });
+      assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
+      const body = JSON.parse(res.body);
+      assert.deepEqual(calls, [false]);
+      assert.match(body.terrainStatus, /Copy terrain/);
+      assert.equal(/timed out/i.test(body.terrainStatus), false);
+    } finally {
+      setFetchTerrainDemForTests(null);
+    }
+  });
+
+  it("does not retry GLO-30 after a fast Finland grid miss", async () => {
+    const calls = [];
+    setFetchTerrainDemForTests(() => {
+      calls.push("miss");
+      throw new Error("USGS 3DEP did not return a usable grid");
+    });
+    installFetch({ error: { message: "no 3dep" } }, HAMINA);
+    try {
+      const t0 = Date.now();
+      const res = await handler({
+        httpMethod: "POST",
+        headers: { host: "dev--openclutter.netlify.app" },
+        body: JSON.stringify({ ...HAMINA, format: "bundle", includeFoliage: false }),
+      });
+      assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
+      assert.ok(Date.now() - t0 < 2500, "elapsed " + (Date.now() - t0));
+      const body = JSON.parse(res.body);
+      assert.deepEqual(calls, ["miss"]);
+      assert.match(body.terrainStatus, /did not return a usable grid/);
+      assert.equal(/timed out/i.test(body.terrainStatus), false);
+      assert.equal(body.terrainClipboard, null);
+    } finally {
+      setFetchTerrainDemForTests(null);
     }
   });
 

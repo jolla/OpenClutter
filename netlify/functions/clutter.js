@@ -49,6 +49,17 @@ const OVERTURE_HARD_MS = 23000;
 // GLO-30; this cap is only the shared abort.
 const TERRAIN_GRACE_MS = 1500;
 const TERRAIN_HARD_MS = 9000;
+// Finland's ground-meter resample blocks the event loop after the JPEG, so a
+// GLO-30 read planned against the 9s cap is often still in flight when core
+// ends — and that cap then aborts it empty ("Terrain omitted: timed out").
+// Give the in-flight read the same grace joinOptional would have, then if it
+// is still open spend one more slice on a coarser lattice. 4s stays under the
+// glo30SamplePlan full-lattice tier (6s) so the retry cannot ask for the read
+// that just missed. The slice must also end with time left to build the zip
+// under the ~26s platform kill.
+const TERRAIN_RESERVE_MS = 4000;
+const TERRAIN_PLATFORM_MS = 20000;
+const TERRAIN_RESCUE_MIN_MS = 800;
 // Roof fill scans every footprint. On a dense draw that already spent 10s
 // fetching, skip it and emit the vector buildings.
 const DENSE_FEATURES = 1500;
@@ -76,12 +87,18 @@ const {
   noteMissingTerrain,
   normalizeTerrainResolution,
   isDevDemHost,
+  frameHas3dep,
   EXPORT_PAYLOAD_BUDGET,
   LAMBDA_SYNC_PAYLOAD_MAX,
   estimateBundlePayload,
   lambdaPayloadBytes,
   maxPasteJsonForCompanion,
 } = require("../lib/terrain");
+
+let fetchTerrainDemImpl = fetchTerrainDem;
+function setFetchTerrainDemForTests(fn) {
+  fetchTerrainDemImpl = typeof fn === "function" ? fn : fetchTerrainDem;
+}
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
 const { surfaceMasksFromImage } = require("../lib/surface-mask");
@@ -213,7 +230,9 @@ function beginOptional(fn) {
       if (ctrl.signal.aborted) {
         // A center row group may already be parsed when the abort fires.
         // Dropping it is how the Sphere disappeared behind a slow map fetch.
-        if (value && Array.isArray(value.features) && value.features.length) return value;
+        // A DEM pack that resolved on that same edge is the terrain paste.
+        const kept = keptOptionalResult(value);
+        if (kept) return kept;
         return TIMED_OUT;
       }
       return value;
@@ -238,24 +257,96 @@ function optionalMissWarning(label, job) {
   return label + (timedOut ? " omitted: timed out" : " omitted: " + msg);
 }
 
-function keptFootprints(result) {
+function keptOptionalResult(result) {
   if (!result || result === TIMED_OUT) return null;
   if (Array.isArray(result.features) && result.features.length) return result;
+  if (result && Array.isArray(result.samples) && result.samples.length >= 4) return result;
   return null;
+}
+
+function keptFootprints(result) {
+  return keptOptionalResult(result);
 }
 
 /** After an abort, keep rows the reader already returned (center group first). */
 async function flushOptional(job, waitMs) {
-  if (job.isSettled()) return keptFootprints(await job.work);
+  if (job.isSettled()) return keptOptionalResult(await job.work);
   let timer;
   const timeout = new Promise((resolve) => {
     timer = setTimeout(() => resolve(TIMED_OUT), waitMs);
   });
   try {
-    return keptFootprints(await Promise.race([job.work, timeout]));
+    return keptOptionalResult(await Promise.race([job.work, timeout]));
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * How long joinOptional would still wait for terrain before aborting.
+ * Outside 3DEP, a read that misses this window gets one coarser retry
+ * instead of "Terrain omitted: timed out".
+ */
+function terrainSettleMs(elapsed) {
+  const ms = Math.max(0, +elapsed || 0);
+  if (ms < SKIP_OPTIONAL_AFTER_MS) {
+    return Math.min(OPTIONAL_MS, Math.max(400, SKIP_OPTIONAL_AFTER_MS - ms));
+  }
+  const hardLeft = TERRAIN_HARD_MS - ms;
+  if (hardLeft < 200) return 0;
+  return Math.min(TERRAIN_GRACE_MS, hardLeft);
+}
+
+/** Milliseconds for a coarser GLO-30 follow-up. 0 means do not start one. */
+function terrainRescueBudget(elapsed) {
+  const ms = Math.max(0, +elapsed || 0);
+  const reserve = Math.min(TERRAIN_RESERVE_MS, TERRAIN_PLATFORM_MS - ms);
+  if (!(reserve >= TERRAIN_RESCUE_MIN_MS)) return 0;
+  return Math.floor(reserve);
+}
+
+/**
+ * Outside 3DEP, keep a GLO-30 grid that finished during the aerial. If it is
+ * still running after the grace the 9s cap would have allowed, abort it and
+ * read a coarser lattice with the reserved slice. A US 3DEP read is unchanged.
+ * Returns { job, join, preset }. preset is a finished DEM pack to use as-is.
+ */
+async function followUpOutsideTerrain(terrainJob, started, frame, devHost, terrainResolution) {
+  const join = { graceMs: TERRAIN_GRACE_MS, hardMs: TERRAIN_HARD_MS };
+  if (!terrainJob || !devHost || !frame || frameHas3dep(frame)) {
+    return { job: terrainJob, join, preset: null };
+  }
+  if (!terrainJob.isSettled()) {
+    const settle = terrainSettleMs(Date.now() - started);
+    if (settle >= 200) await flushOptional(terrainJob, settle);
+  }
+  if (terrainJob.isSettled()) return { job: terrainJob, join, preset: null };
+  const elapsed = Date.now() - started;
+  const budgetMs = terrainRescueBudget(elapsed);
+  if (!budgetMs) return { job: terrainJob, join, preset: null };
+  terrainJob.ctrl.abort();
+  const flushed = await flushOptional(terrainJob, 250);
+  if (flushed && Array.isArray(flushed.samples) && flushed.samples.length >= 4) {
+    return { job: null, join, preset: flushed };
+  }
+  const job = beginOptional((signal) =>
+    fetchTerrainDemImpl(frame, null, {
+      signal,
+      terrainResolution,
+      allowSurfaceFallback: true,
+      budgetMs,
+      skip3depProbe: true,
+    })
+  );
+  return {
+    job,
+    preset: null,
+    join: {
+      graceMs: budgetMs,
+      hardMs: elapsed + budgetMs + 400,
+      reserveMs: budgetMs,
+    },
+  };
 }
 
 /**
@@ -280,7 +371,11 @@ async function joinOptional(warnings, started, label, job, opts) {
   }
   const elapsed = Date.now() - started;
   let budget = 0;
-  if (graceMs > SKIP_OPTIONAL_AFTER_MS) {
+  if (opts && opts.reserveMs > 0) {
+    // A follow-up DEM slice. The 5s optional window and the 9s hard cap
+    // already passed with the aerial; this wait is the coarsened read.
+    budget = Math.min(opts.reserveMs, Math.max(0, hardMs - elapsed));
+  } else if (graceMs > SKIP_OPTIONAL_AFTER_MS) {
     // A dense campus read is allowed to outlast a fast core. The short
     // optional window (grace at or under 5s) still aborts quickly so a hung
     // read on a small draw cannot eat the export. hardMs ends either wait.
@@ -294,7 +389,9 @@ async function joinOptional(warnings, started, label, job, opts) {
     job.ctrl.abort();
     const flushed = await flushOptional(job, 1200);
     if (flushed) {
-      warnings.push(label + " partial: kept " + flushed.features.length + " footprints already read");
+      if (Array.isArray(flushed.features)) {
+        warnings.push(label + " partial: kept " + flushed.features.length + " footprints already read");
+      }
       return flushed;
     }
     warnings.push(label + " omitted: export budget spent on the map and footprints");
@@ -312,7 +409,9 @@ async function joinOptional(warnings, started, label, job, opts) {
     if (result === TIMED_OUT) {
       const flushed = await flushOptional(job, 1500);
       if (flushed) {
-        warnings.push(label + " partial: kept " + flushed.features.length + " footprints already read");
+        if (Array.isArray(flushed.features)) {
+          warnings.push(label + " partial: kept " + flushed.features.length + " footprints already read");
+        }
         return flushed;
       }
       warnings.push(optionalMissWarning(label, job));
@@ -529,7 +628,7 @@ async function handleClutter(event) {
       // Copernicus GLO-30 inside this same optional budget. Outside coverage
       // the 3DEP probe is short so GLO-30 gets the remaining time.
       terrainJob = beginOptional((signal) =>
-        fetchTerrainDem(frame, null, {
+        fetchTerrainDemImpl(frame, null, {
           signal,
           terrainResolution,
           allowSurfaceFallback: devHost,
@@ -598,20 +697,23 @@ async function handleClutter(event) {
     return json(502, cors, { error: describeCoreFailure(e) });
   }
 
-  const optional = await Promise.all([
-    overtureJob
-      ? joinOptional(warnings, started, "Overture buildings", overtureJob, overtureWait(frame))
-      : Promise.resolve(null),
-    terrainJob
-      ? joinOptional(warnings, started, "Terrain", terrainJob, {
-          graceMs: TERRAIN_GRACE_MS,
-          hardMs: TERRAIN_HARD_MS,
-        })
-      : Promise.resolve(null),
+  // Overture and canopy start now so the Finland DEM settle wait does not
+  // eat their grace. The DEM follow-up may replace terrainJob with a coarser
+  // GLO-30 read once that settle window misses.
+  const overturePromise = overtureJob
+    ? joinOptional(warnings, started, "Overture buildings", overtureJob, overtureWait(frame))
+    : Promise.resolve(null);
+  const chmPromise =
     includeFoliage && needImage
       ? runOptional(warnings, started, "Canopy height", (signal) => fetchChmGrid(frame, { signal }))
-      : Promise.resolve(null),
-  ]);
+      : Promise.resolve(null);
+  const terrainFollow = await followUpOutsideTerrain(terrainJob, started, frame, devHost, terrainResolution);
+  const demPromise = terrainFollow.preset
+    ? Promise.resolve(terrainFollow.preset)
+    : terrainFollow.job
+      ? joinOptional(warnings, started, "Terrain", terrainFollow.job, terrainFollow.join)
+      : Promise.resolve(null);
+  const optional = await Promise.all([overturePromise, demPromise, chmPromise]);
   overturePack = optional[0] || { features: [] };
   const demPack = optional[1];
   let demKind = null;
@@ -975,3 +1077,11 @@ exports.ZIP_FIT_BYTES = ZIP_FIT_BYTES;
 exports.EXPORT_PAYLOAD_BUDGET = EXPORT_PAYLOAD_BUDGET;
 exports.LAMBDA_SYNC_PAYLOAD_MAX = LAMBDA_SYNC_PAYLOAD_MAX;
 exports.lambdaPayloadBytes = lambdaPayloadBytes;
+exports.TERRAIN_GRACE_MS = TERRAIN_GRACE_MS;
+exports.TERRAIN_HARD_MS = TERRAIN_HARD_MS;
+exports.TERRAIN_RESERVE_MS = TERRAIN_RESERVE_MS;
+exports.TERRAIN_PLATFORM_MS = TERRAIN_PLATFORM_MS;
+exports.TERRAIN_RESCUE_MIN_MS = TERRAIN_RESCUE_MIN_MS;
+exports.terrainSettleMs = terrainSettleMs;
+exports.terrainRescueBudget = terrainRescueBudget;
+exports.setFetchTerrainDemForTests = setFetchTerrainDemForTests;
