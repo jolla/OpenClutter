@@ -35,7 +35,13 @@
       display: flex; align-items: center; gap: 8px; margin-top: 10px;
       font-size: 13px; color: #e8eaed; user-select: none; cursor: pointer;
     }
+    .check[hidden] { display: none; }
     .check input { width: 16px; height: 16px; margin: 0; accent-color: #238636; }
+    .tag {
+      font-size: 10px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase;
+      color: #d29922; border: 1px solid #d2992266; border-radius: 999px;
+      padding: 0 6px; line-height: 16px;
+    }
     #copy-terrain { width: 100%; margin-top: 10px; }
     .terrain-res { margin-top: 10px; }
     .terrain-res[hidden] { display: none; }
@@ -89,7 +95,7 @@
 <body>
   <div id="map"></div>
   <div class="panel">
-    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.23</span></p>
+    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.24</span></p>
     <h1>OpenClutter</h1>
     <div class="sub">Export a zip. Import it in Hamina for the aerial map and buildings.</div>
     <form id="search">
@@ -104,6 +110,11 @@
     <label class="check" for="include-foliage">
       <input type="checkbox" id="include-foliage" />
       Include foliage
+      <span class="tag">Experimental</span>
+    </label>
+    <label class="check" id="include-terrain-row" for="include-terrain" hidden>
+      <input type="checkbox" id="include-terrain" checked />
+      Terrain
     </label>
     <div id="terrain-resolution" class="terrain-res" hidden>
       <div class="terrain-res-head">

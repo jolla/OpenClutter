@@ -1128,8 +1128,13 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.equal(/Import OpenIntent for the map and buildings/i.test(html), false);
     assert.equal(/One zip\./i.test(html), false);
     assert.match(html, /Include foliage/);
+    assert.match(html, /<span class="tag">Experimental<\/span>/);
     assert.match(html, /id="include-foliage"/);
+    assert.equal(/id="include-foliage"[^>]*checked/.test(html), false);
     assert.equal(/checked/.test(html.split("include-foliage")[1].slice(0, 80)), false);
+    assert.match(html, /id="include-terrain-row"[^>]*hidden/);
+    assert.match(html, /id="include-terrain"[^>]*checked/);
+    assert.match(html, />\s*Terrain\s*</);
     assert.equal(/paste hamina-clipboard\.json for trees/i.test(html), false);
     assert.match(app, /Import this zip in Hamina \(Projects → Import → OpenIntent\)/);
     assert.match(app, /includeFoliage/);
@@ -1167,7 +1172,10 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(html, /class="build"/);
     assert.equal(/<h1>[^<]*id="app-version"/.test(html), false);
     assert.match(html, /past 20×20/);
-    assert.match(app, /terrainRes\.hidden = false/);
+    assert.match(app, /terrainRes\.hidden = !on/);
+    assert.match(app, /const terrainOff = includeTerrain === false/);
+    assert.match(app, /terrainOff \? "Terrain off"/);
+    assert.match(app, /includeTerrain: terrain/);
     assert.match(app, /id: "auto", label: "Auto", cellM: null, maxGrid: 20, readout: "Auto · from draw"/);
     assert.match(app, /id: "default", label: "Default", cellM: 80, maxGrid: 12, readout: "Default · ~80 m"/);
     assert.match(app, /id: "fine", label: "Fine", cellM: 40, maxGrid: 16, readout: "Fine · ~40 m"/);
@@ -1180,7 +1188,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /covers ~" \+ side \+ "×" \+ side \+ " m"/);
     assert.match(app, /TERRAIN_AUTO_MAX_GRID = 20/);
     assert.match(app, /TERRAIN_AUTO_MIN_CELL_M = 1/);
-    assert.match(app, /terrainResolution: selectedTerrainResolution\(\) \|\| undefined/);
+    assert.match(app, /terrainResolution: terrain \? selectedTerrainResolution\(\) \|\| undefined : undefined/);
     assert.match(app, /if \(!wrap \|\| wrap\.hidden\) return null/);
   });
 

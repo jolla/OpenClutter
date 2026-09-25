@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.24** on `dev` — Include foliage wears an Experimental tag and stays off unless checked. A Terrain checkbox sits next to it, on by default. Turn it off and that export skips the DEM and Copy terrain. Terrain resolution stays hidden while Terrain is off. The subtitle and muted badge stay (`dev · v1.1.24`).
+
 **v1.1.23** on `dev` — The subtitle under the title says what Export does: a zip you import in Hamina for the aerial map and buildings. The small muted build label stays (`dev · v1.1.23`).
 
 **v1.1.22** on `dev` — The address panel drops “One zip.” The build label sits in the corner in small muted type (`dev · v1.1.22`). Address, draw, and export stay the same.
@@ -21,7 +23,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.23`). The same dev host shows **Terrain resolution** (Auto / Default / Fine / 25 / 20 / 15 / 10 / 5 / 1 m) next to Include foliage. Auto is selected by default.
+- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.24`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. **Terrain resolution** (Auto / Default / Fine / 25 / 20 / 15 / 10 / 5 / 1 m) shows only while Terrain is on. Auto is selected by default.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 
