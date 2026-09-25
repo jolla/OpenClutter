@@ -1178,7 +1178,14 @@ describe("main UI: import buildings, optional foliage", () => {
     const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
     const app = fs.readFileSync(path.join(root, "app.js"), "utf8");
     assert.match(html, /id="draw-hint"/);
-    assert.match(html, /Drag a box\. Click corners, then right-click to finish a polygon\. Esc cancels\./);
+    assert.match(html, /Drag a box\. Click corners, then Finish shape, double-click, or click the first corner\. Esc cancels\./);
+    assert.match(html, /id="finish-shape" hidden/);
+    assert.match(html, />Finish shape</);
+    assert.match(app, /Finish shape, double-click, or click the first corner/);
+    assert.match(app, /prepareExport/);
+    assert.match(app, /dblclick/);
+    assert.match(app, /Export was not run/);
+    assert.equal(/Right-click finishes/.test(html + app), false);
     assert.match(html, /src="\/site-draw\.js"/);
     assert.equal(/leaflet-draw/.test(html), false);
     assert.equal(/<dialog/i.test(html), false);
