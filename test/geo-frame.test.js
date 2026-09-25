@@ -23,6 +23,9 @@ const {
   lockIsotropicImagery,
   isAspectLocked,
   geodesicPixelMismatchPx,
+  needsGroundMeterImage,
+  geodesicSpans,
+  metersPerDeg,
   IMAGERY_MAX_SIDE,
   IMAGERY_MAX_SIDE_DEV,
   imageryMaxSide,
@@ -433,6 +436,194 @@ describe("isotropic aspect lock after Esri N/S pad", () => {
     assert.equal(wh.width, locked.frame.imgW);
     assert.equal(wh.height, locked.frame.imgH);
     assert.ok(Math.abs(wh.width / wh.height - w / h) < 0.02);
+  });
+});
+
+/** Hamina town center. A ~0.9 km ground square, not a degree square. */
+function haminaTownBox() {
+  const lat = 60.5694;
+  const lon = 27.1975;
+  const mpd = metersPerDeg(lat);
+  const halfE = 450 / mpd.lon;
+  const halfN = 450 / mpd.lat;
+  return {
+    west: lon - halfE,
+    south: lat - halfN,
+    east: lon + halfE,
+    north: lat + halfN,
+    lat,
+    lon,
+    mpd,
+  };
+}
+
+function quadrantJpeg(width, height) {
+  const jpeg = require("jpeg-js");
+  const data = Buffer.alloc(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    const north = y < height / 2;
+    for (let x = 0; x < width; x++) {
+      const east = x >= width / 2;
+      const o = (y * width + x) * 4;
+      // Y-down: row 0 is north. Saturated quadrants survive a JPEG round trip.
+      if (north && !east) {
+        data[o] = 220;
+        data[o + 1] = 20;
+        data[o + 2] = 20;
+      } else if (north && east) {
+        data[o] = 20;
+        data[o + 1] = 200;
+        data[o + 2] = 20;
+      } else if (!north && !east) {
+        data[o] = 20;
+        data[o + 1] = 20;
+        data[o + 2] = 220;
+      } else {
+        data[o] = 220;
+        data[o + 1] = 220;
+        data[o + 2] = 40;
+      }
+      data[o + 3] = 255;
+    }
+  }
+  return Buffer.from(jpeg.encode({ data, width, height }, 90).data);
+}
+
+describe("Finland ground-meter image (Hamina scale)", () => {
+  it("treats Finland as stretched plate carrée and leaves US sites on the content grid", () => {
+    assert.equal(needsGroundMeterImage(60.5694), true);
+    assert.equal(needsGroundMeterImage(59.8), true);
+    assert.equal(needsGroundMeterImage(42.9), false);
+    assert.equal(needsGroundMeterImage(44.91), false);
+    assert.equal(needsGroundMeterImage(36.128), false);
+    assert.ok(metersPerDeg(60.5694).lat / metersPerDeg(60.5694).lon > 1.9);
+  });
+
+  it("gives a Hamina town box equal east and north meters and a square building", () => {
+    const box = haminaTownBox();
+    const drawn = geoFrame(box, { maxSide: IMAGERY_MAX_SIDE_DEV });
+    const content = esriContentExtent(box, drawn.imgW, drawn.imgH);
+    const snapped = geoFrame(content, {
+      imgW: drawn.imgW,
+      imgH: drawn.imgH,
+      maxSpanM: 10000,
+      minSpanM: 1,
+    });
+    assert.equal(needsGroundMeterImage((snapped.south + snapped.north) / 2), true);
+    const jpeg = quadrantJpeg(snapped.imgW, snapped.imgH);
+    const plate = lockIsotropicImagery(snapped, jpeg, { maxSide: IMAGERY_MAX_SIDE_DEV });
+    // Latitude selects the path. The plate-carrée scale bug is the pre-resample
+    // frame, where unify would set lengthM from degree pixels.
+    const spans = geodesicSpans(snapped);
+    const plateLen = snapped.widthM * (snapped.imgH / snapped.imgW);
+    assert.ok(spans.lengthM > plateLen * 1.7, "degree pixels compress N–S before the resample");
+
+    const locked = plate;
+    assert.equal(locked.groundMeters, true);
+    assert.equal(locked.resampled, true);
+    assert.equal(isAspectLocked(locked.frame), true);
+    assert.equal(locked.frame.mpuX, locked.frame.mpuY);
+    const wh = jpegSize(locked.jpegBuf);
+    assert.equal(wh.width, locked.frame.imgW);
+    assert.equal(wh.height, locked.frame.imgH);
+    const geo = geodesicSpans(locked.frame);
+    assert.ok(Math.abs(locked.frame.widthM - geo.widthM) / geo.widthM < 0.01);
+    assert.ok(Math.abs(locked.frame.lengthM - geo.lengthM) / geo.lengthM < 0.01);
+
+    const [lonE, latE] = [box.lon + 200 / box.mpd.lon, box.lat];
+    const [lonN, latN] = [box.lon, box.lat + 200 / box.mpd.lat];
+    const c0 = llToClipboard(box.lon, box.lat, locked.frame);
+    const cE = llToClipboard(lonE, latE, locked.frame);
+    const cN = llToClipboard(lonN, latN, locked.frame);
+    const dE = Math.hypot(cE[0] - c0[0], cE[1] - c0[1]);
+    const dN = Math.hypot(cN[0] - c0[0], cN[1] - c0[1]);
+    assert.ok(Math.abs(dE - 200) / 200 < 0.01, "east " + dE);
+    assert.ok(Math.abs(dN - 200) / 200 < 0.01, "north " + dN);
+    assert.ok(Math.abs(dE - dN) / 200 < 0.01, "aspect " + dE + " vs " + dN);
+
+    const jpegLib = require("jpeg-js");
+    const raw = jpegLib.decode(locked.jpegBuf, { useTArray: true, formatAsRGBA: true });
+    function sample(lon, lat) {
+      const [x, y] = llToImagePx(lon, lat, locked.frame);
+      const xi = Math.max(0, Math.min(raw.width - 1, Math.round(x)));
+      const yi = Math.max(0, Math.min(raw.height - 1, Math.round(y)));
+      const o = (yi * raw.width + xi) * 4;
+      return [raw.data[o], raw.data[o + 1], raw.data[o + 2]];
+    }
+    const dLon = (locked.frame.east - locked.frame.west) * 0.25;
+    const dLat = (locked.frame.north - locked.frame.south) * 0.25;
+    const midLon = (locked.frame.west + locked.frame.east) / 2;
+    const midLat = (locked.frame.south + locked.frame.north) / 2;
+    const nw = sample(midLon - dLon, midLat + dLat);
+    const se = sample(midLon + dLon, midLat - dLat);
+    assert.ok(nw[0] > 160 && nw[1] < 80, "NW red " + nw);
+    assert.ok(se[0] > 160 && se[1] > 160 && se[2] < 100, "SE yellow " + se);
+
+    const { buildClutter } = require("../netlify/lib/pipeline");
+    const side = 40;
+    const dELon = side / box.mpd.lon;
+    const dNLat = side / box.mpd.lat;
+    const lon0 = box.lon - dELon / 2;
+    const lat0 = box.lat - dNLat / 2;
+    const built = buildClutter({
+      frame: locked.frame,
+      footprintsGeojson: {
+        features: [
+          {
+            type: "Feature",
+            properties: { height: 6 },
+            geometry: {
+              type: "Polygon",
+              coordinates: [[
+                [lon0, lat0],
+                [lon0 + dELon, lat0],
+                [lon0 + dELon, lat0 + dNLat],
+                [lon0, lat0 + dNLat],
+                [lon0, lat0],
+              ]],
+            },
+          },
+        ],
+      },
+      name: "Hamina",
+      imgBuf: locked.jpegBuf,
+      includeFoliage: false,
+    });
+    const fp = built.openintent.floorplans[0];
+    const meters = fp.dimensions.find((d) => d.unit === "meters");
+    const pixels = fp.dimensions.find((d) => d.unit === "pixels");
+    assert.ok(Math.abs(pixels.width / pixels.length - meters.width / meters.length) < 1e-9);
+    assert.ok(Math.abs(meters.width - locked.frame.widthM) < 1e-6);
+    assert.ok(Math.abs(meters.length - locked.frame.lengthM) < 1e-6);
+    assert.equal(built.stats.buildings, 1);
+    const coords = fp.attenuation_areas[0].area.coordinates;
+    const xs = [];
+    const ys = [];
+    for (let i = 1; i < coords.length; i += 3) {
+      xs.push(coords[i].coordinate_xyz.x);
+      ys.push(coords[i].coordinate_xyz.y);
+    }
+    const wM = Math.max(...xs) - Math.min(...xs);
+    const hM = Math.max(...ys) - Math.min(...ys);
+    assert.ok(Math.abs(wM - side) / side < 0.02, "building east " + wM);
+    assert.ok(Math.abs(hM - side) / side < 0.02, "building north " + hM);
+  });
+
+  it("does not geodesic-resample Oak Creek even when the JPEG decodes", () => {
+    const fs = require("fs");
+    const path = require("path");
+    const jpeg = fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/imagery.jpg"));
+    const meta = JSON.parse(
+      fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/imagery-meta.json"), "utf8")
+    );
+    const bbox = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/bbox.json"), "utf8"));
+    const snapped = applyImageryMeta(geoFrame(bbox), meta, jpegSize(jpeg));
+    assert.equal(needsGroundMeterImage((snapped.south + snapped.north) / 2), false);
+    const locked = lockIsotropicImagery(snapped, jpeg);
+    assert.equal(locked.groundMeters, false);
+    assert.ok(Math.abs(locked.frame.imgW / locked.frame.imgH - snapped.imgW / snapped.imgH) < 0.01);
+    const roof = { lon: -87.91482, lat: 42.89849 };
+    assert.ok(geodesicPixelMismatchPx(locked.frame, roof.lon, roof.lat) > 40);
   });
 });
 
