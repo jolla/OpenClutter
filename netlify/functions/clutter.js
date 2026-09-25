@@ -16,12 +16,14 @@ const { userAgent: UA } = require("../lib/version");
 // (absent from MS Global and USA Structures). Page-index pruning reads the
 // center row group first so a late abort can still keep footprints already parsed.
 const CORE_FETCH_MS = 7000;
+// One full attempt fits in the function. A retry runs only when the first
+// failure leaves at least 1.2s under this ceiling (fast reset, not a 8.5s hang).
 const IMAGERY_ATTEMPT_MS = 8500;
 const IMAGERY_ATTEMPTS = 2;
 const IMAGERY_BACKOFF_MS = 400;
-// One full attempt fits in the function. A retry runs only when the first
-// failure leaves at least 1.2s under this ceiling (fast reset, not a 8.5s hang).
-const IMAGERY_BUDGET_MS = 8500;
+// Dev host requests a 1600px JPEG. A ~2.4 km square at that size came back in
+// ~10s, which the 8.5s abort would drop. 12s still sits under the ~26s platform kill.
+const IMAGERY_ATTEMPT_MS_DEV = 12000;
 // Live Oak Creek metadata was ~3.0s and pads latitude by ~500 m at the same
 // pixel size. The content extent is derived from the drawn box and the JPEG
 // pixel size (the same pad export?f=json returns), so a slow JSON cannot
@@ -55,7 +57,7 @@ const DENSE_FEATURES = 1500;
 // Stay under it so the zip actually downloads.
 const ZIP_FIT_BYTES = 4200000;
 const ZIP_SHRINK_STEPS = [640, 400, 240];
-const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, padFootprintBbox } = require("../lib/geo-frame");
+const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, padFootprintBbox, imageryMaxSide } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
@@ -127,13 +129,19 @@ async function fetchImageryMeta(url) {
   }
 }
 
+/** Production stays on the 8.5s ceiling. The dev host gets a longer one for the 1600px JPEG. */
+function imageryAttemptMs(devHost) {
+  return devHost ? IMAGERY_ATTEMPT_MS_DEV : IMAGERY_ATTEMPT_MS;
+}
+
 /** Headers and JPEG body share one AbortController per attempt. A timeout does not reuse that signal. */
-async function fetchImageryJpeg(url) {
+async function fetchImageryJpeg(url, attemptMs) {
+  const ceiling = attemptMs > 0 ? attemptMs : IMAGERY_ATTEMPT_MS;
   let last = "aerial imagery failed";
   let timedOut = false;
   const started = Date.now();
   for (let attempt = 0; attempt < IMAGERY_ATTEMPTS; attempt++) {
-    const budget = Math.min(IMAGERY_ATTEMPT_MS, IMAGERY_BUDGET_MS - (Date.now() - started));
+    const budget = Math.min(ceiling, ceiling - (Date.now() - started));
     if (budget < 1200) break;
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), budget);
@@ -157,7 +165,7 @@ async function fetchImageryJpeg(url) {
     }
     if (attempt + 1 >= IMAGERY_ATTEMPTS) break;
     const pause = IMAGERY_BACKOFF_MS * (attempt + 1);
-    if (Date.now() - started + pause > IMAGERY_BUDGET_MS - 1200) break;
+    if (Date.now() - started + pause > ceiling - 1200) break;
     await new Promise((resolve) => setTimeout(resolve, pause));
   }
   throw fail("imagery", timedOut || isTimeout(last) ? "The operation was aborted due to timeout" : last);
@@ -326,6 +334,7 @@ function parseFormat(body) {
 }
 
 function decodeImagery(imgBuf) {
+  // 1600² is ~2.6 MP and the live 1600px JPEGs were ~0.4–1.1 MB, under both limits.
   if (!imgBuf || imgBuf.length < 100 || imgBuf.length > 3500000) return null;
   try {
     const jpeg = require("jpeg-js");
@@ -425,9 +434,11 @@ exports.handler = async (event) => {
     return json(400, cors, { error: "invalid json" });
   }
 
+  const devHost = isDevDemHost(event);
+  const maxSide = imageryMaxSide(devHost);
   let frame;
   try {
-    frame = geoFrame(body);
+    frame = geoFrame(body, { maxSide });
   } catch (e) {
     return json(400, cors, { error: String(e.message || e) });
   }
@@ -485,7 +496,7 @@ exports.handler = async (event) => {
       east: frame.east,
       north: frame.north,
     };
-    const imageryJob = needImage ? fetchImageryJpeg(imgUrl) : Promise.resolve(null);
+    const imageryJob = needImage ? fetchImageryJpeg(imgUrl, imageryAttemptMs(devHost)) : Promise.resolve(null);
     if (needImage) {
       frame = applyImageryMeta(frame, null, { width: frame.imgW, height: frame.imgH }, { requestBbox });
     }
@@ -513,7 +524,7 @@ exports.handler = async (event) => {
         fetchTerrainDem(frame, null, {
           signal,
           terrainResolution,
-          allowSurfaceFallback: isDevDemHost(event),
+          allowSurfaceFallback: devHost,
           deadlineMs: started + TERRAIN_HARD_MS,
         })
       );
@@ -559,7 +570,7 @@ exports.handler = async (event) => {
     imgBuf = fetched[3];
     if (imgBuf) {
       frame = applyImageryMeta(frame, imgMeta, jpegSize(imgBuf), { requestBbox });
-      const locked = lockIsotropicImagery(frame, imgBuf);
+      const locked = lockIsotropicImagery(frame, imgBuf, { maxSide });
       frame = locked.frame;
       imgBuf = locked.jpegBuf;
     }
@@ -752,7 +763,7 @@ exports.handler = async (event) => {
       maskPolygons,
       includeFoliage,
       terrainResolution,
-      nlsHeights: isDevDemHost(event),
+      nlsHeights: devHost,
     });
   }
 
@@ -837,6 +848,9 @@ exports.handler = async (event) => {
 };
 
 exports.UA = UA;
+exports.imageryAttemptMs = imageryAttemptMs;
+exports.IMAGERY_ATTEMPT_MS = IMAGERY_ATTEMPT_MS;
+exports.IMAGERY_ATTEMPT_MS_DEV = IMAGERY_ATTEMPT_MS_DEV;
 exports.beginOptional = beginOptional;
 exports.joinOptional = joinOptional;
 exports.OVERTURE_GRACE_MS = OVERTURE_GRACE_MS;

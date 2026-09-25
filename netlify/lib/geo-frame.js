@@ -39,6 +39,23 @@ function metersPerDeg(lat) {
   return { lon: 111320 * Math.cos(rad), lat: 110540 };
 }
 
+/**
+ * Production long side. An Oak Creek-scale box (~0.9–1.4 km) stays near a
+ * 1000px JPEG. Callers on the dev host pass imageryMaxSide(true) instead.
+ */
+const IMAGERY_MAX_SIDE = 1040;
+/**
+ * Dev-host long side. 2048 would be ~1 m/px on a 2 km box, but a live Esri
+ * export of a ~2.4 km square at 2048 took ~12s and at 1600 took ~10s.
+ * 1600 still leaves a ~1.4 km campus at ~1 m/px (under the cap) and a large
+ * box closer to 1 m/px than 1040. 1600² is under the 6 MP jpeg-js decode cap.
+ */
+const IMAGERY_MAX_SIDE_DEV = 1600;
+
+function imageryMaxSide(devHost) {
+  return devHost ? IMAGERY_MAX_SIDE_DEV : IMAGERY_MAX_SIDE;
+}
+
 function geoFrame(bbox, opts = {}) {
   const west = +bbox.west;
   const south = +bbox.south;
@@ -62,8 +79,7 @@ function geoFrame(bbox, opts = {}) {
   }
 
   const metersPerPx = opts.metersPerPx ?? 1.0;
-  // 1040 keeps an Oak Creek-scale box (~0.9–1.4 km) near a 1000px JPEG instead of 1280.
-  const maxSide = opts.maxSide ?? 1040;
+  const maxSide = opts.maxSide ?? IMAGERY_MAX_SIDE;
   let imgW;
   let imgH;
   if (opts.imgW > 0 && opts.imgH > 0) {
@@ -364,7 +380,7 @@ function isAspectLocked(frame, eps = 0.002) {
 
 /** Choose imgW×imgH with the geographic aspect, capped on the long side. */
 function isotropicPixelSize(widthM, lengthM, maxSide) {
-  const side = Math.max(64, Math.round(+maxSide || 1040));
+  const side = Math.max(64, Math.round(+maxSide || IMAGERY_MAX_SIDE));
   const aspect = widthM / lengthM;
   let imgW;
   let imgH;
@@ -461,7 +477,7 @@ function unifyFrameMpu(frame) {
  * downscale when the long side exceeds maxSide (same aspect). Then unify mpu.
  */
 function lockIsotropicImagery(frame, jpegBuf, opts = {}) {
-  const maxSide = opts.maxSide != null ? opts.maxSide : 1040;
+  const maxSide = opts.maxSide != null ? opts.maxSide : IMAGERY_MAX_SIDE;
   if (!frame) return { frame, jpegBuf, resampled: false };
   if (!jpegBuf || jpegBuf.length < 100) {
     return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
@@ -704,6 +720,9 @@ function applyAffine(lon, lat, affine) {
 
 module.exports = {
   CLIPBOARD_ORIGIN,
+  IMAGERY_MAX_SIDE,
+  IMAGERY_MAX_SIDE_DEV,
+  imageryMaxSide,
   metersPerDeg,
   geoFrame,
   llToPx,
