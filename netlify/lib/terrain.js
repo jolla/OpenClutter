@@ -24,9 +24,9 @@
  * at most 12×12, from 144 samples. Fine is ~40 m, at most 16×16, from 324
  * samples. Finest is ~25 m, at most 20×20, from 576 samples. Stops at 20, 15,
  * 10, 5, and 1 m may paste past that 20×20 expectation so a large hill can
- * keep the cell size. A mesh that will not fit in the export is omitted and
- * named in export-warnings instead of hanging. DEM samples for those stops
- * step down when the budget is short.
+ * keep the cell size. A mesh that will not fit in the export is coarsened to
+ * the densest grid that still fits, and that reduction is named in the export
+ * status. DEM samples for those stops step down when the budget is short.
  *
  * Hamina clipboard rings are open: the first vertex is not repeated.
  * raisedFloorZones are xy quads. slopedFloors are xyz quads whose first edge
@@ -58,17 +58,22 @@ const FLAT_M = 0.5;
 const PASTE_SOFT_GRID = 20;
 /**
  * Quads on one side for a 2.5 km draw at 5 m (the export span limit).
- * A 1 m mesh on that draw still does not fit; the paste is omitted.
+ * A 1 m mesh on that draw is coarser than 1 m so the paste still fits.
  */
 const ABSOLUTE_MAX_GRID = 500;
 /** DEM samples. 625 was the old hard ceiling (Finest uses 576). */
 const ABSOLUTE_MAX_SAMPLES = 2500;
 /**
  * Uncompressed clipboard JSON that can ride along with the zip in one
- * response. A denser mesh is built only when it can still be returned.
+ * response. This is the hard limit for Copy terrain. A requested mesh past
+ * it is coarsened until the JSON fits. It is not dropped.
  */
 const TERRAIN_PASTE_JSON_MAX = 3500000;
-/** Above this, skip allocating quads that cannot fit in that response. */
+/**
+ * Do not allocate a lattice denser than this. It sits under the JSON limit
+ * for a sloped mesh, so planning can stop here and the byte check still
+ * confirms the built clipboard fits.
+ */
 const PASTE_BUILD_MAX_QUADS = 12000;
 /** Auto will not paste cells smaller than this, even on a tiny hill. */
 const MIN_CELL_M = 1;
@@ -402,6 +407,36 @@ function pasteableQuad(ring) {
   return true;
 }
 
+/**
+ * Largest cols×rows at most wantCols×wantRows whose product is <= maxQuads,
+ * close to the requested aspect. The request is returned unchanged when it
+ * already fits. One extra quad on either axis would pass the cap or the
+ * request.
+ */
+function fitPasteAxes(wantCols, wantRows, maxQuads) {
+  const wantC = Math.max(1, wantCols | 0);
+  const wantR = Math.max(1, wantRows | 0);
+  const cap = Math.max(1, maxQuads | 0);
+  if (wantC * wantR <= cap) return [wantC, wantR];
+  const aspect = wantC / wantR;
+  const scale = Math.sqrt(cap / (wantC * wantR));
+  let cols = Math.max(1, Math.min(wantC, Math.floor(wantC * scale)));
+  let rows = Math.max(1, Math.min(wantR, Math.floor(wantR * scale)));
+  while (true) {
+    const canC = cols < wantC && (cols + 1) * rows <= cap;
+    const canR = rows < wantR && cols * (rows + 1) <= cap;
+    if (!canC && !canR) break;
+    if (canC && canR) {
+      const errC = Math.abs((cols + 1) / rows - aspect);
+      const errR = Math.abs(cols / (rows + 1) - aspect);
+      if (errC <= errR) cols += 1;
+      else rows += 1;
+    } else if (canC) cols += 1;
+    else rows += 1;
+  }
+  return [cols, rows];
+}
+
 function chooseGrid(relief, frame, resolution) {
   if (!(relief >= 1)) return [2, 2];
   if (relief < 8) return [4, 3];
@@ -420,9 +455,35 @@ function chooseGrid(relief, frame, resolution) {
   return [cols, rows];
 }
 
+function pasteReducedNote(terrain) {
+  const preset = normalizeTerrainResolution(terrain.terrainResolution);
+  let cells = "";
+  if (preset.cellM > 0 && terrain.cellM > preset.cellM + 0.5) {
+    cells =
+      " (about " +
+      formatCellM(terrain.cellM) +
+      " m cells, not " +
+      formatCellM(preset.cellM) +
+      " m)";
+  }
+  return (
+    "Terrain paste reduced from " +
+    (terrain.requestedGridCols | 0) +
+    "×" +
+    (terrain.requestedGridRows | 0) +
+    " to " +
+    (terrain.gridCols | 0) +
+    "×" +
+    (terrain.gridRows | 0) +
+    " quads" +
+    cells +
+    " so it fits in the export response. OpenIntent zip is unchanged."
+  );
+}
+
 /**
  * Notes for export-warnings when an experimental stop passes the old 20×20
- * paste, coarsens because of the mesh cap, or cannot be returned.
+ * paste, coarsens because of the mesh cap, or is reduced to fit the response.
  */
 function terrainResolutionNotes(terrain, frame) {
   const notes = [];
@@ -434,11 +495,17 @@ function terrainResolutionNotes(terrain, frame) {
   const rows = terrain.gridRows | 0;
   const width = frame && frame.widthM > 0 ? frame.widthM : 0;
   const length = frame && frame.lengthM > 0 ? frame.lengthM : 0;
+  const reqC = terrain.requestedGridCols > 0 ? terrain.requestedGridCols | 0 : cols;
+  const reqR = terrain.requestedGridRows > 0 ? terrain.requestedGridRows | 0 : rows;
   if (preset.cellM > 0 && width > 0 && length > 0) {
     const wantC = Math.max(6, Math.round(width / preset.cellM));
     const wantR = Math.max(6, Math.round(length / preset.cellM));
-    if (wantC > cols || wantR > rows) {
-      const cover = Math.round((preset.maxGrid > 0 ? preset.maxGrid : cols) * preset.cellM);
+    if (wantC > reqC || wantR > reqR) {
+      const cover = Math.round((preset.maxGrid > 0 ? preset.maxGrid : reqC) * preset.cellM);
+      let tail = " The paste covers the whole draw at the cap instead of hanging.";
+      if (reqC !== cols || reqR !== rows) {
+        tail = " The export response then coarsens that mesh further. The paste still covers the whole draw.";
+      }
       notes.push(
         "Terrain cell size is about " +
           formatCellM(terrain.cellM) +
@@ -456,7 +523,8 @@ function terrainResolutionNotes(terrain, frame) {
           cover +
           "×" +
           cover +
-          " m. The paste covers the whole draw at the cap instead of hanging."
+          " m." +
+          tail
       );
     }
   }
@@ -470,6 +538,7 @@ function terrainResolutionNotes(terrain, frame) {
     );
     return notes;
   }
+  if (terrain.pasteReduced) notes.push(pasteReducedNote(terrain));
   if (cols > PASTE_SOFT_GRID || rows > PASTE_SOFT_GRID) {
     notes.push(
       "Terrain paste is " +
@@ -487,7 +556,12 @@ function demDensityNote(preset, frame, sampleCount) {
   if (!preset || !preset.experimental) return null;
   const count = sampleCount | 0;
   if (!(count > 0) || !frame) return null;
-  const [cols, rows] = chooseGrid(LIFT_RELIEF_M, frame, preset.id);
+  let [cols, rows] = chooseGrid(LIFT_RELIEF_M, frame, preset.id);
+  if (preset.experimental) {
+    const fitted = fitPasteAxes(cols, rows, PASTE_BUILD_MAX_QUADS);
+    cols = fitted[0];
+    rows = fitted[1];
+  }
   const nodes = (cols + 1) * (rows + 1);
   if (count >= nodes) return null;
   return (
@@ -621,58 +695,8 @@ function slopedZone(ring) {
   };
 }
 
-/**
- * @param {{lon:number,lat:number,z:number}[]} samples
- * @param {object} frame geo frame with west/south/east/north and meter scale
- * @param {{terrainResolution?: string, kind?: string, attribution?: string}} [opts]
- */
-function terrainFromSamples(samples, frame, opts) {
-  const pts = (samples || []).filter(
-    (s) => s && Number.isFinite(+s.lon) && Number.isFinite(+s.lat) && Number.isFinite(+s.z)
-  );
-  if (pts.length < 4 || !frame) return null;
-  const clean = pts.map((s) => ({ lon: +s.lon, lat: +s.lat, z: +s.z }));
-  let minS = Infinity;
-  let maxS = -Infinity;
-  for (const s of clean) {
-    if (s.z < minS) minS = s.z;
-    if (s.z > maxS) maxS = s.z;
-  }
-  const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
-  const reliefM = maxS - minS;
-  const [cols, rows] = chooseGrid(reliefM, frame, preset.id);
-  const widthM = frame && frame.widthM > 0 ? frame.widthM : 800;
-  const lengthM = frame && frame.lengthM > 0 ? frame.lengthM : 800;
-  const cellM =
-    (preset.id === "auto" || preset.experimental) && reliefM >= LIFT_RELIEF_M
-      ? (widthM / cols + lengthM / rows) / 2
-      : preset.cellM;
-  const kind = opts && opts.kind === "surface" ? "surface" : "bare-earth";
-  const attribution =
-    (opts && opts.attribution) || (kind === "surface" ? GLO30_CREDIT : USGS_3DEP_ATTRIBUTION);
-  const elevationAt = buildElevation(clean);
-  const summary = {
-    reliefM: Math.round((maxS - minS) * 10) / 10,
-    minZ: Math.round(minS * 10) / 10,
-    maxZ: Math.round(maxS * 10) / 10,
-    terrainResolution: preset.id,
-    cellM,
-    gridCols: cols,
-    gridRows: rows,
-    samples: clean,
-    elevationAt,
-    kind,
-    attribution,
-  };
-  // A Granite Peak mesh at 5–10 m can be tens of thousands of quads. Building
-  // it and then dropping the JSON still spends the export. Skip that allocation.
-  if (preset.experimental && cols * rows > PASTE_BUILD_MAX_QUADS) {
-    return Object.assign(
-      { clipboard: null, pasteOmitted: true, raised: 0, sloped: 0, datumZ: minS },
-      summary
-    );
-  }
-  const grid = lattice(clean, frame, cols, rows, elevationAt);
+function buildTerrainClipboard(samples, frame, cols, rows, elevationAt) {
+  const grid = lattice(samples, frame, cols, rows, elevationAt);
   const raised = [];
   const sloped = [];
   for (let r = 0; r < rows; r++) {
@@ -703,29 +727,143 @@ function terrainFromSamples(samples, frame, opts) {
   clip.raisedFloorZones = raised;
   clip.slopedFloors = sloped;
   clip.attenuatingZones = [];
-  if (preset.experimental && cols * rows > PASTE_SOFT_GRID * PASTE_SOFT_GRID) {
-    const json = JSON.stringify(clip);
-    if (json.length > TERRAIN_PASTE_JSON_MAX) {
-      return Object.assign(
-        {
-          clipboard: null,
-          pasteOmitted: true,
-          raised: raised.length,
-          sloped: sloped.length,
-          // z = 0 on sloped floors is the lowest lattice node, not the raw sample min.
-          datumZ: grid.minZ,
-        },
-        summary
-      );
+  return { grid, clip, raised: raised.length, sloped: sloped.length };
+}
+
+/**
+ * @param {{lon:number,lat:number,z:number}[]} samples
+ * @param {object} frame geo frame with west/south/east/north and meter scale
+ * @param {{terrainResolution?: string, kind?: string, attribution?: string}} [opts]
+ */
+function terrainFromSamples(samples, frame, opts) {
+  const pts = (samples || []).filter(
+    (s) => s && Number.isFinite(+s.lon) && Number.isFinite(+s.lat) && Number.isFinite(+s.z)
+  );
+  if (pts.length < 4 || !frame) return null;
+  const clean = pts.map((s) => ({ lon: +s.lon, lat: +s.lat, z: +s.z }));
+  let minS = Infinity;
+  let maxS = -Infinity;
+  for (const s of clean) {
+    if (s.z < minS) minS = s.z;
+    if (s.z > maxS) maxS = s.z;
+  }
+  const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
+  const reliefM = maxS - minS;
+  let [cols, rows] = chooseGrid(reliefM, frame, preset.id);
+  const requestedCols = cols;
+  const requestedRows = rows;
+  const skiExperimental = !!(preset.experimental && reliefM >= LIFT_RELIEF_M);
+  // Plan against the allocation cap first so a 200×200 request is never built.
+  // The byte limit below is the hard response budget; if the built JSON is
+  // still over it, replan coarser until emit succeeds.
+  if (skiExperimental && cols * rows > PASTE_BUILD_MAX_QUADS) {
+    const fitted = fitPasteAxes(cols, rows, PASTE_BUILD_MAX_QUADS);
+    cols = fitted[0];
+    rows = fitted[1];
+  }
+  const widthM = frame && frame.widthM > 0 ? frame.widthM : 800;
+  const lengthM = frame && frame.lengthM > 0 ? frame.lengthM : 800;
+  const kind = opts && opts.kind === "surface" ? "surface" : "bare-earth";
+  const attribution =
+    (opts && opts.attribution) || (kind === "surface" ? GLO30_CREDIT : USGS_3DEP_ATTRIBUTION);
+  const elevationAt = buildElevation(clean);
+  let mesh = buildTerrainClipboard(clean, frame, cols, rows, elevationAt);
+  if (!mesh) return null;
+  function omitFields() {
+    return {
+      clean,
+      frame,
+      preset,
+      reliefM,
+      minS,
+      maxS,
+      cols,
+      rows,
+      elevationAt,
+      kind,
+      attribution,
+      mesh,
+      requestedCols,
+      requestedRows,
+    };
+  }
+  if (skiExperimental && cols * rows > PASTE_SOFT_GRID * PASTE_SOFT_GRID) {
+    let guard = 0;
+    let jsonLen = JSON.stringify(mesh.clip).length;
+    while (jsonLen > TERRAIN_PASTE_JSON_MAX) {
+      if (guard >= 8) {
+        return omittedPaste(omitFields());
+      }
+      const ratio = TERRAIN_PASTE_JSON_MAX / jsonLen;
+      let nextMax = Math.floor(cols * rows * ratio * 0.98);
+      if (!(nextMax < cols * rows)) nextMax = cols * rows - 1;
+      const fitted = fitPasteAxes(cols, rows, Math.max(1, nextMax));
+      if (fitted[0] === cols && fitted[1] === rows) {
+        return omittedPaste(omitFields());
+      }
+      cols = fitted[0];
+      rows = fitted[1];
+      mesh = buildTerrainClipboard(clean, frame, cols, rows, elevationAt);
+      if (!mesh) return null;
+      jsonLen = JSON.stringify(mesh.clip).length;
+      guard += 1;
     }
   }
-  return Object.assign({}, summary, {
-    clipboard: clip,
-    raised: raised.length,
-    sloped: sloped.length,
+  const cellM =
+    (preset.id === "auto" || preset.experimental) && reliefM >= LIFT_RELIEF_M
+      ? (widthM / cols + lengthM / rows) / 2
+      : preset.cellM;
+  const pasteReduced = skiExperimental && (cols !== requestedCols || rows !== requestedRows);
+  return {
+    reliefM: Math.round((maxS - minS) * 10) / 10,
+    minZ: Math.round(minS * 10) / 10,
+    maxZ: Math.round(maxS * 10) / 10,
+    terrainResolution: preset.id,
+    cellM,
+    gridCols: cols,
+    gridRows: rows,
+    requestedGridCols: requestedCols,
+    requestedGridRows: requestedRows,
+    pasteReduced: pasteReduced || undefined,
+    samples: clean,
+    elevationAt,
+    kind,
+    attribution,
+    clipboard: mesh.clip,
+    raised: mesh.raised,
+    sloped: mesh.sloped,
     // z = 0 on sloped floors is the lowest lattice node, not the raw sample min.
-    datumZ: grid.minZ,
-  });
+    datumZ: mesh.grid.minZ,
+  };
+}
+
+function omittedPaste(src) {
+  const widthM = src.frame && src.frame.widthM > 0 ? src.frame.widthM : 800;
+  const lengthM = src.frame && src.frame.lengthM > 0 ? src.frame.lengthM : 800;
+  const cellM =
+    (src.preset.id === "auto" || src.preset.experimental) && src.reliefM >= LIFT_RELIEF_M
+      ? (widthM / src.cols + lengthM / src.rows) / 2
+      : src.preset.cellM;
+  return {
+    reliefM: Math.round(src.reliefM * 10) / 10,
+    minZ: Math.round(src.minS * 10) / 10,
+    maxZ: Math.round(src.maxS * 10) / 10,
+    terrainResolution: src.preset.id,
+    cellM,
+    gridCols: src.cols,
+    gridRows: src.rows,
+    requestedGridCols: src.requestedCols,
+    requestedGridRows: src.requestedRows,
+    samples: src.clean,
+    elevationAt: src.elevationAt,
+    kind: src.kind,
+    attribution: src.attribution,
+    clipboard: null,
+    pasteOmitted: true,
+    raised: src.mesh ? src.mesh.raised : 0,
+    sloped: src.mesh ? src.mesh.sloped : 0,
+    datumZ: src.mesh ? src.mesh.grid.minZ : src.minS,
+  };
 }
 
 /** Meters above the terrain clipboard's z = 0. Same datum as sloped-floor z. */
@@ -833,6 +971,7 @@ function terrainBundleFields(terrain, warnings) {
     } else if (preset.id !== "default") {
       mesh = ", " + preset.label + " (relief under 20 m keeps the coarse mesh)";
     }
+    const reduced = terrain.pasteReduced ? " " + pasteReducedNote(terrain) : "";
     return {
       terrainFilename: TERRAIN_FILENAME,
       terrainClipboard: terrain.clipboard,
@@ -845,7 +984,9 @@ function terrainBundleFields(terrain, warnings) {
         terrain.sloped +
         " sloped" +
         mesh +
-        "). Use Copy terrain and paste it in Planner Plus. Do not import it as OpenIntent.",
+        ")." +
+        reduced +
+        " Use Copy terrain and paste it in Planner Plus. Do not import it as OpenIntent.",
     };
   }
   const omitted = (warnings || []).map(String).find((w) => /terrain omitted/i.test(w));
@@ -1047,6 +1188,7 @@ module.exports = {
   DEP3_OUTSIDE_MS,
   DEP3_PROBE_SAMPLES,
   chooseGrid,
+  fitPasteAxes,
   normalizeTerrainResolution,
   sampleCountForResolution,
   terrainResolutionNotes,
