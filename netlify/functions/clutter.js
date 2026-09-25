@@ -41,6 +41,12 @@ const OVERTURE_GRACE_MS = 4500;
 const OVERTURE_LARGE_GRACE_MS = 15000;
 const LARGE_DRAW_SIDE_M = 1500;
 const OVERTURE_HARD_MS = 23000;
+// Terrain overlaps the JPEG after imagery metadata snaps the extent.
+// grace/hard match joinOptional. Outside 3DEP coverage the read itself
+// fails that probe in a few hundred milliseconds and spends the rest on
+// GLO-30; this cap is only the shared abort.
+const TERRAIN_GRACE_MS = 1500;
+const TERRAIN_HARD_MS = 9000;
 // Roof fill scans every footprint. On a dense draw that already spent 10s
 // fetching, skip it and emit the vector buildings.
 const DENSE_FEATURES = 1500;
@@ -500,13 +506,15 @@ exports.handler = async (event) => {
       if (imgMeta) frame = applyImageryMeta(frame, imgMeta, null, { requestBbox });
       // Same lon/lat extent the JPEG will lock. Meters are applied later with
       // the isotropic frame, so pads line up with hamina-clipboard.json.
-      // 3DEP first. On the dev host only, a miss reads Copernicus GLO-30
-      // inside this same optional budget (grace 1.5s, hard 9s).
+      // 3DEP where that service has a grid. On the dev host, a miss reads
+      // Copernicus GLO-30 inside this same optional budget. Outside coverage
+      // the 3DEP probe is short so GLO-30 gets the remaining time.
       terrainJob = beginOptional((signal) =>
         fetchTerrainDem(frame, null, {
           signal,
           terrainResolution,
           allowSurfaceFallback: isDevDemHost(event),
+          deadlineMs: started + TERRAIN_HARD_MS,
         })
       );
     }
@@ -576,7 +584,10 @@ exports.handler = async (event) => {
       ? joinOptional(warnings, started, "Overture buildings", overtureJob, overtureWait(frame))
       : Promise.resolve(null),
     terrainJob
-      ? joinOptional(warnings, started, "Terrain", terrainJob, { graceMs: 1500, hardMs: 9000 })
+      ? joinOptional(warnings, started, "Terrain", terrainJob, {
+          graceMs: TERRAIN_GRACE_MS,
+          hardMs: TERRAIN_HARD_MS,
+        })
       : Promise.resolve(null),
     includeFoliage && needImage
       ? runOptional(warnings, started, "Canopy height", (signal) => fetchChmGrid(frame, { signal }))

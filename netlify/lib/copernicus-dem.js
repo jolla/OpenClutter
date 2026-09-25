@@ -19,6 +19,12 @@ const GLO30_BUCKET = "https://copernicus-dem-30m.s3.eu-central-1.amazonaws.com";
 const GLO30_CREDIT =
   "© DLR e.V. 2010–2014 and © Airbus Defence and Space GmbH 2014–2018 provided under COPERNICUS by the European Union and ESA; all rights reserved";
 const MAX_TILES = 4;
+/**
+ * Used only when the caller did not pass a signal. A 2s default aborted the
+ * COG before the first range read finished. This stays under the terrain
+ * hard cap so a direct read can still return a grid.
+ */
+const GLO30_FETCH_MS = 8000;
 
 function glo30TileId(latSw, lonSw) {
   const lat = latSw | 0;
@@ -86,9 +92,7 @@ function usableElevation(z, nodata) {
   return true;
 }
 
-async function readGlo30Window(geotiff, url, frame, signal) {
-  const tiff = await geotiff.fromUrl(url, { cacheSize: 16 }, signal);
-  const image = await tiff.getImage();
+function rasterWindow(image, frame) {
   const origin = image.getOrigin();
   const res = image.getResolution();
   const iw = image.getWidth();
@@ -106,23 +110,76 @@ async function readGlo30Window(geotiff, url, frame, signal) {
   right = Math.min(iw, right);
   bottom = Math.min(ih, bottom);
   if (right - left < 1 || bottom - top < 1) return null;
+  return {
+    left,
+    top,
+    right,
+    bottom,
+    origin,
+    res,
+    longSide: Math.max(right - left, bottom - top),
+  };
+}
+
+/**
+ * Full resolution when that window fits maxSide. A larger draw steps to a
+ * coarser overview so the range read can finish. Small sites never list
+ * overviews — that IFD walk is extra requests.
+ */
+async function chooseGlo30Image(tiff, frame, maxSide) {
+  const cap = maxSide > 0 ? maxSide : 128;
+  const full = await tiff.getImage(0);
+  const fullWin = rasterWindow(full, frame);
+  if (!fullWin) return null;
+  if (fullWin.longSide <= cap || typeof tiff.getImageCount !== "function") {
+    return { image: full, win: fullWin };
+  }
+  let count = 1;
+  try {
+    const n = await tiff.getImageCount();
+    if (n > 1 && n < 16) count = n;
+  } catch {
+    return { image: full, win: fullWin };
+  }
+  let coarsest = { image: full, win: fullWin };
+  for (let i = 1; i < count; i++) {
+    let image;
+    try {
+      image = await tiff.getImage(i);
+    } catch {
+      break;
+    }
+    const win = rasterWindow(image, frame);
+    if (!win) continue;
+    coarsest = { image, win };
+    if (win.longSide <= cap) return coarsest;
+  }
+  return coarsest;
+}
+
+async function readGlo30Window(geotiff, url, frame, signal, maxRasterSide) {
+  const tiff = await geotiff.fromUrl(url, { cacheSize: 16 }, signal);
+  const chosen = await chooseGlo30Image(tiff, frame, maxRasterSide);
+  if (!chosen) return null;
+  const { image, win } = chosen;
   const ras = await image.readRasters({
-    window: [left, top, right, bottom],
+    window: [win.left, win.top, win.right, win.bottom],
     interleave: true,
+    signal,
   });
   const data = rasterValues(ras);
-  const width = ras && ras.width ? ras.width : right - left;
-  const height = ras && ras.height ? ras.height : bottom - top;
+  const width = ras && ras.width ? ras.width : win.right - win.left;
+  const height = ras && ras.height ? ras.height : win.bottom - win.top;
   if (!data || data.length < width * height || width < 1 || height < 1) return null;
   const nodata = typeof image.getGDALNoData === "function" ? image.getGDALNoData() : null;
   return {
     data,
     width,
     height,
-    left,
-    top,
-    origin,
-    res,
+    left: win.left,
+    top: win.top,
+    origin: win.origin,
+    res: win.res,
     nodata: Number.isFinite(+nodata) ? +nodata : null,
   };
 }
@@ -155,13 +212,14 @@ async function fetchCopernicusDemSamples(frame, opts) {
   const urls = glo30TilesForFrame(frame);
   if (!urls.length || urls.length > MAX_TILES) throw new Error("GLO-30 tile span");
   const geotiff = (opts && opts.geotiff) || require("geotiff");
-  const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
+  const signal = (opts && opts.signal) || AbortSignal.timeout(GLO30_FETCH_MS);
+  const maxRasterSide = opts && opts.maxRasterSide > 0 ? opts.maxRasterSide : 128;
   const tiles = [];
   let firstError = null;
   await Promise.all(
     urls.map(async (url) => {
       try {
-        const tile = await readGlo30Window(geotiff, url, frame, signal);
+        const tile = await readGlo30Window(geotiff, url, frame, signal, maxRasterSide);
         if (tile) tiles.push(tile);
       } catch (e) {
         if (signal.aborted) throw e;
@@ -195,6 +253,7 @@ async function fetchCopernicusDemSamples(frame, opts) {
 module.exports = {
   GLO30_BUCKET,
   GLO30_CREDIT,
+  GLO30_FETCH_MS,
   MAX_TILES,
   glo30TileId,
   glo30TileUrl,
