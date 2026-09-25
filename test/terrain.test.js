@@ -23,6 +23,8 @@ const {
   MIN_CELL_M,
   LIFT_RELIEF_M,
   siteWarrantsLift,
+  pasteableQuad,
+  slopedRing,
 } = require("../netlify/lib/terrain");
 const { buildClutter } = require("../netlify/lib/pipeline");
 const { unzipStore } = require("../netlify/lib/zip-store");
@@ -335,6 +337,146 @@ describe("3DEP terrain clipboard", () => {
     const clip = JSON.parse(files["terrain-clipboard.json"].toString());
     assert.ok(clip.raisedFloorZones.length + clip.slopedFloors.length >= 1);
     assert.equal(clip.header.type, "HaminaClipboard");
+  });
+});
+
+describe("sloped floor winding", () => {
+  function node(x, y, z) {
+    return { x, y, zRel: z };
+  }
+
+  /** Clipboard rectangle: x increases east, y increases north. */
+  const sw = [-10, -8];
+  const se = [-2, -8];
+  const ne = [-2, -1];
+  const nw = [-10, -1];
+
+  function ringOf(zsw, zse, zne, znw) {
+    return slopedRing(node(sw[0], sw[1], zsw), node(se[0], se[1], zse), node(ne[0], ne[1], zne), node(nw[0], nw[1], znw));
+  }
+
+  function cornerName(p) {
+    const west = p[0] === sw[0];
+    const south = p[1] === sw[1];
+    if (west && south) return "sw";
+    if (!west && south) return "se";
+    if (!west && !south) return "ne";
+    return "nw";
+  }
+
+  function assertGrade(ring, order, lowZ, highZ) {
+    assert.equal(pasteableQuad(ring), true);
+    assertSlopedRamp(ring);
+    assert.equal(ring.map(cornerName).join(","), order);
+    assert.equal(ring[0][2], lowZ);
+    assert.equal(ring[1][2], lowZ);
+    assert.equal(ring[2][2], highZ);
+    assert.equal(ring[3][2], highZ);
+    assert.ok(ring[0][2] < ring[2][2]);
+  }
+
+  it("emits a pasteable CCW low-first ramp for every grade", () => {
+    assertGrade(ringOf(0, 0, 6, 6), "sw,se,ne,nw", 0, 6);
+    assertGrade(ringOf(6, 6, 0, 0), "ne,nw,sw,se", 0, 6);
+    assertGrade(ringOf(0, 6, 6, 0), "nw,sw,se,ne", 0, 6);
+    assertGrade(ringOf(6, 0, 0, 6), "se,ne,nw,sw", 0, 6);
+    // East rise is the stronger axis, so the ramp follows that grade.
+    assertGrade(ringOf(0, 4, 5, 1), "nw,sw,se,ne", 0.5, 4.5);
+    // South rise is the stronger axis.
+    assertGrade(ringOf(5, 4, 0, 1), "ne,nw,sw,se", 0.5, 4.5);
+  });
+
+  it("rejects the clockwise low-first orders", () => {
+    const xyz = (xy, z) => [xy[0], xy[1], z];
+    // North edge first, walked east: clockwise. The CCW walk of that edge starts at ne.
+    const northLowClockwise = [xyz(nw, 0), xyz(ne, 0), xyz(se, 6), xyz(sw, 6)];
+    // West edge first, walked north: clockwise. The CCW walk of that edge starts at nw.
+    const westLowClockwise = [xyz(sw, 0), xyz(nw, 0), xyz(ne, 6), xyz(se, 6)];
+    assert.equal(pasteableQuad(northLowClockwise), false);
+    assert.equal(pasteableQuad(westLowClockwise), false);
+    assert.equal(pasteableQuad(ringOf(6, 6, 0, 0)), true);
+    assert.equal(pasteableQuad(ringOf(0, 6, 6, 0)), true);
+  });
+
+  function cornerSamples(frame, zAt) {
+    const n = 6;
+    const samples = [];
+    for (let r = 0; r <= n; r++) {
+      for (let c = 0; c <= n; c++) {
+        samples.push({
+          lon: frame.west + (c / n) * (frame.east - frame.west),
+          lat: frame.south + (r / n) * (frame.north - frame.south),
+          z: zAt(c, r),
+        });
+      }
+    }
+    return samples;
+  }
+
+  function label(p, ring) {
+    const xs = ring.map((q) => q[0]);
+    const ys = ring.map((q) => q[1]);
+    const midX = (Math.min(...xs) + Math.max(...xs)) / 2;
+    const midY = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const west = p[0] < midX;
+    const south = p[1] < midY;
+    if (west && south) return "sw";
+    if (!west && south) return "se";
+    if (!west && !south) return "ne";
+    return "nw";
+  }
+
+  it("pastes every relief cell as a DEM-aligned ramp instead of a raised pad", () => {
+    const frame = geoFrame({ west: -87.922, south: 42.89, east: -87.912, north: 42.903, name: "Grades" });
+    const grades = [
+      {
+        name: "south low",
+        zAt: (c, r) => 100 + r * 2,
+        order: "sw,se,ne,nw",
+        risesNorth: true,
+      },
+      {
+        name: "north low",
+        zAt: (c, r) => 100 + (6 - r) * 2,
+        order: "ne,nw,sw,se",
+        risesNorth: false,
+      },
+      {
+        name: "west low",
+        zAt: (c) => 100 + c * 2,
+        order: "nw,sw,se,ne",
+        risesEast: true,
+      },
+      {
+        name: "east low",
+        zAt: (c) => 100 + (6 - c) * 2,
+        order: "se,ne,nw,sw",
+        risesEast: false,
+      },
+    ];
+    for (const grade of grades) {
+      const terrain = terrainFromSamples(cornerSamples(frame, grade.zAt), frame);
+      assert.ok(terrain.reliefM > 8 && terrain.reliefM < LIFT_RELIEF_M, grade.name + " relief " + terrain.reliefM);
+      const [cols, rows] = chooseGrid(terrain.reliefM, frame);
+      assert.equal(terrain.sloped, cols * rows, grade.name + " sloped");
+      assert.equal(terrain.raised, 0, grade.name + " fell back to a raised pad");
+      for (const zone of terrain.clipboard.slopedFloors) {
+        const ring = zone.area.coordinates[0];
+        assert.equal(pasteableQuad(ring), true, grade.name);
+        assertSlopedRamp(ring);
+        assert.equal(ring.map((p) => label(p, ring)).join(","), grade.order, grade.name);
+        const lowX = (ring[0][0] + ring[1][0]) / 2;
+        const highX = (ring[2][0] + ring[3][0]) / 2;
+        const lowY = (ring[0][1] + ring[1][1]) / 2;
+        const highY = (ring[2][1] + ring[3][1]) / 2;
+        if (grade.risesNorth !== undefined) {
+          assert.equal(lowY < highY, grade.risesNorth, grade.name + " north");
+        }
+        if (grade.risesEast !== undefined) {
+          assert.equal(lowX < highX, grade.risesEast, grade.name + " east");
+        }
+      }
+    }
   });
 });
 
