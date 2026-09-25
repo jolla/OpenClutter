@@ -306,10 +306,27 @@ function xyzAt(n, z) {
   return [n.x, n.y, z];
 }
 
+function edgeRunM(a, b) {
+  return Math.hypot(b.x - a.x, b.y - a.y);
+}
+
+/** Rise over run. A zero-length edge is infinitely steep when it still rises. */
+function riseOverRun(rise, run) {
+  if (!(run > 0)) return rise > 0 ? Infinity : 0;
+  return rise / run;
+}
+
 /**
- * One ramp per cell, along the stronger axis. Hamina stores a sloped floor as
+ * One ramp per cell, along the steeper axis. Hamina stores a sloped floor as
  * a low edge (two vertices, one z) and the opposite high edge — not a triangle
  * and not an independent z on every corner.
+ *
+ * The axis is rise/run, not raw |Δz|:
+ *   nsSlope = |zN − zS| / northSouthEdgeLengthM
+ *   ewSlope = |zE − zW| / eastWestEdgeLengthM
+ * A wide cell can rise more east-west and still be gentler than the short
+ * north-south face. Equal slopes keep the north-south ramp (the same tie the
+ * old |Δz| compare used on a square cell).
  *
  * Clipboard y increases north, so the low edge is walked with the cell
  * interior on the left. That is the one counterclockwise low-first order for
@@ -325,9 +342,11 @@ function slopedRing(sw, se, ne, nw) {
   const zN = round1((nw.zRel + ne.zRel) / 2);
   const zW = round1((sw.zRel + nw.zRel) / 2);
   const zE = round1((se.zRel + ne.zRel) / 2);
-  const ns = Math.abs(zN - zS);
-  const ew = Math.abs(zE - zW);
-  if (ns >= ew && zN !== zS) {
+  const northSouthEdgeLengthM = (edgeRunM(sw, nw) + edgeRunM(se, ne)) / 2;
+  const eastWestEdgeLengthM = (edgeRunM(sw, se) + edgeRunM(nw, ne)) / 2;
+  const nsSlope = riseOverRun(Math.abs(zN - zS), northSouthEdgeLengthM);
+  const ewSlope = riseOverRun(Math.abs(zE - zW), eastWestEdgeLengthM);
+  if (nsSlope >= ewSlope && zN !== zS) {
     return zS <= zN
       ? [xyzAt(sw, zS), xyzAt(se, zS), xyzAt(ne, zN), xyzAt(nw, zN)]
       : [xyzAt(ne, zN), xyzAt(nw, zN), xyzAt(sw, zS), xyzAt(se, zS)];

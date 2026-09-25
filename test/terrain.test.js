@@ -386,6 +386,66 @@ describe("sloped floor winding", () => {
     assertGrade(ringOf(5, 4, 0, 1), "ne,nw,sw,se", 0.5, 4.5);
   });
 
+  function ringAt(corners, zsw, zse, zne, znw) {
+    return slopedRing(
+      node(corners.sw[0], corners.sw[1], zsw),
+      node(corners.se[0], corners.se[1], zse),
+      node(corners.ne[0], corners.ne[1], zne),
+      node(corners.nw[0], corners.nw[1], znw)
+    );
+  }
+
+  function assertElongatedGrade(corners, zsw, zse, zne, znw, order, lowZ, highZ) {
+    const ring = ringAt(corners, zsw, zse, zne, znw);
+    function cornerNameAt(p) {
+      const west = p[0] === corners.sw[0];
+      const south = p[1] === corners.sw[1];
+      if (west && south) return "sw";
+      if (!west && south) return "se";
+      if (!west && !south) return "ne";
+      return "nw";
+    }
+    assert.equal(pasteableQuad(ring), true);
+    assertSlopedRamp(ring);
+    assert.equal(ring.map(cornerNameAt).join(","), order);
+    assert.equal(ring[0][2], lowZ);
+    assert.equal(ring[2][2], highZ);
+  }
+
+  it("picks the steeper short axis when the long axis has the larger rise", () => {
+    // 20 m east-west, 4 m north-south. |Δz| is 3 m east-west and 1 m north-south,
+    // so raw |Δz| would ramp east. Rise/run is 0.15 vs 0.25, so the short face wins.
+    const wide = {
+      sw: [0, 0],
+      se: [20, 0],
+      ne: [20, 4],
+      nw: [0, 4],
+    };
+    assertElongatedGrade(wide, 0, 3, 4, 1, "sw,se,ne,nw", 1.5, 2.5);
+
+    // 4 m east-west, 20 m north-south. |Δz| is 3 m north-south and 1 m east-west.
+    // Rise/run is 0.15 vs 0.25, so the short east-west face wins.
+    const tall = {
+      sw: [0, 0],
+      se: [4, 0],
+      ne: [4, 20],
+      nw: [0, 20],
+    };
+    assertElongatedGrade(tall, 0, 1, 4, 3, "nw,sw,se,ne", 1.5, 2.5);
+  });
+
+  it("keeps the north-south ramp when the two slopes tie", () => {
+    // 10 m × 5 m. |Δz| is 2 m east-west and 1 m north-south (raw |Δz| would go east).
+    // Both slopes are 0.2, so the tie stays north-south.
+    const cell = {
+      sw: [0, 0],
+      se: [10, 0],
+      ne: [10, 5],
+      nw: [0, 5],
+    };
+    assertElongatedGrade(cell, 0.5, 1.5, 3.5, 0.5, "sw,se,ne,nw", 1, 2);
+  });
+
   it("rejects the clockwise low-first orders", () => {
     const xyz = (xy, z) => [xy[0], xy[1], z];
     // North edge first, walked east: clockwise. The CCW walk of that edge starts at ne.
