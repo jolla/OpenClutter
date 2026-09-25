@@ -252,8 +252,12 @@ const TERRAIN_README =
   "draw, about 1 m on a small hill and coarser on a large one, at most 20×20 quads,\n" +
   "with a 3DEP sample count denser than that mesh (at most 625). Default is about 80 m quads, at most 12×12\n" +
   "(144 DEM samples). Fine is about 40 m quads, at most 16×16 (324 samples).\n" +
-  "Finest is about 25 m quads, at most 20×20 (576 samples). The paste never exceeds\n" +
-  "20×20 quads.\n" +
+  "Finest is about 25 m quads, at most 20×20 (576 samples). Stops at 20, 15, 10, 5,\n" +
+  "and 1 m may paste a denser grid so a draw about 2.5 km on a side can still use\n" +
+  "about 5–10 m cells (mesh cap 500 quads on a side). The older Hamina paste\n" +
+  "expectation is about 20×20. A paste past that size is named in export-warnings.json.\n" +
+  "A mesh that will not fit in the export response is omitted instead of hanging.\n" +
+  "DEM samples for those stops step down when the export budget is short.\n" +
   "OpenIntent does not support raised or sloped floors. On the OpenClutter page,\n" +
   "Copy terrain pastes this JSON into Planner Plus. The same JSON is\n" +
   "terrain-clipboard.json in this zip when the DEM returned a grid. Do not import\n" +
@@ -264,7 +268,8 @@ const TERRAIN_README =
   "so the solid floor is not a second clutter wall.\n" +
   "slopedFloors are open xyz quads (z = meters above that same low point).\n" +
   "The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
-  "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
+  "If terrain-clipboard.json is absent, the DEM request did not return a usable grid,\n" +
+  "or the paste was omitted because it would not fit.\n" +
   "Building attenuating objects stay in this OpenIntent zip. On a ski-hill DEM their\n" +
   "bottom_height is bottom height from floor (slope top under the footprint) and\n" +
   "top_height is top height from floor (that bottom plus the building height).\n" +
@@ -288,8 +293,12 @@ const TERRAIN_README_SURFACE =
   "draw, about 1 m on a small hill and coarser on a large one, at most 20×20 quads,\n" +
   "with a DEM sample count denser than that mesh (at most 625). Default is about 80 m quads, at most 12×12\n" +
   "(144 DEM samples). Fine is about 40 m quads, at most 16×16 (324 samples).\n" +
-  "Finest is about 25 m quads, at most 20×20 (576 samples). The paste never exceeds\n" +
-  "20×20 quads.\n" +
+  "Finest is about 25 m quads, at most 20×20 (576 samples). Stops at 20, 15, 10, 5,\n" +
+  "and 1 m may paste a denser grid so a draw about 2.5 km on a side can still use\n" +
+  "about 5–10 m cells (mesh cap 500 quads on a side). The older Hamina paste\n" +
+  "expectation is about 20×20. A paste past that size is named in export-warnings.json.\n" +
+  "A mesh that will not fit in the export response is omitted instead of hanging.\n" +
+  "DEM samples for those stops step down when the export budget is short.\n" +
   "OpenIntent does not support raised or sloped floors. On the OpenClutter page,\n" +
   "Copy terrain pastes this JSON into Planner Plus. The same JSON is\n" +
   "terrain-clipboard.json in this zip when the DEM returned a grid. Do not import\n" +
@@ -300,7 +309,8 @@ const TERRAIN_README_SURFACE =
   "so the solid floor is not a second clutter wall.\n" +
   "slopedFloors are open xyz quads (z = meters above that same low point).\n" +
   "The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
-  "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
+  "If terrain-clipboard.json is absent, the DEM request did not return a usable grid,\n" +
+  "or the paste was omitted because it would not fit.\n" +
   "Building attenuating objects stay in this OpenIntent zip. They sit on this DEM:\n" +
   "bottom_height is the slope top under that footprint, and top_height is that\n" +
   "bottom plus the building height. Canopy polygons use that bottom plus the\n" +

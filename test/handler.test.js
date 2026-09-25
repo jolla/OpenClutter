@@ -210,6 +210,8 @@ describe("clutter handler (mocked Esri)", () => {
     assert.deepEqual(await sampleCountFor("default"), { count: "144", id: "default" });
     assert.deepEqual(await sampleCountFor("fine"), { count: "324", id: "fine" });
     assert.deepEqual(await sampleCountFor("finest"), { count: "576", id: "finest" });
+    assert.deepEqual(await sampleCountFor("10"), { count: "2500", id: "10" });
+    assert.deepEqual(await sampleCountFor("1"), { count: "2500", id: "1" });
     assert.deepEqual(await sampleCountFor("ultra"), { count: "576", id: "auto" });
     assert.deepEqual(await sampleCountFor(undefined, { terrainResolution: "fine" }), { count: "324", id: "fine" });
     assert.deepEqual(await sampleCountFor("default", { terrainResolution: "finest" }), { count: "144", id: "default" });

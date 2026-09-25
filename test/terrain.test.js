@@ -23,9 +23,12 @@ const {
   TARGET_CELL_M,
   SAMPLE_COUNT,
   TERRAIN_RESOLUTIONS,
+  PASTE_SOFT_GRID,
   ABSOLUTE_MAX_GRID,
   ABSOLUTE_MAX_SAMPLES,
+  PASTE_BUILD_MAX_QUADS,
   MIN_CELL_M,
+  terrainResolutionNotes,
   LIFT_RELIEF_M,
   siteWarrantsLift,
   demUnderFootprint,
@@ -812,23 +815,37 @@ describe("terrain resolution presets", () => {
     assert.equal(TERRAIN_RESOLUTIONS.finest.cellM, 25);
     assert.equal(TERRAIN_RESOLUTIONS.finest.maxGrid, 20);
     assert.equal(TERRAIN_RESOLUTIONS.finest.sampleCount, 576);
-    assert.ok(TERRAIN_RESOLUTIONS.finest.maxGrid <= ABSOLUTE_MAX_GRID);
+    assert.ok(TERRAIN_RESOLUTIONS.finest.maxGrid <= PASTE_SOFT_GRID);
     assert.ok(TERRAIN_RESOLUTIONS.finest.sampleCount <= ABSOLUTE_MAX_SAMPLES);
-    assert.equal(ABSOLUTE_MAX_GRID, 20);
-    assert.equal(ABSOLUTE_MAX_SAMPLES, 625);
+    assert.equal(PASTE_SOFT_GRID, 20);
+    assert.equal(ABSOLUTE_MAX_GRID, 500);
+    assert.equal(ABSOLUTE_MAX_SAMPLES, 2500);
     assert.equal(normalizeTerrainResolution(undefined).id, "auto");
     assert.equal(normalizeTerrainResolution("").id, "auto");
     assert.equal(normalizeTerrainResolution(" AUTO ").id, "auto");
     assert.equal(normalizeTerrainResolution(" FINE ").id, "fine");
     assert.equal(normalizeTerrainResolution("nope").id, "auto");
     assert.equal(normalizeTerrainResolution("default").id, "default");
-    assert.equal(TERRAIN_RESOLUTIONS.auto.maxGrid, ABSOLUTE_MAX_GRID);
+    assert.equal(normalizeTerrainResolution("20 m").id, "20");
+    assert.equal(normalizeTerrainResolution("1m").id, "1");
+    assert.equal(TERRAIN_RESOLUTIONS.auto.maxGrid, PASTE_SOFT_GRID);
     assert.equal(TERRAIN_RESOLUTIONS.auto.cellM, null);
+    for (const id of ["20", "15", "10", "5", "1"]) {
+      const preset = TERRAIN_RESOLUTIONS[id];
+      assert.equal(preset.experimental, true);
+      assert.equal(preset.cellM, Number(id));
+      assert.ok(preset.maxGrid > PASTE_SOFT_GRID);
+      assert.ok(preset.maxGrid <= ABSOLUTE_MAX_GRID);
+    }
+    for (const id of ["20", "15", "10", "5"]) {
+      assert.ok(TERRAIN_RESOLUTIONS[id].maxGrid * TERRAIN_RESOLUTIONS[id].cellM >= 2500);
+    }
+    assert.equal(TERRAIN_RESOLUTIONS["1"].maxGrid, ABSOLUTE_MAX_GRID);
   });
 
   it("leaves flat, mild, and medium ladders unchanged at every preset", () => {
     const frame = metersBox(44.91, 900, 700, "Mild");
-    for (const id of [undefined, "auto", "default", "fine", "finest"]) {
+    for (const id of [undefined, "auto", "default", "fine", "finest", "20", "15", "10", "5", "1"]) {
       assert.deepEqual(chooseGrid(0.4, frame, id), [2, 2]);
       assert.deepEqual(chooseGrid(5, frame, id), [4, 3]);
       assert.deepEqual(chooseGrid(15, frame, id), [6, 5]);
@@ -1029,7 +1046,7 @@ describe("terrain resolution presets", () => {
     };
     const small = metersBox(44.91, 8, 8, "8 m", { minSpanM: 1 });
     const [cols, rows] = chooseGrid(LIFT_RELIEF_M, small, "auto");
-    assert.ok(cols < ABSOLUTE_MAX_GRID);
+    assert.ok(cols < PASTE_SOFT_GRID);
     await fetchDemSamples(small, fetchFn, { terrainResolution: "auto" });
     await fetchDemSamples(small, fetchFn, { terrainResolution: "default" });
     const autoN = Number(new URL(seen[0]).searchParams.get("sampleCount"));
@@ -1038,6 +1055,102 @@ describe("terrain resolution presets", () => {
     assert.ok(autoN > (cols + 1) * (rows + 1), "denser than paste nodes");
     assert.ok(autoN < 576, "smaller mesh than a full 20×20 Auto box");
     assert.ok(autoN <= ABSOLUTE_MAX_SAMPLES);
+  });
+
+  it("fills a Granite Peak draw at 20–5 m and omits a 1 m mesh that will not fit", () => {
+    const peak = metersBox(44.91, 1800, 1400, "Granite Peak");
+    assert.deepEqual(chooseGrid(200, peak, "20"), [90, 70]);
+    assert.deepEqual(chooseGrid(200, peak, "15"), [120, 93]);
+    assert.deepEqual(chooseGrid(200, peak, "10"), [180, 140]);
+    assert.deepEqual(chooseGrid(200, peak, "5"), [360, 280]);
+    assert.deepEqual(chooseGrid(200, peak, "1"), [500, 500]);
+    assert.ok(180 * 140 > PASTE_SOFT_GRID * PASTE_SOFT_GRID);
+    assert.ok(360 <= ABSOLUTE_MAX_GRID && 280 <= ABSOLUTE_MAX_GRID);
+    assert.ok(180 * 140 > PASTE_BUILD_MAX_QUADS);
+    assert.ok(90 * 70 <= PASTE_BUILD_MAX_QUADS);
+
+    const zAt = (r, c, lon, lat) => 300 + ((lat - peak.south) / (peak.north - peak.south)) * 200;
+    const samples = gridSamples(peak, zAt);
+    const m20 = terrainFromSamples(samples, peak, { terrainResolution: "20" });
+    assert.equal(m20.pasteOmitted, undefined);
+    assert.deepEqual([m20.gridCols, m20.gridRows], [90, 70]);
+    assert.equal(m20.raised + m20.sloped, 90 * 70);
+    assert.ok(Math.abs(m20.cellM - ((1800 / 90 + 1400 / 70) / 2)) < 1.5);
+    assert.ok(m20.clipboard.slopedFloors.concat(m20.clipboard.raisedFloorZones).every((z) => z.slabOnly === false));
+    const notes20 = terrainResolutionNotes(m20, peak);
+    assert.match(notes20.join("\n"), /past the 20×20/);
+    assert.equal(/not 20 m/.test(notes20.join("\n")), false);
+    assert.match(terrainBundleFields(m20, []).terrainStatus, /20 m ~/);
+    assert.match(terrainBundleFields(m20, []).terrainStatus, /past 20×20/);
+
+    const m10 = terrainFromSamples(samples, peak, { terrainResolution: "10" });
+    assert.equal(m10.pasteOmitted, true);
+    assert.equal(m10.clipboard, null);
+    assert.deepEqual([m10.gridCols, m10.gridRows], [180, 140]);
+    assert.match(terrainResolutionNotes(m10, peak).join("\n"), /Terrain paste omitted: 180×140/);
+    assert.match(terrainBundleFields(m10, []).terrainStatus, /will not fit/);
+    assert.match(terrainBundleFields(m10, []).terrainStatus, /OpenIntent zip is unchanged/);
+    const warnings = [];
+    noteMissingTerrain(m10, warnings);
+    assert.equal(warnings.length, 0);
+
+    const m1 = terrainFromSamples(samples, peak, { terrainResolution: "1" });
+    assert.equal(m1.pasteOmitted, true);
+    assert.deepEqual([m1.gridCols, m1.gridRows], [500, 500]);
+    const notes1 = terrainResolutionNotes(m1, peak);
+    assert.match(notes1.join("\n"), /not 1 m/);
+    assert.match(notes1.join("\n"), /covers about 500×500 m/);
+    assert.match(notes1.join("\n"), /Terrain paste omitted: 500×500/);
+    assert.equal(typeof m1.elevationAt, "function");
+    assert.ok(m1.reliefM >= LIFT_RELIEF_M);
+
+    const hill = metersBox(44.91, 30, 30, "1 m hill", { minSpanM: 1 });
+    const fineHill = terrainFromSamples(
+      gridSamples(hill, (r, c, lon, lat) => 400 + ((lat - hill.south) / (hill.north - hill.south)) * 40),
+      hill,
+      { terrainResolution: "1" }
+    );
+    assert.equal(fineHill.pasteOmitted, undefined);
+    assert.deepEqual([fineHill.gridCols, fineHill.gridRows], [30, 30]);
+    assert.ok(fineHill.cellM >= 0.9 && fineHill.cellM <= 1.2);
+    assert.match(terrainResolutionNotes(fineHill, hill).join("\n"), /30×30/);
+    assert.equal(fineHill.clipboard.slopedFloors.length + fineHill.clipboard.raisedFloorZones.length, 30 * 30);
+
+    const wide = metersBox(44.91, 2500, 2500, "Max draw");
+    assert.deepEqual(chooseGrid(200, wide, "5"), [500, 500]);
+    assert.deepEqual(chooseGrid(200, wide, "10"), [250, 250]);
+    assert.ok(chooseGrid(200, wide, "auto")[0] <= PASTE_SOFT_GRID);
+  });
+
+  it("steps experimental DEM samples down when the budget is short", async () => {
+    const peak = metersBox(44.91, 1800, 1400, "Granite Peak");
+    const seen = [];
+    const fetchFn = async (url) => {
+      seen.push(String(url));
+      const samples = [];
+      for (let i = 0; i < 4; i++) {
+        samples.push({
+          location: {
+            x: peak.west + ((i % 2) + 0.5) * (peak.east - peak.west) * 0.5,
+            y: peak.south + (Math.floor(i / 2) + 0.5) * (peak.north - peak.south) * 0.5,
+          },
+          value: 300 + i * 40,
+        });
+      }
+      return { ok: true, json: async () => ({ samples }) };
+    };
+    await fetchDemSamples(peak, fetchFn, { terrainResolution: "10", budgetMs: 8000 });
+    await fetchDemSamples(peak, fetchFn, { terrainResolution: "10", budgetMs: 5000 });
+    await fetchDemSamples(peak, fetchFn, { terrainResolution: "10", budgetMs: 900 });
+    await fetchDemSamples(peak, fetchFn, { terrainResolution: "default", budgetMs: 900 });
+    assert.equal(new URL(seen[0]).searchParams.get("sampleCount"), "2500");
+    assert.equal(new URL(seen[1]).searchParams.get("sampleCount"), "1024");
+    assert.equal(new URL(seen[2]).searchParams.get("sampleCount"), "16");
+    assert.equal(new URL(seen[3]).searchParams.get("sampleCount"), "144");
+    const pack = await fetchTerrainDem(peak, fetchFn, { terrainResolution: "10", budgetMs: 8000 });
+    assert.equal(pack.kind, "bare-earth");
+    assert.match(pack.notes.join("\n"), /stepped down to 4/);
+    assert.match(pack.notes.join("\n"), /180×140/);
   });
 });
 

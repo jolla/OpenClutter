@@ -15,14 +15,21 @@
 })();
 
 const TERRAIN_STOPS = [
-  { id: "auto", readout: "Auto · from draw" },
-  { id: "default", readout: "Default · ~80 m" },
-  { id: "fine", readout: "Fine · ~40 m" },
-  { id: "finest", readout: "Finest · ~25 m" },
+  { id: "auto", label: "Auto", cellM: null, maxGrid: 20, readout: "Auto · from draw" },
+  { id: "default", label: "Default", cellM: 80, maxGrid: 12, readout: "Default · ~80 m" },
+  { id: "fine", label: "Fine", cellM: 40, maxGrid: 16, readout: "Fine · ~40 m" },
+  { id: "finest", label: "Finest", cellM: 25, maxGrid: 20, readout: "Finest · ~25 m" },
+  { id: "20", label: "20 m", cellM: 20, maxGrid: 125 },
+  { id: "15", label: "15 m", cellM: 15, maxGrid: 167 },
+  { id: "10", label: "10 m", cellM: 10, maxGrid: 250 },
+  { id: "5", label: "5 m", cellM: 5, maxGrid: 500 },
+  { id: "1", label: "1 m", cellM: 1, maxGrid: 500 },
 ];
 // Same paste budget and 1 m floor as autoAxisCount in netlify/lib/terrain.js.
+// maxGrid on the meter stops matches TERRAIN_RESOLUTIONS there.
 const TERRAIN_AUTO_MAX_GRID = 20;
 const TERRAIN_AUTO_MIN_CELL_M = 1;
+const TERRAIN_PASTE_SOFT_GRID = 20;
 
 function terrainStopIndex() {
   const input = document.getElementById("terrain-resolution-range");
@@ -50,22 +57,54 @@ function formatCellMUi(m) {
   return tenth.toFixed(1);
 }
 
-function autoReadout() {
-  if (!bbox || typeof L === "undefined") return "Auto · from draw";
+function drawSpans() {
+  if (!bbox || typeof L === "undefined") return null;
   const w = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.south, bbox.east));
   const h = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.north, bbox.west));
-  if (!(w > 0) || !(h > 0)) return "Auto · from draw";
-  const cols = autoAxisCountUi(w);
-  const rows = autoAxisCountUi(h);
-  const cell = (w / cols + h / rows) / 2;
+  if (!(w > 0) || !(h > 0)) return null;
+  return { w: w, h: h };
+}
+
+function autoReadout() {
+  const draw = drawSpans();
+  if (!draw) return "Auto · from draw";
+  const cols = autoAxisCountUi(draw.w);
+  const rows = autoAxisCountUi(draw.h);
+  const cell = (draw.w / cols + draw.h / rows) / 2;
   return "Auto · ~" + formatCellMUi(cell) + " m";
+}
+
+function manualReadout(stop) {
+  const draw = drawSpans();
+  if (!draw || !(stop.cellM > 0)) {
+    if (stop.maxGrid > TERRAIN_PASTE_SOFT_GRID && stop.cellM > 0) {
+      const side = stop.cellM * TERRAIN_PASTE_SOFT_GRID;
+      return "~" + stop.cellM + " m · covers ~" + side + "×" + side + " m";
+    }
+    return stop.readout;
+  }
+  const wantC = Math.max(6, Math.round(draw.w / stop.cellM));
+  const wantR = Math.max(6, Math.round(draw.h / stop.cellM));
+  const cols = Math.min(stop.maxGrid, wantC);
+  const rows = Math.min(stop.maxGrid, wantR);
+  const cell = (draw.w / cols + draw.h / rows) / 2;
+  if (stop.maxGrid <= TERRAIN_PASTE_SOFT_GRID) {
+    return stop.label + " · ~" + formatCellMUi(cell) + " m";
+  }
+  let text = "~" + formatCellMUi(cell) + " m · " + cols + "×" + rows;
+  if (cols > TERRAIN_PASTE_SOFT_GRID || rows > TERRAIN_PASTE_SOFT_GRID) text += " · past 20×20";
+  if (wantC > cols || wantR > rows) {
+    const cover = Math.round(stop.maxGrid * stop.cellM);
+    text += " · requested " + stop.cellM + " m covers ~" + cover + "×" + cover + " m";
+  }
+  return text;
 }
 
 function syncTerrainResolutionReadout() {
   const input = document.getElementById("terrain-resolution-range");
   const readout = document.getElementById("terrain-resolution-readout");
   const stop = TERRAIN_STOPS[terrainStopIndex()];
-  if (readout && stop) readout.textContent = stop.id === "auto" ? autoReadout() : stop.readout;
+  if (readout && stop) readout.textContent = stop.id === "auto" ? autoReadout() : manualReadout(stop);
   if (input) input.setAttribute("aria-valuenow", String(terrainStopIndex()));
 }
 

@@ -70,6 +70,7 @@ const {
   fetchTerrainDem,
   terrainFromSamples,
   terrainBundleFields,
+  terrainResolutionNotes,
   noteMissingTerrain,
   normalizeTerrainResolution,
   isDevDemHost,
@@ -614,6 +615,9 @@ exports.handler = async (event) => {
     demSamples = demPack.samples;
     demKind = demPack.kind;
     demAttribution = demPack.attribution;
+    if (Array.isArray(demPack.notes)) {
+      for (let i = 0; i < demPack.notes.length; i++) warnings.push(demPack.notes[i]);
+    }
   } else {
     demSamples = null;
   }
@@ -719,6 +723,10 @@ exports.handler = async (event) => {
         kind: demKind,
         attribution: demAttribution,
       });
+      if (terrain) {
+        const notes = terrainResolutionNotes(terrain, frame);
+        for (let i = 0; i < notes.length; i++) warnings.push(notes[i]);
+      }
     } catch {
       terrain = null;
     }
