@@ -15,7 +15,18 @@
  * content pixel grid (downscale only if over maxSide) and unifyFrameMpu sets
  * lengthM = imgH * (widthM/imgW) so Hamina's isotropic map meters match the
  * image aspect. Stretching the aerial to geodesic aspect shifted footprints
- * south of rooftops on Oak Creek.
+ * south of rooftops on Oak Creek — that miss was projecting lon/lat on one
+ * pixel grid and shipping a JPEG on another. Continental US stays on the
+ * content grid.
+ *
+ * At Finland latitudes a 4326 JPEG is square in degrees, so a ground square
+ * is about half as many pixels tall as it is wide (cos 60° ≈ 0.5). Hamina
+ * then treats those pixels as square meters and the import looks stretched,
+ * with north–south scale about half of east–west. Above GROUND_METER_STRETCH
+ * the same lock resamples the JPEG onto the ground-meter aspect and projects
+ * footprints on that new grid, so the aerial, buildings, and terrain paste
+ * share one isotropic meter frame. The OpenClutter draw is Web Mercator,
+ * which matches that frame to a few centimetres on a town-scale box.
  *
  * Two pixel conventions (unit-tested):
  *   OpenIntent / Y-up: (0,0) = SW, y increases north (oiconvert + Hamina OI)
@@ -37,6 +48,44 @@
 function metersPerDeg(lat) {
   const rad = (lat * Math.PI) / 180;
   return { lon: 111320 * Math.cos(rad), lat: 110540 };
+}
+
+/**
+ * How many times taller a degree of latitude is, in ground meters, than a
+ * degree of longitude. Plate carrée pixels are square in degrees, so this is
+ * the N–S stretch Hamina applies when it treats those pixels as square meters.
+ * ~1.36 at Oak Creek (42.9°N), ~1.40 at Granite Peak (44.9°N), ~2.02 at
+ * Hamina (60.6°N).
+ */
+function groundMeterStretch(lat) {
+  const mpd = metersPerDeg(lat);
+  if (!(mpd.lon > 0)) return Infinity;
+  return mpd.lat / mpd.lon;
+}
+
+/**
+ * CONUS stays under ~1.55 (49°N). 1.7 is about 54°N, south of mainland
+ * Finland (~59.5°N) and north of the US sites this exporter already locks
+ * to the Esri content grid.
+ */
+const GROUND_METER_STRETCH = 1.7;
+
+function needsGroundMeterImage(lat) {
+  return groundMeterStretch(lat) >= GROUND_METER_STRETCH;
+}
+
+/** Geodesic width × length of the JPEG extent. Ignores a unified lengthM. */
+function geodesicSpans(frame) {
+  const south = +frame.south;
+  const north = +frame.north;
+  const west = +frame.west;
+  const east = +frame.east;
+  const mpd = metersPerDeg((south + north) / 2);
+  return {
+    mpd,
+    widthM: (east - west) * mpd.lon,
+    lengthM: (north - south) * mpd.lat,
+  };
 }
 
 /**
@@ -469,12 +518,36 @@ function unifyFrameMpu(frame) {
   });
 }
 
+function encodeJpegRgba(rgba, imgW, imgH, quality) {
+  const jpeg = require("jpeg-js");
+  const enc = jpeg.encode({ data: rgba, width: imgW, height: imgH }, quality);
+  return Buffer.from(enc.data);
+}
+
 /**
- * Lock Hamina map meters to the Esri JPEG pixel aspect without distorting the
- * aerial. Stretching the JPEG to geodesic aspect (PR #20) made footprints sit
- * south/large of rooftops on Oak Creek — lon/lat was projected in a different
- * pixel space than the final image content. Keep the content grid; only
- * downscale when the long side exceeds maxSide (same aspect). Then unify mpu.
+ * Pixel size whose aspect is geodesic width/length. Long side is `cap`.
+ * Callers cap `cap` at the source long side so a Finland resample does not
+ * invent resolution the 4326 JPEG never had.
+ */
+function groundMeterPixelSize(frame, cap) {
+  const spans = geodesicSpans(frame);
+  return isotropicPixelSize(spans.widthM, spans.lengthM, cap);
+}
+
+/**
+ * Lock Hamina map meters to the JPEG pixel aspect.
+ *
+ * Continental US: keep the Esri content pixel grid (downscale only if over
+ * maxSide — same aspect). Stretching that JPEG to geodesic aspect (PR #20)
+ * made footprints sit south of rooftops on Oak Creek, because lon/lat was
+ * projected on a different grid than the pixels Hamina displayed. Then
+ * unify mpu.
+ *
+ * High latitude (needsGroundMeterImage): the 4326 content grid is square in
+ * degrees, and Hamina's isotropic meters stretch it. Resample onto the
+ * ground-meter aspect in this same step, then project every later lon/lat
+ * through the returned frame. The JPEG size and the meter frame move
+ * together, which is the Oak Creek failure avoided.
  */
 function lockIsotropicImagery(frame, jpegBuf, opts = {}) {
   const maxSide = opts.maxSide != null ? opts.maxSide : IMAGERY_MAX_SIDE;
@@ -492,23 +565,30 @@ function lockIsotropicImagery(frame, jpegBuf, opts = {}) {
   if (!raw || !raw.data || !(raw.width > 0) || !(raw.height > 0)) {
     return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
   }
-  const longSide = Math.max(raw.width, raw.height);
+  const quality = opts.quality != null ? opts.quality : 85;
+  const groundMeters = needsGroundMeterImage((+frame.south + +frame.north) / 2);
   let imgW = raw.width;
   let imgH = raw.height;
   let outBuf = jpegBuf;
   let resampled = false;
-  if (longSide > maxSide) {
-    const k = maxSide / longSide;
-    imgW = Math.max(64, Math.round(raw.width * k));
-    imgH = Math.max(64, Math.round(raw.height * k));
-    const rgba = resizeRgba(raw.data, raw.width, raw.height, imgW, imgH);
+  let targetW = imgW;
+  let targetH = imgH;
+  if (groundMeters) {
+    const cap = Math.min(Math.max(64, Math.round(+maxSide || IMAGERY_MAX_SIDE)), Math.max(raw.width, raw.height));
+    const sized = groundMeterPixelSize(frame, cap);
+    targetW = sized.imgW;
+    targetH = sized.imgH;
+  } else if (Math.max(raw.width, raw.height) > maxSide) {
+    const k = maxSide / Math.max(raw.width, raw.height);
+    targetW = Math.max(64, Math.round(raw.width * k));
+    targetH = Math.max(64, Math.round(raw.height * k));
+  }
+  if (targetW !== raw.width || targetH !== raw.height) {
+    const rgba = resizeRgba(raw.data, raw.width, raw.height, targetW, targetH);
     try {
-      const jpeg = require("jpeg-js");
-      const enc = jpeg.encode(
-        { data: rgba, width: imgW, height: imgH },
-        opts.quality != null ? opts.quality : 85
-      );
-      outBuf = Buffer.from(enc.data);
+      outBuf = encodeJpegRgba(rgba, targetW, targetH, quality);
+      imgW = targetW;
+      imgH = targetH;
       resampled = true;
     } catch {
       return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
@@ -521,7 +601,7 @@ function lockIsotropicImagery(frame, jpegBuf, opts = {}) {
       { imgW, imgH, maxSpanM: padM, minSpanM: 1 }
     )
   );
-  return { frame: locked, jpegBuf: outBuf, resampled };
+  return { frame: locked, jpegBuf: outBuf, resampled, groundMeters };
 }
 
 const FP_PAGE_SIZE = 500;
@@ -724,6 +804,11 @@ module.exports = {
   IMAGERY_MAX_SIDE_DEV,
   imageryMaxSide,
   metersPerDeg,
+  groundMeterStretch,
+  GROUND_METER_STRETCH,
+  needsGroundMeterImage,
+  geodesicSpans,
+  groundMeterPixelSize,
   geoFrame,
   llToPx,
   pxToLl,
