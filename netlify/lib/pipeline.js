@@ -26,6 +26,7 @@ const { zipStore } = require("./zip-store");
 const { TERRAIN_FILENAME, demUnderFootprint, normalizeTerrainResolution, GLO30_CREDIT } = require("./terrain");
 const { overlaySvg, frameLockJson } = require("./overlay");
 const { version: OPENCLUTTER_VERSION } = require("./version");
+const { applyNlsBuildingHeights, NLS_CREDIT, HEIGHT_SOURCE } = require("./nls-building-height");
 
 const MIN_AREA_M2 = 25;
 const MAX_AREA_M2 = 40000;
@@ -206,6 +207,9 @@ function coverageStats(stats) {
     compatibilityMode: s.compatibilityMode || COMPATIBILITY_MODE,
     exactBuildingHeights: s.exactBuildingHeights || 0,
     exactFoliageHeights: s.exactFoliageHeights || 0,
+    nlsHeights: s.nlsHeights || 0,
+    nlsHeightMin: s.nlsHeightMin || 0,
+    nlsHeightMax: s.nlsHeightMax || 0,
     includeFoliage: s.includeFoliage === true,
     waterMaskRings: s.waterMaskRings || 0,
     pavementMaskRings: s.pavementMaskRings || 0,
@@ -324,6 +328,7 @@ function zipReadme(stats) {
     coverageSummary(stats) +
     "\n" +
     terrainReadme(c) +
+    nlsZipCredit(c) +
     "\n" +
     `buildingsKept: ${c.buildingsKept}\n` +
     `includeFoliage: ${c.includeFoliage ? "true" : "false"}\n` +
@@ -344,6 +349,27 @@ function zipReadme(stats) {
     `droppedVerts: ${c.droppedVerts}\n` +
     `droppedAreasCap: ${c.droppedAreasCap}\n` +
     zipTroubleshoot(c)
+  );
+}
+
+function nlsZipCredit(c) {
+  if (!c || !(c.nlsHeights > 0)) return "";
+  const lo = Math.round(c.nlsHeightMin * 10) / 10;
+  const hi = Math.round(c.nlsHeightMax * 10) / 10;
+  return (
+    "\nBuilding heights on this export: " +
+    c.nlsHeights +
+    " buildings, " +
+    lo +
+    "–" +
+    hi +
+    " m.\n" +
+    NLS_CREDIT +
+    "\n" +
+    "Roof minus ground under each footprint. OpenIntent uses Building - H.H\n" +
+    "at that thickness (not Building N.N m). On a slope the name is\n" +
+    "Building - H.H @ B.B: H.H is the building height and B.B is bottom height\n" +
+    "from floor. Unmeasured roofs stay on Building - One/Two/Five/Ten Floor.\n"
   );
 }
 
@@ -1106,13 +1132,15 @@ function featureExteriorRings(geometry) {
   return out;
 }
 
-function pickedForRing(ring, heightM, areaM2, slopeTop) {
-  const picked = materialForBuilding(heightM, areaM2);
+function pickedForRing(ring, heightM, areaM2, slopeTop, heightSource) {
+  const picked = materialForBuilding(heightM, areaM2, {
+    exactMetres: heightSource === HEIGHT_SOURCE,
+  });
   if (typeof slopeTop !== "function") return picked;
   return liftPickedBuilding(picked, slopeTop(ring));
 }
 
-function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop) {
+function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource) {
   const amRaw = ringAreaM2(ring, frame.mpd);
   // Large detailed roofs (Wynn casino) self-intersect if Douglas–Peucker is too
   // aggressive; try a tighter pass before giving up as clip. These budgets
@@ -1139,7 +1167,7 @@ function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop) {
 
   let lastFail = "skip";
   for (const [maxPts, eps] of budgets) {
-    const result = emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop);
+    const result = emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource);
     if (result === "keep") return "keep";
     // Tiny clipped area will not grow with more verts. A one-axis sliver
     // will not grow a short side either — do not retry and double-count it.
@@ -1186,7 +1214,7 @@ function stashBuilding(buckets, frame, affine, clipRing, overlayPts, clipPx, pic
   );
 }
 
-function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop) {
+function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource) {
   const simple = simplifyRing(ring, maxPts, eps);
   if (!simple || simple.length < 4) return "skip";
   const detailVerts = ringVertexCount(simple);
@@ -1217,7 +1245,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
   if (thinSliverDrop(clippedPts, minSpan)) {
     // Clipboard keeps the exact sliver. OpenIntent must not, or Hamina drops
     // every attenuating object.
-    const pickedThin = pickedForRing(ring, heightM, am, slopeTop);
+    const pickedThin = pickedForRing(ring, heightM, am, slopeTop, heightSource);
     if (pickedThin.lifted) buckets.lifted++;
     stashBuilding(buckets, frame, affine, clipRing, clippedPts, clippedPts, pickedThin);
     return "span";
@@ -1227,7 +1255,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     if (ringVertexCount(clippedPts) > MAX_OI_RING_VERTS) return "verts";
     return "clip";
   }
-  const picked = pickedForRing(ring, heightM, am, slopeTop);
+  const picked = pickedForRing(ring, heightM, am, slopeTop, heightSource);
   const area = emitIfValid(makeOiArea(oiCoords, picked.material), frame.imgW, frame.imgH);
   if (!area) return "invalid";
   buckets.oiAreas.push(area);
@@ -1359,6 +1387,9 @@ function footprintsToClutter(features, frame, affine, slopeTop) {
     droppedInvalid: 0,
     droppedSpan: 0,
     droppedVerts: 0,
+    nlsHeights: 0,
+    nlsHeightMin: 0,
+    nlsHeightMax: 0,
   };
   const buckets = {
     oiAreas,
@@ -1376,6 +1407,7 @@ function footprintsToClutter(features, frame, affine, slopeTop) {
     if (!g) continue;
     const props = f.properties || {};
     const heightM = Number(props.height || props.Height || props.HEIGHT || 0) || 0;
+    const heightSource = props.heightSource || "";
     const rings = featureExteriorRings(g);
     if (!rings.length) continue;
     for (const ring of rings) {
@@ -1383,8 +1415,15 @@ function footprintsToClutter(features, frame, affine, slopeTop) {
         stats.droppedCap++;
         continue;
       }
-      const result = emitBuilding(ring, heightM, frame, affine, buckets, slopeTop);
-      if (result === "keep") stats.buildings++;
+      const result = emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource);
+      if (result === "keep") {
+        stats.buildings++;
+        if (heightSource === HEIGHT_SOURCE && heightM > 2) {
+          stats.nlsHeights++;
+          if (!stats.nlsHeightMin || heightM < stats.nlsHeightMin) stats.nlsHeightMin = heightM;
+          if (heightM > stats.nlsHeightMax) stats.nlsHeightMax = heightM;
+        }
+      }
       else if (result === "mega") stats.droppedMega++;
       else if (result === "tiny") stats.droppedTiny++;
       else if (result === "clip") stats.droppedClip++;
@@ -1489,11 +1528,14 @@ function buildClutter({
   includeFoliage,
   chmGrid,
   terrainResolution,
+  nlsHeights,
 }) {
+  const featureList = footprintsGeojson?.features || [];
+  if (nlsHeights) applyNlsBuildingHeights(featureList);
   const { name, slug } = siteName(rawName);
   const imgName = `${slug}.jpg`;
   const slopeTop = demUnderFootprint(terrain);
-  const fp = footprintsToClutter(footprintsGeojson?.features || [], frame, affine, slopeTop);
+  const fp = footprintsToClutter(featureList, frame, affine, slopeTop);
   const foliageOn = includeFoliage === true;
   const veg = foliageOn
     ? treePairsFromPoints(treePoints || [], frame, fp.aabbs, affine, {
