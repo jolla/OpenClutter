@@ -22,9 +22,11 @@
  * follows the draw, about 1 m on a small hill and coarser on a large one, at
  * most 20×20, with a 3DEP count denser than that mesh. Default is ~80 m quads,
  * at most 12×12, from 144 samples. Fine is ~40 m, at most 16×16, from 324
- * samples. Finest is ~25 m, at most 20×20, from 576 samples. The sample grid
- * stays denser than the paste nodes so a finer mesh is not a stretched
- * 144-point surface. The paste cap is 20×20 quads.
+ * samples. Finest is ~25 m, at most 20×20, from 576 samples. Stops at 20, 15,
+ * 10, 5, and 1 m may paste past that 20×20 expectation so a large hill can
+ * keep the cell size. A mesh that will not fit in the export is omitted and
+ * named in export-warnings instead of hanging. DEM samples for those stops
+ * step down when the budget is short.
  *
  * Hamina clipboard rings are open: the first vertex is not repeated.
  * raisedFloorZones are xy quads. slopedFloors are xyz quads whose first edge
@@ -47,26 +49,52 @@ const FLAT_M = 0.5;
  * overrides. Only relief at or above LIFT_RELIEF_M changes. Flat, mild, and
  * medium ladders stay 2×2, 4×3, and 6×5. sampleCount is the 3DEP getSamples
  * request: a square count denser than the paste nodes so bilinear is not
- * stretching a sparse DEM. ABSOLUTE_MAX_GRID / ABSOLUTE_MAX_SAMPLES refuse
- * anything past the Hamina paste cap.
+ * stretching a sparse DEM. Auto, Default, Fine, and Finest stay inside the
+ * older Hamina paste size (PASTE_SOFT_GRID). Experimental stops may pass it,
+ * up to ABSOLUTE_MAX_GRID. ABSOLUTE_MAX_SAMPLES is the DEM read ceiling;
+ * the old ceiling was 625.
  */
-const ABSOLUTE_MAX_GRID = 20;
-const ABSOLUTE_MAX_SAMPLES = 625;
+/** Older Hamina clipboard size. Auto and the named manuals stay inside it. */
+const PASTE_SOFT_GRID = 20;
+/**
+ * Quads on one side for a 2.5 km draw at 5 m (the export span limit).
+ * A 1 m mesh on that draw still does not fit; the paste is omitted.
+ */
+const ABSOLUTE_MAX_GRID = 500;
+/** DEM samples. 625 was the old hard ceiling (Finest uses 576). */
+const ABSOLUTE_MAX_SAMPLES = 2500;
+/**
+ * Uncompressed clipboard JSON that can ride along with the zip in one
+ * response. A denser mesh is built only when it can still be returned.
+ */
+const TERRAIN_PASTE_JSON_MAX = 3500000;
+/** Above this, skip allocating quads that cannot fit in that response. */
+const PASTE_BUILD_MAX_QUADS = 12000;
 /** Auto will not paste cells smaller than this, even on a tiny hill. */
 const MIN_CELL_M = 1;
 const TERRAIN_RESOLUTIONS = {
-  auto: { id: "auto", label: "Auto", cellM: null, maxGrid: ABSOLUTE_MAX_GRID, sampleCount: null },
+  auto: { id: "auto", label: "Auto", cellM: null, maxGrid: PASTE_SOFT_GRID, sampleCount: null },
   default: { id: "default", label: "Default", cellM: 80, maxGrid: 12, sampleCount: 144 },
   fine: { id: "fine", label: "Fine", cellM: 40, maxGrid: 16, sampleCount: 324 },
   finest: { id: "finest", label: "Finest", cellM: 25, maxGrid: 20, sampleCount: 576 },
+  // maxGrid fills a 2.5 km side at that cell size. 1 m shares the hard cap.
+  "20": { id: "20", label: "20 m", cellM: 20, maxGrid: 125, sampleCount: null, experimental: true },
+  "15": { id: "15", label: "15 m", cellM: 15, maxGrid: 167, sampleCount: null, experimental: true },
+  "10": { id: "10", label: "10 m", cellM: 10, maxGrid: 250, sampleCount: null, experimental: true },
+  "5": { id: "5", label: "5 m", cellM: 5, maxGrid: 500, sampleCount: null, experimental: true },
+  "1": { id: "1", label: "1 m", cellM: 1, maxGrid: 500, sampleCount: null, experimental: true },
 };
 const SAMPLE_COUNT = TERRAIN_RESOLUTIONS.default.sampleCount;
-/** Quads per side on the default ski-hill lattice. Finest cannot pass ABSOLUTE_MAX_GRID. */
+/** Quads per side on the default ski-hill lattice. */
 const MAX_GRID = TERRAIN_RESOLUTIONS.default.maxGrid;
 const TARGET_CELL_M = TERRAIN_RESOLUTIONS.default.cellM;
 
 function normalizeTerrainResolution(id) {
-  const key = String(id == null ? "" : id).trim().toLowerCase();
+  let key = String(id == null ? "" : id)
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "");
+  if (key.endsWith("m") && TERRAIN_RESOLUTIONS[key.slice(0, -1)]) key = key.slice(0, -1);
   return TERRAIN_RESOLUTIONS[key] || TERRAIN_RESOLUTIONS.auto;
 }
 
@@ -78,14 +106,14 @@ function normalizeTerrainResolution(id) {
  */
 function autoAxisCount(spanM) {
   const span = spanM > 0 ? spanM : 800;
-  const cellM = Math.max(MIN_CELL_M, span / ABSOLUTE_MAX_GRID);
+  const cellM = Math.max(MIN_CELL_M, span / PASTE_SOFT_GRID);
   let n = Math.round(span / cellM);
-  if (!Number.isFinite(n)) n = ABSOLUTE_MAX_GRID;
-  n = Math.max(1, Math.min(ABSOLUTE_MAX_GRID, n));
+  if (!Number.isFinite(n)) n = PASTE_SOFT_GRID;
+  n = Math.max(1, Math.min(PASTE_SOFT_GRID, n));
   // Rounding onto the paste cap can land a hair under 1 m. Keep that quad.
   // A span that cannot hold the count at about 1 m steps down instead.
   while (n > 1 && span / n < MIN_CELL_M - 0.05) n -= 1;
-  if (span >= 6 * MIN_CELL_M) n = Math.max(6, Math.min(ABSOLUTE_MAX_GRID, n));
+  if (span >= 6 * MIN_CELL_M) n = Math.max(6, Math.min(PASTE_SOFT_GRID, n));
   return n;
 }
 
@@ -102,8 +130,20 @@ function autoSampleCount(cols, rows) {
   return Math.max(4, Math.min(ABSOLUTE_MAX_SAMPLES, count));
 }
 
+/** Square DEM count for an experimental paste: denser than the nodes, never past the ceiling. */
+function experimentalSampleCount(cols, rows) {
+  const long = Math.max(cols | 0, rows | 0, 1);
+  const sideCap = Math.floor(Math.sqrt(ABSOLUTE_MAX_SAMPLES));
+  const side = Math.max(2, Math.min(sideCap, long + 4));
+  return Math.max(4, Math.min(ABSOLUTE_MAX_SAMPLES, side * side));
+}
+
 function sampleCountForResolution(resolution, frame) {
   const preset = normalizeTerrainResolution(resolution);
+  if (preset.experimental) {
+    const [cols, rows] = chooseGrid(LIFT_RELIEF_M, frame, preset.id);
+    return experimentalSampleCount(cols, rows);
+  }
   if (preset.id !== "auto") {
     return Math.max(4, Math.min(ABSOLUTE_MAX_SAMPLES, preset.sampleCount | 0));
   }
@@ -128,7 +168,10 @@ function demSampleCount(opts, frame) {
   if (opts && Number.isFinite(+opts.sampleCount) && +opts.sampleCount > 0) {
     return Math.max(4, Math.min(ABSOLUTE_MAX_SAMPLES, opts.sampleCount | 0));
   }
-  return sampleCountForResolution(opts && opts.terrainResolution, frame);
+  const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
+  const requested = sampleCountForResolution(preset.id, frame);
+  if (!preset.experimental) return requested;
+  return glo30SamplePlan(requested, demRemainingMs(opts)).sampleCount;
 }
 
 /** Milliseconds left for the DEM read. budgetMs wins over a deadline. */
@@ -160,6 +203,13 @@ function glo30SamplePlan(requested, remainingMs) {
     } else if (ms >= 3500) {
       cap = 144;
       maxRasterSide = 96;
+      // Requests above the old 625 ceiling (the sub-25 m stops) keep a
+      // denser lattice when a few seconds remain. Counts at or under 625
+      // stay on the 144 cap so a short Finland read does not grow.
+      if (ms >= 4500 && want > 625) {
+        cap = 1024;
+        maxRasterSide = 128;
+      }
     } else if (ms >= 1800) {
       cap = 64;
       maxRasterSide = 64;
@@ -361,12 +411,94 @@ function chooseGrid(relief, frame, resolution) {
   const length = frame && frame.lengthM > 0 ? frame.lengthM : 800;
   if (preset.id === "auto") return [autoAxisCount(width), autoAxisCount(length)];
   const cellM = preset.cellM > 0 ? preset.cellM : TARGET_CELL_M;
-  const cap = Math.max(6, Math.min(ABSOLUTE_MAX_GRID, preset.maxGrid | 0));
+  const hard = preset.experimental ? ABSOLUTE_MAX_GRID : PASTE_SOFT_GRID;
+  const cap = Math.max(6, Math.min(hard, preset.maxGrid | 0));
   let cols = Math.round(width / cellM);
   let rows = Math.round(length / cellM);
   cols = Math.max(6, Math.min(cap, cols));
   rows = Math.max(6, Math.min(cap, rows));
   return [cols, rows];
+}
+
+/**
+ * Notes for export-warnings when an experimental stop passes the old 20×20
+ * paste, coarsens because of the mesh cap, or cannot be returned.
+ */
+function terrainResolutionNotes(terrain, frame) {
+  const notes = [];
+  if (!terrain) return notes;
+  const preset = normalizeTerrainResolution(terrain.terrainResolution);
+  if (!preset.experimental) return notes;
+  if (!(terrain.reliefM >= LIFT_RELIEF_M)) return notes;
+  const cols = terrain.gridCols | 0;
+  const rows = terrain.gridRows | 0;
+  const width = frame && frame.widthM > 0 ? frame.widthM : 0;
+  const length = frame && frame.lengthM > 0 ? frame.lengthM : 0;
+  if (preset.cellM > 0 && width > 0 && length > 0) {
+    const wantC = Math.max(6, Math.round(width / preset.cellM));
+    const wantR = Math.max(6, Math.round(length / preset.cellM));
+    if (wantC > cols || wantR > rows) {
+      const cover = Math.round((preset.maxGrid > 0 ? preset.maxGrid : cols) * preset.cellM);
+      notes.push(
+        "Terrain cell size is about " +
+          formatCellM(terrain.cellM) +
+          " m, not " +
+          formatCellM(preset.cellM) +
+          " m: this draw wants " +
+          wantC +
+          "×" +
+          wantR +
+          " quads and the mesh cap is " +
+          preset.maxGrid +
+          ". At " +
+          formatCellM(preset.cellM) +
+          " m that cap covers about " +
+          cover +
+          "×" +
+          cover +
+          " m. The paste covers the whole draw at the cap instead of hanging."
+      );
+    }
+  }
+  if (terrain.pasteOmitted) {
+    notes.push(
+      "Terrain paste omitted: " +
+        cols +
+        "×" +
+        rows +
+        " quads will not fit in the export response. Hamina's older paste expectation is about 20×20. The OpenIntent zip still exported."
+    );
+    return notes;
+  }
+  if (cols > PASTE_SOFT_GRID || rows > PASTE_SOFT_GRID) {
+    notes.push(
+      "Terrain paste is " +
+        cols +
+        "×" +
+        rows +
+        " quads, past the 20×20 Hamina clipboard expectation. Planner Plus may reject it."
+    );
+  }
+  return notes;
+}
+
+/** When the DEM lattice is coarser than an experimental paste, say so. */
+function demDensityNote(preset, frame, sampleCount) {
+  if (!preset || !preset.experimental) return null;
+  const count = sampleCount | 0;
+  if (!(count > 0) || !frame) return null;
+  const [cols, rows] = chooseGrid(LIFT_RELIEF_M, frame, preset.id);
+  const nodes = (cols + 1) * (rows + 1);
+  if (count >= nodes) return null;
+  return (
+    "DEM samples stepped down to " +
+    count +
+    " for a " +
+    cols +
+    "×" +
+    rows +
+    " paste so the read can finish. Elevations between samples are interpolated."
+  );
 }
 
 function lattice(samples, frame, cols, rows, elevationAt) {
@@ -512,10 +644,34 @@ function terrainFromSamples(samples, frame, opts) {
   const widthM = frame && frame.widthM > 0 ? frame.widthM : 800;
   const lengthM = frame && frame.lengthM > 0 ? frame.lengthM : 800;
   const cellM =
-    preset.id === "auto" && reliefM >= LIFT_RELIEF_M
+    (preset.id === "auto" || preset.experimental) && reliefM >= LIFT_RELIEF_M
       ? (widthM / cols + lengthM / rows) / 2
       : preset.cellM;
+  const kind = opts && opts.kind === "surface" ? "surface" : "bare-earth";
+  const attribution =
+    (opts && opts.attribution) || (kind === "surface" ? GLO30_CREDIT : USGS_3DEP_ATTRIBUTION);
   const elevationAt = buildElevation(clean);
+  const summary = {
+    reliefM: Math.round((maxS - minS) * 10) / 10,
+    minZ: Math.round(minS * 10) / 10,
+    maxZ: Math.round(maxS * 10) / 10,
+    terrainResolution: preset.id,
+    cellM,
+    gridCols: cols,
+    gridRows: rows,
+    samples: clean,
+    elevationAt,
+    kind,
+    attribution,
+  };
+  // A Granite Peak mesh at 5–10 m can be tens of thousands of quads. Building
+  // it and then dropping the JSON still spends the export. Skip that allocation.
+  if (preset.experimental && cols * rows > PASTE_BUILD_MAX_QUADS) {
+    return Object.assign(
+      { clipboard: null, pasteOmitted: true, raised: 0, sloped: 0, datumZ: minS },
+      summary
+    );
+  }
   const grid = lattice(clean, frame, cols, rows, elevationAt);
   const raised = [];
   const sloped = [];
@@ -543,30 +699,33 @@ function terrainFromSamples(samples, frame, opts) {
     }
   }
   if (!raised.length && !sloped.length) return null;
-  const kind = opts && opts.kind === "surface" ? "surface" : "bare-earth";
   const clip = emptyClipboard();
   clip.raisedFloorZones = raised;
   clip.slopedFloors = sloped;
   clip.attenuatingZones = [];
-  return {
+  if (preset.experimental && cols * rows > PASTE_SOFT_GRID * PASTE_SOFT_GRID) {
+    const json = JSON.stringify(clip);
+    if (json.length > TERRAIN_PASTE_JSON_MAX) {
+      return Object.assign(
+        {
+          clipboard: null,
+          pasteOmitted: true,
+          raised: raised.length,
+          sloped: sloped.length,
+          // z = 0 on sloped floors is the lowest lattice node, not the raw sample min.
+          datumZ: grid.minZ,
+        },
+        summary
+      );
+    }
+  }
+  return Object.assign({}, summary, {
     clipboard: clip,
     raised: raised.length,
     sloped: sloped.length,
-    reliefM: Math.round((maxS - minS) * 10) / 10,
-    minZ: Math.round(minS * 10) / 10,
-    maxZ: Math.round(maxS * 10) / 10,
-    terrainResolution: preset.id,
-    cellM,
-    gridCols: cols,
-    gridRows: rows,
     // z = 0 on sloped floors is the lowest lattice node, not the raw sample min.
     datumZ: grid.minZ,
-    samples: clean,
-    elevationAt,
-    kind,
-    attribution:
-      (opts && opts.attribution) || (kind === "surface" ? GLO30_CREDIT : USGS_3DEP_ATTRIBUTION),
-  };
+  });
 }
 
 /** Meters above the terrain clipboard's z = 0. Same datum as sloped-floor z. */
@@ -621,7 +780,12 @@ function siteWarrantsLift(terrain) {
  */
 function demUnderFootprint(terrain) {
   if (!terrain) return null;
-  if ((terrain.raised || 0) + (terrain.sloped || 0) <= 0) return null;
+  const zones = (terrain.raised || 0) + (terrain.sloped || 0);
+  if (zones <= 0 && !terrain.pasteOmitted) return null;
+  if (terrain.pasteOmitted) {
+    if (terrain.kind !== "surface" && !(terrain.reliefM >= LIFT_RELIEF_M)) return null;
+    return (ring) => slopeTopUnderRing(terrain, ring);
+  }
   if (terrain.kind === "surface" || siteWarrantsLift(terrain)) {
     return (ring) => slopeTopUnderRing(terrain, ring);
   }
@@ -639,6 +803,18 @@ function terrainSourceLabel(terrain) {
  * terrainFilename names that JSON inside the zip, or both are null when 3DEP misses.
  */
 function terrainBundleFields(terrain, warnings) {
+  if (terrain && terrain.pasteOmitted) {
+    return {
+      terrainFilename: null,
+      terrainClipboard: null,
+      terrainStatus:
+        "Terrain paste omitted: " +
+        (terrain.gridCols || 0) +
+        "×" +
+        (terrain.gridRows || 0) +
+        " quads will not fit in the export response. Hamina's older paste expectation is about 20×20. OpenIntent zip is unchanged.",
+    };
+  }
   const ready = !!(
     terrain &&
     terrain.clipboard &&
@@ -648,8 +824,12 @@ function terrainBundleFields(terrain, warnings) {
     const preset = normalizeTerrainResolution(terrain.terrainResolution);
     let mesh = "";
     if (terrain.reliefM >= LIFT_RELIEF_M) {
-      const shown = preset.id === "auto" && terrain.cellM > 0 ? terrain.cellM : preset.cellM;
+      const shown =
+        preset.experimental || (preset.id === "auto" && terrain.cellM > 0) ? terrain.cellM : preset.cellM;
       mesh = ", " + preset.label + " ~" + formatCellM(shown) + " m";
+      if (preset.experimental && (terrain.gridCols > PASTE_SOFT_GRID || terrain.gridRows > PASTE_SOFT_GRID)) {
+        mesh += " (" + terrain.gridCols + "×" + terrain.gridRows + ", past 20×20)";
+      }
     } else if (preset.id !== "default") {
       mesh = ", " + preset.label + " (relief under 20 m keeps the coarse mesh)";
     }
@@ -679,6 +859,7 @@ function terrainBundleFields(terrain, warnings) {
 }
 
 function noteMissingTerrain(terrain, warnings) {
+  if (terrain && terrain.pasteOmitted) return;
   const ready = !!(terrain && ((terrain.raised || 0) > 0 || (terrain.sloped || 0) > 0));
   if (ready) return;
   if ((warnings || []).some((w) => /terrain omitted/i.test(String(w)))) return;
@@ -780,11 +961,15 @@ async function fetchTerrainDem(frame, fetchFn, opts) {
   } finally {
     if (probe) probe.done();
   }
-  if (usableDemSamples(samples).length >= 4) {
+  const usable = usableDemSamples(samples);
+  if (usable.length >= 4) {
+    const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
+    const note = demDensityNote(preset, frame, usable.length);
     return {
-      samples: usableDemSamples(samples),
+      samples: usable,
       kind: "bare-earth",
       attribution: USGS_3DEP_ATTRIBUTION,
+      notes: note ? [note] : [],
     };
   }
   if (!allowSurface) {
@@ -806,8 +991,16 @@ async function fetchTerrainDem(frame, fetchFn, opts) {
       sampleCount: plan.sampleCount,
       maxRasterSide: plan.maxRasterSide,
     });
-    if (usableDemSamples(glo).length < 4) throw new Error("GLO-30 short");
-    return { samples: glo, kind: "surface", attribution: GLO30_CREDIT };
+    const gloUsable = usableDemSamples(glo);
+    if (gloUsable.length < 4) throw new Error("GLO-30 short");
+    const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
+    const note = demDensityNote(preset, frame, gloUsable.length);
+    return {
+      samples: gloUsable,
+      kind: "surface",
+      attribution: GLO30_CREDIT,
+      notes: note ? [note] : [],
+    };
   } catch (e) {
     if (parent && parent.aborted) throw e;
     if (e && e.name === "AbortError") throw e;
@@ -826,8 +1019,11 @@ module.exports = {
   MAX_GRID,
   TARGET_CELL_M,
   TERRAIN_RESOLUTIONS,
+  PASTE_SOFT_GRID,
   ABSOLUTE_MAX_GRID,
   ABSOLUTE_MAX_SAMPLES,
+  TERRAIN_PASTE_JSON_MAX,
+  PASTE_BUILD_MAX_QUADS,
   MIN_CELL_M,
   LIFT_RELIEF_M,
   LIFT_LOCAL_M,
@@ -853,6 +1049,7 @@ module.exports = {
   chooseGrid,
   normalizeTerrainResolution,
   sampleCountForResolution,
+  terrainResolutionNotes,
   formatCellM,
   autoAxisCount,
 };
