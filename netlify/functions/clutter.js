@@ -59,11 +59,12 @@ const { assembleFootprints } = require("../lib/conflate");
 const { fetchOvertureFootprints } = require("../lib/overture");
 const { fetchChmGrid, applyChmToTrees, sampleChmGrid } = require("../lib/canopy-height");
 const {
-  fetchDemSamples,
+  fetchTerrainDem,
   terrainFromSamples,
   terrainBundleFields,
   noteMissingTerrain,
   normalizeTerrainResolution,
+  isDevDemHost,
 } = require("../lib/terrain");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
@@ -499,8 +500,14 @@ exports.handler = async (event) => {
       if (imgMeta) frame = applyImageryMeta(frame, imgMeta, null, { requestBbox });
       // Same lon/lat extent the JPEG will lock. Meters are applied later with
       // the isotropic frame, so pads line up with hamina-clipboard.json.
+      // 3DEP first. On the dev host only, a miss reads Copernicus GLO-30
+      // inside this same optional budget (grace 1.5s, hard 9s).
       terrainJob = beginOptional((signal) =>
-        fetchDemSamples(frame, null, { signal, terrainResolution })
+        fetchTerrainDem(frame, null, {
+          signal,
+          terrainResolution,
+          allowSurfaceFallback: isDevDemHost(event),
+        })
       );
     }
     const globalJob = fetchMsGlobalFootprints(frame, (url) =>
@@ -576,7 +583,18 @@ exports.handler = async (event) => {
       : Promise.resolve(null),
   ]);
   overturePack = optional[0] || { features: [] };
-  demSamples = optional[1];
+  const demPack = optional[1];
+  let demKind = null;
+  let demAttribution = null;
+  if (Array.isArray(demPack)) {
+    demSamples = demPack;
+  } else if (demPack && Array.isArray(demPack.samples)) {
+    demSamples = demPack.samples;
+    demKind = demPack.kind;
+    demAttribution = demPack.attribution;
+  } else {
+    demSamples = null;
+  }
   chmGrid = optional[2];
 
   treesSource = normalizeTreesSource(treesSource, treePoints.length);
@@ -674,7 +692,11 @@ exports.handler = async (event) => {
   let terrain = null;
   if (demSamples && demSamples.length && frame) {
     try {
-      terrain = terrainFromSamples(demSamples, frame, { terrainResolution });
+      terrain = terrainFromSamples(demSamples, frame, {
+        terrainResolution,
+        kind: demKind,
+        attribution: demAttribution,
+      });
     } catch {
       terrain = null;
     }

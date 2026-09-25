@@ -181,6 +181,12 @@ describe("clutter handler (mocked Esri)", () => {
     assert.equal(new URL(dem).searchParams.get("sampleCount"), "576");
     assert.equal(body.stats.terrainResolution, "auto");
     assert.match(files["README.txt"].toString(), /Auto is the default/);
+    assert.match(body.terrainStatus, /USGS 3DEP bare-earth/);
+    assert.equal(/Copernicus/.test(body.terrainStatus), false);
+    assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
+    assert.match(files["README.txt"].toString(), /USGS 3DEP bare-earth/);
+    assert.equal(/Airbus Defence/.test(files["README.txt"].toString()), false);
+    assert.equal(exportStats.demKind, "bare-earth");
   });
 
   it("asks 3DEP for a denser sample count when terrain resolution is Fine or Finest", async () => {
@@ -781,5 +787,129 @@ describe("oversized Microsoft footprint tile", () => {
     const zipNotes = JSON.parse(files["export-warnings.json"].toString());
     assert.match(zipNotes.warnings.join("\n"), /omitted/);
     assert.ok(stats.attenuationAreasEmitted >= 1);
+  });
+});
+
+describe("dev-host Copernicus fallback", () => {
+  const orig = global.fetch;
+  const TRAFALGAR = {
+    west: -0.13,
+    south: 51.506,
+    east: -0.126,
+    north: 51.51,
+    name: "Trafalgar",
+  };
+
+  after(() => {
+    global.fetch = orig;
+  });
+
+  function installFetch(samplesBody) {
+    const urls = [];
+    global.fetch = async (url) => {
+      const u = String(url && url.url ? url.url : url);
+      urls.push(u);
+      if (u.includes("getSamples")) {
+        return { ok: true, json: async () => samplesBody };
+      }
+      if (u.includes("copernicus-dem")) {
+        return { ok: false, status: 404, headers: { get: () => undefined }, arrayBuffer: async () => new ArrayBuffer(0) };
+      }
+      if (u.includes("World_Imagery")) {
+        if (u.includes("f=json")) {
+          return {
+            ok: true,
+            json: async () => ({
+              width: 64,
+              height: 64,
+              extent: {
+                xmin: TRAFALGAR.west,
+                ymin: TRAFALGAR.south,
+                xmax: TRAFALGAR.east,
+                ymax: TRAFALGAR.north,
+                spatialReference: { wkid: 4326 },
+              },
+            }),
+          };
+        }
+        return { ok: true, arrayBuffer: async () => jpeg };
+      }
+      if (u.includes("MSBFP2")) {
+        return {
+          ok: true,
+          json: async () => ({
+            features: [{
+              type: "Feature",
+              properties: { height: 12 },
+              geometry: {
+                type: "Polygon",
+                coordinates: [[
+                  [-0.1288, 51.5072], [-0.1282, 51.5072], [-0.1282, 51.5078], [-0.1288, 51.5078], [-0.1288, 51.5072],
+                ]],
+              },
+            }],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ features: [], objectIds: [] }), arrayBuffer: async () => new ArrayBuffer(0) };
+    };
+    return urls;
+  }
+
+  it("does not call GLO-30 when 3DEP returns a grid, even on the dev host", async () => {
+    const samples = [];
+    for (let i = 0; i < 4; i++) {
+      samples.push({
+        location: {
+          x: TRAFALGAR.west + ((i % 2) + 0.5) * 0.002,
+          y: TRAFALGAR.south + (Math.floor(i / 2) + 0.5) * 0.002,
+        },
+        value: "18",
+      });
+    }
+    const urls = installFetch({ samples });
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...TRAFALGAR, format: "bundle" }),
+    });
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.terrainFilename, "terrain-clipboard.json");
+    assert.match(body.terrainStatus, /USGS 3DEP bare-earth/);
+    assert.equal(/Copernicus/.test(body.terrainStatus), false);
+    assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
+    assert.equal(body.stats.demKind, "bare-earth");
+  });
+
+  it("requests the London GLO-30 tile when 3DEP fails on the dev host", async () => {
+    const urls = installFetch({ error: { message: "Invalid or missing input parameters" } });
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...TRAFALGAR, format: "bundle" }),
+    });
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    const glo = urls.filter((u) => u.includes("copernicus-dem"));
+    assert.equal(glo.length >= 1, true);
+    assert.match(glo[0], /Copernicus_DSM_COG_10_N51_00_W001_00_DEM\.tif/);
+    assert.equal(body.terrainClipboard, null);
+    assert.match(body.terrainStatus, /Terrain omitted/);
+    assert.match(body.terrainStatus, /USGS 3DEP did not return a usable grid/);
+  });
+
+  it("leaves production on 3DEP alone when that grid is missing", async () => {
+    const urls = installFetch({ error: { message: "Invalid or missing input parameters" } });
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "openclutter.netlify.app" },
+      body: JSON.stringify({ ...TRAFALGAR, format: "bundle" }),
+    });
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
+    assert.equal(body.terrainClipboard, null);
+    assert.match(body.terrainStatus, /Terrain omitted/);
   });
 });

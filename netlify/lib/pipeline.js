@@ -23,7 +23,7 @@ const {
 const { treePairsFromPoints } = require("./vegetation");
 const { dedupeStackedFootprints } = require("./conflate");
 const { zipStore } = require("./zip-store");
-const { TERRAIN_FILENAME, slopeTopUnderRing, siteWarrantsLift, normalizeTerrainResolution } = require("./terrain");
+const { TERRAIN_FILENAME, slopeTopUnderRing, siteWarrantsLift, normalizeTerrainResolution, GLO30_CREDIT } = require("./terrain");
 const { overlaySvg, frameLockJson } = require("./overlay");
 const { version: OPENCLUTTER_VERSION } = require("./version");
 
@@ -62,6 +62,18 @@ const ZIP_README =
   "Schema: OpenIntent 2.0.1, pixels+meters+feet per vertex, isotropic meter/pixel aspect.\n" +
   "(Optional) Unzip and open alignment-overlay.svg next to images/ to check rooftops and, when foliage is on, canopy.\n";
 
+const LIFT_BARE_EARTH =
+  "Flat sites omit bottom_height, so bottom height from floor stays the floor (about 0)\n" +
+  "and top height from floor stays the building or canopy height. Do not write bottom_height: 0.\n" +
+  "When the DEM rises at least 20 m, a building or canopy polygon sets bottom_height\n" +
+  "to the slope top under that footprint and top_height to that bottom plus the\n" +
+  "building height or the foliage height.\n";
+
+const LIFT_SURFACE =
+  "This export used Copernicus DEM GLO-30, a surface model, so roofs are already in the terrain mesh.\n" +
+  "Building and canopy polygons omit bottom_height even when that mesh rises at least 20 m.\n" +
+  "Bottom height from floor stays the floor. Do not write bottom_height: 0.\n";
+
 const ZIP_TROUBLESHOOT =
   "\nTroubleshooting if Hamina shows the map but no attenuating objects:\n" +
   "If VERIFY.txt attenuation_areas > 0, generation succeeded. Hamina then either dropped the import\n" +
@@ -81,11 +93,7 @@ const ZIP_TROUBLESHOOT =
   "Tree materials, only when Include foliage was on, are stock Foliage - Heavy / Light,\n" +
   "or Foliage - Heavy H.H / Foliage - Light H.H at the measured height.\n" +
   "Each is name + rf_properties + top_height + display_color. No itu_material_type.\n" +
-  "Flat sites omit bottom_height, so bottom height from floor stays the floor (about 0)\n" +
-  "and top height from floor stays the building or canopy height. Do not write bottom_height: 0.\n" +
-  "When the DEM rises at least 20 m, a building or canopy polygon sets bottom_height\n" +
-  "to the slope top under that footprint and top_height to that bottom plus the\n" +
-  "building height or the foliage height.\n" +
+  LIFT_BARE_EARTH +
   "Tree Trunk and Foliage N.N m stay off OpenIntent. Clipboard foliage types are canopy polygons only.\n" +
   "Each ring vertex is pixels+meters+feet. Materials omit itu_material_type.\n" +
   "Rings thinner than 4 px on one axis, or over the Hamina vertex cap, are omitted from OpenIntent\n" +
@@ -187,6 +195,7 @@ function coverageStats(stats) {
     terrainRaised: s.terrainRaised || 0,
     terrainSloped: s.terrainSloped || 0,
     terrainResolution: normalizeTerrainResolution(s.terrainResolution).id,
+    demKind: s.demKind === "surface" ? "surface" : s.demKind === "bare-earth" ? "bare-earth" : "",
     buildingsLifted: s.buildingsLifted || 0,
     foliageLifted: s.foliageLifted || 0,
     areaMaterials: s.areaMaterials != null ? s.areaMaterials : STOCK_MATERIAL_NAMES.length,
@@ -261,6 +270,49 @@ const TERRAIN_README =
   "paste it in Planner Plus, then check 3D. Buildings should sit on the slope.\n" +
   "With Include foliage on, import again and Copy terrain: canopy should sit on the slope.\n";
 
+const TERRAIN_README_SURFACE =
+  "\nOptional Planner Plus terrain (not part of the OpenIntent import):\n" +
+  "Copernicus DEM GLO-30 surface elevations (EGM2008) become open quads on the same meter frame.\n" +
+  GLO30_CREDIT +
+  ".\n" +
+  "This is a digital surface model, not bare earth. Roofs and canopy are in the mesh.\n" +
+  "Flat ground is a 2×2 pad. A mild rise is a 4×3 lattice. Relief under 20 m\n" +
+  "stays 6×5. A ski hill (DEM relief at least 20 m, Granite Peak scale) uses the\n" +
+  "terrain resolution chosen on export. Auto is the default: cell size follows the\n" +
+  "draw, about 1 m on a small hill and coarser on a large one, at most 20×20 quads,\n" +
+  "with a DEM sample count denser than that mesh (at most 625). Default is about 80 m quads, at most 12×12\n" +
+  "(144 DEM samples). Fine is about 40 m quads, at most 16×16 (324 samples).\n" +
+  "Finest is about 25 m quads, at most 20×20 (576 samples). The paste never exceeds\n" +
+  "20×20 quads.\n" +
+  "OpenIntent does not support raised or sloped floors. On the OpenClutter page,\n" +
+  "Copy terrain pastes this JSON into Planner Plus. The same JSON is\n" +
+  "terrain-clipboard.json in this zip when the DEM returned a grid. Do not import\n" +
+  "that file as OpenIntent.\n" +
+  "raisedFloorZones are flat pads (open xy quads, NE origin, same frame as hamina-clipboard.json).\n" +
+  "height is meters above the lowest DEM sample. slabOnly is false, so Planner Plus\n" +
+  "draws a solid floor rather than a thin slab. attenuationDbPerMeter is 0\n" +
+  "so the solid floor is not a second clutter wall.\n" +
+  "slopedFloors are open xyz quads (z = meters above that same low point).\n" +
+  "The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
+  "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
+  "Building attenuating objects stay in this OpenIntent zip. Because this DEM is a\n" +
+  "surface model, they omit bottom_height even when relief is at least 20 m.\n" +
+  "Bottom height from floor stays the floor, and top height from floor stays the\n" +
+  "building height or the foliage height. Do not stack those heights on the roofs.\n" +
+  "Retest a city block: Import this zip (Projects → Import → OpenIntent), Copy terrain,\n" +
+  "paste it in Planner Plus, then check 3D. Buildings should sit on the floor of the\n" +
+  "terrain mesh, not on a second copy of the roof height.\n";
+
+function terrainReadme(stats) {
+  if (stats && stats.demKind === "surface") return TERRAIN_README_SURFACE;
+  return TERRAIN_README;
+}
+
+function zipTroubleshoot(stats) {
+  if (!stats || stats.demKind !== "surface") return ZIP_TROUBLESHOOT;
+  return ZIP_TROUBLESHOOT.replace(LIFT_BARE_EARTH, LIFT_SURFACE);
+}
+
 function zipReadme(stats) {
   const c = coverageStats(stats);
   return (
@@ -268,11 +320,12 @@ function zipReadme(stats) {
     "\nCoverage — compare buildingsKept / treesKept / attenuationAreasEmitted to Hamina’s sidebar.\n" +
     coverageSummary(stats) +
     "\n" +
-    TERRAIN_README +
+    terrainReadme(c) +
     "\n" +
     `buildingsKept: ${c.buildingsKept}\n` +
     `includeFoliage: ${c.includeFoliage ? "true" : "false"}\n` +
     `terrainResolution: ${c.terrainResolution}\n` +
+    `demKind: ${c.demKind || "none"}\n` +
     `treesKept: ${c.treesKept}\n` +
     `treesSource: ${c.treesSource}\n` +
     `attenuationAreasEmitted: ${c.attenuationAreasEmitted}\n` +
@@ -287,7 +340,7 @@ function zipReadme(stats) {
     `droppedSpan: ${c.droppedSpan}\n` +
     `droppedVerts: ${c.droppedVerts}\n` +
     `droppedAreasCap: ${c.droppedAreasCap}\n` +
-    ZIP_TROUBLESHOOT
+    zipTroubleshoot(c)
   );
 }
 
@@ -1562,6 +1615,7 @@ function buildClutter({
     chmTrees: footprintMeta && footprintMeta.chmTrees ? footprintMeta.chmTrees : 0,
     terrainRaised: terrain && terrain.raised ? terrain.raised : 0,
     terrainSloped: terrain && terrain.sloped ? terrain.sloped : 0,
+    demKind: terrain && terrain.kind === "surface" ? "surface" : terrain && terrain.kind ? "bare-earth" : "",
     terrainResolution: normalizeTerrainResolution(
       terrainResolution || (terrain && terrain.terrainResolution)
     ).id,

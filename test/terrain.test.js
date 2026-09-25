@@ -10,6 +10,9 @@ const {
   noteMissingTerrain,
   chooseGrid,
   fetchDemSamples,
+  fetchTerrainDem,
+  isDevDemHost,
+  GLO30_CREDIT,
   normalizeTerrainResolution,
   RAISED_KEYS,
   SLOPED_KEYS,
@@ -1031,5 +1034,204 @@ describe("terrain resolution presets", () => {
     assert.ok(autoN > (cols + 1) * (rows + 1), "denser than paste nodes");
     assert.ok(autoN < 576, "smaller mesh than a full 20×20 Auto box");
     assert.ok(autoN <= ABSOLUTE_MAX_SAMPLES);
+  });
+});
+
+describe("Copernicus GLO-30 when 3DEP misses", () => {
+  const frame = geoFrame({
+    west: -0.13,
+    south: 51.506,
+    east: -0.126,
+    north: 51.51,
+    name: "Trafalgar",
+  });
+
+  function demFetch(body) {
+    return async () => ({ ok: true, json: async () => body });
+  }
+
+  function gloGeotiff(zAt) {
+    const urls = [];
+    return {
+      urls,
+      geotiff: {
+        fromUrl: async (url) => {
+          urls.push(String(url));
+          const m = String(url).match(/_([NS])(\d{2})_00_([EW])(\d{3})_00_DEM\.tif$/);
+          if (!m) throw new Error("bad tile url " + url);
+          const latSw = (m[1] === "S" ? -1 : 1) * Number(m[2]);
+          const lonSw = (m[3] === "W" ? -1 : 1) * Number(m[4]);
+          const resX = 1 / 2400;
+          const resY = -1 / 3600;
+          const width = 2400;
+          const height = 3600;
+          const origin = [lonSw, latSw + 1, 0];
+          return {
+            getImage: async () => ({
+              getOrigin: () => origin,
+              getResolution: () => [resX, resY, 0],
+              getWidth: () => width,
+              getHeight: () => height,
+              getGDALNoData: () => null,
+              readRasters: async ({ window }) => {
+                const [left, top, right, bottom] = window;
+                const w = right - left;
+                const h = bottom - top;
+                const data = new Float32Array(w * h);
+                for (let y = 0; y < h; y++) {
+                  for (let x = 0; x < w; x++) {
+                    const lon = origin[0] + (left + x + 0.5) * resX;
+                    const lat = origin[1] + (top + y + 0.5) * resY;
+                    data[y * w + x] = zAt(lon, lat);
+                  }
+                }
+                data.width = w;
+                data.height = h;
+                return data;
+              },
+            }),
+          };
+        },
+      },
+    };
+  }
+
+  it("names the public AWS tiles for London, Helsinki, and a southern point", () => {
+    const { glo30TileUrlForPoint, glo30TilesForFrame } = require("../netlify/lib/copernicus-dem");
+    const london = glo30TileUrlForPoint(51.508, -0.128);
+    assert.match(london, /Copernicus_DSM_COG_10_N51_00_W001_00_DEM\/Copernicus_DSM_COG_10_N51_00_W001_00_DEM\.tif$/);
+    assert.match(london, /^https:\/\/copernicus-dem-30m\.s3\.eu-central-1\.amazonaws\.com\//);
+    const helsinki = glo30TileUrlForPoint(60.17, 24.952);
+    assert.match(helsinki, /Copernicus_DSM_COG_10_N60_00_E024_00_DEM\.tif$/);
+    const sydney = glo30TileUrlForPoint(-33.87, 151.21);
+    assert.match(sydney, /Copernicus_DSM_COG_10_S34_00_E151_00_DEM\.tif$/);
+    const across = glo30TilesForFrame({ west: -0.002, south: 51.2, east: 0.002, north: 51.21 });
+    assert.equal(across.length, 2);
+    assert.ok(across.some((u) => u.includes("N51_00_W001_00")));
+    assert.ok(across.some((u) => u.includes("N51_00_E000_00")));
+  });
+
+  it("keeps a 3DEP grid and does not open a GLO-30 COG", async () => {
+    const glo = gloGeotiff(() => 40);
+    const samples = [];
+    for (let i = 0; i < 4; i++) {
+      samples.push({
+        location: {
+          x: frame.west + ((i % 2) + 0.5) * 0.002,
+          y: frame.south + (Math.floor(i / 2) + 0.5) * 0.002,
+        },
+        value: String(200 + i),
+      });
+    }
+    const pack = await fetchTerrainDem(frame, demFetch({ samples }), {
+      allowSurfaceFallback: true,
+      geotiff: glo.geotiff,
+      terrainResolution: "default",
+    });
+    assert.equal(pack.kind, "bare-earth");
+    assert.equal(pack.attribution, "USGS 3DEP");
+    assert.equal(pack.samples.length, 4);
+    assert.equal(glo.urls.length, 0);
+    const terrain = terrainFromSamples(pack.samples, frame, { kind: pack.kind });
+    assert.equal(terrain.kind, "bare-earth");
+    assert.match(terrainBundleFields(terrain, []).terrainStatus, /USGS 3DEP bare-earth/);
+    assert.equal(/Copernicus/.test(terrainBundleFields(terrain, []).terrainStatus), false);
+  });
+
+  it("reads GLO-30 samples when 3DEP returns an error, and only on the dev gate", async () => {
+    const span = frame.north - frame.south;
+    const zAt = (lon, lat) => 15 + ((lat - frame.south) / span) * 80;
+    const glo = gloGeotiff(zAt);
+    const fail = demFetch({ error: { message: "Invalid or missing input parameters" } });
+    await assert.rejects(
+      () => fetchTerrainDem(frame, fail, { geotiff: glo.geotiff, terrainResolution: "default" }),
+      /3DEP/
+    );
+    assert.equal(glo.urls.length, 0);
+
+    const pack = await fetchTerrainDem(frame, fail, {
+      allowSurfaceFallback: true,
+      geotiff: glo.geotiff,
+      terrainResolution: "default",
+    });
+    assert.equal(pack.kind, "surface");
+    assert.equal(pack.attribution, GLO30_CREDIT);
+    assert.equal(pack.samples.length, 144);
+    assert.equal(glo.urls.length, 1);
+    assert.match(glo.urls[0], /Copernicus_DSM_COG_10_N51_00_W001_00_DEM\.tif$/);
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (const s of pack.samples) {
+      assert.ok(s.lon > frame.west && s.lon < frame.east);
+      assert.ok(s.lat > frame.south && s.lat < frame.north);
+      assert.equal(Object.keys(s).sort().join(","), "lat,lon,z");
+      if (s.z < minZ) minZ = s.z;
+      if (s.z > maxZ) maxZ = s.z;
+    }
+    assert.ok(maxZ - minZ > 50, "relief " + (maxZ - minZ));
+
+    const surface = terrainFromSamples(pack.samples, frame, {
+      kind: pack.kind,
+      attribution: pack.attribution,
+      terrainResolution: "default",
+    });
+    assert.equal(surface.kind, "surface");
+    assert.ok(surface.reliefM >= LIFT_RELIEF_M);
+    assert.equal(siteWarrantsLift(surface), false);
+    const bare = terrainFromSamples(pack.samples, frame, { kind: "bare-earth" });
+    assert.equal(siteWarrantsLift(bare), true);
+
+    const dLon = (frame.east - frame.west) * 0.08;
+    const dLat = span * 0.08;
+    const hill = squareFeature(
+      frame.west + (frame.east - frame.west) * 0.4,
+      frame.south + span * 0.72,
+      frame.west + (frame.east - frame.west) * 0.4 + dLon,
+      frame.south + span * 0.72 + dLat,
+      { height: 6.4 }
+    );
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [hill] },
+      treePoints: [],
+      name: "Trafalgar",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain: surface,
+    });
+    assert.equal(built.stats.buildingsLifted, 0);
+    assert.equal(built.stats.demKind, "surface");
+    const area = built.openintent.floorplans[0].attenuation_areas[0];
+    assert.equal(area.area_material.name, "Building - Two Floor");
+    assert.equal("bottom_height" in area.area_material, false);
+    assert.ok(Math.abs(area.area_material.top_height - 7.620092660326749) < 0.05);
+    const readme = unzipStore(built.zip)["README.txt"].toString();
+    assert.match(readme, /Copernicus DEM GLO-30/);
+    assert.match(readme, /EGM2008/);
+    assert.match(readme, new RegExp(GLO30_CREDIT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(readme, /omit bottom_height/);
+    assert.equal(/sets bottom_height/.test(readme), false);
+    assert.match(readme, /^demKind: surface$/m);
+    assert.match(terrainBundleFields(surface, []).terrainStatus, /Copernicus DEM GLO-30 surface/);
+    assert.equal(/3DEP/.test(terrainBundleFields(surface, []).terrainStatus), false);
+    const lifted = buildClutter({
+      frame,
+      footprintsGeojson: { features: [hill] },
+      treePoints: [],
+      name: "Trafalgar",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain: bare,
+    });
+    assert.equal(lifted.stats.buildingsLifted, 1);
+    assert.ok(lifted.openintent.floorplans[0].attenuation_areas[0].area_material.bottom_height >= 20);
+  });
+
+  it("treats the dev badge host as the only fallback gate", () => {
+    assert.equal(isDevDemHost({ headers: { host: "dev--openclutter.netlify.app" } }), true);
+    assert.equal(isDevDemHost({ headers: { host: "deploy-preview-50--openclutter.netlify.app" } }), true);
+    assert.equal(isDevDemHost({ headers: { Host: "dev--openclutter.netlify.app" } }), true);
+    assert.equal(isDevDemHost({ path: "/dev", headers: {} }), true);
+    assert.equal(isDevDemHost({ headers: { host: "openclutter.netlify.app" } }), false);
+    assert.equal(isDevDemHost({ headers: {} }), false);
+    assert.equal(isDevDemHost(undefined), false);
   });
 });

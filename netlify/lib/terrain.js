@@ -2,6 +2,9 @@
 
 /**
  * USGS 3DEP bare-earth DEM → a HaminaClipboard JSON for Planner Plus paste.
+ * On the dev host, fetchTerrainDem tries Copernicus DEM GLO-30 when 3DEP
+ * returns no usable grid. GLO-30 is a surface DSM: kind "surface" does not
+ * lift building bottoms. Production callers leave that fallback off.
  * OpenIntent has no raisedFloorZones / slopedFloors. Copy terrain is the paste
  * path. The same JSON is stored in the OpenIntent zip when 3DEP hits; Export
  * does not download it as a second file.
@@ -27,8 +30,10 @@
 
 const { llToClipboard } = require("./geo-frame");
 const { emptyClipboard } = require("./hamina-clipboard");
+const { fetchCopernicusDemSamples, GLO30_CREDIT } = require("./copernicus-dem");
 
 const DEM_URL = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/getSamples";
+const USGS_3DEP_ATTRIBUTION = "USGS 3DEP";
 const TERRAIN_FILENAME = "terrain-clipboard.json";
 const FLAT_M = 0.5;
 /**
@@ -379,7 +384,7 @@ function slopedZone(ring) {
 /**
  * @param {{lon:number,lat:number,z:number}[]} samples
  * @param {object} frame geo frame with west/south/east/north and meter scale
- * @param {{terrainResolution?: string}} [opts]
+ * @param {{terrainResolution?: string, kind?: string, attribution?: string}} [opts]
  */
 function terrainFromSamples(samples, frame, opts) {
   const pts = (samples || []).filter(
@@ -430,6 +435,7 @@ function terrainFromSamples(samples, frame, opts) {
     }
   }
   if (!raised.length && !sloped.length) return null;
+  const kind = opts && opts.kind === "surface" ? "surface" : "bare-earth";
   const clip = emptyClipboard();
   clip.raisedFloorZones = raised;
   clip.slopedFloors = sloped;
@@ -449,6 +455,9 @@ function terrainFromSamples(samples, frame, opts) {
     datumZ: grid.minZ,
     samples: clean,
     elevationAt,
+    kind,
+    attribution:
+      (opts && opts.attribution) || (kind === "surface" ? GLO30_CREDIT : USGS_3DEP_ATTRIBUTION),
   };
 }
 
@@ -485,10 +494,18 @@ function slopeTopUnderRing(terrain, ring) {
   return max;
 }
 
-/** True when this export's terrain clipboard is a ski-hill-scale DEM. */
+/** True when this export's terrain clipboard is a ski-hill-scale bare-earth DEM. */
 function siteWarrantsLift(terrain) {
-  if (!terrain || !(terrain.reliefM >= LIFT_RELIEF_M)) return false;
+  // A surface DSM (Copernicus GLO-30) includes roofs. Lifting buildings by
+  // that relief would stack building height on top of roof height.
+  if (!terrain || terrain.kind === "surface") return false;
+  if (!(terrain.reliefM >= LIFT_RELIEF_M)) return false;
   return (terrain.raised || 0) + (terrain.sloped || 0) > 0;
+}
+
+function terrainSourceLabel(terrain) {
+  if (terrain && terrain.kind === "surface") return "Copernicus DEM GLO-30 surface";
+  return "USGS 3DEP bare-earth";
 }
 
 /**
@@ -516,6 +533,8 @@ function terrainBundleFields(terrain, warnings) {
       terrainClipboard: terrain.clipboard,
       terrainStatus:
         "Terrain ready (" +
+        terrainSourceLabel(terrain) +
+        ", " +
         terrain.raised +
         " raised, " +
         terrain.sloped +
@@ -585,8 +604,83 @@ async function fetchDemSamples(frame, fetchFn, opts) {
   return parseDemSamples(body);
 }
 
+function usableDemSamples(samples) {
+  return (samples || []).filter(
+    (s) => s && Number.isFinite(+s.lon) && Number.isFinite(+s.lat) && Number.isFinite(+s.z)
+  );
+}
+
+/**
+ * Dev-host gate, same host/path check as the terrain-resolution slider.
+ * Accepts a Netlify event or a headers object.
+ */
+function isDevDemHost(eventOrHeaders) {
+  const event =
+    eventOrHeaders && (eventOrHeaders.headers || eventOrHeaders.httpMethod || eventOrHeaders.path)
+      ? eventOrHeaders
+      : { headers: eventOrHeaders || {} };
+  const headers = event.headers || {};
+  const host = String(headers.host || headers.Host || "")
+    .trim()
+    .toLowerCase();
+  const path = String(event.path || event.rawPath || "");
+  return (
+    host.startsWith("dev--") ||
+    host.startsWith("deploy-preview-") ||
+    path === "/dev" ||
+    path.startsWith("/dev/")
+  );
+}
+
+/**
+ * Try USGS 3DEP. On the dev host, a miss reads Copernicus GLO-30 for the same
+ * frame. 3DEP success never calls GLO-30. Both failures keep today's omission.
+ * @returns {Promise<{samples:{lon:number,lat:number,z:number}[], kind:string, attribution:string}>}
+ */
+async function fetchTerrainDem(frame, fetchFn, opts) {
+  const allowSurface = !!(opts && opts.allowSurfaceFallback);
+  let samples = [];
+  try {
+    samples = await fetchDemSamples(frame, fetchFn, opts);
+  } catch (e) {
+    if (opts && opts.signal && opts.signal.aborted) throw e;
+    if (!allowSurface) throw e;
+  }
+  if (usableDemSamples(samples).length >= 4) {
+    return {
+      samples: usableDemSamples(samples),
+      kind: "bare-earth",
+      attribution: USGS_3DEP_ATTRIBUTION,
+    };
+  }
+  if (!allowSurface) {
+    return { samples: samples || [], kind: "bare-earth", attribution: USGS_3DEP_ATTRIBUTION };
+  }
+  if (opts && opts.signal && opts.signal.aborted) {
+    const err = new Error("The operation was aborted due to timeout");
+    err.name = "AbortError";
+    throw err;
+  }
+  try {
+    const glo = await fetchCopernicusDemSamples(frame, {
+      signal: opts && opts.signal,
+      geotiff: opts && opts.geotiff,
+      sampleCount: sampleCountForResolution(opts && opts.terrainResolution, frame),
+    });
+    if (usableDemSamples(glo).length < 4) throw new Error("GLO-30 short");
+    return { samples: glo, kind: "surface", attribution: GLO30_CREDIT };
+  } catch (e) {
+    if (opts && opts.signal && opts.signal.aborted) throw e;
+    if (e && e.name === "AbortError") throw e;
+    // Same warning the zip already uses when 3DEP misses.
+    throw new Error("USGS 3DEP did not return a usable grid");
+  }
+}
+
 module.exports = {
   DEM_URL,
+  USGS_3DEP_ATTRIBUTION,
+  GLO30_CREDIT,
   TERRAIN_FILENAME,
   FLAT_M,
   SAMPLE_COUNT,
@@ -610,6 +704,8 @@ module.exports = {
   noteMissingTerrain,
   parseDemSamples,
   fetchDemSamples,
+  fetchTerrainDem,
+  isDevDemHost,
   chooseGrid,
   normalizeTerrainResolution,
   sampleCountForResolution,
