@@ -189,6 +189,42 @@ describe("clutter handler (mocked Esri)", () => {
     assert.equal(exportStats.demKind, "bare-earth");
   });
 
+  it("skips the DEM and Copy terrain when includeTerrain is false", async () => {
+    urls.length = 0;
+    const calls = [];
+    setFetchTerrainDemForTests(async () => {
+      calls.push("dem");
+      return { samples: [], kind: "bare-earth" };
+    });
+    try {
+      const res = await handler({
+        httpMethod: "POST",
+        headers: { host: "dev--openclutter.netlify.app" },
+        body: JSON.stringify({ ...WYNN, includeTerrain: false, format: "bundle" }),
+      });
+      assert.equal(res.statusCode, 200);
+      const body = JSON.parse(res.body);
+      assert.equal(body.terrainStatus, "Terrain off");
+      assert.equal(body.terrainClipboard, null);
+      assert.equal(body.terrainFilename, null);
+      assert.equal(calls.length, 0);
+      assert.equal(urls.some((u) => u.includes("elevation.nationalmap.gov")), false);
+      assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
+      const warnings = (body.warnings || []).join("\n");
+      assert.equal(/terrain omitted|timed out/i.test(warnings), false);
+      assert.equal(/terrain omitted|timed out/i.test(body.terrainStatus), false);
+      const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+      assert.equal(files["terrain-clipboard.json"], undefined);
+      assert.ok(files["images/Wynn-Golf.jpg"]);
+      assert.ok(files["openIntent_Wynn-Golf.json"]);
+      const oi = JSON.parse(files["openIntent_Wynn-Golf.json"].toString());
+      assert.ok(oi.floorplans[0].attenuation_areas.length >= 1);
+      assert.equal(body.stats.includeFoliage, false);
+    } finally {
+      setFetchTerrainDemForTests(null);
+    }
+  });
+
   it("asks 3DEP for a denser sample count when terrain resolution is Fine or Finest", async () => {
     async function sampleCountFor(terrainResolution, query) {
       urls.length = 0;

@@ -1,15 +1,35 @@
-(function markDeployEnv() {
+function devPage() {
   const host = location.hostname || "";
   const path = location.pathname || "";
-  const isDev =
+  return (
     host.startsWith("dev--") ||
     host.startsWith("deploy-preview-") ||
     path === "/dev" ||
-    path.startsWith("/dev/");
-  const badge = document.getElementById("env-badge");
-  if (badge && isDev) badge.classList.add("on");
+    path.startsWith("/dev/")
+  );
+}
+
+function syncTerrainControls() {
+  const dev = devPage();
+  const row = document.getElementById("include-terrain-row");
+  const input = document.getElementById("include-terrain");
   const terrainRes = document.getElementById("terrain-resolution");
-  if (terrainRes && isDev) terrainRes.hidden = false;
+  if (row) row.hidden = !dev;
+  const on = !!(dev && input && input.checked);
+  if (terrainRes) terrainRes.hidden = !on;
+}
+
+function terrainExportEnabled() {
+  const row = document.getElementById("include-terrain-row");
+  const input = document.getElementById("include-terrain");
+  if (!row || row.hidden || !input) return true;
+  return !!input.checked;
+}
+
+(function markDeployEnv() {
+  const badge = document.getElementById("env-badge");
+  if (badge && devPage()) badge.classList.add("on");
+  syncTerrainControls();
   const ver = document.getElementById("app-version");
   if (ver && window.OPENCLUTTER_VERSION) ver.textContent = "v" + window.OPENCLUTTER_VERSION;
 })();
@@ -216,6 +236,8 @@ if (terrainResolutionRange) {
   terrainResolutionRange.addEventListener("input", syncTerrainResolutionReadout);
   syncTerrainResolutionReadout();
 }
+const includeTerrainInput = document.getElementById("include-terrain");
+if (includeTerrainInput) includeTerrainInput.addEventListener("change", syncTerrainControls);
 
 const map = L.map("map").setView([36.128, -115.16], 15);
 L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
@@ -632,8 +654,9 @@ function exportError(status, data) {
   return err;
 }
 
-async function exportOnce(trees, treesSource, canopyHits, includeFoliage) {
+async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain) {
   const foliage = includeFoliage === true;
+  const terrain = includeTerrain !== false;
   const r = await fetch("/api/clutter", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -642,7 +665,8 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage) {
       ...bbox,
       name: document.getElementById("q").value || "Site",
       includeFoliage: foliage,
-      terrainResolution: selectedTerrainResolution() || undefined,
+      includeTerrain: terrain,
+      terrainResolution: terrain ? selectedTerrainResolution() || undefined : undefined,
       trees: foliage ? trees : [],
       treesSource: foliage ? treesSource : "none",
       canopyHits: foliage && canopyHits && canopyHits.length ? canopyHits : undefined,
@@ -658,6 +682,7 @@ document.getElementById("export").onclick = async () => {
   if (!bbox) return;
   exportBtn.disabled = true;
   const includeFoliage = document.getElementById("include-foliage").checked;
+  const includeTerrain = terrainExportEnabled();
   setStatus(includeFoliage ? "Building map + buildings + canopy…" : "Building map + buildings…");
   try {
     let trees = [];
@@ -690,16 +715,23 @@ document.getElementById("export").onclick = async () => {
     }
     let data;
     try {
-      data = await exportOnce(trees, treesSource, canopyHits, includeFoliage);
+      data = await exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain);
     } catch (e) {
       if (e && e.noRetry) throw e;
-      data = await exportOnce(trees, treesSource, canopyHits, includeFoliage);
+      data = await exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain);
     }
     downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
-    rememberTerrain(data);
+    const terrainOff = includeTerrain === false;
+    if (terrainOff) {
+      terrainPasteJson = "";
+      if (copyTerrainBtn) copyTerrainBtn.hidden = true;
+    } else {
+      rememberTerrain(data);
+    }
     const summary = (data.stats && data.stats.summary) || "";
-    const terrainNote = data.terrainStatus || "";
-    const warnLines = Array.isArray(data.warnings) ? data.warnings.filter(Boolean) : [];
+    const terrainNote = terrainOff ? "Terrain off" : (data.terrainStatus || "");
+    const warnLines = (Array.isArray(data.warnings) ? data.warnings.filter(Boolean) : [])
+      .filter((line) => !terrainOff || !/terrain/i.test(line));
     setStatus(
       "Import this zip in Hamina (Projects → Import → OpenIntent)." +
         (terrainNote ? "\n" + terrainNote : "") +

@@ -507,6 +507,14 @@ function wantFoliage(event, body) {
   return raw === true || raw === 1 || raw === "1" || raw === "true";
 }
 
+/** Terrain stays on unless the body or query explicitly turns it off. */
+function wantTerrain(event, body) {
+  const q = (event && event.queryStringParameters) || {};
+  const raw = body && body.includeTerrain != null ? body.includeTerrain : q.includeTerrain;
+  if (raw == null || raw === "") return true;
+  return !(raw === false || raw === 0 || raw === "0" || raw === "false");
+}
+
 /** Client-supplied NLCD hits, capped. Used to re-place trees off rooftops. */
 function normalizeCanopyHits(raw) {
   if (!Array.isArray(raw)) return [];
@@ -568,6 +576,7 @@ async function handleClutter(event) {
   const imgUrl = esriImageryUrl(frame);
   const imgMetaUrl = esriImageryMetaUrl(frame);
   const includeFoliage = wantFoliage(event, body);
+  const includeTerrain = wantTerrain(event, body);
 
   let treePoints = includeFoliage && Array.isArray(body.trees) ? body.trees.slice() : [];
   let treesSource = includeFoliage && ["nlcd-canopy", "imagery-rgb", "none"].includes(body.treesSource)
@@ -627,14 +636,17 @@ async function handleClutter(event) {
       // 3DEP where that service has a grid. On the dev host, a miss reads
       // Copernicus GLO-30 inside this same optional budget. Outside coverage
       // the 3DEP probe is short so GLO-30 gets the remaining time.
-      terrainJob = beginOptional((signal) =>
-        fetchTerrainDemImpl(frame, null, {
-          signal,
-          terrainResolution,
-          allowSurfaceFallback: devHost,
-          deadlineMs: started + TERRAIN_HARD_MS,
-        })
-      );
+      // includeTerrain false skips the DEM, the follow-up, and Copy terrain.
+      if (includeTerrain) {
+        terrainJob = beginOptional((signal) =>
+          fetchTerrainDemImpl(frame, null, {
+            signal,
+            terrainResolution,
+            allowSurfaceFallback: devHost,
+            deadlineMs: started + TERRAIN_HARD_MS,
+          })
+        );
+      }
     }
     const globalJob = fetchMsGlobalFootprints(frame, (url) =>
       fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(CORE_FETCH_MS) })
@@ -707,7 +719,9 @@ async function handleClutter(event) {
     includeFoliage && needImage
       ? runOptional(warnings, started, "Canopy height", (signal) => fetchChmGrid(frame, { signal }))
       : Promise.resolve(null);
-  const terrainFollow = await followUpOutsideTerrain(terrainJob, started, frame, devHost, terrainResolution);
+  const terrainFollow = includeTerrain
+    ? await followUpOutsideTerrain(terrainJob, started, frame, devHost, terrainResolution)
+    : { preset: null, job: null, join: null };
   const demPromise = terrainFollow.preset
     ? Promise.resolve(terrainFollow.preset)
     : terrainFollow.job
@@ -840,7 +854,7 @@ async function handleClutter(event) {
       terrain = null;
     }
   }
-  if (needImage) noteMissingTerrain(terrain, warnings);
+  if (includeTerrain && needImage) noteMissingTerrain(terrain, warnings);
 
   let maskRings = [];
   let maskPolygons = [];
@@ -1014,7 +1028,9 @@ async function handleClutter(event) {
   }
 
   function bundleResult() {
-    const terrainFields = terrainBundleFields(built.terrain, warnings);
+    const terrainFields = includeTerrain
+      ? terrainBundleFields(built.terrain, warnings)
+      : { terrainFilename: null, terrainClipboard: null, terrainStatus: "Terrain off" };
     return json(200, cors, {
       ok: true,
       alignment: ALIGNMENT,
