@@ -1124,7 +1124,8 @@ describe("main UI: import buildings, optional foliage", () => {
   it("index and app keep one Include foliage toggle, off unless checked", () => {
     const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
     const app = fs.readFileSync(path.join(root, "app.js"), "utf8");
-    assert.match(html, /Import OpenIntent for the map and buildings/i);
+    assert.match(html, /Export a zip\. Import it in Hamina for the aerial map and buildings\./);
+    assert.equal(/Import OpenIntent for the map and buildings/i.test(html), false);
     assert.equal(/One zip\./i.test(html), false);
     assert.match(html, /Include foliage/);
     assert.match(html, /id="include-foliage"/);
