@@ -2,7 +2,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { geoFrame, cornerClipboard } = require("../netlify/lib/geo-frame");
+const { geoFrame, cornerClipboard, llToClipboard } = require("../netlify/lib/geo-frame");
 const {
   terrainFromSamples,
   parseDemSamples,
@@ -1692,6 +1692,185 @@ describe("Finland terrain does not wait on 3DEP", () => {
     assert.equal(built.stats.demKind, "surface");
     assert.equal(built.stats.buildingsLifted, 1);
     assert.match(terrainBundleFields(surface, []).terrainStatus, /Copernicus DEM GLO-30 surface/);
+  });
+
+  it("rests Finland buildings on the pasted slope when that ramp is above the DEM sample", () => {
+    const frame = geoFrame({
+      west: 27.18,
+      south: 60.565,
+      east: 27.2,
+      north: 60.578,
+      name: "Hamina",
+    });
+    const samples = [];
+    const n = 10;
+    for (let r = 0; r < n; r++) {
+      for (let c = 0; c < n; c++) {
+        const lon = frame.west + ((c + 0.5) / n) * (frame.east - frame.west);
+        const lat = frame.south + ((r + 0.5) / n) * (frame.north - frame.south);
+        const bump = (r + c) % 2 === 0 ? 16 : 0;
+        const rise = ((lat - frame.south) / (frame.north - frame.south)) * 6;
+        samples.push({ lon, lat, z: 4 + bump + rise });
+      }
+    }
+    const surface = terrainFromSamples(samples, frame, {
+      kind: "surface",
+      attribution: GLO30_CREDIT,
+      terrainResolution: "default",
+    });
+    assert.equal(surface.kind, "surface");
+    assert.equal(typeof demUnderFootprint(surface), "function");
+    assert.ok(surface.clipboard.slopedFloors.length > 0);
+
+    function rampZ(quad, x, y) {
+      const z0 = quad[0][2];
+      const z1 = quad[2][2];
+      const horizontal = Math.abs(quad[0][1] - quad[1][1]) <= 0.002;
+      let t = 0;
+      if (horizontal) {
+        const y0 = quad[0][1];
+        const y1 = quad[2][1];
+        t = y1 === y0 ? 0 : (y - y0) / (y1 - y0);
+      } else {
+        const x0 = quad[0][0];
+        const x1 = quad[2][0];
+        t = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
+      }
+      if (t < 0) t = 0;
+      else if (t > 1) t = 1;
+      return z0 + t * (z1 - z0);
+    }
+    function floorAt(x, y) {
+      let floor = 0;
+      const zones = surface.clipboard.slopedFloors.concat(surface.clipboard.raisedFloorZones);
+      for (let i = 0; i < zones.length; i++) {
+        const quad = zones[i].area.coordinates[0];
+        let inside = true;
+        for (let k = 0; k < 4; k++) {
+          const a = quad[k];
+          const b = quad[(k + 1) % 4];
+          const cross = (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
+          if (cross < -0.02) {
+            inside = false;
+            break;
+          }
+        }
+        if (!inside) continue;
+        const z = quad[0].length >= 3 ? rampZ(quad, x, y) : zones[i].height;
+        if (z > floor) floor = z;
+      }
+      return floor;
+    }
+    function demOnly(ring) {
+      const end = ring.length - 1;
+      let max = 0;
+      let sx = 0;
+      let sy = 0;
+      for (let i = 0; i < end; i++) {
+        const z = Math.max(0, Math.round((surface.elevationAt(ring[i][0], ring[i][1]) - surface.datumZ) * 10) / 10);
+        if (z > max) max = z;
+        sx += ring[i][0];
+        sy += ring[i][1];
+      }
+      const zc = Math.max(0, Math.round((surface.elevationAt(sx / end, sy / end) - surface.datumZ) * 10) / 10);
+      return Math.max(max, zc);
+    }
+
+    let picked = null;
+    const steps = 12;
+    const dLon = (frame.east - frame.west) * 0.02;
+    const dLat = (frame.north - frame.south) * 0.02;
+    for (let r = 1; r < steps && !picked; r++) {
+      for (let c = 1; c < steps && !picked; c++) {
+        const lon = frame.west + (c / steps) * (frame.east - frame.west);
+        const lat = frame.south + (r / steps) * (frame.north - frame.south);
+        const ring = [
+          [lon, lat],
+          [lon + dLon, lat],
+          [lon + dLon, lat + dLat],
+          [lon, lat + dLat],
+          [lon, lat],
+        ];
+        let floor = 0;
+        for (const [fx, fy] of [
+          [0.2, 0.2],
+          [0.8, 0.2],
+          [0.2, 0.8],
+          [0.8, 0.8],
+          [0.5, 0.5],
+        ]) {
+          const xy = llToClipboard(lon + dLon * fx, lat + dLat * fy, frame);
+          const z = floorAt(xy[0], xy[1]);
+          if (z > floor) floor = z;
+        }
+        const dem = demOnly(ring);
+        if (floor > dem + 0.8) picked = { ring, floor, dem, lon, lat };
+      }
+    }
+    assert.ok(picked, "expected a coarse ramp above the DEM sample");
+    const bottom = slopeTopUnderRing(surface, picked.ring);
+    assert.ok(bottom + 0.05 >= picked.floor, "bottom " + bottom + " floor " + picked.floor);
+    assert.ok(bottom > picked.dem, "bottom " + bottom + " dem " + picked.dem);
+
+    const feature = squareFeature(picked.lon, picked.lat, picked.lon + dLon, picked.lat + dLat, { height: 8.3 });
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [feature] },
+      treePoints: [],
+      name: "Hamina",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain: surface,
+    });
+    const mat = built.openintent.floorplans[0].attenuation_areas[0].area_material;
+    assert.equal(mat.bottom_height, bottom);
+    assert.equal(mat.top_height, Math.round((bottom + 7.620092660326749) * 10) / 10);
+    assert.equal(built.stats.buildingsLifted, 1);
+    assert.equal(built.stats.demKind, "surface");
+    const zone = built.clipboard.attenuatingZones[0];
+    const type = built.clipboard.attenuatingZoneTypes.find((t) => t.id === zone.typeId);
+    assert.equal(type.bottomEdge, mat.bottom_height);
+    assert.equal(type.topEdge, Math.round((type.bottomEdge + 8.3) * 10) / 10);
+
+    const us = geoFrame({ west: -89.7, south: 44.91, east: -89.684, north: 44.926, name: "Granite Peak" });
+    const span = us.north - us.south;
+    const spanLon = us.east - us.west;
+    const usSamples = [];
+    for (let r = 0; r < 6; r++) {
+      for (let c = 0; c < 6; c++) {
+        const lon = us.west + ((c + 0.5) / 6) * spanLon;
+        const lat = us.south + ((r + 0.5) / 6) * span;
+        const t = (lat - us.south) / span;
+        usSamples.push({ lon, lat, z: t < 0.35 ? 300 : 300 + ((t - 0.35) / 0.65) * 180 });
+      }
+    }
+    const bare = terrainFromSamples(usSamples, us);
+    assert.equal(bare.kind, "bare-earth");
+    assert.equal(siteWarrantsLift(bare), true);
+    const hill = squareFeature(
+      us.west + spanLon * 0.5,
+      us.south + span * 0.75,
+      us.west + spanLon * 0.5 + spanLon * 0.04,
+      us.south + span * 0.75 + span * 0.03,
+      { height: 6.4 }
+    );
+    const usBuilt = buildClutter({
+      frame: us,
+      footprintsGeojson: { features: [hill] },
+      treePoints: [],
+      name: "Granite Peak",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain: bare,
+    });
+    const usMat = usBuilt.openintent.floorplans[0].attenuation_areas[0].area_material;
+    assert.ok(usMat.bottom_height >= 50, "us bottom " + usMat.bottom_height);
+    assert.equal(usMat.top_height, Math.round((usMat.bottom_height + 7.620092660326749) * 10) / 10);
+    assert.equal(usBuilt.stats.buildingsLifted, 1);
+    const mild = terrainFromSamples(
+      usSamples.map((s) => ({ lon: s.lon, lat: s.lat, z: 400 + ((s.lat - us.south) / span) * 12 })),
+      us
+    );
+    assert.equal(siteWarrantsLift(mild), false);
+    assert.equal(demUnderFootprint(mild), null);
   });
 
   it("still prefers a US 3DEP grid over GLO-30", async () => {

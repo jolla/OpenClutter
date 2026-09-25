@@ -6,6 +6,11 @@
 [functions]
   node_bundler = "esbuild"
 
+# esbuild emits clutter.js and does not copy fs reads. The Hamina laser grid
+# has to be listed or a Finland export throws ENOENT and the gateway returns 502.
+[functions."clutter"]
+  included_files = ["netlify/lib/nls-hamina-ndsm.gz"]
+
 # Production API (main deploy only — keep ahead of /dev rules).
 [[redirects]]
   from = "/api/*"

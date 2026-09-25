@@ -426,7 +426,7 @@ function normalizeCanopyHits(raw) {
   return out;
 }
 
-exports.handler = async (event) => {
+async function handleClutter(event) {
   const cors = {
     "access-control-allow-origin": "*",
     "access-control-allow-headers": "content-type",
@@ -944,6 +944,19 @@ exports.handler = async (event) => {
     });
   }
   return result;
+}
+
+exports.handler = async (event) => {
+  try {
+    return await handleClutter(event);
+  } catch (e) {
+    const cors = {
+      "access-control-allow-origin": "*",
+      "access-control-allow-headers": "content-type",
+    };
+    const msg = e && e.message ? String(e.message) : "export failed";
+    return json(500, cors, { error: msg + " — export failed. Retry the export." });
+  }
 };
 
 exports.UA = UA;

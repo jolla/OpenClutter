@@ -46,15 +46,61 @@ const MAX_CELL_TESTS = 8000;
 const PROTECT_HEIGHT = { overture: true, "ms-global": true, fema: true };
 
 let grid = null;
+/** Test-only. Production leaves this null and searches nlsGridPaths(). */
+let gridPathOverride = null;
 
 function nlsApiKey() {
   const k = process.env[NLS_API_KEY_ENV];
   return k && String(k).trim() ? String(k).trim() : "";
 }
 
+const GRID_FILENAME = "nls-hamina-ndsm.gz";
+
+/**
+ * Local tests read the gzip beside this module. The deployed function is
+ * esbuild output at netlify/functions/clutter.js; included_files places the
+ * gzip at netlify/lib/ inside the lambda (/var/task).
+ */
+function nlsGridPaths() {
+  const roots = [
+    __dirname,
+    path.join(__dirname, "..", "lib"),
+    path.join(process.env.LAMBDA_TASK_ROOT || "", "netlify", "lib"),
+    path.join(process.cwd(), "netlify", "lib"),
+  ];
+  const out = [];
+  for (let i = 0; i < roots.length; i++) {
+    const p = path.join(roots[i], GRID_FILENAME);
+    if (out.indexOf(p) === -1) out.push(p);
+  }
+  return out;
+}
+
+function setNlsGridPathForTests(filePath) {
+  gridPathOverride = filePath == null || filePath === "" ? null : String(filePath);
+  grid = null;
+}
+
+function readGridGzip() {
+  const paths = gridPathOverride ? [gridPathOverride] : nlsGridPaths();
+  let last = null;
+  for (let i = 0; i < paths.length; i++) {
+    try {
+      return fs.readFileSync(paths[i]);
+    } catch (e) {
+      last = e;
+      if (!e || e.code !== "ENOENT") throw e;
+    }
+  }
+  const err = new Error("Finland laser grid missing");
+  err.code = "ENOENT";
+  if (last) err.cause = last;
+  throw err;
+}
+
 function loadGrid() {
   if (grid) return grid;
-  const gz = fs.readFileSync(path.join(__dirname, "nls-hamina-ndsm.gz"));
+  const gz = readGridGzip();
   const buf = zlib.gunzipSync(gz);
   if (buf.length !== COLS * ROWS * 2) throw new Error("bad Hamina nDSM");
   const aligned = buf.byteOffset % 2 === 0 ? buf : Buffer.from(buf);
@@ -189,7 +235,7 @@ function heightForRing(ringLonLat) {
  * Fill footprints that do not already have an overture / MS / FEMA height.
  * Mutates features. Returns how many received a laser height, and the range.
  */
-function applyNlsBuildingHeights(features) {
+function sampleNlsBuildingHeights(features) {
   let applied = 0;
   let min = 0;
   let max = 0;
@@ -215,6 +261,25 @@ function applyNlsBuildingHeights(features) {
   return { applied, min: applied ? min : 0, max: applied ? max : 0, source: HEIGHT_SOURCE };
 }
 
+/**
+ * Laser heights are optional. A missing grid used to throw out of the export
+ * and the gateway showed that as Export failed (502). Omit the heights instead.
+ */
+function applyNlsBuildingHeights(features) {
+  try {
+    return sampleNlsBuildingHeights(features);
+  } catch (e) {
+    return {
+      applied: 0,
+      min: 0,
+      max: 0,
+      source: HEIGHT_SOURCE,
+      omitted: true,
+      reason: e && e.message ? String(e.message) : "laser grid unavailable",
+    };
+  }
+}
+
 module.exports = {
   NLS_API_KEY_ENV,
   NLS_CREDIT,
@@ -224,7 +289,10 @@ module.exports = {
   CELL_M,
   COLS,
   ROWS,
+  GRID_FILENAME,
   nlsApiKey,
+  nlsGridPaths,
+  setNlsGridPathForTests,
   lonLatToTm35,
   cellMetres,
   heightForRing,
