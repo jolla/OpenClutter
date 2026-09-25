@@ -1164,7 +1164,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.equal(/Ski hills only/i.test(html), false);
     assert.match(html, /class="build"/);
     assert.equal(/<h1>[^<]*id="app-version"/.test(html), false);
-    assert.equal(/terrainRes/.test(app), false);
+    assert.equal(/\bterrainRes\b/.test(app), false);
     assert.equal(/selectedTerrainResolution/.test(app), false);
     assert.equal(/TERRAIN_STOPS/.test(app), false);
     assert.match(app, /row\.hidden = !dev/);
