@@ -27,9 +27,11 @@
  *    no area is left alone.
  *
  * Height, measured wins (higher rank replaces):
- *    overture explicit height > Microsoft Global ML height > FEMA HEIGHT
- *    > Overture num_floors × 3 m > nearest measured neighbor within 120 m
- *    > stock One Floor / Five Floor / Hotel bins.
+ *    overture explicit height > Microsoft Global ML height > NLS laser nDSM
+ *    > FEMA HEIGHT > Overture num_floors × 3 m > nearest measured neighbor
+ *    within 120 m > stock One Floor / Five Floor / Hotel bins.
+ *    NLS laser is applied on the dev host after this merge (Finland tile
+ *    L5211C3). It does not replace overture, MS, or FEMA heights.
  *    Microsoft height -1 and anything ≤ 2 m is ignored.
  *    Ties keep the height already on the kept ring.
  *    OpenIntent buildings use the four gold Building names. Trees use
@@ -44,6 +46,7 @@ const { simpleExteriorRings } = require("./poly-clip");
 const HEIGHT_RANK = {
   overture: 40,
   "ms-global": 30,
+  "nls-laser": 25,
   fema: 20,
   "overture-floors": 10,
   nearby: 5,
@@ -294,7 +297,7 @@ function tagLayer(features, geomSource, heightSourceName) {
 }
 
 function countHeightSources(features) {
-  const counts = { "ms-global": 0, overture: 0, fema: 0, "overture-floors": 0, nearby: 0, untagged: 0 };
+  const counts = { "ms-global": 0, overture: 0, "nls-laser": 0, fema: 0, "overture-floors": 0, nearby: 0, untagged: 0 };
   for (const f of features || []) {
     if (!featureHeight(f)) continue;
     const src = heightSource(f);

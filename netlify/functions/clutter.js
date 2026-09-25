@@ -741,6 +741,7 @@ exports.handler = async (event) => {
       maskPolygons,
       includeFoliage,
       terrainResolution,
+      nlsHeights: isDevDemHost(event),
     });
   }
 
