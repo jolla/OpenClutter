@@ -12,6 +12,8 @@ const {
   fetchDemSamples,
   fetchTerrainDem,
   isDevDemHost,
+  frameHas3dep,
+  DEP3_PROBE_SAMPLES,
   GLO30_CREDIT,
   normalizeTerrainResolution,
   RAISED_KEYS,
@@ -1332,5 +1334,268 @@ describe("Copernicus GLO-30 when 3DEP misses", () => {
     assert.equal(isDevDemHost({ headers: { host: "openclutter.netlify.app" } }), false);
     assert.equal(isDevDemHost({ headers: {} }), false);
     assert.equal(isDevDemHost(undefined), false);
+  });
+});
+
+describe("Finland terrain does not wait on 3DEP", () => {
+  const hamina = geoFrame({
+    west: 27.18,
+    south: 60.565,
+    east: 27.2,
+    north: 60.578,
+    name: "Hamina",
+  });
+  const helsinki = geoFrame({
+    west: 24.93,
+    south: 60.16,
+    east: 24.96,
+    north: 60.18,
+    name: "Helsinki",
+  });
+  const vegas = geoFrame({
+    west: -115.1735,
+    south: 36.1205,
+    east: -115.1488,
+    north: 36.1355,
+    name: "Wynn",
+  });
+
+  function gloGeotiff(zAt) {
+    const urls = [];
+    return {
+      urls,
+      geotiff: {
+        fromUrl: async (url) => {
+          urls.push(String(url));
+          const m = String(url).match(/_([NS])(\d{2})_00_([EW])(\d{3})_00_DEM\.tif$/);
+          if (!m) throw new Error("bad tile url " + url);
+          const latSw = (m[1] === "S" ? -1 : 1) * Number(m[2]);
+          const lonSw = (m[3] === "W" ? -1 : 1) * Number(m[4]);
+          const resX = 1 / 2400;
+          const resY = -1 / 3600;
+          const width = 2400;
+          const height = 3600;
+          const origin = [lonSw, latSw + 1, 0];
+          return {
+            getImage: async () => ({
+              getOrigin: () => origin,
+              getResolution: () => [resX, resY, 0],
+              getWidth: () => width,
+              getHeight: () => height,
+              getGDALNoData: () => null,
+              readRasters: async ({ window }) => {
+                const [left, top, right, bottom] = window;
+                const w = right - left;
+                const h = bottom - top;
+                const data = new Float32Array(w * h);
+                for (let y = 0; y < h; y++) {
+                  for (let x = 0; x < w; x++) {
+                    const lon = origin[0] + (left + x + 0.5) * resX;
+                    const lat = origin[1] + (top + y + 0.5) * resY;
+                    data[y * w + x] = zAt(lon, lat);
+                  }
+                }
+                data.width = w;
+                data.height = h;
+                return data;
+              },
+            }),
+          };
+        },
+      },
+    };
+  }
+
+  function hangUntilAbort(seen) {
+    return (url, init) => {
+      if (seen) seen.push(String(url));
+      return new Promise((resolve, reject) => {
+        const signal = init && init.signal;
+        const fail = () => {
+          const err = new Error("The operation was aborted");
+          err.name = "AbortError";
+          reject(err);
+        };
+        if (signal && signal.aborted) fail();
+        else if (signal) signal.addEventListener("abort", fail, { once: true });
+        else {
+          const timer = setTimeout(fail, 20000);
+          if (timer.unref) timer.unref();
+        }
+      });
+    };
+  }
+
+  it("treats Finland as outside 3DEP and the US as inside", () => {
+    assert.equal(frameHas3dep(hamina), false);
+    assert.equal(frameHas3dep(helsinki), false);
+    assert.equal(frameHas3dep(vegas), true);
+    assert.equal(
+      frameHas3dep(geoFrame({ west: -87.91, south: 42.89, east: -87.9, north: 42.9, name: "Oak Creek" })),
+      true
+    );
+    assert.equal(DEP3_PROBE_SAMPLES, 4);
+  });
+
+  it("returns a surface grid for Hamina without waiting on a slow 3DEP", async () => {
+    const seen = [];
+    const span = hamina.north - hamina.south;
+    const zAt = (lon, lat) => 8 + ((lat - hamina.south) / span) * 12;
+    const glo = gloGeotiff(zAt);
+    const t0 = Date.now();
+    const pack = await fetchTerrainDem(hamina, hangUntilAbort(seen), {
+      allowSurfaceFallback: true,
+      geotiff: glo.geotiff,
+      terrainResolution: "default",
+    });
+    const elapsed = Date.now() - t0;
+    assert.ok(elapsed < 1200, "elapsed " + elapsed);
+    assert.equal(seen.length, 1);
+    assert.equal(new URL(seen[0]).searchParams.get("sampleCount"), "4");
+    assert.equal(pack.kind, "surface");
+    assert.equal(pack.attribution, GLO30_CREDIT);
+    assert.equal(pack.samples.length, 144);
+    assert.equal(glo.urls.length, 1);
+    assert.match(glo.urls[0], /Copernicus_DSM_COG_10_N60_00_E027_00_DEM\.tif$/);
+    const surface = terrainFromSamples(pack.samples, hamina, {
+      kind: pack.kind,
+      attribution: pack.attribution,
+      terrainResolution: "default",
+    });
+    assert.equal(surface.kind, "surface");
+    assert.equal(siteWarrantsLift(surface), false);
+    assert.equal(typeof demUnderFootprint(surface), "function");
+    assert.ok(surface.reliefM > 10 && surface.reliefM < LIFT_RELIEF_M, "relief " + surface.reliefM);
+    const dLon = (hamina.east - hamina.west) * 0.08;
+    const dLat = span * 0.08;
+    const hill = squareFeature(
+      hamina.west + (hamina.east - hamina.west) * 0.55,
+      hamina.south + span * 0.7,
+      hamina.west + (hamina.east - hamina.west) * 0.55 + dLon,
+      hamina.south + span * 0.7 + dLat,
+      { height: 6.4 }
+    );
+    const built = buildClutter({
+      frame: hamina,
+      footprintsGeojson: { features: [hill] },
+      treePoints: [],
+      name: "Hamina",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain: surface,
+    });
+    const bottom = built.openintent.floorplans[0].attenuation_areas[0].area_material.bottom_height;
+    assert.equal(bottom, slopeTopUnderRing(surface, hill.geometry.coordinates[0]));
+    assert.ok(bottom >= 1 && bottom < LIFT_RELIEF_M, "bottom " + bottom);
+    assert.equal(built.stats.demKind, "surface");
+    assert.equal(built.stats.buildingsLifted, 1);
+    assert.match(terrainBundleFields(surface, []).terrainStatus, /Copernicus DEM GLO-30 surface/);
+  });
+
+  it("still prefers a US 3DEP grid over GLO-30", async () => {
+    const glo = gloGeotiff(() => 40);
+    const samples = [];
+    for (let i = 0; i < 4; i++) {
+      samples.push({
+        location: {
+          x: vegas.west + ((i % 2) + 0.5) * (vegas.east - vegas.west) * 0.5,
+          y: vegas.south + (Math.floor(i / 2) + 0.5) * (vegas.north - vegas.south) * 0.5,
+        },
+        value: String(600 + i * 10),
+      });
+    }
+    const seen = [];
+    const fetchFn = async (url) => {
+      seen.push(String(url));
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      return { ok: true, json: async () => ({ samples }) };
+    };
+    const t0 = Date.now();
+    const pack = await fetchTerrainDem(vegas, fetchFn, {
+      allowSurfaceFallback: true,
+      geotiff: glo.geotiff,
+      terrainResolution: "finest",
+    });
+    assert.ok(Date.now() - t0 >= 200);
+    assert.equal(pack.kind, "bare-earth");
+    assert.equal(pack.attribution, "USGS 3DEP");
+    assert.equal(glo.urls.length, 0);
+    assert.equal(new URL(seen[0]).searchParams.get("sampleCount"), "576");
+    const terrain = terrainFromSamples(pack.samples, vegas, { kind: pack.kind });
+    assert.equal(terrain.kind, "bare-earth");
+    assert.ok(terrain.reliefM >= LIFT_RELIEF_M);
+    assert.equal(siteWarrantsLift(terrain), true);
+  });
+
+  it("uses a coarser GLO-30 lattice when little time remains, and the full count when it does not", async () => {
+    const zAt = (lon, lat) => 5 + (lat - hamina.south) * 800;
+    const short = gloGeotiff(zAt);
+    const fail = async () => ({ ok: true, json: async () => ({ error: { message: "outside" } }) });
+    const coarse = await fetchTerrainDem(hamina, fail, {
+      allowSurfaceFallback: true,
+      geotiff: short.geotiff,
+      terrainResolution: "finest",
+      budgetMs: 900,
+    });
+    assert.equal(coarse.kind, "surface");
+    assert.ok(coarse.samples.length >= 4, "samples " + coarse.samples.length);
+    assert.ok(coarse.samples.length <= 16, "samples " + coarse.samples.length);
+    const mesh = terrainFromSamples(coarse.samples, hamina, { kind: "surface", terrainResolution: "finest" });
+    assert.ok(mesh && mesh.clipboard);
+    assert.equal(mesh.kind, "surface");
+    assert.equal(siteWarrantsLift(mesh), false);
+
+    const full = gloGeotiff(zAt);
+    const fine = await fetchTerrainDem(hamina, fail, {
+      allowSurfaceFallback: true,
+      geotiff: full.geotiff,
+      terrainResolution: "finest",
+      budgetMs: 8000,
+    });
+    assert.equal(fine.samples.length, 576);
+    assert.equal(fine.kind, "surface");
+  });
+
+  it("rejects with a timeout only after GLO-30 is aborted too", async () => {
+    const ctrl = new AbortController();
+    let gloStarted = 0;
+    const geotiff = {
+      fromUrl: async (url, _opts, signal) => {
+        gloStarted += 1;
+        await new Promise((resolve, reject) => {
+          const fail = () => {
+            const err = new Error("The operation was aborted");
+            err.name = "AbortError";
+            reject(err);
+          };
+          if (signal && signal.aborted) fail();
+          else if (signal) signal.addEventListener("abort", fail, { once: true });
+          else setTimeout(fail, 5000);
+        });
+        throw new Error("unreachable " + url);
+      },
+    };
+    const job = fetchTerrainDem(hamina, hangUntilAbort(), {
+      allowSurfaceFallback: true,
+      geotiff,
+      signal: ctrl.signal,
+      terrainResolution: "default",
+    });
+    setTimeout(() => ctrl.abort(), 900);
+    await assert.rejects(job, /abort|timeout/i);
+    assert.equal(gloStarted, 1);
+
+    const miss = gloGeotiff(() => 1);
+    miss.geotiff.fromUrl = async () => {
+      throw new Error("HTTP 404");
+    };
+    await assert.rejects(
+      () =>
+        fetchTerrainDem(hamina, hangUntilAbort(), {
+          allowSurfaceFallback: true,
+          geotiff: miss.geotiff,
+          terrainResolution: "default",
+        }),
+      /did not return a usable grid/
+    );
   });
 });

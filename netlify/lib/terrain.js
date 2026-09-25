@@ -3,10 +3,13 @@
 /**
  * USGS 3DEP bare-earth DEM → a HaminaClipboard JSON for Planner Plus paste.
  * On the dev host, fetchTerrainDem tries Copernicus DEM GLO-30 when 3DEP
- * returns no usable grid. GLO-30 is a surface DSM. kind "surface" does not
- * use the bare-earth 20 m ski-hill gate. Attenuating objects still take
- * bottom height from the DEM under the footprint. Production callers leave
- * that fallback off.
+ * returns no usable grid. A frame outside 3DEP coverage (Finland and the
+ * rest of Europe) only probes 3DEP briefly, with a tiny sample count, so
+ * the rest of the DEM budget can finish a GLO-30 grid — coarser when little
+ * time is left. GLO-30 is a surface DSM. kind "surface" does not use the
+ * bare-earth 20 m ski-hill gate. Attenuating objects still take bottom
+ * height from the DEM under the footprint. Production callers leave that
+ * fallback off and never call GLO-30. A US 3DEP hit is still preferred.
  * OpenIntent has no raisedFloorZones / slopedFloors. Copy terrain is the paste
  * path. The same JSON is stored in the OpenIntent zip when 3DEP hits; Export
  * does not download it as a second file.
@@ -108,6 +111,92 @@ function sampleCountForResolution(resolution, frame) {
   return autoSampleCount(cols, rows);
 }
 
+/** True when the frame center can get a USGS 3DEP grid. */
+function frameHas3dep(frame) {
+  if (!frame) return false;
+  const lon = (+frame.west + +frame.east) / 2;
+  const lat = (+frame.south + +frame.north) / 2;
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return false;
+  for (let i = 0; i < DEP3_COVERAGE.length; i++) {
+    const box = DEP3_COVERAGE[i];
+    if (lon >= box.west && lon <= box.east && lat >= box.south && lat <= box.north) return true;
+  }
+  return false;
+}
+
+function demSampleCount(opts, frame) {
+  if (opts && Number.isFinite(+opts.sampleCount) && +opts.sampleCount > 0) {
+    return Math.max(4, Math.min(ABSOLUTE_MAX_SAMPLES, opts.sampleCount | 0));
+  }
+  return sampleCountForResolution(opts && opts.terrainResolution, frame);
+}
+
+/** Milliseconds left for the DEM read. budgetMs wins over a deadline. */
+function demRemainingMs(opts) {
+  if (!opts) return null;
+  if (opts.budgetMs != null && opts.budgetMs !== "" && Number.isFinite(+opts.budgetMs)) {
+    return Math.max(0, +opts.budgetMs);
+  }
+  if (opts.deadlineMs != null && Number.isFinite(+opts.deadlineMs)) {
+    return Math.max(0, +opts.deadlineMs - Date.now());
+  }
+  return null;
+}
+
+/**
+ * Square GLO-30 lattice that can finish in the time left. Unknown time keeps
+ * the requested count. A short budget steps down to a 4×4 grid rather than
+ * asking for a 24×24 read that will be aborted empty.
+ */
+function glo30SamplePlan(requested, remainingMs) {
+  const want = Math.max(4, Math.min(ABSOLUTE_MAX_SAMPLES, requested | 0 || SAMPLE_COUNT));
+  let cap = ABSOLUTE_MAX_SAMPLES;
+  let maxRasterSide = 128;
+  if (remainingMs != null && Number.isFinite(+remainingMs)) {
+    const ms = Math.max(0, +remainingMs);
+    if (ms >= 6000) {
+      cap = ABSOLUTE_MAX_SAMPLES;
+      maxRasterSide = 128;
+    } else if (ms >= 3500) {
+      cap = 144;
+      maxRasterSide = 96;
+    } else if (ms >= 1800) {
+      cap = 64;
+      maxRasterSide = 64;
+    } else {
+      cap = 16;
+      maxRasterSide = 48;
+    }
+  }
+  let side = Math.round(Math.sqrt(Math.min(want, cap)));
+  if (!Number.isFinite(side) || side < 2) side = 2;
+  let count = side * side;
+  if (count > cap || count > want) {
+    side = Math.max(2, Math.floor(Math.sqrt(Math.min(want, cap))));
+    count = side * side;
+  }
+  return { sampleCount: Math.max(4, count), maxRasterSide };
+}
+
+/** Child abort. Does not abort the parent. The timer is cleared by done(). */
+function linkAbort(parent, ms) {
+  const ctrl = new AbortController();
+  const abort = () => ctrl.abort();
+  let timer = null;
+  if (parent) {
+    if (parent.aborted) ctrl.abort();
+    else parent.addEventListener("abort", abort, { once: true });
+  }
+  if (ms > 0) timer = setTimeout(abort, ms);
+  return {
+    signal: ctrl.signal,
+    done() {
+      if (timer) clearTimeout(timer);
+      if (parent) parent.removeEventListener("abort", abort);
+    },
+  };
+}
+
 function formatCellM(m) {
   const n = Number(m);
   if (!(n > 0)) return "1";
@@ -124,6 +213,23 @@ function formatCellM(m) {
 const LIFT_RELIEF_M = 20;
 /** Local ground under this is bottom height from floor ≈ 0 (field omitted). */
 const LIFT_LOCAL_M = 1;
+/**
+ * USGS 3DEP Elevation ImageServer has data here. A center outside every box
+ * cannot succeed, so the dev host must not spend the DEM budget on it.
+ * The rectangle includes some border water; a US hit is still preferred.
+ */
+const DEP3_COVERAGE = [
+  { west: -125.5, south: 24.0, east: -66.0, north: 49.6 },
+  { west: -170.0, south: 51.0, east: -129.0, north: 71.6 },
+  { west: -160.3, south: 18.8, east: -154.7, north: 22.3 },
+  { west: -67.5, south: 17.6, east: -64.5, north: 18.6 },
+  { west: 144.6, south: 13.2, east: 145.0, north: 13.7 },
+  { west: -170.9, south: -14.4, east: -169.4, north: -14.2 },
+];
+/** Outside coverage, give 3DEP this long, then read GLO-30. */
+const DEP3_OUTSIDE_MS = 400;
+/** Probe count. A 576-point getSamples is what makes an out-of-coverage miss slow. */
+const DEP3_PROBE_SAMPLES = 4;
 
 const RAISED_KEYS = ["area", "height", "attenuationDbPerMeter", "slabOnly"];
 const SLOPED_KEYS = [
@@ -598,7 +704,7 @@ function parseDemSamples(body) {
 async function fetchDemSamples(frame, fetchFn, opts) {
   const fetchImpl = fetchFn || fetch;
   const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
-  const sampleCount = sampleCountForResolution(opts && opts.terrainResolution, frame);
+  const sampleCount = demSampleCount(opts, frame);
   const geometry = JSON.stringify({
     xmin: +frame.west,
     ymin: +frame.south,
@@ -658,12 +764,21 @@ function isDevDemHost(eventOrHeaders) {
  */
 async function fetchTerrainDem(frame, fetchFn, opts) {
   const allowSurface = !!(opts && opts.allowSurfaceFallback);
+  const parent = opts && opts.signal;
+  // Outside coverage a full getSamples often hangs until the shared abort,
+  // which used to cancel GLO-30 before it started. Probe briefly instead.
+  const probe = allowSurface && !frameHas3dep(frame) ? linkAbort(parent, DEP3_OUTSIDE_MS) : null;
   let samples = [];
   try {
-    samples = await fetchDemSamples(frame, fetchFn, opts);
+    const demOpts = probe
+      ? Object.assign({}, opts, { signal: probe.signal, sampleCount: DEP3_PROBE_SAMPLES })
+      : opts;
+    samples = await fetchDemSamples(frame, fetchFn, demOpts);
   } catch (e) {
-    if (opts && opts.signal && opts.signal.aborted) throw e;
+    if (parent && parent.aborted) throw e;
     if (!allowSurface) throw e;
+  } finally {
+    if (probe) probe.done();
   }
   if (usableDemSamples(samples).length >= 4) {
     return {
@@ -675,21 +790,26 @@ async function fetchTerrainDem(frame, fetchFn, opts) {
   if (!allowSurface) {
     return { samples: samples || [], kind: "bare-earth", attribution: USGS_3DEP_ATTRIBUTION };
   }
-  if (opts && opts.signal && opts.signal.aborted) {
+  if (parent && parent.aborted) {
     const err = new Error("The operation was aborted due to timeout");
     err.name = "AbortError";
     throw err;
   }
+  const plan = glo30SamplePlan(
+    sampleCountForResolution(opts && opts.terrainResolution, frame),
+    demRemainingMs(opts)
+  );
   try {
     const glo = await fetchCopernicusDemSamples(frame, {
-      signal: opts && opts.signal,
+      signal: parent,
       geotiff: opts && opts.geotiff,
-      sampleCount: sampleCountForResolution(opts && opts.terrainResolution, frame),
+      sampleCount: plan.sampleCount,
+      maxRasterSide: plan.maxRasterSide,
     });
     if (usableDemSamples(glo).length < 4) throw new Error("GLO-30 short");
     return { samples: glo, kind: "surface", attribution: GLO30_CREDIT };
   } catch (e) {
-    if (opts && opts.signal && opts.signal.aborted) throw e;
+    if (parent && parent.aborted) throw e;
     if (e && e.name === "AbortError") throw e;
     // Same warning the zip already uses when 3DEP misses.
     throw new Error("USGS 3DEP did not return a usable grid");
@@ -726,6 +846,10 @@ module.exports = {
   fetchDemSamples,
   fetchTerrainDem,
   isDevDemHost,
+  frameHas3dep,
+  glo30SamplePlan,
+  DEP3_OUTSIDE_MS,
+  DEP3_PROBE_SAMPLES,
   chooseGrid,
   normalizeTerrainResolution,
   sampleCountForResolution,
