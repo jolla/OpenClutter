@@ -23,7 +23,7 @@ const {
 const { treePairsFromPoints } = require("./vegetation");
 const { dedupeStackedFootprints } = require("./conflate");
 const { zipStore } = require("./zip-store");
-const { TERRAIN_FILENAME, slopeTopUnderRing, siteWarrantsLift, normalizeTerrainResolution, GLO30_CREDIT } = require("./terrain");
+const { TERRAIN_FILENAME, demUnderFootprint, normalizeTerrainResolution, GLO30_CREDIT } = require("./terrain");
 const { overlaySvg, frameLockJson } = require("./overlay");
 const { version: OPENCLUTTER_VERSION } = require("./version");
 
@@ -70,9 +70,11 @@ const LIFT_BARE_EARTH =
   "building height or the foliage height.\n";
 
 const LIFT_SURFACE =
-  "This export used Copernicus DEM GLO-30, a surface model, so roofs are already in the terrain mesh.\n" +
-  "Building and canopy polygons omit bottom_height even when that mesh rises at least 20 m.\n" +
-  "Bottom height from floor stays the floor. Do not write bottom_height: 0.\n";
+  "This export used Copernicus DEM GLO-30, a surface model.\n" +
+  "Building and canopy polygons set bottom_height to the DEM under that footprint\n" +
+  "and top_height to that bottom plus the building or foliage height.\n" +
+  "The 20 m ski-hill gate does not apply. Ground under 1 m omits bottom_height.\n" +
+  "Do not write bottom_height: 0.\n";
 
 const ZIP_TROUBLESHOOT =
   "\nTroubleshooting if Hamina shows the map but no attenuating objects:\n" +
@@ -295,13 +297,14 @@ const TERRAIN_README_SURFACE =
   "slopedFloors are open xyz quads (z = meters above that same low point).\n" +
   "The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
   "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
-  "Building attenuating objects stay in this OpenIntent zip. Because this DEM is a\n" +
-  "surface model, they omit bottom_height even when relief is at least 20 m.\n" +
-  "Bottom height from floor stays the floor, and top height from floor stays the\n" +
-  "building height or the foliage height. Do not stack those heights on the roofs.\n" +
-  "Retest a city block: Import this zip (Projects → Import → OpenIntent), Copy terrain,\n" +
-  "paste it in Planner Plus, then check 3D. Buildings should sit on the floor of the\n" +
-  "terrain mesh, not on a second copy of the roof height.\n";
+  "Building attenuating objects stay in this OpenIntent zip. They sit on this DEM:\n" +
+  "bottom_height is the slope top under that footprint, and top_height is that\n" +
+  "bottom plus the building height. Canopy polygons use that bottom plus the\n" +
+  "foliage height. The bare-earth 20 m ski-hill gate does not apply here.\n" +
+  "A footprint whose ground is under 1 m omits bottom_height. Do not write bottom_height: 0.\n" +
+  "Retest: Import this zip (Projects → Import → OpenIntent), Copy terrain,\n" +
+  "paste it in Planner Plus, then check 3D. Buildings should rest on the sloped\n" +
+  "floors, not under them.\n";
 
 function terrainReadme(stats) {
   if (stats && stats.demKind === "surface") return TERRAIN_README_SURFACE;
@@ -1489,7 +1492,7 @@ function buildClutter({
 }) {
   const { name, slug } = siteName(rawName);
   const imgName = `${slug}.jpg`;
-  const slopeTop = siteWarrantsLift(terrain) ? (ring) => slopeTopUnderRing(terrain, ring) : null;
+  const slopeTop = demUnderFootprint(terrain);
   const fp = footprintsToClutter(footprintsGeojson?.features || [], frame, affine, slopeTop);
   const foliageOn = includeFoliage === true;
   const veg = foliageOn
