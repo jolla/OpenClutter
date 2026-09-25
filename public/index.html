@@ -43,6 +43,8 @@
       padding: 0 6px; line-height: 16px;
     }
     #copy-terrain { width: 100%; margin-top: 10px; }
+    #finish-shape { width: 100%; margin-top: 10px; }
+    #finish-shape[hidden] { display: none; }
     .row { display: flex; gap: 8px; margin-top: 10px; }
     .row button { flex: 1; }
     .hint { margin: 8px 0 0; font-size: 11px; line-height: 1.35; color: #6e7681; }
@@ -77,7 +79,7 @@
 <body>
   <div id="map"></div>
   <div class="panel">
-    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.25</span></p>
+    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.26</span></p>
     <h1>OpenClutter</h1>
     <div class="sub">Export a zip. Import it in Hamina for the aerial map and buildings.</div>
     <form id="search">
@@ -88,7 +90,8 @@
       <button type="button" id="draw" class="secondary">Draw</button>
       <button type="button" id="export" disabled>Export</button>
     </div>
-    <p id="draw-hint" class="hint">Drag a box. Click corners, then right-click to finish a polygon. Esc cancels.</p>
+    <button type="button" id="finish-shape" hidden>Finish shape</button>
+    <p id="draw-hint" class="hint">Drag a box. Click corners, then Finish shape, double-click, or click the first corner. Esc cancels.</p>
     <label class="check" for="include-foliage">
       <input type="checkbox" id="include-foliage" />
       Include foliage

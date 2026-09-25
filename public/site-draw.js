@@ -1,13 +1,17 @@
 /**
  * Site outline gestures.
  *
- * Drag commits a box. A click (no drag) adds a polygon vertex. The caller
- * maps right-click / contextmenu to finish(), and Escape to cancel().
- * finish() with fewer than 3 vertices discards the ring — an unfinished
- * shape is not a site. A drag after vertices have been placed commits a
- * box and drops the open ring.
+ * Drag commits a box. A click (no drag) adds a polygon vertex. Close the
+ * ring by double-click, by clicking the first vertex (once there are at
+ * least 3 corners), or by finish() — the Finish shape button and an
+ * optional right-click. finish() with fewer than 3 vertices discards the
+ * ring. prepareExport() commits an open ring of 3+ vertices and refuses a
+ * 1–2 vertex ring so a newer sketch cannot export the previous site.
+ * Escape is cancel() and does not touch a finished site. A drag after
+ * vertices have been placed commits a box and drops the open ring.
  *
  * Distances are container pixels. DRAG_PX is the click/drag split.
+ * CLOSE_PX is how near a click must be to the first corner to close.
  * Browser + Node. The export path still sends the axis-aligned box.
  */
 (function (root, factory) {
@@ -19,6 +23,8 @@
 
   /** Pointer travel at or above this many pixels is a box, not a vertex. */
   const DRAG_PX = 6;
+  /** Click inside this radius of the first corner to close a 3+ vertex ring. */
+  const CLOSE_PX = 12;
 
   function createSession() {
     return {
@@ -81,11 +87,19 @@
     };
   }
 
+  function nearVertex(vertex, pt, px) {
+    if (!vertex || !pt) return false;
+    if (![pt.x, pt.y, vertex.x, vertex.y].every(Number.isFinite)) return false;
+    return dist2(vertex, pt) < px * px;
+  }
+
   function nearLastVertex(session, pt) {
-    const prev = session.vertices[session.vertices.length - 1];
-    if (!prev || !pt) return false;
-    if (![pt.x, pt.y, prev.x, prev.y].every(Number.isFinite)) return false;
-    return dist2(prev, pt) < DRAG_PX * DRAG_PX;
+    return nearVertex(session.vertices[session.vertices.length - 1], pt, DRAG_PX);
+  }
+
+  function closingOnFirst(session, pt) {
+    if (session.vertices.length < 3) return false;
+    return nearVertex(session.vertices[0], pt, CLOSE_PX);
   }
 
   function pointerUp(session, pt) {
@@ -113,9 +127,15 @@
       x: pt && Number.isFinite(+pt.x) ? +pt.x : downPt.x,
       y: pt && Number.isFinite(+pt.y) ? +pt.y : downPt.y,
     };
-    if (nearLastVertex(session, candidate)) return { type: "ignore" };
+    const doubleClick = pt && +pt.clicks >= 2;
+    if (closingOnFirst(session, candidate)) return finish(session);
+    if (nearLastVertex(session, candidate)) {
+      if (doubleClick && session.vertices.length >= 3) return finish(session);
+      return { type: "ignore" };
+    }
     session.vertices.push(candidate);
     session.phase = "polygon";
+    if (doubleClick && session.vertices.length >= 3) return finish(session);
     return { type: "vertex", vertices: copyVerts(session.vertices) };
   }
 
@@ -126,7 +146,11 @@
     return { type: "abort-press" };
   }
 
-  /** Right-click. Fewer than 3 corners discards the ring and stops drawing. */
+  /**
+   * Commit a ring of 3 or more corners. Fewer than 3 discards the ring.
+   * Used by Finish shape, double-click, clicking the first corner, and
+   * the optional right-click shortcut.
+   */
   function finish(session) {
     if (!session.armed || session.phase !== "polygon" || session.down) return { type: "ignore" };
     if (!session.vertices.length) return { type: "ignore" };
@@ -144,6 +168,22 @@
     session.phase = "idle";
     session.armed = false;
     return { type: "commit-polygon", vertices: vertices, bounds: boundsOf(vertices) };
+  }
+
+  /**
+   * Export guard. An open ring of 3+ vertices is committed first.
+   * A ring of 1–2 vertices blocks export and is left in progress.
+   * No open ring means the caller should use the already committed site.
+   */
+  function prepareExport(session) {
+    const n = session && session.phase === "polygon" ? session.vertices.length : 0;
+    if (n >= 3) {
+      const closed = finish(session);
+      if (closed.type === "commit-polygon") return closed;
+      return { type: "blocked", count: n };
+    }
+    if (n > 0) return { type: "blocked", count: n };
+    return { type: "use-committed" };
   }
 
   /** Escape. Drops an open ring and leaves draw mode. Does not touch a finished site. */
@@ -191,6 +231,7 @@
 
   return {
     DRAG_PX: DRAG_PX,
+    CLOSE_PX: CLOSE_PX,
     createSession: createSession,
     arm: arm,
     pointerDown: pointerDown,
@@ -198,6 +239,7 @@
     pointerUp: pointerUp,
     abortPress: abortPress,
     finish: finish,
+    prepareExport: prepareExport,
     cancel: cancel,
     setVertexPixels: setVertexPixels,
     boundsOf: boundsOf,

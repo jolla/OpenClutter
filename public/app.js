@@ -67,6 +67,7 @@ let activePointer = null;
 const drawSession = OpenClutterDraw.createSession();
 const statusEl = document.getElementById("status");
 const exportBtn = document.getElementById("export");
+const finishBtn = document.getElementById("finish-shape");
 const copyTerrainBtn = document.getElementById("copy-terrain");
 let terrainPasteJson = "";
 
@@ -148,14 +149,29 @@ function syncDrawMode() {
   }
 }
 
+function committedExportBlocked() {
+  if (!bbox) return true;
+  const w = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.south, bbox.east));
+  const h = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.north, bbox.west));
+  return w > 2500 || h > 2500 || w < 40 || h < 40;
+}
+
+function syncFinishControl() {
+  const n = drawSession.phase === "polygon" ? drawSession.vertices.length : 0;
+  if (finishBtn) finishBtn.hidden = n < 3;
+  if (n > 0) {
+    exportBtn.disabled = false;
+    return;
+  }
+  exportBtn.disabled = committedExportBlocked();
+}
+
 function applyExtent(bounds, label) {
   committedBounds = bounds;
   committedLabel = label == null ? null : label;
   bbox = chipBbox(bounds);
   showAreaChip(bounds, committedLabel);
-  const w = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.south, bbox.east));
-  const h = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.north, bbox.west));
-  exportBtn.disabled = w > 2500 || h > 2500 || w < 40 || h < 40;
+  syncFinishControl();
   if (exportBtn.disabled) setStatus("Area must be between 40 m and 2.5 km on a side.", true);
   else setStatus("Ready to export.");
 }
@@ -240,8 +256,9 @@ function handleDraw(result) {
   if (result.type === "vertex") {
     showVertexPreview(result.vertices);
     const n = result.vertices.length;
-    if (n < 3) setStatus("Corner " + n + ". Click the next corner. Right-click finishes, Esc cancels.");
-    else setStatus("Corner " + n + ". Right-click to finish, Esc to cancel.");
+    syncFinishControl();
+    if (n < 3) setStatus("Corner " + n + ". Click the next corner. Esc cancels.");
+    else setStatus("Corner " + n + ". Finish shape, double-click, or click the first corner. Esc cancels.");
     return;
   }
   if (result.type === "commit-box") {
@@ -255,6 +272,7 @@ function handleDraw(result) {
   if (result.type === "discard") {
     restoreCommitted();
     syncDrawMode();
+    syncFinishControl();
     setStatus(
       bbox
         ? "Need at least 3 corners. The previous site is unchanged."
@@ -265,6 +283,7 @@ function handleDraw(result) {
   if (result.type === "cancel") {
     restoreCommitted();
     syncDrawMode();
+    syncFinishControl();
     if (!bbox) setStatus("Search, then draw the site.");
     else if (exportBtn.disabled) setStatus("Area must be between 40 m and 2.5 km on a side.", true);
     else setStatus("Ready to export.");
@@ -276,7 +295,15 @@ function pointFromEvent(ev) {
   const x = ev.clientX - rect.left;
   const y = ev.clientY - rect.top;
   const ll = map.containerPointToLatLng(L.point(x, y));
-  return { x: x, y: y, lat: ll.lat, lng: ll.lng, button: ev.button, ctrlKey: !!ev.ctrlKey };
+  return {
+    x: x,
+    y: y,
+    lat: ll.lat,
+    lng: ll.lng,
+    button: ev.button,
+    ctrlKey: !!ev.ctrlKey,
+    clicks: ev.detail > 1 ? ev.detail : 1,
+  };
 }
 
 const mapEl = map.getContainer();
@@ -308,10 +335,23 @@ mapEl.addEventListener(
   { passive: false }
 );
 
+let blockMapDblClick = false;
+let blockMapDblClickTimer = 0;
+
+function holdMapDblClick() {
+  blockMapDblClick = true;
+  window.clearTimeout(blockMapDblClickTimer);
+  blockMapDblClickTimer = window.setTimeout(() => {
+    blockMapDblClick = false;
+  }, 400);
+}
+
 mapEl.addEventListener("pointerup", (ev) => {
   if (ev.pointerId !== activePointer) return;
+  const drawing = drawSession.armed;
   activePointer = null;
   handleDraw(OpenClutterDraw.pointerUp(drawSession, pointFromEvent(ev)));
+  if (drawing) holdMapDblClick();
 });
 
 mapEl.addEventListener("pointercancel", (ev) => {
@@ -327,6 +367,19 @@ mapEl.addEventListener("contextmenu", (ev) => {
   if (!drawSession.armed) return;
   handleDraw(OpenClutterDraw.finish(drawSession));
 });
+
+mapEl.addEventListener(
+  "dblclick",
+  (ev) => {
+    if (!drawSession.armed && !blockMapDblClick) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    blockMapDblClick = false;
+    if (!drawSession.armed || drawSession.vertices.length < 3) return;
+    handleDraw(OpenClutterDraw.finish(drawSession));
+  },
+  true
+);
 
 window.addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape") return;
@@ -354,8 +407,16 @@ document.getElementById("draw").onclick = () => {
   OpenClutterDraw.arm(drawSession);
   restoreCommitted();
   syncDrawMode();
-  setStatus("Drag a box, or click corners. Right-click finishes the polygon.");
+  syncFinishControl();
+  setStatus("Drag a box, or click corners. Finish shape, double-click, or click the first corner.");
 };
+
+if (finishBtn) {
+  finishBtn.onclick = () => {
+    activePointer = null;
+    handleDraw(OpenClutterDraw.finish(drawSession));
+  };
+}
 
 document.getElementById("search").onsubmit = async (e) => {
   e.preventDefault();
@@ -472,9 +533,32 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
   return data;
 }
 
+function openRingExportStatus(count) {
+  if (count >= 3) return "Finish the open polygon before export. Export was not run.";
+  const noun = count === 1 ? "corner" : "corners";
+  return (
+    "Open polygon has " +
+    count +
+    " " +
+    noun +
+    ". Add at least 3 corners and finish, or press Esc. Export was not run."
+  );
+}
+
 document.getElementById("export").onclick = async () => {
+  const pending = OpenClutterDraw.prepareExport(drawSession);
+  if (pending.type === "blocked") {
+    syncFinishControl();
+    setStatus(openRingExportStatus(pending.count), true);
+    return;
+  }
+  if (pending.type === "commit-polygon") {
+    handleDraw(pending);
+    if (!bbox || exportBtn.disabled) return;
+  }
   if (!bbox) return;
   exportBtn.disabled = true;
+  if (finishBtn) finishBtn.hidden = true;
   const includeFoliage = document.getElementById("include-foliage").checked;
   const includeTerrain = terrainExportEnabled();
   setStatus(includeFoliage ? "Building map + buildings + canopy…" : "Building map + buildings…");
