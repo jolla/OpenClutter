@@ -43,24 +43,6 @@
       padding: 0 6px; line-height: 16px;
     }
     #copy-terrain { width: 100%; margin-top: 10px; }
-    .terrain-res { margin-top: 10px; }
-    .terrain-res[hidden] { display: none; }
-    .terrain-res-head {
-      display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
-      font-size: 13px;
-    }
-    .terrain-res-head label { cursor: pointer; }
-    #terrain-resolution-readout {
-      color: #8b949e; font-size: 12px; font-variant-numeric: tabular-nums;
-      text-align: right; max-width: 68%;
-    }
-    #terrain-resolution-range {
-      width: 100%; margin: 8px 0 2px; accent-color: #238636; cursor: pointer;
-    }
-    .terrain-res-stops {
-      display: flex; justify-content: space-between; gap: 4px;
-      font-size: 10px; color: #6e7681; white-space: nowrap;
-    }
     .row { display: flex; gap: 8px; margin-top: 10px; }
     .row button { flex: 1; }
     .hint { margin: 8px 0 0; font-size: 11px; line-height: 1.35; color: #6e7681; }
@@ -95,7 +77,7 @@
 <body>
   <div id="map"></div>
   <div class="panel">
-    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.24</span></p>
+    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.25</span></p>
     <h1>OpenClutter</h1>
     <div class="sub">Export a zip. Import it in Hamina for the aerial map and buildings.</div>
     <form id="search">
@@ -116,36 +98,6 @@
       <input type="checkbox" id="include-terrain" checked />
       Terrain
     </label>
-    <div id="terrain-resolution" class="terrain-res" hidden>
-      <div class="terrain-res-head">
-        <label for="terrain-resolution-range">Terrain resolution</label>
-        <span id="terrain-resolution-readout">Auto · from draw</span>
-      </div>
-      <input
-        type="range"
-        id="terrain-resolution-range"
-        min="0"
-        max="8"
-        step="1"
-        value="0"
-        aria-valuemin="0"
-        aria-valuemax="8"
-        aria-valuenow="0"
-        aria-label="Terrain resolution"
-      />
-      <div class="terrain-res-stops" aria-hidden="true">
-        <span>Auto</span>
-        <span>Default</span>
-        <span>Fine</span>
-        <span>25</span>
-        <span>20</span>
-        <span>15</span>
-        <span>10</span>
-        <span>5</span>
-        <span>1</span>
-      </div>
-      <p class="hint">Auto follows the draw. 20 to 1 m can paste past 20×20. The readout is the ground-meter cell size of the mesh that pastes.</p>
-    </div>
     <button type="button" id="copy-terrain" class="secondary" hidden>Copy terrain</button>
     <div id="status">Search, then draw the site.</div>
   </div>

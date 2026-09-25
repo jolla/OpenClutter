@@ -543,7 +543,7 @@ function squareMeterAxes(widthM, lengthM, cellM, cap) {
   return [cols, rows];
 }
 
-/** US relief ladder. Null once the site is a ski hill and the slider applies. */
+/** US relief ladder. Null once the site is a ski hill and a resolution preset applies. */
 function reliefLadder(relief) {
   if (!(relief >= 1)) return [2, 2];
   if (relief < 8) return [4, 3];
@@ -626,8 +626,8 @@ function chooseGrid(relief, frame, resolution) {
   const highLat = highLatMeterFrame(frame);
   const width = frame && frame.widthM > 0 ? frame.widthM : 800;
   const length = frame && frame.lengthM > 0 ? frame.lengthM : 800;
-  // Finland Auto and the meter stops follow the slider on a town, not only
-  // on a 20 m ski hill. US bare earth keeps the relief ladder.
+  // Finland Auto and the meter stops follow the requested cell size on a town,
+  // not only on a 20 m ski hill. US bare earth keeps the relief ladder.
   const honorMeters = highLat && (preset.id === "auto" || preset.experimental);
   if (!honorMeters) {
     const ladder = reliefLadder(relief);
@@ -1447,7 +1447,7 @@ function usableDemSamples(samples) {
 }
 
 /**
- * Dev-host gate, same host/path check as the terrain-resolution slider.
+ * Dev-host gate, same host/path check as the Terrain checkbox.
  * Accepts a Netlify event or a headers object.
  */
 function isDevDemHost(eventOrHeaders) {

@@ -2019,9 +2019,6 @@ describe("Finland terrain does not wait on 3DEP", () => {
 });
 
 describe("Finland paste quads are square ground meters", () => {
-  const fs = require("node:fs");
-  const path = require("node:path");
-
   function lockedHamina(halfM) {
     const jpeg = require("jpeg-js");
     const lat = 60.5694;
@@ -2162,12 +2159,9 @@ describe("Finland paste quads are square ground meters", () => {
     assert.match(terrainBundleFields(us, []).terrainStatus, /keeps the coarse mesh/);
   });
 
-  it("locks the slider quad budget to the export's first-pass paste cap", () => {
+  it("locks the paste quad budget to the export's first-pass paste cap", () => {
     const budget = pastePlanQuadBudget();
     assert.equal(budget, Math.min(PASTE_BUILD_MAX_QUADS, Math.floor(TERRAIN_PASTE_JSON_MAX / 240)));
-    const app = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
-    assert.match(app, new RegExp("TERRAIN_PASTE_QUAD_BUDGET = " + budget));
-    assert.match(app, /requested " \+ stop\.cellM \+ " m stepped up to fit/);
     const [cols, rows] = squareMeterAxes(frame.widthM, frame.lengthM, 1, 500);
     assert.ok(Math.max(cols, rows) <= 500);
     assert.ok(Math.abs(frame.widthM / cols - frame.lengthM / rows) / (frame.widthM / cols) < 0.08);
