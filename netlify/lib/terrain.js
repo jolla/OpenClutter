@@ -310,6 +310,15 @@ function xyzAt(n, z) {
  * One ramp per cell, along the stronger axis. Hamina stores a sloped floor as
  * a low edge (two vertices, one z) and the opposite high edge — not a triangle
  * and not an independent z on every corner.
+ *
+ * Clipboard y increases north, so the low edge is walked with the cell
+ * interior on the left. That is the one counterclockwise low-first order for
+ * each grade. The other low-first order is clockwise, and pasteableQuad
+ * rejects it (the cell would paste as a flat pad):
+ *   south low, north high: sw, se, ne, nw
+ *   north low, south high: ne, nw, sw, se
+ *   west low, east high:   nw, sw, se, ne
+ *   east low, west high:   se, ne, nw, sw
  */
 function slopedRing(sw, se, ne, nw) {
   const zS = round1((sw.zRel + se.zRel) / 2);
@@ -573,6 +582,8 @@ module.exports = {
   RAISED_KEYS,
   SLOPED_KEYS,
   terrainFromSamples,
+  pasteableQuad,
+  slopedRing,
   terrainGroundM,
   slopeTopUnderRing,
   siteWarrantsLift,

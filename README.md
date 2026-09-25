@@ -4,7 +4,7 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
-**v1.1.7** on `dev` — terrain resolution defaults to **Auto** (mesh density from the draw-box size, about 1 m on a small ski hill, coarser on a large one, still at most 20×20). Default / Fine / Finest stay on the dev page as manual overrides for testing. CHM canopy crowns and solid (not slab-only) terrain floors stay. The page title and the export zip (`openclutter_version`) both read this from `package.json`.
+**v1.1.8** on `dev` — every sloped cell is a counterclockwise ramp in clipboard meters, low edge first and high edge opposite, for a grade that rises north, south, east, or west. Terrain resolution still defaults to **Auto** (mesh density from the draw-box size, about 1 m on a small ski hill, coarser on a large one, still at most 20×20). Default / Fine / Finest stay on the dev page as manual overrides for testing. CHM canopy crowns and solid (not slab-only) terrain floors stay. The page title and the export zip (`openclutter_version`) both read this from `package.json`.
 
 Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/dev · Source: https://github.com/jolla/OpenClutter
 
@@ -17,7 +17,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The title row shows a **dev** badge and the build version (`dev · v1.1.7`). The same dev host shows **Terrain resolution** (Auto / Default / Fine / Finest) next to Include foliage. Auto is selected by default.
+- Hack on **https://openclutter.netlify.app/dev**. The title row shows a **dev** badge and the build version (`dev · v1.1.8`). The same dev host shows **Terrain resolution** (Auto / Default / Fine / Finest) next to Include foliage. Auto is selected by default.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 
@@ -101,7 +101,7 @@ With **Include foliage** checked, canopy comes first from the **Meta/WRI canopy 
 
 ### Sloped sites (Granite Peak)
 
-Terrain still cannot go in the OpenIntent zip. **Copy terrain** pastes open quads into Planner Plus. Flat ground stays a 2×2 pad. A mild rise uses a 4×3 lattice. Relief under 20 m stays 6×5. A ski hill (DEM relief at least 20 m) uses the **Terrain resolution** control on the dev page. **Auto** is the default: cell size follows the draw (about 1 m on a ~20 m hill, about 10 m on a ~200 m hill, about 40 m on an ~800 m hill), filling up to 20×20 quads and never going under about 1 m. The 3DEP sample count scales with that mesh and stays at most 625. **Default** is about 80 m quads, at most 12×12 (144 DEM samples) — the same mesh as v1.1.5. **Fine** is about 40 m, at most 16×16 (324 samples). **Finest** is about 25 m, at most 20×20 (576 samples). Those three are manual overrides for A/B tests. The paste never exceeds 20×20 quads. Quads stay Jerry’s open-quad schema: four corners, ring not closed, sloped floors with one z on the low edge and a higher z on the opposite edge. `slabOnly` stays false.
+Terrain still cannot go in the OpenIntent zip. **Copy terrain** pastes open quads into Planner Plus. Flat ground stays a 2×2 pad. A mild rise uses a 4×3 lattice. Relief under 20 m stays 6×5. A ski hill (DEM relief at least 20 m) uses the **Terrain resolution** control on the dev page. **Auto** is the default: cell size follows the draw (about 1 m on a ~20 m hill, about 10 m on a ~200 m hill, about 40 m on an ~800 m hill), filling up to 20×20 quads and never going under about 1 m. The 3DEP sample count scales with that mesh and stays at most 625. **Default** is about 80 m quads, at most 12×12 (144 DEM samples) — the same mesh as v1.1.5. **Fine** is about 40 m, at most 16×16 (324 samples). **Finest** is about 25 m, at most 20×20 (576 samples). Those three are manual overrides for A/B tests. The paste never exceeds 20×20 quads. Quads stay Jerry’s open-quad schema: four corners, ring not closed, sloped floors with one z on the low edge and a higher z on the opposite edge. The ring is counterclockwise in clipboard meters on a north, south, east, or west grade. `slabOnly` stays false.
 
 Hamina’s attenuating-object fields are **bottom height from floor** and **top height from floor**. On a ski-hill DEM those are OpenIntent `bottom_height` and `top_height` (clipboard `bottomEdge` and `topEdge`):
 
