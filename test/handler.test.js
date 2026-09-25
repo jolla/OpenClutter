@@ -1100,6 +1100,94 @@ describe("dev-host Copernicus fallback", () => {
     assert.equal(body.terrainClipboard, null);
   });
 
+  it("returns a Hamina zip with laser heights, and still a zip when the grid is missing", async () => {
+    const fixture = require("./fixtures/nls-hamina-sample.json");
+    const { setNlsGridPathForTests } = require("../netlify/lib/nls-building-height");
+    const box = {
+      west: 27.19,
+      south: 60.566,
+      east: 27.2,
+      north: 60.572,
+      name: "Hamina",
+    };
+    function install() {
+      global.fetch = async (url) => {
+        const u = String(url && url.url ? url.url : url);
+        if (u.includes("getSamples") && u.includes("elevation.nationalmap.gov")) {
+          return { ok: true, json: async () => ({ error: { message: "no 3dep" } }) };
+        }
+        if (u.includes("copernicus-dem")) {
+          return { ok: false, status: 404, headers: { get: () => undefined }, arrayBuffer: async () => new ArrayBuffer(0) };
+        }
+        if (u.includes("World_Imagery")) {
+          if (u.includes("f=json")) {
+            return {
+              ok: true,
+              json: async () => ({
+                width: 64,
+                height: 64,
+                extent: {
+                  xmin: box.west,
+                  ymin: box.south,
+                  xmax: box.east,
+                  ymax: box.north,
+                  spatialReference: { wkid: 4326 },
+                },
+              }),
+            };
+          }
+          return { ok: true, arrayBuffer: async () => jpeg };
+        }
+        if (u.includes("MSBFP2")) {
+          return {
+            ok: true,
+            json: async () => ({
+              features: [
+                {
+                  type: "Feature",
+                  properties: {},
+                  geometry: { type: "Polygon", coordinates: [fixture.ring] },
+                },
+              ],
+            }),
+          };
+        }
+        return { ok: true, json: async () => ({ features: [], objectIds: [] }), arrayBuffer: async () => new ArrayBuffer(0) };
+      };
+    }
+    install();
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...box, format: "bundle", includeFoliage: false }),
+    });
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 500));
+    const body = JSON.parse(res.body);
+    assert.ok(body.zipBase64);
+    assert.equal(body.stats.nlsHeights >= 1, true);
+    assert.equal((body.warnings || []).some((w) => /Finland building heights omitted/.test(String(w))), false);
+    const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+    assert.match(files["README.txt"].toString(), /National Land Survey of Finland/);
+
+    setNlsGridPathForTests("/tmp/openclutter-missing-nls-grid.gz");
+    try {
+      install();
+      const miss = await handler({
+        httpMethod: "POST",
+        headers: { host: "dev--openclutter.netlify.app" },
+        body: JSON.stringify({ ...box, format: "bundle", includeFoliage: false }),
+      });
+      assert.equal(miss.statusCode, 200, String(miss.body).slice(0, 500));
+      const missBody = JSON.parse(miss.body);
+      assert.ok(missBody.zipBase64);
+      assert.equal(missBody.stats.nlsHeights, 0);
+      assert.ok((missBody.warnings || []).some((w) => /Finland building heights omitted/.test(String(w))));
+      assert.equal(missBody.error, undefined);
+    } finally {
+      setNlsGridPathForTests(null);
+    }
+  });
+
   it("does not call GLO-30 for Hamina on production", async () => {
     const urls = installFetch({ error: { message: "Invalid or missing input parameters" } }, HAMINA);
     const res = await handler({
