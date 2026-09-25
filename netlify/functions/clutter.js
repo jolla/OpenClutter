@@ -54,7 +54,9 @@ const TERRAIN_HARD_MS = 9000;
 const DENSE_FEATURES = 1500;
 // OpenIntent triples plus the clipboard and overlay for every roof on a
 // campus blow past the response limit (Hollywood at 982 areas was ~6.5 MB).
-// Stay under it so the zip actually downloads.
+// Stay under it so the zip actually downloads. The bundle repeats
+// terrain-clipboard.json beside that zip, so a fine paste is fitted again
+// against the synchronous payload budget before the response is returned.
 const ZIP_FIT_BYTES = 4200000;
 const ZIP_SHRINK_STEPS = [640, 400, 240];
 const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, padFootprintBbox, imageryMaxSide } = require("../lib/geo-frame");
@@ -74,6 +76,11 @@ const {
   noteMissingTerrain,
   normalizeTerrainResolution,
   isDevDemHost,
+  EXPORT_PAYLOAD_BUDGET,
+  LAMBDA_SYNC_PAYLOAD_MAX,
+  estimateBundlePayload,
+  lambdaPayloadBytes,
+  maxPasteJsonForCompanion,
 } = require("../lib/terrain");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
@@ -819,6 +826,70 @@ exports.handler = async (event) => {
     };
   }
 
+  function terrainClipJson(t) {
+    return t && t.clipboard ? JSON.stringify(t.clipboard) : "";
+  }
+
+  function refreshTerrainNotes() {
+    for (let i = warnings.length - 1; i >= 0; i--) {
+      if (/^Terrain (cell size is|paste )/.test(String(warnings[i]))) warnings.splice(i, 1);
+    }
+    if (!terrain) return;
+    const notes = terrainResolutionNotes(terrain, frame);
+    for (let i = 0; i < notes.length; i++) warnings.push(notes[i]);
+  }
+
+  function rebuildWithPasteCap(pasteJsonMax) {
+    const before = terrainClipJson(terrain).length;
+    let next = null;
+    try {
+      next = terrainFromSamples(demSamples, frame, {
+        terrainResolution,
+        kind: demKind,
+        attribution: demAttribution,
+        pasteJsonMax,
+      });
+    } catch {
+      next = null;
+    }
+    if (!next) return false;
+    terrain = next;
+    refreshTerrainNotes();
+    built = emitClutter(exportFeatures);
+    return terrainClipJson(terrain).length < before;
+  }
+
+  function dropTerrainPaste() {
+    if (!terrain || !terrain.clipboard) return;
+    terrain = Object.assign({}, terrain, { clipboard: null, pasteOmitted: true });
+    refreshTerrainNotes();
+    built = emitClutter(exportFeatures);
+  }
+
+  // The zip stores the paste and the bundle JSON stores it again. Fit to the
+  // leftover budget, then drop the paste and keep the zip if it still will not.
+  if (built.zip && demSamples && demSamples.length) {
+    let guard = 0;
+    while (guard < 6 && terrain && terrain.clipboard && built.zip) {
+      const clipJson = terrainClipJson(terrain);
+      const zipTooBig = built.zip.length > 4500000;
+      const payloadTooBig = estimateBundlePayload(built.zip.length, clipJson) > EXPORT_PAYLOAD_BUDGET;
+      if (!zipTooBig && !payloadTooBig) break;
+      const companion = Math.max(0, built.zip.length - clipJson.length);
+      let nextMax = maxPasteJsonForCompanion(companion);
+      if (!(nextMax < clipJson.length)) nextMax = Math.floor(clipJson.length * 0.7);
+      if (!(nextMax >= 8000)) {
+        dropTerrainPaste();
+        break;
+      }
+      if (!rebuildWithPasteCap(nextMax)) {
+        dropTerrainPaste();
+        break;
+      }
+      guard += 1;
+    }
+  }
+
   if (!built.zip) return json(500, cors, { error: "zip missing" });
   if (built.zip.length > 4500000) {
     return json(413, cors, {
@@ -840,19 +911,39 @@ exports.handler = async (event) => {
     };
   }
 
-  const terrainFields = terrainBundleFields(built.terrain, warnings);
-  return json(200, cors, {
-    ok: true,
-    alignment: ALIGNMENT,
-    frame: built.frame,
-    stats: built.stats,
-    zipFilename: `${built.slug}-openintent.zip`,
-    zipBase64: built.zip.toString("base64"),
-    terrainFilename: terrainFields.terrainFilename,
-    terrainClipboard: terrainFields.terrainClipboard,
-    terrainStatus: terrainFields.terrainStatus,
-    warnings,
-  });
+  function bundleResult() {
+    const terrainFields = terrainBundleFields(built.terrain, warnings);
+    return json(200, cors, {
+      ok: true,
+      alignment: ALIGNMENT,
+      frame: built.frame,
+      stats: built.stats,
+      zipFilename: `${built.slug}-openintent.zip`,
+      zipBase64: built.zip.toString("base64"),
+      terrainFilename: terrainFields.terrainFilename,
+      terrainClipboard: terrainFields.terrainClipboard,
+      terrainStatus: terrainFields.terrainStatus,
+      warnings,
+    });
+  }
+
+  let result = bundleResult();
+  if (lambdaPayloadBytes(result) > EXPORT_PAYLOAD_BUDGET && terrain && terrain.clipboard) {
+    const clipJson = terrainClipJson(terrain);
+    const scale = EXPORT_PAYLOAD_BUDGET / Math.max(1, lambdaPayloadBytes(result));
+    const nextMax = Math.floor(clipJson.length * scale * 0.85);
+    if (nextMax >= 8000 && rebuildWithPasteCap(nextMax)) result = bundleResult();
+    if (lambdaPayloadBytes(result) > EXPORT_PAYLOAD_BUDGET && terrain && terrain.clipboard) {
+      dropTerrainPaste();
+      result = bundleResult();
+    }
+  }
+  if (lambdaPayloadBytes(result) > LAMBDA_SYNC_PAYLOAD_MAX) {
+    return json(413, cors, {
+      error: "This area is too large to export in one zip. Draw a smaller area and try again.",
+    });
+  }
+  return result;
 };
 
 exports.UA = UA;
@@ -868,3 +959,6 @@ exports.OVERTURE_HARD_MS = OVERTURE_HARD_MS;
 exports.overtureWait = overtureWait;
 exports.largestFeatures = largestFeatures;
 exports.ZIP_FIT_BYTES = ZIP_FIT_BYTES;
+exports.EXPORT_PAYLOAD_BUDGET = EXPORT_PAYLOAD_BUDGET;
+exports.LAMBDA_SYNC_PAYLOAD_MAX = LAMBDA_SYNC_PAYLOAD_MAX;
+exports.lambdaPayloadBytes = lambdaPayloadBytes;
