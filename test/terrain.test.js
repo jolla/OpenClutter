@@ -26,6 +26,8 @@ const {
   MIN_CELL_M,
   LIFT_RELIEF_M,
   siteWarrantsLift,
+  demUnderFootprint,
+  slopeTopUnderRing,
   pasteableQuad,
   slopedRing,
 } = require("../netlify/lib/terrain");
@@ -1198,18 +1200,29 @@ describe("Copernicus GLO-30 when 3DEP misses", () => {
       imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
       terrain: surface,
     });
-    assert.equal(built.stats.buildingsLifted, 0);
+    assert.equal(siteWarrantsLift(surface), false);
+    assert.equal(typeof demUnderFootprint(surface), "function");
+    assert.equal(built.stats.buildingsLifted, 1);
     assert.equal(built.stats.demKind, "surface");
+    const hillRing = hill.geometry.coordinates[0];
+    const expectedBottom = slopeTopUnderRing(surface, hillRing);
+    assert.ok(expectedBottom >= 20, "slope top " + expectedBottom);
+    assert.notEqual(expectedBottom, LIFT_RELIEF_M);
     const area = built.openintent.floorplans[0].attenuation_areas[0];
-    assert.equal(area.area_material.name, "Building - Two Floor");
-    assert.equal("bottom_height" in area.area_material, false);
-    assert.ok(Math.abs(area.area_material.top_height - 7.620092660326749) < 0.05);
+    const stockTwo = 7.620092660326749;
+    assert.equal(area.area_material.bottom_height, expectedBottom);
+    assert.equal(area.area_material.top_height, Math.round((expectedBottom + stockTwo) * 10) / 10);
+    assert.equal(area.area_material.name, "Building - Two Floor " + expectedBottom.toFixed(1));
+    const zone = built.clipboard.attenuatingZones[0];
+    const type = built.clipboard.attenuatingZoneTypes.find((t) => t.id === zone.typeId);
+    assert.equal(type.bottomEdge, expectedBottom);
+    assert.equal(type.topEdge, Math.round((expectedBottom + 6.4) * 10) / 10);
     const readme = unzipStore(built.zip)["README.txt"].toString();
     assert.match(readme, /Copernicus DEM GLO-30/);
     assert.match(readme, /EGM2008/);
     assert.match(readme, new RegExp(GLO30_CREDIT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.match(readme, /omit bottom_height/);
-    assert.equal(/sets bottom_height/.test(readme), false);
+    assert.match(readme, /20 m ski-hill gate does not apply/);
+    assert.equal(/omit bottom_height even when relief is at least 20 m/.test(readme), false);
     assert.match(readme, /^demKind: surface$/m);
     assert.match(terrainBundleFields(surface, []).terrainStatus, /Copernicus DEM GLO-30 surface/);
     assert.equal(/3DEP/.test(terrainBundleFields(surface, []).terrainStatus), false);
@@ -1223,6 +1236,92 @@ describe("Copernicus GLO-30 when 3DEP misses", () => {
     });
     assert.equal(lifted.stats.buildingsLifted, 1);
     assert.ok(lifted.openintent.floorplans[0].attenuation_areas[0].area_material.bottom_height >= 20);
+  });
+
+  it("places buildings and foliage on a surface slope, including relief under 20 m", () => {
+    const frame = geoFrame({ west: -89.7, south: 44.91, east: -89.684, north: 44.926, name: "Hamina slope" });
+    const span = frame.north - frame.south;
+    const spanLon = frame.east - frame.west;
+    const zMild = (r, c, lon, lat) => 400 + ((lat - frame.south) / span) * 12;
+    const samples = gridSamples(frame, zMild);
+    const surface = terrainFromSamples(samples, frame, { kind: "surface", attribution: GLO30_CREDIT });
+    const bare = terrainFromSamples(samples, frame);
+    assert.ok(surface.reliefM < LIFT_RELIEF_M, "relief " + surface.reliefM);
+    assert.equal(surface.kind, "surface");
+    assert.equal(siteWarrantsLift(surface), false);
+    assert.equal(siteWarrantsLift(bare), false);
+    assert.equal(demUnderFootprint(bare), null);
+    assert.equal(typeof demUnderFootprint(surface), "function");
+
+    const dLat = span * 0.012;
+    const dLon = spanLon * 0.012;
+    const valley = squareFeature(
+      frame.west + spanLon * 0.2,
+      frame.south + span * 0.02,
+      frame.west + spanLon * 0.2 + dLon,
+      frame.south + span * 0.02 + dLat
+    );
+    const hillLon = frame.west + spanLon * 0.4;
+    const hillLat = frame.south + span * 0.7;
+    const hill = squareFeature(hillLon, hillLat, hillLon + dLon, hillLat + dLat, { height: 6.4 });
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [valley, hill] },
+      treePoints: [],
+      name: "Hamina slope",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain: surface,
+      includeFoliage: true,
+      canopyHits: canopyHitsGrid(frame, hillLon + spanLon * 0.2, hillLat, { pct: 80 }).concat(
+        canopyHitsGrid(frame, frame.west + spanLon * 0.15, frame.south + span * 0.02, { pct: 80 })
+      ),
+      heightSample: () => 14.2,
+    });
+    const bareBuilt = buildClutter({
+      frame,
+      footprintsGeojson: { features: [valley, hill] },
+      treePoints: [],
+      name: "Hamina slope",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain: bare,
+    });
+    assert.equal(bareBuilt.stats.buildingsLifted, 0);
+    assert.equal(
+      bareBuilt.openintent.floorplans[0].attenuation_areas.some((a) => "bottom_height" in a.area_material),
+      false
+    );
+
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    const valleyArea = areas.find((a) => a.area_material.name === "Building - One Floor");
+    const hillArea = areas.find((a) => String(a.area_material.name).indexOf("Building - Two Floor ") === 0);
+    assert.ok(valleyArea, "valley building stays on the floor");
+    assert.equal("bottom_height" in valleyArea.area_material, false);
+    assert.equal(valleyArea.area_material.top_height, 4.5);
+    const expected = slopeTopUnderRing(surface, hill.geometry.coordinates[0]);
+    assert.ok(expected >= 1 && expected < LIFT_RELIEF_M, "bottom " + expected);
+    assert.equal(hillArea.area_material.bottom_height, expected);
+    assert.equal(hillArea.area_material.top_height, Math.round((expected + 7.620092660326749) * 10) / 10);
+    const hillZone = built.clipboard.attenuatingZones.find((z) => String(z.typeId).indexOf("bldg-m-") === 0);
+    const hillType = built.clipboard.attenuatingZoneTypes.find((t) => t.id === hillZone.typeId);
+    assert.equal(hillType.bottomEdge, expected);
+    assert.equal(hillType.topEdge, Math.round((expected + 6.4) * 10) / 10);
+    assert.ok(hillType.topEdge > hillType.bottomEdge);
+
+    const foliage = areas.filter((a) => String(a.area_material.name).indexOf("Foliage - Heavy 14.2 @ ") === 0);
+    const foliageFloor = areas.filter((a) => a.area_material.name === "Foliage - Heavy 14.2");
+    assert.ok(foliage.length >= 1, "uphill canopy sits on the DEM");
+    assert.ok(foliageFloor.length >= 1, "valley canopy stays on the floor");
+    const folMat = foliage[0].area_material;
+    assert.ok(folMat.bottom_height >= 1 && folMat.bottom_height < LIFT_RELIEF_M);
+    assert.equal(folMat.top_height, Math.round((folMat.bottom_height + 14.2) * 10) / 10);
+    const folZone = built.clipboard.attenuatingZones.find((z) => String(z.typeId).indexOf("foliage-m-14_2-b") === 0);
+    const folType = built.clipboard.attenuatingZoneTypes.find((t) => t.id === folZone.typeId);
+    assert.equal(folType.bottomEdge, folMat.bottom_height);
+    assert.equal(folType.topEdge, folMat.top_height);
+    assert.equal(built.stats.demKind, "surface");
+    assert.equal(built.stats.buildingsLifted, 1);
+    assert.equal(built.stats.foliageLifted, foliage.length);
+    assert.equal(siteWarrantsLift(surface), false);
   });
 
   it("treats the dev badge host as the only fallback gate", () => {

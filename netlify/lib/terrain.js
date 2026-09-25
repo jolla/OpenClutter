@@ -3,8 +3,10 @@
 /**
  * USGS 3DEP bare-earth DEM → a HaminaClipboard JSON for Planner Plus paste.
  * On the dev host, fetchTerrainDem tries Copernicus DEM GLO-30 when 3DEP
- * returns no usable grid. GLO-30 is a surface DSM: kind "surface" does not
- * lift building bottoms. Production callers leave that fallback off.
+ * returns no usable grid. GLO-30 is a surface DSM. kind "surface" does not
+ * use the bare-earth 20 m ski-hill gate. Attenuating objects still take
+ * bottom height from the DEM under the footprint. Production callers leave
+ * that fallback off.
  * OpenIntent has no raisedFloorZones / slopedFloors. Copy terrain is the paste
  * path. The same JSON is stored in the OpenIntent zip when 3DEP hits; Export
  * does not download it as a second file.
@@ -494,13 +496,30 @@ function slopeTopUnderRing(terrain, ring) {
   return max;
 }
 
-/** True when this export's terrain clipboard is a ski-hill-scale bare-earth DEM. */
+/** True when this export's terrain clipboard is a ski-hill-scale bare-earth DEM.
+ *  Surface DEMs stay false. The 20 m gate is not applied to Copernicus.
+ */
 function siteWarrantsLift(terrain) {
-  // A surface DSM (Copernicus GLO-30) includes roofs. Lifting buildings by
-  // that relief would stack building height on top of roof height.
   if (!terrain || terrain.kind === "surface") return false;
   if (!(terrain.reliefM >= LIFT_RELIEF_M)) return false;
   return (terrain.raised || 0) + (terrain.sloped || 0) > 0;
+}
+
+/**
+ * Ring → meters above the terrain datum for attenuating-object bottoms.
+ * Null when objects stay on the floor.
+ * Bare earth uses the ski-hill gate (relief at least 20 m).
+ * A surface DEM skips that gate and still samples the mesh, including relief
+ * under 20 m. The value is the slope top under the ring, not a flat 20 m.
+ * Ground under LIFT_LOCAL_M still omits bottom_height inside the lifters.
+ */
+function demUnderFootprint(terrain) {
+  if (!terrain) return null;
+  if ((terrain.raised || 0) + (terrain.sloped || 0) <= 0) return null;
+  if (terrain.kind === "surface" || siteWarrantsLift(terrain)) {
+    return (ring) => slopeTopUnderRing(terrain, ring);
+  }
+  return null;
 }
 
 function terrainSourceLabel(terrain) {
@@ -700,6 +719,7 @@ module.exports = {
   terrainGroundM,
   slopeTopUnderRing,
   siteWarrantsLift,
+  demUnderFootprint,
   terrainBundleFields,
   noteMissingTerrain,
   parseDemSamples,

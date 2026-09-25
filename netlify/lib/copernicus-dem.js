@@ -6,8 +6,9 @@
  * Pixel size is about 30 m: longitude spacing changes with latitude, so the
  * reader uses the GeoTIFF origin and resolution instead of a fixed 3600 grid.
  *
- * This is a surface DSM (EGM2008), not bare earth. Callers tag kind "surface"
- * and must not lift building bottoms onto it.
+ * This is a surface DSM (EGM2008), not bare earth. Callers tag kind "surface".
+ * That tag skips the bare-earth 20 m ski-hill gate. Attenuating objects still
+ * sit on the sampled elevation.
  *
  * Example (Trafalgar Square, confirmed HTTP 200):
  * https://copernicus-dem-30m.s3.eu-central-1.amazonaws.com/Copernicus_DSM_COG_10_N51_00_W001_00_DEM/Copernicus_DSM_COG_10_N51_00_W001_00_DEM.tif
