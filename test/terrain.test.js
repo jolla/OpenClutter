@@ -27,8 +27,10 @@ const {
   ABSOLUTE_MAX_GRID,
   ABSOLUTE_MAX_SAMPLES,
   PASTE_BUILD_MAX_QUADS,
+  TERRAIN_PASTE_JSON_MAX,
   MIN_CELL_M,
   terrainResolutionNotes,
+  fitPasteAxes,
   LIFT_RELIEF_M,
   siteWarrantsLift,
   demUnderFootprint,
@@ -1057,7 +1059,7 @@ describe("terrain resolution presets", () => {
     assert.ok(autoN <= ABSOLUTE_MAX_SAMPLES);
   });
 
-  it("fills a Granite Peak draw at 20–5 m and omits a 1 m mesh that will not fit", () => {
+  it("keeps a fine paste that fits and coarsens one that would not", () => {
     const peak = metersBox(44.91, 1800, 1400, "Granite Peak");
     assert.deepEqual(chooseGrid(200, peak, "20"), [90, 70]);
     assert.deepEqual(chooseGrid(200, peak, "15"), [120, 93]);
@@ -1068,11 +1070,23 @@ describe("terrain resolution presets", () => {
     assert.ok(360 <= ABSOLUTE_MAX_GRID && 280 <= ABSOLUTE_MAX_GRID);
     assert.ok(180 * 140 > PASTE_BUILD_MAX_QUADS);
     assert.ok(90 * 70 <= PASTE_BUILD_MAX_QUADS);
+    const fit10 = fitPasteAxes(180, 140, PASTE_BUILD_MAX_QUADS);
+    const fit1 = fitPasteAxes(500, 500, PASTE_BUILD_MAX_QUADS);
+    assert.ok(fit10[0] * fit10[1] <= PASTE_BUILD_MAX_QUADS);
+    assert.ok((fit10[0] + 1) * fit10[1] > PASTE_BUILD_MAX_QUADS);
+    assert.ok(fit10[0] * (fit10[1] + 1) > PASTE_BUILD_MAX_QUADS);
+    assert.ok(Math.abs(fit10[0] / fit10[1] - 180 / 140) < 0.05);
+    const campus = metersBox(44.91, 2140, 1780, "Campus");
+    assert.deepEqual(chooseGrid(200, campus, "10"), [214, 178]);
+    const fitCampus = fitPasteAxes(214, 178, PASTE_BUILD_MAX_QUADS);
+    assert.ok(fitCampus[0] * fitCampus[1] <= PASTE_BUILD_MAX_QUADS);
+    assert.ok(fitCampus[0] < 214 && fitCampus[1] < 178);
 
     const zAt = (r, c, lon, lat) => 300 + ((lat - peak.south) / (peak.north - peak.south)) * 200;
     const samples = gridSamples(peak, zAt);
     const m20 = terrainFromSamples(samples, peak, { terrainResolution: "20" });
     assert.equal(m20.pasteOmitted, undefined);
+    assert.equal(m20.pasteReduced, undefined);
     assert.deepEqual([m20.gridCols, m20.gridRows], [90, 70]);
     assert.equal(m20.raised + m20.sloped, 90 * 70);
     assert.ok(Math.abs(m20.cellM - ((1800 / 90 + 1400 / 70) / 2)) < 1.5);
@@ -1080,27 +1094,54 @@ describe("terrain resolution presets", () => {
     const notes20 = terrainResolutionNotes(m20, peak);
     assert.match(notes20.join("\n"), /past the 20×20/);
     assert.equal(/not 20 m/.test(notes20.join("\n")), false);
+    assert.equal(/reduced from/.test(notes20.join("\n")), false);
     assert.match(terrainBundleFields(m20, []).terrainStatus, /20 m ~/);
     assert.match(terrainBundleFields(m20, []).terrainStatus, /past 20×20/);
+    assert.match(terrainBundleFields(m20, []).terrainStatus, /Copy terrain/);
+
+    const m15 = terrainFromSamples(samples, peak, { terrainResolution: "15" });
+    assert.equal(m15.pasteOmitted, undefined);
+    assert.equal(m15.pasteReduced, undefined);
+    assert.deepEqual([m15.gridCols, m15.gridRows], [120, 93]);
+    assert.ok(JSON.stringify(m15.clipboard).length <= TERRAIN_PASTE_JSON_MAX);
+    assert.match(terrainBundleFields(m15, []).terrainStatus, /Copy terrain/);
+
+    function assertFittedPaste(terrain, frame, fromCols, fromRows, fitted) {
+      assert.equal(terrain.pasteOmitted, undefined);
+      assert.equal(terrain.pasteReduced, true);
+      assert.ok(terrain.clipboard);
+      assert.deepEqual([terrain.requestedGridCols, terrain.requestedGridRows], [fromCols, fromRows]);
+      assert.deepEqual([terrain.gridCols, terrain.gridRows], fitted);
+      assert.equal(terrain.raised + terrain.sloped, fitted[0] * fitted[1]);
+      assert.ok(JSON.stringify(terrain.clipboard).length <= TERRAIN_PASTE_JSON_MAX);
+      assert.ok(terrain.clipboard.slopedFloors.concat(terrain.clipboard.raisedFloorZones).every((z) => z.slabOnly === false));
+      const note = "reduced from " + fromCols + "×" + fromRows + " to " + fitted[0] + "×" + fitted[1];
+      const notes = terrainResolutionNotes(terrain, frame).join("\n");
+      assert.match(notes, new RegExp(note));
+      assert.match(notes, /OpenIntent zip is unchanged/);
+      const status = terrainBundleFields(terrain, []).terrainStatus;
+      assert.match(status, new RegExp(note));
+      assert.match(status, /OpenIntent zip is unchanged/);
+      assert.match(status, /Copy terrain/);
+      assert.equal(status.includes("omitted"), false);
+    }
 
     const m10 = terrainFromSamples(samples, peak, { terrainResolution: "10" });
-    assert.equal(m10.pasteOmitted, true);
-    assert.equal(m10.clipboard, null);
-    assert.deepEqual([m10.gridCols, m10.gridRows], [180, 140]);
-    assert.match(terrainResolutionNotes(m10, peak).join("\n"), /Terrain paste omitted: 180×140/);
-    assert.match(terrainBundleFields(m10, []).terrainStatus, /will not fit/);
-    assert.match(terrainBundleFields(m10, []).terrainStatus, /OpenIntent zip is unchanged/);
+    assertFittedPaste(m10, peak, 180, 140, fit10);
+    assert.ok(m10.cellM > 10);
     const warnings = [];
     noteMissingTerrain(m10, warnings);
     assert.equal(warnings.length, 0);
 
+    const campusSamples = gridSamples(campus, (r, c, lon, lat) => 200 + ((lat - campus.south) / (campus.north - campus.south)) * 80);
+    const campus10 = terrainFromSamples(campusSamples, campus, { terrainResolution: "10" });
+    assertFittedPaste(campus10, campus, 214, 178, fitCampus);
+
     const m1 = terrainFromSamples(samples, peak, { terrainResolution: "1" });
-    assert.equal(m1.pasteOmitted, true);
-    assert.deepEqual([m1.gridCols, m1.gridRows], [500, 500]);
+    assertFittedPaste(m1, peak, 500, 500, fit1);
     const notes1 = terrainResolutionNotes(m1, peak);
     assert.match(notes1.join("\n"), /not 1 m/);
     assert.match(notes1.join("\n"), /covers about 500×500 m/);
-    assert.match(notes1.join("\n"), /Terrain paste omitted: 500×500/);
     assert.equal(typeof m1.elevationAt, "function");
     assert.ok(m1.reliefM >= LIFT_RELIEF_M);
 
@@ -1111,9 +1152,11 @@ describe("terrain resolution presets", () => {
       { terrainResolution: "1" }
     );
     assert.equal(fineHill.pasteOmitted, undefined);
+    assert.equal(fineHill.pasteReduced, undefined);
     assert.deepEqual([fineHill.gridCols, fineHill.gridRows], [30, 30]);
     assert.ok(fineHill.cellM >= 0.9 && fineHill.cellM <= 1.2);
     assert.match(terrainResolutionNotes(fineHill, hill).join("\n"), /30×30/);
+    assert.equal(/reduced from/.test(terrainResolutionNotes(fineHill, hill).join("\n")), false);
     assert.equal(fineHill.clipboard.slopedFloors.length + fineHill.clipboard.raisedFloorZones.length, 30 * 30);
 
     const wide = metersBox(44.91, 2500, 2500, "Max draw");
@@ -1149,8 +1192,10 @@ describe("terrain resolution presets", () => {
     assert.equal(new URL(seen[3]).searchParams.get("sampleCount"), "144");
     const pack = await fetchTerrainDem(peak, fetchFn, { terrainResolution: "10", budgetMs: 8000 });
     assert.equal(pack.kind, "bare-earth");
+    const fitted = fitPasteAxes(180, 140, PASTE_BUILD_MAX_QUADS);
     assert.match(pack.notes.join("\n"), /stepped down to 4/);
-    assert.match(pack.notes.join("\n"), /180×140/);
+    assert.match(pack.notes.join("\n"), new RegExp(fitted[0] + "×" + fitted[1]));
+    assert.equal(/180×140/.test(pack.notes.join("\n")), false);
   });
 });
 

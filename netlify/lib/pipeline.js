@@ -256,7 +256,8 @@ const TERRAIN_README =
   "and 1 m may paste a denser grid so a draw about 2.5 km on a side can still use\n" +
   "about 5–10 m cells (mesh cap 500 quads on a side). The older Hamina paste\n" +
   "expectation is about 20×20. A paste past that size is named in export-warnings.json.\n" +
-  "A mesh that will not fit in the export response is omitted instead of hanging.\n" +
+  "A mesh that will not fit in the export response is coarsened to the densest\n" +
+  "grid that still fits, and that reduction is named in export-warnings.json.\n" +
   "DEM samples for those stops step down when the export budget is short.\n" +
   "OpenIntent does not support raised or sloped floors. On the OpenClutter page,\n" +
   "Copy terrain pastes this JSON into Planner Plus. The same JSON is\n" +
@@ -268,8 +269,7 @@ const TERRAIN_README =
   "so the solid floor is not a second clutter wall.\n" +
   "slopedFloors are open xyz quads (z = meters above that same low point).\n" +
   "The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
-  "If terrain-clipboard.json is absent, the DEM request did not return a usable grid,\n" +
-  "or the paste was omitted because it would not fit.\n" +
+  "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
   "Building attenuating objects stay in this OpenIntent zip. On a ski-hill DEM their\n" +
   "bottom_height is bottom height from floor (slope top under the footprint) and\n" +
   "top_height is top height from floor (that bottom plus the building height).\n" +
@@ -297,7 +297,8 @@ const TERRAIN_README_SURFACE =
   "and 1 m may paste a denser grid so a draw about 2.5 km on a side can still use\n" +
   "about 5–10 m cells (mesh cap 500 quads on a side). The older Hamina paste\n" +
   "expectation is about 20×20. A paste past that size is named in export-warnings.json.\n" +
-  "A mesh that will not fit in the export response is omitted instead of hanging.\n" +
+  "A mesh that will not fit in the export response is coarsened to the densest\n" +
+  "grid that still fits, and that reduction is named in export-warnings.json.\n" +
   "DEM samples for those stops step down when the export budget is short.\n" +
   "OpenIntent does not support raised or sloped floors. On the OpenClutter page,\n" +
   "Copy terrain pastes this JSON into Planner Plus. The same JSON is\n" +
@@ -309,8 +310,7 @@ const TERRAIN_README_SURFACE =
   "so the solid floor is not a second clutter wall.\n" +
   "slopedFloors are open xyz quads (z = meters above that same low point).\n" +
   "The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
-  "If terrain-clipboard.json is absent, the DEM request did not return a usable grid,\n" +
-  "or the paste was omitted because it would not fit.\n" +
+  "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
   "Building attenuating objects stay in this OpenIntent zip. They sit on this DEM:\n" +
   "bottom_height is the slope top under that footprint, and top_height is that\n" +
   "bottom plus the building height. Canopy polygons use that bottom plus the\n" +
