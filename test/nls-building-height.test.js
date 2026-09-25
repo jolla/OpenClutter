@@ -2,6 +2,8 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const fixture = require("./fixtures/nls-hamina-sample.json");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { buildClutter, validateOiArea } = require("../netlify/lib/pipeline");
@@ -16,6 +18,8 @@ const {
 const {
   NLS_API_KEY_ENV,
   nlsApiKey,
+  nlsGridPaths,
+  setNlsGridPathForTests,
   cellMetres,
   heightForRing,
   applyNlsBuildingHeights,
@@ -39,7 +43,7 @@ function squareFeature(west, south, east, north, props) {
   };
 }
 
-describe("NLS Hamina building heights", () => {
+describe("NLS Hamina building heights", { concurrency: false }, () => {
   it("reads the laser grid at the fixture cells", () => {
     const roofCol = Math.floor((fixture.roof.e - fixture.originE) / fixture.cellM);
     const roofRow = Math.floor((fixture.roof.n - fixture.originN) / fixture.cellM);
@@ -175,6 +179,52 @@ describe("NLS Hamina building heights", () => {
     const stock = liftPickedBuilding(materialForBuilding(6.4, 100), 10);
     assert.equal(stock.material.name, "Building - Two Floor 10.0");
     assert.equal(isMeasuredBuildingOiName(stock.material.name), false);
+  });
+
+  it("packages the laser grid next to the function bundle", () => {
+    const paths = nlsGridPaths();
+    assert.ok(paths.some((p) => p.endsWith(path.join("netlify", "lib", "nls-hamina-ndsm.gz"))));
+    assert.ok(paths.some((p) => fs.existsSync(p)));
+    const toml = fs.readFileSync(path.join(__dirname, "../netlify.toml"), "utf8");
+    assert.match(toml, /\[functions\."clutter"\]/);
+    assert.match(toml, /included_files = \["netlify\/lib\/nls-hamina-ndsm\.gz"\]/);
+  });
+
+  it("omits laser heights instead of throwing when the grid file is missing", () => {
+    const ring = fixture.ring;
+    const frame = geoFrame({
+      west: ring[0][0] - 0.0003,
+      south: ring[0][1] - 0.0002,
+      east: ring[2][0] + 0.0003,
+      north: ring[2][1] + 0.0002,
+      name: "Hamina missing grid",
+    });
+    const feature = squareFeature(ring[0][0], ring[0][1], ring[2][0], ring[2][1], {});
+    feature.geometry.coordinates = [ring];
+    const warnings = [];
+    setNlsGridPathForTests("/tmp/openclutter-missing-nls-grid.gz");
+    try {
+      const out = applyNlsBuildingHeights([feature]);
+      assert.equal(out.omitted, true);
+      assert.equal(out.applied, 0);
+      assert.equal(feature.properties && feature.properties.heightSource, undefined);
+      const built = buildClutter({
+        frame,
+        footprintsGeojson: { features: [JSON.parse(JSON.stringify(feature))] },
+        treePoints: [],
+        name: "Hamina missing",
+        imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+        nlsHeights: true,
+        warnings,
+      });
+      assert.ok(built.zip && built.zip.length > 0);
+      assert.equal(built.stats.nlsHeights, 0);
+      assert.ok(warnings.some((w) => /Finland building heights omitted/.test(w)));
+      assert.match(warnings.join("\n"), /OpenIntent zip is unchanged/);
+    } finally {
+      setNlsGridPathForTests(null);
+    }
+    assert.equal(heightForRing(fixture.ring), fixture.ringHeightM);
   });
 
   it("reads NLS_API_KEY and does not invent one", () => {

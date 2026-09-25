@@ -1545,7 +1545,14 @@ function buildClutter({
   nlsHeights,
 }) {
   const featureList = footprintsGeojson?.features || [];
-  if (nlsHeights) applyNlsBuildingHeights(featureList);
+  if (nlsHeights) {
+    const nls = applyNlsBuildingHeights(featureList);
+    if (nls && nls.omitted && Array.isArray(warnings)) {
+      warnings.push(
+        "Finland building heights omitted: the laser grid could not be read. OpenIntent zip is unchanged."
+      );
+    }
+  }
   const { name, slug } = siteName(rawName);
   const imgName = `${slug}.jpg`;
   const slopeTop = demUnderFootprint(terrain);

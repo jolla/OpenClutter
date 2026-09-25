@@ -920,6 +920,7 @@ function terrainFromSamples(samples, frame, opts) {
     clipboard: mesh.clip,
     raised: mesh.raised,
     sloped: mesh.sloped,
+    frame,
     // z = 0 on sloped floors is the lowest lattice node, not the raw sample min.
     datumZ: mesh.grid.minZ,
   };
@@ -950,6 +951,7 @@ function omittedPaste(src) {
     pasteOmitted: true,
     raised: src.mesh ? src.mesh.raised : 0,
     sloped: src.mesh ? src.mesh.sloped : 0,
+    frame: src.frame,
     datumZ: src.mesh ? src.mesh.grid.minZ : src.minS,
   };
 }
@@ -962,9 +964,168 @@ function terrainGroundM(terrain, lon, lat) {
   return Math.max(0, round1(z - terrain.datumZ));
 }
 
+function ringPointCount(ring) {
+  if (!ring || ring.length < 2) return ring ? ring.length : 0;
+  const a = ring[0];
+  const b = ring[ring.length - 1];
+  if (a && b && a[0] === b[0] && a[1] === b[1]) return ring.length - 1;
+  return ring.length;
+}
+
+function pointInOrOnRing(x, y, ring) {
+  const n = ringPointCount(ring);
+  if (n < 3) return false;
+  let inside = false;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = ring[i][0];
+    const yi = ring[i][1];
+    const xj = ring[j][0];
+    const yj = ring[j][1];
+    const dx = xj - xi;
+    const dy = yj - yi;
+    const cross = (x - xi) * dy - (y - yi) * dx;
+    if (Math.abs(cross) <= 1e-4 * Math.max(1, Math.hypot(dx, dy))) {
+      const dot = (x - xi) * dx + (y - yi) * dy;
+      const len2 = dx * dx + dy * dy;
+      if (dot >= -1e-4 && dot <= len2 + 1e-4) return true;
+    }
+    const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-20) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function segmentHit(a, b, c, d) {
+  const rx = b[0] - a[0];
+  const ry = b[1] - a[1];
+  const sx = d[0] - c[0];
+  const sy = d[1] - c[1];
+  const den = rx * sy - ry * sx;
+  if (Math.abs(den) < 1e-12) return null;
+  const qx = c[0] - a[0];
+  const qy = c[1] - a[1];
+  const t = (qx * sy - qy * sx) / den;
+  const u = (qx * ry - qy * rx) / den;
+  if (t < -1e-8 || t > 1 + 1e-8 || u < -1e-8 || u > 1 + 1e-8) return null;
+  return [a[0] + t * rx, a[1] + t * ry];
+}
+
+/** Vertices of the intersection of two rings. A linear floor is highest at one of these. */
+function overlapVertices(a, b) {
+  const na = ringPointCount(a);
+  const nb = ringPointCount(b);
+  const out = [];
+  for (let i = 0; i < na; i++) {
+    if (pointInOrOnRing(a[i][0], a[i][1], b)) out.push(a[i]);
+  }
+  for (let i = 0; i < nb; i++) {
+    if (pointInOrOnRing(b[i][0], b[i][1], a)) out.push(b[i]);
+  }
+  for (let i = 0; i < na; i++) {
+    const a0 = a[i];
+    const a1 = a[(i + 1) % na];
+    for (let j = 0; j < nb; j++) {
+      const hit = segmentHit(a0, a1, b[j], b[(j + 1) % nb]);
+      if (hit) out.push(hit);
+    }
+  }
+  return out;
+}
+
+function boundsOverlap(a, b) {
+  let aL = Infinity;
+  let aR = -Infinity;
+  let aB = Infinity;
+  let aT = -Infinity;
+  let bL = Infinity;
+  let bR = -Infinity;
+  let bB = Infinity;
+  let bT = -Infinity;
+  const na = ringPointCount(a);
+  const nb = ringPointCount(b);
+  for (let i = 0; i < na; i++) {
+    if (a[i][0] < aL) aL = a[i][0];
+    if (a[i][0] > aR) aR = a[i][0];
+    if (a[i][1] < aB) aB = a[i][1];
+    if (a[i][1] > aT) aT = a[i][1];
+  }
+  for (let i = 0; i < nb; i++) {
+    if (b[i][0] < bL) bL = b[i][0];
+    if (b[i][0] > bR) bR = b[i][0];
+    if (b[i][1] < bB) bB = b[i][1];
+    if (b[i][1] > bT) bT = b[i][1];
+  }
+  return aL <= bR && aR >= bL && aB <= bT && aT >= bB;
+}
+
 /**
- * Top of the slope under a lon/lat ring: the highest DEM sample on the
- * vertices and the centroid, in terrain-clipboard meters.
+ * Pasted floor height at one clipboard point. A ramp stores one z on the low
+ * edge and one z on the opposite edge, so the plane can sit above a corner DEM.
+ */
+function pastedFloorZ(zone, x, y) {
+  const ring = zone.area && zone.area.coordinates && zone.area.coordinates[0];
+  if (!ring || ring.length < 4) return 0;
+  if (ring[0].length < 3) return Number(zone.height) || 0;
+  const z0 = ring[0][2];
+  const z1 = ring[2][2];
+  const horizontal = Math.abs(ring[0][1] - ring[1][1]) <= 0.002;
+  let t = 0;
+  if (horizontal) {
+    const y0 = ring[0][1];
+    const y1 = ring[2][1];
+    t = y1 === y0 ? 0 : (y - y0) / (y1 - y0);
+  } else {
+    const x0 = ring[0][0];
+    const x1 = ring[2][0];
+    t = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
+  }
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  return z0 + t * (z1 - z0);
+}
+
+function ringToClipboard(ring, frame) {
+  const n = ringPointCount(ring);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const p = ring[i];
+    if (!p || !Number.isFinite(+p[0]) || !Number.isFinite(+p[1])) continue;
+    out.push(llToClipboard(+p[0], +p[1], frame));
+  }
+  return out;
+}
+
+/** Highest pasted floor inside the footprint, in the same meters as sloped-floor z. */
+function pastedFloorTopUnderRing(terrain, ring) {
+  const clip = terrain && terrain.clipboard;
+  const frame = terrain && terrain.frame;
+  if (!clip || !frame || !ring) return 0;
+  const xy = ringToClipboard(ring, frame);
+  if (xy.length < 3) return 0;
+  const zones = [];
+  const sloped = clip.slopedFloors || [];
+  const raised = clip.raisedFloorZones || [];
+  for (let i = 0; i < sloped.length; i++) zones.push(sloped[i]);
+  for (let i = 0; i < raised.length; i++) zones.push(raised[i]);
+  let max = 0;
+  for (let i = 0; i < zones.length; i++) {
+    const zone = zones[i];
+    const quad = zone.area && zone.area.coordinates && zone.area.coordinates[0];
+    if (!quad || quad.length < 4 || !boundsOverlap(xy, quad)) continue;
+    const pts = overlapVertices(xy, quad);
+    for (let k = 0; k < pts.length; k++) {
+      const z = pastedFloorZ(zone, pts[k][0], pts[k][1]);
+      if (z > max) max = z;
+    }
+  }
+  return max;
+}
+
+/**
+ * Top of the slope under a lon/lat ring, in terrain-clipboard meters.
+ * DEM samples at the vertices and centroid, and the pasted floor inside the
+ * footprint. A coarse ramp can sit above those samples; the higher one is
+ * the surface the object has to rest on.
  */
 function slopeTopUnderRing(terrain, ring) {
   if (!terrain || !ring || ring.length < 3) return 0;
@@ -984,7 +1145,9 @@ function slopeTopUnderRing(terrain, ring) {
     const zc = terrainGroundM(terrain, sx / end, sy / end);
     if (zc > max) max = zc;
   }
-  return max;
+  const floor = pastedFloorTopUnderRing(terrain, ring);
+  if (floor > max) max = floor;
+  return round1(max);
 }
 
 /** True when this export's terrain clipboard is a ski-hill-scale bare-earth DEM.
