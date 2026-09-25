@@ -290,7 +290,12 @@ const TERRAIN_README_SURFACE =
   ".\n" +
   "This is a digital surface model, not bare earth. Roofs and canopy are in the mesh.\n" +
   "Flat ground is a 2×2 pad. A mild rise is a 4×3 lattice. Relief under 20 m\n" +
-  "stays 6×5. A ski hill (DEM relief at least 20 m, Granite Peak scale) uses the\n" +
+  "stays 6×5 on a US site. At high latitude (Finland) those quads are retargeted\n" +
+  "so they are square in ground meters, on the same frame as the aerial. Auto and\n" +
+  "the 20–1 m stops use that cell size even when relief is under 20 m. Sub-30 m\n" +
+  "cells are interpolated from GLO-30. The status shows the cell size that pastes,\n" +
+  "which steps coarser when the draw will not fit.\n" +
+  "A ski hill (DEM relief at least 20 m, Granite Peak scale) uses the\n" +
   "terrain resolution chosen on export. Auto is the default: cell size follows the\n" +
   "draw, about 1 m on a small hill and coarser on a large one, at most 20×20 quads,\n" +
   "with a DEM sample count denser than that mesh (at most 625). Default is about 80 m quads, at most 12×12\n" +
