@@ -24,9 +24,10 @@
  * relief is under 20 m. A draw that cannot hold the requested cell steps up
  * to a coarser square lattice, and the status reports that size. Ski-hill
  * relief (about 20 m or more, Granite Peak scale) uses the export's terrain
- * resolution. Auto is the default: cell size follows the draw, about 1 m on a
- * small hill and coarser on a large one, at most 20×20, with a 3DEP count
- * denser than that mesh. Default is ~80 m quads,
+ * resolution. Auto is the default: the densest mesh that still fits, aiming
+ * at about 1 m cells and stepping coarser only when that grid will not fit
+ * beside the zip. It does not size cells from the draw, and it does not omit
+ * the paste just because 1 m is too big. Default is ~80 m quads,
  * at most 12×12, from 144 samples. Fine is ~40 m, at most 16×16, from 324
  * samples. Finest is ~25 m, at most 20×20, from 576 samples. Stops at 20, 15,
  * 10, 5, and 1 m may paste past that 20×20 expectation so a large hill can
@@ -52,17 +53,18 @@ const USGS_3DEP_ATTRIBUTION = "USGS 3DEP";
 const TERRAIN_FILENAME = "terrain-clipboard.json";
 const FLAT_M = 0.5;
 /**
- * Ski-hill paste presets. Auto is the default and sizes cells from the draw.
- * Default matches the v1.1.5 lattice. Fine and Finest are fixed manual
- * overrides. Only relief at or above LIFT_RELIEF_M changes. Flat, mild, and
- * medium ladders stay 2×2, 4×3, and 6×5. sampleCount is the 3DEP getSamples
- * request: a square count denser than the paste nodes so bilinear is not
- * stretching a sparse DEM. Auto, Default, Fine, and Finest stay inside the
- * older Hamina paste size (PASTE_SOFT_GRID). Experimental stops may pass it,
- * up to ABSOLUTE_MAX_GRID. ABSOLUTE_MAX_SAMPLES is the DEM read ceiling;
- * the old ceiling was 625.
+ * Ski-hill paste presets. Auto is the default and targets 1 m cells, then
+ * uses the same paste step-down as the 1 m stop. Default matches the v1.1.5
+ * lattice. Fine and Finest are fixed manual overrides. Only relief at or
+ * above LIFT_RELIEF_M changes on a US site. Flat, mild, and medium ladders
+ * stay 2×2, 4×3, and 6×5. sampleCount is the 3DEP getSamples request: a
+ * square count denser than the paste nodes so bilinear is not stretching a
+ * sparse DEM. Default, Fine, and Finest stay inside the older Hamina paste
+ * size (PASTE_SOFT_GRID). Auto and the meter stops may pass it, up to
+ * ABSOLUTE_MAX_GRID, then coarsen until the paste fits the response.
+ * ABSOLUTE_MAX_SAMPLES is the DEM read ceiling; the old ceiling was 625.
  */
-/** Older Hamina clipboard size. Auto and the named manuals stay inside it. */
+/** Older Hamina clipboard size. Default, Fine, and Finest stay inside it. */
 const PASTE_SOFT_GRID = 20;
 /**
  * Quads on one side for a 2.5 km draw at 5 m (the export span limit).
@@ -145,10 +147,17 @@ function lambdaPayloadBytes(handlerResult) {
   if (!handlerResult) return 0;
   return Buffer.byteLength(JSON.stringify(handlerResult), "utf8");
 }
-/** Auto will not paste cells smaller than this, even on a tiny hill. */
+/** Finest cell the densest-fit path aims at. A tinier span still uses the 6-quad floor. */
 const MIN_CELL_M = 1;
 const TERRAIN_RESOLUTIONS = {
-  auto: { id: "auto", label: "Auto", cellM: null, maxGrid: PASTE_SOFT_GRID, sampleCount: null },
+  auto: {
+    id: "auto",
+    label: "Auto",
+    cellM: MIN_CELL_M,
+    maxGrid: ABSOLUTE_MAX_GRID,
+    sampleCount: null,
+    experimental: true,
+  },
   default: { id: "default", label: "Default", cellM: 80, maxGrid: 12, sampleCount: 144 },
   fine: { id: "fine", label: "Fine", cellM: 40, maxGrid: 16, sampleCount: 324 },
   finest: { id: "finest", label: "Finest", cellM: 25, maxGrid: 20, sampleCount: 576 },
@@ -173,39 +182,7 @@ function normalizeTerrainResolution(id) {
   return TERRAIN_RESOLUTIONS[key] || TERRAIN_RESOLUTIONS.auto;
 }
 
-/**
- * Quads along one side for Auto on a ski hill. Fill the 20×20 paste budget,
- * but keep cells at least MIN_CELL_M. A span that can hold the historical
- * 6-quad floor at that size still does. A tinier span stays near 1 m instead
- * of inventing oversized cells to force 6×6.
- */
-function autoAxisCount(spanM) {
-  const span = spanM > 0 ? spanM : 800;
-  const cellM = Math.max(MIN_CELL_M, span / PASTE_SOFT_GRID);
-  let n = Math.round(span / cellM);
-  if (!Number.isFinite(n)) n = PASTE_SOFT_GRID;
-  n = Math.max(1, Math.min(PASTE_SOFT_GRID, n));
-  // Rounding onto the paste cap can land a hair under 1 m. Keep that quad.
-  // A span that cannot hold the count at about 1 m steps down instead.
-  while (n > 1 && span / n < MIN_CELL_M - 0.05) n -= 1;
-  if (span >= 6 * MIN_CELL_M) n = Math.max(6, Math.min(PASTE_SOFT_GRID, n));
-  return n;
-}
-
-/** Square 3DEP count for Auto: denser than the paste nodes, never past the cap. */
-function autoSampleCount(cols, rows) {
-  const nodes = (cols + 1) * (rows + 1);
-  const long = Math.max(cols | 0, rows | 0, 1);
-  let side = long + 4;
-  let count = side * side;
-  if (count <= nodes) {
-    side += 1;
-    count = side * side;
-  }
-  return Math.max(4, Math.min(ABSOLUTE_MAX_SAMPLES, count));
-}
-
-/** Square DEM count for an experimental paste: denser than the nodes, never past the ceiling. */
+/** Square DEM count for a densest-fit or meter-stop paste: denser than the nodes, never past the ceiling. */
 function experimentalSampleCount(cols, rows) {
   const long = Math.max(cols | 0, rows | 0, 1);
   const sideCap = Math.floor(Math.sqrt(ABSOLUTE_MAX_SAMPLES));
@@ -219,11 +196,7 @@ function sampleCountForResolution(resolution, frame) {
     const [cols, rows] = chooseGrid(LIFT_RELIEF_M, frame, preset.id);
     return experimentalSampleCount(cols, rows);
   }
-  if (preset.id !== "auto") {
-    return Math.max(4, Math.min(ABSOLUTE_MAX_SAMPLES, preset.sampleCount | 0));
-  }
-  const [cols, rows] = chooseGrid(LIFT_RELIEF_M, frame, "auto");
-  return autoSampleCount(cols, rows);
+  return Math.max(4, Math.min(ABSOLUTE_MAX_SAMPLES, preset.sampleCount | 0));
 }
 
 /** True when the frame center can get a USGS 3DEP grid. */
@@ -583,11 +556,6 @@ function squareReliefAxes(relief, widthM, lengthM) {
 function meterAxes(frame, preset, squareCells) {
   const width = frame && frame.widthM > 0 ? frame.widthM : 800;
   const length = frame && frame.lengthM > 0 ? frame.lengthM : 800;
-  if (preset.id === "auto") {
-    if (!squareCells) return [autoAxisCount(width), autoAxisCount(length)];
-    const cell = Math.max(MIN_CELL_M, Math.max(width, length) / PASTE_SOFT_GRID);
-    return squareMeterAxes(width, length, cell, PASTE_SOFT_GRID);
-  }
   const cellM = preset.cellM > 0 ? preset.cellM : TARGET_CELL_M;
   const hard = preset.experimental ? ABSOLUTE_MAX_GRID : PASTE_SOFT_GRID;
   const cap = Math.max(6, Math.min(hard, preset.maxGrid | 0));
@@ -1604,5 +1572,4 @@ module.exports = {
   sampleCountForResolution,
   terrainResolutionNotes,
   formatCellM,
-  autoAxisCount,
 };
