@@ -2,7 +2,7 @@
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
-const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures } = require("../netlify/functions/clutter");
+const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures, imageryAttemptMs, IMAGERY_ATTEMPT_MS, IMAGERY_ATTEMPT_MS_DEV } = require("../netlify/functions/clutter");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
 const { unzipStore } = require("../netlify/lib/zip-store");
@@ -787,6 +787,83 @@ describe("oversized Microsoft footprint tile", () => {
     const zipNotes = JSON.parse(files["export-warnings.json"].toString());
     assert.match(zipNotes.warnings.join("\n"), /omitted/);
     assert.ok(stats.attenuationAreasEmitted >= 1);
+  });
+});
+
+describe("dev-host Esri long side", () => {
+  const prev = global.fetch;
+
+  function samples() {
+    const out = [];
+    for (let i = 0; i < 24; i++) {
+      out.push({
+        location: { x: -115.16 - i * 0.0003, y: 36.128 - i * 0.0002 },
+        value: String(40 + (i % 40)),
+      });
+    }
+    return out;
+  }
+
+  async function longSideFor(extra) {
+    const seen = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      seen.push(u);
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: WYNN.west, ymin: WYNN.south, xmax: WYNN.east, ymax: WYNN.north },
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+      if (u.includes("getSamples") || u.includes("USFS_EDW_NLCD_TCC")) {
+        return { ok: true, json: async () => ({ samples: samples() }) };
+      }
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+    const res = await handler({
+      httpMethod: "POST",
+      headers: extra.headers,
+      path: extra.path,
+      body: JSON.stringify({ ...WYNN, format: "bundle" }),
+    });
+    assert.equal(res.statusCode, 200, res.body);
+    const img = seen.find((u) => u.includes("World_Imagery") && u.includes("f=image"));
+    const m = String(img).match(/size=(\d+),(\d+)/);
+    assert.ok(m, String(img));
+    return Math.max(+m[1], +m[2]);
+  }
+
+  after(() => {
+    global.fetch = prev;
+  });
+
+  it("keeps production at 8.5s and gives the dev host 12s for the larger JPEG", () => {
+    assert.equal(IMAGERY_ATTEMPT_MS, 8500);
+    assert.equal(IMAGERY_ATTEMPT_MS_DEV, 12000);
+    assert.equal(imageryAttemptMs(false), 8500);
+    assert.equal(imageryAttemptMs(true), 12000);
+  });
+
+  it("asks Esri for 1600 px only on the dev host", async () => {
+    assert.equal(await longSideFor({ headers: { host: "dev--openclutter.netlify.app" } }), 1600);
+    assert.equal(
+      await longSideFor({ headers: { host: "deploy-preview-12--openclutter.netlify.app" } }),
+      1600
+    );
+    assert.equal(
+      await longSideFor({ headers: { host: "openclutter.netlify.app" }, path: "/dev" }),
+      1600
+    );
+    assert.equal(await longSideFor({ headers: { host: "openclutter.netlify.app" } }), 1040);
+    assert.equal(
+      await longSideFor({ headers: { host: "openclutter.netlify.app" }, path: "/api/clutter" }),
+      1040
+    );
   });
 });
 
