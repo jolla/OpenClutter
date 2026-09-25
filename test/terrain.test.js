@@ -192,11 +192,12 @@ describe("3DEP terrain clipboard", () => {
     const frame = geoFrame({ west: -87.922, south: 42.89, east: -87.912, north: 42.903, name: "Slope" });
     const terrain = terrainFromSamples(
       gridSamples(frame, (r) => 180 + r * 4),
-      frame
+      frame,
+      { terrainResolution: "default" }
     );
     assert.ok(terrain);
     assert.ok(terrain.reliefM > 2);
-    const [cols, rows] = chooseGrid(terrain.reliefM, frame);
+    const [cols, rows] = chooseGrid(terrain.reliefM, frame, "default");
     assert.equal(terrain.raised + terrain.sloped, cols * rows);
     assert.ok(terrain.sloped > 9);
     assert.ok(terrain.sloped <= ABSOLUTE_MAX_GRID * ABSOLUTE_MAX_GRID);
@@ -283,10 +284,11 @@ describe("3DEP terrain clipboard", () => {
     const frame = geoFrame({ west: -87.922, south: 42.89, east: -87.912, north: 42.903, name: "EW" });
     const terrain = terrainFromSamples(
       gridSamples(frame, (r, c) => 150 + c * 3),
-      frame
+      frame,
+      { terrainResolution: "default" }
     );
     assert.equal(terrain.raised, 0);
-    const [cols, rows] = chooseGrid(terrain.reliefM, frame);
+    const [cols, rows] = chooseGrid(terrain.reliefM, frame, "default");
     assert.equal(terrain.sloped, cols * rows);
     assert.ok(terrain.sloped > 9);
     assert.ok(terrain.sloped <= MAX_GRID * MAX_GRID);
@@ -302,7 +304,8 @@ describe("3DEP terrain clipboard", () => {
 
     const towardWest = terrainFromSamples(
       gridSamples(frame, (r, c) => 400 - c * 4),
-      frame
+      frame,
+      { terrainResolution: "default" }
     );
     assert.ok(towardWest.sloped > 9);
     for (const z of towardWest.clipboard.slopedFloors) {
@@ -314,7 +317,8 @@ describe("3DEP terrain clipboard", () => {
     }
     const towardSouth = terrainFromSamples(
       gridSamples(frame, (r) => 400 - r * 4),
-      frame
+      frame,
+      { terrainResolution: "default" }
     );
     assert.ok(towardSouth.sloped > 9);
     for (const z of towardSouth.clipboard.slopedFloors) {
@@ -846,8 +850,9 @@ describe("terrain resolution presets", () => {
     assert.equal(normalizeTerrainResolution("default").id, "default");
     assert.equal(normalizeTerrainResolution("20 m").id, "20");
     assert.equal(normalizeTerrainResolution("1m").id, "1");
-    assert.equal(TERRAIN_RESOLUTIONS.auto.maxGrid, PASTE_SOFT_GRID);
-    assert.equal(TERRAIN_RESOLUTIONS.auto.cellM, null);
+    assert.equal(TERRAIN_RESOLUTIONS.auto.maxGrid, ABSOLUTE_MAX_GRID);
+    assert.equal(TERRAIN_RESOLUTIONS.auto.cellM, MIN_CELL_M);
+    assert.equal(TERRAIN_RESOLUTIONS.auto.experimental, true);
     for (const id of ["20", "15", "10", "5", "1"]) {
       const preset = TERRAIN_RESOLUTIONS[id];
       assert.equal(preset.experimental, true);
@@ -966,11 +971,11 @@ describe("terrain resolution presets", () => {
     await fetchDemSamples(frame, fetchFn, { terrainResolution: "fine" });
     await fetchDemSamples(frame, fetchFn, { terrainResolution: "finest" });
     await fetchDemSamples(frame, fetchFn, { terrainResolution: "ultra" });
-    assert.match(seen[0], /sampleCount=576(?:&|$)/);
+    assert.match(seen[0], /sampleCount=2500(?:&|$)/);
     assert.match(seen[1], /sampleCount=144(?:&|$)/);
     assert.match(seen[2], /sampleCount=324(?:&|$)/);
     assert.match(seen[3], /sampleCount=576(?:&|$)/);
-    assert.match(seen[4], /sampleCount=576(?:&|$)/);
+    assert.match(seen[4], /sampleCount=2500(?:&|$)/);
     for (const url of seen) {
       const n = Number(new URL(url).searchParams.get("sampleCount"));
       assert.ok(n <= ABSOLUTE_MAX_SAMPLES);
@@ -978,42 +983,28 @@ describe("terrain resolution presets", () => {
     }
   });
 
-  it("sizes Auto from the draw and keeps manuals as fixed overrides", () => {
+  it("uses the densest mesh that fits for Auto and keeps manuals as fixed overrides", () => {
     const box20 = metersBox(44.91, 20, 20, "Tiny hill", { minSpanM: 1 });
-    const [c20, r20] = chooseGrid(200, box20, "auto");
-    assert.deepEqual([c20, r20], [20, 20]);
-    const cell20 = (box20.widthM / c20 + box20.lengthM / r20) / 2;
+    assert.deepEqual(chooseGrid(200, box20, "auto"), [20, 20]);
+    const cell20 = (box20.widthM / 20 + box20.lengthM / 20) / 2;
     assert.ok(cell20 >= 0.95 && cell20 <= 1.2, "20 m cell " + cell20);
-    assert.ok(c20 * r20 <= ABSOLUTE_MAX_GRID * ABSOLUTE_MAX_GRID);
 
     const box40 = metersBox(44.91, 40, 40, "Small hill", { minSpanM: 1 });
-    const [c40, r40] = chooseGrid(200, box40, "auto");
-    assert.deepEqual([c40, r40], [20, 20]);
-    const cell40 = (box40.widthM / c40 + box40.lengthM / r40) / 2;
-    assert.ok(cell40 >= 1.8 && cell40 <= 2.2, "40 m cell " + cell40);
+    assert.deepEqual(chooseGrid(200, box40, "auto"), [40, 40]);
+    assert.deepEqual(chooseGrid(200, box40, "auto"), chooseGrid(200, box40, "1"));
 
     const box200 = metersBox(44.91, 200, 200, "200");
-    const [c200, r200] = chooseGrid(200, box200, "auto");
-    assert.deepEqual([c200, r200], [20, 20]);
-    const cell200 = box200.widthM / c200;
-    assert.ok(Math.abs(cell200 - 10) < 0.6, "200 m cell " + cell200);
+    assert.deepEqual(chooseGrid(200, box200, "auto"), [200, 200]);
 
     const box800 = metersBox(44.91, 800, 800, "800");
-    const [c800, r800] = chooseGrid(200, box800, "auto");
-    assert.deepEqual([c800, r800], [20, 20]);
-    assert.ok(Math.abs(box800.widthM / c800 - 40) < 1, "800 m cell " + box800.widthM / c800);
+    assert.deepEqual(chooseGrid(200, box800, "auto"), [500, 500]);
 
     const wide = metersBox(44.91, 1800, 1400, "Granite Peak");
-    const [cW, rW] = chooseGrid(200, wide, "auto");
-    assert.deepEqual([cW, rW], [20, 20]);
-    assert.ok(wide.widthM / cW > 80);
-    assert.ok(cW <= ABSOLUTE_MAX_GRID && rW <= ABSOLUTE_MAX_GRID);
+    assert.deepEqual(chooseGrid(200, wide, "auto"), [500, 500]);
+    assert.deepEqual(chooseGrid(200, wide, "auto"), chooseGrid(200, wide, "1"));
 
-    const tiny = metersBox(44.91, 4, 4, "Too small for 6", { minSpanM: 1 });
-    const [tC, tR] = chooseGrid(200, tiny, "auto");
-    assert.ok(tC < 6 && tR < 6, "tiny grid " + tC + "x" + tR);
-    assert.ok(tiny.widthM / tC >= MIN_CELL_M - 0.05);
-    assert.ok(tC * tR <= ABSOLUTE_MAX_GRID * ABSOLUTE_MAX_GRID);
+    const tiny = metersBox(44.91, 4, 4, "Too small for 1 m quads", { minSpanM: 1 });
+    assert.deepEqual(chooseGrid(200, tiny, "auto"), [6, 6]);
 
     assert.deepEqual(chooseGrid(0.2, box20, "auto"), [2, 2]);
     assert.deepEqual(chooseGrid(4, box40, "auto"), [4, 3]);
@@ -1024,12 +1015,16 @@ describe("terrain resolution presets", () => {
     const zAt = (r, c, lon, lat) => 300 + ((lat - box40.south) / (box40.north - box40.south)) * 80;
     const autoTerrain = terrainFromSamples(gridSamples(box40, zAt), box40);
     assert.equal(autoTerrain.terrainResolution, "auto");
-    assert.deepEqual([autoTerrain.gridCols, autoTerrain.gridRows], [20, 20]);
-    assert.ok(autoTerrain.cellM >= 1.8 && autoTerrain.cellM <= 2.2);
+    assert.deepEqual([autoTerrain.gridCols, autoTerrain.gridRows], [40, 40]);
+    assert.ok(autoTerrain.cellM >= 0.9 && autoTerrain.cellM <= 1.2);
+    assert.equal(autoTerrain.pasteOmitted, undefined);
+    assert.equal(autoTerrain.pasteReduced, undefined);
     const zones = autoTerrain.clipboard.raisedFloorZones.concat(autoTerrain.clipboard.slopedFloors);
-    assert.equal(zones.length, 20 * 20);
+    assert.equal(zones.length, 40 * 40);
     assert.ok(zones.every((z) => z.slabOnly === false));
-    assert.match(terrainBundleFields(autoTerrain, []).terrainStatus, /Auto ~2 m/);
+    assert.match(terrainBundleFields(autoTerrain, []).terrainStatus, /Auto ~1 m/);
+    assert.match(terrainBundleFields(autoTerrain, []).terrainStatus, /Copy terrain/);
+    assert.equal(/omitted/.test(terrainBundleFields(autoTerrain, []).terrainStatus), false);
 
     const flat = terrainFromSamples(gridSamples(box800, () => 214.2), box800);
     assert.equal(flat.terrainResolution, "auto");
@@ -1045,14 +1040,18 @@ describe("terrain resolution presets", () => {
     assert.deepEqual([manual.gridCols, manual.gridRows], [12, 12]);
     assert.match(terrainBundleFields(manual, []).terrainStatus, /Default ~80 m/);
 
-    const largeAuto = terrainFromSamples(
-      gridSamples(wide, (r, c, lon, lat) => 300 + ((lat - wide.south) / (wide.north - wide.south)) * 200),
-      wide
-    );
+    const largeSamples = gridSamples(wide, (r, c, lon, lat) => 300 + ((lat - wide.south) / (wide.north - wide.south)) * 200);
+    const largeAuto = terrainFromSamples(largeSamples, wide);
+    const largeOne = terrainFromSamples(largeSamples, wide, { terrainResolution: "1" });
     assert.equal(largeAuto.terrainResolution, "auto");
-    assert.deepEqual([largeAuto.gridCols, largeAuto.gridRows], [20, 20]);
-    assert.ok(largeAuto.cellM > 70);
-    assert.match(terrainBundleFields(largeAuto, []).terrainStatus, /Auto ~/);
+    assert.equal(largeAuto.pasteOmitted, undefined);
+    assert.equal(largeAuto.pasteReduced, true);
+    assert.deepEqual([largeAuto.requestedGridCols, largeAuto.requestedGridRows], [500, 500]);
+    assert.deepEqual([largeAuto.gridCols, largeAuto.gridRows], [largeOne.gridCols, largeOne.gridRows]);
+    assert.ok(largeAuto.cellM > 1);
+    assert.match(terrainBundleFields(largeAuto, []).terrainStatus, /reduced from 500×500/);
+    assert.match(terrainBundleFields(largeAuto, []).terrainStatus, /Copy terrain/);
+    assert.equal(/omitted/.test(terrainBundleFields(largeAuto, []).terrainStatus), false);
     assert.ok(largeAuto.clipboard.slopedFloors.concat(largeAuto.clipboard.raisedFloorZones).every((z) => z.slabOnly === false));
   });
 
@@ -1219,7 +1218,7 @@ describe("terrain resolution presets", () => {
     const wide = metersBox(44.91, 2500, 2500, "Max draw");
     assert.deepEqual(chooseGrid(200, wide, "5"), [500, 500]);
     assert.deepEqual(chooseGrid(200, wide, "10"), [250, 250]);
-    assert.ok(chooseGrid(200, wide, "auto")[0] <= PASTE_SOFT_GRID);
+    assert.deepEqual(chooseGrid(200, wide, "auto"), [500, 500]);
   });
 
   it("steps experimental DEM samples down when the budget is short", async () => {
@@ -2019,9 +2018,6 @@ describe("Finland terrain does not wait on 3DEP", () => {
 });
 
 describe("Finland paste quads are square ground meters", () => {
-  const fs = require("node:fs");
-  const path = require("node:path");
-
   function lockedHamina(halfM) {
     const jpeg = require("jpeg-js");
     const lat = 60.5694;
@@ -2127,17 +2123,23 @@ describe("Finland paste quads are square ground meters", () => {
     assert.match(terrainBundleFields(terrain, []).terrainStatus, /Copy terrain/);
   });
 
-  it("keeps Auto on that town square and inside 20×20", () => {
-    const terrain = terrainFromSamples(rampSamples(frame, 12), frame, {
+  it("keeps Auto on that town as the densest square mesh that fits", () => {
+    const samples = rampSamples(frame, 12);
+    const terrain = terrainFromSamples(samples, frame, {
       terrainResolution: "auto",
       kind: "surface",
     });
+    const one = terrainFromSamples(samples, frame, {
+      terrainResolution: "1",
+      kind: "surface",
+    });
     const q = assertSquareMeters(terrain, frame);
-    assert.ok(terrain.gridCols <= PASTE_SOFT_GRID && terrain.gridRows <= PASTE_SOFT_GRID);
-    assert.ok(q.ew > 40 && q.ew < 120, "auto cell " + q.ew);
-    const long = Math.max(frame.widthM, frame.lengthM);
-    const expect = long / PASTE_SOFT_GRID;
-    assert.ok(Math.abs(q.ew - expect) / expect < 0.15, q.ew + " vs " + expect);
+    assert.deepEqual([terrain.gridCols, terrain.gridRows], [one.gridCols, one.gridRows]);
+    assert.equal(terrain.pasteOmitted, undefined);
+    assert.ok(q.ew < 30 && q.ns < 30, "auto cell " + q.ew);
+    assert.ok(q.ew > 4 && q.ns > 4);
+    assert.match(terrainBundleFields(terrain, []).terrainStatus, /Copy terrain/);
+    assert.equal(/omitted/.test(terrainBundleFields(terrain, []).terrainStatus), false);
   });
 
   it("keeps a high-relief 1 m Finland mesh square after the paste budget", () => {
@@ -2157,17 +2159,14 @@ describe("Finland paste quads are square ground meters", () => {
     assert.deepEqual(chooseGrid(12, mild, "auto"), [6, 5]);
     const peak = metersBox(44.91, 1800, 1400, "Granite Peak");
     assert.deepEqual(chooseGrid(200, peak, "1"), [500, 500]);
-    assert.deepEqual(chooseGrid(200, peak, "auto"), [20, 20]);
+    assert.deepEqual(chooseGrid(200, peak, "auto"), [500, 500]);
     const us = terrainFromSamples(rampSamples(mild, 12), mild, { terrainResolution: "1" });
     assert.match(terrainBundleFields(us, []).terrainStatus, /keeps the coarse mesh/);
   });
 
-  it("locks the slider quad budget to the export's first-pass paste cap", () => {
+  it("locks the paste quad budget to the export's first-pass paste cap", () => {
     const budget = pastePlanQuadBudget();
     assert.equal(budget, Math.min(PASTE_BUILD_MAX_QUADS, Math.floor(TERRAIN_PASTE_JSON_MAX / 240)));
-    const app = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
-    assert.match(app, new RegExp("TERRAIN_PASTE_QUAD_BUDGET = " + budget));
-    assert.match(app, /requested " \+ stop\.cellM \+ " m stepped up to fit/);
     const [cols, rows] = squareMeterAxes(frame.widthM, frame.lengthM, 1, 500);
     assert.ok(Math.max(cols, rows) <= 500);
     assert.ok(Math.abs(frame.widthM / cols - frame.lengthM / rows) / (frame.widthM / cols) < 0.08);

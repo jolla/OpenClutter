@@ -12,11 +12,7 @@ function devPage() {
 function syncTerrainControls() {
   const dev = devPage();
   const row = document.getElementById("include-terrain-row");
-  const input = document.getElementById("include-terrain");
-  const terrainRes = document.getElementById("terrain-resolution");
   if (row) row.hidden = !dev;
-  const on = !!(dev && input && input.checked);
-  if (terrainRes) terrainRes.hidden = !on;
 }
 
 function terrainExportEnabled() {
@@ -34,208 +30,7 @@ function terrainExportEnabled() {
   if (ver && window.OPENCLUTTER_VERSION) ver.textContent = "v" + window.OPENCLUTTER_VERSION;
 })();
 
-const TERRAIN_STOPS = [
-  { id: "auto", label: "Auto", cellM: null, maxGrid: 20, readout: "Auto · from draw" },
-  { id: "default", label: "Default", cellM: 80, maxGrid: 12, readout: "Default · ~80 m" },
-  { id: "fine", label: "Fine", cellM: 40, maxGrid: 16, readout: "Fine · ~40 m" },
-  { id: "finest", label: "Finest", cellM: 25, maxGrid: 20, readout: "Finest · ~25 m" },
-  { id: "20", label: "20 m", cellM: 20, maxGrid: 125 },
-  { id: "15", label: "15 m", cellM: 15, maxGrid: 167 },
-  { id: "10", label: "10 m", cellM: 10, maxGrid: 250 },
-  { id: "5", label: "5 m", cellM: 5, maxGrid: 500 },
-  { id: "1", label: "1 m", cellM: 1, maxGrid: 500 },
-];
-// Same paste budget and 1 m floor as autoAxisCount in netlify/lib/terrain.js.
-// maxGrid on the meter stops matches TERRAIN_RESOLUTIONS there.
-const TERRAIN_AUTO_MAX_GRID = 20;
-const TERRAIN_AUTO_MIN_CELL_M = 1;
-const TERRAIN_PASTE_SOFT_GRID = 20;
-// Same first-pass quad budget as pastePlanQuadBudget() in netlify/lib/terrain.js
-// (min of the 12000 build cap and floor(paste JSON ceiling / 240)).
-const TERRAIN_PASTE_QUAD_BUDGET = 9429;
-// Matches GROUND_METER_STRETCH in netlify/lib/geo-frame.js (~54°N).
-const GROUND_METER_STRETCH_UI = 1.7;
-
-function terrainStopIndex() {
-  const input = document.getElementById("terrain-resolution-range");
-  const n = input ? Number(input.value) : 0;
-  if (n >= 1 && n < TERRAIN_STOPS.length && n === Math.round(n)) return n;
-  return 0;
-}
-
-function autoAxisCountUi(spanM) {
-  const span = spanM > 0 ? spanM : 800;
-  const cellM = Math.max(TERRAIN_AUTO_MIN_CELL_M, span / TERRAIN_AUTO_MAX_GRID);
-  let n = Math.round(span / cellM);
-  if (!Number.isFinite(n)) n = TERRAIN_AUTO_MAX_GRID;
-  n = Math.max(1, Math.min(TERRAIN_AUTO_MAX_GRID, n));
-  while (n > 1 && span / n < TERRAIN_AUTO_MIN_CELL_M - 0.05) n -= 1;
-  if (span >= 6 * TERRAIN_AUTO_MIN_CELL_M) n = Math.max(6, Math.min(TERRAIN_AUTO_MAX_GRID, n));
-  return n;
-}
-
-function formatCellMUi(m) {
-  const n = Number(m);
-  if (!(n > 0)) return "1";
-  const tenth = Math.round(n * 10) / 10;
-  if (Math.abs(tenth - Math.round(tenth)) < 1e-6) return String(Math.round(tenth));
-  return tenth.toFixed(1);
-}
-
-function drawSpans() {
-  if (!bbox || typeof L === "undefined") return null;
-  const w = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.south, bbox.east));
-  const h = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.north, bbox.west));
-  if (!(w > 0) || !(h > 0)) return null;
-  return { w: w, h: h };
-}
-
-function uiMetersPerDeg(lat) {
-  const rad = (lat * Math.PI) / 180;
-  return { lon: 111320 * Math.cos(rad), lat: 110540 };
-}
-
-/**
- * Ground-meter size of the paste. At high latitude Esri's degree grid pads
- * the short axis until pixels are square in degrees, which is the frame the
- * aerial resample and the terrain lattice share.
- */
-function pasteSpans() {
-  const draw = drawSpans();
-  if (!draw || !bbox) return null;
-  const lat = (bbox.south + bbox.north) / 2;
-  const mpd = uiMetersPerDeg(lat);
-  const stretch = mpd.lon > 0 ? mpd.lat / mpd.lon : 1;
-  let w = draw.w;
-  let h = draw.h;
-  if (stretch >= GROUND_METER_STRETCH_UI) {
-    const lonSpan = bbox.east - bbox.west;
-    const latSpan = bbox.north - bbox.south;
-    const target = draw.w / draw.h;
-    const current = lonSpan / latSpan;
-    if (target > 0 && current > target) h = (lonSpan / target) * mpd.lat;
-    else if (current > 0 && target > current) w = latSpan * target * mpd.lon;
-  }
-  return { w: w, h: h, highLat: stretch >= GROUND_METER_STRETCH_UI };
-}
-
-function squareMeterAxesUi(width, length, cell, cap) {
-  let cols = Math.max(1, Math.round(width / cell));
-  let rows = Math.max(1, Math.round(length / cell));
-  const limit = Math.max(1, cap | 0);
-  if (Math.max(cols, rows) > limit) {
-    const scale = limit / Math.max(cols, rows);
-    cols = Math.max(1, Math.round(cols * scale));
-    rows = Math.max(1, Math.round(rows * scale));
-    while ((cols > limit || rows > limit) && cols * rows > 1) {
-      if (cols >= rows && cols > 1) cols -= 1;
-      else if (rows > 1) rows -= 1;
-      else break;
-    }
-  }
-  return [cols, rows];
-}
-
-function fitPasteAxesUi(wantCols, wantRows, maxQuads) {
-  const wantC = Math.max(1, wantCols | 0);
-  const wantR = Math.max(1, wantRows | 0);
-  const cap = Math.max(1, maxQuads | 0);
-  if (wantC * wantR <= cap) return [wantC, wantR];
-  const aspect = wantC / wantR;
-  const scale = Math.sqrt(cap / (wantC * wantR));
-  let cols = Math.max(1, Math.min(wantC, Math.floor(wantC * scale)));
-  let rows = Math.max(1, Math.min(wantR, Math.floor(wantR * scale)));
-  while (true) {
-    const canC = cols < wantC && (cols + 1) * rows <= cap;
-    const canR = rows < wantR && cols * (rows + 1) <= cap;
-    if (!canC && !canR) break;
-    if (canC && canR) {
-      const errC = Math.abs((cols + 1) / rows - aspect);
-      const errR = Math.abs(cols / (rows + 1) - aspect);
-      if (errC <= errR) cols += 1;
-      else rows += 1;
-    } else if (canC) cols += 1;
-    else rows += 1;
-  }
-  return [cols, rows];
-}
-
-function autoReadout() {
-  const paste = pasteSpans();
-  if (!paste) return "Auto · from draw";
-  if (paste.highLat) {
-    const cell = Math.max(TERRAIN_AUTO_MIN_CELL_M, Math.max(paste.w, paste.h) / TERRAIN_AUTO_MAX_GRID);
-    const axes = squareMeterAxesUi(paste.w, paste.h, cell, TERRAIN_AUTO_MAX_GRID);
-    const effective = (paste.w / axes[0] + paste.h / axes[1]) / 2;
-    return "Auto · ~" + formatCellMUi(effective) + " m · " + axes[0] + "×" + axes[1];
-  }
-  const cols = autoAxisCountUi(paste.w);
-  const rows = autoAxisCountUi(paste.h);
-  const shown = (paste.w / cols + paste.h / rows) / 2;
-  return "Auto · ~" + formatCellMUi(shown) + " m";
-}
-
-function manualReadout(stop) {
-  const paste = pasteSpans();
-  if (paste && paste.highLat && stop.cellM > 0 && stop.maxGrid > TERRAIN_PASTE_SOFT_GRID) {
-    let axes = squareMeterAxesUi(paste.w, paste.h, stop.cellM, stop.maxGrid);
-    axes = fitPasteAxesUi(axes[0], axes[1], TERRAIN_PASTE_QUAD_BUDGET);
-    const cols = axes[0];
-    const rows = axes[1];
-    const cell = (paste.w / cols + paste.h / rows) / 2;
-    let text = "~" + formatCellMUi(cell) + " m · " + cols + "×" + rows;
-    if (cols > TERRAIN_PASTE_SOFT_GRID || rows > TERRAIN_PASTE_SOFT_GRID) text += " · past 20×20";
-    const wantC = Math.max(1, Math.round(paste.w / stop.cellM));
-    const wantR = Math.max(1, Math.round(paste.h / stop.cellM));
-    if (wantC > cols || wantR > rows) text += " · requested " + stop.cellM + " m stepped up to fit";
-    return text;
-  }
-  const draw = drawSpans();
-  if (!draw || !(stop.cellM > 0)) {
-    if (stop.maxGrid > TERRAIN_PASTE_SOFT_GRID && stop.cellM > 0) {
-      const side = stop.cellM * TERRAIN_PASTE_SOFT_GRID;
-      return "~" + stop.cellM + " m · covers ~" + side + "×" + side + " m";
-    }
-    return stop.readout;
-  }
-  const wantC = Math.max(6, Math.round(draw.w / stop.cellM));
-  const wantR = Math.max(6, Math.round(draw.h / stop.cellM));
-  const cols = Math.min(stop.maxGrid, wantC);
-  const rows = Math.min(stop.maxGrid, wantR);
-  const cell = (draw.w / cols + draw.h / rows) / 2;
-  if (stop.maxGrid <= TERRAIN_PASTE_SOFT_GRID) {
-    return stop.label + " · ~" + formatCellMUi(cell) + " m";
-  }
-  let text = "~" + formatCellMUi(cell) + " m · " + cols + "×" + rows;
-  if (cols > TERRAIN_PASTE_SOFT_GRID || rows > TERRAIN_PASTE_SOFT_GRID) text += " · past 20×20";
-  if (wantC > cols || wantR > rows) {
-    const cover = Math.round(stop.maxGrid * stop.cellM);
-    text += " · requested " + stop.cellM + " m covers ~" + cover + "×" + cover + " m";
-  }
-  return text;
-}
-
-function syncTerrainResolutionReadout() {
-  const input = document.getElementById("terrain-resolution-range");
-  const readout = document.getElementById("terrain-resolution-readout");
-  const stop = TERRAIN_STOPS[terrainStopIndex()];
-  if (readout && stop) readout.textContent = stop.id === "auto" ? autoReadout() : manualReadout(stop);
-  if (input) input.setAttribute("aria-valuenow", String(terrainStopIndex()));
-}
-
-function selectedTerrainResolution() {
-  const wrap = document.getElementById("terrain-resolution");
-  if (!wrap || wrap.hidden) return null;
-  const stop = TERRAIN_STOPS[terrainStopIndex()];
-  return stop ? stop.id : "auto";
-}
-
 let bbox = null;
-const terrainResolutionRange = document.getElementById("terrain-resolution-range");
-if (terrainResolutionRange) {
-  terrainResolutionRange.addEventListener("input", syncTerrainResolutionReadout);
-  syncTerrainResolutionReadout();
-}
 const includeTerrainInput = document.getElementById("include-terrain");
 if (includeTerrainInput) includeTerrainInput.addEventListener("change", syncTerrainControls);
 
@@ -363,7 +158,6 @@ function applyExtent(bounds, label) {
   exportBtn.disabled = w > 2500 || h > 2500 || w < 40 || h < 40;
   if (exportBtn.disabled) setStatus("Area must be between 40 m and 2.5 km on a side.", true);
   else setStatus("Ready to export.");
-  syncTerrainResolutionReadout();
 }
 
 function commitBox(start, end) {
@@ -666,7 +460,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       name: document.getElementById("q").value || "Site",
       includeFoliage: foliage,
       includeTerrain: terrain,
-      terrainResolution: terrain ? selectedTerrainResolution() || undefined : undefined,
+      terrainResolution: terrain ? "auto" : undefined,
       trees: foliage ? trees : [],
       treesSource: foliage ? treesSource : "none",
       canopyHits: foliage && canopyHits && canopyHits.length ? canopyHits : undefined,

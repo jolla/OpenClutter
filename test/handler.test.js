@@ -178,7 +178,7 @@ describe("clutter handler (mocked Esri)", () => {
     assert.ok(!urls.some((u) => u.includes("USFS_EDW_NLCD_TCC")));
     const dem = urls.find((u) => u.includes("elevation.nationalmap.gov") && u.includes("getSamples"));
     assert.ok(dem);
-    assert.equal(new URL(dem).searchParams.get("sampleCount"), "576");
+    assert.equal(new URL(dem).searchParams.get("sampleCount"), "2500");
     assert.equal(body.stats.terrainResolution, "auto");
     assert.match(files["README.txt"].toString(), /Auto is the default/);
     assert.match(body.terrainStatus, /USGS 3DEP bare-earth/);
@@ -242,13 +242,13 @@ describe("clutter handler (mocked Esri)", () => {
       assert.ok(hit);
       return { count: new URL(hit).searchParams.get("sampleCount"), id: body.stats.terrainResolution };
     }
-    assert.deepEqual(await sampleCountFor(undefined), { count: "576", id: "auto" });
+    assert.deepEqual(await sampleCountFor(undefined), { count: "2500", id: "auto" });
     assert.deepEqual(await sampleCountFor("default"), { count: "144", id: "default" });
     assert.deepEqual(await sampleCountFor("fine"), { count: "324", id: "fine" });
     assert.deepEqual(await sampleCountFor("finest"), { count: "576", id: "finest" });
     assert.deepEqual(await sampleCountFor("10"), { count: "2500", id: "10" });
     assert.deepEqual(await sampleCountFor("1"), { count: "2500", id: "1" });
-    assert.deepEqual(await sampleCountFor("ultra"), { count: "576", id: "auto" });
+    assert.deepEqual(await sampleCountFor("ultra"), { count: "2500", id: "auto" });
     assert.deepEqual(await sampleCountFor(undefined, { terrainResolution: "fine" }), { count: "324", id: "fine" });
     assert.deepEqual(await sampleCountFor("default", { terrainResolution: "finest" }), { count: "144", id: "default" });
   });
@@ -1428,7 +1428,7 @@ describe("dev-host Copernicus fallback", () => {
     const body = JSON.parse(res.body);
     const dem = urls.find((u) => u.includes("elevation.nationalmap.gov") && u.includes("getSamples"));
     assert.ok(dem);
-    assert.equal(new URL(dem).searchParams.get("sampleCount"), "576");
+    assert.equal(new URL(dem).searchParams.get("sampleCount"), "2500");
     assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
     assert.match(body.terrainStatus, /USGS 3DEP bare-earth/);
     assert.equal(body.terrainFilename, "terrain-clipboard.json");
@@ -1545,15 +1545,15 @@ describe("campus terrain paste stays inside the synchronous response", () => {
     }
   });
 
-  it("keeps Auto on its 20×20 mesh when the aerial is already large", async () => {
+  it("steps Auto down to the densest mesh that fits a heavy aerial", async () => {
     const body = await exportCampus("auto", heavyJpeg);
     assert.ok(body.terrainClipboard, body.terrainStatus);
+    assert.match(body.terrainStatus, /reduced from 500×500/);
     assert.match(body.terrainStatus, /Copy terrain/);
-    assert.equal(/reduced from/.test(body.terrainStatus), false);
     assert.equal(/omitted/.test(body.terrainStatus), false);
     const quads =
       body.terrainClipboard.slopedFloors.length + body.terrainClipboard.raisedFloorZones.length;
-    assert.ok(quads <= 20 * 20);
-    assert.ok(quads >= 6 * 5);
+    assert.ok(quads < 500 * 500, "quads " + quads);
+    assert.ok(quads >= 6 * 5, "quads " + quads);
   });
 });
