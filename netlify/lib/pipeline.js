@@ -256,8 +256,10 @@ const TERRAIN_README =
   "and 1 m may paste a denser grid so a draw about 2.5 km on a side can still use\n" +
   "about 5–10 m cells (mesh cap 500 quads on a side). The older Hamina paste\n" +
   "expectation is about 20×20. A paste past that size is named in export-warnings.json.\n" +
-  "A mesh that will not fit in the export response is coarsened to the densest\n" +
-  "grid that still fits, and that reduction is named in export-warnings.json.\n" +
+  "A mesh that will not fit beside the zip in one response is coarsened until\n" +
+  "Copy terrain still returns with the download. That reduction is named in\n" +
+  "export-warnings.json. If it still cannot, terrain-clipboard.json is left out\n" +
+  "and the OpenIntent zip still exports.\n" +
   "DEM samples for those stops step down when the export budget is short.\n" +
   "OpenIntent does not support raised or sloped floors. On the OpenClutter page,\n" +
   "Copy terrain pastes this JSON into Planner Plus. The same JSON is\n" +
@@ -297,8 +299,10 @@ const TERRAIN_README_SURFACE =
   "and 1 m may paste a denser grid so a draw about 2.5 km on a side can still use\n" +
   "about 5–10 m cells (mesh cap 500 quads on a side). The older Hamina paste\n" +
   "expectation is about 20×20. A paste past that size is named in export-warnings.json.\n" +
-  "A mesh that will not fit in the export response is coarsened to the densest\n" +
-  "grid that still fits, and that reduction is named in export-warnings.json.\n" +
+  "A mesh that will not fit beside the zip in one response is coarsened until\n" +
+  "Copy terrain still returns with the download. That reduction is named in\n" +
+  "export-warnings.json. If it still cannot, terrain-clipboard.json is left out\n" +
+  "and the OpenIntent zip still exports.\n" +
   "DEM samples for those stops step down when the export budget is short.\n" +
   "OpenIntent does not support raised or sloped floors. On the OpenClutter page,\n" +
   "Copy terrain pastes this JSON into Planner Plus. The same JSON is\n" +
