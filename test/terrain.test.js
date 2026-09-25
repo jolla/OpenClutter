@@ -1935,6 +1935,30 @@ describe("Finland terrain does not wait on 3DEP", () => {
     });
     assert.equal(fine.samples.length, 576);
     assert.equal(fine.kind, "surface");
+    assert.match((coarse.notes || []).join("\n"), /stepped down to 16/);
+    assert.equal(/timed out|omitted/i.test((coarse.notes || []).join("\n")), false);
+    assert.equal(/stepped down/.test((fine.notes || []).join("\n")), false);
+  });
+
+  it("skips the 3DEP probe on a reserved Finland retry and still coarsens", async () => {
+    const seen = [];
+    const zAt = (lon, lat) => 5 + (lat - hamina.south) * 800;
+    const glo = gloGeotiff(zAt);
+    const pack = await fetchTerrainDem(hamina, hangUntilAbort(seen), {
+      allowSurfaceFallback: true,
+      geotiff: glo.geotiff,
+      terrainResolution: "auto",
+      budgetMs: 900,
+      skip3depProbe: true,
+    });
+    assert.equal(seen.length, 0);
+    assert.equal(pack.kind, "surface");
+    assert.ok(pack.samples.length >= 4 && pack.samples.length <= 16, "samples " + pack.samples.length);
+    assert.match((pack.notes || []).join("\n"), /stepped down/);
+    const mesh = terrainFromSamples(pack.samples, hamina, { kind: "surface", terrainResolution: "auto" });
+    assert.ok(mesh && mesh.clipboard);
+    assert.match(terrainBundleFields(mesh, pack.notes).terrainStatus, /Copy terrain/);
+    assert.equal(/timed out/i.test(terrainBundleFields(mesh, pack.notes).terrainStatus), false);
   });
 
   it("rejects with a timeout only after GLO-30 is aborted too", async () => {
