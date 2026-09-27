@@ -1538,6 +1538,7 @@ describe("campus terrain paste stays inside the synchronous response", () => {
       assert.equal(/omitted/.test(body.terrainStatus), false);
       const quads =
         body.terrainClipboard.slopedFloors.length + body.terrainClipboard.raisedFloorZones.length;
+      assert.match(body.terrainStatus, /Terrain sloped/);
       assert.ok(quads < 214 * 178, stop + " quads " + quads);
       assert.ok(quads >= 6 * 5, stop + " quads " + quads);
       const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
@@ -1551,6 +1552,7 @@ describe("campus terrain paste stays inside the synchronous response", () => {
     assert.equal(/reduced from/.test(body.terrainStatus), false);
     assert.equal(/past 20×20/.test(body.terrainStatus), false);
     assert.match(body.terrainStatus, /Copy terrain/);
+    assert.match(body.terrainStatus, /Terrain sloped 20×20/);
     assert.equal(/omitted/.test(body.terrainStatus), false);
     const quads =
       body.terrainClipboard.slopedFloors.length + body.terrainClipboard.raisedFloorZones.length;

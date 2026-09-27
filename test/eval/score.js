@@ -536,7 +536,13 @@ function evaluate(scores, thresholds) {
   const terrain = scores.terrain;
   if (terrain && terrain.required) {
     if (terrain.polygons < t.minTerrainPolygons) failures.push("terrain clipboard empty");
-    if (terrain.reliefM > 2 && terrain.sloped < 1) failures.push("terrain relief missing sloped floors");
+    if (
+      terrain.reliefM > 2 &&
+      terrain.sloped < 1 &&
+      !(terrain.raised >= 1 && terrain.maxRaisedM >= 1)
+    ) {
+      failures.push("terrain relief missing raised layers");
+    }
     if (!terrain.separateFromOpenIntent) failures.push("terrain leaked into OpenIntent");
     if (!terrain.mainClipboardFlat) failures.push("main hamina clipboard gained terrain zones");
   }

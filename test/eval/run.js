@@ -297,10 +297,19 @@ function runLoaded(loaded, opts) {
     heightsUpgraded: overtureMerge ? overtureMerge.heightsUpgraded : 0,
     explicit: heightSources.overture || 0,
   };
+  let maxRaisedM = 0;
+  const raisedZones = terrain && terrain.clipboard && terrain.clipboard.raisedFloorZones;
+  if (raisedZones) {
+    for (let i = 0; i < raisedZones.length; i++) {
+      const h = Number(raisedZones[i] && raisedZones[i].height);
+      if (h > maxRaisedM) maxRaisedM = h;
+    }
+  }
   const terrainScore = {
     required: prefer && !!(loaded.dem && loaded.dem.samples && loaded.dem.samples.length),
     raised: terrain ? terrain.raised : 0,
     sloped: terrain ? terrain.sloped : 0,
+    maxRaisedM,
     reliefM: terrain ? terrain.reliefM : 0,
     polygons: terrain ? terrain.raised + terrain.sloped : 0,
     separateFromOpenIntent: !JSON.stringify(built.openintent).includes("raisedFloorZones"),
