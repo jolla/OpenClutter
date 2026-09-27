@@ -1172,6 +1172,14 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /terrainOff \? "Terrain off"/);
     assert.match(app, /includeTerrain: terrain/);
     assert.match(app, /terrainResolution: terrain \? "auto" : undefined/);
+    assert.match(html, /id="terrain-style"[^>]*hidden/);
+    assert.match(html, /name="terrain-style" value="sloped" checked/);
+    assert.match(html, /name="terrain-style" value="raised"/);
+    assert.match(html, /> Sloped</);
+    assert.match(html, /> Raised layers</);
+    assert.match(app, /function selectedTerrainStyle/);
+    assert.match(app, /terrainStyle: terrain \? selectedTerrainStyle\(\) : undefined/);
+    assert.match(app, /style\.hidden = !dev \|\| !input \|\| !input\.checked/);
   });
 
   it("distinguishes a drag box from a click polygon and still exports one bbox", () => {
