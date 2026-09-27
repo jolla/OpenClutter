@@ -502,7 +502,7 @@ function terrainResolutionFromRequest(event, body) {
   return normalizeTerrainResolution(raw).id;
 }
 
-/** Raised layers unless the body or query asks for the older sloped mesh. */
+/** Sloped ramps unless the body or query asks for raised layers. */
 function terrainStyleFromRequest(event, body) {
   const q = (event && event.queryStringParameters) || {};
   let raw = "";

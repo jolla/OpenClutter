@@ -152,10 +152,9 @@ describe("3DEP terrain clipboard", () => {
     const terrain = terrainFromSamples(gridSamples(frame, () => 214.2), frame);
     assert.ok(terrain);
     assert.equal(terrain.sloped, 0);
-    assert.equal(terrain.terrainStyle, "raised");
+    assert.equal(terrain.terrainStyle, "sloped");
     const [cols, rows] = chooseGrid(terrain.reliefM);
-    assert.equal(cols * rows, 4);
-    assert.equal(terrain.raised, 1);
+    assert.equal(terrain.raised, cols * rows);
     assert.ok(terrain.raised <= 4);
     assert.equal(terrain.reliefM, 0);
     assert.equal(terrain.clipboard.header.type, "HaminaClipboard");
@@ -173,8 +172,7 @@ describe("3DEP terrain clipboard", () => {
     const fields = terrainBundleFields(terrain, []);
     assert.equal(fields.terrainFilename, TERRAIN_FILENAME);
     assert.equal(fields.terrainClipboard.raisedFloorZones.length, terrain.raised);
-    assert.match(fields.terrainStatus, /Terrain raised layers 2×2/);
-    assert.match(fields.terrainStatus, /1 floor/);
+    assert.match(fields.terrainStatus, /Terrain sloped 2×2/);
     assert.match(fields.terrainStatus, /Copy terrain/);
     assert.match(fields.terrainStatus, /paste it in Planner Plus/);
     assert.match(fields.terrainStatus, /Do not import it as OpenIntent/);
@@ -186,7 +184,7 @@ describe("3DEP terrain clipboard", () => {
     assert.equal(pasteSample.slopedFloors[0].slabOnly, false);
     const frame = geoFrame({ west: -87.922, south: 42.89, east: -87.912, north: 42.903, name: "Solid" });
     const flat = terrainFromSamples(gridSamples(frame, () => 200), frame);
-    const layered = terrainFromSamples(gridSamples(frame, (r) => 180 + r * 8), frame);
+    const layered = terrainFromSamples(gridSamples(frame, (r) => 180 + r * 8), frame, { terrainStyle: "raised" });
     assert.equal(layered.terrainStyle, "raised");
     assert.equal(layered.clipboard.slopedFloors.length, 0);
     assert.ok(layered.clipboard.raisedFloorZones.length >= 1);
@@ -252,7 +250,15 @@ describe("3DEP terrain clipboard", () => {
 
   it("stacks raised layers on a slope and keeps the sloped mesh behind terrainStyle", () => {
     const frame = geoFrame({ west: -87.922, south: 42.89, east: -87.912, north: 42.903, name: "Stack" });
-    const layered = terrainFromSamples(gridSamples(frame, (r) => 100 + r * 6), frame, { terrainResolution: "default" });
+    const layered = terrainFromSamples(gridSamples(frame, (r) => 100 + r * 6), frame, {
+      terrainResolution: "default",
+      terrainStyle: "raised",
+    });
+    const implicit = terrainFromSamples(gridSamples(frame, (r) => 100 + r * 6), frame, {
+      terrainResolution: "default",
+    });
+    assert.equal(implicit.terrainStyle, "sloped");
+    assert.ok(implicit.sloped > 9);
     assert.equal(layered.terrainStyle, "raised");
     assert.equal(layered.sloped, 0);
     assert.ok(layered.raised >= 2 && layered.raised <= 400);
@@ -309,15 +315,11 @@ describe("3DEP terrain clipboard", () => {
     const terrain = terrainFromSamples(samples, frame);
     assert.ok(terrain);
     assert.ok(terrain.reliefM > 2);
-    assert.equal(terrain.terrainStyle, "raised");
-    assert.equal(terrain.sloped, 0);
-    assert.ok(terrain.raised >= 2);
+    assert.equal(terrain.terrainStyle, "sloped");
+    assert.ok(terrain.sloped >= 1);
     const [mildCols, mildRows] = chooseGrid(terrain.reliefM, frame);
-    assert.ok(terrain.raised <= 400);
-    assert.ok(terrain.raised <= mildCols * mildRows);
+    assert.equal(terrain.raised + terrain.sloped, mildCols * mildRows);
     assert.ok(terrain.raised + terrain.sloped <= MAX_GRID * MAX_GRID);
-    const heights = new Set(terrain.clipboard.raisedFloorZones.map((z) => z.height));
-    assert.ok(heights.size >= 2, "height bands");
     assert.equal(terrain.clipboard.header.type, "HaminaClipboard");
     assert.equal(terrain.clipboard.attenuatingZones.length, 0);
     for (const z of terrain.clipboard.slopedFloors) {
@@ -717,15 +719,10 @@ describe("building height from floor on a slope", () => {
     }, [southB, northB]);
     assert.ok(terrain.reliefM >= LIFT_RELIEF_M);
     assert.equal(siteWarrantsLift(terrain), true);
-    assert.equal(terrain.terrainStyle, "raised");
-    assert.equal(terrain.sloped, 0);
-    assert.ok(terrain.raised >= 2);
-    assert.ok(terrain.raised <= 400);
-    for (const z of terrain.clipboard.raisedFloorZones) {
-      assertOpenQuad(z.area.coordinates[0], 2);
-      assert.equal(z.slabOnly, false);
-      assert.ok(z.height >= 0);
-    }
+    assert.equal(terrain.terrainStyle, "sloped");
+    assert.ok(terrain.sloped > 9);
+    assert.ok(terrain.sloped <= ABSOLUTE_MAX_GRID * ABSOLUTE_MAX_GRID);
+    for (const z of terrain.clipboard.slopedFloors) assertSlopedRamp(z.area.coordinates[0]);
     const areas = built.openintent.floorplans[0].attenuation_areas;
     assert.equal(areas.length, 2);
     const valley = areas.find((a) => a.area_material.name === "Building - One Floor");
@@ -985,16 +982,13 @@ describe("terrain resolution presets", () => {
     const finest = terrainFromSamples(samples, frame, { terrainResolution: "finest" });
     assert.equal(coarse.terrainResolution, "default");
     assert.deepEqual([coarse.gridCols, coarse.gridRows], [12, 12]);
-    assert.equal(coarse.sloped, 0);
-    assert.ok(coarse.raised >= 2 && coarse.raised <= 400);
+    assert.equal(coarse.raised + coarse.sloped, 12 * 12);
     assert.equal(fine.terrainResolution, "fine");
-    assert.equal(fine.sloped, 0);
-    assert.ok(fine.raised >= 2 && fine.raised <= 400);
+    assert.equal(fine.raised + fine.sloped, 16 * 16);
     assert.equal(finest.terrainResolution, "finest");
-    assert.equal(finest.sloped, 0);
-    assert.ok(finest.raised >= 2 && finest.raised <= 400);
-    assert.ok(finest.gridCols * finest.gridRows > fine.gridCols * fine.gridRows);
-    assert.ok(fine.gridCols * fine.gridRows > coarse.gridCols * coarse.gridRows);
+    assert.equal(finest.raised + finest.sloped, 20 * 20);
+    assert.ok(finest.sloped > fine.sloped);
+    assert.ok(fine.sloped > coarse.sloped);
     for (const terrain of [coarse, fine, finest]) {
       assert.ok(terrain.reliefM >= LIFT_RELIEF_M);
       const zones = terrain.clipboard.raisedFloorZones.concat(terrain.clipboard.slopedFloors);
@@ -1006,7 +1000,7 @@ describe("terrain resolution presets", () => {
     assert.match(fields.terrainStatus, /Finest ~25 m/);
     assert.match(fields.terrainStatus, /Copy terrain/);
     const flat = terrainFromSamples(gridSamples(frame, () => 214.2), frame, { terrainResolution: "finest" });
-    assert.equal(flat.raised, 1);
+    assert.equal(flat.raised, 4);
     assert.equal(flat.sloped, 0);
     assert.match(terrainBundleFields(flat, []).terrainStatus, /keeps the coarse mesh/);
     const mild = terrainFromSamples(
@@ -1015,8 +1009,7 @@ describe("terrain resolution presets", () => {
       { terrainResolution: "finest" }
     );
     assert.ok(mild.reliefM < 8);
-    assert.equal(mild.sloped, 0);
-    assert.ok(mild.raised >= 1 && mild.raised <= 4 * 3);
+    assert.equal(mild.raised + mild.sloped, 4 * 3);
     const built = buildClutter({
       frame,
       footprintsGeojson: { features: [] },
@@ -1031,11 +1024,10 @@ describe("terrain resolution presets", () => {
     assert.match(readme, /about 25 m quads, at most 20×20/);
     assert.match(readme, /^terrainResolution: finest$/m);
     assert.match(readme, /slabOnly is false/);
-    assert.match(readme, /^terrainStyle: raised$/m);
+    assert.match(readme, /^terrainStyle: sloped$/m);
     const clip = JSON.parse(unzipStore(built.zip)["terrain-clipboard.json"].toString());
-    assert.equal(clip.slopedFloors.length, 0);
-    assert.ok(clip.raisedFloorZones.length >= 2 && clip.raisedFloorZones.length <= 400);
-    assert.ok(clip.raisedFloorZones.every((z) => z.slabOnly === false));
+    assert.equal(clip.slopedFloors.length + clip.raisedFloorZones.length, 20 * 20);
+    assert.ok(clip.slopedFloors.concat(clip.raisedFloorZones).every((z) => z.slabOnly === false));
   });
 
   it("requests a denser DEM sample count for Fine and Finest", async () => {
@@ -1117,18 +1109,27 @@ describe("terrain resolution presets", () => {
     assert.equal(autoTerrain.pasteOmitted, undefined);
     assert.equal(autoTerrain.pasteReduced, undefined);
     const zones = autoTerrain.clipboard.raisedFloorZones.concat(autoTerrain.clipboard.slopedFloors);
-    assert.equal(autoTerrain.sloped, 0);
-    assert.ok(zones.length >= 2 && zones.length <= 400);
-    assert.ok(zones.length < 20 * 20);
-    assert.match(terrainBundleFields(autoTerrain, []).terrainStatus, /Terrain raised layers 20×20/);
+    assert.equal(autoTerrain.terrainStyle, "sloped");
+    assert.equal(zones.length, 20 * 20);
     assert.ok(zones.every((z) => z.slabOnly === false));
+    assert.match(terrainBundleFields(autoTerrain, []).terrainStatus, /Terrain sloped 20×20/);
     assert.match(terrainBundleFields(autoTerrain, []).terrainStatus, /Auto ~2 m/);
     assert.match(terrainBundleFields(autoTerrain, []).terrainStatus, /Copy terrain/);
     assert.equal(/past 20×20/.test(terrainBundleFields(autoTerrain, []).terrainStatus), false);
 
+    const raisedAuto = terrainFromSamples(gridSamples(box40, zAt), box40, { terrainStyle: "raised" });
+    assert.equal(raisedAuto.terrainStyle, "raised");
+    assert.equal(raisedAuto.sloped, 0);
+    assert.deepEqual([raisedAuto.gridCols, raisedAuto.gridRows], [20, 20]);
+    assert.ok(raisedAuto.raised >= 2 && raisedAuto.raised <= 400);
+    assert.ok(raisedAuto.clipboard.raisedFloorZones.every((z) => z.slabOnly === false));
+    assert.match(terrainBundleFields(raisedAuto, []).terrainStatus, /Terrain raised layers 20×20/);
+    assert.equal(/past 20×20/.test(terrainBundleFields(raisedAuto, []).terrainStatus), false);
+
     const flat = terrainFromSamples(gridSamples(box800, () => 214.2), box800);
     assert.equal(flat.terrainResolution, "auto");
-    assert.equal(flat.raised, 1);
+    assert.equal(flat.terrainStyle, "sloped");
+    assert.equal(flat.raised, 4);
     assert.equal(flat.sloped, 0);
     assert.ok(flat.clipboard.raisedFloorZones.every((z) => z.slabOnly === false));
     assert.match(terrainBundleFields(flat, []).terrainStatus, /Auto \(relief under 20 m keeps the coarse mesh\)/);
@@ -1146,9 +1147,8 @@ describe("terrain resolution presets", () => {
     );
     assert.equal(largeAuto.terrainResolution, "auto");
     assert.deepEqual([largeAuto.gridCols, largeAuto.gridRows], [20, 20]);
-    assert.equal(largeAuto.sloped, 0);
-    assert.ok(largeAuto.raised >= 2 && largeAuto.raised <= 400);
-    assert.ok(largeAuto.raised < 20 * 20);
+    assert.equal(largeAuto.terrainStyle, "sloped");
+    assert.equal(largeAuto.raised + largeAuto.sloped, 20 * 20);
     assert.ok(largeAuto.cellM > 70);
     assert.equal(largeAuto.pasteReduced, undefined);
     assert.match(terrainBundleFields(largeAuto, []).terrainStatus, /Auto ~/);
@@ -1161,9 +1161,8 @@ describe("terrain resolution presets", () => {
       campus
     );
     assert.deepEqual([campusTerrain.gridCols, campusTerrain.gridRows], [20, 20]);
-    assert.equal(campusTerrain.sloped, 0);
-    assert.ok(campusTerrain.raised >= 2 && campusTerrain.raised <= 400);
-    assert.ok(campusTerrain.raised < 20 * 20);
+    assert.equal(campusTerrain.terrainStyle, "sloped");
+    assert.equal(campusTerrain.raised + campusTerrain.sloped, 20 * 20);
     assert.ok(campusTerrain.cellM > 20);
   });
 
@@ -1217,9 +1216,8 @@ describe("terrain resolution presets", () => {
     assert.equal(m20.pasteOmitted, undefined);
     assert.equal(m20.pasteReduced, undefined);
     assert.deepEqual([m20.gridCols, m20.gridRows], [90, 70]);
-    assert.equal(m20.sloped, 0);
-    assert.ok(m20.raised >= 2 && m20.raised <= 400);
-    assert.ok(m20.raised < 90 * 70);
+    assert.equal(m20.terrainStyle, "sloped");
+    assert.equal(m20.raised + m20.sloped, 90 * 70);
     assert.ok(Math.abs(m20.cellM - ((1800 / 90 + 1400 / 70) / 2)) < 1.5);
     assert.ok(m20.clipboard.slopedFloors.concat(m20.clipboard.raisedFloorZones).every((z) => z.slabOnly === false));
     const notes20 = terrainResolutionNotes(m20, peak);
@@ -1229,6 +1227,14 @@ describe("terrain resolution presets", () => {
     assert.match(terrainBundleFields(m20, []).terrainStatus, /20 m ~/);
     assert.match(terrainBundleFields(m20, []).terrainStatus, /past 20×20/);
     assert.match(terrainBundleFields(m20, []).terrainStatus, /Copy terrain/);
+    assert.match(terrainBundleFields(m20, []).terrainStatus, /Terrain sloped/);
+
+    const raised20 = terrainFromSamples(samples, peak, { terrainResolution: "20", terrainStyle: "raised" });
+    assert.equal(raised20.terrainStyle, "raised");
+    assert.equal(raised20.sloped, 0);
+    assert.ok(raised20.raised >= 1 && raised20.raised <= 400);
+    assert.ok(raised20.raised < 90 * 70);
+    assert.match(terrainBundleFields(raised20, []).terrainStatus, /Terrain raised layers/);
 
     const m15 = terrainFromSamples(samples, peak, { terrainResolution: "15" });
     assert.equal(m15.pasteOmitted, undefined);
@@ -1251,9 +1257,8 @@ describe("terrain resolution presets", () => {
       assert.deepEqual([terrain.requestedGridCols, terrain.requestedGridRows], [fromCols, fromRows]);
       assert.ok(terrain.gridCols * terrain.gridRows < fromCols * fromRows);
       assert.ok(terrain.gridCols * terrain.gridRows <= PASTE_BUILD_MAX_QUADS);
-      assert.equal(terrain.sloped, 0);
-      assert.ok(terrain.raised >= 1 && terrain.raised <= 400);
-      assert.ok(terrain.raised < terrain.gridCols * terrain.gridRows);
+      assert.equal(terrain.terrainStyle, "sloped");
+      assert.equal(terrain.raised + terrain.sloped, terrain.gridCols * terrain.gridRows);
       const json = JSON.stringify(terrain.clipboard);
       assert.ok(json.length <= TERRAIN_PASTE_JSON_MAX);
       assert.ok(estimateBundlePayload(200 * 1024 + json.length, json) <= EXPORT_PAYLOAD_BUDGET);
@@ -1285,9 +1290,7 @@ describe("terrain resolution presets", () => {
     });
     const fat = JSON.stringify(uncapped.clipboard);
     assert.ok(uncapped.gridCols * uncapped.gridRows > campus10.gridCols * campus10.gridRows);
-    assert.equal(uncapped.sloped, 0);
-    assert.ok(uncapped.raised >= 1 && uncapped.raised <= 400);
-    assert.ok(estimateBundlePayload(900000 + fat.length, fat) <= LAMBDA_SYNC_PAYLOAD_MAX);
+    assert.ok(estimateBundlePayload(900000 + fat.length, fat) > LAMBDA_SYNC_PAYLOAD_MAX);
     const aerialMax = maxPasteJsonForCompanion(900000);
     const withAerial = terrainFromSamples(campusSamples, campus, {
       terrainResolution: "10",
@@ -1331,9 +1334,8 @@ describe("terrain resolution presets", () => {
     assert.ok(fineHill.cellM >= 0.9 && fineHill.cellM <= 1.2);
     assert.match(terrainResolutionNotes(fineHill, hill).join("\n"), /30×30/);
     assert.equal(/reduced from/.test(terrainResolutionNotes(fineHill, hill).join("\n")), false);
-    assert.equal(fineHill.sloped, 0);
-    assert.ok(fineHill.raised >= 2 && fineHill.raised <= 400);
-    assert.ok(fineHill.raised < 30 * 30);
+    assert.equal(fineHill.terrainStyle, "sloped");
+    assert.equal(fineHill.clipboard.slopedFloors.length + fineHill.clipboard.raisedFloorZones.length, 30 * 30);
 
     const wide = metersBox(44.91, 2500, 2500, "Max draw");
     assert.deepEqual(chooseGrid(200, wide, "5"), [500, 500]);
@@ -1859,9 +1861,8 @@ describe("Finland terrain does not wait on 3DEP", () => {
     });
     assert.equal(surface.kind, "surface");
     assert.equal(typeof demUnderFootprint(surface), "function");
-    assert.equal(surface.clipboard.slopedFloors.length, 0);
-    assert.ok(surface.clipboard.raisedFloorZones.length >= 2);
-    assert.ok(surface.clipboard.raisedFloorZones.length <= 400);
+    assert.equal(surface.terrainStyle, "sloped");
+    assert.ok(surface.clipboard.slopedFloors.length > 0);
 
     function rampZ(quad, x, y) {
       const z0 = quad[0][2];
@@ -2193,27 +2194,27 @@ describe("Finland paste quads are square ground meters", () => {
     return samples;
   }
 
-  function cellEdges(terrain, frame) {
+  function cellEdges(terrain) {
     const zones = terrain.clipboard.slopedFloors.concat(terrain.clipboard.raisedFloorZones);
-    assert.ok(zones.length >= 1);
-    assert.ok(zones.length <= 400);
-    const ew = frame.widthM / terrain.gridCols;
-    const ns = frame.lengthM / terrain.gridRows;
-    for (const z of zones) {
-      const ring = z.area.coordinates[0];
-      assert.equal(ring.length, 4);
-      for (const p of ring) {
-        const fromWest = (p[0] + frame.widthM) / ew;
-        const fromSouth = (p[1] + frame.lengthM) / ns;
-        assert.ok(Math.abs(fromWest - Math.round(fromWest)) < 0.08, "x " + p[0]);
-        assert.ok(Math.abs(fromSouth - Math.round(fromSouth)) < 0.08, "y " + p[1]);
-      }
+    assert.equal(zones.length, terrain.gridCols * terrain.gridRows);
+    let sumW = 0;
+    let sumH = 0;
+    let n = 0;
+    const step = Math.max(1, Math.floor(zones.length / 12));
+    for (let i = 0; i < zones.length; i += step) {
+      const ring = zones[i].area.coordinates[0];
+      const e01 = Math.hypot(ring[1][0] - ring[0][0], ring[1][1] - ring[0][1]);
+      const e12 = Math.hypot(ring[2][0] - ring[1][0], ring[2][1] - ring[1][1]);
+      const alongX = Math.abs(ring[1][0] - ring[0][0]) >= Math.abs(ring[1][1] - ring[0][1]);
+      sumW += alongX ? e01 : e12;
+      sumH += alongX ? e12 : e01;
+      n += 1;
     }
-    return { ew, ns };
+    return { ew: sumW / n, ns: sumH / n };
   }
 
   function assertSquareMeters(terrain, frame) {
-    const q = cellEdges(terrain, frame);
+    const q = cellEdges(terrain);
     const aspect = Math.max(q.ew, q.ns) / Math.min(q.ew, q.ns);
     assert.ok(aspect < 1.12, "aspect " + aspect.toFixed(3) + " edges " + q.ew.toFixed(2) + "×" + q.ns.toFixed(2));
     assert.ok(Math.abs(q.ew * terrain.gridCols - frame.widthM) / frame.widthM < 0.03, "east " + q.ew);
@@ -2260,9 +2261,9 @@ describe("Finland paste quads are square ground meters", () => {
     });
     const q = assertSquareMeters(terrain, frame);
     assert.ok(terrain.gridCols <= PASTE_SOFT_GRID && terrain.gridRows <= PASTE_SOFT_GRID);
-    assert.equal(terrain.sloped, 0);
-    assert.ok(terrain.raised >= 1 && terrain.raised <= 400);
-    assert.match(terrainBundleFields(terrain, []).terrainStatus, /Terrain raised layers/);
+    assert.equal(terrain.terrainStyle, "sloped");
+    assert.equal(terrain.raised + terrain.sloped, terrain.gridCols * terrain.gridRows);
+    assert.match(terrainBundleFields(terrain, []).terrainStatus, /Terrain sloped/);
     assert.ok(q.ew > 40 && q.ew < 120, "auto cell " + q.ew);
     const long = Math.max(frame.widthM, frame.lengthM);
     const expect = long / PASTE_SOFT_GRID;

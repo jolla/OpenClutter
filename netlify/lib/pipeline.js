@@ -246,12 +246,13 @@ function coverageSummary(stats) {
 
 const TERRAIN_README =
   "\nOptional Planner Plus terrain (not part of the OpenIntent import):\n" +
-  "USGS 3DEP bare-earth elevations become raised floor layers on the same meter frame.\n" +
-  "Each cell uses its high corner, quantized to a height band (1 m, coarser only when\n" +
+  "USGS 3DEP bare-earth elevations become a Planner Plus paste on the same meter frame.\n" +
+  "Sloped is the default: open ramps, one quad per cell. Raised layers is the alternate:\n" +
+  "each cell uses its high corner, quantized to a height band (1 m, coarser only when\n" +
   "the stack would pass 400 floors). A band covers every cell that reaches that height,\n" +
-  "merged into rectangles, so higher plates sit on lower ones. Flat ground is one pad.\n" +
-  "The older sloped-floor mesh is used only when the export asks for terrainStyle sloped.\n" +
-  "The lattice under those layers is still the relief ladder: flat ground is a 2×2 pad.\n" +
+  "merged into rectangles, so higher plates sit on lower ones. Flat ground in that\n" +
+  "mode is one pad. The page offers both when Terrain is on.\n" +
+  "The lattice under either paste is still the relief ladder: flat ground is a 2×2 pad.\n" +
   "A mild rise is a 4×3 lattice. Relief under 20 m\n" +
   "stays 6×5. A ski hill (DEM relief at least 20 m, Granite Peak scale) uses the\n" +
   "terrain resolution chosen on export. Auto is the default: cell size follows the\n" +
@@ -286,16 +287,18 @@ const TERRAIN_README =
   "Clipboard zone types use the same pair as bottomEdge and topEdge. Flatter sites\n" +
   "omit bottom_height so the bottom stays on the floor.\n" +
   "Retest Granite Peak: Import this zip (Projects → Import → OpenIntent), Copy terrain,\n" +
-  "paste it in Planner Plus, then check 3D. Buildings should sit on the raised layers.\n" +
-  "With Include foliage on, import again and Copy terrain: canopy should sit on the slope.\n";
+  "paste it in Planner Plus, then check 3D. Buildings should sit on the pasted terrain\n" +
+  "(sloped ramps, or stacked raised layers when that style was selected).\n" +
+  "With Include foliage on, import again and Copy terrain: canopy should sit on that surface.\n";
 
 const TERRAIN_README_SURFACE =
   "\nOptional Planner Plus terrain (not part of the OpenIntent import):\n" +
-  "Copernicus DEM GLO-30 surface elevations (EGM2008) become raised floor layers on the same meter frame.\n" +
-  "Each cell uses its high corner, quantized to a height band (1 m, coarser only when\n" +
+  "Copernicus DEM GLO-30 surface elevations (EGM2008) become a Planner Plus paste on the same meter frame.\n" +
+  "Sloped is the default: open ramps, one quad per cell. Raised layers is the alternate:\n" +
+  "each cell uses its high corner, quantized to a height band (1 m, coarser only when\n" +
   "the stack would pass 400 floors). A band covers every cell that reaches that height,\n" +
-  "merged into rectangles, so higher plates sit on lower ones. Flat ground is one pad.\n" +
-  "The older sloped-floor mesh is used only when the export asks for terrainStyle sloped.\n" +
+  "merged into rectangles, so higher plates sit on lower ones. Flat ground in that\n" +
+  "mode is one pad. The page offers both when Terrain is on.\n" +
   GLO30_CREDIT +
   ".\n" +
   "This is a digital surface model, not bare earth. Roofs and canopy are in the mesh.\n" +
@@ -336,8 +339,8 @@ const TERRAIN_README_SURFACE =
   "foliage height. The bare-earth 20 m ski-hill gate does not apply here.\n" +
   "A footprint whose ground is under 1 m omits bottom_height. Do not write bottom_height: 0.\n" +
   "Retest: Import this zip (Projects → Import → OpenIntent), Copy terrain,\n" +
-  "paste it in Planner Plus, then check 3D. Buildings should sit on the raised layers,\n" +
-  "not under them.\n";
+  "paste it in Planner Plus, then check 3D. Buildings should sit on the pasted terrain\n" +
+  "(sloped ramps, or stacked raised layers when that style was selected), not under it.\n";
 
 function terrainReadme(stats) {
   if (stats && stats.demKind === "surface") return TERRAIN_README_SURFACE;
@@ -1701,7 +1704,7 @@ function buildClutter({
     terrainResolution: normalizeTerrainResolution(
       terrainResolution || (terrain && terrain.terrainResolution)
     ).id,
-    terrainStyle: terrain && terrain.terrainStyle === "sloped" ? "sloped" : terrain ? "raised" : "",
+    terrainStyle: terrain && terrain.terrainStyle === "raised" ? "raised" : terrain ? "sloped" : "",
     areaMaterials: materials.length,
     compatibilityMode: COMPATIBILITY_MODE,
     exactBuildingHeights,

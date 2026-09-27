@@ -19,12 +19,12 @@
  * (−widthM, −lengthM). z on sloped floors, and raised-floor height, are meters
  * above the lowest sample.
  *
- * The default paste (terrainStyle "raised") is raisedFloorZones only. Each
- * cell takes the high corner, quantized to a height band. Every band is a
- * plate: the polygon covers every cell that reaches that height, merged into
- * rectangles, so higher plates sit on lower ones. Flat ground is one pad.
- * The stack stays at or under 400 floors. terrainStyle "sloped" keeps the
- * older ramp mesh. There is no resolution control on the page.
+ * The page default (terrainStyle "sloped") is the ramp mesh. When Terrain is
+ * on, the page also offers terrainStyle "raised": raisedFloorZones only. Each cell takes the high
+ * corner, quantized to a height band. Every band is a plate covering every
+ * cell that reaches that height, merged into rectangles, so higher plates sit
+ * on lower ones. Flat ground is one pad. The stack stays at or under 400
+ * floors. There is no resolution control on the page.
  *
  * Flat ground stays a 2×2 lattice before that merge. A mild rise uses a 4×3
  * lattice. Medium relief
@@ -190,16 +190,14 @@ function normalizeTerrainResolution(id) {
   return TERRAIN_RESOLUTIONS[key] || TERRAIN_RESOLUTIONS.auto;
 }
 
-/** Raised layers are the Terrain-on paste. "sloped" is the older ramp mesh. */
+/** Sloped ramps are the Terrain-on default. "raised" is the layered alternate. */
 function normalizeTerrainStyle(id) {
   const key = String(id == null ? "" : id)
     .trim()
     .toLowerCase()
     .replace(/[\s_-]+/g, "");
-  if (key === "sloped" || key === "slope" || key === "slopedfloors" || key === "mesh" || key === "ramps") {
-    return "sloped";
-  }
-  return "raised";
+  if (key === "raised" || key === "raisedlayers" || key === "raisedfloors" || key === "layers") return "raised";
+  return "sloped";
 }
 
 /**
@@ -1285,7 +1283,7 @@ function omittedPaste(src) {
     minZ: Math.round(src.minS * 10) / 10,
     maxZ: Math.round(src.maxS * 10) / 10,
     terrainResolution: src.preset.id,
-    terrainStyle: src.style || "raised",
+    terrainStyle: src.style || "sloped",
     bandM: src.mesh && src.mesh.bandM,
     cellM,
     gridCols: src.cols,
