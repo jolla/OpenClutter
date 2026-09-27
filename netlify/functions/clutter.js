@@ -86,6 +86,7 @@ const {
   terrainResolutionNotes,
   noteMissingTerrain,
   normalizeTerrainResolution,
+  normalizeTerrainStyle,
   isDevDemHost,
   frameHas3dep,
   EXPORT_PAYLOAD_BUDGET,
@@ -311,7 +312,7 @@ function terrainRescueBudget(elapsed) {
  * read a coarser lattice with the reserved slice. A US 3DEP read is unchanged.
  * Returns { job, join, preset }. preset is a finished DEM pack to use as-is.
  */
-async function followUpOutsideTerrain(terrainJob, started, frame, devHost, terrainResolution) {
+async function followUpOutsideTerrain(terrainJob, started, frame, devHost, terrainResolution, terrainStyle) {
   const join = { graceMs: TERRAIN_GRACE_MS, hardMs: TERRAIN_HARD_MS };
   if (!terrainJob || !devHost || !frame || frameHas3dep(frame)) {
     return { job: terrainJob, join, preset: null };
@@ -333,6 +334,7 @@ async function followUpOutsideTerrain(terrainJob, started, frame, devHost, terra
     fetchTerrainDemImpl(frame, null, {
       signal,
       terrainResolution,
+      terrainStyle,
       allowSurfaceFallback: true,
       budgetMs,
       skip3depProbe: true,
@@ -500,6 +502,18 @@ function terrainResolutionFromRequest(event, body) {
   return normalizeTerrainResolution(raw).id;
 }
 
+/** Raised layers unless the body or query asks for the older sloped mesh. */
+function terrainStyleFromRequest(event, body) {
+  const q = (event && event.queryStringParameters) || {};
+  let raw = "";
+  if (body && body.terrainStyle != null && String(body.terrainStyle).trim() !== "") {
+    raw = body.terrainStyle;
+  } else if (q.terrainStyle != null && String(q.terrainStyle).trim() !== "") {
+    raw = q.terrainStyle;
+  }
+  return normalizeTerrainStyle(raw);
+}
+
 /** Include foliage is off unless the body or query explicitly turns it on. */
 function wantFoliage(event, body) {
   const q = (event && event.queryStringParameters) || {};
@@ -573,6 +587,7 @@ async function handleClutter(event) {
   const format = parseFormat(body);
   const needImage = format !== "hamina-clipboard";
   const terrainResolution = terrainResolutionFromRequest(event, body);
+  const terrainStyle = terrainStyleFromRequest(event, body);
   const imgUrl = esriImageryUrl(frame);
   const imgMetaUrl = esriImageryMetaUrl(frame);
   const includeFoliage = wantFoliage(event, body);
@@ -642,6 +657,7 @@ async function handleClutter(event) {
           fetchTerrainDemImpl(frame, null, {
             signal,
             terrainResolution,
+            terrainStyle,
             allowSurfaceFallback: devHost,
             deadlineMs: started + TERRAIN_HARD_MS,
           })
@@ -720,7 +736,7 @@ async function handleClutter(event) {
       ? runOptional(warnings, started, "Canopy height", (signal) => fetchChmGrid(frame, { signal }))
       : Promise.resolve(null);
   const terrainFollow = includeTerrain
-    ? await followUpOutsideTerrain(terrainJob, started, frame, devHost, terrainResolution)
+    ? await followUpOutsideTerrain(terrainJob, started, frame, devHost, terrainResolution, terrainStyle)
     : { preset: null, job: null, join: null };
   const demPromise = terrainFollow.preset
     ? Promise.resolve(terrainFollow.preset)
@@ -843,6 +859,7 @@ async function handleClutter(event) {
     try {
       terrain = terrainFromSamples(demSamples, frame, {
         terrainResolution,
+        terrainStyle,
         kind: demKind,
         attribution: demAttribution,
       });
@@ -894,6 +911,7 @@ async function handleClutter(event) {
       maskPolygons,
       includeFoliage,
       terrainResolution,
+      terrainStyle,
       nlsHeights: devHost,
     });
   }
@@ -961,6 +979,7 @@ async function handleClutter(event) {
     try {
       next = terrainFromSamples(demSamples, frame, {
         terrainResolution,
+        terrainStyle,
         kind: demKind,
         attribution: demAttribution,
         pasteJsonMax,

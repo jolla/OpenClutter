@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.28** on `dev` — With Terrain on, Copy terrain is raised floor layers: each cell’s high corner is a height band, and those bands stack as rectangles (1 m bands, coarser only past 400 floors, at most the 20×20 Auto lattice). Status names the mode (`Terrain raised layers 12×8`). The older sloped mesh is still available when an export sends `terrainStyle` `sloped`. Terrain stays a checkbox, on by default, with no resolution control. When it is off, that export skips the DEM and Copy terrain. The badge stays (`dev · v1.1.28`).
+
 **v1.1.27** on `dev` — Terrain stays a checkbox, on by default, with no resolution control. When it is on, Auto sizes cells from the draw: about 1 m on a small hill and coarser on a large one, at most 20×20 quads, so Copy terrain stays a paste Planner Plus can take. When it is off, that export skips the DEM and Copy terrain. The badge stays (`dev · v1.1.27`).
 
 **v1.1.26** on `dev` — A polygon closes without a right-click. After three corners, double-click, click the first corner, or **Finish shape**. Export commits that open polygon. A ring of one or two corners blocks export instead of sending the previous outline. Esc still drops only the open corners. The badge stays (`dev · v1.1.26`).
@@ -29,7 +31,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.27`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, export uses Auto: about 1 m on a small hill, coarser on a large one, at most 20×20 quads. There is no resolution control.
+- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.28`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, Copy terrain is raised floor layers on the Auto lattice (about 1 m on a small hill, coarser on a large one, at most 20×20, at most 400 floors). There is no resolution control. An export that sends `terrainStyle` `sloped` keeps the older ramp mesh.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 

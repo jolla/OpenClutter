@@ -198,6 +198,7 @@ function coverageStats(stats) {
     terrainRaised: s.terrainRaised || 0,
     terrainSloped: s.terrainSloped || 0,
     terrainResolution: normalizeTerrainResolution(s.terrainResolution).id,
+    terrainStyle: s.terrainStyle === "sloped" ? "sloped" : s.terrainStyle === "raised" ? "raised" : "",
     demKind: s.demKind === "surface" ? "surface" : s.demKind === "bare-earth" ? "bare-earth" : "",
     buildingsLifted: s.buildingsLifted || 0,
     foliageLifted: s.foliageLifted || 0,
@@ -245,8 +246,13 @@ function coverageSummary(stats) {
 
 const TERRAIN_README =
   "\nOptional Planner Plus terrain (not part of the OpenIntent import):\n" +
-  "USGS 3DEP bare-earth elevations become open quads on the same meter frame.\n" +
-  "Flat ground is a 2×2 pad. A mild rise is a 4×3 lattice. Relief under 20 m\n" +
+  "USGS 3DEP bare-earth elevations become raised floor layers on the same meter frame.\n" +
+  "Each cell uses its high corner, quantized to a height band (1 m, coarser only when\n" +
+  "the stack would pass 400 floors). A band covers every cell that reaches that height,\n" +
+  "merged into rectangles, so higher plates sit on lower ones. Flat ground is one pad.\n" +
+  "The older sloped-floor mesh is used only when the export asks for terrainStyle sloped.\n" +
+  "The lattice under those layers is still the relief ladder: flat ground is a 2×2 pad.\n" +
+  "A mild rise is a 4×3 lattice. Relief under 20 m\n" +
   "stays 6×5. A ski hill (DEM relief at least 20 m, Granite Peak scale) uses the\n" +
   "terrain resolution chosen on export. Auto is the default: cell size follows the\n" +
   "draw, about 1 m on a small hill and coarser on a large one, at most 20×20 quads,\n" +
@@ -280,12 +286,16 @@ const TERRAIN_README =
   "Clipboard zone types use the same pair as bottomEdge and topEdge. Flatter sites\n" +
   "omit bottom_height so the bottom stays on the floor.\n" +
   "Retest Granite Peak: Import this zip (Projects → Import → OpenIntent), Copy terrain,\n" +
-  "paste it in Planner Plus, then check 3D. Buildings should sit on the slope.\n" +
+  "paste it in Planner Plus, then check 3D. Buildings should sit on the raised layers.\n" +
   "With Include foliage on, import again and Copy terrain: canopy should sit on the slope.\n";
 
 const TERRAIN_README_SURFACE =
   "\nOptional Planner Plus terrain (not part of the OpenIntent import):\n" +
-  "Copernicus DEM GLO-30 surface elevations (EGM2008) become open quads on the same meter frame.\n" +
+  "Copernicus DEM GLO-30 surface elevations (EGM2008) become raised floor layers on the same meter frame.\n" +
+  "Each cell uses its high corner, quantized to a height band (1 m, coarser only when\n" +
+  "the stack would pass 400 floors). A band covers every cell that reaches that height,\n" +
+  "merged into rectangles, so higher plates sit on lower ones. Flat ground is one pad.\n" +
+  "The older sloped-floor mesh is used only when the export asks for terrainStyle sloped.\n" +
   GLO30_CREDIT +
   ".\n" +
   "This is a digital surface model, not bare earth. Roofs and canopy are in the mesh.\n" +
@@ -326,8 +336,8 @@ const TERRAIN_README_SURFACE =
   "foliage height. The bare-earth 20 m ski-hill gate does not apply here.\n" +
   "A footprint whose ground is under 1 m omits bottom_height. Do not write bottom_height: 0.\n" +
   "Retest: Import this zip (Projects → Import → OpenIntent), Copy terrain,\n" +
-  "paste it in Planner Plus, then check 3D. Buildings should rest on the sloped\n" +
-  "floors, not under them.\n";
+  "paste it in Planner Plus, then check 3D. Buildings should sit on the raised layers,\n" +
+  "not under them.\n";
 
 function terrainReadme(stats) {
   if (stats && stats.demKind === "surface") return TERRAIN_README_SURFACE;
@@ -352,6 +362,7 @@ function zipReadme(stats) {
     `buildingsKept: ${c.buildingsKept}\n` +
     `includeFoliage: ${c.includeFoliage ? "true" : "false"}\n` +
     `terrainResolution: ${c.terrainResolution}\n` +
+    `terrainStyle: ${c.terrainStyle || "none"}\n` +
     `demKind: ${c.demKind || "none"}\n` +
     `treesKept: ${c.treesKept}\n` +
     `treesSource: ${c.treesSource}\n` +
@@ -1690,6 +1701,7 @@ function buildClutter({
     terrainResolution: normalizeTerrainResolution(
       terrainResolution || (terrain && terrain.terrainResolution)
     ).id,
+    terrainStyle: terrain && terrain.terrainStyle === "sloped" ? "sloped" : terrain ? "raised" : "",
     areaMaterials: materials.length,
     compatibilityMode: COMPATIBILITY_MODE,
     exactBuildingHeights,

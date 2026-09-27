@@ -16,8 +16,18 @@
  * does not download it as a second file.
  *
  * Clipboard meters match hamina-clipboard.js: NE is (0, 0), SW is
- * (−widthM, −lengthM). z on sloped floors is meters above the lowest sample.
- * Flat ground stays a 2×2 pad. A mild rise uses a 4×3 lattice. Medium relief
+ * (−widthM, −lengthM). z on sloped floors, and raised-floor height, are meters
+ * above the lowest sample.
+ *
+ * The default paste (terrainStyle "raised") is raisedFloorZones only. Each
+ * cell takes the high corner, quantized to a height band. Every band is a
+ * plate: the polygon covers every cell that reaches that height, merged into
+ * rectangles, so higher plates sit on lower ones. Flat ground is one pad.
+ * The stack stays at or under 400 floors. terrainStyle "sloped" keeps the
+ * older ramp mesh. There is no resolution control on the page.
+ *
+ * Flat ground stays a 2×2 lattice before that merge. A mild rise uses a 4×3
+ * lattice. Medium relief
  * under 20 m stays 6×5. That ladder is the US bare-earth hill. At Finland
  * latitudes the paste is planned in the same ground meters as the aerial, so
  * each quad is square. Auto and the 20–1 m stops use that cell size even when
@@ -64,6 +74,13 @@ const FLAT_M = 0.5;
  */
 /** Older Hamina clipboard size. Auto and the named manuals stay inside it. */
 const PASTE_SOFT_GRID = 20;
+/**
+ * Raised-layer paste cap. A ~9k sloped mesh locked Planner Plus. Nested
+ * plates stay at or under this many raisedFloorZones.
+ */
+const RAISED_FLOOR_MAX = PASTE_SOFT_GRID * PASTE_SOFT_GRID;
+/** First height band, in meters. Coarser bands are only the cap fallback. */
+const RAISED_BAND_M = 1;
 /**
  * Quads on one side for a 2.5 km draw at 5 m (the export span limit).
  * A 1 m mesh on that draw is coarser than 1 m so the paste still fits.
@@ -171,6 +188,18 @@ function normalizeTerrainResolution(id) {
     .replace(/\s+/g, "");
   if (key.endsWith("m") && TERRAIN_RESOLUTIONS[key.slice(0, -1)]) key = key.slice(0, -1);
   return TERRAIN_RESOLUTIONS[key] || TERRAIN_RESOLUTIONS.auto;
+}
+
+/** Raised layers are the Terrain-on paste. "sloped" is the older ramp mesh. */
+function normalizeTerrainStyle(id) {
+  const key = String(id == null ? "" : id)
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+  if (key === "sloped" || key === "slope" || key === "slopedfloors" || key === "mesh" || key === "ramps") {
+    return "sloped";
+  }
+  return "raised";
 }
 
 /**
@@ -881,6 +910,170 @@ function slopedZone(ring) {
   };
 }
 
+/** High corner of each cell, meters above the lattice low point. */
+function cellHighCorners(grid) {
+  const cols = grid.cols;
+  const rows = grid.rows;
+  const heights = new Array(rows);
+  let maxH = 0;
+  for (let r = 0; r < rows; r++) {
+    heights[r] = new Array(cols);
+    for (let c = 0; c < cols; c++) {
+      const sw = at(grid, c, r);
+      const se = at(grid, c + 1, r);
+      const ne = at(grid, c + 1, r + 1);
+      const nw = at(grid, c, r + 1);
+      const h = round1(Math.max(sw.zRel, se.zRel, ne.zRel, nw.zRel));
+      heights[r][c] = h;
+      if (h > maxH) maxH = h;
+    }
+  }
+  return { heights, maxH };
+}
+
+/** Band steps from 1 m up. The last step covers the whole rise as one plate. */
+function raisedBandSteps(maxHeight) {
+  const steps = [1, 2, 5, 10, 20, 25, 50, 100];
+  const out = [];
+  const maxH = maxHeight > 0 ? maxHeight : 0;
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    if (step < RAISED_BAND_M) continue;
+    out.push(step);
+    if (maxH > 0 && step >= maxH) return out;
+  }
+  if (maxH > RAISED_BAND_M) out.push(Math.max(RAISED_BAND_M, Math.ceil(maxH)));
+  return out.length ? out : [RAISED_BAND_M];
+}
+
+/**
+ * Maximal rectangles of a cell mask. Runs with the same column span merge
+ * northward into one quad.
+ */
+function horizontalRects(maskFn, rows, cols) {
+  const rects = [];
+  let active = new Map();
+  for (let r = 0; r < rows; r++) {
+    const runs = [];
+    let c = 0;
+    while (c < cols) {
+      if (!maskFn(r, c)) {
+        c += 1;
+        continue;
+      }
+      let c1 = c;
+      while (c1 + 1 < cols && maskFn(r, c1 + 1)) c1 += 1;
+      runs.push([c, c1]);
+      c = c1 + 1;
+    }
+    const next = new Map();
+    for (let i = 0; i < runs.length; i++) {
+      const c0 = runs[i][0];
+      const c1 = runs[i][1];
+      const key = c0 + ":" + c1;
+      const prev = active.get(key);
+      if (prev && prev.r1 === r - 1) {
+        prev.r1 = r;
+        next.set(key, prev);
+      } else {
+        next.set(key, { c0, c1, r0: r, r1: r });
+      }
+    }
+    active.forEach((rect, key) => {
+      if (!next.has(key)) rects.push(rect);
+    });
+    active = next;
+  }
+  active.forEach((rect) => rects.push(rect));
+  return rects;
+}
+
+function pushRaisedRects(zones, grid, rects, height) {
+  for (let i = 0; i < rects.length; i++) {
+    const rect = rects[i];
+    const pad = raisedZone(
+      at(grid, rect.c0, rect.r0),
+      at(grid, rect.c1 + 1, rect.r0),
+      at(grid, rect.c1 + 1, rect.r1 + 1),
+      at(grid, rect.c0, rect.r1 + 1),
+      height
+    );
+    if (pad) zones.push(pad);
+  }
+}
+
+/**
+ * Nested raised plates for one band step. A cell quantized to H is covered by
+ * every plate from the step up through H, so the plates stack. Cells under
+ * FLAT_M stay a height-0 pad and are not in those plates.
+ */
+function raisedLayersForStep(grid, heights, step) {
+  const rows = grid.rows;
+  const cols = grid.cols;
+  const q = new Array(rows);
+  let maxB = 0;
+  const stepR = round1(step > 0 ? step : RAISED_BAND_M);
+  for (let r = 0; r < rows; r++) {
+    q[r] = new Array(cols);
+    for (let c = 0; c < cols; c++) {
+      const h = heights[r][c];
+      let band = 0;
+      if (h >= FLAT_M && stepR > 0) band = round1(Math.ceil((h - 1e-9) / stepR) * stepR);
+      q[r][c] = band;
+      if (band > maxB) maxB = band;
+    }
+  }
+  const zones = [];
+  if (!(maxB > 0)) {
+    pushRaisedRects(zones, grid, [{ c0: 0, c1: cols - 1, r0: 0, r1: rows - 1 }], 0);
+    return { zones, bandM: stepR };
+  }
+  pushRaisedRects(
+    zones,
+    grid,
+    horizontalRects((r, c) => q[r][c] === 0, rows, cols),
+    0
+  );
+  for (let h = stepR; h <= maxB + 1e-6; h = round1(h + stepR)) {
+    const level = h;
+    pushRaisedRects(
+      zones,
+      grid,
+      horizontalRects((r, c) => q[r][c] + 1e-9 >= level, rows, cols),
+      level
+    );
+  }
+  return { zones, bandM: stepR };
+}
+
+/**
+ * Raised-floor terrain. Prefer 1 m bands. Coarser bands are used only when
+ * the stack would pass RAISED_FLOOR_MAX. The caller coarsens the lattice if
+ * even one band is still over that cap.
+ */
+function buildRaisedLayerClipboard(samples, frame, cols, rows, elevationAt) {
+  const grid = lattice(samples, frame, cols, rows, elevationAt);
+  const highs = cellHighCorners(grid);
+  const steps = raisedBandSteps(highs.maxH);
+  let best = null;
+  for (let i = 0; i < steps.length; i++) {
+    best = raisedLayersForStep(grid, highs.heights, steps[i]);
+    if (best.zones.length <= RAISED_FLOOR_MAX) break;
+  }
+  if (!best || !best.zones.length) return null;
+  const clip = emptyClipboard();
+  clip.raisedFloorZones = best.zones;
+  clip.slopedFloors = [];
+  clip.attenuatingZones = [];
+  return {
+    grid,
+    clip,
+    raised: best.zones.length,
+    sloped: 0,
+    bandM: best.bandM,
+  };
+}
+
 function buildTerrainClipboard(samples, frame, cols, rows, elevationAt) {
   const grid = lattice(samples, frame, cols, rows, elevationAt);
   const raised = [];
@@ -934,6 +1127,7 @@ function terrainFromSamples(samples, frame, opts) {
     if (s.z > maxS) maxS = s.z;
   }
   const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
+  const style = normalizeTerrainStyle(opts && opts.terrainStyle);
   const reliefM = maxS - minS;
   let [cols, rows] = chooseGrid(reliefM, frame, preset.id);
   const requestedCols = cols;
@@ -955,6 +1149,7 @@ function terrainFromSamples(samples, frame, opts) {
       clean,
       frame,
       preset,
+      style,
       reliefM,
       minS,
       maxS,
@@ -979,13 +1174,36 @@ function terrainFromSamples(samples, frame, opts) {
       rows = fitted[1];
     }
   }
-  let mesh = buildTerrainClipboard(clean, frame, cols, rows, elevationAt);
+  function settleRaised(c, r) {
+    let mesh = buildRaisedLayerClipboard(clean, frame, c, r, elevationAt);
+    let guard = 0;
+    while (mesh && mesh.raised > RAISED_FLOOR_MAX && guard < 8) {
+      const fitted = fitPasteAxes(c, r, Math.max(1, Math.floor((c * r) / 4)));
+      if (fitted[0] === c && fitted[1] === r) break;
+      c = fitted[0];
+      r = fitted[1];
+      mesh = buildRaisedLayerClipboard(clean, frame, c, r, elevationAt);
+      guard += 1;
+    }
+    return { mesh, cols: c, rows: r };
+  }
+  function rebuild(c, r) {
+    if (style === "sloped") {
+      return { mesh: buildTerrainClipboard(clean, frame, c, r, elevationAt), cols: c, rows: r };
+    }
+    return settleRaised(c, r);
+  }
+  let builtMesh = rebuild(cols, rows);
+  let mesh = builtMesh.mesh;
+  cols = builtMesh.cols;
+  rows = builtMesh.rows;
   if (!mesh) return null;
   function omitFields() {
     return {
       clean,
       frame,
       preset,
+      style,
       reliefM,
       minS,
       maxS,
@@ -1013,9 +1231,10 @@ function terrainFromSamples(samples, frame, opts) {
       if (fitted[0] === cols && fitted[1] === rows) {
         return omittedPaste(omitFields());
       }
-      cols = fitted[0];
-      rows = fitted[1];
-      mesh = buildTerrainClipboard(clean, frame, cols, rows, elevationAt);
+      builtMesh = rebuild(fitted[0], fitted[1]);
+      mesh = builtMesh.mesh;
+      cols = builtMesh.cols;
+      rows = builtMesh.rows;
       if (!mesh) return null;
       jsonLen = JSON.stringify(mesh.clip).length;
       guard += 1;
@@ -1028,6 +1247,8 @@ function terrainFromSamples(samples, frame, opts) {
     minZ: Math.round(minS * 10) / 10,
     maxZ: Math.round(maxS * 10) / 10,
     terrainResolution: preset.id,
+    terrainStyle: style,
+    bandM: mesh.bandM,
     cellM,
     gridCols: cols,
     gridRows: rows,
@@ -1064,6 +1285,8 @@ function omittedPaste(src) {
     minZ: Math.round(src.minS * 10) / 10,
     maxZ: Math.round(src.maxS * 10) / 10,
     terrainResolution: src.preset.id,
+    terrainStyle: src.style || "raised",
+    bandM: src.mesh && src.mesh.bandM,
     cellM,
     gridCols: src.cols,
     gridRows: src.rows,
@@ -1361,17 +1584,22 @@ function terrainBundleFields(terrain, warnings) {
       mesh = ", " + preset.label + " (relief under 20 m keeps the coarse mesh)";
     }
     const reduced = terrain.pasteReduced ? " " + pasteReducedNote(terrain) : "";
+    const slopedStyle = terrain.terrainStyle === "sloped";
+    const mode = slopedStyle ? "Terrain sloped " + cols + "×" + rows : "Terrain raised layers " + cols + "×" + rows;
+    const floors = slopedStyle
+      ? terrain.raised + " raised, " + terrain.sloped + " sloped"
+      : terrain.raised +
+        (terrain.raised === 1 ? " floor" : " floors") +
+        (terrain.bandM > 0 ? ", " + formatCellM(terrain.bandM) + " m bands" : "");
     return {
       terrainFilename: TERRAIN_FILENAME,
       terrainClipboard: terrain.clipboard,
       terrainStatus:
-        "Terrain ready (" +
+        mode +
+        " (" +
         terrainSourceLabel(terrain) +
         ", " +
-        terrain.raised +
-        " raised, " +
-        terrain.sloped +
-        " sloped" +
+        floors +
         mesh +
         ")." +
         reduced +
@@ -1563,6 +1791,8 @@ module.exports = {
   TARGET_CELL_M,
   TERRAIN_RESOLUTIONS,
   PASTE_SOFT_GRID,
+  RAISED_FLOOR_MAX,
+  RAISED_BAND_M,
   ABSOLUTE_MAX_GRID,
   ABSOLUTE_MAX_SAMPLES,
   TERRAIN_PASTE_JSON_MAX,
@@ -1601,6 +1831,7 @@ module.exports = {
   squareMeterAxes,
   highLatMeterFrame,
   normalizeTerrainResolution,
+  normalizeTerrainStyle,
   sampleCountForResolution,
   terrainResolutionNotes,
   formatCellM,

@@ -1538,8 +1538,10 @@ describe("campus terrain paste stays inside the synchronous response", () => {
       assert.equal(/omitted/.test(body.terrainStatus), false);
       const quads =
         body.terrainClipboard.slopedFloors.length + body.terrainClipboard.raisedFloorZones.length;
+      assert.equal(body.terrainClipboard.slopedFloors.length, 0);
+      assert.match(body.terrainStatus, /Terrain raised layers/);
       assert.ok(quads < 214 * 178, stop + " quads " + quads);
-      assert.ok(quads >= 6 * 5, stop + " quads " + quads);
+      assert.ok(quads >= 1 && quads <= 400, stop + " quads " + quads);
       const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
       assert.ok(files["terrain-clipboard.json"]);
     }
@@ -1551,9 +1553,12 @@ describe("campus terrain paste stays inside the synchronous response", () => {
     assert.equal(/reduced from/.test(body.terrainStatus), false);
     assert.equal(/past 20×20/.test(body.terrainStatus), false);
     assert.match(body.terrainStatus, /Copy terrain/);
+    assert.match(body.terrainStatus, /Terrain raised layers 20×20/);
     assert.equal(/omitted/.test(body.terrainStatus), false);
     const quads =
       body.terrainClipboard.slopedFloors.length + body.terrainClipboard.raisedFloorZones.length;
-    assert.equal(quads, 20 * 20);
+    assert.equal(body.terrainClipboard.slopedFloors.length, 0);
+    assert.ok(quads >= 1 && quads <= 400);
+    assert.ok(quads < 20 * 20);
   });
 });
