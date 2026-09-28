@@ -43,12 +43,26 @@ const OVERTURE_GRACE_MS = 4500;
 const OVERTURE_LARGE_GRACE_MS = 15000;
 const LARGE_DRAW_SIDE_M = 1500;
 const OVERTURE_HARD_MS = 23000;
-// Terrain overlaps the JPEG after imagery metadata snaps the extent.
-// grace/hard match joinOptional. Outside 3DEP coverage the read itself
-// fails that probe in a few hundred milliseconds and spends the rest on
-// GLO-30; this cap is only the shared abort.
+// Terrain overlaps the JPEG. On the dev host it starts with the JPEG, on the
+// predicted content grid, so a slow metadata response does not eat the read.
+// Production still waits for that snap. grace/hard match joinOptional.
+// Outside 3DEP coverage the read itself fails that probe in a few hundred
+// milliseconds and spends the rest on GLO-30; this cap is only the shared abort.
+// A large campus keeps fetching footprints well past 9s (dev imagery up to 12s,
+// a dense Overture row group until 23s). The old 9s hard cap aborted the DEM
+// while that work continued, which is "Terrain omitted: timed out" with a
+// finished zip. Raised layers and Sloped share this read; the style is applied
+// only after samples exist. The dev host lets the in-flight read ride with
+// the buildings, then one coarser retry if it is still open.
 const TERRAIN_GRACE_MS = 1500;
 const TERRAIN_HARD_MS = 9000;
+const TERRAIN_HARD_MS_DEV = 18000;
+// Fast maps still give a full getSamples this long before the coarse retry.
+// A map that already ran longer has had that time; the retry is not a second wait.
+const TERRAIN_FULL_MS = 4000;
+// Coarse 3DEP count for that retry. Dense enough to interpolate a 20×20 paste,
+// small enough that a campus getSamples can return inside the rescue slice.
+const TERRAIN_COARSE_SAMPLES = 64;
 // Finland's ground-meter resample blocks the event loop after the JPEG, so a
 // GLO-30 read planned against the 9s cap is often still in flight when core
 // ends — and that cap then aborts it empty ("Terrain omitted: timed out").
@@ -307,38 +321,52 @@ function terrainRescueBudget(elapsed) {
 }
 
 /**
- * Outside 3DEP, keep a GLO-30 grid that finished during the aerial. If it is
- * still running after the grace the 9s cap would have allowed, abort it and
- * read a coarser lattice with the reserved slice. A US 3DEP read is unchanged.
- * Returns { job, join, preset }. preset is a finished DEM pack to use as-is.
+ * A settled optional DEM job. pack is a usable grid. timedOut means the read
+ * was aborted, so one coarser retry can still finish. A clean miss (no grid,
+ * not an abort) is not a timeout and is not retried.
  */
-async function followUpOutsideTerrain(terrainJob, started, frame, devHost, terrainResolution, terrainStyle) {
-  const join = { graceMs: TERRAIN_GRACE_MS, hardMs: TERRAIN_HARD_MS };
-  if (!terrainJob || !devHost || !frame || frameHas3dep(frame)) {
-    return { job: terrainJob, join, preset: null };
+async function finishedTerrain(job) {
+  if (!job || !job.isSettled()) return null;
+  const result = await job.work;
+  const pack = keptOptionalResult(result);
+  if (pack) return { pack, timedOut: false };
+  const err = job.error();
+  const timedOut = result === TIMED_OUT && (!err || job.ctrl.signal.aborted || isTimeout(err));
+  return { pack: null, timedOut };
+}
+
+/**
+ * Abort a read that is still open and start one shorter DEM fetch.
+ * fetchOpts is skip3depProbe for GLO-30, or sampleCount for a coarse 3DEP.
+ * Returns { job, join, preset }.
+ */
+async function rescueTerrain(terrainJob, started, frame, terrainResolution, terrainStyle, fetchOpts) {
+  const giveUp = { graceMs: TERRAIN_GRACE_MS, hardMs: TERRAIN_HARD_MS };
+  const budgetMs = terrainRescueBudget(Date.now() - started);
+  if (!budgetMs) return { job: terrainJob, join: giveUp, preset: null };
+  if (terrainJob && !terrainJob.isSettled()) {
+    terrainJob.ctrl.abort();
+    const flushed = await flushOptional(terrainJob, 250);
+    if (flushed && Array.isArray(flushed.samples) && flushed.samples.length >= 4) {
+      return { job: null, join: giveUp, preset: flushed };
+    }
   }
-  if (!terrainJob.isSettled()) {
-    const settle = terrainSettleMs(Date.now() - started);
-    if (settle >= 200) await flushOptional(terrainJob, settle);
-  }
-  if (terrainJob.isSettled()) return { job: terrainJob, join, preset: null };
   const elapsed = Date.now() - started;
-  const budgetMs = terrainRescueBudget(elapsed);
-  if (!budgetMs) return { job: terrainJob, join, preset: null };
-  terrainJob.ctrl.abort();
-  const flushed = await flushOptional(terrainJob, 250);
-  if (flushed && Array.isArray(flushed.samples) && flushed.samples.length >= 4) {
-    return { job: null, join, preset: flushed };
-  }
   const job = beginOptional((signal) =>
-    fetchTerrainDemImpl(frame, null, {
-      signal,
-      terrainResolution,
-      terrainStyle,
-      allowSurfaceFallback: true,
-      budgetMs,
-      skip3depProbe: true,
-    })
+    fetchTerrainDemImpl(
+      frame,
+      null,
+      Object.assign(
+        {
+          signal,
+          terrainResolution,
+          terrainStyle,
+          allowSurfaceFallback: true,
+          budgetMs,
+        },
+        fetchOpts || {}
+      )
+    )
   );
   return {
     job,
@@ -349,6 +377,43 @@ async function followUpOutsideTerrain(terrainJob, started, frame, devHost, terra
       reserveMs: budgetMs,
     },
   };
+}
+
+/**
+ * Keep a DEM grid that finished during the aerial. If it is still open, or it
+ * was aborted, read once more with a coarser lattice in the slice that is left.
+ * Outside 3DEP that retry skips the probe and reads GLO-30. Inside coverage it
+ * is one short 3DEP getSamples, not another 576-point read and not a second
+ * style-specific fetch. Raised layers and Sloped both use this.
+ * Returns { job, join, preset }. preset is a finished DEM pack to use as-is.
+ */
+async function followUpTerrain(terrainJob, started, frame, devHost, terrainResolution, terrainStyle) {
+  const join = {
+    graceMs: devHost ? TERRAIN_HARD_MS_DEV : TERRAIN_GRACE_MS,
+    hardMs: devHost ? TERRAIN_HARD_MS_DEV : TERRAIN_HARD_MS,
+  };
+  if (!terrainJob || !devHost || !frame) {
+    return { job: terrainJob, join: { graceMs: TERRAIN_GRACE_MS, hardMs: TERRAIN_HARD_MS }, preset: null };
+  }
+  const outside = !frameHas3dep(frame);
+  if (!terrainJob.isSettled()) {
+    const elapsed = Date.now() - started;
+    const wait = outside
+      ? terrainSettleMs(elapsed)
+      : Math.min(TERRAIN_HARD_MS_DEV, Math.max(TERRAIN_FULL_MS, elapsed + TERRAIN_GRACE_MS)) - elapsed;
+    if (wait >= 200) await flushOptional(terrainJob, wait);
+  }
+  const done = await finishedTerrain(terrainJob);
+  if (done && done.pack) return { job: null, join, preset: done.pack };
+  if (done && !done.timedOut) return { job: terrainJob, join, preset: null };
+  return rescueTerrain(
+    terrainJob,
+    started,
+    frame,
+    terrainResolution,
+    terrainStyle,
+    outside ? { skip3depProbe: true } : { sampleCount: TERRAIN_COARSE_SAMPLES }
+  );
 }
 
 /**
@@ -643,6 +708,23 @@ async function handleClutter(event) {
     overtureJob = beginOptional((signal) =>
       fetchOvertureFootprints(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
     );
+    // Dev host: start the DEM on the predicted content grid, in parallel with
+    // metadata. A large campus used to await that JSON (up to 4s) and then
+    // abort the read at 9s while footprints were still downloading. Raised
+    // layers do not fetch again; terrainStyle is applied when the mesh is built.
+    // Production still starts after the snap below.
+    if (includeTerrain && needImage && devHost) {
+      const terrainFrame = Object.assign({}, frame);
+      terrainJob = beginOptional((signal) =>
+        fetchTerrainDemImpl(terrainFrame, null, {
+          signal,
+          terrainResolution,
+          terrainStyle,
+          allowSurfaceFallback: true,
+          deadlineMs: started + TERRAIN_HARD_MS_DEV,
+        })
+      );
+    }
     if (needImage) {
       imgMeta = await fetchImageryMeta(imgMetaUrl);
       if (imgMeta) frame = applyImageryMeta(frame, imgMeta, null, { requestBbox });
@@ -652,7 +734,7 @@ async function handleClutter(event) {
       // Copernicus GLO-30 inside this same optional budget. Outside coverage
       // the 3DEP probe is short so GLO-30 gets the remaining time.
       // includeTerrain false skips the DEM, the follow-up, and Copy terrain.
-      if (includeTerrain) {
+      if (includeTerrain && !terrainJob) {
         terrainJob = beginOptional((signal) =>
           fetchTerrainDemImpl(frame, null, {
             signal,
@@ -736,7 +818,7 @@ async function handleClutter(event) {
       ? runOptional(warnings, started, "Canopy height", (signal) => fetchChmGrid(frame, { signal }))
       : Promise.resolve(null);
   const terrainFollow = includeTerrain
-    ? await followUpOutsideTerrain(terrainJob, started, frame, devHost, terrainResolution, terrainStyle)
+    ? await followUpTerrain(terrainJob, started, frame, devHost, terrainResolution, terrainStyle)
     : { preset: null, job: null, join: null };
   const demPromise = terrainFollow.preset
     ? Promise.resolve(terrainFollow.preset)
@@ -1114,6 +1196,9 @@ exports.LAMBDA_SYNC_PAYLOAD_MAX = LAMBDA_SYNC_PAYLOAD_MAX;
 exports.lambdaPayloadBytes = lambdaPayloadBytes;
 exports.TERRAIN_GRACE_MS = TERRAIN_GRACE_MS;
 exports.TERRAIN_HARD_MS = TERRAIN_HARD_MS;
+exports.TERRAIN_HARD_MS_DEV = TERRAIN_HARD_MS_DEV;
+exports.TERRAIN_FULL_MS = TERRAIN_FULL_MS;
+exports.TERRAIN_COARSE_SAMPLES = TERRAIN_COARSE_SAMPLES;
 exports.TERRAIN_RESERVE_MS = TERRAIN_RESERVE_MS;
 exports.TERRAIN_PLATFORM_MS = TERRAIN_PLATFORM_MS;
 exports.TERRAIN_RESCUE_MIN_MS = TERRAIN_RESCUE_MIN_MS;

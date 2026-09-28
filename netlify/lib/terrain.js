@@ -1710,9 +1710,12 @@ async function fetchTerrainDem(frame, fetchFn, opts) {
   // which used to cancel GLO-30 before it started. Probe briefly instead.
   const probe = outside && !skipProbe ? linkAbort(parent, DEP3_OUTSIDE_MS) : null;
   let samples = [];
+  // terrainStyle is intentionally unused here. Sloped and Raised layers share
+  // this read; the mesh is built later from the same samples.
+  let demOpts = opts;
   if (!skipProbe) {
     try {
-      const demOpts = probe
+      demOpts = probe
         ? Object.assign({}, opts, { signal: probe.signal, sampleCount: DEP3_PROBE_SAMPLES })
         : opts;
       samples = await fetchDemSamples(frame, fetchFn, demOpts);
@@ -1726,12 +1729,26 @@ async function fetchTerrainDem(frame, fetchFn, opts) {
   const usable = usableDemSamples(samples);
   if (usable.length >= 4) {
     const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
-    const note = demDensityNote(preset, frame, usable.length);
+    const notes = [];
+    const density = demDensityNote(preset, frame, usable.length);
+    if (density) notes.push(density);
+    else {
+      const asked = demSampleCount(demOpts, frame);
+      const requested = sampleCountForResolution(opts && opts.terrainResolution, frame);
+      // The outside-coverage probe is 4 samples and is not a step-down.
+      if (asked > DEP3_PROBE_SAMPLES && asked < requested) {
+        notes.push(
+          "DEM samples stepped down to " +
+            usable.length +
+            " so the elevation read can finish. Elevations between samples are interpolated."
+        );
+      }
+    }
     return {
       samples: usable,
       kind: "bare-earth",
       attribution: USGS_3DEP_ATTRIBUTION,
-      notes: note ? [note] : [],
+      notes,
     };
   }
   if (!allowSurface) {
