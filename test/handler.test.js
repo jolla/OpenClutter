@@ -2,7 +2,7 @@
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
-const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures, imageryAttemptMs, IMAGERY_ATTEMPT_MS, IMAGERY_ATTEMPT_MS_DEV, lambdaPayloadBytes, EXPORT_PAYLOAD_BUDGET, LAMBDA_SYNC_PAYLOAD_MAX, terrainSettleMs, terrainRescueBudget, TERRAIN_RESERVE_MS, TERRAIN_HARD_MS, setFetchTerrainDemForTests } = require("../netlify/functions/clutter");
+const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures, imageryAttemptMs, IMAGERY_ATTEMPT_MS, IMAGERY_ATTEMPT_MS_DEV, lambdaPayloadBytes, EXPORT_PAYLOAD_BUDGET, LAMBDA_SYNC_PAYLOAD_MAX, terrainSettleMs, terrainRescueBudget, TERRAIN_RESERVE_MS, TERRAIN_HARD_MS, TERRAIN_FULL_MS, TERRAIN_COARSE_SAMPLES, setFetchTerrainDemForTests } = require("../netlify/functions/clutter");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
 const { unzipStore } = require("../netlify/lib/zip-store");
@@ -1557,5 +1557,170 @@ describe("campus terrain paste stays inside the synchronous response", () => {
     const quads =
       body.terrainClipboard.slopedFloors.length + body.terrainClipboard.raisedFloorZones.length;
     assert.equal(quads, 20 * 20);
+  });
+});
+
+describe("large campus DEM survives the building fetch", () => {
+  const prev = global.fetch;
+  after(() => {
+    global.fetch = prev;
+  });
+
+  function campusBox() {
+    const lat = 44.91;
+    const widthM = 2140;
+    const lengthM = 1780;
+    const mpdLon = 111320 * Math.cos((lat * Math.PI) / 180);
+    const west = -89.72;
+    const south = lat;
+    return {
+      west,
+      south,
+      east: west + widthM / mpdLon,
+      north: south + lengthM / 110540,
+      name: "Campus",
+    };
+  }
+
+  function demBody(box, n) {
+    const samples = [];
+    const side = Math.max(2, n | 0);
+    for (let r = 0; r < side; r++) {
+      for (let c = 0; c < side; c++) {
+        const lon = box.west + ((c + 0.5) / side) * (box.east - box.west);
+        const lat = box.south + ((r + 0.5) / side) * (box.north - box.south);
+        const t = (lat - box.south) / (box.north - box.south);
+        samples.push({ location: { x: lon, y: lat }, value: 200 + t * 40 });
+      }
+    }
+    return { samples };
+  }
+
+  function install(mode) {
+    const counts = [];
+    const box = campusBox();
+    global.fetch = async (url, init) => {
+      const u = String(url && url.url ? url.url : url);
+      if (u.includes("elevation.nationalmap.gov") && u.includes("getSamples")) {
+        const count = new URL(u).searchParams.get("sampleCount");
+        counts.push(count);
+        const signal = init && init.signal;
+        const hang =
+          mode === "all" || (mode === "full" && count !== String(TERRAIN_COARSE_SAMPLES));
+        if (hang) {
+          return await new Promise((resolve, reject) => {
+            const fail = () => {
+              const err = new Error("The operation was aborted due to timeout");
+              err.name = "AbortError";
+              reject(err);
+            };
+            if (signal && signal.aborted) fail();
+            else if (signal) signal.addEventListener("abort", fail, { once: true });
+            else {
+              const timer = setTimeout(fail, 30000);
+              if (timer.unref) timer.unref();
+            }
+          });
+        }
+        const n = Math.max(2, Math.round(Math.sqrt(Number(count) || 8)));
+        return { ok: true, json: async () => demBody(box, Math.min(n, 12)) };
+      }
+      if (u.includes("copernicus-dem")) {
+        return { ok: false, status: 404, headers: { get: () => undefined }, arrayBuffer: async () => new ArrayBuffer(0) };
+      }
+      if (u.includes("World_Imagery")) {
+        if (u.includes("f=json")) {
+          return {
+            ok: true,
+            json: async () => ({
+              width: 64,
+              height: 48,
+              extent: {
+                xmin: box.west,
+                ymin: box.south,
+                xmax: box.east,
+                ymax: box.north,
+                spatialReference: { wkid: 4326 },
+              },
+            }),
+          };
+        }
+        return { ok: true, arrayBuffer: async () => jpeg };
+      }
+      return { ok: true, json: async () => ({ features: [], objectIds: [] }), arrayBuffer: async () => new ArrayBuffer(0) };
+    };
+    return { counts, box };
+  }
+
+  function post(box, terrainStyle) {
+    return handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      path: "/dev",
+      body: JSON.stringify({
+        ...box,
+        format: "bundle",
+        includeFoliage: false,
+        terrainStyle,
+        terrainResolution: "auto",
+      }),
+    });
+  }
+
+  it("pastes Raised layers and Sloped from a coarse grid when the full 3DEP read hangs", async () => {
+    const { counts, box } = install("full");
+    for (const style of ["raised", "sloped"]) {
+      counts.length = 0;
+      const t0 = Date.now();
+      const res = await post(box, style);
+      const elapsed = Date.now() - t0;
+      assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
+      assert.ok(elapsed < 12000, style + " elapsed " + elapsed);
+      const body = JSON.parse(res.body);
+      assert.ok(body.zipBase64);
+      assert.equal(/timed out/i.test(body.terrainStatus), false, body.terrainStatus);
+      assert.match(body.terrainStatus, /Copy terrain/);
+      assert.match(body.terrainStatus, style === "raised" ? /Terrain raised layers/ : /Terrain sloped/);
+      assert.equal(/past 20×20/.test(body.terrainStatus), false, body.terrainStatus);
+      const clip = body.terrainClipboard;
+      assert.ok(clip, body.terrainStatus);
+      const floors = clip.raisedFloorZones.length + clip.slopedFloors.length;
+      assert.ok(floors >= 1 && floors <= 400, style + " floors " + floors);
+      assert.ok(clip.raisedFloorZones.concat(clip.slopedFloors).every((z) => z.slabOnly === false));
+      if (style === "sloped") assert.equal(floors, 20 * 20);
+      if (style === "raised") assert.equal(clip.slopedFloors.length, 0);
+      assert.ok(counts.includes("576"), style + " counts " + counts.join(","));
+      assert.ok(counts.includes(String(TERRAIN_COARSE_SAMPLES)), style + " counts " + counts.join(","));
+      assert.match((body.warnings || []).join("\n"), /stepped down/);
+    }
+  });
+
+  it("keeps the full 3DEP grid when that read returns", async () => {
+    const { counts, box } = install("none");
+    const res = await post(box, "raised");
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 300));
+    const body = JSON.parse(res.body);
+    assert.deepEqual(counts, ["576"]);
+    assert.match(body.terrainStatus, /Terrain raised layers/);
+    assert.match(body.terrainStatus, /Copy terrain/);
+    assert.equal(/timed out|stepped down/i.test((body.warnings || []).join("\n") + body.terrainStatus), false);
+    const floors = body.terrainClipboard.raisedFloorZones.length;
+    assert.ok(floors >= 1 && floors <= 400, "floors " + floors);
+  });
+
+  it("soft-omits when the coarse campus read is aborted too", async () => {
+    const { counts, box } = install("all");
+    const t0 = Date.now();
+    const res = await post(box, "raised");
+    const elapsed = Date.now() - t0;
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 300));
+    assert.ok(elapsed < TERRAIN_FULL_MS + 8000, "elapsed " + elapsed);
+    const body = JSON.parse(res.body);
+    assert.ok(body.zipBase64);
+    assert.equal(body.terrainClipboard, null);
+    assert.match(body.terrainStatus, /Terrain omitted: timed out/);
+    assert.match(body.terrainStatus, /OpenIntent zip is unchanged/);
+    assert.ok(counts.includes("576"), counts.join(","));
+    assert.ok(counts.includes(String(TERRAIN_COARSE_SAMPLES)), counts.join(","));
   });
 });

@@ -2050,6 +2050,53 @@ describe("Finland terrain does not wait on 3DEP", () => {
     assert.equal(siteWarrantsLift(terrain), true);
   });
 
+  it("names a stepped-down 3DEP count and still builds both terrain styles", async () => {
+    const seen = [];
+    const fetchFn = async (url) => {
+      seen.push(String(url));
+      const samples = [];
+      for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+          samples.push({
+            location: {
+              x: vegas.west + ((c + 0.5) / 8) * (vegas.east - vegas.west),
+              y: vegas.south + ((r + 0.5) / 8) * (vegas.north - vegas.south),
+            },
+            value: String(600 + r * 5),
+          });
+        }
+      }
+      return { ok: true, json: async () => ({ samples }) };
+    };
+    const pack = await fetchTerrainDem(vegas, fetchFn, {
+      allowSurfaceFallback: true,
+      terrainResolution: "auto",
+      sampleCount: 64,
+    });
+    assert.equal(new URL(seen[0]).searchParams.get("sampleCount"), "64");
+    assert.equal(pack.kind, "bare-earth");
+    assert.match((pack.notes || []).join("\n"), /stepped down to 64/);
+    const raised = terrainFromSamples(pack.samples, vegas, {
+      terrainStyle: "raised",
+      kind: pack.kind,
+      terrainResolution: "auto",
+    });
+    const sloped = terrainFromSamples(pack.samples, vegas, {
+      terrainStyle: "sloped",
+      kind: pack.kind,
+      terrainResolution: "auto",
+    });
+    assert.equal(raised.terrainStyle, "raised");
+    assert.equal(sloped.terrainStyle, "sloped");
+    assert.equal(sloped.gridCols, 20);
+    assert.equal(sloped.gridRows, 20);
+    assert.ok(raised.raised >= 1 && raised.raised <= 400);
+    assert.equal(raised.sloped, 0);
+    assert.ok(raised.gridCols <= 20 && raised.gridRows <= 20);
+    assert.match(terrainBundleFields(raised, pack.notes).terrainStatus, /Terrain raised layers/);
+    assert.match(terrainBundleFields(sloped, pack.notes).terrainStatus, /Terrain sloped/);
+  });
+
   it("uses a coarser GLO-30 lattice when little time remains, and the full count when it does not", async () => {
     const zAt = (lon, lat) => 5 + (lat - hamina.south) * 800;
     const short = gloGeotiff(zAt);
