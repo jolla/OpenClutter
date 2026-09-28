@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.29** on `dev` — A large campus with Terrain on still returns **Copy terrain** for **Sloped** and **Raised layers**. Both styles use the same elevation read. When the full grid does not come back, a coarser grid is pasted instead (still at most 20×20, and at most 400 raised floors). The status still starts with `Terrain sloped` or `Terrain raised layers`. The OpenIntent zip is unchanged. The badge stays (`dev · v1.1.29`).
+
 **v1.1.28** on `dev` — With Terrain on, the page offers **Sloped** (the default ramp mesh, one quad per cell) and **Raised layers** (stacked height-band rectangles, 1 m bands, at most 400 floors). The style radios appear only when Terrain is on. Status names the mode (`Terrain sloped 20×20` or `Terrain raised layers 12×8`). Terrain stays a checkbox, on by default, with no resolution control. When it is off, that export skips the DEM and Copy terrain. The badge stays (`dev · v1.1.28`).
 
 **v1.1.27** on `dev` — Terrain stays a checkbox, on by default, with no resolution control. When it is on, Auto sizes cells from the draw: about 1 m on a small hill and coarser on a large one, at most 20×20 quads, so Copy terrain stays a paste Planner Plus can take. When it is off, that export skips the DEM and Copy terrain. The badge stays (`dev · v1.1.27`).
@@ -31,7 +33,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.28`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, choose **Sloped** (default, one ramp or pad per cell) or **Raised layers** (stacked plates, at most 400 floors). The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The style radios hide when Terrain is off, and both the checkbox and the radios stay hidden off this host.
+- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.29`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, choose **Sloped** (default, one ramp or pad per cell) or **Raised layers** (stacked plates, at most 400 floors). The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The style radios hide when Terrain is off, and both the checkbox and the radios stay hidden off this host.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 
