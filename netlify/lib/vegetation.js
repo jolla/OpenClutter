@@ -281,11 +281,13 @@ function metersAt(lat) {
 
 /**
  * NLCD hits are the ≥18% cells only. A short CHM spike far from every one of
- * those cells is pavement noise. A tall crown, or a crown inside the canopy
- * field, stays. With no NLCD coverage, the CHM itself is the mask.
+ * those cells is pavement noise. A tall outline, a patch large enough to be
+ * a tree line the 30 m grid missed, or a crown inside the canopy field, stays.
+ * With no NLCD coverage, the CHM itself is the mask.
  */
 function crownSupported(crown, hits) {
   if (!hits || hits.length < 4) return true;
+  if (crown.areaM2 >= 350 || crown.heightM >= 8) return true;
   const m = metersAt(crown.peakLat || 0);
   let best = Infinity;
   for (let i = 0; i < hits.length; i++) {
@@ -298,12 +300,12 @@ function crownSupported(crown, hits) {
     if (d2 < best) best = d2;
   }
   if (!(best < Infinity) || best <= 55 * 55) return true;
-  return crown.heightM >= 8;
+  return false;
 }
 
 /**
- * CHM crowns as foliage polygons. One ring per resolved crown, measured
- * height, no circles. Empty when the grid does not resolve canopy.
+ * CHM canopy as foliage polygons. One ring per connected outline, measured
+ * height, no circles and no grid squares. Empty when the grid does not resolve canopy.
  */
 function ringBoxes(rings) {
   const out = [];
@@ -351,10 +353,10 @@ function chmCrownPolygons(grid, frame, buildingAabbs, hits, opts) {
     opts && opts.maskRings,
     opts && opts.maskPolygons
   );
-  const blocked = (lon, lat) => {
-    if (frame && treeHitsBuilding(lon, lat, frame, buildingAabbs)) return true;
-    return ringBlock ? ringBlock(lon, lat) : false;
-  };
+  // Footprint rings only. A building bounding box also covers the courtyard
+  // and the trees beside an L-shaped roof, which is how fairway canopy disappeared.
+  const blocked = (lon, lat) => (ringBlock ? ringBlock(lon, lat) : false);
+  void buildingAabbs;
   const packed = crownsForExport(grid, {
     blocked,
     hits,
@@ -366,7 +368,6 @@ function chmCrownPolygons(grid, frame, buildingAabbs, hits, opts) {
   for (let i = 0; i < crowns.length; i++) {
     const c = crowns[i];
     if (!crownSupported(c, hits)) continue;
-    if (frame && treeHitsBuilding(c.peakLon, c.peakLat, frame, buildingAabbs)) continue;
     const ringPx = c.ringLonLat.map(([lon, lat]) => llToPx(lon, lat, frame));
     if (ringPx.length < 4) continue;
     const tier = c.heightM >= 12 ? "heavy" : "light";
@@ -396,8 +397,8 @@ function clipboardForCanopy(material) {
 
 /**
  * Foliage rings for OpenIntent.
- * When a CHM grid is present, each resolved crown is its own polygon: the
- * ring is the canopy footprint and the material height is the CHM top.
+ * When a CHM grid is present, each connected canopy is one polygon: the
+ * ring follows the traced CHM edge and the material height is the measured top.
  * Cells on a building footprint or a pavement/road polygon are cleared first.
  * NLCD percent can only extend a cell that already has a measured height.
  * A canopy-height timeout sets omitFoliage and emits nothing.
@@ -423,7 +424,7 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
   } else if (opts && opts.chmGrid) {
     polygons = chmCrownPolygons(opts.chmGrid, frame, buildingAabbs, opts && opts.canopyHits, opts);
     coarsened = !!polygons.coarsened;
-    if (polygons.length) foliageGeometry = "chm-crown";
+    if (polygons.length) foliageGeometry = "chm-contour";
   }
   if (!polygons.length && !(opts && opts.omitFoliage)) {
     polygons = canopyPolygonsFromHits(

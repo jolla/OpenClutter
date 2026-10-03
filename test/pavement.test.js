@@ -105,4 +105,52 @@ describe("pavement footprints", () => {
     assert.equal(houses.dropped, 0);
     assert.equal(houses.features.length, fp.features.length);
   });
+
+  it("keeps a smooth gray roof and still drops a textured lot", () => {
+    const frame = geoFrame(
+      { west: -87.92, south: 42.898, east: -87.915, north: 42.902 },
+      { imgW: 200, imgH: 200, maxSpanM: 5000 }
+    );
+    const data = new Uint8Array(200 * 200 * 4);
+    for (let y = 0; y < 200; y++) {
+      for (let x = 0; x < 200; x++) {
+        const i = (y * 200 + x) * 4;
+        const roof = x >= 20 && x <= 70 && y >= 20 && y <= 70;
+        const lot = x >= 100 && x <= 170 && y >= 30 && y <= 110;
+        let rgb = [30, 90, 40];
+        if (roof) rgb = [148, 146, 144];
+        else if (lot) {
+          const block = ((x / 6) | 0) % 2 !== ((y / 6) | 0) % 2;
+          rgb = block ? [72, 74, 76] : [168, 166, 160];
+        }
+        data[i] = rgb[0];
+        data[i + 1] = rgb[1];
+        data[i + 2] = rgb[2];
+        data[i + 3] = 255;
+      }
+    }
+    function ringAt(x0, y0, x1, y1) {
+      const ll = (x, y) => [
+        frame.west + (x / 200) * (frame.east - frame.west),
+        frame.north - (y / 200) * (frame.north - frame.south),
+      ];
+      return [ll(x0, y0), ll(x1, y0), ll(x1, y1), ll(x0, y1), ll(x0, y0)];
+    }
+    const features = [
+      {
+        type: "Feature",
+        properties: { height: 8 },
+        geometry: { type: "Polygon", coordinates: [ringAt(20, 20, 70, 70)] },
+      },
+      {
+        type: "Feature",
+        properties: { height: 6 },
+        geometry: { type: "Polygon", coordinates: [ringAt(100, 30, 170, 110)] },
+      },
+    ];
+    const out = rejectPavementFootprints({ data, width: 200, height: 200 }, frame, features);
+    assert.equal(out.features.length, 1);
+    assert.equal(out.dropped, 1);
+    assert.equal(out.features[0].properties.height, 8);
+  });
 });

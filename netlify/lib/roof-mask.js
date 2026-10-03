@@ -8,7 +8,8 @@
  * and requiring the mask to put it back on the Esri JPEG):
  *   1. Keep pixels that are bright, low-saturation, and locally smooth
  *      (membrane / metal roofs, not textured canopy, not car-filled asphalt).
- *   2. Connected components whose area is at least ~2500 m².
+ *   2. Connected components whose area is at least ~900 m² (bright) or
+ *      ~1100 m² (smooth gray membrane). Car-textured lots stay out.
  *   3. Reject long thin components (roads) and low fill (speckle).
  *   4. If existing footprint rings already cover most of the component, skip it.
  *   5. Otherwise emit the convex hull as a GeoJSON polygon. A much smaller
@@ -19,7 +20,10 @@
 
 const { featureExteriorRings, ringAreaM2, simplifyDP } = require("./pipeline");
 
-const MIN_ROOF_M2 = 2500;
+const MIN_ROOF_M2 = 900;
+/** Smooth gray membranes (clubhouse, hotel wing) below the bright-roof gate. */
+const MIN_MEMBRANE_M2 = 1100;
+const MAX_MEMBRANE_M2 = 12000;
 const MAX_ASPECT = 3.6;
 const MIN_FILL = 0.62;
 const MAX_COVER = 0.45;
@@ -149,7 +153,8 @@ function featureHeight(feature) {
   return h > 2 && h < 400 ? h : 0;
 }
 
-function roofCells(raw, step) {
+function roofCells(raw, step, mode) {
+  const membrane = mode === "membrane";
   const w = raw.width;
   const h = raw.height;
   const data = raw.data;
@@ -162,11 +167,13 @@ function roofCells(raw, step) {
       const g = data[i + 1];
       const b = data[i + 2];
       const Y = luma(r, g, b);
-      if (Y < 186) continue;
+      if (membrane) {
+        if (Y < 132 || Y > 184) continue;
+      } else if (Y < 186) continue;
       const mx = Math.max(r, g, b);
       const mn = Math.min(r, g, b);
       const sat = mx ? (mx - mn) / mx : 0;
-      if (sat > 0.12) continue;
+      if (sat > (membrane ? 0.14 : 0.12)) continue;
       if (g > r + 10 && g > b + 6) continue;
       let n = 0;
       let sum = 0;
@@ -186,7 +193,9 @@ function roofCells(raw, step) {
       }
       const mean = n ? sum / n : 0;
       const std = Math.sqrt(Math.max(0, (n ? sum2 / n : 0) - mean * mean));
-      if (std > 9.5 || mean < 182) continue;
+      if (membrane) {
+        if (std > 5.2 || mean < 128 || mean > 186) continue;
+      } else if (std > 9.5 || mean < 182) continue;
       const key = x + "," + y;
       set.add(key);
       cells.push([x, y]);
@@ -255,12 +264,17 @@ function hullRingPx(comp, step) {
  * @param {object[]} features existing footprint features
  * @returns {{features:object[], dropIndexes:number[]}}
  */
-function imageryRoofFeatures(raw, frame, features) {
+function imageryRoofFeatures(raw, frame, features, mode) {
   if (!raw || !raw.data || !frame || !(raw.width > 8) || !(raw.height > 8)) {
     return { features: [], dropIndexes: [] };
   }
+  const membrane = mode === "membrane";
+  const minArea = membrane ? MIN_MEMBRANE_M2 : MIN_ROOF_M2;
+  const maxArea = membrane ? MAX_MEMBRANE_M2 : 150000;
+  const maxAspect = membrane ? 3.2 : MAX_ASPECT;
+  const minFill = membrane ? 0.68 : MIN_FILL;
   const step = Math.max(raw.width, raw.height) > 1400 ? 4 : 3;
-  const { cells, set } = roofCells(raw, step);
+  const { cells, set } = roofCells(raw, step, membrane ? "membrane" : "bright");
   if (!cells.length) return { features: [], dropIndexes: [] };
   const rings = existingImageRings(features, frame);
   const m2PerCell = step * step * frame.mpuX * frame.mpuY;
@@ -270,7 +284,7 @@ function imageryRoofFeatures(raw, frame, features) {
   for (let c = 0; c < comps.length; c++) {
     const comp = comps[c];
     const areaM = comp.length * m2PerCell;
-    if (areaM < MIN_ROOF_M2) continue;
+    if (areaM < minArea || areaM > maxArea) continue;
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -284,9 +298,9 @@ function imageryRoofFeatures(raw, frame, features) {
     const bw = Math.max(step, maxX - minX + step);
     const bh = Math.max(step, maxY - minY + step);
     const aspect = Math.max(bw, bh) / Math.max(1, Math.min(bw, bh));
-    if (aspect > MAX_ASPECT) continue;
+    if (aspect > maxAspect) continue;
     const fill = (comp.length * step * step) / (bw * bh);
-    if (fill < MIN_FILL) continue;
+    if (fill < minFill) continue;
     let covered = 0;
     const sampleN = comp.length > 280 ? 280 : comp.length;
     const stride = Math.max(1, Math.floor(comp.length / sampleN));
@@ -307,7 +321,7 @@ function imageryRoofFeatures(raw, frame, features) {
     if (ringPxArea(hull) <= 0) continue;
     const lonlat = hull.map(([x, y]) => imagePxToLl(x, y, frame));
     const areaHull = ringAreaM2(lonlat, frame.mpd);
-    if (areaHull < MIN_ROOF_M2 || areaHull > 150000) continue;
+    if (areaHull < minArea || areaHull > maxArea) continue;
     let borrowed = 0;
     for (let r = 0; r < rings.length; r++) {
       const ring = rings[r];
@@ -352,15 +366,23 @@ function supplementFootprints(raw, frame, features) {
   for (let i = 0; i < list.length; i++) {
     if (!drop.has(i)) kept.push(list[i]);
   }
+  const withBright = kept.concat(found.features);
+  const membrane = imageryRoofFeatures(raw, frame, withBright, "membrane");
+  const membraneDrop = new Set(membrane.dropIndexes || []);
+  const afterMembrane = [];
+  for (let i = 0; i < withBright.length; i++) {
+    if (!membraneDrop.has(i)) afterMembrane.push(withBright[i]);
+  }
   return {
-    features: kept.concat(found.features),
-    imageryRoofs: found.features.length,
-    droppedStubs: drop.size,
+    features: afterMembrane.concat(membrane.features),
+    imageryRoofs: found.features.length + membrane.features.length,
+    droppedStubs: (found.dropIndexes || []).length + membraneDrop.size,
   };
 }
 
 module.exports = {
   MIN_ROOF_M2,
+  MIN_MEMBRANE_M2,
   imageryRoofFeatures,
   supplementFootprints,
   imagePxToLl,
