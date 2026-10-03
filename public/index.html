@@ -88,7 +88,7 @@
 <body>
   <div id="map"></div>
   <div class="panel">
-    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.30</span></p>
+    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.31</span></p>
     <h1>OpenClutter</h1>
     <div class="sub">Export a zip. Import it in Hamina for the aerial map and buildings.</div>
     <form id="search">
@@ -99,8 +99,8 @@
       <button type="button" id="draw" class="secondary">Draw</button>
       <button type="button" id="export" disabled>Export</button>
     </div>
-    <button type="button" id="finish-shape" hidden>Finish shape</button>
-    <p id="draw-hint" class="hint">Drag a box. Click corners, then Finish shape, double-click, or click the first corner. Esc cancels.</p>
+    <button type="button" id="finish-shape" class="secondary" hidden>Finish shape</button>
+    <p id="draw-hint" class="hint">Click the map to draw. Drag a box, or click corners and click the first corner to close. Double-click also finishes. Esc cancels.</p>
     <label class="check" for="include-foliage">
       <input type="checkbox" id="include-foliage" />
       Include foliage
@@ -115,7 +115,7 @@
       <label><input type="radio" name="terrain-style" value="raised" /> Raised layers</label>
     </div>
     <button type="button" id="copy-terrain" class="secondary" hidden>Copy terrain</button>
-    <div id="status">Search, then draw the site.</div>
+    <div id="status">Click the map to draw the site.</div>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/tree-detect.js"></script>

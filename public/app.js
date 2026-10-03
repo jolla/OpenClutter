@@ -70,6 +70,7 @@ let committedLabel = null;
 let areaChip = null;
 let sketchHidden = false;
 let rubber = null;
+let closeHint = null;
 let vertexMarks = [];
 let activePointer = null;
 const drawSession = OpenClutterDraw.createSession();
@@ -124,6 +125,10 @@ function clearRubber() {
     map.removeLayer(rubber);
     rubber = null;
   }
+  if (closeHint) {
+    map.removeLayer(closeHint);
+    closeHint = null;
+  }
   for (let i = 0; i < vertexMarks.length; i++) map.removeLayer(vertexMarks[i]);
   vertexMarks = [];
 }
@@ -174,6 +179,23 @@ function syncFinishControl() {
   exportBtn.disabled = committedExportBlocked();
 }
 
+function enterDrawMode(message) {
+  activePointer = null;
+  clearRubber();
+  OpenClutterDraw.arm(drawSession);
+  restoreCommitted();
+  syncDrawMode();
+  syncFinishControl();
+  if (message) setStatus(message);
+}
+
+function resumeDrawMode() {
+  if (drawSession.vertices.length || drawSession.down) return;
+  if (!drawSession.armed) OpenClutterDraw.arm(drawSession);
+  syncDrawMode();
+  syncFinishControl();
+}
+
 function applyExtent(bounds, label) {
   committedBounds = bounds;
   committedLabel = label == null ? null : label;
@@ -192,7 +214,7 @@ function commitBox(start, end) {
   if (!map.hasLayer(drawn)) map.addLayer(drawn);
   sketchHidden = false;
   applyExtent(bounds, null);
-  syncDrawMode();
+  resumeDrawMode();
 }
 
 function commitPolygon(vertices) {
@@ -205,7 +227,7 @@ function commitPolygon(vertices) {
   if (!map.hasLayer(drawn)) map.addLayer(drawn);
   sketchHidden = false;
   applyExtent(layer.getBounds(), OpenClutterArea.formatPolygonSqFt(vertices));
-  syncDrawMode();
+  resumeDrawMode();
 }
 
 function showDragPreview(start, end) {
@@ -224,25 +246,26 @@ function showVertexPreview(vertices) {
   clearRubber();
   const latlngs = [];
   for (let i = 0; i < vertices.length; i++) latlngs.push([vertices[i].lat, vertices[i].lng]);
-  if (latlngs.length >= 3) {
-    rubber = L.polygon(latlngs, {
-      color: OUTLINE.color,
-      weight: 2,
-      fillColor: OUTLINE.fillColor,
-      fillOpacity: 0.08,
-      dashArray: "5 6",
-      interactive: false,
-    }).addTo(map);
-  } else if (latlngs.length === 2) {
+  if (latlngs.length >= 2) {
     rubber = L.polyline(latlngs, { color: OUTLINE.color, weight: 2, interactive: false }).addTo(map);
   }
+  if (latlngs.length >= 3) {
+    closeHint = L.polyline([latlngs[latlngs.length - 1], latlngs[0]], {
+      color: OUTLINE.color,
+      weight: 2,
+      dashArray: "2 6",
+      opacity: 0.8,
+      interactive: false,
+    }).addTo(map);
+  }
   for (let i = 0; i < latlngs.length; i++) {
+    const closeTarget = vertices.length >= 3 && i === 0;
     vertexMarks.push(
       L.circleMarker(latlngs[i], {
-        radius: 4,
+        radius: closeTarget ? 11 : 4,
         color: "#3fb950",
-        weight: 2,
-        fillColor: "#3fb950",
+        weight: closeTarget ? 3 : 2,
+        fillColor: closeTarget ? "#0e1116" : "#3fb950",
         fillOpacity: 1,
         interactive: false,
       }).addTo(map)
@@ -266,7 +289,11 @@ function handleDraw(result) {
     const n = result.vertices.length;
     syncFinishControl();
     if (n < 3) setStatus("Corner " + n + ". Click the next corner. Esc cancels.");
-    else setStatus("Corner " + n + ". Finish shape, double-click, or click the first corner. Esc cancels.");
+    else setStatus("Corner " + n + ". Click the first corner to close. Double-click also finishes. Esc cancels.");
+    return;
+  }
+  if (result.type === "short") {
+    setStatus("Add another corner, then click the first corner to close. Esc cancels.");
     return;
   }
   if (result.type === "commit-box") {
@@ -279,33 +306,29 @@ function handleDraw(result) {
   }
   if (result.type === "discard") {
     restoreCommitted();
-    syncDrawMode();
-    syncFinishControl();
     setStatus(
       bbox
         ? "Need at least 3 corners. The previous site is unchanged."
         : "Need at least 3 corners to close a polygon."
     );
+    resumeDrawMode();
     return;
   }
   if (result.type === "cancel") {
     restoreCommitted();
-    syncDrawMode();
-    syncFinishControl();
-    if (!bbox) setStatus("Search, then draw the site.");
+    resumeDrawMode();
+    if (!bbox) setStatus("Click the map to draw the site.");
     else if (exportBtn.disabled) setStatus("Area must be between 40 m and 2.5 km on a side.", true);
     else setStatus("Ready to export.");
   }
 }
 
 function pointFromEvent(ev) {
-  const rect = map.getContainer().getBoundingClientRect();
-  const x = ev.clientX - rect.left;
-  const y = ev.clientY - rect.top;
-  const ll = map.containerPointToLatLng(L.point(x, y));
+  const p = map.mouseEventToContainerPoint(ev);
+  const ll = map.containerPointToLatLng(p);
   return {
-    x: x,
-    y: y,
+    x: p.x,
+    y: p.y,
     lat: ll.lat,
     lng: ll.lng,
     button: ev.button,
@@ -314,13 +337,28 @@ function pointFromEvent(ev) {
   };
 }
 
+function refreshVertexPixels() {
+  if (!drawSession.vertices.length) return;
+  const pixels = [];
+  for (let i = 0; i < drawSession.vertices.length; i++) {
+    const v = drawSession.vertices[i];
+    const p = map.latLngToContainerPoint([v.lat, v.lng]);
+    pixels.push({ x: p.x, y: p.y });
+  }
+  OpenClutterDraw.setVertexPixels(drawSession, pixels);
+}
+
 const mapEl = map.getContainer();
 mapEl.addEventListener(
   "pointerdown",
   (ev) => {
-    if (!drawSession.armed || activePointer != null) return;
+    if (activePointer != null) return;
     if (ev.button !== 0 || ev.ctrlKey) return;
     if (ev.target.closest && ev.target.closest(".leaflet-control")) return;
+    if (!drawSession.armed) {
+      OpenClutterDraw.arm(drawSession);
+      syncDrawMode();
+    }
     activePointer = ev.pointerId;
     try {
       mapEl.setPointerCapture(ev.pointerId);
@@ -358,6 +396,7 @@ mapEl.addEventListener("pointerup", (ev) => {
   if (ev.pointerId !== activePointer) return;
   const drawing = drawSession.armed;
   activePointer = null;
+  refreshVertexPixels();
   handleDraw(OpenClutterDraw.pointerUp(drawSession, pointFromEvent(ev)));
   if (drawing) holdMapDblClick();
 });
@@ -398,26 +437,13 @@ window.addEventListener("keydown", (ev) => {
   handleDraw(result);
 });
 
-map.on("zoomend", () => {
-  if (!drawSession.vertices.length) return;
-  const pixels = [];
-  for (let i = 0; i < drawSession.vertices.length; i++) {
-    const v = drawSession.vertices[i];
-    const p = map.latLngToContainerPoint([v.lat, v.lng]);
-    pixels.push({ x: p.x, y: p.y });
-  }
-  OpenClutterDraw.setVertexPixels(drawSession, pixels);
-});
+map.on("zoomend moveend", refreshVertexPixels);
 
 document.getElementById("draw").onclick = () => {
-  activePointer = null;
-  clearRubber();
-  OpenClutterDraw.arm(drawSession);
-  restoreCommitted();
-  syncDrawMode();
-  syncFinishControl();
-  setStatus("Drag a box, or click corners. Finish shape, double-click, or click the first corner.");
+  enterDrawMode("Click corners, then click the first corner to close. Drag a box. Double-click also finishes.");
 };
+
+enterDrawMode("Click the map to draw. Drag a box, or click corners and click the first corner to close.");
 
 if (finishBtn) {
   finishBtn.onclick = () => {
@@ -437,7 +463,7 @@ document.getElementById("search").onsubmit = async (e) => {
     if (!hits.length) throw new Error("No results");
     const hit = hits[0];
     map.setView([+hit.lat, +hit.lon], 16);
-    setStatus("Draw the site.");
+    setStatus("Click the map to trace the site.");
   } catch (err) {
     setStatus(err.message, true);
   }
@@ -523,14 +549,14 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
 }
 
 function openRingExportStatus(count) {
-  if (count >= 3) return "Finish the open polygon before export. Export was not run.";
+  if (count >= 3) return "Click the first corner to close the polygon before export. Export was not run.";
   const noun = count === 1 ? "corner" : "corners";
   return (
     "Open polygon has " +
     count +
     " " +
     noun +
-    ". Add at least 3 corners and finish, or press Esc. Export was not run."
+    ". Add at least 3 corners and click the first corner to close, or press Esc. Export was not run."
   );
 }
 
