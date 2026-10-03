@@ -7,9 +7,11 @@ const path = require("node:path");
 const { sampleChmGrid, applyChmToTrees, chmUrl, CHM_ZOOM, crownsFromChm } = require("../netlify/lib/canopy-height");
 const { quadkeysForBbox } = require("../netlify/lib/ms-global");
 const { treePairsFromPoints } = require("../netlify/lib/vegetation");
-const { geoFrame } = require("../netlify/lib/geo-frame");
-const { buildClutter } = require("../netlify/lib/pipeline");
+const { geoFrame, llToPx } = require("../netlify/lib/geo-frame");
+const { buildClutter, footprintsToClutter, oiPixelCoords } = require("../netlify/lib/pipeline");
 const { terrainFromSamples } = require("../netlify/lib/terrain");
+const { intersectionAreaPx } = require("../netlify/lib/poly-clip");
+const { canopyHeightM } = require("../netlify/lib/tree-source");
 
 function pointInRing(pt, ring) {
   const pts =
@@ -361,5 +363,195 @@ describe("canopy height grid", () => {
     const keys = quadkeysForBbox(-87.9226, 42.8904, -87.9118, 42.9033, CHM_ZOOM);
     assert.deepEqual(keys, ["0302222101"]);
     assert.match(chmUrl(keys[0]), /0302222101\.tif$/);
+  });
+});
+
+function cellLonLat(grid, x, y) {
+  const dLon = grid.east - grid.west;
+  const dLat = grid.north - grid.south;
+  return [
+    grid.west + ((x + 0.5) / grid.width) * dLon,
+    grid.north - ((y + 0.5) / grid.height) * dLat,
+  ];
+}
+
+function frameForGrid(grid, name) {
+  return geoFrame({
+    west: grid.west,
+    south: grid.south,
+    east: grid.east,
+    north: grid.north,
+    name,
+  });
+}
+
+describe("canopy height replaces the color guess", () => {
+  it("does not draw canopy over a known building footprint", () => {
+    const g = syntheticChm();
+    paintPeak(g.values, g.w, 16, 18, 3.2, 2.4, 16);
+    paintPeak(g.values, g.w, 50, 30, 2.8, 2.2, 11);
+    const frame = frameForGrid(g.grid, "Roof");
+    const [cx, cy] = cellLonLat(g.grid, 16, 18);
+    const dLon = (g.grid.east - g.grid.west) / g.w;
+    const dLat = (g.grid.north - g.grid.south) / g.h;
+    const ring = [
+      [cx - dLon * 5, cy - dLat * 4],
+      [cx + dLon * 5, cy - dLat * 4],
+      [cx + dLon * 5, cy + dLat * 4],
+      [cx - dLon * 5, cy + dLat * 4],
+      [cx - dLon * 5, cy - dLat * 4],
+    ];
+    const fp = footprintsToClutter(
+      [{ type: "Feature", properties: { height: 8 }, geometry: { type: "Polygon", coordinates: [ring] } }],
+      frame
+    );
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: {
+        features: [{ type: "Feature", properties: { height: 8 }, geometry: { type: "Polygon", coordinates: [ring] } }],
+      },
+      treePoints: [],
+      name: "Roof",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      chmGrid: g.grid,
+      includeFoliage: true,
+      treesSource: "nlcd-canopy",
+    });
+    assert.ok(built.stats.openIntentBuildingAreas >= 1);
+    const foliage = built.openintent.floorplans[0].attenuation_areas.filter((a) =>
+      String(a.area_material.name).indexOf("Foliage") === 0
+    );
+    assert.ok(foliage.length >= 1, "canopy beside the roof is kept");
+    const rings = foliage.map((a) =>
+      oiPixelCoords(a.area.coordinates).map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y])
+    );
+    const [bx, by] = llToPx(cx, cy, frame);
+    assert.equal(
+      rings.some((px) => pointInRing([bx, by], px)),
+      false
+    );
+    let overlap = 0;
+    for (const px of rings) overlap += intersectionAreaPx(px, fp.overlayRings[0]);
+    assert.ok(overlap * frame.mpuX * frame.mpuY < 1, "overlap " + overlap);
+    assert.ok(foliage.some((a) => a.area_material.top_height === 11));
+  });
+
+  it("leaves canopy off a road pavement polygon", () => {
+    const g = syntheticChm();
+    paintPeak(g.values, g.w, 14, 16, 2.6, 2.2, 15);
+    paintPeak(g.values, g.w, 48, 32, 2.4, 3.1, 9);
+    const frame = frameForGrid(g.grid, "Road");
+    const [lon, lat] = cellLonLat(g.grid, 14, 16);
+    const [x, y] = llToPx(lon, lat, frame);
+    const road = [
+      [x - 28, y - 18],
+      [x + 28, y - 18],
+      [x + 28, y + 18],
+      [x - 28, y + 18],
+      [x - 28, y - 18],
+    ];
+    const pairs = treePairsFromPoints([], frame, [], null, {
+      chmGrid: g.grid,
+      maskPolygons: [[road]],
+    });
+    const foliage = pairs.oiAreas.filter((a) => a.kind === "canopy");
+    assert.ok(foliage.length >= 1, "canopy off the road is kept");
+    assert.equal(
+      foliage.some((a) => pointInRing([x, y], a.ringPx)),
+      false,
+      "road center is inside canopy"
+    );
+    let overlap = 0;
+    for (const area of foliage) overlap += intersectionAreaPx(area.ringPx, road);
+    assert.ok(overlap < 1, "road overlap px " + overlap);
+    assert.ok(foliage.some((a) => a.material.top_height === 9));
+    assert.equal(
+      foliage.some((a) => a.material.top_height === 15),
+      false,
+      "the crown centered on the road is not exported"
+    );
+  });
+
+  it("takes canopy height from the CHM sample, not a percent bucket", () => {
+    const g = syntheticChm();
+    paintPeak(g.values, g.w, 20, 20, 3, 2, 22);
+    const frame = frameForGrid(g.grid, "Height");
+    const [lon, lat] = cellLonLat(g.grid, 20, 20);
+    const hits = [];
+    for (let i = 0; i < 6; i++) hits.push({ lon: lon + i * 0.00002, lat, pct: 80 });
+    const bucket = canopyHeightM(80, lon, lat);
+    assert.notEqual(bucket, 22);
+    const pairs = treePairsFromPoints([], frame, [], null, { chmGrid: g.grid, canopyHits: hits });
+    const area = pairs.oiAreas.find((a) => a.material && a.material.top_height === 22);
+    assert.ok(area, "measured 22 m crown is present");
+    assert.equal(area.material.name, "Foliage - Heavy 22.0");
+    assert.equal(area.material.top_height, 22);
+    assert.notEqual(area.material.top_height, bucket);
+    assert.equal(area.shape, "polygon");
+  });
+
+  it("soft-omits foliage when canopy height times out and still exports buildings", () => {
+    const frame = geoFrame({ west: -87.93, south: 42.89, east: -87.91, north: 42.91, name: "Timeout" });
+    const cellLon = 30 / (111320 * Math.cos((42.9 * Math.PI) / 180));
+    const cellLat = 30 / 110540;
+    const lon0 = frame.west + (frame.east - frame.west) * 0.4;
+    const lat0 = frame.south + (frame.north - frame.south) * 0.45;
+    const hits = [];
+    for (let iy = 0; iy < 2; iy++) {
+      for (let ix = 0; ix < 3; ix++) hits.push({ lon: lon0 + ix * cellLon, lat: lat0 + iy * cellLat, pct: 80 });
+    }
+    const dLon = (frame.east - frame.west) * 0.04;
+    const dLat = (frame.north - frame.south) * 0.04;
+    const bLon = frame.west + (frame.east - frame.west) * 0.15;
+    const bLat = frame.south + (frame.north - frame.south) * 0.15;
+    const building = {
+      type: "Feature",
+      properties: { height: 8 },
+      geometry: {
+        type: "Polygon",
+        coordinates: [[
+          [bLon, bLat],
+          [bLon + dLon, bLat],
+          [bLon + dLon, bLat + dLat],
+          [bLon, bLat + dLat],
+          [bLon, bLat],
+        ]],
+      },
+    };
+    const withCanopy = buildClutter({
+      frame,
+      footprintsGeojson: { features: [building] },
+      treePoints: [],
+      name: "Timeout",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      canopyHits: hits,
+      heightSample: () => 14.2,
+      includeFoliage: true,
+      treesSource: "nlcd-canopy",
+    });
+    assert.ok(withCanopy.stats.openIntentTreeAreas >= 1);
+    const omitted = buildClutter({
+      frame,
+      footprintsGeojson: { features: [building] },
+      treePoints: [],
+      name: "Timeout",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      canopyHits: hits,
+      heightSample: () => 14.2,
+      includeFoliage: true,
+      omitFoliage: true,
+      treesSource: "nlcd-canopy",
+    });
+    assert.equal(omitted.stats.includeFoliage, true);
+    assert.equal(omitted.stats.foliageOmitted, "canopy-height-timeout");
+    assert.equal(omitted.stats.openIntentTreeAreas, 0);
+    assert.ok(omitted.stats.openIntentBuildingAreas >= 1);
+    assert.equal(omitted.stats.buildingsKept, withCanopy.stats.buildingsKept);
+    assert.match(omitted.stats.summary, /Foliage omitted \(canopy height timed out\)/);
+    assert.match(omitted.stats.summary, /Buildings /);
+    const areas = omitted.openintent.floorplans[0].attenuation_areas;
+    assert.equal(areas.some((a) => String(a.area_material.name).indexOf("Foliage") === 0), false);
+    assert.ok(areas.some((a) => String(a.area_material.name).indexOf("Building") === 0));
+    assert.ok(omitted.zip && omitted.zip.length > 50);
   });
 });

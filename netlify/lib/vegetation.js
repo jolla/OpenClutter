@@ -5,8 +5,8 @@ const { clipZone } = require("./hamina-clipboard");
 const { measuredFoliageMaterial, materialForVegetation, liftFoliagePair } = require("./materials");
 
 const { MAX_TREES, maxTreesForBbox, canopyHeightM } = require("./tree-source");
-const { crownsFromChm } = require("./canopy-height");
-const { BUILDING_BUFFER_M, createClipSet, clipFoliageRing, dissolveFoliageRings } = require("./poly-clip");
+const { crownsForExport } = require("./canopy-height");
+const { BUILDING_BUFFER_M, createClipSet, clipFoliageRing, dissolveFoliageRings, pointInRing } = require("./poly-clip");
 
 function pointInAabb(x, y, boxes, pad) {
   for (const b of boxes) {
@@ -178,7 +178,7 @@ function chainBoundary(edges) {
  * Connected NLCD cells above the canopy threshold become one outline per
  * height band. A single cell is not emitted as its own crown circle.
  */
-function canopyPolygonsFromHits(hits, frame, buildingAabbs, heightSample) {
+function canopyPolygonsFromHits(hits, frame, buildingAabbs, heightSample, requireMeasured) {
   const cell = inferCanopyCell(hits, frame);
   if (!cell) return [];
   const originLon = frame.west;
@@ -205,7 +205,11 @@ function canopyPolygonsFromHits(hits, frame, buildingAabbs, heightSample) {
           measured = true;
         }
       }
-      if (!(heightM > 2)) heightM = canopyHeightM(pct, h.lon, h.lat);
+      if (!(heightM > 2)) {
+        // A real canopy-height grid must not be replaced by a percent bucket.
+        if (requireMeasured) continue;
+        heightM = canopyHeightM(pct, h.lon, h.lat);
+      }
       grid.set(key, { ix, iy, lon: h.lon, lat: h.lat, pct, heightM, measured });
     }
   }
@@ -301,8 +305,63 @@ function crownSupported(crown, hits) {
  * CHM crowns as foliage polygons. One ring per resolved crown, measured
  * height, no circles. Empty when the grid does not resolve canopy.
  */
-function chmCrownPolygons(grid, frame, buildingAabbs, hits) {
-  const crowns = crownsFromChm(grid);
+function ringBoxes(rings) {
+  const out = [];
+  for (const ring of rings || []) {
+    if (!ring || ring.length < 3) continue;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < ring.length; i++) {
+      const x = ring[i][0];
+      const y = ring[i][1];
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+    if (maxX > minX && maxY > minY) out.push({ ring, minX, minY, maxX, maxY });
+  }
+  return out;
+}
+
+/** Point-in-ring test for footprints, pavement, and water. Boxes are built once. */
+function blockerFromRings(frame, buildingRings, maskRings, maskPolygons) {
+  const rings = ringBoxes(buildingRings).concat(ringBoxes(maskRings));
+  for (const poly of maskPolygons || []) {
+    if (poly && poly[0]) rings.push.apply(rings, ringBoxes([poly[0]]));
+  }
+  if (!frame || !rings.length) return null;
+  return (lon, lat) => {
+    const p = llToPx(lon, lat, frame);
+    for (let i = 0; i < rings.length; i++) {
+      const b = rings[i];
+      if (p[0] < b.minX || p[0] > b.maxX || p[1] < b.minY || p[1] > b.maxY) continue;
+      if (pointInRing(p, b.ring)) return true;
+    }
+    return false;
+  };
+}
+
+function chmCrownPolygons(grid, frame, buildingAabbs, hits, opts) {
+  const ringBlock = blockerFromRings(
+    frame,
+    opts && opts.buildingRings,
+    opts && opts.maskRings,
+    opts && opts.maskPolygons
+  );
+  const blocked = (lon, lat) => {
+    if (frame && treeHitsBuilding(lon, lat, frame, buildingAabbs)) return true;
+    return ringBlock ? ringBlock(lon, lat) : false;
+  };
+  const packed = crownsForExport(grid, {
+    blocked,
+    hits,
+    maxPolygons: opts && opts.maxPolygons,
+  });
+  const crowns = packed.crowns;
+  const coarsened = packed.coarsened;
   const polygons = [];
   for (let i = 0; i < crowns.length; i++) {
     const c = crowns[i];
@@ -321,6 +380,7 @@ function chmCrownPolygons(grid, frame, buildingAabbs, hits) {
       shape: "polygon",
     });
   }
+  polygons.coarsened = !!coarsened;
   return polygons;
 }
 
@@ -338,6 +398,9 @@ function clipboardForCanopy(material) {
  * Foliage rings for OpenIntent.
  * When a CHM grid is present, each resolved crown is its own polygon: the
  * ring is the canopy footprint and the material height is the CHM top.
+ * Cells on a building footprint or a pavement/road polygon are cleared first.
+ * NLCD percent can only extend a cell that already has a measured height.
+ * A canopy-height timeout sets omitFoliage and emits nothing.
  * Otherwise multi-cell NLCD patches become canopy polygons. Tree points,
  * median dots, and crown circles are not emitted. There is no Tree type, so
  * trunks stay off OpenIntent. Clipboard gets the same polygons and no trunks.
@@ -354,16 +417,21 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
   const seenClip = new Set();
   let foliageGeometry = "none";
   let polygons = [];
-  if (opts && opts.chmGrid) {
-    polygons = chmCrownPolygons(opts.chmGrid, frame, buildingAabbs, opts && opts.canopyHits);
+  let coarsened = false;
+  if (opts && opts.omitFoliage) {
+    foliageGeometry = "omitted";
+  } else if (opts && opts.chmGrid) {
+    polygons = chmCrownPolygons(opts.chmGrid, frame, buildingAabbs, opts && opts.canopyHits, opts);
+    coarsened = !!polygons.coarsened;
     if (polygons.length) foliageGeometry = "chm-crown";
   }
-  if (!polygons.length) {
+  if (!polygons.length && !(opts && opts.omitFoliage)) {
     polygons = canopyPolygonsFromHits(
       opts && opts.canopyHits,
       frame,
       buildingAabbs,
-      opts && opts.heightSample
+      opts && opts.heightSample,
+      !!(opts && opts.chmGrid)
     );
     if (polygons.length) foliageGeometry = "nlcd-polygon";
   }
@@ -425,6 +493,7 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     count: oiAreas.length,
     foliageLifted,
     foliageGeometry,
+    foliageCoarsened: coarsened,
     polygons: polygons.length,
     overlayPoints: [],
     overlayRings,

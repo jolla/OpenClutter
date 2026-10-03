@@ -383,7 +383,21 @@ describe("optional sources cannot fail the export", () => {
     const t0 = Date.now();
     const res = await handler({
       httpMethod: "POST",
-      body: JSON.stringify({ ...WYNN, trees: [{ lon: -115.17, lat: 36.122 }], includeFoliage: true, format: "bundle" }),
+      body: JSON.stringify({
+        ...WYNN,
+        trees: [{ lon: -115.17, lat: 36.122 }],
+        includeFoliage: true,
+        treesSource: "nlcd-canopy",
+        canopyHits: [
+          { lon: -115.17, lat: 36.122, pct: 80 },
+          { lon: -115.1697, lat: 36.122, pct: 80 },
+          { lon: -115.17, lat: 36.12225, pct: 70 },
+          { lon: -115.1697, lat: 36.12225, pct: 70 },
+          { lon: -115.1694, lat: 36.122, pct: 60 },
+          { lon: -115.1694, lat: 36.12225, pct: 60 },
+        ],
+        format: "bundle",
+      }),
     });
     const elapsed = Date.now() - t0;
     assert.equal(res.statusCode, 200);
@@ -399,6 +413,11 @@ describe("optional sources cannot fail the export", () => {
     const text = warnings.warnings.join("\n");
     assert.match(text, /Overture buildings omitted/);
     assert.match(text, /Canopy height omitted/);
+    assert.match(text, /Foliage omitted: canopy height timed out/);
+    assert.match(body.stats.summary, /Foliage omitted \(canopy height timed out\)/);
+    assert.equal(body.stats.openIntentTreeAreas, 0);
+    assert.ok(body.stats.openIntentBuildingAreas >= 1);
+    assert.equal(body.stats.includeFoliage, true);
     assert.match(text, /Terrain omitted/);
     assert.equal(/esri/i.test(text), false);
     assert.equal(/smaller box/i.test(text + body.warnings.join(" ")), false);

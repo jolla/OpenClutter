@@ -450,26 +450,6 @@ async function detectCanopyTrees(b) {
   });
 }
 
-async function detectRgbTrees(b) {
-  const T = globalThis.OpenClutterTrees;
-  const maxTrees = T.maxTreesForBbox(b);
-  const imgW = 720;
-  const imgH = Math.max(200, Math.round(imgW * ((b.north - b.south) / Math.max(1e-9, b.east - b.west))));
-  const url =
-    "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export" +
-    `?bbox=${b.west},${b.south},${b.east},${b.north}&bboxSR=4326&imageSR=4326&size=${imgW},${imgH}&format=jpg&f=image`;
-  const res = await fetch(url);
-  if (!res.ok) return [];
-  const bmp = await createImageBitmap(await res.blob());
-  const c = document.createElement("canvas");
-  c.width = bmp.width;
-  c.height = bmp.height;
-  const ctx = c.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(bmp, 0, 0);
-  const { data, width: w, height: h } = ctx.getImageData(0, 0, c.width, c.height);
-  return T.detectTreesFromImageData(data, w, h, b, { maxTrees, minDist: maxTrees >= 400 ? 9 : 14 });
-}
-
 function downloadBlob(blob, name) {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -584,19 +564,13 @@ document.getElementById("export").onclick = async () => {
       } catch (e) {
         canopy = { trees: [], source: null, reason: "fetch-failed", parsed: { samples: 0, validCount: 0, hits: [] } };
       }
-      let rgb = [];
-      if (T.rgbFillNeeded(canopy, bbox, { maxTrees: budget })) {
-        try {
-          rgb = await detectRgbTrees(bbox);
-        } catch (e) {
-          rgb = [];
-        }
-      }
-      const resolved = T.resolveTrees(bbox, canopy, rgb, { maxTrees: budget });
+      // Canopy extent and height come from the height model on export.
+      // Aerial color is not a tree source. NLCD hits only supplement dense cells.
+      const resolved = T.resolveTrees(bbox, canopy, [], { maxTrees: budget });
       trees = resolved.trees;
-      treesSource = resolved.source;
+      treesSource = resolved.source === "imagery-rgb" ? "none" : resolved.source || "none";
       canopyHits =
-        treesSource === "nlcd-canopy" && canopy && canopy.parsed && canopy.parsed.hits
+        canopy && canopy.parsed && Array.isArray(canopy.parsed.hits) && canopy.parsed.hits.length
           ? canopy.parsed.hits
           : null;
     }
