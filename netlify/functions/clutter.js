@@ -6,7 +6,8 @@ const { userAgent: UA } = require("../lib/version");
 // Esri export and used to be awaited for up to 7s before that download began,
 // so a slow meta response left no time for the JPEG. Meta is now capped and
 // overlapped with the JPEG. Footprints keep their own 7s clock and are not
-// aborted when the JPEG aborts. Canopy height still starts only after core.
+// aborted when the JPEG aborts. Canopy height starts with the footprint
+// fetch on its own abort. A timeout leaves foliage out of the zip.
 // 3DEP starts once imagery metadata has snapped the extent, overlapping the
 // JPEG, so a slow aerial download does not skip the DEM. Overture starts with
 // the JPEG, before the Global ML gzip. A finished read is kept even if core
@@ -118,8 +119,6 @@ const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
 const { surfaceMasksFromImage } = require("../lib/surface-mask");
 const { rejectPavementFootprints } = require("../lib/pavement");
-const { detectMedianTrees, appendTreePoints } = require("../lib/tree-source");
-
 function json(status, cors, obj) {
   return {
     statusCode: status,
@@ -276,6 +275,7 @@ function keptOptionalResult(result) {
   if (!result || result === TIMED_OUT) return null;
   if (Array.isArray(result.features) && result.features.length) return result;
   if (result && Array.isArray(result.samples) && result.samples.length >= 4) return result;
+  if (result && result.values && result.width > 1 && result.height > 1 && result.nonzero > 0) return result;
   return null;
 }
 
@@ -678,6 +678,7 @@ async function handleClutter(event) {
   const started = Date.now();
   let overtureJob = null;
   let terrainJob = null;
+  let chmJob = null;
   try {
     // JPEG and Overture together. Meta may confirm the footprint query, but it
     // must not gate the image or the Overture read — the Las Vegas row group
@@ -756,6 +757,15 @@ async function handleClutter(event) {
     )
       .catch(() => ({ features: [] }))
       .finally(() => clearTimeout(usaTimer));
+    if (includeFoliage && needImage && !chmJob) {
+      const chmFrame = {
+        west: frame.west,
+        south: frame.south,
+        east: frame.east,
+        north: frame.north,
+      };
+      chmJob = beginOptional((signal) => fetchChmGrid(chmFrame, { signal }));
+    }
     const clientHitsEarly = includeFoliage ? normalizeCanopyHits(body.canopyHits) : [];
     const canopyJob =
       includeFoliage && !clientHitsEarly.length
@@ -804,6 +814,7 @@ async function handleClutter(event) {
   } catch (e) {
     if (overtureJob) overtureJob.ctrl.abort();
     if (terrainJob) terrainJob.ctrl.abort();
+    if (chmJob) chmJob.ctrl.abort();
     return json(502, cors, { error: describeCoreFailure(e) });
   }
 
@@ -813,10 +824,9 @@ async function handleClutter(event) {
   const overturePromise = overtureJob
     ? joinOptional(warnings, started, "Overture buildings", overtureJob, overtureWait(frame))
     : Promise.resolve(null);
-  const chmPromise =
-    includeFoliage && needImage
-      ? runOptional(warnings, started, "Canopy height", (signal) => fetchChmGrid(frame, { signal }))
-      : Promise.resolve(null);
+  const chmPromise = chmJob
+    ? joinOptional(warnings, started, "Canopy height", chmJob)
+    : Promise.resolve(null);
   const terrainFollow = includeTerrain
     ? await followUpTerrain(terrainJob, started, frame, devHost, terrainResolution, terrainStyle)
     : { preset: null, job: null, join: null };
@@ -842,7 +852,14 @@ async function handleClutter(event) {
   } else {
     demSamples = null;
   }
-  chmGrid = optional[2];
+  chmGrid = optional[2] && optional[2].values ? optional[2] : null;
+  const chmTimedOut =
+    includeFoliage &&
+    !chmGrid &&
+    warnings.some((w) => /Canopy height omitted:/.test(String(w)) && /timed out|export budget/i.test(String(w)));
+  if (chmTimedOut) {
+    warnings.push("Foliage omitted: canopy height timed out. Buildings in this zip are unchanged.");
+  }
 
   treesSource = normalizeTreesSource(treesSource, treePoints.length);
 
@@ -909,17 +926,6 @@ async function handleClutter(event) {
       maxTrees: maxTreesForBbox(frame),
       reject: (lon, lat) => treeHitsBuilding(lon, lat, frame, preview.aabbs),
     });
-    if (decoded) {
-      const medians = detectMedianTrees(decoded.data, decoded.width, decoded.height, frame, {
-        maxTrees: 80,
-        reject: (lon, lat) => treeHitsBuilding(lon, lat, frame, preview.aabbs),
-      });
-      footprintMeta.medianTrees = medians.length;
-      treePoints = appendTreePoints(treePoints, medians, frame, {
-        minDistM: 8,
-        maxTrees: Math.min(800, maxTreesForBbox(frame) + medians.length),
-      });
-    }
   }
   if (includeFoliage && chmGrid && treePoints.length) {
     const applied = applyChmToTrees(treePoints, (lon, lat) => sampleChmGrid(chmGrid, lon, lat));
@@ -974,6 +980,9 @@ async function handleClutter(event) {
     }
   }
 
+  const FOLIAGE_CAPS = [480, 160, 48, 12];
+  let foliageCap = FOLIAGE_CAPS[0];
+
   function emitClutter(list, extraWarnings) {
     return buildClutter({
       frame,
@@ -986,12 +995,14 @@ async function handleClutter(event) {
       footprintMeta,
       terrain,
       warnings: extraWarnings ? warnings.concat(extraWarnings) : warnings,
-      canopyHits: placeHits,
-      heightSample: chmGrid ? (lon, lat) => sampleChmGrid(chmGrid, lon, lat) : null,
-      chmGrid,
+      canopyHits: chmTimedOut ? [] : placeHits,
+      heightSample: !chmTimedOut && chmGrid ? (lon, lat) => sampleChmGrid(chmGrid, lon, lat) : null,
+      chmGrid: chmTimedOut ? null : chmGrid,
       maskRings,
       maskPolygons,
       includeFoliage,
+      omitFoliage: chmTimedOut,
+      maxFoliagePolygons: foliageCap,
       terrainResolution,
       terrainStyle,
       nlsHeights: devHost,
@@ -1013,6 +1024,12 @@ async function handleClutter(event) {
     noteShrink(exportFeatures.length);
   }
   let built = emitClutter(exportFeatures);
+  if (includeFoliage && !chmTimedOut && built.zip && built.zip.length > ZIP_FIT_BYTES) {
+    for (let i = 1; i < FOLIAGE_CAPS.length && built.zip && built.zip.length > ZIP_FIT_BYTES; i++) {
+      foliageCap = FOLIAGE_CAPS[i];
+      built = emitClutter(exportFeatures);
+    }
+  }
   if (built.zip && built.zip.length > ZIP_FIT_BYTES) {
     for (let i = 1; i < ZIP_SHRINK_STEPS.length; i++) {
       exportFeatures = largestFeatures(features, ZIP_SHRINK_STEPS[i], frame.mpd);

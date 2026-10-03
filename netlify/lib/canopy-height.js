@@ -4,9 +4,9 @@
  * Meta / WRI canopy height (CHM v2), ~1.2 m uint8 metres, anonymous COG.
  * One zoom-10 Web-Mercator quadkey covers a commercial site. The reader
  * requests only the pixel window over the export bbox (resampled), so the
- * ~200 MB tile is not downloaded. NLCD still decides where a coarse canopy
- * polygon may fall when this grid cannot resolve a crown.
- * A sample ≥ 2 m replaces an NLCD-informed top_height. 0 / nodata keeps it.
+ * ~200 MB tile is not downloaded. NLCD percent can add a cell only where
+ * cover is denser and a measured height is already on the grid. It does not
+ * invent a height. A sample ≥ 2 m is a measured top. 0 / nodata is not.
  * crownsFromChm turns the same grid into individual crown outlines: each
  * ring is the CHM footprint of one peaked (or compact) canopy, at the
  * measured top height. It does not emit circles, trunks, or a point scatter.
@@ -628,6 +628,144 @@ function crownsFromChm(grid) {
   return out.length > CROWN_CAP ? out.slice(0, CROWN_CAP) : out;
 }
 
+function copyGrid(grid, values, nonzero) {
+  return {
+    west: +grid.west,
+    south: +grid.south,
+    east: +grid.east,
+    north: +grid.north,
+    width: grid.width | 0,
+    height: grid.height | 0,
+    values,
+    nonzero,
+  };
+}
+
+/**
+ * Copy a CHM window, drop cells the caller marks as roof or pavement, and
+ * let dense NLCD percent promote only cells that already have a measured
+ * height (or sit on a measured neighbor). Percent never becomes a height.
+ */
+function maskChmGrid(grid, opts) {
+  const src = gridValues(grid);
+  if (!src) return null;
+  const w = grid.width | 0;
+  const h = grid.height | 0;
+  const values = new Uint8Array(w * h);
+  const n = Math.min(values.length, src.length);
+  for (let i = 0; i < n; i++) values[i] = src[i] || 0;
+  const blocked = opts && opts.blocked;
+  const dLon = +grid.east - +grid.west || 1e-9;
+  const dLat = +grid.north - +grid.south || 1e-9;
+  const lonAt = (x) => +grid.west + ((x + 0.5) / w) * dLon;
+  const latAt = (y) => +grid.north - ((y + 0.5) / h) * dLat;
+  if (typeof blocked === "function") {
+    for (let y = 0; y < h; y++) {
+      const lat = latAt(y);
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (values[i] < 2) continue;
+        if (blocked(lonAt(x), lat)) values[i] = 0;
+      }
+    }
+  }
+  const hits = (opts && opts.hits) || [];
+  for (let nHit = 0; nHit < hits.length; nHit++) {
+    const hit = hits[nHit];
+    if (!hit) continue;
+    const pct = hit.pct != null ? +hit.pct : (hit.score || 0) * 100;
+    if (!(pct >= 50) || !Number.isFinite(+hit.lon) || !Number.isFinite(+hit.lat)) continue;
+    const x = Math.round(((+hit.lon - +grid.west) / dLon) * w - 0.5);
+    const y = Math.round(((+grid.north - +hit.lat) / dLat) * h - 0.5);
+    if (x < 0 || y < 0 || x >= w || y >= h) continue;
+    const i = y * w + x;
+    if (typeof blocked === "function" && blocked(lonAt(x), latAt(y))) continue;
+    if (values[i] >= 2 && values[i] < 3) values[i] = 3;
+    if (values[i] >= 3 || pct < 60) continue;
+    let best = 0;
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const v = values[ny * w + nx] || 0;
+        if (v > best) best = v;
+      }
+    }
+    if (best >= 4) values[i] = best;
+  }
+  let nz = 0;
+  for (let i = 0; i < values.length; i++) if (values[i] >= 2) nz++;
+  if (!nz) return copyGrid(grid, values, 0);
+  return copyGrid(grid, values, nz);
+}
+
+/** Max-pool so a large draw becomes fewer, still measured, canopy cells. */
+function poolChmGrid(grid, stride) {
+  const src = gridValues(grid);
+  if (!src) return null;
+  const step = Math.max(2, stride | 0);
+  const w = grid.width | 0;
+  const h = grid.height | 0;
+  const w2 = Math.max(2, Math.ceil(w / step));
+  const h2 = Math.max(2, Math.ceil(h / step));
+  const values = new Uint8Array(w2 * h2);
+  for (let y = 0; y < h2; y++) {
+    for (let x = 0; x < w2; x++) {
+      let m = 0;
+      for (let dy = 0; dy < step; dy++) {
+        const sy = y * step + dy;
+        if (sy >= h) break;
+        for (let dx = 0; dx < step; dx++) {
+          const sx = x * step + dx;
+          if (sx >= w) break;
+          const v = src[sy * w + sx] || 0;
+          if (v > m) m = v;
+        }
+      }
+      values[y * w2 + x] = m;
+    }
+  }
+  let nz = 0;
+  for (let i = 0; i < values.length; i++) if (values[i] >= 2) nz++;
+  return {
+    west: +grid.west,
+    south: +grid.south,
+    east: +grid.east,
+    north: +grid.north,
+    width: w2,
+    height: h2,
+    values,
+    nonzero: nz,
+  };
+}
+
+/**
+ * Crowns for an export. Roof and pavement cells are cleared first. When the
+ * outline count is over maxPolygons the grid is pooled (measured max height
+ * in each block) until it fits, same idea as dropping excess roofs.
+ */
+function crownsForExport(grid, opts) {
+  const prepared = maskChmGrid(grid, opts);
+  if (!prepared || !(prepared.nonzero > 0)) return { crowns: [], coarsened: false, stride: 1 };
+  const max = opts && opts.maxPolygons > 0 ? opts.maxPolygons | 0 : 480;
+  let stride = 1;
+  let current = prepared;
+  let crowns = crownsFromChm(current);
+  while (crowns.length > max && stride < 8) {
+    const nextStride = stride * 2;
+    const pooled = poolChmGrid(prepared, nextStride);
+    if (!pooled) break;
+    const meters = gridMeters(pooled);
+    if (!(meters.mPerX >= 0.5) || meters.mPerX > 30 || meters.mPerY > 30) break;
+    stride = nextStride;
+    current = pooled;
+    crowns = crownsFromChm(current);
+  }
+  if (crowns.length > max) crowns = crowns.slice(0, max);
+  return { crowns, coarsened: stride > 1, stride };
+}
+
 module.exports = {
   CHM_ZOOM,
   MAX_DIM,
@@ -639,4 +777,7 @@ module.exports = {
   fetchChmGrid,
   gridSize,
   crownsFromChm,
+  maskChmGrid,
+  poolChmGrid,
+  crownsForExport,
 };

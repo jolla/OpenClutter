@@ -48,16 +48,18 @@ const ZIP_README =
   "Import this zip in Hamina (Projects → Import → OpenIntent).\n" +
   "OpenIntent carries the map image and building attenuation_areas.\n" +
   "Include foliage is off by default: the zip is buildings only, with no tree attenuation_areas.\n" +
-  "When Include foliage was checked, foliage is individual canopy crowns from the\n" +
-  "Meta/WRI canopy-height model when that grid resolves them: each crown is the\n" +
-  "measured outline and height, not a circle and not one coarse NLCD blob.\n" +
-  "If the height model is missing, canopy falls back to connected NLCD polygons.\n" +
+  "When Include foliage was checked, canopy extent and height come from the\n" +
+  "Meta/WRI canopy-height model: each polygon is measured canopy, not a circle\n" +
+  "and not a percent-to-height bucket. US tree-canopy percent can add a cell\n" +
+  "only where that cover is denser and a measured height is already known.\n" +
+  "If the canopy-height read times out, foliage is left out of this zip and\n" +
+  "the status says so. Buildings still export.\n" +
   "Materials are Foliage - Heavy / Foliage - Light, or Foliage - Heavy H.H /\n" +
   "Foliage - Light H.H at the measured height.\n" +
   "Individual tree-point circles and trunks are not emitted. OpenIntent has no Tree type,\n" +
   "so trunks cannot be imported that way.\n" +
   "Buildings use Hamina's outdoor Building - One/Two/Five/Ten Floor materials.\n" +
-  "Canopy rings are cut around building footprints (4 m buffer) and imagery water, so foliage does not cover roofs or ponds.\n" +
+  "Canopy cells on building footprints and on pavement or roads are cleared, and rings are cut around footprints (4 m buffer) and water, so foliage does not cover roofs, parking, or ponds.\n" +
   "There is no Tree type, so OpenIntent does not emit trunks. Tree Trunk and Foliage N.N m stay off OpenIntent.\n" +
   "hamina-clipboard.json matches the toggle: buildings only when foliage is off, or the same canopy polygons when it is on.\n" +
   "Schema: OpenIntent 2.0.1, pixels+meters+feet per vertex, isotropic meter/pixel aspect.\n" +
@@ -212,6 +214,7 @@ function coverageStats(stats) {
     nlsHeightMin: s.nlsHeightMin || 0,
     nlsHeightMax: s.nlsHeightMax || 0,
     includeFoliage: s.includeFoliage === true,
+    foliageOmitted: s.foliageOmitted || "",
     waterMaskRings: s.waterMaskRings || 0,
     pavementMaskRings: s.pavementMaskRings || 0,
     foliageGeometry: s.foliageGeometry || "none",
@@ -236,7 +239,7 @@ function coverageSummary(stats) {
   if (c.droppedPavement) drops.push("pavement " + c.droppedPavement);
   if (c.droppedAreasCap) drops.push("areas-cap " + c.droppedAreasCap);
   const dropTxt = drops.length ? `; dropped ${drops.join(", ")}` : "";
-  const foliage = c.includeFoliage ? "on" : "off";
+  const foliage = c.foliageOmitted ? "omitted (canopy height timed out)" : c.includeFoliage ? "on" : "off";
   return (
     `Buildings ${c.buildingsKept} kept (${c.fetched} fetched${dropTxt}). ` +
     `Foliage ${foliage}. Trees ${c.treesKept} kept (${c.treesSource}). ` +
@@ -1562,6 +1565,8 @@ function buildClutter({
   chmGrid,
   terrainResolution,
   nlsHeights,
+  omitFoliage,
+  maxFoliagePolygons,
 }) {
   const featureList = footprintsGeojson?.features || [];
   if (nlsHeights) {
@@ -1586,6 +1591,8 @@ function buildClutter({
         maskRings,
         maskPolygons,
         slopeTop,
+        omitFoliage: omitFoliage === true,
+        maxPolygons: maxFoliagePolygons,
       })
     : {
         oiAreas: [],
@@ -1594,11 +1601,16 @@ function buildClutter({
         materials: [],
         count: 0,
         foliageLifted: 0,
-        foliageGeometry: "none",
+        foliageGeometry: omitFoliage ? "omitted" : "none",
+        foliageCoarsened: false,
         polygons: 0,
         overlayPoints: [],
         overlayRings: [],
       };
+  if (foliageOn && veg.foliageCoarsened && Array.isArray(warnings)) {
+    const line = "Canopy was merged into fewer polygons so this zip can download.";
+    if (warnings.indexOf(line) < 0) warnings.push(line);
+  }
   // A poisoned or drifted vegetation material fails makeOiArea and that ring
   // is omitted, so it cannot empty the buildings.
   const treeOi = treesToOi(veg.oiAreas, frame.imgW, frame.imgH, frame.mpuX);
@@ -1665,10 +1677,12 @@ function buildClutter({
   const stats = {
     ...fp.stats,
     trees: veg.count,
-    treesSource: foliageOn ? treesSource || (veg.count ? "nlcd-canopy" : "none") : "none",
+    treesSource: omitFoliage ? "none" : foliageOn ? treesSource || (veg.count ? "nlcd-canopy" : "none") : "none",
     includeFoliage: foliageOn,
     foliageLifted: veg.foliageLifted || 0,
-    foliageGeometry: foliageOn ? veg.foliageGeometry || "none" : "none",
+    foliageGeometry: omitFoliage ? "omitted" : foliageOn ? veg.foliageGeometry || "none" : "none",
+    foliageOmitted: omitFoliage ? "canopy-height-timeout" : "",
+    foliageCoarsened: foliageOn && veg.foliageCoarsened ? 1 : 0,
     zones: clip.attenuatingZones.length,
     areas: areas.length,
     droppedInvalid: fp.stats.droppedInvalid || 0,
