@@ -274,35 +274,6 @@ function canopyPolygonsFromHits(hits, frame, buildingAabbs, heightSample, requir
   return polygons;
 }
 
-function metersAt(lat) {
-  const r = (lat * Math.PI) / 180;
-  return { lon: 111320 * Math.cos(r), lat: 110540 };
-}
-
-/**
- * NLCD hits are the ≥18% cells only. A short CHM spike far from every one of
- * those cells is pavement noise. A tall outline, a patch large enough to be
- * a tree line the 30 m grid missed, or a crown inside the canopy field, stays.
- * With no NLCD coverage, the CHM itself is the mask.
- */
-function crownSupported(crown, hits) {
-  if (!hits || hits.length < 4) return true;
-  if (crown.areaM2 >= 350 || crown.heightM >= 8) return true;
-  const m = metersAt(crown.peakLat || 0);
-  let best = Infinity;
-  for (let i = 0; i < hits.length; i++) {
-    const h = hits[i];
-    const pct = h.pct != null ? +h.pct : (h.score || 0) * 100;
-    if (!(pct >= 18)) continue;
-    const dx = (h.lon - crown.peakLon) * m.lon;
-    const dy = (h.lat - crown.peakLat) * m.lat;
-    const d2 = dx * dx + dy * dy;
-    if (d2 < best) best = d2;
-  }
-  if (!(best < Infinity) || best <= 55 * 55) return true;
-  return false;
-}
-
 /**
  * CHM canopy as foliage polygons. One ring per connected outline, measured
  * height, no circles and no grid squares. Empty when the grid does not resolve canopy.
@@ -355,6 +326,8 @@ function chmCrownPolygons(grid, frame, buildingAabbs, hits, opts) {
   );
   // Footprint rings only. A building bounding box also covers the courtyard
   // and the trees beside an L-shaped roof, which is how fairway canopy disappeared.
+  // A measured crown is not dropped for sitting far from an NLCD cell. Percent
+  // can only raise a cell that already has a height. Empty CHM stays empty.
   const blocked = (lon, lat) => (ringBlock ? ringBlock(lon, lat) : false);
   void buildingAabbs;
   const packed = crownsForExport(grid, {
@@ -367,7 +340,6 @@ function chmCrownPolygons(grid, frame, buildingAabbs, hits, opts) {
   const polygons = [];
   for (let i = 0; i < crowns.length; i++) {
     const c = crowns[i];
-    if (!crownSupported(c, hits)) continue;
     const ringPx = c.ringLonLat.map(([lon, lat]) => llToPx(lon, lat, frame));
     if (ringPx.length < 4) continue;
     const tier = c.heightM >= 12 ? "heavy" : "light";

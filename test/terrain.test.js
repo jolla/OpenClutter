@@ -157,7 +157,8 @@ describe("3DEP terrain clipboard", () => {
     assert.equal(terrain.terrainStyle, "sloped");
     const [cols, rows] = chooseGrid(terrain.reliefM);
     assert.equal(terrain.raised, cols * rows);
-    assert.ok(terrain.raised <= 4);
+    assert.ok(terrain.raised <= PASTE_SOFT_GRID * PASTE_SOFT_GRID);
+    assert.ok(terrain.raised > 4);
     assert.equal(terrain.reliefM, 0);
     assert.equal(terrain.clipboard.header.type, "HaminaClipboard");
     assert.equal(terrain.clipboard.attenuatingZones.length, 0);
@@ -174,7 +175,7 @@ describe("3DEP terrain clipboard", () => {
     const fields = terrainBundleFields(terrain, []);
     assert.equal(fields.terrainFilename, TERRAIN_FILENAME);
     assert.equal(fields.terrainClipboard.raisedFloorZones.length, terrain.raised);
-    assert.match(fields.terrainStatus, /Terrain sloped 2×2/);
+    assert.match(fields.terrainStatus, /Terrain sloped 20×20/);
     assert.match(fields.terrainStatus, /Copy terrain/);
     assert.match(fields.terrainStatus, /paste it in Planner Plus/);
     assert.match(fields.terrainStatus, /Do not import it as OpenIntent/);
@@ -321,7 +322,7 @@ describe("3DEP terrain clipboard", () => {
     assert.ok(terrain.sloped >= 1);
     const [mildCols, mildRows] = chooseGrid(terrain.reliefM, frame);
     assert.equal(terrain.raised + terrain.sloped, mildCols * mildRows);
-    assert.ok(terrain.raised + terrain.sloped <= MAX_GRID * MAX_GRID);
+    assert.ok(terrain.raised + terrain.sloped <= PASTE_SOFT_GRID * PASTE_SOFT_GRID);
     assert.equal(terrain.clipboard.header.type, "HaminaClipboard");
     assert.equal(terrain.clipboard.attenuatingZones.length, 0);
     for (const z of terrain.clipboard.slopedFloors) {
@@ -949,13 +950,20 @@ describe("terrain resolution presets", () => {
     assert.equal(TERRAIN_RESOLUTIONS["1"].maxGrid, ABSOLUTE_MAX_GRID);
   });
 
-  it("leaves flat, mild, and medium ladders unchanged at every preset", () => {
+  it("keeps the relief ladder on hidden presets and fills the paste budget on Auto", () => {
     const frame = metersBox(44.91, 900, 700, "Mild");
-    for (const id of [undefined, "auto", "default", "fine", "finest", "20", "15", "10", "5", "1"]) {
+    for (const id of ["default", "fine", "finest", "20", "15", "10", "5", "1"]) {
       assert.deepEqual(chooseGrid(0.4, frame, id), [2, 2]);
       assert.deepEqual(chooseGrid(5, frame, id), [4, 3]);
       assert.deepEqual(chooseGrid(15, frame, id), [6, 5]);
     }
+    assert.deepEqual(chooseGrid(0.4, frame, "auto"), [20, 20]);
+    assert.deepEqual(chooseGrid(5, frame, "auto"), [20, 20]);
+    assert.deepEqual(chooseGrid(15, frame, "auto"), [20, 20]);
+    assert.deepEqual(chooseGrid(15, frame, undefined), [20, 20]);
+    const [cols, rows] = chooseGrid(12, frame, "auto");
+    assert.ok(cols <= PASTE_SOFT_GRID && rows <= PASTE_SOFT_GRID);
+    assert.ok(cols * rows > 6 * 5, "auto is finer than the 6×5 ladder");
   });
 
   it("densifies only the ski-hill lattice, and caps a huge draw at 20×20", () => {
@@ -1108,9 +1116,9 @@ describe("terrain resolution presets", () => {
     assert.ok(tiny.widthM / tC >= MIN_CELL_M - 0.05);
     assert.ok(tC * tR <= PASTE_SOFT_GRID * PASTE_SOFT_GRID);
 
-    assert.deepEqual(chooseGrid(0.2, box20, "auto"), [2, 2]);
-    assert.deepEqual(chooseGrid(4, box40, "auto"), [4, 3]);
-    assert.deepEqual(chooseGrid(12, wide, "auto"), [6, 5]);
+    assert.deepEqual(chooseGrid(0.2, box20, "auto"), [20, 20]);
+    assert.deepEqual(chooseGrid(4, box40, "auto"), [20, 20]);
+    assert.deepEqual(chooseGrid(12, wide, "auto"), [20, 20]);
     assert.deepEqual(chooseGrid(200, box40, "default"), [6, 6]);
     assert.deepEqual(chooseGrid(200, box40, "finest"), [6, 6]);
 
@@ -1142,10 +1150,11 @@ describe("terrain resolution presets", () => {
     const flat = terrainFromSamples(gridSamples(box800, () => 214.2), box800);
     assert.equal(flat.terrainResolution, "auto");
     assert.equal(flat.terrainStyle, "sloped");
-    assert.equal(flat.raised, 4);
+    assert.equal(flat.raised, 20 * 20);
     assert.equal(flat.sloped, 0);
     assert.ok(flat.clipboard.raisedFloorZones.every((z) => z.slabOnly === false));
-    assert.match(terrainBundleFields(flat, []).terrainStatus, /Auto \(relief under 20 m keeps the coarse mesh\)/);
+    assert.match(terrainBundleFields(flat, []).terrainStatus, /Terrain sloped 20×20/);
+    assert.match(terrainBundleFields(flat, []).terrainStatus, /Auto ~/);
 
     const manual = terrainFromSamples(gridSamples(wide, (r, c, lon, lat) => 300 + ((lat - wide.south) / (wide.north - wide.south)) * 200), wide, {
       terrainResolution: "default",
@@ -2345,7 +2354,7 @@ describe("Finland paste quads are square ground meters", () => {
   it("leaves a US 1 m site on the relief ladder and the 500 cap", () => {
     const mild = metersBox(44.91, 800, 800, "US town");
     assert.deepEqual(chooseGrid(12, mild, "1"), [6, 5]);
-    assert.deepEqual(chooseGrid(12, mild, "auto"), [6, 5]);
+    assert.deepEqual(chooseGrid(12, mild, "auto"), [20, 20]);
     const peak = metersBox(44.91, 1800, 1400, "Granite Peak");
     assert.deepEqual(chooseGrid(200, peak, "1"), [500, 500]);
     assert.deepEqual(chooseGrid(200, peak, "auto"), [20, 20]);

@@ -468,7 +468,6 @@ function flood(w, h, seedX, seedY, accept) {
 
 function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH) {
   const area = pixels.length * mPerX * mPerY;
-  if (!(area >= CROWN_MIN_AREA_M2)) return null;
   let maxH = 0;
   let px = pixels[0][0];
   let py = pixels[0][1];
@@ -482,8 +481,11 @@ function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH) {
   }
   const heightM = Math.round(Math.max(maxH, hintH || 0) * 10) / 10;
   if (!(heightM >= CROWN_MIN_H) || heightM >= 80) return null;
-  // A lone 4 m pixel is CHM noise. A real small tree is taller, or wider.
-  if (heightM < 5 && pixels.length < 2) return null;
+  // A lone short pixel is CHM noise. A real small tree is taller, or wider.
+  // The export grid is about 2 m, so a street tree is often one or two cells
+  // and used to miss the 12 m² floor.
+  if (pixels.length < 2 && heightM < 5) return null;
+  if (pixels.length >= 2 && heightM < 5 && pixels.length < 3 && area < CROWN_MIN_AREA_M2) return null;
   let ring = tracePixels(pixels);
   if (!ring) return null;
   let open = simplifyContour(dropCollinearPx(ring), CROWN_MAX_VERTS);
