@@ -1,14 +1,18 @@
 /**
  * Site outline gestures.
  *
- * Drag commits a box. A click (no drag) adds a polygon vertex. Close the
- * ring by double-click, by clicking the first vertex (once there are at
- * least 3 corners), or by finish() — the Finish shape button and an
- * optional right-click. finish() with fewer than 3 vertices discards the
- * ring. prepareExport() commits an open ring of 3+ vertices and refuses a
- * 1–2 vertex ring so a newer sketch cannot export the previous site.
- * Escape is cancel() and does not touch a finished site. A drag after
- * vertices have been placed commits a box and drops the open ring.
+ * Drag commits a box. A click (no drag) adds a polygon vertex. A ring of
+ * 3 or more corners closes by itself when a click lands on the first
+ * corner or returns near the start — that click is the finish, not a
+ * separate Finish shape press. Double-click is an optional shortcut.
+ * finish() remains optional (a Finish control, or a right-click). A click
+ * that returns to the start with only two corners does not close a line
+ * and does not drop a duplicate point on the start. finish() with fewer
+ * than 3 vertices discards the ring. prepareExport() commits an open ring
+ * of 3+ vertices and refuses a 1–2 vertex ring so a newer sketch cannot
+ * export the previous site. Escape is cancel() and does not touch a
+ * finished site. A drag after vertices have been placed commits a box and
+ * drops the open ring.
  *
  * Distances are container pixels. DRAG_PX is the click/drag split.
  * CLOSE_PX is how near a click must be to the first corner to close.
@@ -23,8 +27,17 @@
 
   /** Pointer travel at or above this many pixels is a box, not a vertex. */
   const DRAG_PX = 6;
-  /** Click inside this radius of the first corner to close a 3+ vertex ring. */
-  const CLOSE_PX = 12;
+  /**
+   * Click inside this radius of the first corner to close a 3+ vertex ring.
+   * Wide enough that a click returning near the start closes, including a
+   * click on the close handle.
+   */
+  const CLOSE_PX = 24;
+  /**
+   * With only two corners, a click this close to the start is not a new
+   * corner and does not close a line.
+   */
+  const EARLY_PX = 12;
 
   function createSession() {
     return {
@@ -97,9 +110,9 @@
     return nearVertex(session.vertices[session.vertices.length - 1], pt, DRAG_PX);
   }
 
-  function closingOnFirst(session, pt) {
-    if (session.vertices.length < 3) return false;
-    return nearVertex(session.vertices[0], pt, CLOSE_PX);
+  function nearStart(session, pt, px) {
+    if (!session.vertices.length) return false;
+    return nearVertex(session.vertices[0], pt, px == null ? CLOSE_PX : px);
   }
 
   function pointerUp(session, pt) {
@@ -128,11 +141,14 @@
       y: pt && Number.isFinite(+pt.y) ? +pt.y : downPt.y,
     };
     const doubleClick = pt && +pt.clicks >= 2;
-    if (closingOnFirst(session, candidate)) return finish(session);
+    const backToStart = nearStart(session, candidate) || nearStart(session, downPt);
+    if (session.vertices.length >= 3 && backToStart) return finish(session);
     if (nearLastVertex(session, candidate)) {
       if (doubleClick && session.vertices.length >= 3) return finish(session);
       return { type: "ignore" };
     }
+    const early = nearStart(session, candidate, EARLY_PX) || nearStart(session, downPt, EARLY_PX);
+    if (session.vertices.length === 2 && early) return { type: "short", count: 2 };
     session.vertices.push(candidate);
     session.phase = "polygon";
     if (doubleClick && session.vertices.length >= 3) return finish(session);
@@ -148,8 +164,8 @@
 
   /**
    * Commit a ring of 3 or more corners. Fewer than 3 discards the ring.
-   * Used by Finish shape, double-click, clicking the first corner, and
-   * the optional right-click shortcut.
+   * Optional path: Finish shape, double-click, or a right-click. The
+   * normal close is a click that returns to the first corner.
    */
   function finish(session) {
     if (!session.armed || session.phase !== "polygon" || session.down) return { type: "ignore" };
