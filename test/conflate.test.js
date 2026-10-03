@@ -4,6 +4,8 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const { conflateFootprints, assembleFootprints, dedupeStackedFootprints, heightRank, ringAreaM2 } = require("../netlify/lib/conflate");
 const { mergeFootprintFeatures } = require("../netlify/lib/ms-global");
+const { buildClutter } = require("../netlify/lib/pipeline");
+const { geoFrame } = require("../netlify/lib/geo-frame");
 
 function box(west, south, east, north, props) {
   return {
@@ -215,5 +217,67 @@ describe("footprint conflation", () => {
     const built = footprintsToClutter(merged.features, frame, null);
     assert.equal(built.stats.droppedMega, 1);
     assert.equal(built.stats.buildings, 1);
+  });
+
+  it("keeps a taller inset as its own level instead of extruding the podium", () => {
+    const podium = metersBox(-87.92, 42.9, 70, 46, {
+      height: 8,
+      heightSource: "overture",
+      geomSource: "overture",
+    });
+    const tower = metersBox(-87.92, 42.9, 22, 16, {
+      height: 32,
+      heightSource: "overture",
+      geomSource: "overture",
+    });
+    const separated = dedupeStackedFootprints([podium, tower]);
+    assert.equal(separated.features.length, 2);
+    const upper = separated.features.find((f) => f.properties.levelBaseM > 0);
+    const lower = separated.features.find((f) => !(f.properties.levelBaseM > 0));
+    assert.ok(upper);
+    assert.equal(upper.properties.levelBaseM, 8);
+    assert.equal(upper.properties.height, 32);
+    assert.equal(lower.properties.height, 8);
+    const assembled = assembleFootprints({ global: [podium], overture: [tower], arcgis: [], usa: [] });
+    assert.equal(assembled.features.length, 2);
+    assert.ok(assembled.features.some((f) => f.properties.levelBaseM === 8 && f.properties.height === 32));
+    const frame = geoFrame({ west: -87.93, south: 42.895, east: -87.91, north: 42.905, name: "Step" });
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [podium, tower] },
+      treePoints: [],
+      name: "Step",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    assert.equal(built.stats.buildings, 2);
+    const zones = built.clipboard.attenuatingZones;
+    assert.equal(zones.length, 2);
+    const types = built.clipboard.attenuatingZoneTypes;
+    const paired = zones.map((z) => types.find((t) => t.id === z.typeId));
+    const podiumType = paired.find((t) => t.bottomEdge == null && t.topEdge === 8);
+    const towerType = paired.find((t) => t.bottomEdge === 8 && t.topEdge === 32);
+    assert.ok(podiumType, "podium " + paired.map((t) => t.id + " " + t.bottomEdge + "-" + t.topEdge).join("; "));
+    assert.ok(towerType);
+    assert.equal(towerType.name.indexOf("@ 8.0") > 0 || towerType.bottomEdge === 8, true);
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    const towerArea = areas.find((a) => a.area_material.bottom_height === 8);
+    assert.ok(towerArea);
+    assert.equal(towerArea.area_material.top_height, 32);
+    assert.equal(towerArea.area_material.name, "Building - 24.0 @ 8.0");
+    const box = metersBox(-87.915, 42.898, 30, 18, { height: 8, heightSource: "overture" });
+    const plain = buildClutter({
+      frame,
+      footprintsGeojson: { features: [box] },
+      treePoints: [],
+      name: "Box",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    assert.equal(plain.stats.buildings, 1);
+    assert.equal(plain.clipboard.attenuatingZones.length, 1);
+    const plainType = plain.clipboard.attenuatingZoneTypes.find(
+      (t) => t.id === plain.clipboard.attenuatingZones[0].typeId
+    );
+    assert.equal(plainType.bottomEdge, null);
+    assert.equal(plainType.topEdge, 8);
   });
 });

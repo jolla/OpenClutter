@@ -291,6 +291,10 @@ const TERRAIN_README =
   "slope top under that canopy, and top_height is that bottom plus the foliage height.\n" +
   "Clipboard zone types use the same pair as bottomEdge and topEdge. Flatter sites\n" +
   "omit bottom_height so the bottom stays on the floor.\n" +
+  "A footprint that climbs more than about 8 m is split, and each piece uses the\n" +
+  "slope top under that piece. A taller plan inside a shorter one is two objects:\n" +
+  "the lower footprint up to its height, then the upper footprint from that height\n" +
+  "to the taller top. A single simple box stays one object.\n" +
   "Retest Granite Peak: Import this zip (Projects → Import → OpenIntent), Copy terrain,\n" +
   "paste it in Planner Plus, then check 3D. Buildings should sit on the pasted terrain\n" +
   "(sloped ramps, or stacked raised layers when that style was selected).\n" +
@@ -343,6 +347,10 @@ const TERRAIN_README_SURFACE =
   "bottom plus the building height. Canopy polygons use that bottom plus the\n" +
   "foliage height. The bare-earth 20 m ski-hill gate does not apply here.\n" +
   "A footprint whose ground is under 1 m omits bottom_height. Do not write bottom_height: 0.\n" +
+  "A footprint that climbs more than about 8 m is split, and each piece uses the\n" +
+  "slope top under that piece. A taller plan inside a shorter one is two objects:\n" +
+  "the lower footprint up to its height, then the upper footprint from that height\n" +
+  "to the taller top. A single simple box stays one object.\n" +
   "Retest: Import this zip (Projects → Import → OpenIntent), Copy terrain,\n" +
   "paste it in Planner Plus, then check 3D. Buildings should sit on the pasted terrain\n" +
   "(sloped ramps, or stacked raised layers when that style was selected), not under it.\n";
@@ -1170,15 +1178,21 @@ function featureExteriorRings(geometry) {
   return out;
 }
 
-function pickedForRing(ring, heightM, areaM2, slopeTop, heightSource) {
-  const picked = materialForBuilding(heightM, areaM2, {
-    exactMetres: heightSource === HEIGHT_SOURCE,
+function pickedForRing(ring, heightM, areaM2, slopeTop, heightSource, levelBase) {
+  const base = levelBase > 0 ? levelBase : 0;
+  // A stepped plan uses the band above the lower footprint, not the full height.
+  const band = base > 0 ? Math.round((heightM - base) * 10) / 10 : heightM;
+  const picked = materialForBuilding(band > 2 ? band : heightM, areaM2, {
+    exactMetres: heightSource === HEIGHT_SOURCE || base > 0,
   });
-  if (typeof slopeTop !== "function") return picked;
-  return liftPickedBuilding(picked, slopeTop(ring));
+  let bottom = 0;
+  if (typeof slopeTop === "function") bottom = slopeTop(ring) || 0;
+  bottom += base;
+  if (bottom >= 1) return liftPickedBuilding(picked, bottom);
+  return picked;
 }
 
-function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource) {
+function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase) {
   const amRaw = ringAreaM2(ring, frame.mpd);
   // Large detailed roofs (Wynn casino) self-intersect if Douglas–Peucker is too
   // aggressive; try a tighter pass before giving up as clip. These budgets
@@ -1205,7 +1219,7 @@ function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSou
 
   let lastFail = "skip";
   for (const [maxPts, eps] of budgets) {
-    const result = emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource);
+    const result = emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase);
     if (result === "keep") return "keep";
     // Tiny clipped area will not grow with more verts. A one-axis sliver
     // will not grow a short side either — do not retry and double-count it.
@@ -1252,7 +1266,7 @@ function stashBuilding(buckets, frame, affine, clipRing, overlayPts, clipPx, pic
   );
 }
 
-function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource) {
+function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase) {
   const simple = simplifyRing(ring, maxPts, eps);
   if (!simple || simple.length < 4) return "skip";
   const detailVerts = ringVertexCount(simple);
@@ -1283,7 +1297,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
   if (thinSliverDrop(clippedPts, minSpan)) {
     // Clipboard keeps the exact sliver. OpenIntent must not, or Hamina drops
     // every attenuating object.
-    const pickedThin = pickedForRing(ring, heightM, am, slopeTop, heightSource);
+    const pickedThin = pickedForRing(ring, heightM, am, slopeTop, heightSource, levelBase);
     if (pickedThin.lifted) buckets.lifted++;
     stashBuilding(buckets, frame, affine, clipRing, clippedPts, clippedPts, pickedThin);
     return "span";
@@ -1293,7 +1307,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     if (ringVertexCount(clippedPts) > MAX_OI_RING_VERTS) return "verts";
     return "clip";
   }
-  const picked = pickedForRing(ring, heightM, am, slopeTop, heightSource);
+  const picked = pickedForRing(ring, heightM, am, slopeTop, heightSource, levelBase);
   const area = emitIfValid(makeOiArea(oiCoords, picked.material), frame.imgW, frame.imgH);
   if (!area) return "invalid";
   buckets.oiAreas.push(area);
@@ -1446,28 +1460,31 @@ function footprintsToClutter(features, frame, affine, slopeTop) {
     const props = f.properties || {};
     const heightM = Number(props.height || props.Height || props.HEIGHT || 0) || 0;
     const heightSource = props.heightSource || "";
+    const levelBase = Number(props.levelBaseM) > 0 ? Number(props.levelBaseM) : 0;
     const rings = featureExteriorRings(g);
     if (!rings.length) continue;
     for (const ring of rings) {
-      if (oiAreas.length >= MAX_BUILDINGS) {
-        stats.droppedCap++;
-        continue;
-      }
-      const result = emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource);
-      if (result === "keep") {
-        stats.buildings++;
-        if (heightSource === HEIGHT_SOURCE && heightM > 2) {
-          stats.nlsHeights++;
-          if (!stats.nlsHeightMin || heightM < stats.nlsHeightMin) stats.nlsHeightMin = heightM;
-          if (heightM > stats.nlsHeightMax) stats.nlsHeightMax = heightM;
+      const parts = slopeTop && typeof slopeTop.split === "function" ? slopeTop.split(ring) : [ring];
+      for (let p = 0; p < parts.length; p++) {
+        if (oiAreas.length >= MAX_BUILDINGS) {
+          stats.droppedCap++;
+          continue;
         }
+        const result = emitBuilding(parts[p], heightM, frame, affine, buckets, slopeTop, heightSource, levelBase);
+        if (result === "keep") {
+          stats.buildings++;
+          if (heightSource === HEIGHT_SOURCE && heightM > 2) {
+            stats.nlsHeights++;
+            if (!stats.nlsHeightMin || heightM < stats.nlsHeightMin) stats.nlsHeightMin = heightM;
+            if (heightM > stats.nlsHeightMax) stats.nlsHeightMax = heightM;
+          }
+        } else if (result === "mega") stats.droppedMega++;
+        else if (result === "tiny") stats.droppedTiny++;
+        else if (result === "clip") stats.droppedClip++;
+        else if (result === "invalid") stats.droppedInvalid++;
+        else if (result === "span") stats.droppedSpan++;
+        else if (result === "verts") stats.droppedVerts++;
       }
-      else if (result === "mega") stats.droppedMega++;
-      else if (result === "tiny") stats.droppedTiny++;
-      else if (result === "clip") stats.droppedClip++;
-      else if (result === "invalid") stats.droppedInvalid++;
-      else if (result === "span") stats.droppedSpan++;
-      else if (result === "verts") stats.droppedVerts++;
     }
   }
   stats.measuredBuildings = buckets.measured;
