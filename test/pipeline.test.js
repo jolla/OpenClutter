@@ -1186,10 +1186,14 @@ describe("main UI: import buildings, optional foliage", () => {
     const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
     const app = fs.readFileSync(path.join(root, "app.js"), "utf8");
     assert.match(html, /id="draw-hint"/);
-    assert.match(html, /Drag a box\. Click corners, then Finish shape, double-click, or click the first corner\. Esc cancels\./);
-    assert.match(html, /id="finish-shape" hidden/);
+    assert.match(html, /Click the map to draw\. Drag a box, or click corners and click the first corner to close\. Double-click also finishes\. Esc cancels\./);
+    assert.match(html, /id="finish-shape"[^>]*hidden/);
     assert.match(html, />Finish shape</);
-    assert.match(app, /Finish shape, double-click, or click the first corner/);
+    assert.match(app, /Click the first corner to close\. Double-click also finishes/);
+    assert.match(app, /function enterDrawMode/);
+    const afterDraw = app.split('getElementById("draw").onclick')[1] || "";
+    assert.ok((afterDraw.match(/enterDrawMode\(/g) || []).length >= 2);
+    assert.match(app, /if \(!drawSession\.armed\)/);
     assert.match(app, /prepareExport/);
     assert.match(app, /dblclick/);
     assert.match(app, /Export was not run/);

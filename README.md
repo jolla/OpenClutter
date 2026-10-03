@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.31** on `dev` — The map starts ready to draw. Click it to place corners; Draw is optional. A shape with 3 or more corners closes when you click the first corner again, including a click that comes back near the start. Double-click still finishes. Finish shape stays optional. A two-corner line does not close. Export still commits an open polygon of 3 or more corners and still refuses one or two. The badge stays (`dev · v1.1.31`).
+
 **v1.1.30** on `dev` — Include foliage stays off unless checked, and it still wears the Experimental tag. When it is on, canopy extent and height come from the Meta/WRI canopy height model. US tree-canopy percent can add cells only where that cover is denser and a measured height is already known. Canopy is kept off building footprints and pavement, so it does not sit on roofs or parking. Bottom height from floor is the terrain under the footprint. Top height from floor is that bottom plus the measured canopy height. If the canopy-height read times out, foliage is left out of the zip and the status says so. Buildings still download. The badge stays (`dev · v1.1.30`).
 
 **v1.1.29** on `dev` — A large campus with Terrain on still returns **Copy terrain** for **Sloped** and **Raised layers**. Both styles use the same elevation read. When the full grid does not come back, a coarser grid is pasted instead (still at most 20×20, and at most 400 raised floors). The status still starts with `Terrain sloped` or `Terrain raised layers`. The OpenIntent zip is unchanged. The badge stays (`dev · v1.1.29`).
@@ -35,7 +37,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.30`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, choose **Sloped** (default, one ramp or pad per cell) or **Raised layers** (stacked plates, at most 400 floors). The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The style radios hide when Terrain is off, and both the checkbox and the radios stay hidden off this host.
+- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.31`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, choose **Sloped** (default, one ramp or pad per cell) or **Raised layers** (stacked plates, at most 400 floors). The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The style radios hide when Terrain is off, and both the checkbox and the radios stay hidden off this host.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 
