@@ -73,6 +73,9 @@ let rubber = null;
 let closeHint = null;
 let vertexMarks = [];
 let activePointer = null;
+let spacePan = false;
+let panPointer = null;
+let panLast = null;
 const drawSession = OpenClutterDraw.createSession();
 const statusEl = document.getElementById("status");
 const exportBtn = document.getElementById("export");
@@ -150,16 +153,34 @@ function restoreCommitted() {
 
 function syncDrawMode() {
   const container = map.getContainer();
+  if (panPointer != null) {
+    map.dragging.disable();
+    container.style.cursor = "grabbing";
+    return;
+  }
   if (drawSession.armed) {
     map.dragging.disable();
     if (map.doubleClickZoom) map.doubleClickZoom.disable();
-    container.style.cursor = "crosshair";
+    container.style.cursor = spacePan ? "grab" : "crosshair";
   } else {
     map.dragging.enable();
     if (map.doubleClickZoom) map.doubleClickZoom.enable();
-    container.style.cursor = "";
+    container.style.cursor = spacePan ? "grab" : "";
     activePointer = null;
   }
+}
+
+function typingTarget(el) {
+  if (!el || !el.tagName) return false;
+  const tag = el.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  return !!el.isContentEditable;
+}
+
+function panGesture(ev) {
+  if (ev.button === 2) return true;
+  if (ev.button !== 0) return false;
+  return spacePan || !!ev.ctrlKey;
 }
 
 function committedExportBlocked() {
@@ -348,13 +369,55 @@ function refreshVertexPixels() {
   OpenClutterDraw.setVertexPixels(drawSession, pixels);
 }
 
+function releaseDrawPress() {
+  if (activePointer == null) return;
+  OpenClutterDraw.abortPress(drawSession);
+  activePointer = null;
+  if (drawSession.vertices.length) showVertexPreview(drawSession.vertices.map((v) => ({ lat: v.lat, lng: v.lng })));
+  else restoreCommitted();
+}
+
+function beginPan(ev) {
+  panPointer = ev.pointerId;
+  panLast = { x: ev.clientX, y: ev.clientY };
+  try {
+    mapEl.setPointerCapture(ev.pointerId);
+  } catch (e) {
+    /* capture is optional; the container still receives the gesture */
+  }
+  syncDrawMode();
+}
+
+function movePan(ev) {
+  if (!panLast) return;
+  const dx = ev.clientX - panLast.x;
+  const dy = ev.clientY - panLast.y;
+  panLast = { x: ev.clientX, y: ev.clientY };
+  if (!dx && !dy) return;
+  map.panBy(L.point(-dx, -dy), { animate: false });
+}
+
+function endPan() {
+  panPointer = null;
+  panLast = null;
+  refreshVertexPixels();
+  syncDrawMode();
+}
+
 const mapEl = map.getContainer();
 mapEl.addEventListener(
   "pointerdown",
   (ev) => {
-    if (activePointer != null) return;
-    if (ev.button !== 0 || ev.ctrlKey) return;
     if (ev.target.closest && ev.target.closest(".leaflet-control")) return;
+    if (panGesture(ev)) {
+      if (panPointer != null) return;
+      releaseDrawPress();
+      ev.preventDefault();
+      beginPan(ev);
+      return;
+    }
+    if (activePointer != null) return;
+    if (ev.button !== 0) return;
     if (!drawSession.armed) {
       OpenClutterDraw.arm(drawSession);
       syncDrawMode();
@@ -374,6 +437,11 @@ mapEl.addEventListener(
 mapEl.addEventListener(
   "pointermove",
   (ev) => {
+    if (ev.pointerId === panPointer) {
+      ev.preventDefault();
+      movePan(ev);
+      return;
+    }
     if (ev.pointerId !== activePointer) return;
     ev.preventDefault();
     handleDraw(OpenClutterDraw.pointerMove(drawSession, pointFromEvent(ev)));
@@ -393,6 +461,10 @@ function holdMapDblClick() {
 }
 
 mapEl.addEventListener("pointerup", (ev) => {
+  if (ev.pointerId === panPointer) {
+    endPan();
+    return;
+  }
   if (ev.pointerId !== activePointer) return;
   const drawing = drawSession.armed;
   activePointer = null;
@@ -402,6 +474,10 @@ mapEl.addEventListener("pointerup", (ev) => {
 });
 
 mapEl.addEventListener("pointercancel", (ev) => {
+  if (ev.pointerId === panPointer) {
+    endPan();
+    return;
+  }
   if (ev.pointerId !== activePointer) return;
   activePointer = null;
   OpenClutterDraw.abortPress(drawSession);
@@ -409,15 +485,19 @@ mapEl.addEventListener("pointercancel", (ev) => {
   else restoreCommitted();
 });
 
-mapEl.addEventListener("contextmenu", (ev) => {
-  ev.preventDefault();
-  if (!drawSession.armed) return;
-  handleDraw(OpenClutterDraw.finish(drawSession));
-});
+mapEl.addEventListener(
+  "contextmenu",
+  (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  },
+  true
+);
 
 mapEl.addEventListener(
   "dblclick",
   (ev) => {
+    if (ev.button === 2) return;
     if (!drawSession.armed && !blockMapDblClick) return;
     ev.preventDefault();
     ev.stopPropagation();
@@ -429,21 +509,34 @@ mapEl.addEventListener(
 );
 
 window.addEventListener("keydown", (ev) => {
+  if (ev.code === "Space" && !typingTarget(ev.target)) {
+    spacePan = true;
+    ev.preventDefault();
+    if (panPointer == null) releaseDrawPress();
+    syncDrawMode();
+  }
   if (ev.key !== "Escape") return;
   const result = OpenClutterDraw.cancel(drawSession);
   if (result.type !== "cancel") return;
   activePointer = null;
+  if (panPointer != null) endPan();
   ev.preventDefault();
   handleDraw(result);
+});
+
+window.addEventListener("keyup", (ev) => {
+  if (ev.code !== "Space") return;
+  spacePan = false;
+  if (panPointer == null) syncDrawMode();
 });
 
 map.on("zoomend moveend", refreshVertexPixels);
 
 document.getElementById("draw").onclick = () => {
-  enterDrawMode("Click corners, then click the first corner to close. Drag a box. Double-click also finishes.");
+  enterDrawMode("Click corners, then click the first corner to close. Right-drag or hold Space to pan.");
 };
 
-enterDrawMode("Click the map to draw. Drag a box, or click corners and click the first corner to close.");
+enterDrawMode("Click the map to draw. Drag a box, or click corners and click the first corner to close. Right-drag or hold Space to pan.");
 
 if (finishBtn) {
   finishBtn.onclick = () => {
