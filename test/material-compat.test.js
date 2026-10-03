@@ -65,7 +65,8 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.notEqual(heavy.display_color, "#9AA5AC");
     assert.notEqual(heavy.display_color, "#9A4159");
     for (const mat of [heavyStock, lightStock, light, heavy]) {
-      assert.deepEqual(Object.keys(mat), ["name", "rf_properties", "top_height", "display_color"]);
+      assert.equal(mat.transparencyEnabled, true);
+      assert.deepEqual(Object.keys(mat), ["name", "rf_properties", "top_height", "display_color", "transparencyEnabled"]);
       assert.equal(isVegetationOiName(mat.name), true);
       assert.equal(isPoisonedOiName(mat.name), false);
       assert.equal("itu_material_type" in mat, false);
@@ -174,9 +175,13 @@ describe("Hamina OpenIntent material compatibility", () => {
       bareAreas.map((a) => a.area_material)
     );
     assert.ok(both.length > bareAreas.length);
+    for (const a of both.slice(0, bareAreas.length)) {
+      assert.equal("transparencyEnabled" in a.area_material, false);
+    }
     for (const a of both.slice(bareAreas.length)) {
       assert.equal(isVegetationOiName(a.area_material.name), true);
-      assert.deepEqual(Object.keys(a.area_material), ["name", "rf_properties", "top_height", "display_color"]);
+      assert.equal(a.area_material.transparencyEnabled, true);
+      assert.deepEqual(Object.keys(a.area_material), ["name", "rf_properties", "top_height", "display_color", "transparencyEnabled"]);
       const cat = withTrees.openintent.area_materials.find((m) => m.name === a.area_material.name);
       assert.deepEqual(a.area_material, cat);
     }
@@ -297,7 +302,12 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.ok(types.some((t) => t.id === "bldg-m-6_4" && t.topEdge === 6.4));
     assert.ok(types.some((t) => t.id === "bldg-m-18_2" && t.topEdge === 18.2));
     assert.ok(types.some((t) => t.id === "bldg-m-32_0" && t.topEdge === 32));
-    assert.ok(types.some((t) => t.id === "foliage-m-14_2" && t.topEdge === 14.2));
+    assert.ok(types.some((t) => t.id === "foliage-m-14_2" && t.topEdge === 14.2 && t.transparencyEnabled === true && t.name === "Foliage - Heavy 14.2"));
+    for (const t of types) {
+      const id = String(t.id || "");
+      if (id.indexOf("foliage") === 0) assert.equal(t.transparencyEnabled, true, id);
+      if (id.indexOf("bldg") === 0) assert.equal(t.transparencyEnabled, false, id);
+    }
     assert.ok(built.stats.exactBuildingHeights >= 3);
     assert.ok(built.stats.exactFoliageHeights >= 3);
     // Buildings stay on the gold prefix. Tree rings use the custom vegetation objects.
@@ -343,7 +353,19 @@ describe("Hamina OpenIntent material compatibility", () => {
       assert.deepEqual(Object.keys(a).sort(), ["area", "area_material"]);
       const cat = built.openintent.area_materials.find((m) => m.name === a.area_material.name);
       assert.deepEqual(a.area_material, cat);
-      assert.deepEqual(Object.keys(a.area_material), ["name", "rf_properties", "top_height", "display_color"]);
+      if (isVegetationOiName(a.area_material.name)) {
+        assert.equal(a.area_material.transparencyEnabled, true);
+        assert.deepEqual(Object.keys(a.area_material), [
+          "name",
+          "rf_properties",
+          "top_height",
+          "display_color",
+          "transparencyEnabled",
+        ]);
+      } else {
+        assert.equal("transparencyEnabled" in a.area_material, false);
+        assert.deepEqual(Object.keys(a.area_material), ["name", "rf_properties", "top_height", "display_color"]);
+      }
       assert.ok(
         OI_BUILDING_NAMES.includes(a.area_material.name) || isVegetationOiName(a.area_material.name)
       );

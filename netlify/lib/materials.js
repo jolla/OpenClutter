@@ -3,8 +3,13 @@
 /**
  * Buildings keep Hamina's gold outdoor objects (Jerry's export).
  * Canopy uses the stock outdoor foliage objects from the Attenuating Objects
- * picker, with the same four keys as those buildings:
- *   name, rf_properties.attenuation_per_m, top_height, display_color
+ * picker, with the same four keys as those buildings, plus the flag Hamina's
+ * 3D view already reads on an attenuating zone type:
+ *   name, rf_properties.attenuation_per_m, top_height, display_color,
+ *   transparencyEnabled
+ * OpenIntent 2.0.1 has no opacity property. Hamina's client schema strips
+ * unknown keys and does not fail the document for them. transparencyEnabled
+ * is the Transparent-in-3D flag (true on foliage, omitted on buildings).
  * No itu_material_type. bottom_height is omitted on flat sites (Hamina rejected
  * bottom_height: 0 on a gold material as "Invalid OpenIntent format").
  * Bare-earth ski hills, and any surface DEM mesh, set it: bottom height from
@@ -106,6 +111,17 @@ function oiMaterial(name, color, top, dbPerM) {
     rf_properties: { attenuation_per_m: dbPerM },
     top_height: top,
     display_color: color,
+  };
+}
+
+/** Same object as a building material, plus Hamina's see-through flag. Buildings never get this key. */
+function foliageOiMaterial(name, color, top, dbPerM) {
+  return {
+    name,
+    rf_properties: { attenuation_per_m: dbPerM },
+    top_height: top,
+    display_color: color,
+    transparencyEnabled: true,
   };
 }
 
@@ -289,6 +305,7 @@ function liftedFoliageMaterial(material, bottomM) {
     top_height: top,
     bottom_height: bottom,
     display_color: material.display_color,
+    transparencyEnabled: true,
   };
 }
 
@@ -380,8 +397,8 @@ function cloneMaterial(material) {
   return JSON.parse(JSON.stringify(material));
 }
 
-const FOLIAGE_HEAVY = oiMaterial(FOLIAGE_HEAVY_NAME, FOLIAGE_HEAVY_COLOR, OI_FOLIAGE_TOP_M, 2);
-const FOLIAGE_LIGHT = oiMaterial(FOLIAGE_LIGHT_NAME, FOLIAGE_LIGHT_COLOR, OI_FOLIAGE_TOP_M, 1);
+const FOLIAGE_HEAVY = foliageOiMaterial(FOLIAGE_HEAVY_NAME, FOLIAGE_HEAVY_COLOR, OI_FOLIAGE_TOP_M, 2);
+const FOLIAGE_LIGHT = foliageOiMaterial(FOLIAGE_LIGHT_NAME, FOLIAGE_LIGHT_COLOR, OI_FOLIAGE_TOP_M, 1);
 const STOCK_FOLIAGE_BY_NAME = {
   [FOLIAGE_HEAVY_NAME]: FOLIAGE_HEAVY,
   [FOLIAGE_LIGHT_NAME]: FOLIAGE_LIGHT,
@@ -474,7 +491,7 @@ function materialForVegetation(heightM, kind) {
   if (!h || Math.abs(h - OI_FOLIAGE_TOP_M) <= STOCK_HEIGHT_TOL_M) return cloneMaterial(stock);
   const name = (heavy ? FOLIAGE_HEAVY_NAME : FOLIAGE_LIGHT_NAME) + " " + h.toFixed(1);
   if (!isVegetationOiName(name)) return null;
-  return oiMaterial(name, heavy ? FOLIAGE_HEAVY_COLOR : FOLIAGE_LIGHT_COLOR, h, heavy ? 2 : 1);
+  return foliageOiMaterial(name, heavy ? FOLIAGE_HEAVY_COLOR : FOLIAGE_LIGHT_COLOR, h, heavy ? 2 : 1);
 }
 
 /** Exact picker object. kind is "heavy" or "light". */
@@ -505,8 +522,9 @@ function canonicalLiftedFoliage(material) {
   if (!material || typeof material !== "object" || Array.isArray(material)) return null;
   if ("itu_material_type" in material || !("bottom_height" in material)) return null;
   const keys = Object.keys(material);
-  if (keys.length !== 5) return null;
-  if (!keys.every((k) => ["name", "rf_properties", "top_height", "bottom_height", "display_color"].includes(k))) return null;
+  if (keys.length !== 6) return null;
+  if (material.transparencyEnabled !== true) return null;
+  if (!keys.every((k) => ["name", "rf_properties", "top_height", "bottom_height", "display_color", "transparencyEnabled"].includes(k))) return null;
   const parsed = LIFTED_FOLIAGE_NAME.exec(material.name || "");
   if (!parsed) return null;
   const tier = parsed[1] === "Light" ? "light" : "heavy";

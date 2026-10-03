@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.32** on `dev` — Include foliage stays off unless checked, and it still wears the Experimental tag. Canopy is still a traced outline, not a grid square. Foliage attenuating objects set Hamina’s Transparent in 3D flag (`transparencyEnabled: true`) on the OpenIntent material and on the clipboard zone type. Buildings omit that flag and stay opaque. Turn on Transparency effects in Hamina settings to see through the canopy. The badge stays (`dev · v1.1.32`).
+
 **v1.1.31** on `dev` — Include foliage stays off unless checked, and it still wears the Experimental tag. When it is on, canopy is a traced outline of the Meta/WRI canopy height model: connected canopy becomes a simplified polygon that follows the canopy edge, at the measured height, sitting on the terrain under that outline. It is not a grid of squares. US tree-canopy percent can still add a cell only where that cover is denser and a measured height is already known. Canopy stays off roofs, parking, and pavement. If the canopy-height read times out, foliage is left out of the zip and the status says so. Buildings still download. Bright and smooth gray roofs that the vector layers miss are filled in; car-filled lots are not. The badge stays (`dev · v1.1.31`).
 
 **v1.1.30** on `dev` — Include foliage stays off unless checked, and it still wears the Experimental tag. When it is on, canopy extent and height come from the Meta/WRI canopy height model. US tree-canopy percent can add cells only where that cover is denser and a measured height is already known. Canopy is kept off building footprints and pavement, so it does not sit on roofs or parking. Bottom height from floor is the terrain under the footprint. Top height from floor is that bottom plus the measured canopy height. If the canopy-height read times out, foliage is left out of the zip and the status says so. Buildings still download. The badge stays (`dev · v1.1.30`).
@@ -37,7 +39,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.31`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, choose **Sloped** (default, one ramp or pad per cell) or **Raised layers** (stacked plates, at most 400 floors). The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The style radios hide when Terrain is off, and both the checkbox and the radios stay hidden off this host.
+- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.32`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, choose **Sloped** (default, one ramp or pad per cell) or **Raised layers** (stacked plates, at most 400 floors). The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The style radios hide when Terrain is off, and both the checkbox and the radios stay hidden off this host.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 
@@ -57,7 +59,7 @@ One bbox drives everything:
 
 ### Materials that import
 
-Every `area_material` is an object with exactly these keys: `name`, `rf_properties.attenuation_per_m`, `top_height`, `display_color`. No `itu_material_type`, no `bottom_height`. The object deep-equals its catalog entry (a stock name with a different `top_height` is rejected). Buildings are always the gold prefix. A vegetation material is added only when an area uses it, so a buildings-only zip stays the four gold objects.
+Building `area_material` objects keep exactly these keys: `name`, `rf_properties.attenuation_per_m`, `top_height`, `display_color`. Foliage adds `transparencyEnabled: true`, the flag Hamina already uses for Transparent in 3D on an attenuating zone type. Buildings omit that key. No `itu_material_type`, no `bottom_height` on a flat site. The object deep-equals its catalog entry (a stock name with a different `top_height` is rejected). Buildings are always the gold prefix. A vegetation material is added only when an area uses it, so a buildings-only zip stays the four gold objects. Clipboard foliage types set the same `transparencyEnabled` flag; building types leave it false. Hamina only draws that transparency when Transparency effects are on in Settings.
 
 | Name | Color | Top height | dB/m | Used for |
 |---|---|---|---|---|

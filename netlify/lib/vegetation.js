@@ -391,8 +391,16 @@ function clipboardForCanopy(material) {
   if (material.name === "Foliage - Heavy") return { typeId: "foliage-heavy" };
   if (material.name === "Foliage - Light") return { typeId: "foliage-light" };
   const measured = measuredFoliageMaterial(material.top_height);
-  if (!measured) return null;
-  return { typeId: measured.typeId, clipType: measured.clipType };
+  if (!measured || !measured.clipType) return null;
+  return {
+    typeId: measured.typeId,
+    clipType: Object.assign({}, measured.clipType, {
+      name: material.name,
+      color: material.display_color,
+      attenuationDbPerMeter: material.rf_properties.attenuation_per_m,
+      transparencyEnabled: true,
+    }),
+  };
 }
 
 /**
