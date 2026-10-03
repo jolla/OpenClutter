@@ -5,7 +5,8 @@
  * 3 or more corners closes by itself when a click lands on the first
  * corner or returns near the start — that click is the finish, not a
  * separate Finish shape press. Double-click is an optional shortcut.
- * finish() remains optional (a Finish control, or a right-click). A click
+ * finish() remains optional (the Finish shape control, or a double-click).
+ * A right-click does not finish the ring. A click
  * that returns to the start with only two corners does not close a line
  * and does not drop a duplicate point on the start. finish() with fewer
  * than 3 vertices discards the ring. prepareExport() commits an open ring
@@ -164,8 +165,8 @@
 
   /**
    * Commit a ring of 3 or more corners. Fewer than 3 discards the ring.
-   * Optional path: Finish shape, double-click, or a right-click. The
-   * normal close is a click that returns to the first corner.
+   * Optional path: Finish shape or double-click. A right-click does not
+   * finish. The normal close is a click that returns to the first corner.
    */
   function finish(session) {
     if (!session.armed || session.phase !== "polygon" || session.down) return { type: "ignore" };
