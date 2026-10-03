@@ -1186,7 +1186,7 @@ describe("main UI: import buildings, optional foliage", () => {
     const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
     const app = fs.readFileSync(path.join(root, "app.js"), "utf8");
     assert.match(html, /id="draw-hint"/);
-    assert.match(html, /Click the map to draw\. Drag a box, or click corners and click the first corner to close\. Double-click also finishes\. Esc cancels\./);
+    assert.match(html, /Click the map to draw\. Drag a box, or click corners and click the first corner to close\. Right-drag or hold Space to pan\. Double-click also finishes\. Esc cancels\./);
     assert.match(html, /id="finish-shape"[^>]*hidden/);
     assert.match(html, />Finish shape</);
     assert.match(app, /Click the first corner to close\. Double-click also finishes/);
@@ -1205,6 +1205,13 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /formatBboxFeet/);
     assert.match(app, /formatPolygonSqFt/);
     assert.match(app, /contextmenu/);
+    const menuAt = app.indexOf('"contextmenu"');
+    const menuBody = app.slice(menuAt, menuAt + 160);
+    assert.match(menuBody, /preventDefault/);
+    assert.equal(/finish\(/.test(menuBody), false);
+    assert.match(app, /map\.panBy/);
+    assert.match(app, /ev\.code === "Space"/);
+    assert.match(app, /ev\.button === 2/);
     assert.match(app, /Escape/);
     assert.match(app, /commit-box/);
     assert.match(app, /commit-polygon/);
