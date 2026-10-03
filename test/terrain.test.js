@@ -51,6 +51,8 @@ const {
   siteWarrantsLift,
   demUnderFootprint,
   slopeTopUnderRing,
+  splitRingByFloor,
+  SPLIT_FLOOR_M,
   pasteableQuad,
   slopedRing,
 } = require("../netlify/lib/terrain");
@@ -2357,5 +2359,224 @@ describe("Finland paste quads are square ground meters", () => {
     const [cols, rows] = squareMeterAxes(frame.widthM, frame.lengthM, 1, 500);
     assert.ok(Math.max(cols, rows) <= 500);
     assert.ok(Math.abs(frame.widthM / cols - frame.lengthM / rows) / (frame.widthM / cols) < 0.08);
+  });
+});
+
+function pastedFloorAt(terrain, x, y) {
+  let floor = 0;
+  const zones = (terrain.clipboard.slopedFloors || []).concat(terrain.clipboard.raisedFloorZones || []);
+  for (let i = 0; i < zones.length; i++) {
+    const zone = zones[i];
+    const quad = zone.area.coordinates[0];
+    let inside = true;
+    const n = quad.length >= 4 && quad[0][0] === quad[quad.length - 1][0] ? quad.length - 1 : quad.length;
+    const m = Math.min(n, 4);
+    for (let k = 0; k < m; k++) {
+      const a = quad[k];
+      const b = quad[(k + 1) % m];
+      const cross = (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
+      const tol = 0.02 * Math.max(1, Math.hypot(b[0] - a[0], b[1] - a[1]));
+      if (cross < -tol) {
+        inside = false;
+        break;
+      }
+    }
+    if (!inside) continue;
+    let z;
+    if (quad[0].length >= 3) {
+      const z0 = quad[0][2];
+      const z1 = quad[2][2];
+      const horizontal = Math.abs(quad[0][1] - quad[1][1]) <= 0.002;
+      let t = 0;
+      if (horizontal) {
+        const y0 = quad[0][1];
+        const y1 = quad[2][1];
+        t = y1 === y0 ? 0 : (y - y0) / (y1 - y0);
+      } else {
+        const x0 = quad[0][0];
+        const x1 = quad[2][0];
+        t = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
+      }
+      if (t < 0) t = 0;
+      else if (t > 1) t = 1;
+      z = z0 + t * (z1 - z0);
+    } else z = Number(zone.height) || 0;
+    if (z > floor) floor = z;
+  }
+  return floor;
+}
+
+function maxPastedFloor(terrain, clipRing) {
+  const n =
+    clipRing.length > 1 &&
+    clipRing[0][0] === clipRing[clipRing.length - 1][0] &&
+    clipRing[0][1] === clipRing[clipRing.length - 1][1]
+      ? clipRing.length - 1
+      : clipRing.length;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < n; i++) {
+    minX = Math.min(minX, clipRing[i][0]);
+    maxX = Math.max(maxX, clipRing[i][0]);
+    minY = Math.min(minY, clipRing[i][1]);
+    maxY = Math.max(maxY, clipRing[i][1]);
+  }
+  function inside(x, y) {
+    let inn = false;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const xi = clipRing[i][0];
+      const yi = clipRing[i][1];
+      const xj = clipRing[j][0];
+      const yj = clipRing[j][1];
+      const dx = xj - xi;
+      const dy = yj - yi;
+      const cross = (x - xi) * dy - (y - yi) * dx;
+      if (Math.abs(cross) <= 0.05 * Math.max(1, Math.hypot(dx, dy))) {
+        const dot = (x - xi) * dx + (y - yi) * dy;
+        if (dot >= -0.05 && dot <= dx * dx + dy * dy + 0.05) return true;
+      }
+      const inter = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-20) + xi;
+      if (inter) inn = !inn;
+    }
+    return inn;
+  }
+  let max = 0;
+  const N = 28;
+  for (let r = 0; r <= N; r++) {
+    for (let c = 0; c <= N; c++) {
+      const x = minX + (c / N) * (maxX - minX);
+      const y = minY + (r / N) * (maxY - minY);
+      if (!inside(x, y)) continue;
+      const z = pastedFloorAt(terrain, x, y);
+      if (z > max) max = z;
+    }
+  }
+  return max;
+}
+
+describe("buildings stay above the pasted slope", () => {
+  const frame = geoFrame({
+    west: 27.18,
+    south: 60.565,
+    east: 27.2,
+    north: 60.578,
+    name: "Hamina",
+  });
+
+  function checkerSamples() {
+    const samples = [];
+    const n = 10;
+    for (let r = 0; r < n; r++) {
+      for (let c = 0; c < n; c++) {
+        const lon = frame.west + ((c + 0.5) / n) * (frame.east - frame.west);
+        const lat = frame.south + ((r + 0.5) / n) * (frame.north - frame.south);
+        const bump = (r + c) % 2 === 0 ? 18 : 0;
+        const rise = ((lat - frame.south) / (frame.north - frame.south)) * 30;
+        samples.push({ lon, lat, z: 4 + bump + rise });
+      }
+    }
+    return samples;
+  }
+
+  function assertNothingBuried(terrain, built) {
+    const types = built.clipboard.attenuatingZoneTypes;
+    const zones = built.clipboard.attenuatingZones.filter((z) => String(z.typeId).indexOf("bldg") === 0);
+    assert.ok(zones.length >= 1);
+    for (const zone of zones) {
+      const type = types.find((t) => t.id === zone.typeId);
+      const bottom = type && type.bottomEdge != null ? type.bottomEdge : 0;
+      const floor = maxPastedFloor(terrain, zone.area.coordinates[0]);
+      assert.ok(
+        bottom + 0.12 >= floor,
+        type.id + " bottom " + bottom + " is under floor " + floor
+      );
+      if (type && type.bottomEdge != null) {
+        assert.ok(type.topEdge > type.bottomEdge);
+      }
+    }
+  }
+
+  for (const style of ["sloped", "raised"]) {
+    it("keeps every building on or above a " + style + " floor, including shared cell edges", () => {
+      const terrain = terrainFromSamples(checkerSamples(), frame, {
+        kind: "surface",
+        terrainStyle: style,
+        terrainResolution: "default",
+      });
+      const features = [];
+      const steps = 6;
+      for (let r = 0; r < steps; r++) {
+        for (let c = 0; c < steps; c++) {
+          const lon = frame.west + ((c + 0.2) / steps) * (frame.east - frame.west) * 0.85;
+          const lat = frame.south + ((r + 0.2) / steps) * (frame.north - frame.south) * 0.85;
+          const dLon = (frame.east - frame.west) * 0.08;
+          const dLat = (frame.north - frame.south) * 0.08;
+          features.push(squareFeature(lon, lat, lon + dLon, lat + dLat, { height: 8.3 }));
+        }
+      }
+      const built = buildClutter({
+        frame,
+        footprintsGeojson: { features },
+        treePoints: [],
+        name: "Hamina",
+        imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+        terrain,
+      });
+      // A box that climbs more than SPLIT_FLOOR_M becomes more than one object.
+      // The rest stay one. Nothing in either case is left under the floor.
+      assert.ok(built.stats.buildings >= features.length);
+      assert.ok(built.stats.buildings < features.length * 2, "buildings " + built.stats.buildings);
+      assertNothingBuried(terrain, built);
+    });
+  }
+
+  it("splits a footprint that climbs a large slope and keeps each piece above the floor", () => {
+    const terrain = terrainFromSamples(checkerSamples(), frame, {
+      kind: "surface",
+      terrainResolution: "default",
+    });
+    const span = frame.north - frame.south;
+    const spanLon = frame.east - frame.west;
+    const long = squareFeature(
+      frame.west + spanLon * 0.42,
+      frame.south + span * 0.08,
+      frame.west + spanLon * 0.5,
+      frame.south + span * 0.92,
+      { height: 9 }
+    );
+    const smallLon = frame.west + spanLon * 0.7;
+    const smallLat = frame.south + span * 0.2;
+    const small = squareFeature(
+      smallLon,
+      smallLat,
+      smallLon + spanLon * 0.04,
+      smallLat + span * 0.03,
+      { height: 6.4 }
+    );
+    const extent = slopeTopUnderRing(terrain, long.geometry.coordinates[0]);
+    assert.ok(extent > SPLIT_FLOOR_M, "long building relief " + extent);
+    const parts = splitRingByFloor(terrain, long.geometry.coordinates[0]);
+    assert.ok(parts.length >= 2, "pieces " + parts.length);
+    const smallParts = splitRingByFloor(terrain, small.geometry.coordinates[0]);
+    assert.equal(smallParts.length, 1);
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [long, small] },
+      treePoints: [],
+      name: "Hamina",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain,
+    });
+    assert.ok(built.stats.buildings >= 3, "buildings " + built.stats.buildings);
+    assertNothingBuried(terrain, built);
+    const tops = new Set(
+      built.clipboard.attenuatingZones.map((z) => {
+        const type = built.clipboard.attenuatingZoneTypes.find((t) => t.id === z.typeId);
+        return type && type.bottomEdge;
+      })
+    );
+    assert.ok(tops.size >= 2, "bottoms " + [...tops].join(","));
   });
 });
