@@ -43,6 +43,35 @@ describe("imagery roof mask", () => {
     assert.equal(found.features[0].properties.source, "imagery-roof");
   });
 
+  it("fills a mid-size bright roof and a smooth gray membrane, not a parking lot", () => {
+    const mid = paint(200, 200, (x, y) => {
+      if (x >= 20 && x <= 42 && y >= 30 && y <= 52) return [236, 236, 234];
+      if (x >= 90 && x <= 140 && y >= 90 && y <= 130) return [154, 152, 148];
+      if (x >= 150 && x <= 190 && y >= 20 && y <= 70) {
+        const n = ((x * 17 + y * 13) % 40);
+        return [100 + n, 100 + (n % 17), 98 + (n % 11)];
+      }
+      return [(x * 3) % 40, 70 + (y % 17), 30];
+    });
+    const bright = imageryRoofFeatures(mid, frame, []);
+    assert.equal(bright.features.length, 1, "bright mid-size roof");
+    const membrane = imageryRoofFeatures(mid, frame, bright.features, "membrane");
+    assert.equal(membrane.features.length, 1, "smooth gray membrane");
+    assert.equal(
+      membrane.features.concat(bright.features).some((f) => {
+        const ring = f.geometry.coordinates[0];
+        const lon = frame.west + (170 / 200) * (frame.east - frame.west);
+        const lat = frame.north - (45 / 200) * (frame.north - frame.south);
+        return pointInRing([lon, lat], ring);
+      }),
+      false,
+      "textured parking is not a footprint"
+    );
+    const dark = paint(200, 200, (x, y) => (x >= 40 && x <= 110 && y >= 40 && y <= 110 ? [48, 50, 46] : [20, 80, 30]));
+    assert.equal(imageryRoofFeatures(dark, frame, []).features.length, 0);
+    assert.equal(imageryRoofFeatures(dark, frame, [], "membrane").features.length, 0);
+  });
+
   it("does not emit a second polygon when a footprint already covers the roof", () => {
     const west = frame.west + (40 / 200) * (frame.east - frame.west);
     const east = frame.west + (130 / 200) * (frame.east - frame.west);

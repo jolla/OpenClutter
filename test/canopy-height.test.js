@@ -30,6 +30,20 @@ function pointInRing(pt, ring) {
   return inside;
 }
 
+function isAxisRect(ring) {
+  const open =
+    ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+      ? ring.slice(0, -1)
+      : ring.slice();
+  if (open.length !== 4) return false;
+  for (let i = 0; i < 4; i++) {
+    const a = open[i];
+    const b = open[(i + 1) % 4];
+    if (Math.abs(a[0] - b[0]) > 1e-6 && Math.abs(a[1] - b[1]) > 1e-6) return false;
+  }
+  return true;
+}
+
 function bboxAspect(ring) {
   let minX = Infinity;
   let maxX = -Infinity;
@@ -174,7 +188,7 @@ describe("canopy height grid", () => {
       name: "Crowns",
     });
     const pairs = treePairsFromPoints([], frame, [], null, { chmGrid: g.grid });
-    assert.equal(pairs.foliageGeometry, "chm-crown");
+    assert.equal(pairs.foliageGeometry, "chm-contour");
     assert.equal(pairs.oiAreas.some((a) => a.shape === "circle" || a.kind === "trunk"), false);
     assert.equal(pairs.overlayPoints.length, 0);
     const heavy = pairs.oiAreas.filter((a) => a.material.top_height >= 14);
@@ -219,7 +233,7 @@ describe("canopy height grid", () => {
       });
     }
     const filtered = treePairsFromPoints([], frame, [], null, { chmGrid: g.grid, canopyHits: hits });
-    assert.equal(filtered.foliageGeometry, "chm-crown");
+    assert.equal(filtered.foliageGeometry, "chm-contour");
     assert.equal(
       filtered.oiAreas.some((a) => a.material.top_height === 7),
       false,
@@ -228,6 +242,7 @@ describe("canopy height grid", () => {
     const ell = filtered.oiAreas.find((a) => a.material.top_height === 18);
     assert.ok(ell, "the L stays");
     assert.ok(ell.ringPx.length >= 6);
+    assert.equal(isAxisRect(ell.ringPx), false, "the L is a traced outline, not a grid box");
     const px = ell.ringPx;
     let minX = Infinity;
     let maxX = -Infinity;
@@ -281,7 +296,7 @@ describe("canopy height grid", () => {
     paintPeak(values, w, x1, y1, 2.2, 1.2, 15);
     paintPeak(values, w, x2, y2, 1.2, 2.4, 8);
     const both = treePairsFromPoints([], frame, [], null, { canopyHits: hits, chmGrid: grid, heightSample: () => 14 });
-    assert.equal(both.foliageGeometry, "chm-crown");
+    assert.equal(both.foliageGeometry, "chm-contour");
     assert.ok(both.oiAreas.length >= 2, "two crowns, not one NLCD polygon");
     const tops = both.oiAreas.map((a) => a.material.top_height).sort((a, b) => a - b);
     assert.ok(tops.includes(15));
@@ -289,22 +304,65 @@ describe("canopy height grid", () => {
     assert.equal(both.oiAreas.every((a) => a.shape === "polygon"), true);
   });
 
-  it("splits Oak Creek and Long Meadow CHM into many measured crowns", () => {
+  it("traces Oak Creek and Long Meadow canopy as simplified outlines, not grid squares", () => {
     for (const id of ["oak-creek-commercial", "long-meadow"]) {
       const grid = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", id, "chm-grid.json"), "utf8"));
       const crowns = crownsFromChm(grid);
-      assert.ok(crowns.length >= 80, id + " crowns " + crowns.length);
+      assert.ok(crowns.length >= 40, id + " outlines " + crowns.length);
       const heights = new Set(crowns.map((c) => c.heightM));
       assert.ok(heights.size >= 8, id + " heights " + heights.size);
-      assert.ok(crowns.every((c) => c.heightM >= 4 && c.heightM <= 40));
-      assert.ok(crowns.every((c) => c.areaM2 < 800 && c.ringLonLat.length >= 4 && c.ringLonLat.length <= 40));
-      const areas = crowns.map((c) => c.areaM2).sort((a, b) => a - b);
-      assert.ok(areas[areas.length >> 1] < 400, id + " median area is a crown, not a woods blob");
+      assert.ok(crowns.every((c) => c.heightM >= 3 && c.heightM <= 40));
+      assert.ok(crowns.every((c) => c.ringLonLat.length >= 4 && c.ringLonLat.length <= 40));
+      const traced = crowns.filter((c) => !isAxisRect(c.ringLonLat));
+      assert.ok(traced.length >= 8, id + " non-rectangular outlines " + traced.length);
       assert.ok(
-        crowns.some((c) => bboxAspect(c.ringLonLat) > 1.4),
-        id + " includes a non-circular outline"
+        traced.some((c) => c.ringLonLat.length >= 6),
+        id + " keeps a canopy edge with a bend"
       );
+      const areas = crowns.map((c) => c.areaM2).sort((a, b) => b - a);
+      assert.ok(areas[0] > 900, id + " keeps canopy the old per-crown cap dropped, largest " + areas[0]);
     }
+  });
+
+  it("keeps a diagonal canopy as one non-rectangular outline", () => {
+    const g = syntheticChm();
+    for (let i = 0; i < 7; i++) {
+      g.values[(10 + i) * g.w + (8 + i)] = 13;
+      g.values[(10 + i) * g.w + (9 + i)] = 11;
+      g.values[(11 + i) * g.w + (8 + i)] = 9;
+    }
+    const crowns = crownsFromChm(g.grid);
+    assert.equal(crowns.length, 1);
+    assert.equal(crowns[0].heightM, 13);
+    assert.equal(isAxisRect(crowns[0].ringLonLat), false);
+    assert.ok(crowns[0].ringLonLat.length >= 6);
+    assert.ok(crowns[0].areaM2 > 200, "the whole band is kept, area " + crowns[0].areaM2);
+  });
+
+  it("keeps canopy in the notch of a building box when it is not on the roof", () => {
+    const g = syntheticChm();
+    paintPeak(g.values, g.w, 30, 20, 2.2, 1.6, 14);
+    const frame = frameForGrid(g.grid, "Notch");
+    const [lon, lat] = cellLonLat(g.grid, 30, 20);
+    const [x, y] = llToPx(lon, lat, frame);
+    const ring = [
+      [x - 80, y + 70],
+      [x + 70, y + 70],
+      [x + 70, y + 28],
+      [x - 28, y + 28],
+      [x - 28, y - 70],
+      [x - 80, y - 70],
+      [x - 80, y + 70],
+    ];
+    const pairs = treePairsFromPoints([], frame, [
+      { minX: x - 80, minY: y - 70, maxX: x + 70, maxY: y + 70 },
+    ], null, {
+      chmGrid: g.grid,
+      buildingRings: [ring],
+    });
+    const kept = pairs.oiAreas.find((a) => a.material && a.material.top_height === 14);
+    assert.ok(kept, "canopy in the notch is exported");
+    assert.equal(pointInRing([x, y], kept.ringPx), true);
   });
 
   it("lifts a CHM crown by the slope under it", () => {
@@ -340,7 +398,7 @@ describe("canopy height grid", () => {
       includeFoliage: true,
       treesSource: "nlcd-canopy",
     });
-    assert.equal(built.stats.foliageGeometry, "chm-crown");
+    assert.equal(built.stats.foliageGeometry, "chm-contour");
     assert.equal(built.stats.includeFoliage, true);
     assert.ok(built.stats.foliageLifted >= 1);
     const area = built.openintent.floorplans[0].attenuation_areas.find((a) =>

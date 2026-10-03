@@ -7,29 +7,24 @@
  * ~200 MB tile is not downloaded. NLCD percent can add a cell only where
  * cover is denser and a measured height is already on the grid. It does not
  * invent a height. A sample ≥ 2 m is a measured top. 0 / nodata is not.
- * crownsFromChm turns the same grid into individual crown outlines: each
- * ring is the CHM footprint of one peaked (or compact) canopy, at the
- * measured top height. It does not emit circles, trunks, or a point scatter.
+ * crownsFromChm traces each connected canopy as one simplified polygon: the
+ * ring follows the CHM edge, and the height is the measured top inside it.
+ * It does not emit grid squares, circles, trunks, or a point scatter.
  */
 
 const { quadkeysForBbox } = require("./ms-global");
 
 const CHM_ZOOM = 10;
 const MAX_TILES = 4;
-/** Long side of the resampled window. ~3–5 m on a commercial block, still a bbox read. */
-const MAX_DIM = 320;
-/** Pixels below this are ground, not a crown. */
+/** Long side of the resampled window. Cells stay near 2 m so a crown has an edge. */
+const MAX_DIM = 720;
+const TARGET_CELL_M = 2.2;
+const MIN_CELL_M = 1.4;
+/** Pixels below this are ground, not canopy. */
 const CROWN_MIN_H = 3;
-/** A seed must stand at least this far above the canopy around it. */
-const CROWN_PROM_M = 1;
-const CROWN_RADIUS_M = 14;
 const CROWN_MIN_AREA_M2 = 12;
-const CROWN_MAX_AREA_M2 = 900;
-/** Isolated clumps with no internal peak, small enough to be one crown. */
-const CROWN_CLUMP_M2 = 650;
 const CROWN_MAX_VERTS = 32;
-const CROWN_RELATIVE = 0.42;
-/** Keep the tallest crowns inside the OpenIntent area budget. */
+/** Safety cap. Export trims further by keeping the largest outlines. */
 const CROWN_CAP = 800;
 
 function chmUrl(quadkey) {
@@ -48,14 +43,18 @@ function mercator(lon, lat) {
 }
 
 function gridSize(frame) {
-  const dLon = Math.abs(frame.east - frame.west) || 1e-6;
-  const dLat = Math.abs(frame.north - frame.south) || 1e-6;
-  const aspect = dLat / dLon;
-  let width = MAX_DIM;
-  let height = Math.max(8, Math.round(MAX_DIM * aspect));
-  if (height > MAX_DIM) {
-    height = MAX_DIM;
-    width = Math.max(8, Math.round(MAX_DIM / aspect));
+  const lat = ((+frame.south) + (+frame.north)) / 2;
+  const widthM = Math.abs(+frame.east - +frame.west) * 111320 * Math.cos((lat * Math.PI) / 180);
+  const heightM = Math.abs(+frame.north - +frame.south) * 110540;
+  let width = Math.max(8, Math.round((widthM || 1) / TARGET_CELL_M));
+  let height = Math.max(8, Math.round((heightM || 1) / TARGET_CELL_M));
+  const over = Math.max(width / MAX_DIM, height / MAX_DIM, 1);
+  width = Math.max(8, Math.round(width / over));
+  height = Math.max(8, Math.round(height / over));
+  const cell = widthM / width;
+  if (cell > 0 && cell < MIN_CELL_M) {
+    width = Math.max(8, Math.round(widthM / MIN_CELL_M));
+    height = Math.max(8, Math.round(heightM / MIN_CELL_M));
   }
   return { width, height };
 }
@@ -317,22 +316,59 @@ function douglas(pts, eps) {
   return out;
 }
 
-function simplifyOpen(points, maxVerts) {
-  let cur = points;
-  let eps = 0.35;
-  while (cur.length > maxVerts && eps < 8) {
-    const next = douglas(cur, eps);
-    if (next.length >= cur.length) break;
+function isAxisRect(open) {
+  if (!open || open.length !== 4) return false;
+  for (let i = 0; i < 4; i++) {
+    const a = open[i];
+    const b = open[(i + 1) % 4];
+    const dx = Math.abs(a[0] - b[0]);
+    const dy = Math.abs(a[1] - b[1]);
+    if (dx > 1e-6 && dy > 1e-6) return false;
+  }
+  return true;
+}
+
+function dpClosed(open, eps) {
+  if (open.length < 4) return open.slice();
+  let start = 0;
+  for (let i = 1; i < open.length; i++) {
+    if (open[i][0] < open[start][0] || (open[i][0] === open[start][0] && open[i][1] < open[start][1])) start = i;
+  }
+  const rot = open.slice(start).concat(open.slice(0, start));
+  const simple = douglas(rot.concat([rot[0]]), eps);
+  const out = simple.length > 1 ? simple.slice(0, -1) : simple;
+  return out.length >= 3 ? out : open.slice();
+}
+
+/**
+ * Drop pixel stair-steps. Stop before an irregular canopy becomes a rectangle,
+ * and before the vertex cap turns a traced edge into a box.
+ */
+function simplifyContour(open, maxVerts) {
+  if (!open || open.length < 3) return open ? open.slice() : [];
+  const irregular = !isAxisRect(open);
+  let cur = open.slice();
+  let eps = 0.62;
+  while (eps < 8) {
+    const next = dpClosed(cur, eps);
+    if (next.length < 3) break;
+    if (irregular && isAxisRect(next)) break;
+    if (next.length >= cur.length) {
+      if (cur.length <= maxVerts) break;
+      eps *= 1.5;
+      continue;
+    }
     cur = next;
-    eps *= 1.45;
+    if (cur.length <= maxVerts) break;
+    eps *= 1.4;
   }
   if (cur.length > maxVerts) {
     const step = Math.ceil(cur.length / maxVerts);
-    const next = [];
-    for (let i = 0; i < cur.length; i += step) next.push(cur[i]);
-    cur = next.length >= 3 ? next : cur.slice(0, maxVerts);
+    const thin = [];
+    for (let i = 0; i < cur.length && thin.length < maxVerts; i += step) thin.push(cur[i]);
+    if (thin.length >= 3 && !(irregular && isAxisRect(thin))) cur = thin;
   }
-  return cur;
+  return cur.length >= 3 ? cur : open.slice();
 }
 
 /**
@@ -430,10 +466,9 @@ function flood(w, h, seedX, seedY, accept) {
   return pixels;
 }
 
-function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH, maxArea) {
+function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH) {
   const area = pixels.length * mPerX * mPerY;
-  const cap = maxArea > 0 ? maxArea : CROWN_MAX_AREA_M2;
-  if (!(area >= CROWN_MIN_AREA_M2) || area > cap) return null;
+  if (!(area >= CROWN_MIN_AREA_M2)) return null;
   let maxH = 0;
   let px = pixels[0][0];
   let py = pixels[0][1];
@@ -451,8 +486,7 @@ function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH, maxArea) 
   if (heightM < 5 && pixels.length < 2) return null;
   let ring = tracePixels(pixels);
   if (!ring) return null;
-  let open = dropCollinearPx(ring);
-  if (open.length > CROWN_MAX_VERTS) open = simplifyOpen(open, CROWN_MAX_VERTS);
+  let open = simplifyContour(dropCollinearPx(ring), CROWN_MAX_VERTS);
   if (open.length < 3) return null;
   const dLon = +grid.east - +grid.west;
   const dLat = +grid.north - +grid.south;
@@ -471,10 +505,10 @@ function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH, maxArea) 
 }
 
 /**
- * Individual canopy crowns from a Meta CHM window.
- * A local height peak becomes one crown whose ring is the CHM cells that
- * belong to that peak (real outline, measured top). A compact clump with no
- * internal peak is one outline. A flat woods is not sliced into a point grid.
+ * Connected canopy from a Meta CHM window.
+ * Each component above the height floor is one simplified polygon. The ring
+ * is the traced CHM edge, not a grid square and not a peak sliced out of a
+ * tree line. Height is the measured top inside that outline.
  * @returns {{ringLonLat:number[][], heightM:number, peakLon:number, peakLat:number, areaM2:number}[]}
  */
 function crownsFromChm(grid) {
@@ -485,147 +519,24 @@ function crownsFromChm(grid) {
   const { mPerX, mPerY } = gridMeters(grid);
   if (!(mPerX >= 0.5) || !(mPerY >= 0.5) || mPerX > 30 || mPerY > 30) return [];
   const at = (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? 0 : values[y * w + x] || 0);
-  const rad = Math.max(1, Math.min(4, Math.round(8 / Math.min(mPerX, mPerY))));
-  const peaks = [];
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const v = at(x, y);
-      if (v < 4) continue;
-      let taller = false;
-      let sum = 0;
-      let n = 0;
-      for (let dy = -rad; dy <= rad; dy++) {
-        for (let dx = -rad; dx <= rad; dx++) {
-          if (!dx && !dy) continue;
-          const dist = Math.hypot(dx * mPerX, dy * mPerY);
-          if (dist > 9) continue;
-          const o = at(x + dx, y + dy);
-          if (o > v) taller = true;
-          // Ground beside a woods edge is not a saddle. Compare to canopy only.
-          if (o >= CROWN_MIN_H) {
-            sum += o;
-            n++;
-          }
-        }
-      }
-      if (taller) continue;
-      if (!n) {
-        if (v >= 5) peaks.push({ x, y, h: v, prom: v });
-        continue;
-      }
-      const prom = v - sum / n;
-      if (prom < CROWN_PROM_M) continue;
-      peaks.push({ x, y, h: v, prom });
-    }
-  }
-  peaks.sort((a, b) => b.h - a.h || b.prom - a.prom || a.y - b.y || a.x - b.x);
-  const kept = [];
-  const minDist = 7.5;
-  for (let i = 0; i < peaks.length; i++) {
-    const p = peaks[i];
-    let close = false;
-    for (let k = 0; k < kept.length; k++) {
-      const dx = (p.x - kept[k].x) * mPerX;
-      const dy = (p.y - kept[k].y) * mPerY;
-      if (dx * dx + dy * dy < minDist * minDist) {
-        close = true;
-        break;
-      }
-    }
-    if (!close) kept.push(p);
-  }
-
-  const cellM = CROWN_RADIUS_M;
-  const buckets = new Map();
-  const bkey = (x, y) => Math.floor((x * mPerX) / cellM) + ":" + Math.floor((y * mPerY) / cellM);
-  for (let i = 0; i < kept.length; i++) {
-    const k = bkey(kept[i].x, kept[i].y);
-    if (!buckets.has(k)) buckets.set(k, []);
-    buckets.get(k).push(i);
-  }
-  const labels = new Int32Array(w * h);
-  labels.fill(-1);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const v = at(x, y);
-      if (v < CROWN_MIN_H) continue;
-      const bx = Math.floor((x * mPerX) / cellM);
-      const by = Math.floor((y * mPerY) / cellM);
-      let best = -1;
-      let bestD = Infinity;
-      for (let oy = -1; oy <= 1; oy++) {
-        for (let ox = -1; ox <= 1; ox++) {
-          const list = buckets.get(bx + ox + ":" + (by + oy));
-          if (!list) continue;
-          for (let n = 0; n < list.length; n++) {
-            const i = list[n];
-            const p = kept[i];
-            const dx = (x - p.x) * mPerX;
-            const dy = (y - p.y) * mPerY;
-            const d2 = dx * dx + dy * dy;
-            if (d2 > CROWN_RADIUS_M * CROWN_RADIUS_M) continue;
-            if (v + 0.15 < Math.max(CROWN_MIN_H, p.h * CROWN_RELATIVE)) continue;
-            if (d2 < bestD) {
-              bestD = d2;
-              best = i;
-            }
-          }
-        }
-      }
-      if (best >= 0) labels[y * w + x] = best;
-    }
-  }
-
-  const crowns = [];
-  for (let i = 0; i < kept.length; i++) {
-    const pixels = flood(w, h, kept[i].x, kept[i].y, (x, y) => labels[y * w + x] === i);
-    if (!pixels) continue;
-    const crown = crownFromPixels(pixels, values, w, grid, mPerX, mPerY, kept[i].h);
-    if (crown) crowns.push(crown);
-  }
-
   const seen = new Uint8Array(w * h);
-  const clumps = [];
+  const crowns = [];
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const idx = y * w + x;
-      if (seen[idx] || labels[idx] >= 0 || at(x, y) < 4) continue;
+      if (seen[idx] || at(x, y) < CROWN_MIN_H) continue;
       const pixels = flood(w, h, x, y, (px, py) => {
         const id = py * w + px;
-        // Pixels already given to a peaked crown stay with that crown, including
-        // diagonal orphans. They are not a second outline.
-        return labels[id] < 0 && !seen[id] && at(px, py) >= 4;
+        return !seen[id] && at(px, py) >= CROWN_MIN_H;
       });
       if (!pixels) continue;
-      for (let p = 0; p < pixels.length; p++) seen[pixels[p][1] * w + pixels[p][0]] = 1;
-      const area = pixels.length * mPerX * mPerY;
-      const limit = crowns.length ? CROWN_CLUMP_M2 : 200000;
-      if (area < CROWN_MIN_AREA_M2 || area > limit) continue;
-      let minX = w;
-      let minY = h;
-      let maxX = 0;
-      let maxY = 0;
-      for (let p = 0; p < pixels.length; p++) {
-        if (pixels[p][0] < minX) minX = pixels[p][0];
-        if (pixels[p][1] < minY) minY = pixels[p][1];
-        if (pixels[p][0] > maxX) maxX = pixels[p][0];
-        if (pixels[p][1] > maxY) maxY = pixels[p][1];
-      }
-      let blocked = false;
-      for (let k = 0; k < kept.length && !blocked; k++) {
-        if (kept[k].x >= minX - 1 && kept[k].x <= maxX + 1 && kept[k].y >= minY - 1 && kept[k].y <= maxY + 1) {
-          blocked = true;
-        }
-      }
-      if (blocked) continue;
-      const crown = crownFromPixels(pixels, values, w, grid, mPerX, mPerY, 0, limit);
-      if (crown) clumps.push(crown);
+      for (let i = 0; i < pixels.length; i++) seen[pixels[i][1] * w + pixels[i][0]] = 1;
+      const crown = crownFromPixels(pixels, values, w, grid, mPerX, mPerY, 0);
+      if (crown) crowns.push(crown);
     }
   }
-
-  const out = crowns.concat(clumps);
-  out.sort((a, b) => b.heightM - a.heightM || b.areaM2 - a.areaM2);
-  return out.length > CROWN_CAP ? out.slice(0, CROWN_CAP) : out;
+  crowns.sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
+  return crowns.length > CROWN_CAP ? crowns.slice(0, CROWN_CAP) : crowns;
 }
 
 function copyGrid(grid, values, nonzero) {
@@ -741,29 +652,36 @@ function poolChmGrid(grid, stride) {
 }
 
 /**
- * Crowns for an export. Roof and pavement cells are cleared first. When the
- * outline count is over maxPolygons the grid is pooled (measured max height
- * in each block) until it fits, same idea as dropping excess roofs.
+ * Canopy outlines for an export. Roof and pavement cells are cleared first.
+ * Over the polygon budget, the smallest outlines are dropped. The grid is not
+ * max-pooled: that merge turned canopy edges into squares and erased crowns
+ * that did not survive the coarser cell.
  */
 function crownsForExport(grid, opts) {
   const prepared = maskChmGrid(grid, opts);
   if (!prepared || !(prepared.nonzero > 0)) return { crowns: [], coarsened: false, stride: 1 };
   const max = opts && opts.maxPolygons > 0 ? opts.maxPolygons | 0 : 480;
-  let stride = 1;
-  let current = prepared;
-  let crowns = crownsFromChm(current);
-  while (crowns.length > max && stride < 8) {
-    const nextStride = stride * 2;
-    const pooled = poolChmGrid(prepared, nextStride);
-    if (!pooled) break;
-    const meters = gridMeters(pooled);
-    if (!(meters.mPerX >= 0.5) || meters.mPerX > 30 || meters.mPerY > 30) break;
-    stride = nextStride;
-    current = pooled;
-    crowns = crownsFromChm(current);
+  let crowns = crownsFromChm(prepared);
+  let trimmed = false;
+  if (crowns.length > max) {
+    trimmed = true;
+    const traced = [];
+    const boxes = [];
+    for (let i = 0; i < crowns.length; i++) {
+      const open =
+        crowns[i].ringLonLat.length > 1 &&
+        crowns[i].ringLonLat[0][0] === crowns[i].ringLonLat[crowns[i].ringLonLat.length - 1][0] &&
+        crowns[i].ringLonLat[0][1] === crowns[i].ringLonLat[crowns[i].ringLonLat.length - 1][1]
+          ? crowns[i].ringLonLat.slice(0, -1)
+          : crowns[i].ringLonLat;
+      if (isAxisRect(open) && crowns[i].areaM2 < 140) boxes.push(crowns[i]);
+      else traced.push(crowns[i]);
+    }
+    traced.sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
+    boxes.sort((a, b) => b.heightM - a.heightM || b.areaM2 - a.areaM2);
+    crowns = traced.concat(boxes).slice(0, max);
   }
-  if (crowns.length > max) crowns = crowns.slice(0, max);
-  return { crowns, coarsened: stride > 1, stride };
+  return { crowns, coarsened: trimmed, stride: 1 };
 }
 
 module.exports = {

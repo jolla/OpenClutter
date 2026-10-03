@@ -10,8 +10,10 @@
  * is gray asphalt rather than a dark membrane or a house roof.
  *
  * Houses stay: they are under MIN_PAVEMENT_AREA_M2 or they are not asphalt.
- * Imagery roof fill (source imagery-roof) is never dropped — those rings were
- * cut from a bright smooth plane. This does not invent a replacement outline.
+ * A smooth gray membrane with a measured height stays too: that is a roof,
+ * not a car-filled lot. Imagery roof fill (source imagery-roof) is never
+ * dropped — those rings were cut from a smooth plane. This does not invent
+ * a replacement outline.
  */
 
 const { llToImagePx } = require("./geo-frame");
@@ -50,6 +52,34 @@ function pointInRing(pt, ring) {
  * @param {number[][]} ringImg Y-down image pixels
  * @param {number} mpu meters per pixel (isotropic)
  */
+function localStdAt(data, w, h, x, y) {
+  let n = 0;
+  let sum = 0;
+  let sum2 = 0;
+  for (let dy = -3; dy <= 3; dy += 3) {
+    const yy = y + dy;
+    if (yy < 0 || yy >= h) continue;
+    for (let dx = -3; dx <= 3; dx += 3) {
+      const xx = x + dx;
+      if (xx < 0 || xx >= w) continue;
+      const j = (yy * w + xx) * 4;
+      const Y = luma(data[j], data[j + 1], data[j + 2]);
+      n++;
+      sum += Y;
+      sum2 += Y * Y;
+    }
+  }
+  if (!n) return 99;
+  const mean = sum / n;
+  return Math.sqrt(Math.max(0, sum2 / n - mean * mean));
+}
+
+function medianOf(values) {
+  if (!values.length) return 99;
+  const s = values.slice().sort((a, b) => a - b);
+  return s[(s.length / 2) | 0];
+}
+
 function pavementEvidence(raw, ringImg, mpu) {
   const empty = {
     n: 0,
@@ -59,6 +89,7 @@ function pavementEvidence(raw, ringImg, mpu) {
     greenFrac: 0,
     meanY: 0,
     meanSat: 0,
+    medianStd: 99,
   };
   if (!raw || !raw.data || !ringImg || ringImg.length < 3) return empty;
   const w = raw.width;
@@ -86,6 +117,7 @@ function pavementEvidence(raw, ringImg, mpu) {
   let green = 0;
   let sumY = 0;
   let sumS = 0;
+  const stds = [];
   const data = raw.data;
   const y0 = Math.max(1, minY | 0);
   const y1 = Math.min(h - 2, maxY);
@@ -103,6 +135,7 @@ function pavementEvidence(raw, ringImg, mpu) {
       n++;
       sumY += Y;
       sumS += S;
+      stds.push(localStdAt(data, w, h, x, y));
       const isGreen = g > r + 10 && g >= b && S > 0.08;
       if (isGreen) green++;
       else if (Y >= 168 && S < 0.2) roof++;
@@ -117,12 +150,29 @@ function pavementEvidence(raw, ringImg, mpu) {
     greenFrac: n ? green / n : 0,
     meanY: n ? sumY / n : 0,
     meanSat: n ? sumS / n : 0,
+    medianStd: medianOf(stds),
   };
 }
 
-function evidenceIsPavement(e) {
+/**
+ * Smooth gray roofs sit in the same luma band as asphalt. Cars and stall
+ * paint raise the local deviation; a membrane does not. A measured height
+ * is a building source. A compact very-smooth pad without a height can be
+ * a small roof. A large smooth lot without a height stays pavement.
+ */
+function smoothMembrane(e, heightM) {
+  if (!e || !(e.medianStd < 7.5)) return false;
+  if (e.greenFrac >= MAX_GREEN_FRAC) return false;
+  // A measured height plus a smooth plane is a roof, including a large gray
+  // hotel wing. The area cap keeps a town-sized smooth pad from coming back.
+  if (heightM >= 3.5 && e.areaM2 < 25000) return true;
+  return e.areaM2 < 1800 && e.medianStd < 5;
+}
+
+function evidenceIsPavement(e, heightM) {
   if (!e || e.n < 20) return false;
   if (!(e.areaM2 >= MIN_PAVEMENT_AREA_M2)) return false;
+  if (smoothMembrane(e, heightM)) return false;
   if (e.roofFrac >= MAX_ROOF_FRAC) return false;
   if (e.greenFrac >= MAX_GREEN_FRAC) return false;
   if (e.meanY < DARK_ROOF_LUMA && e.asphaltFrac < 0.45) return false;
@@ -135,8 +185,8 @@ function evidenceIsPavement(e) {
   return false;
 }
 
-function isPavementFootprint(raw, ringImg, mpu) {
-  return evidenceIsPavement(pavementEvidence(raw, ringImg, mpu));
+function isPavementFootprint(raw, ringImg, mpu, heightM) {
+  return evidenceIsPavement(pavementEvidence(raw, ringImg, mpu), heightM);
 }
 
 function geometryFromRings(rings) {
@@ -167,7 +217,10 @@ function rejectPavementFootprints(raw, frame, features) {
       for (let k = 0; k < rings[r].length; k++) {
         img.push(llToImagePx(rings[r][k][0], rings[r][k][1], frame));
       }
-      if (isPavementFootprint(raw, img, frame.mpuX)) dropped++;
+      const heightM = Number(
+        f.properties && (f.properties.height != null ? f.properties.height : f.properties.Height || f.properties.HEIGHT)
+      );
+      if (isPavementFootprint(raw, img, frame.mpuX, heightM)) dropped++;
       else keepRings.push(rings[r]);
     }
     if (!keepRings.length) continue;
@@ -188,6 +241,7 @@ module.exports = {
   MIN_PAVEMENT_AREA_M2,
   pavementEvidence,
   evidenceIsPavement,
+  smoothMembrane,
   isPavementFootprint,
   rejectPavementFootprints,
 };

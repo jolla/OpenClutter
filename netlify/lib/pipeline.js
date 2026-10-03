@@ -49,8 +49,8 @@ const ZIP_README =
   "OpenIntent carries the map image and building attenuation_areas.\n" +
   "Include foliage is off by default: the zip is buildings only, with no tree attenuation_areas.\n" +
   "When Include foliage was checked, canopy extent and height come from the\n" +
-  "Meta/WRI canopy-height model: each polygon is measured canopy, not a circle\n" +
-  "and not a percent-to-height bucket. US tree-canopy percent can add a cell\n" +
+  "Meta/WRI canopy-height model: each polygon is a traced canopy outline, not a grid square,\n" +
+  "not a circle, and not a percent-to-height bucket. US tree-canopy percent can add a cell\n" +
   "only where that cover is denser and a measured height is already known.\n" +
   "If the canopy-height read times out, foliage is left out of this zip and\n" +
   "the status says so. Buildings still export.\n" +
@@ -442,7 +442,7 @@ const ALIGNMENT = [
   "1. Import this zip in Hamina (Projects → Import → OpenIntent).",
   "   Floorplan meters match the JPEG pixel aspect (unified mpu; Esri content grid).",
   "   dimensions.height is Hamina outdoor 2.5 m. OpenIntent areas are buildings.",
-  "   Include foliage is off by default. Checked, it adds canopy crowns (CHM outlines when the height model resolves them, otherwise NLCD polygons).",
+  "   Include foliage is off by default. Checked, it adds traced canopy polygons (CHM contours when the height model resolves them, otherwise NLCD polygons).",
   "   Buildings: Building - One / Two / Five / Ten Floor.",
   "   Canopy: Foliage - Heavy / Foliage - Light (19.68 ft). Measured heights use Foliage - Heavy H.H / Foliage - Light H.H.",
   "   Individual tree-point circles and trunks are not emitted.",
@@ -1608,7 +1608,7 @@ function buildClutter({
         overlayRings: [],
       };
   if (foliageOn && veg.foliageCoarsened && Array.isArray(warnings)) {
-    const line = "Canopy was merged into fewer polygons so this zip can download.";
+    const line = "Kept the largest canopy outlines so this zip can download.";
     if (warnings.indexOf(line) < 0) warnings.push(line);
   }
   // A poisoned or drifted vegetation material fails makeOiArea and that ring
