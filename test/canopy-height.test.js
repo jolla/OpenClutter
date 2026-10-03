@@ -234,10 +234,9 @@ describe("canopy height grid", () => {
     }
     const filtered = treePairsFromPoints([], frame, [], null, { chmGrid: g.grid, canopyHits: hits });
     assert.equal(filtered.foliageGeometry, "chm-contour");
-    assert.equal(
+    assert.ok(
       filtered.oiAreas.some((a) => a.material.top_height === 7),
-      false,
-      "a short crown far from NLCD canopy is not painted on pavement"
+      "a measured crown stays when it is not on a roof, road, pavement, or water"
     );
     const ell = filtered.oiAreas.find((a) => a.material.top_height === 18);
     assert.ok(ell, "the L stays");
@@ -302,6 +301,51 @@ describe("canopy height grid", () => {
     assert.ok(tops.includes(15));
     assert.ok(tops.includes(8));
     assert.equal(both.oiAreas.every((a) => a.shape === "polygon"), true);
+  });
+
+  it("keeps a tall single-cell crown the 12 m² floor used to drop, and does not invent empty ground", () => {
+    const w = 24;
+    const h = 24;
+    const values = new Uint8Array(w * h);
+    const mLon = 111320 * Math.cos((60.57 * Math.PI) / 180);
+    const cell = 2.2;
+    const dLon = (w * cell) / mLon;
+    const dLat = (h * cell) / 110540;
+    const grid = {
+      west: 27.18,
+      south: 60.57,
+      east: 27.18 + dLon,
+      north: 60.57 + dLat,
+      width: w,
+      height: h,
+      values,
+    };
+    values[8 * w + 6] = 8;
+    values[16 * w + 14] = 4;
+    const frame = frameForGrid(grid, "Street");
+    const pairs = treePairsFromPoints([], frame, [], null, { chmGrid: grid });
+    const kept = pairs.oiAreas.filter((a) => a.kind === "canopy");
+    assert.equal(kept.length, 1, "crowns " + kept.map((a) => a.material && a.material.top_height).join(","));
+    assert.equal(kept[0].material.top_height, 8);
+    const [lon, lat] = cellLonLat(grid, 6, 8);
+    const [x, y] = llToPx(lon, lat, frame);
+    assert.equal(pointInRing([x, y], kept[0].ringPx), true);
+    assert.equal(
+      kept.some((a) => a.material.top_height <= 4),
+      false,
+      "a lone 4 m cell is not a tree"
+    );
+    const empty = new Uint8Array(w * h);
+    const bare = treePairsFromPoints([], frame, [], null, {
+      chmGrid: Object.assign({}, grid, { values: empty }),
+      canopyHits: [
+        { lon, lat, pct: 80 },
+        { lon: lon + 0.0002, lat, pct: 70 },
+        { lon: lon + 0.0004, lat, pct: 60 },
+        { lon, lat: lat + 0.0002, pct: 90 },
+      ],
+    });
+    assert.equal(bare.oiAreas.length, 0, "percent without a measured height does not invent canopy");
   });
 
   it("traces Oak Creek and Long Meadow canopy as simplified outlines, not grid squares", () => {

@@ -257,12 +257,12 @@ const TERRAIN_README =
   "the stack would pass 400 floors). A band covers every cell that reaches that height,\n" +
   "merged into rectangles, so higher plates sit on lower ones. Flat ground in that\n" +
   "mode is one pad. The page offers both when Terrain is on.\n" +
-  "The lattice under either paste is still the relief ladder: flat ground is a 2×2 pad.\n" +
-  "A mild rise is a 4×3 lattice. Relief under 20 m\n" +
-  "stays 6×5. A ski hill (DEM relief at least 20 m, Granite Peak scale) uses the\n" +
-  "terrain resolution chosen on export. Auto is the default: cell size follows the\n" +
-  "draw, about 1 m on a small hill and coarser on a large one, at most 20×20 quads,\n" +
-  "with a 3DEP sample count denser than that mesh (at most 576). Default is about 80 m quads, at most 12×12\n" +
+  "Auto fills the paste budget on either style: about 1 m cells, at most 20×20 quads,\n" +
+  "including a mild hill. A larger draw is coarser because that cap is the limit\n" +
+  "Planner Plus accepts, not because relief under 20 m drops to 6×5. Raised layers\n" +
+  "keep that same plan and only coarsen the height band when the stack would pass\n" +
+  "400 floors. Hidden named presets still use a coarser ladder below 20 m of relief.\n" +
+  "Auto's 3DEP sample count is denser than the mesh and stays at most 576. Default is about 80 m quads, at most 12×12\n" +
   "(144 DEM samples). Fine is about 40 m quads, at most 16×16 (324 samples).\n" +
   "Finest is about 25 m quads, at most 20×20 (576 samples). Stops at 20, 15, 10, 5,\n" +
   "and 1 m may paste a denser grid so a draw about 2.5 km on a side can still use\n" +
@@ -311,16 +311,13 @@ const TERRAIN_README_SURFACE =
   GLO30_CREDIT +
   ".\n" +
   "This is a digital surface model, not bare earth. Roofs and canopy are in the mesh.\n" +
-  "Flat ground is a 2×2 pad. A mild rise is a 4×3 lattice. Relief under 20 m\n" +
-  "stays 6×5 on a US site. At high latitude (Finland) those quads are retargeted\n" +
-  "so they are square in ground meters, on the same frame as the aerial. Auto and\n" +
-  "the 20–1 m stops use that cell size even when relief is under 20 m. Sub-30 m\n" +
-  "cells are interpolated from GLO-30. The status shows the cell size that pastes,\n" +
-  "which steps coarser when the draw will not fit.\n" +
-  "A ski hill (DEM relief at least 20 m, Granite Peak scale) uses the\n" +
-  "terrain resolution chosen on export. Auto is the default: cell size follows the\n" +
-  "draw, about 1 m on a small hill and coarser on a large one, at most 20×20 quads,\n" +
-  "with a DEM sample count denser than that mesh (at most 576). Default is about 80 m quads, at most 12×12\n" +
+  "Auto fills the paste budget: about 1 m cells, at most 20×20 quads, including a\n" +
+  "mild hill. A larger draw is coarser because that cap is the limit Planner Plus\n" +
+  "accepts. At high latitude (Finland) those quads are square in ground meters, on\n" +
+  "the same frame as the aerial, so a long draw hits 20 on the long side. Sub-30 m\n" +
+  "cells are interpolated from GLO-30. The status shows the cell size that pastes.\n" +
+  "Raised layers keep that plan and only coarsen the height band past 400 floors.\n" +
+  "Auto's DEM sample count is denser than the mesh and stays at most 576. Default is about 80 m quads, at most 12×12\n" +
   "(144 DEM samples). Fine is about 40 m quads, at most 16×16 (324 samples).\n" +
   "Finest is about 25 m quads, at most 20×20 (576 samples). Stops at 20, 15, 10, 5,\n" +
   "and 1 m may paste a denser grid so a draw about 2.5 km on a side can still use\n" +

@@ -26,17 +26,14 @@
  * on lower ones. Flat ground is one pad. The stack stays at or under 400
  * floors. There is no resolution control on the page.
  *
- * Flat ground stays a 2×2 lattice before that merge. A mild rise uses a 4×3
- * lattice. Medium relief
- * under 20 m stays 6×5. That ladder is the US bare-earth hill. At Finland
- * latitudes the paste is planned in the same ground meters as the aerial, so
- * each quad is square. Auto and the 20–1 m stops use that cell size even when
- * relief is under 20 m. A draw that cannot hold the requested cell steps up
- * to a coarser square lattice, and the status reports that size. Ski-hill
- * relief (about 20 m or more, Granite Peak scale) uses the export's terrain
- * resolution. Auto is the default: cell size follows the draw, about 1 m on a
- * small hill and coarser on a large one, at most 20×20, with a 3DEP count
- * denser than that mesh. That cap is the paste Planner Plus accepts. Default is ~80 m quads,
+ * Auto is the Terrain toggle. It fills the paste budget: about 1 m cells, at
+ * most 20×20 quads, and raised layers stay at or under 400 floors. A larger
+ * draw gets coarser cells because that budget is the cap, not because a
+ * milder hill is dropped to 2×2, 4×3, or 6×5. Those relief steps remain only
+ * for the hidden named presets. At Finland latitudes Auto still plans square
+ * ground-meter quads, so a long draw hits 20 on the long side and fewer on
+ * the short side. A draw that cannot hold the requested cell steps up to a
+ * coarser square lattice, and the status reports that size. Default is ~80 m quads,
  * at most 12×12, from 144 samples. Fine is ~40 m, at most 16×16, from 324
  * samples. Finest is ~25 m, at most 20×20, from 576 samples. Stops at 20, 15,
  * 10, 5, and 1 m may paste past that 20×20 expectation so a large hill can
@@ -63,10 +60,16 @@ const USGS_3DEP_ATTRIBUTION = "USGS 3DEP";
 const TERRAIN_FILENAME = "terrain-clipboard.json";
 const FLAT_M = 0.5;
 /**
- * Ski-hill paste presets. Auto is the default and sizes cells from the draw.
- * Default matches the v1.1.5 lattice. Fine and Finest are fixed manual
- * overrides. Only relief at or above LIFT_RELIEF_M changes. Flat, mild, and
- * medium ladders stay 2×2, 4×3, and 6×5. sampleCount is the 3DEP getSamples
+ * Sloped style only. A 0.5 m gate turned every cell of a fine mesh into a pad
+ * on a gentle hill, so the floor was a staircase instead of ramps. A cell
+ * this close to level stays a pad.
+ */
+const SLOPED_FLAT_M = 0.05;
+/**
+ * Ski-hill paste presets. Auto fills the 20×20 budget from the draw, including
+ * relief under 20 m. Default matches the v1.1.5 lattice. Fine and Finest are
+ * fixed manual overrides. Those hidden presets still use the 2×2, 4×3, and
+ * 6×5 ladders below 20 m of relief. sampleCount is the 3DEP getSamples
  * request: a square count denser than the paste nodes so bilinear is not
  * stretching a sparse DEM. Auto, Default, Fine, and Finest stay inside the
  * older Hamina paste size (PASTE_SOFT_GRID). Experimental stops may pass it,
@@ -654,9 +657,12 @@ function chooseGrid(relief, frame, resolution) {
   const highLat = highLatMeterFrame(frame);
   const width = frame && frame.widthM > 0 ? frame.widthM : 800;
   const length = frame && frame.lengthM > 0 ? frame.lengthM : 800;
-  // Finland Auto and the meter stops follow the requested cell size on a town,
-  // not only on a 20 m ski hill. US bare earth keeps the relief ladder.
-  const honorMeters = highLat && (preset.id === "auto" || preset.experimental);
+  // Auto is the only resolution the page sends. A mild site used to stay on
+  // the 2×2 / 4×3 / 6×5 ladder, which is coarser than the 20×20 paste budget
+  // the DEM sample count was already planned for. Fill that budget instead.
+  // Hidden presets still use the ladder below 20 m of relief.
+  if (preset.id === "auto") return meterAxes(frame, preset, highLat);
+  const honorMeters = highLat && preset.experimental;
   if (!honorMeters) {
     const ladder = reliefLadder(relief);
     if (ladder) {
@@ -1087,7 +1093,7 @@ function buildTerrainClipboard(samples, frame, cols, rows, elevationAt) {
       const z0 = Math.min(...zs);
       const z1 = Math.max(...zs);
       const height = round1((z0 + z1) / 2);
-      if (z1 - z0 < FLAT_M) {
+      if (z1 - z0 < SLOPED_FLAT_M) {
         const pad = raisedZone(sw, se, ne, nw, height);
         if (pad) raised.push(pad);
       } else {
@@ -1841,7 +1847,9 @@ function terrainBundleFields(terrain, warnings) {
     const rows = terrain.gridRows | 0;
     const highLat = highLatMeterFrame(terrain.frame);
     const showMeters =
-      terrain.reliefM >= LIFT_RELIEF_M || (highLat && (preset.id === "auto" || preset.experimental));
+      preset.id === "auto" ||
+      terrain.reliefM >= LIFT_RELIEF_M ||
+      (highLat && preset.experimental);
     let mesh = "";
     if (showMeters) {
       const shown =
