@@ -129,6 +129,15 @@ const STACK_COVER = 0.55;
 /** Ignore a shared wall. Notch anything larger that still stacks. */
 const STACK_CUT_M2 = 12;
 const STACK_CUT_FRAC = 0.06;
+/**
+ * A smaller footprint inside a larger one is a real upper level when it is
+ * at least two floors taller, not a duplicate outline and not a tiny stub.
+ * A single simple box never qualifies.
+ */
+const LEVEL_MIN_DELTA_M = 6;
+const LEVEL_MIN_INNER_M2 = 180;
+const LEVEL_MIN_RATIO = 0.04;
+const LEVEL_MAX_RATIO = 0.8;
 /** Same bands as pipeline isMegaCampus. A coarse campus hull is left for that filter. */
 const MEGA_CAMPUS_M2 = 150000;
 const HOTEL_MEGA_M2 = 400000;
@@ -188,6 +197,49 @@ function shouldReplaceGeometry(owner, candidate) {
 
 function ringIsCoarseMega(ring) {
   return coarseMega(ringAreaM2(ring), ringVertexCount(ring));
+}
+
+function roundLevelM(n) {
+  return Math.round(Number(n) * 10) / 10;
+}
+
+/**
+ * Height of the lower plan when `inner` is a taller inset of `outer`.
+ * 0 when the pair is the same roof, a fragment, or a single box.
+ */
+function levelBaseM(inner, outer, innerArea, outerArea) {
+  const th = featureHeight(inner);
+  const ph = featureHeight(outer);
+  if (!(th > 0) || !(ph >= 2) || !(th >= ph + LEVEL_MIN_DELTA_M)) return 0;
+  const ta = innerArea > 0 ? innerArea : featureAreaM2(inner);
+  const pa = outerArea > 0 ? outerArea : featureAreaM2(outer);
+  if (!(ta >= LEVEL_MIN_INNER_M2) || !(pa > ta)) return 0;
+  const ratio = ta / pa;
+  if (ratio < LEVEL_MIN_RATIO || ratio > LEVEL_MAX_RATIO) return 0;
+  const innerRing = singleExterior(inner);
+  const outerRing = singleExterior(outer);
+  if (!innerRing || !outerRing) return 0;
+  const c = centroid(innerRing);
+  if (!c || !pointInRing(c, outerRing)) return 0;
+  return roundLevelM(ph);
+}
+
+function stampLevelBase(feature, base) {
+  if (!feature || !(base > 0)) return;
+  if (!feature.properties) feature.properties = {};
+  const prev = Number(feature.properties.levelBaseM) || 0;
+  if (base > prev) feature.properties.levelBaseM = base;
+}
+
+function bestLevelBase(feature, area, others) {
+  let base = 0;
+  for (let i = 0; i < others.length; i++) {
+    const other = others[i];
+    if (!other || other.feature === feature) continue;
+    const b = levelBaseM(feature, other.feature, area, other.area);
+    if (b > base) base = b;
+  }
+  return base;
 }
 
 function similarFootprint(owner, candidate) {
@@ -267,6 +319,18 @@ function conflateFootprints(primary, secondary, opts) {
       }
       if (seen.has(owner.feature)) continue;
       seen.add(owner.feature);
+      const towerOnOwner = levelBaseM(f, owner.feature);
+      if (towerOnOwner > 0) {
+        stampLevelBase(f, towerOnOwner);
+        covered = false;
+        continue;
+      }
+      const ownerOnCandidate = levelBaseM(owner.feature, f);
+      if (ownerOnCandidate > 0) {
+        stampLevelBase(owner.feature, ownerOnCandidate);
+        covered = false;
+        continue;
+      }
       if (replace && shouldReplaceGeometry(owner.feature, f)) {
         replaceGeometry(owner.feature, f, owners);
         geometriesReplaced++;
@@ -610,6 +674,13 @@ function dedupeStackedFootprints(features) {
     }
     const hit = overlapAgainst(item, kept);
     const cover = item.area > 0 ? hit.inter / item.area : 0;
+    const level = bestLevelBase(item.feature, item.area, hit.targets);
+    if (level > 0 && hit.inter >= STACK_CUT_M2) {
+      stampLevelBase(item.feature, level);
+      const copy = cloneKept(item, null, proj);
+      if (copy) kept.push(copy);
+      continue;
+    }
     if (hit.inter >= STACK_CUT_M2 && cover >= STACK_COVER && hit.best) {
       let other = 0;
       for (const t of hit.targets) {
@@ -668,6 +739,10 @@ function dedupeStackedFootprints(features) {
   for (const item of megas) {
     const copy = cloneKept(item, null, proj);
     if (copy) kept.push(copy);
+  }
+  for (let i = 0; i < kept.length; i++) {
+    const base = bestLevelBase(kept[i].feature, kept[i].area, kept);
+    if (base > 0) stampLevelBase(kept[i].feature, base);
   }
   return { features: kept.map((k) => k.feature), dropped, cut, merged };
 }

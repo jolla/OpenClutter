@@ -53,7 +53,8 @@
  * Plus rejects as "Sloped floor coordinates are not valid!".
  */
 
-const { llToClipboard, needsGroundMeterImage } = require("./geo-frame");
+const { llToClipboard, clipboardToLl, needsGroundMeterImage } = require("./geo-frame");
+const polygonClipping = require("polygon-clipping");
 const { emptyClipboard } = require("./hamina-clipboard");
 const { fetchCopernicusDemSamples, GLO30_CREDIT } = require("./copernicus-dem");
 
@@ -1379,6 +1380,13 @@ function overlapVertices(a, b) {
   return out;
 }
 
+/**
+ * A footprint that only shares a cell edge still has to clear that cell.
+ * Lattice nodes are rounded to 0.001 m, so a strict box test drops the shared
+ * edge and the higher ramp wins in Hamina while the object stays low.
+ */
+const FLOOR_TOUCH_M = 0.25;
+
 function boundsOverlap(a, b) {
   let aL = Infinity;
   let aR = -Infinity;
@@ -1402,7 +1410,7 @@ function boundsOverlap(a, b) {
     if (b[i][1] < bB) bB = b[i][1];
     if (b[i][1] > bT) bT = b[i][1];
   }
-  return aL <= bR && aR >= bL && aB <= bT && aT >= bB;
+  return aL <= bR + FLOOR_TOUCH_M && aR + FLOOR_TOUCH_M >= bL && aB <= bT + FLOOR_TOUCH_M && aT + FLOOR_TOUCH_M >= bB;
 }
 
 /**
@@ -1442,59 +1450,153 @@ function ringToClipboard(ring, frame) {
   return out;
 }
 
-/** Highest pasted floor inside the footprint, in the same meters as sloped-floor z. */
-function pastedFloorTopUnderRing(terrain, ring) {
+function floorZones(terrain) {
   const clip = terrain && terrain.clipboard;
-  const frame = terrain && terrain.frame;
-  if (!clip || !frame || !ring) return 0;
-  const xy = ringToClipboard(ring, frame);
-  if (xy.length < 3) return 0;
+  if (!clip) return [];
   const zones = [];
   const sloped = clip.slopedFloors || [];
   const raised = clip.raisedFloorZones || [];
   for (let i = 0; i < sloped.length; i++) zones.push(sloped[i]);
   for (let i = 0; i < raised.length; i++) zones.push(raised[i]);
+  return zones;
+}
+
+/**
+ * Lattice nodes are rounded to 0.001 m, so a footprint edge that should lie on
+ * a cell boundary can sit a fraction of a millimeter off that quad. Hamina
+ * still draws the higher ramp or plate through that wall. Treat a gap this
+ * small as the floor under the object.
+ */
+const FLOOR_EDGE_M = 0.05;
+
+function quadBox(quad) {
+  const n = Math.min(ringPointCount(quad), 4);
+  let L = Infinity;
+  let R = -Infinity;
+  let B = Infinity;
+  let T = -Infinity;
+  for (let i = 0; i < n; i++) {
+    if (quad[i][0] < L) L = quad[i][0];
+    if (quad[i][0] > R) R = quad[i][0];
+    if (quad[i][1] < B) B = quad[i][1];
+    if (quad[i][1] > T) T = quad[i][1];
+  }
+  return { L, R, B, T };
+}
+
+function dist2ToRing(ring, x, y) {
+  if (pointInOrOnRing(x, y, ring)) return 0;
+  const n = ringPointCount(ring);
+  let best = Infinity;
+  for (let i = 0; i < n; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % n];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len2 = dx * dx + dy * dy;
+    let t = len2 > 0 ? ((x - a[0]) * dx + (y - a[1]) * dy) / len2 : 0;
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+    const px = a[0] + t * dx;
+    const py = a[1] + t * dy;
+    const d2 = (x - px) * (x - px) + (y - py) * (y - py);
+    if (d2 < best) best = d2;
+  }
+  return best;
+}
+
+/** Highest and lowest pasted floor on the overlap of the footprint and the mesh. */
+function pastedFloorExtent(terrain, xy) {
+  const zones = floorZones(terrain);
+  if (!zones.length || !xy || xy.length < 3) return null;
   let max = 0;
+  let min = Infinity;
+  let n = 0;
+  const edge2 = FLOOR_EDGE_M * FLOOR_EDGE_M;
+  const consider = (z) => {
+    if (!(z > 0) && z !== 0) return;
+    if (z > max) max = z;
+    if (z < min) min = z;
+    n++;
+  };
   for (let i = 0; i < zones.length; i++) {
     const zone = zones[i];
     const quad = zone.area && zone.area.coordinates && zone.area.coordinates[0];
     if (!quad || quad.length < 4 || !boundsOverlap(xy, quad)) continue;
     const pts = overlapVertices(xy, quad);
-    for (let k = 0; k < pts.length; k++) {
-      const z = pastedFloorZ(zone, pts[k][0], pts[k][1]);
-      if (z > max) max = z;
+    for (let k = 0; k < pts.length; k++) consider(pastedFloorZ(zone, pts[k][0], pts[k][1]));
+    const box = quadBox(quad);
+    const nv = ringPointCount(xy);
+    for (let k = 0; k < nv; k++) {
+      const x = xy[k][0];
+      const y = xy[k][1];
+      const cx = Math.min(box.R, Math.max(box.L, x));
+      const cy = Math.min(box.T, Math.max(box.B, y));
+      if ((x - cx) * (x - cx) + (y - cy) * (y - cy) > edge2) continue;
+      consider(pastedFloorZ(zone, cx, cy));
+    }
+    const nq = Math.min(ringPointCount(quad), 4);
+    for (let k = 0; k < nq; k++) {
+      if (dist2ToRing(xy, quad[k][0], quad[k][1]) > edge2) continue;
+      consider(pastedFloorZ(zone, quad[k][0], quad[k][1]));
     }
   }
-  return max;
+  if (!n) return null;
+  return { min, max };
 }
 
 /**
- * Top of the slope under a lon/lat ring, in terrain-clipboard meters.
- * DEM samples at the vertices and centroid, and the pasted floor inside the
- * footprint. A coarse ramp can sit above those samples; the higher one is
- * the surface the object has to rest on.
+ * Raw min/max of the slope under a lon/lat ring, before tenth rounding.
+ * Samples are the ring vertices, the centroid, and every pasted-floor
+ * intersection (cell corners inside the footprint and shared edges).
  */
-function slopeTopUnderRing(terrain, ring) {
-  if (!terrain || !ring || ring.length < 3) return 0;
+function floorExtentUnderRing(terrain, ring) {
+  if (!terrain || !ring || ring.length < 3) return { min: 0, max: 0 };
   const closed =
     ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1];
   const end = closed ? ring.length - 1 : ring.length;
   let max = 0;
+  let min = Infinity;
   let sx = 0;
   let sy = 0;
   for (let i = 0; i < end; i++) {
     const z = terrainGroundM(terrain, ring[i][0], ring[i][1]);
     if (z > max) max = z;
+    if (z < min) min = z;
     sx += +ring[i][0];
     sy += +ring[i][1];
   }
   if (end > 0) {
     const zc = terrainGroundM(terrain, sx / end, sy / end);
     if (zc > max) max = zc;
+    if (zc < min) min = zc;
   }
-  const floor = pastedFloorTopUnderRing(terrain, ring);
-  if (floor > max) max = floor;
-  return round1(max);
+  const frame = terrain.frame;
+  const xy = frame ? ringToClipboard(ring, frame) : [];
+  const pasted = pastedFloorExtent(terrain, xy);
+  if (pasted) {
+    if (pasted.max > max) max = pasted.max;
+    if (pasted.min < min) min = pasted.min;
+  }
+  if (!(min < Infinity)) min = 0;
+  return { min, max };
+}
+
+/** Round a slope top up to the next 0.1 m so the object is not left under the sample. */
+function roundUpTenth(n) {
+  const down = round1(n);
+  if (down + 1e-6 < n) return round1(down + 0.1);
+  return down;
+}
+
+/**
+ * Top of the slope under a lon/lat ring, in terrain-clipboard meters.
+ * The value is the highest pasted floor under the footprint, including a
+ * cell the ring only shares an edge with. DEM samples cover a mesh that was
+ * not pasted. Rounded up to 0.1 m so the bottom is not under that surface.
+ */
+function slopeTopUnderRing(terrain, ring) {
+  return roundUpTenth(floorExtentUnderRing(terrain, ring).max);
 }
 
 /** True when this export's terrain clipboard is a ski-hill-scale bare-earth DEM.
@@ -1506,6 +1608,182 @@ function siteWarrantsLift(terrain) {
   return (terrain.raised || 0) + (terrain.sloped || 0) > 0;
 }
 
+/** Split a footprint when the slope under it rises more than this. */
+const SPLIT_FLOOR_M = 8;
+const SPLIT_MAX_PIECES = 6;
+
+function closeClipRing(open) {
+  if (!open || open.length < 3) return null;
+  const ring = open.map((p) => [p[0], p[1]]);
+  const a = ring[0];
+  const b = ring[ring.length - 1];
+  if (a[0] !== b[0] || a[1] !== b[1]) ring.push([a[0], a[1]]);
+  return ring;
+}
+
+function meterAreaAbs(ring) {
+  const n = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+    ? ring.length - 1
+    : ring.length;
+  let a = 0;
+  for (let i = 0; i < n; i++) {
+    const p = ring[i];
+    const q = ring[(i + 1) % n];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return Math.abs(a) / 2;
+}
+
+function pointInClipQuad(quad, x, y) {
+  const n = Math.min(ringPointCount(quad), 4);
+  if (n < 3) return false;
+  for (let k = 0; k < n; k++) {
+    const a = quad[k];
+    const b = quad[(k + 1) % n];
+    const cross = (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
+    const tol = 0.05 * Math.max(1, Math.hypot(b[0] - a[0], b[1] - a[1]));
+    if (cross < -tol) return false;
+  }
+  return true;
+}
+
+function terrainFloorCells(terrain) {
+  if (terrain._floorCells) return terrain._floorCells;
+  const frame = terrain.frame;
+  const cols = terrain.gridCols | 0;
+  const rows = terrain.gridRows | 0;
+  const cells = [];
+  if (!frame || cols < 1 || rows < 1) {
+    terrain._floorCells = cells;
+    return cells;
+  }
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const corners = [
+        [c, r],
+        [c + 1, r],
+        [c + 1, r + 1],
+        [c, r + 1],
+      ].map(([cc, rr]) => {
+        const lon = frame.west + (cc / cols) * (frame.east - frame.west);
+        const lat = frame.south + (rr / rows) * (frame.north - frame.south);
+        const xy = llToClipboard(lon, lat, frame);
+        return { lon, lat, xy };
+      });
+      const center = [
+        (corners[0].xy[0] + corners[2].xy[0]) / 2,
+        (corners[0].xy[1] + corners[2].xy[1]) / 2,
+      ];
+      let z = terrainGroundM(
+        terrain,
+        (corners[0].lon + corners[2].lon) / 2,
+        (corners[0].lat + corners[2].lat) / 2
+      );
+      const own = floorZones(terrain);
+      for (let i = 0; i < own.length; i++) {
+        const quad = own[i].area && own[i].area.coordinates && own[i].area.coordinates[0];
+        if (!quad || !pointInClipQuad(quad, center[0], center[1])) continue;
+        const samples = [center, corners[0].xy, corners[1].xy, corners[2].xy, corners[3].xy];
+        for (let k = 0; k < samples.length; k++) {
+          if (k > 0 && !pointInClipQuad(quad, samples[k][0], samples[k][1])) continue;
+          const fz = pastedFloorZ(own[i], samples[k][0], samples[k][1]);
+          if (fz > z) z = fz;
+        }
+      }
+      const clip = closeClipRing(corners.map((p) => p.xy));
+      if (clip) cells.push({ clip, z });
+    }
+  }
+  terrain._floorCells = cells;
+  return cells;
+}
+
+function ringsFromClipGeom(geom, frame) {
+  const out = [];
+  for (const poly of geom || []) {
+    const ring = poly && poly[0];
+    if (!ring || ring.length < 4) continue;
+    if (meterAreaAbs(ring) < 30) continue;
+    const ll = [];
+    for (let i = 0; i < ring.length; i++) {
+      const p = clipboardToLl(ring[i][0], ring[i][1], frame);
+      if (!ll.length || p[0] !== ll[ll.length - 1][0] || p[1] !== ll[ll.length - 1][1]) ll.push(p);
+    }
+    if (ll.length >= 3 && (ll[0][0] !== ll[ll.length - 1][0] || ll[0][1] !== ll[ll.length - 1][1])) {
+      ll.push([ll[0][0], ll[0][1]]);
+    }
+    if (ll.length >= 4) out.push(ll);
+  }
+  return out;
+}
+
+/**
+ * One bottom height is the top of the slope under that piece. A footprint
+ * that climbs more than SPLIT_FLOOR_M is cut along the terrain cells so each
+ * piece can sit on its own slope instead of one sample leaving the rest buried.
+ * A mild rise stays one ring. The original ring is returned when a cut would
+ * drop most of the footprint.
+ */
+function splitRingByFloor(terrain, ring) {
+  if (!terrain || !ring || ring.length < 4) return [ring];
+  const extent = floorExtentUnderRing(terrain, ring);
+  if (!(extent.max - extent.min > SPLIT_FLOOR_M)) return [ring];
+  const frame = terrain.frame;
+  const xy = frame ? ringToClipboard(ring, frame) : [];
+  const bldg = closeClipRing(xy);
+  if (!bldg) return [ring];
+  const cells = terrainFloorCells(terrain).filter((cell) => boundsOverlap(xy, cell.clip));
+  if (cells.length < 2) return [ring];
+  let band = SPLIT_FLOOR_M;
+  let groups = null;
+  while (band < 80) {
+    groups = new Map();
+    for (let i = 0; i < cells.length; i++) {
+      const key = Math.round(cells[i].z / band);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(cells[i]);
+    }
+    if (groups.size <= SPLIT_MAX_PIECES) break;
+    band *= 2;
+  }
+  if (!groups || groups.size < 2) return [ring];
+  const pieces = [];
+  for (const group of groups.values()) {
+    let mask = null;
+    for (let i = 0; i < group.length; i++) {
+      try {
+        mask = mask ? polygonClipping.union(mask, [[group[i].clip]]) : [[group[i].clip]];
+      } catch {
+        mask = null;
+        break;
+      }
+    }
+    if (!mask) continue;
+    let hit;
+    try {
+      hit = polygonClipping.intersection([[bldg]], mask);
+    } catch {
+      continue;
+    }
+    const rings = ringsFromClipGeom(hit, frame);
+    for (let i = 0; i < rings.length; i++) pieces.push(rings[i]);
+  }
+  if (pieces.length < 2) return [ring];
+  let area = 0;
+  for (let i = 0; i < pieces.length; i++) {
+    const clip = ringToClipboard(pieces[i], frame);
+    area += meterAreaAbs(clip);
+  }
+  if (area < meterAreaAbs(bldg) * 0.7) return [ring];
+  return pieces;
+}
+
+function slopeSampler(terrain) {
+  const fn = (ring) => slopeTopUnderRing(terrain, ring);
+  fn.split = (ring) => splitRingByFloor(terrain, ring);
+  return fn;
+}
+
 /**
  * Ring → meters above the terrain datum for attenuating-object bottoms.
  * Null when objects stay on the floor.
@@ -1513,6 +1791,7 @@ function siteWarrantsLift(terrain) {
  * A surface DEM skips that gate and still samples the mesh, including relief
  * under 20 m. The value is the slope top under the ring, not a flat 20 m.
  * Ground under LIFT_LOCAL_M still omits bottom_height inside the lifters.
+ * fn.split cuts a footprint that climbs more than SPLIT_FLOOR_M.
  */
 function demUnderFootprint(terrain) {
   if (!terrain) return null;
@@ -1520,10 +1799,10 @@ function demUnderFootprint(terrain) {
   if (zones <= 0 && !terrain.pasteOmitted) return null;
   if (terrain.pasteOmitted) {
     if (terrain.kind !== "surface" && !(terrain.reliefM >= LIFT_RELIEF_M)) return null;
-    return (ring) => slopeTopUnderRing(terrain, ring);
+    return slopeSampler(terrain);
   }
   if (terrain.kind === "surface" || siteWarrantsLift(terrain)) {
-    return (ring) => slopeTopUnderRing(terrain, ring);
+    return slopeSampler(terrain);
   }
   return null;
 }
@@ -1828,6 +2107,8 @@ module.exports = {
   slopedRing,
   terrainGroundM,
   slopeTopUnderRing,
+  splitRingByFloor,
+  SPLIT_FLOOR_M,
   siteWarrantsLift,
   demUnderFootprint,
   terrainBundleFields,
