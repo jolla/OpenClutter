@@ -802,6 +802,9 @@ describe("foliage height from floor on a slope", () => {
     assert.equal(type.id.indexOf("foliage-m-"), 0);
     assert.equal(type.bottomEdge, 3.5);
     assert.equal(type.topEdge, 14.2);
+    assert.equal(type.name, "Foliage - Heavy 14.2");
+    assert.equal(type.transparencyEnabled, true);
+    assert.equal(areas[0].area_material.transparencyEnabled, true);
     assert.equal(built.openintent.area_materials.slice(0, 4).some((m) => "bottom_height" in m), false);
   });
 
@@ -840,7 +843,15 @@ describe("foliage height from floor on a slope", () => {
     assert.ok(hillMat.bottom_height >= 50, "bottom " + hillMat.bottom_height);
     assert.equal(hillMat.top_height, Math.round((hillMat.bottom_height + stockTop) * 10) / 10);
     assert.equal(hillMat.name, "Foliage - Light @ " + hillMat.bottom_height.toFixed(1));
-    assert.deepEqual(Object.keys(hillMat), ["name", "rf_properties", "top_height", "bottom_height", "display_color"]);
+    assert.equal(hillMat.transparencyEnabled, true);
+    assert.deepEqual(Object.keys(hillMat), [
+      "name",
+      "rf_properties",
+      "top_height",
+      "bottom_height",
+      "display_color",
+      "transparencyEnabled",
+    ]);
     assert.equal(hillMat.rf_properties.attenuation_per_m, 1);
     assert.equal(hillMat.display_color, "#6FA84A");
     const gold = built.openintent.area_materials.slice(0, 4).map((m) => m.name);
