@@ -39,8 +39,6 @@ function mat(name, color, top, bottom, db) {
 
 const CANOPY = mat("Tree_Canopy", "#415915", 12, 3.5, 2);
 const TRUNK = mat("Tree_Trunk", "#7F4A1E", 3.5, null, 10);
-CANOPY.transparencyEnabled = true;
-TRUNK.transparencyEnabled = true;
 
 function toArea(ringPx, imgW, imgH, material, xyz) {
   const coords = ringPx.map(([x, y]) =>

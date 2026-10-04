@@ -103,9 +103,11 @@ const ZIP_TROUBLESHOOT =
   "Building materials are the gold One/Two/Five/Ten Floor objects.\n" +
   "Tree materials, only when Include foliage was on, are stock Foliage - Heavy / Light,\n" +
   "or Foliage - Heavy H.H / Foliage - Light H.H at the measured height.\n" +
-  "Buildings are name + rf_properties + top_height + display_color.\n" +
-  "Foliage and tree objects set transparencyEnabled true (Hamina Transparent in 3D).\n" +
-  "Buildings omit that key. Turn on Transparency effects in Hamina settings to see through canopy.\n" +
+  "Buildings, canopy, and tree tops use name + rf_properties + top_height + display_color.\n" +
+  "OpenIntent has no transparency or opacity field. Hamina does not read Transparency in 3D\n" +
+  "from this zip, so tree tops stay solid after import. The account Transparency effects\n" +
+  "setting only draws a Hamina zone type whose Transparent in 3D box is already checked.\n" +
+  "That checkbox is hamina-clipboard.json transparencyEnabled, not an OpenIntent key.\n" +
   LIFT_BARE_EARTH +
   "The names Tree Trunk and Foliage N.N m stay off OpenIntent. A discrete tree uses Foliage - Trunk H.H.\n" +
   "Each ring vertex is pixels+meters+feet. Materials omit itu_material_type.\n" +
@@ -896,6 +898,9 @@ function validateOiArea(area, imgW, imgH) {
   // Poisoned names fail closed and that ring is omitted.
   if (typeof mat !== "object" || mat == null || Array.isArray(mat)) return { ok: false, reason: "material" };
   if ("itu_material_type" in mat) return { ok: false, reason: "material" };
+  // OpenIntent material has no transparency or opacity property. Hamina's
+  // import support matrix marks Transparency in 3D as not supported in the schema.
+  if ("transparencyEnabled" in mat || "opacity" in mat || "alpha" in mat) return { ok: false, reason: "material" };
   // bottom_height: 0 on a gold name is still rejected inside catalogMaterial.
   // A ski-hill building or canopy carries bottom_height (bottom height from floor)
   // and a raised top_height (top height from floor).

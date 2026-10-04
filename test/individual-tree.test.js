@@ -119,11 +119,11 @@ describe("an individual tree has a stem and a raised crown", () => {
     assert.ok(crown, "crown top stays the measured height");
     assert.ok(crown.area_material.bottom_height >= 2.5);
     assert.ok(crown.area_material.bottom_height < crown.area_material.top_height);
-    assert.equal(crown.area_material.transparencyEnabled, true);
+    assert.equal("transparencyEnabled" in crown.area_material, false);
     const trunk = trunks[0];
     assert.equal(trunk.area_material.top_height, crown.area_material.bottom_height);
     assert.equal("bottom_height" in trunk.area_material, false);
-    assert.equal(trunk.area_material.transparencyEnabled, true);
+    assert.equal("transparencyEnabled" in trunk.area_material, false);
     assert.equal(isPoisonedOiName(trunk.area_material.name), false);
     assert.equal(trunk.area_material.name.indexOf("Tree Trunk"), -1);
     const crownRing = oiRing(crown);
@@ -141,7 +141,7 @@ describe("an individual tree has a stem and a raised crown", () => {
     assert.ok(woods.length >= 1);
     for (const mass of woods) {
       assert.equal("bottom_height" in mass.area_material, false, mass.area_material.name);
-      assert.equal(mass.area_material.transparencyEnabled, true);
+      assert.equal("transparencyEnabled" in mass.area_material, false);
     }
     for (const a of areas) {
       const cat = built.openintent.area_materials.find((m) => m.name === a.area_material.name);

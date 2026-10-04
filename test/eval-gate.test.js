@@ -124,7 +124,7 @@ describe("eval gate with Include foliage on", () => {
       assert.equal(veg.length + trunks.length, next.exportStats.openIntentTrees.emitted);
       assert.ok(veg.length >= 1, site.id);
       for (const trunk of trunks) {
-        assert.equal(trunk.area_material.transparencyEnabled, true);
+        assert.equal("transparencyEnabled" in trunk.area_material, false);
         assert.ok(trunk.area_material.top_height > 0);
       }
       const { unzipStore } = require("../netlify/lib/zip-store");
