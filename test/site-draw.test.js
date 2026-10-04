@@ -224,12 +224,17 @@ describe("site draw gestures", () => {
     assert.notEqual(early.type, "commit-polygon");
   });
 
-  it("export commits an open ring of 3 or more and blocks a shorter one", () => {
+  it("export commits an open ring of 3 or more and blocks one or two corners with no finish control", () => {
     const session = createSession();
     assert.equal(prepareExport(session).type, "use-committed");
     arm(session);
     assert.equal(prepareExport(session).type, "use-committed");
     click(session, { x: 0, y: 0, lat: 1, lng: 2 });
+    const one = prepareExport(session);
+    assert.equal(one.type, "blocked");
+    assert.equal(one.count, 1);
+    assert.equal(session.vertices.length, 1);
+    assert.equal(session.armed, true);
     click(session, { x: 30, y: 0, lat: 1, lng: 3 });
     const blocked = prepareExport(session);
     assert.equal(blocked.type, "blocked");
