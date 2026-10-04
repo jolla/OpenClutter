@@ -11,6 +11,9 @@ const { llToPx, llToImagePx, metersPerDeg } = require("../../netlify/lib/geo-fra
 const {
   OI_BUILDING_NAMES,
   isVegetationOiName,
+  isLiftedBuildingName,
+  isLiftedMeasuredBuildingName,
+  isMeasuredBuildingOiName,
   buildingCatalog,
   isPoisonedOiName,
   COMPATIBILITY_MODE,
@@ -629,7 +632,12 @@ function scoreMaterialCompatibility(openintent) {
     names.length >= gold.length &&
     gold.every((g, i) => names[i] === g.name && JSON.stringify(mats[i]) === JSON.stringify(g));
   const extras = mats.slice(gold.length);
-  const customsOk = extras.every((m) => m && isVegetationOiName(m.name));
+  const allowedExtra = (name) =>
+    isVegetationOiName(name) ||
+    isLiftedBuildingName(name) ||
+    isLiftedMeasuredBuildingName(name) ||
+    isMeasuredBuildingOiName(name);
+  const customsOk = extras.every((m) => m && allowedExtra(m.name));
   const poisoned = names.some((n) => isPoisonedOiName(n));
   const byName = new Map(mats.map((m) => [m.name, m]));
   let consistent = buildingsExact && customsOk && !poisoned;
@@ -643,7 +651,7 @@ function scoreMaterialCompatibility(openintent) {
       consistent = false;
       break;
     }
-    if (!OI_BUILDING_NAMES.includes(name) && !isVegetationOiName(name)) {
+    if (!OI_BUILDING_NAMES.includes(name) && !allowedExtra(name)) {
       consistent = false;
       break;
     }

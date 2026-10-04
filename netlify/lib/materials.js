@@ -424,6 +424,7 @@ function isStockFoliageName(name) {
 function isVegetationOiName(name) {
   if (!name || isPoisonedOiName(name)) return false;
   if (isStockFoliageName(name)) return true;
+  if (isLiftedFoliageName(name)) return true;
   return /^Foliage - (?:Heavy|Light) \d+\.\d$/.test(name);
 }
 
@@ -629,7 +630,7 @@ function documentMaterials(areas) {
   for (const a of areas || []) {
     const mat = a && a.area_material;
     if (!mat || typeof mat !== "object") continue;
-    if (isVegetationOiName(mat.name)) {
+    if (isVegetationOiName(mat.name) && !isLiftedFoliageName(mat.name)) {
       if (!veg.has(mat.name)) veg.set(mat.name, JSON.parse(JSON.stringify(mat)));
       continue;
     }
