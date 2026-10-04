@@ -22,11 +22,17 @@ const CORE_FETCH_MS = 7000;
 const IMAGERY_ATTEMPT_MS = 8500;
 const IMAGERY_ATTEMPTS = 2;
 const IMAGERY_BACKOFF_MS = 400;
-// Dev host asks for a 2048 px / 0.5 m JPEG first. That size of a 500 m box
-// returned in ~9s. 11s still leaves a step-down to 1600 px, then 1040 px,
-// under the ~26s platform kill. 2400 px did not return within 18s.
-const IMAGERY_ATTEMPT_MS_DEV = 11000;
+// Dev host asks for a 2048 px / 0.5 m JPEG and waits for it. A Wynn-sized
+// box (~2221 m) at that size returned in about 12.5s. Aborting at 11s and
+// then fetching a smaller image kept the function silent past the gateway
+// (~30s with no bytes). The page showed that as "too large." 18s covers
+// that image and still returns before the gateway. A fast failure can still
+// step down. A slow fine image is the export. 2400 px is not the request.
+const IMAGERY_ATTEMPT_MS_DEV = 18000;
 const IMAGERY_STEPDOWN_MS = [8000, 6000];
+// Step down only when the sharp request fails immediately. A multi-second
+// wait is the fine image still coming back, not a reason to start another.
+const IMAGERY_STEPDOWN_QUICK_MS = 2000;
 // Live Oak Creek metadata was ~3.0s and pads latitude by ~500 m at the same
 // pixel size. The content extent is derived from the drawn box and the JPEG
 // pixel size (the same pad export?f=json returns), so a slow JSON cannot
@@ -185,10 +191,12 @@ function imagerySteps(devHost) {
   );
 }
 
-/** Same drawn box. A slow or failed sharp JPEG is replaced by the next smaller size. */
+/** Same drawn box. A fast failure of the sharp JPEG may use the next smaller size. A slow fine JPEG is kept. */
 async function fetchImageryStepped(bbox, steps) {
   let last;
+  const started = Date.now();
   for (let i = 0; i < steps.length; i++) {
+    if (i > 0 && Date.now() - started >= IMAGERY_STEPDOWN_QUICK_MS) break;
     const step = steps[i];
     const frame = geoFrame(bbox, { maxSide: step.maxSide, metersPerPx: step.metersPerPx });
     try {

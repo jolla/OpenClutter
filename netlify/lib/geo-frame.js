@@ -98,9 +98,11 @@ const IMAGERY_METERS_PER_PX = 1;
  * Dev-host export. Esri's dynamic export allows 4096 px, and the roof decode
  * refuses above 6 MP, so a square stops at 2048 (2048² is 4.2 MP). 0.5 m/px
  * is World Imagery's resolution across the United States. A live 500 m box
- * at that size (~1000 px) returned in about 3.5s. The same box at 2400 px
- * did not return within 18s, so 2400 is not the request. A timeout steps
- * down to the previous 1600 px / 1 m export, then to the production 1040 px.
+ * at that size (~1000 px) returned in about 3.5s. A ~2221 m box at 2048 px
+ * returned in about 12.5s, so that request is allowed to finish. The same
+ * 500 m box at 2400 px did not return within 18s, so 2400 is not the request.
+ * A fast failure can still use the previous 1600 px / 1 m export, then the
+ * production 1040 px. A slow fine image is not replaced.
  */
 const IMAGERY_MAX_SIDE_DEV = 2048;
 const IMAGERY_METERS_PER_PX_DEV = 0.5;

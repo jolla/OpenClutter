@@ -1204,6 +1204,8 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /L\.map\("map", \{ maxZoom: mapZoom \}\)/);
     assert.match(app, /World_Imagery\/MapServer\/tile/);
     assert.match(app, /imageryTiles\.options\.maxNativeZoom = z - 1/);
+    assert.match(app, /Export is still working\./);
+    assert.equal(/too large to finish in one export/.test(app), false);
     assert.equal(/resolution slider|imagery source/i.test(html + app), false);
   });
 
