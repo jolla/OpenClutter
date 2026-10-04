@@ -280,4 +280,60 @@ describe("footprint conflation", () => {
     assert.equal(plainType.bottomEdge, null);
     assert.equal(plainType.topEdge, 8);
   });
+
+  it("exports a tall nested tower at its measured height and leaves a short box as one object", () => {
+    const lat = 36.127;
+    const lon = -115.166;
+    // 1,000 m² tower on a 30,000 m² podium is under the old 4% inset floor.
+    const podium = metersBox(lon, lat, 200, 150, {
+      height: 22,
+      heightSource: "overture",
+      geomSource: "overture",
+    });
+    const tower = metersBox(lon, lat, 40, 25, {
+      height: 187,
+      heightSource: "overture",
+      geomSource: "overture",
+    });
+    const box = metersBox(lon + 0.004, lat, 28, 16, {
+      height: 8,
+      heightSource: "overture",
+      geomSource: "overture",
+    });
+    const separated = dedupeStackedFootprints([podium, tower, box]);
+    assert.equal(separated.features.length, 3);
+    assert.equal(separated.dropped + separated.merged, 0);
+    const upper = separated.features.find((f) => f.properties.height === 187);
+    assert.ok(upper);
+    assert.equal(upper.properties.levelBaseM, 22);
+    const frame = geoFrame({
+      west: lon - 0.006,
+      south: lat - 0.004,
+      east: lon + 0.008,
+      north: lat + 0.004,
+      name: "Wynn",
+    });
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [podium, tower, box] },
+      treePoints: [],
+      name: "Wynn",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    assert.equal(built.stats.buildings, 3);
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    const towerArea = areas.find((a) => a.area_material.bottom_height === 22);
+    assert.ok(towerArea, areas.map((a) => a.area_material.name).join("; "));
+    assert.equal(towerArea.area_material.top_height, 187);
+    assert.equal(towerArea.area_material.name, "Building - 165.0 @ 22.0");
+    assert.equal(areas.filter((a) => a.area_material.top_height === 187).length, 1);
+    const shorts = areas.filter((a) => a.area_material.name === "Building - Two Floor");
+    assert.equal(shorts.length, 1);
+    assert.equal(shorts[0].area_material.bottom_height, undefined);
+    const types = built.clipboard.attenuatingZoneTypes;
+    const paired = built.clipboard.attenuatingZones.map((z) => types.find((t) => t.id === z.typeId));
+    assert.ok(paired.some((t) => t && t.bottomEdge === 22 && t.topEdge === 187));
+    assert.equal(paired.filter((t) => t && t.topEdge === 8 && t.bottomEdge == null).length, 1);
+    assert.equal(built.clipboard.attenuatingZones.length, 3);
+  });
 });

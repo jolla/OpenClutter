@@ -15,6 +15,7 @@ const {
 } = require("./hamina-clipboard");
 const {
   materialForBuilding,
+  measuredExceedsStock,
   liftPickedBuilding,
   canonicalAreaMaterial,
   documentMaterials,
@@ -1214,8 +1215,17 @@ function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase
   const base = levelBase > 0 ? levelBase : 0;
   // A stepped plan uses the band above the lower footprint, not the full height.
   const band = base > 0 ? Math.round((heightM - base) * 10) / 10 : heightM;
-  const picked = materialForBuilding(band > 2 ? band : heightM, areaM2, {
-    exactMetres: heightSource === HEIGHT_SOURCE || base > 0,
+  const thickness = band > 2 ? band : heightM;
+  // Gold One/Two/Five/Ten Floor stop at 32 m. A measured tower above that
+  // is its own material. Nearby guesses stay in the stock buckets.
+  const measuredSource =
+    heightSource === "overture" ||
+    heightSource === "ms-global" ||
+    heightSource === "fema" ||
+    heightSource === "overture-floors" ||
+    heightSource === HEIGHT_SOURCE;
+  const picked = materialForBuilding(thickness, areaM2, {
+    exactMetres: heightSource === HEIGHT_SOURCE || base > 0 || (measuredSource && measuredExceedsStock(thickness)),
   });
   // Each ring is this piece, not the parent footprint. The drawn ring can
   // cover higher ground than the source ring, so the bottom clears all of them.
@@ -1404,15 +1414,22 @@ function ringCentroidLL(ring) {
   return end ? [sx / end, sy / end] : null;
 }
 
-function readHeight(feature) {
+function sourceHeight(feature) {
   const props = (feature && feature.properties) || {};
   const h = Number(props.height || props.Height || props.HEIGHT || 0);
-  return h > 2 && h < 80 ? h : 0;
+  return h > 2 && h < 400 ? h : 0;
+}
+
+/** Donors for a missing height stay under 80 m, so a tower is not copied onto a shed. */
+function readHeight(feature) {
+  const h = sourceHeight(feature);
+  return h > 0 && h < 80 ? h : 0;
 }
 
 /**
- * Buildings with no FEMA/MS height take the nearest measured height within 120 m.
- * Farther than that, the stock area bins remain the fallback.
+ * Buildings with no measured height take the nearest measured height within 120 m.
+ * A height already on the feature is kept, including a tower above 80 m.
+ * Farther than 120 m, the stock area bins remain the fallback.
  */
 function borrowNearbyHeights(features, frame) {
   if (!frame || !frame.mpd) return 0;
@@ -1428,7 +1445,7 @@ function borrowNearbyHeights(features, frame) {
   const maxD = 120 * 120;
   let n = 0;
   for (const f of features || []) {
-    if (readHeight(f)) continue;
+    if (sourceHeight(f)) continue;
     const rings = featureExteriorRings(f.geometry);
     const c = rings[0] && ringCentroidLL(rings[0]);
     if (!c) continue;

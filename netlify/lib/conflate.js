@@ -34,9 +34,12 @@
  *    L5211C3). It does not replace overture, MS, or FEMA heights.
  *    Microsoft height -1 and anything ≤ 2 m is ignored.
  *    Ties keep the height already on the kept ring.
- *    OpenIntent buildings use the four gold Building names. Trees use
- *    stock Foliage - Heavy / Light, or a measured-height custom. Exact metres
- *    are clipboard zone types only (materials.js, compatibilityMode stock-foliage).
+ *    A measured height above Hamina's Ten Floor stock (32 m) stays that
+ *    height on the OpenIntent object. A shorter measured building still uses
+ *    the four gold names. A taller inset of a larger footprint is its own
+ *    attenuating object (podium plan at the podium height, tower plan at the
+ *    tower height). A plain box is one object. Trees use stock Foliage -
+ *    Heavy / Light, or a measured-height custom.
  */
 
 const polygonClipping = require("polygon-clipping");
@@ -138,6 +141,15 @@ const LEVEL_MIN_DELTA_M = 6;
 const LEVEL_MIN_INNER_M2 = 180;
 const LEVEL_MIN_RATIO = 0.04;
 const LEVEL_MAX_RATIO = 0.8;
+/**
+ * A skyscraper on a casino podium is a few percent of that podium. The 4%
+ * floor still drops a modest step (a penthouse, a duplicate stub). A mass
+ * at least 40 m taller than the lower plan, or 40 m with no lower height,
+ * may be as small as 0.8% of the outer footprint.
+ */
+const LEVEL_TALL_DELTA_M = 40;
+const LEVEL_TALL_MIN_M = 40;
+const LEVEL_TALL_MIN_RATIO = 0.008;
 /** Same bands as pipeline isMegaCampus. A coarse campus hull is left for that filter. */
 const MEGA_CAMPUS_M2 = 150000;
 const HOTEL_MEGA_M2 = 400000;
@@ -204,24 +216,54 @@ function roundLevelM(n) {
 }
 
 /**
- * Height of the lower plan when `inner` is a taller inset of `outer`.
- * 0 when the pair is the same roof, a fragment, or a single box.
+ * A smaller footprint inside a larger one that is its own upper mass.
+ * `base` is the lower plan's measured height, or 0 when that plan has none
+ * (the upper mass then stands on the floor at its own height). Null when
+ * the pair is the same roof, a fragment, or a single box.
  */
-function levelBaseM(inner, outer, innerArea, outerArea) {
+function upperInset(inner, outer, innerArea, outerArea) {
   const th = featureHeight(inner);
   const ph = featureHeight(outer);
-  if (!(th > 0) || !(ph >= 2) || !(th >= ph + LEVEL_MIN_DELTA_M)) return 0;
+  if (!(th > 2)) return null;
   const ta = innerArea > 0 ? innerArea : featureAreaM2(inner);
   const pa = outerArea > 0 ? outerArea : featureAreaM2(outer);
-  if (!(ta >= LEVEL_MIN_INNER_M2) || !(pa > ta)) return 0;
+  if (!(ta >= LEVEL_MIN_INNER_M2) || !(pa > ta)) return null;
   const ratio = ta / pa;
-  if (ratio < LEVEL_MIN_RATIO || ratio > LEVEL_MAX_RATIO) return 0;
+  if (ratio > LEVEL_MAX_RATIO) return null;
   const innerRing = singleExterior(inner);
   const outerRing = singleExterior(outer);
-  if (!innerRing || !outerRing) return 0;
+  if (!innerRing || !outerRing) return null;
   const c = centroid(innerRing);
-  if (!c || !pointInRing(c, outerRing)) return 0;
-  return roundLevelM(ph);
+  if (!c || !pointInRing(c, outerRing)) return null;
+  const podiumKnown = ph >= 2;
+  const tall = th >= LEVEL_TALL_MIN_M && (!podiumKnown || th >= ph + LEVEL_TALL_DELTA_M);
+  const stepped = podiumKnown && th >= ph + LEVEL_MIN_DELTA_M;
+  if (!stepped && !tall) return null;
+  const minRatio = tall ? LEVEL_TALL_MIN_RATIO : LEVEL_MIN_RATIO;
+  if (ratio < minRatio) return null;
+  return { base: stepped ? roundLevelM(ph) : 0 };
+}
+
+/**
+ * Height of the lower plan when `inner` is a taller inset of `outer`.
+ * 0 when the pair is the same roof, a fragment, a single box, or an upper
+ * mass whose lower plan has no measured height.
+ */
+function levelBaseM(inner, outer, innerArea, outerArea) {
+  const hit = upperInset(inner, outer, innerArea, outerArea);
+  return hit && hit.base > 0 ? hit.base : 0;
+}
+
+function bestUpperInset(feature, area, others) {
+  let chosen = null;
+  for (let i = 0; i < others.length; i++) {
+    const other = others[i];
+    if (!other || other.feature === feature) continue;
+    const hit = upperInset(feature, other.feature, area, other.area);
+    if (!hit) continue;
+    if (!chosen || hit.base > chosen.base) chosen = hit;
+  }
+  return chosen;
 }
 
 function stampLevelBase(feature, base) {
@@ -319,15 +361,15 @@ function conflateFootprints(primary, secondary, opts) {
       }
       if (seen.has(owner.feature)) continue;
       seen.add(owner.feature);
-      const towerOnOwner = levelBaseM(f, owner.feature);
-      if (towerOnOwner > 0) {
-        stampLevelBase(f, towerOnOwner);
+      const towerOnOwner = upperInset(f, owner.feature);
+      if (towerOnOwner) {
+        if (towerOnOwner.base > 0) stampLevelBase(f, towerOnOwner.base);
         covered = false;
         continue;
       }
-      const ownerOnCandidate = levelBaseM(owner.feature, f);
-      if (ownerOnCandidate > 0) {
-        stampLevelBase(owner.feature, ownerOnCandidate);
+      const ownerOnCandidate = upperInset(owner.feature, f);
+      if (ownerOnCandidate) {
+        if (ownerOnCandidate.base > 0) stampLevelBase(owner.feature, ownerOnCandidate.base);
         covered = false;
         continue;
       }
@@ -674,9 +716,9 @@ function dedupeStackedFootprints(features) {
     }
     const hit = overlapAgainst(item, kept);
     const cover = item.area > 0 ? hit.inter / item.area : 0;
-    const level = bestLevelBase(item.feature, item.area, hit.targets);
-    if (level > 0 && hit.inter >= STACK_CUT_M2) {
-      stampLevelBase(item.feature, level);
+    const upper = bestUpperInset(item.feature, item.area, hit.targets);
+    if (upper && hit.inter >= STACK_CUT_M2) {
+      if (upper.base > 0) stampLevelBase(item.feature, upper.base);
       const copy = cloneKept(item, null, proj);
       if (copy) kept.push(copy);
       continue;

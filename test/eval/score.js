@@ -681,7 +681,7 @@ function scoreMeasuredHeights(features, overlayRings, overlayHeights, frame, ope
   for (const f of features || []) {
     const props = (f && f.properties) || {};
     const h = Number(props.height || props.Height || props.HEIGHT || 0);
-    if (!(h > 2 && h < 80)) continue;
+    if (!(h > 2 && h < 400)) continue;
     const rings = [];
     const g = f.geometry;
     if (!g) continue;
