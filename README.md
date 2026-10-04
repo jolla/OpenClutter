@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.45** on `dev` — A Wynn-sized draw exports again. The finer aerial (0.5 m pixels, up to a 2048 px long side) is kept when that image is slow. While the zip is still running, the status line says the export is still working. A slow export is not reported as an area that is too large. A smaller site still gets that finer image. There is no resolution slider. The map still follows Esri tiles through level 23. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.45`).
+
 **v1.1.44** on `dev` — The aerial on /dev is sharper. The map follows Esri World Imagery tiles through level 23, and a drawn site’s export asks for 0.5 m pixels up to a 2048 px long side. A slow or failed image steps down to the previous size instead of dropping the map. There is no resolution slider. Address, draw, and export stay the same. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.44`).
 
 **v1.1.42** on `dev` — A building on a slope is cut into the hill. Bottom height from floor is the downhill ground under that piece, and top height from floor is that bottom plus the building height, so the footprint meets the slope on the uphill side and continues down into the hillside on the downhill side. The roof stays the measured height above that ground. A footprint that climbs more than about 2.5 m is split so each piece keeps that height. A building on flat ground stays on the floor. Terrain paste stays a separate paste. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.42`).
@@ -61,7 +63,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.44`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, choose **Sloped** (default, one ramp or pad per cell) or **Raised layers** (stacked plates, at most 400 floors). The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The style radios hide when Terrain is off, and both the checkbox and the radios stay hidden off this host.
+- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.45`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, choose **Sloped** (default, one ramp or pad per cell) or **Raised layers** (stacked plates, at most 400 floors). The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The style radios hide when Terrain is off, and both the checkbox and the radios stay hidden off this host.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 

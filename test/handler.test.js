@@ -955,11 +955,11 @@ describe("dev-host Esri long side", () => {
     global.fetch = prev;
   });
 
-  it("keeps production at 8.5s and gives the dev host 11s for the larger JPEG", () => {
+  it("keeps production at 8.5s and gives the dev host 18s for the larger JPEG", () => {
     assert.equal(IMAGERY_ATTEMPT_MS, 8500);
-    assert.equal(IMAGERY_ATTEMPT_MS_DEV, 11000);
+    assert.equal(IMAGERY_ATTEMPT_MS_DEV, 18000);
     assert.equal(imageryAttemptMs(false), 8500);
-    assert.equal(imageryAttemptMs(true), 11000);
+    assert.equal(imageryAttemptMs(true), 18000);
   });
 
   it("asks Esri for 2048 px only on the dev host", async () => {
@@ -1013,6 +1013,98 @@ describe("dev-host Esri long side", () => {
     assert.ok(images.some((u) => /size=2048,/.test(u)), images.join("\n"));
     assert.ok(images.some((u) => /size=1600,/.test(u)), images.join("\n"));
     assert.equal(images.some((u) => /size=1040,/.test(u)), false);
+  });
+
+  it("keeps a slow 2048 px Wynn image instead of treating the draw as too large", async () => {
+    const seen = [];
+    global.fetch = async (url, init) => {
+      const u = String(url);
+      seen.push(u);
+      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=2048,")) {
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(resolve, 12000);
+          const signal = init && init.signal;
+          const abort = () => {
+            clearTimeout(timer);
+            reject(Object.assign(new Error("The operation was aborted due to timeout"), { name: "AbortError" }));
+          };
+          if (signal) {
+            if (signal.aborted) abort();
+            else signal.addEventListener("abort", abort, { once: true });
+          }
+        });
+        return { ok: true, arrayBuffer: async () => jpeg };
+      }
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: WYNN.west, ymin: WYNN.south, xmax: WYNN.east, ymax: WYNN.north },
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+      if (u.includes("getSamples") || u.includes("USFS_EDW_NLCD_TCC")) {
+        return { ok: true, json: async () => ({ samples: samples() }) };
+      }
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+    const t0 = Date.now();
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...WYNN, format: "bundle" }),
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(/too large to finish in one export/.test(res.body), false);
+    assert.ok(elapsed >= 11000, "elapsed " + elapsed);
+    assert.ok(elapsed < 18000, "elapsed " + elapsed);
+    const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
+    assert.deepEqual(
+      images.map((u) => (u.match(/size=\d+,\d+/) || [""])[0]),
+      ["size=2048,1529"]
+    );
+  });
+
+  it("still asks a smaller site for the finer image", async () => {
+    const small = { west: -115.166, south: 36.126, east: -115.161, north: 36.13, name: "Corner" };
+    const frame = geoFrame(small, { maxSide: 2048, metersPerPx: 0.5 });
+    const expectSide = Math.max(frame.imgW, frame.imgH);
+    assert.ok(expectSide < 1600, expectSide);
+    assert.ok(frame.mpuX < 0.8, frame.mpuX);
+    const seen = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      seen.push(u);
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: frame.imgW,
+            height: frame.imgH,
+            extent: { xmin: small.west, ymin: small.south, xmax: small.east, ymax: small.north },
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+      if (u.includes("getSamples") || u.includes("USFS_EDW_NLCD_TCC")) {
+        return { ok: true, json: async () => ({ samples: samples() }) };
+      }
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...small, format: "bundle" }),
+    });
+    assert.equal(res.statusCode, 200, res.body);
+    const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
+    assert.equal(images.length, 1, images.join("\n"));
+    assert.match(images[0], new RegExp("size=" + expectSide + ","));
+    assert.equal(/size=1600,|size=1040,/.test(images[0]), false);
   });
 });
 

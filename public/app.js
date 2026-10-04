@@ -618,13 +618,12 @@ if (copyTerrainBtn) {
 }
 
 function exportError(status, data) {
-  if (status === 504 || status === 408) {
-    const err = new Error("This area is too large to finish in one export. Draw a smaller area and try again.");
-    err.noRetry = true;
-    return err;
-  }
-  const err = new Error((data && data.error) || "Export failed (" + status + ")");
-  err.noRetry = status === 400 || status === 413;
+  // A gateway timeout is a quiet export that ran long. It is not a draw that is too large.
+  const slow = status === 504 || status === 408;
+  const err = new Error(
+    (data && data.error) || (slow ? "Export did not finish. Try again." : "Export failed (" + status + ")")
+  );
+  err.noRetry = status === 400 || status === 413 || slow;
   return err;
 }
 
@@ -680,7 +679,7 @@ document.getElementById("export").onclick = async () => {
   exportBtn.disabled = true;
   const includeFoliage = document.getElementById("include-foliage").checked;
   const includeTerrain = terrainExportEnabled();
-  setStatus(includeFoliage ? "Building map + buildings + canopy…" : "Building map + buildings…");
+  setStatus("Export is still working.");
   try {
     let trees = [];
     let treesSource = "none";
