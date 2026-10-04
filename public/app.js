@@ -619,13 +619,9 @@ if (copyTerrainBtn) {
 }
 
 function exportError(status, data) {
-  // A gateway timeout is a quiet export that ran long. It is not a draw that is too large.
-  const slow = status === 504 || status === 408;
-  const err = new Error(
-    (data && data.error) || (slow ? "Export did not finish. Try again." : "Export failed (" + status + ")")
-  );
-  err.noRetry = status === 400 || status === 413 || slow;
-  return err;
+  // A gateway timeout is a slow export the platform closed. It is tried again.
+  // It is not a draw that is too large.
+  return OpenClutterExport.failureError(status, data);
 }
 
 async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain) {
@@ -704,13 +700,9 @@ document.getElementById("export").onclick = async () => {
           ? canopy.parsed.hits
           : null;
     }
-    let data;
-    try {
-      data = await exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain);
-    } catch (e) {
-      if (e && e.noRetry) throw e;
-      data = await exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain);
-    }
+    const data = await OpenClutterExport.runExportAttempts(() =>
+      exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain)
+    );
     downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
     const terrainOff = includeTerrain === false;
     if (terrainOff) {
