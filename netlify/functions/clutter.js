@@ -22,25 +22,23 @@ const CORE_FETCH_MS = 7000;
 const IMAGERY_ATTEMPT_MS = 8500;
 const IMAGERY_ATTEMPTS = 2;
 const IMAGERY_BACKOFF_MS = 400;
-// Dev host asks for a 2048 px / 0.5 m JPEG and waits for it. A Wynn-sized
-// box (~2221 m) at that size returned in about 12.5s. Aborting at 11s and
-// then fetching a smaller image kept the function silent past the gateway
-// (~30s with no bytes). The page showed that as "too large." 18s covers
-// that image and still returns before the gateway. A fast failure can still
-// step down. A slow fine image is the export. 2400 px is not the request.
-const IMAGERY_ATTEMPT_MS_DEV = 18000;
-const IMAGERY_STEPDOWN_MS = [8000, 6000];
-// Step down immediately when the sharp request fails at once. A multi-second
-// wait that then aborts can still use the next size, but only inside the
-// time left before the gateway closes a silent export (~30s). A slow fine
-// JPEG that succeeds is kept and never reaches this step. A second image
-// is not started once this window is gone: that extra fetch, then the zip,
-// stayed silent until the gateway returned an empty failure.
+// Dev host asks for a 2048 px / 0.5 m JPEG first. A Wynn-sized box at that
+// size can sit past 12s. Waiting that out, then still reading footprints,
+// kept the function silent until the gateway closed it (~30s, empty 504).
+// The sharp request has this long. If it has not arrived, the next smaller
+// image must still finish, and the zip must be on the way, before
+// EXPORT_ANSWER_MS. 2400 px is not the request.
+const IMAGERY_ATTEMPT_MS_DEV = 7000;
+const IMAGERY_STEPDOWN_MS = [4000, 3500];
+// Step down immediately when the sharp request fails at once. A request
+// that is still out at the end of the sharp window steps down too, using
+// only the time left under IMAGERY_RETURN_MS. A sharp JPEG that arrives
+// inside the window is kept.
 const IMAGERY_STEPDOWN_QUICK_MS = 2000;
-const IMAGERY_RETURN_MS = 18000;
-// Optional reads stop here so the zip is the response. The gateway closes
-// a silent export around 30s and the page then has no JSON error to show.
-const EXPORT_ANSWER_MS = 21000;
+const IMAGERY_RETURN_MS = 15000;
+// Network waits stop here so the zip is the response. The gateway closes a
+// silent export around 30s, including cold start, so this stays well under that.
+const EXPORT_ANSWER_MS = 17000;
 // Live Oak Creek metadata was ~3.0s and pads latitude by ~500 m at the same
 // pixel size. The content extent is derived from the drawn box and the JPEG
 // pixel size (the same pad export?f=json returns), so a slow JSON cannot
@@ -90,7 +88,7 @@ const TERRAIN_COARSE_SAMPLES = 64;
 // that just missed. The slice must also end with time left to build the zip
 // under the ~26s platform kill.
 const TERRAIN_RESERVE_MS = 4000;
-const TERRAIN_PLATFORM_MS = 20000;
+const TERRAIN_PLATFORM_MS = EXPORT_ANSWER_MS;
 const TERRAIN_RESCUE_MIN_MS = 800;
 // Roof fill scans every footprint. On a dense draw that already spent 10s
 // fetching, skip it and emit the vector buildings.
@@ -235,7 +233,26 @@ async function fetchImageryStepped(bbox, steps) {
   throw last;
 }
 
-/** Headers and JPEG body share one AbortController per attempt. A timeout does not reuse that signal. */
+/**
+ * Headers and JPEG body share one deadline. Aborting the socket is not enough:
+ * a fetch that ignores the signal used to sit until the gateway returned 504.
+ * The race rejects on that deadline either way, and the next smaller image
+ * can still run.
+ */
+function imageryDeadline(ms, ctrl) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      ctrl.abort();
+      reject(Object.assign(new Error("The operation was aborted due to timeout"), { name: "AbortError" }));
+    }, ms);
+  });
+  return {
+    timeout: timeout,
+    clear: () => clearTimeout(timer),
+  };
+}
+
 async function fetchImageryJpeg(url, attemptMs) {
   const ceiling = attemptMs > 0 ? attemptMs : IMAGERY_ATTEMPT_MS;
   let last = "aerial imagery failed";
@@ -245,24 +262,29 @@ async function fetchImageryJpeg(url, attemptMs) {
     const budget = Math.min(ceiling, ceiling - (Date.now() - started));
     if (budget < 1200) break;
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), budget);
+    const deadline = imageryDeadline(budget, ctrl);
     try {
-      const r = await fetch(url, { headers: { "user-agent": UA }, signal: ctrl.signal });
-      if (!r.ok) {
-        last = "HTTP " + r.status;
-        timedOut = false;
-        if (r.status < 500) throw fail("imagery", last);
-      } else {
-        const buf = Buffer.from(await r.arrayBuffer());
-        if (buf.length < 100 || buf[0] !== 0xff || buf[1] !== 0xd8) throw fail("imagery", "imagery not jpeg");
-        return buf;
-      }
+      const buf = await Promise.race([
+        (async () => {
+          const r = await fetch(url, { headers: { "user-agent": UA }, signal: ctrl.signal });
+          if (!r.ok) {
+            const err = fail("imagery", "HTTP " + r.status);
+            if (r.status < 500) throw err;
+            throw Object.assign(new Error("HTTP " + r.status), { httpStatus: r.status });
+          }
+          const body = Buffer.from(await r.arrayBuffer());
+          if (body.length < 100 || body[0] !== 0xff || body[1] !== 0xd8) throw fail("imagery", "imagery not jpeg");
+          return body;
+        })(),
+        deadline.timeout,
+      ]);
+      return buf;
     } catch (e) {
       if (e && e.source) throw e;
       last = String(e && e.message ? e.message : e);
-      timedOut = isTimeout(e);
+      timedOut = isTimeout(e) || !(e && e.httpStatus);
     } finally {
-      clearTimeout(timer);
+      deadline.clear();
     }
     if (attempt + 1 >= IMAGERY_ATTEMPTS) break;
     const pause = IMAGERY_BACKOFF_MS * (attempt + 1);
