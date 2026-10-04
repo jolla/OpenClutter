@@ -722,8 +722,7 @@ document.getElementById("export").onclick = async () => {
         (warnLines.length ? "\n" + warnLines.join("\n") : "")
     );
   } catch (err) {
-    const message = err && err.message ? String(err.message) : "";
-    if (message) setStatus(message, true);
+    setStatus(OpenClutterExport.idleStatus(err), true);
   } finally {
     exportBtn.disabled = false;
   }

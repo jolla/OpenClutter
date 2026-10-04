@@ -684,7 +684,7 @@ describe("Overture join keeps a finished read after the core budget", () => {
   });
 
   it("keeps an in-flight Overture read after core has already passed 9s", async () => {
-    assert.ok(OVERTURE_HARD_MS > 18000, "Sphere read must outlast a slow Netlify core");
+    assert.ok(OVERTURE_HARD_MS > 14000, "Sphere read must outlast a slow aerial");
     assert.ok(OVERTURE_GRACE_MS >= 4000);
     const warnings = [];
     const job = beginOptional(
@@ -955,16 +955,18 @@ describe("dev-host Esri long side", () => {
     global.fetch = prev;
   });
 
-  it("keeps production at 8.5s and gives the dev host 18s for the larger JPEG", () => {
+  it("keeps production at 8.5s and steps a slow dev JPEG down inside the gateway", () => {
     assert.equal(IMAGERY_ATTEMPT_MS, 8500);
-    assert.equal(IMAGERY_ATTEMPT_MS_DEV, 18000);
+    assert.equal(IMAGERY_ATTEMPT_MS_DEV, 7000);
     assert.equal(imageryAttemptMs(false), 8500);
-    assert.equal(imageryAttemptMs(true), 18000);
-    assert.equal(IMAGERY_RETURN_MS, 18000);
-    assert.equal(imageryStepBudget(0, 8000), 8000);
-    assert.equal(imageryStepBudget(2100, 8000), 8000);
-    assert.equal(imageryStepBudget(18000, 8000), 0);
-    assert.equal(imageryStepBudget(21000, 8000), 0);
+    assert.equal(imageryAttemptMs(true), 7000);
+    assert.equal(IMAGERY_RETURN_MS, 15000);
+    assert.ok(IMAGERY_ATTEMPT_MS_DEV < IMAGERY_RETURN_MS);
+    assert.ok(IMAGERY_RETURN_MS < 26000);
+    assert.equal(imageryStepBudget(0, 4000), 4000);
+    assert.equal(imageryStepBudget(2100, 4000), 4000);
+    assert.equal(imageryStepBudget(7000, 4000), 4000);
+    assert.equal(imageryStepBudget(14000, 4000), 0);
   });
 
   it("asks Esri for 2048 px only on the dev host", async () => {
@@ -1065,7 +1067,7 @@ describe("dev-host Esri long side", () => {
       seen.push(u);
       if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=2048,")) {
         await new Promise((resolve, reject) => {
-          const timer = setTimeout(resolve, 12000);
+          const timer = setTimeout(resolve, 4000);
           const signal = init && init.signal;
           const abort = () => {
             clearTimeout(timer);
@@ -1103,8 +1105,8 @@ describe("dev-host Esri long side", () => {
     const elapsed = Date.now() - t0;
     assert.equal(res.statusCode, 200, res.body);
     assert.equal(/too large to finish in one export/.test(res.body), false);
-    assert.ok(elapsed >= 11000, "elapsed " + elapsed);
-    assert.ok(elapsed < 18000, "elapsed " + elapsed);
+    assert.ok(elapsed >= 3500, "elapsed " + elapsed);
+    assert.ok(elapsed < 12000, "elapsed " + elapsed);
     const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
     assert.deepEqual(
       images.map((u) => (u.match(/size=\d+,\d+/) || [""])[0]),
@@ -1112,7 +1114,8 @@ describe("dev-host Esri long side", () => {
     );
   });
 
-  it("returns a zip when a slow dev image is followed by hung footprint reads", async () => {
+  it("returns a zip when the sharp image is still out and footprints hang", async () => {
+    const seen = [];
     function hang(signal) {
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => resolve({ ok: false, status: 504, json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0) }), 30000);
@@ -1128,23 +1131,12 @@ describe("dev-host Esri long side", () => {
     }
     global.fetch = async (url, init) => {
       const u = String(url);
+      seen.push(u);
       if (u.includes("overturemaps") || u.includes("blob.core.windows.net/release") || u.includes("elevation.nationalmap.gov") || u.includes("getSamples")) {
         return hang(init && init.signal);
       }
       if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=2048,")) {
-        await new Promise((resolve, reject) => {
-          const timer = setTimeout(resolve, 12000);
-          const signal = init && init.signal;
-          const abort = () => {
-            clearTimeout(timer);
-            reject(Object.assign(new Error("The operation was aborted due to timeout"), { name: "AbortError" }));
-          };
-          if (signal) {
-            if (signal.aborted) abort();
-            else signal.addEventListener("abort", abort, { once: true });
-          }
-        });
-        return { ok: true, arrayBuffer: async () => jpeg };
+        return hang(init && init.signal);
       }
       if (u.includes("World_Imagery") && u.includes("f=json")) {
         return {
@@ -1170,10 +1162,13 @@ describe("dev-host Esri long side", () => {
     );
     const elapsed = Date.now() - t0;
     assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
-    assert.ok(elapsed < 26000, "elapsed " + elapsed);
+    assert.ok(elapsed < 22000, "elapsed " + elapsed);
     assert.equal(/Export failed\. Retry\./.test(res.body), false);
     assert.equal(/too large to finish in one export/.test(res.body), false);
     assert.equal(/did not finish/i.test(res.body), false);
+    const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
+    assert.ok(images.some((u) => /size=2048,/.test(u)), images.join("\n"));
+    assert.ok(images.some((u) => /size=1600,/.test(u)), images.join("\n"));
     const body = JSON.parse(res.body);
     assert.ok(body.zipBase64);
     assert.equal(res.headers && res.headers["content-type"], "application/json");
