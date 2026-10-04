@@ -474,9 +474,10 @@ function pickOiBuildingTypeId(areaM2, heightM) {
 
 /**
  * OpenIntent material is one of the four Hamina Building-* types, unless
- * opts.exactMetres is set (NLS laser, a stacked upper level, or any
- * measured height above the Ten Floor stock). Then it is "Building - H.H"
- * at the measured top_height. Clipboard still keeps the bldg-m-* type.
+ * opts.exactMetres is set (NLS laser, a stacked upper level, a dome or
+ * slope piece, or any measured height above the Ten Floor stock). Then it
+ * is "Building - H.H" at the measured top_height. Clipboard still keeps
+ * the bldg-m-* type.
  */
 function materialForBuilding(heightM, areaM2, opts) {
   const exact = measuredBuildingMaterial(heightM);

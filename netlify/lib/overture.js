@@ -176,6 +176,16 @@ function featureFromRow(row, bbox) {
       properties.numFloors = floors;
     }
   }
+  // Roof fields describe a recorded shape. min_height is the bottom of a
+  // floating volume, not the low side of a sloping roof, so it is not copied.
+  const roofShape = typeof row.roof_shape === "string" ? row.roof_shape.trim() : "";
+  if (roofShape) properties.roofShape = roofShape;
+  if (row.roof_direction !== null && row.roof_direction !== undefined && row.roof_direction !== "") {
+    const roofDir = Number(row.roof_direction);
+    if (Number.isFinite(roofDir)) properties.roofDirection = roofDir;
+  }
+  const roofH = Number(row.roof_height);
+  if (roofH > 0 && roofH < 400) properties.roofHeight = roofH;
   return { type: "Feature", properties, geometry };
 }
 
@@ -209,7 +219,7 @@ async function readGroupRows(reader, source, group, filter, signal) {
   const base = {
     file: source,
     compressors: reader.compressors,
-    columns: ["height", "num_floors", "bbox", "geometry", "is_underground"],
+    columns: ["height", "num_floors", "bbox", "geometry", "is_underground", "roof_shape", "roof_direction", "roof_height"],
     rowStart: group.rowStart,
     rowEnd: group.rowStart + group.rowCount,
   };

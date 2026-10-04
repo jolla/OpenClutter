@@ -24,6 +24,7 @@ const {
 } = require("./materials");
 const { treePairsFromPoints } = require("./vegetation");
 const { dedupeStackedFootprints } = require("./conflate");
+const { piecesForFeature } = require("./roof-form");
 const { zipStore } = require("./zip-store");
 const { TERRAIN_FILENAME, demUnderFootprint, normalizeTerrainResolution, GLO30_CREDIT, LIFT_LOCAL_M } = require("./terrain");
 const { overlaySvg, frameLockJson } = require("./overlay");
@@ -1211,13 +1212,15 @@ function slopeRingsForEmit(source, simple, pixelRing, frame) {
   return rings;
 }
 
-function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase) {
+function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase, shapePart) {
   const base = levelBase > 0 ? levelBase : 0;
   // A stepped plan uses the band above the lower footprint, not the full height.
   const band = base > 0 ? Math.round((heightM - base) * 10) / 10 : heightM;
   const thickness = band > 2 ? band : heightM;
   // Gold One/Two/Five/Ten Floor stop at 32 m. A measured tower above that
   // is its own material. Nearby guesses stay in the stock buckets.
+  // A dome band or a slope strip is a measured piece even when it is shorter
+  // than Ten Floor, so the steps stay at the recorded metres.
   const measuredSource =
     heightSource === "overture" ||
     heightSource === "ms-global" ||
@@ -1225,7 +1228,11 @@ function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase
     heightSource === "overture-floors" ||
     heightSource === HEIGHT_SOURCE;
   const picked = materialForBuilding(thickness, areaM2, {
-    exactMetres: heightSource === HEIGHT_SOURCE || base > 0 || (measuredSource && measuredExceedsStock(thickness)),
+    exactMetres:
+      heightSource === HEIGHT_SOURCE ||
+      base > 0 ||
+      shapePart === true ||
+      (measuredSource && measuredExceedsStock(thickness)),
   });
   // Each ring is this piece, not the parent footprint. The drawn ring can
   // cover higher ground than the source ring, so the bottom clears all of them.
@@ -1235,7 +1242,7 @@ function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase
   return picked;
 }
 
-function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase) {
+function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase, shapePart) {
   const amRaw = ringAreaM2(ring, frame.mpd);
   // Large detailed roofs (Wynn casino) self-intersect if Douglas–Peucker is too
   // aggressive; try a tighter pass before giving up as clip. These budgets
@@ -1262,7 +1269,19 @@ function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSou
 
   let lastFail = "skip";
   for (const [maxPts, eps] of budgets) {
-    const result = emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase);
+    const result = emitBuildingSimplified(
+      ring,
+      heightM,
+      frame,
+      affine,
+      buckets,
+      maxPts,
+      eps,
+      slopeTop,
+      heightSource,
+      levelBase,
+      shapePart
+    );
     if (result === "keep") return "keep";
     // Tiny clipped area will not grow with more verts. A one-axis sliver
     // will not grow a short side either — do not retry and double-count it.
@@ -1309,7 +1328,7 @@ function stashBuilding(buckets, frame, affine, clipRing, overlayPts, clipPx, pic
   );
 }
 
-function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase) {
+function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase, shapePart) {
   const simple = simplifyRing(ring, maxPts, eps);
   if (!simple || simple.length < 4) return "skip";
   const detailVerts = ringVertexCount(simple);
@@ -1341,7 +1360,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
   if (thinSliverDrop(clippedPts, minSpan)) {
     // Clipboard keeps the exact sliver. OpenIntent must not, or Hamina drops
     // every attenuating object.
-    const pickedThin = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase);
+    const pickedThin = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart);
     if (pickedThin.lifted) buckets.lifted++;
     stashBuilding(buckets, frame, affine, clipRing, clippedPts, clippedPts, pickedThin);
     return "span";
@@ -1351,7 +1370,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     if (ringVertexCount(clippedPts) > MAX_OI_RING_VERTS) return "verts";
     return "clip";
   }
-  const picked = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase);
+  const picked = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart);
   const area = emitIfValid(makeOiArea(oiCoords, picked.material), frame.imgW, frame.imgH);
   if (!area) return "invalid";
   buckets.oiAreas.push(area);
@@ -1506,35 +1525,52 @@ function footprintsToClutter(features, frame, affine, slopeTop) {
     lifted: 0,
   };
   for (const f of list) {
-    const g = f.geometry;
-    if (!g) continue;
-    const props = f.properties || {};
-    const heightM = Number(props.height || props.Height || props.HEIGHT || 0) || 0;
-    const heightSource = props.heightSource || "";
-    const levelBase = Number(props.levelBaseM) > 0 ? Number(props.levelBaseM) : 0;
-    const rings = featureExteriorRings(g);
-    if (!rings.length) continue;
-    for (const ring of rings) {
-      const parts = slopeTop && typeof slopeTop.split === "function" ? slopeTop.split(ring) : [ring];
-      for (let p = 0; p < parts.length; p++) {
-        if (oiAreas.length >= MAX_BUILDINGS) {
-          stats.droppedCap++;
-          continue;
-        }
-        const result = emitBuilding(parts[p], heightM, frame, affine, buckets, slopeTop, heightSource, levelBase);
-        if (result === "keep") {
-          stats.buildings++;
-          if (heightSource === HEIGHT_SOURCE && heightM > 2) {
-            stats.nlsHeights++;
-            if (!stats.nlsHeightMin || heightM < stats.nlsHeightMin) stats.nlsHeightMin = heightM;
-            if (heightM > stats.nlsHeightMax) stats.nlsHeightMax = heightM;
+    // Dome rings and slope strips are built after dedupe. Concentric copies
+    // fed through dedupe would be merged back into one slab.
+    const shaped = piecesForFeature(f);
+    for (let s = 0; s < shaped.length; s++) {
+      const piece = shaped[s];
+      const g = piece.geometry;
+      if (!g) continue;
+      const props = piece.properties || {};
+      const heightM = Number(props.height || props.Height || props.HEIGHT || 0) || 0;
+      const heightSource = props.heightSource || "";
+      const levelBase = Number(props.levelBaseM) > 0 ? Number(props.levelBaseM) : 0;
+      const shapePart = props.shapePart === true;
+      const rings = featureExteriorRings(g);
+      if (!rings.length) continue;
+      for (const ring of rings) {
+        const parts = slopeTop && typeof slopeTop.split === "function" ? slopeTop.split(ring) : [ring];
+        for (let p = 0; p < parts.length; p++) {
+          if (oiAreas.length >= MAX_BUILDINGS) {
+            stats.droppedCap++;
+            continue;
           }
-        } else if (result === "mega") stats.droppedMega++;
-        else if (result === "tiny") stats.droppedTiny++;
-        else if (result === "clip") stats.droppedClip++;
-        else if (result === "invalid") stats.droppedInvalid++;
-        else if (result === "span") stats.droppedSpan++;
-        else if (result === "verts") stats.droppedVerts++;
+          const result = emitBuilding(
+            parts[p],
+            heightM,
+            frame,
+            affine,
+            buckets,
+            slopeTop,
+            heightSource,
+            levelBase,
+            shapePart
+          );
+          if (result === "keep") {
+            stats.buildings++;
+            if (heightSource === HEIGHT_SOURCE && heightM > 2) {
+              stats.nlsHeights++;
+              if (!stats.nlsHeightMin || heightM < stats.nlsHeightMin) stats.nlsHeightMin = heightM;
+              if (heightM > stats.nlsHeightMax) stats.nlsHeightMax = heightM;
+            }
+          } else if (result === "mega") stats.droppedMega++;
+          else if (result === "tiny") stats.droppedTiny++;
+          else if (result === "clip") stats.droppedClip++;
+          else if (result === "invalid") stats.droppedInvalid++;
+          else if (result === "span") stats.droppedSpan++;
+          else if (result === "verts") stats.droppedVerts++;
+        }
       }
     }
   }
