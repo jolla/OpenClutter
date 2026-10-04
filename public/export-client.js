@@ -1,10 +1,12 @@
 /**
  * How the page treats an export response.
  *
- * A gateway timeout (empty 504 or 408) is a slow export the platform closed
- * before the function answered. Try it again while the status line stays
- * "Export is still working." A 400 or 413 is the request itself and is not
- * retried. The page does not report that timeout as an area that is too large.
+ * A gateway timeout (empty 504 or 408) and an empty 5xx are a slow export
+ * the platform closed before the function answered. A thrown fetch error is
+ * the same kind of miss. Try again while the status line stays
+ * "Export is still working." A later zip is the export. A 400 or 413 is the
+ * request itself and is not retried. The page does not report that wait as
+ * an area that is too large.
  *
  * Browser + Node.
  */
@@ -19,11 +21,12 @@
     const gateway = status === 504 || status === 408;
     const blocked = status === 400 || status === 413;
     const serverMessage = data && data.error ? String(data.error) : "";
+    const recoverable = !blocked;
     return {
-      message: serverMessage || "Export failed. Retry.",
-      retry: !blocked,
+      message: serverMessage || (blocked ? "Export failed (" + status + ")." : ""),
+      retry: recoverable,
       gateway: gateway,
-      attempts: blocked ? 1 : gateway ? 3 : 2,
+      attempts: recoverable ? 3 : 1,
     };
   }
 
@@ -38,7 +41,8 @@
 
   /**
    * Run the export until it returns or the failure says to stop.
-   * attemptFn throws a failureError. A gateway timeout gets three tries.
+   * A recoverable miss gets three tries. A later success is the zip.
+   * A thrown error with no attempt budget is recoverable too.
    */
   async function runExportAttempts(attemptFn) {
     let lastErr = null;
@@ -47,11 +51,12 @@
         return await attemptFn(attempt);
       } catch (e) {
         lastErr = e;
-        const allowed = e && e.attempts > 0 ? e.attempts : 1;
+        if (e && e.noRetry) break;
+        const allowed = e && e.attempts > 0 ? e.attempts : 3;
         if (attempt >= allowed) break;
       }
     }
-    throw lastErr || new Error("Export failed. Retry.");
+    throw lastErr;
   }
 
   return {
