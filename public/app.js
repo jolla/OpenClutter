@@ -42,15 +42,36 @@ let bbox = null;
 const includeTerrainInput = document.getElementById("include-terrain");
 if (includeTerrainInput) includeTerrainInput.addEventListener("change", syncTerrainControls);
 
-const map = L.map("map").setView([36.128, -115.16], 15);
+// World Imagery's tile pyramid ends at level 23 (~0.02 m at the equator).
+// Leaflet's default map zoom is 18, which is why a drawn site looked soft.
+// On /dev the map follows that pyramid. A missing high level steps the
+// native zoom down so the last good tiles scale up instead of breaking the map.
+const ESRI_TILE_MAX_ZOOM = 23;
+const mapZoom = devPage() ? ESRI_TILE_MAX_ZOOM : 18;
+const map = L.map("map", { maxZoom: mapZoom }).setView([36.128, -115.16], 15);
 L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
   attribution: "&copy; OSM &copy; CARTO",
-  maxZoom: 20,
+  maxZoom: mapZoom,
+  maxNativeZoom: 20,
 }).addTo(map);
-L.tileLayer(
+const imageryTiles = L.tileLayer(
   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-  { opacity: 0.85, maxZoom: 19, attribution: "Esri" }
+  {
+    opacity: 0.85,
+    maxZoom: devPage() ? ESRI_TILE_MAX_ZOOM : 19,
+    maxNativeZoom: devPage() ? ESRI_TILE_MAX_ZOOM : 19,
+    attribution: "Esri",
+  }
 ).addTo(map);
+if (devPage()) {
+  imageryTiles.on("tileerror", function (ev) {
+    const z = ev.coords && ev.coords.z;
+    const native = imageryTiles.options.maxNativeZoom;
+    if (typeof z !== "number" || !(z > 19) || z < native) return;
+    imageryTiles.options.maxNativeZoom = z - 1;
+    imageryTiles.redraw();
+  });
+}
 
 const OUTLINE = {
   color: "#3fb950",

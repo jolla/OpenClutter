@@ -22,9 +22,11 @@ const CORE_FETCH_MS = 7000;
 const IMAGERY_ATTEMPT_MS = 8500;
 const IMAGERY_ATTEMPTS = 2;
 const IMAGERY_BACKOFF_MS = 400;
-// Dev host requests a 1600px JPEG. A ~2.4 km square at that size came back in
-// ~10s, which the 8.5s abort would drop. 12s still sits under the ~26s platform kill.
-const IMAGERY_ATTEMPT_MS_DEV = 12000;
+// Dev host asks for a 2048 px / 0.5 m JPEG first. That size of a 500 m box
+// returned in ~9s. 11s still leaves a step-down to 1600 px, then 1040 px,
+// under the ~26s platform kill. 2400 px did not return within 18s.
+const IMAGERY_ATTEMPT_MS_DEV = 11000;
+const IMAGERY_STEPDOWN_MS = [8000, 6000];
 // Live Oak Creek metadata was ~3.0s and pads latitude by ~500 m at the same
 // pixel size. The content extent is derived from the drawn box and the JPEG
 // pixel size (the same pad export?f=json returns), so a slow JSON cannot
@@ -85,7 +87,7 @@ const DENSE_FEATURES = 1500;
 // against the synchronous payload budget before the response is returned.
 const ZIP_FIT_BYTES = 4200000;
 const ZIP_SHRINK_STEPS = [640, 400, 240];
-const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, padFootprintBbox, imageryMaxSide } = require("../lib/geo-frame");
+const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, padFootprintBbox, imageryExportPlan } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
@@ -168,9 +170,34 @@ async function fetchImageryMeta(url) {
   }
 }
 
-/** Production stays on the 8.5s ceiling. The dev host gets a longer one for the 1600px JPEG. */
+/** Production stays on the 8.5s ceiling. The dev host gets a longer first try for the 2048px JPEG. */
 function imageryAttemptMs(devHost) {
   return devHost ? IMAGERY_ATTEMPT_MS_DEV : IMAGERY_ATTEMPT_MS;
+}
+
+function imagerySteps(devHost) {
+  const plan = imageryExportPlan(devHost);
+  if (!devHost) {
+    return plan.map((step) => Object.assign({ attemptMs: IMAGERY_ATTEMPT_MS }, step));
+  }
+  return plan.map((step, i) =>
+    Object.assign({ attemptMs: i === 0 ? IMAGERY_ATTEMPT_MS_DEV : IMAGERY_STEPDOWN_MS[i - 1] }, step)
+  );
+}
+
+/** Same drawn box. A slow or failed sharp JPEG is replaced by the next smaller size. */
+async function fetchImageryStepped(bbox, steps) {
+  let last;
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    const frame = geoFrame(bbox, { maxSide: step.maxSide, metersPerPx: step.metersPerPx });
+    try {
+      return await fetchImageryJpeg(esriImageryUrl(frame), step.attemptMs);
+    } catch (e) {
+      last = e;
+    }
+  }
+  throw last;
 }
 
 /** Headers and JPEG body share one AbortController per attempt. A timeout does not reuse that signal. */
@@ -508,7 +535,7 @@ function parseFormat(body) {
 }
 
 function decodeImagery(imgBuf) {
-  // 1600² is ~2.6 MP and the live 1600px JPEGs were ~0.4–1.1 MB, under both limits.
+  // 2048² is 4.2 MP. A live 2048 px JPEG was about 1 MB, under both limits.
   if (!imgBuf || imgBuf.length < 100 || imgBuf.length > 3500000) return null;
   try {
     const jpeg = require("jpeg-js");
@@ -629,10 +656,11 @@ async function handleClutter(event) {
   }
 
   const devHost = isDevDemHost(event);
-  const maxSide = imageryMaxSide(devHost);
+  const steps = imagerySteps(devHost);
+  const maxSide = steps[0].maxSide;
   let frame;
   try {
-    frame = geoFrame(body, { maxSide });
+    frame = geoFrame(body, { maxSide: steps[0].maxSide, metersPerPx: steps[0].metersPerPx });
   } catch (e) {
     return json(400, cors, { error: String(e.message || e) });
   }
@@ -653,7 +681,6 @@ async function handleClutter(event) {
   const needImage = format !== "hamina-clipboard";
   const terrainResolution = terrainResolutionFromRequest(event, body);
   const terrainStyle = terrainStyleFromRequest(event, body);
-  const imgUrl = esriImageryUrl(frame);
   const imgMetaUrl = esriImageryMetaUrl(frame);
   const includeFoliage = wantFoliage(event, body);
   const includeTerrain = wantTerrain(event, body);
@@ -693,7 +720,7 @@ async function handleClutter(event) {
       east: frame.east,
       north: frame.north,
     };
-    const imageryJob = needImage ? fetchImageryJpeg(imgUrl, imageryAttemptMs(devHost)) : Promise.resolve(null);
+    const imageryJob = needImage ? fetchImageryStepped(requestBbox, steps) : Promise.resolve(null);
     if (needImage) {
       frame = applyImageryMeta(frame, null, { width: frame.imgW, height: frame.imgH }, { requestBbox });
     }

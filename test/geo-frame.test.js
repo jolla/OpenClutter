@@ -28,7 +28,10 @@ const {
   metersPerDeg,
   IMAGERY_MAX_SIDE,
   IMAGERY_MAX_SIDE_DEV,
+  IMAGERY_METERS_PER_PX_DEV,
   imageryMaxSide,
+  imageryMetersPerPx,
+  imageryExportPlan,
   msFootprintsUrl,
   fetchMsFootprints,
   padFootprintBbox,
@@ -72,36 +75,46 @@ describe("shared geo frame", () => {
     assert.ok(longSide >= 900, String(longSide));
   });
 
-  it("keeps a campus near 1 m/px when the dev long side is 1600", () => {
+  it("requests 0.5 m pixels up to 2048 on the dev host", () => {
     const oak = {
       west: -87.92259693145752,
       south: 42.89043196008693,
       east: -87.91184663772584,
       north: 42.90325386116256,
     };
-    assert.equal(IMAGERY_MAX_SIDE_DEV, 1600);
-    assert.equal(imageryMaxSide(true), 1600);
-    // decodeImagery refuses above 6 MP. 1600² stays under that.
+    assert.equal(IMAGERY_MAX_SIDE_DEV, 2048);
+    assert.equal(IMAGERY_METERS_PER_PX_DEV, 0.5);
+    assert.equal(imageryMaxSide(true), 2048);
+    assert.equal(imageryMetersPerPx(true), 0.5);
+    // Roof decode refuses above 6 MP. 2048² stays under that. 2400 did not.
     assert.ok(IMAGERY_MAX_SIDE_DEV * IMAGERY_MAX_SIDE_DEV < 6e6);
+    assert.ok(IMAGERY_MAX_SIDE_DEV > 1600);
+    const plan = imageryExportPlan(true);
+    assert.deepEqual(
+      plan.map((step) => step.maxSide),
+      [2048, 1600, 1040]
+    );
+    assert.deepEqual(imageryExportPlan(false), [{ maxSide: 1040, metersPerPx: 1 }]);
     const prod = geoFrame(oak);
-    const dev = geoFrame(oak, { maxSide: imageryMaxSide(true) });
+    const dev = geoFrame(oak, { maxSide: imageryMaxSide(true), metersPerPx: imageryMetersPerPx(true) });
     assert.ok(Math.max(prod.imgW, prod.imgH) <= 1040);
     const devSide = Math.max(dev.imgW, dev.imgH);
-    assert.ok(devSide > 1040, String(devSide));
-    assert.ok(devSide <= 1600, String(devSide));
-    assert.ok(Math.abs(dev.mpuX - 1) < 0.02, String(dev.mpuX));
-    assert.ok(Math.abs(dev.mpuY - 1) < 0.02, String(dev.mpuY));
+    assert.equal(devSide, 2048);
+    assert.ok(dev.mpuX < 0.8, String(dev.mpuX));
+    assert.ok(dev.mpuX < prod.mpuX);
     assert.ok(Math.abs(dev.imgW / dev.imgH - dev.widthM / dev.lengthM) < 0.02);
   });
 
-  it("caps a large box at 1600 on the dev side and 1040 in production", () => {
+  it("caps a large box at 2048 on the dev side and 1040 in production", () => {
     const prod = geoFrame(WYNN);
-    const dev = geoFrame(WYNN, { maxSide: imageryMaxSide(true) });
+    const dev = geoFrame(WYNN, { maxSide: imageryMaxSide(true), metersPerPx: imageryMetersPerPx(true) });
+    const old = geoFrame(WYNN, { maxSide: 1600, metersPerPx: 1 });
     assert.equal(Math.max(prod.imgW, prod.imgH), 1040);
-    assert.equal(Math.max(dev.imgW, dev.imgH), 1600);
-    assert.ok(dev.mpuX < prod.mpuX);
+    assert.equal(Math.max(old.imgW, old.imgH), 1600);
+    assert.equal(Math.max(dev.imgW, dev.imgH), 2048);
+    assert.ok(dev.mpuX < old.mpuX);
     assert.ok(Math.abs(dev.imgW / dev.imgH - dev.widthM / dev.lengthM) < 0.02);
-    assert.match(esriImageryUrl(dev), /size=1600,/);
+    assert.match(esriImageryUrl(dev), /size=2048,/);
     assert.match(esriImageryUrl(prod), /size=1040,/);
   });
 
@@ -394,7 +407,7 @@ describe("isotropic aspect lock after Esri N/S pad", () => {
     }
   });
 
-  it("keeps a JPEG between 1040 and 1600 px on the dev cap and still locks mpu", () => {
+  it("keeps a JPEG under the dev cap and still locks mpu", () => {
     const fs = require("fs");
     const path = require("path");
     const jpeg = fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/imagery.jpg"));
@@ -419,16 +432,16 @@ describe("isotropic aspect lock after Esri N/S pad", () => {
     assert.ok(clip[1] > -locked.frame.lengthM - 0.05 && clip[1] < 0.05);
   });
 
-  it("downscales a JPEG past 1600 px without changing aspect or mpu", () => {
+  it("downscales a JPEG past 2048 px without changing aspect or mpu", () => {
     const jpeg = require("jpeg-js");
-    const w = 1610;
-    const h = 900;
+    const w = 2100;
+    const h = 1200;
     const data = Buffer.alloc(w * h * 4, 140);
     const enc = jpeg.encode({ data, width: w, height: h }, 40);
     const frame = geoFrame(WYNN, { imgW: w, imgH: h, maxSpanM: 10000, minSpanM: 1 });
     const locked = lockIsotropicImagery(frame, Buffer.from(enc.data), { maxSide: IMAGERY_MAX_SIDE_DEV });
     assert.equal(locked.resampled, true);
-    assert.equal(Math.max(locked.frame.imgW, locked.frame.imgH), 1600);
+    assert.equal(Math.max(locked.frame.imgW, locked.frame.imgH), 2048);
     assert.equal(isAspectLocked(locked.frame), true);
     assert.equal(locked.frame.mpuX, locked.frame.mpuY);
     assert.ok(Math.abs(locked.frame.lengthM - locked.frame.imgH * locked.frame.mpu) < 1e-6);
