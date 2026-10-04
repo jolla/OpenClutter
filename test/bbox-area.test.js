@@ -5,14 +5,23 @@ const assert = require("node:assert/strict");
 const { metersPerDeg: frameMetersPerDeg } = require("../netlify/lib/geo-frame");
 const {
   FEET_PER_M,
+  SPAN_CAMPUS_M,
+  AREA_HECTARE_M2,
   metersPerDeg,
   bboxSidesM,
   bboxSidesFt,
   formatFeet,
-  formatBboxFeet,
+  bboxReadout,
   ringAreaM2,
-  formatPolygonSqFt,
+  polygonReadout,
 } = require("../public/bbox-area");
+
+const WYNN = {
+  west: -115.1735,
+  south: 36.1205,
+  east: -115.1488,
+  north: 36.1355,
+};
 
 describe("bbox width × length in feet", () => {
   it("matches geo-frame meters per degree (latitude, not a flat degree grid)", () => {
@@ -37,8 +46,11 @@ describe("bbox width × length in feet", () => {
     const feet = bboxSidesFt(bbox);
     assert.ok(Math.abs(feet.widthFt - 328.0839895) < 1e-6);
     assert.ok(Math.abs(feet.lengthFt - 164.04199475) < 1e-6);
-    assert.equal(formatBboxFeet(bbox), "328 × 164 ft");
-    assert.equal(formatBboxFeet(bbox).includes("sq ft"), false);
+    const line = bboxReadout(bbox);
+    assert.equal(line.text, "100 m · 328 ft · 5,000 m² · 53,820 sq ft");
+    assert.match(line.html, /<span class="area-quiet">328 ft<\/span>/);
+    assert.match(line.html, /<span class="area-quiet">53,820 sq ft<\/span>/);
+    assert.equal(line.text.startsWith("100 m"), true);
   });
 
   it("shrinks east-west feet at Wisconsin latitude versus Las Vegas", () => {
@@ -61,34 +73,70 @@ describe("bbox width × length in feet", () => {
     assert.ok(vegas.widthFt < flatWidth * 0.85, `vegas width ${vegas.widthFt} should account for cos(lat)`);
   });
 
-  it("formats with US commas as width × length ft", () => {
+  it("formats with US commas and keeps a short site in meters", () => {
     assert.equal(formatFeet(1280), "1,280");
     assert.equal(formatFeet(0.4), "");
     assert.equal(formatFeet(0), "");
     assert.equal(formatFeet(NaN), "");
     const lat = 36.13;
     const mpd = metersPerDeg(lat);
-    const widthM = 1280 / FEET_PER_M;
-    const lengthM = 980 / FEET_PER_M;
+    const spanM = 40;
     const bbox = {
       west: -115.17,
-      east: -115.17 + widthM / mpd.lon,
-      south: lat - lengthM / 2 / mpd.lat,
-      north: lat + lengthM / 2 / mpd.lat,
+      east: -115.17 + spanM / mpd.lon,
+      south: lat - spanM / 2 / mpd.lat,
+      north: lat + spanM / 2 / mpd.lat,
     };
-    assert.equal(formatBboxFeet(bbox), "1,280 × 980 ft");
+    const line = bboxReadout(bbox);
+    assert.equal(line.text.startsWith("40 m · 131 ft"), true);
+    assert.equal(line.text.includes("km"), false);
+    assert.equal(/0\.0\d km/.test(line.text), false);
   });
 
   it("treats swapped corners as the same box", () => {
     const a = { west: -115.2, south: 36.1, east: -115.15, north: 36.14 };
     const b = { west: -115.15, south: 36.14, east: -115.2, north: 36.1 };
-    assert.equal(formatBboxFeet(a), formatBboxFeet(b));
-    assert.match(formatBboxFeet(a), /^\d{1,3}(,\d{3})* × \d{1,3}(,\d{3})* ft$/);
-    assert.equal(formatBboxFeet(null), "");
+    assert.equal(bboxReadout(a).text, bboxReadout(b).text);
+    assert.equal(bboxReadout(null), null);
   });
 });
 
-describe("polygon area in square feet", () => {
+describe("span steps up to kilometers on a campus", () => {
+  it("reads a Wynn-sized site in kilometers and miles, with hectares", () => {
+    assert.equal(SPAN_CAMPUS_M, 1000);
+    assert.equal(AREA_HECTARE_M2, 100000);
+    const sides = bboxSidesM(WYNN);
+    const span = Math.max(sides.widthM, sides.lengthM);
+    assert.ok(span > 2000 && span < 2500, span);
+    const line = bboxReadout(WYNN);
+    assert.equal(line.text, "2.2 km · 1.4 mi · 368 ha · 910 acres");
+    assert.equal(line.text.startsWith("2.2 km"), true);
+    assert.equal(/\bft\b/.test(line.text), false);
+    assert.equal(/sq ft/.test(line.text), false);
+    assert.match(line.html, /<span class="area-quiet">1\.4 mi<\/span>/);
+    assert.match(line.html, /<span class="area-quiet">910 acres<\/span>/);
+  });
+
+  it("keeps a few-hundred-meter site in meters and steps a large area to hectares", () => {
+    const lat = 36.13;
+    const mpd = metersPerDeg(lat);
+    const bbox = {
+      west: -115.17,
+      east: -115.17 + 400 / mpd.lon,
+      south: lat - 150 / mpd.lat,
+      north: lat + 150 / mpd.lat,
+    };
+    assert.equal(bboxReadout(bbox).text, "400 m · 1,312 ft · 12 ha · 29.7 acres");
+  });
+
+  it("does not lead a campus with thousands of feet", () => {
+    const line = bboxReadout(WYNN).text;
+    assert.equal(/^\d{1,3}(,\d{3})+ ft/.test(line), false);
+    assert.equal(line.includes("7,287"), false);
+  });
+});
+
+describe("polygon area readout", () => {
   const lat = 36.128;
   const mpd = metersPerDeg(lat);
   const south = lat - 25 / mpd.lat;
@@ -102,15 +150,15 @@ describe("polygon area in square feet", () => {
     { lat: north, lng: west },
   ];
 
-  it("matches width × length of the same corners, in square feet", () => {
+  it("matches the box readout for the same corners", () => {
     const m2 = ringAreaM2(rect);
     const sides = bboxSidesM({ west: west, south: south, east: east, north: north });
     assert.ok(Math.abs(m2 - sides.widthM * sides.lengthM) < 1e-4);
-    const sqft = m2 * FEET_PER_M * FEET_PER_M;
-    assert.equal(formatPolygonSqFt(rect), Math.round(sqft).toLocaleString("en-US") + " sq ft");
-    assert.match(formatPolygonSqFt(rect), /sq ft$/);
-    assert.equal(formatPolygonSqFt(rect).includes("×"), false);
-    assert.equal(formatBboxFeet({ west: west, south: south, east: east, north: north }).includes("sq ft"), false);
+    const box = bboxReadout({ west: west, south: south, east: east, north: north });
+    const ring = polygonReadout(rect);
+    assert.equal(ring.text, box.text);
+    assert.equal(ring.text, "100 m · 328 ft · 5,000 m² · 53,820 sq ft");
+    assert.equal(ring.text.startsWith("sq ft"), false);
   });
 
   it("keeps a triangle smaller than the box and ignores winding and a closing vertex", () => {
@@ -123,7 +171,11 @@ describe("polygon area in square feet", () => {
     assert.ok(Math.abs(ringAreaM2(reversed) - rectM2) < 1e-6);
     const closed = rect.concat([{ lat: rect[0].lat, lng: rect[0].lng }]);
     assert.ok(Math.abs(ringAreaM2(closed) - rectM2) < 1e-6);
-    assert.equal(formatPolygonSqFt([rect[0], rect[1]]), "");
-    assert.equal(formatPolygonSqFt(null), "");
+    assert.equal(polygonReadout([rect[0], rect[1]]), null);
+    assert.equal(polygonReadout(null), null);
+    const triLine = polygonReadout([rect[0], rect[1], rect[2]]);
+    assert.ok(triLine.text.includes("m²"));
+    assert.ok(triLine.text.includes("sq ft"));
+    assert.equal(triLine.text.startsWith("100 m"), true);
   });
 });
