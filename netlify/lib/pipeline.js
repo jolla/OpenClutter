@@ -71,15 +71,17 @@ const ZIP_README =
 const LIFT_BARE_EARTH =
   "Flat sites omit bottom_height, so bottom height from floor stays the floor (about 0)\n" +
   "and top height from floor stays the building or canopy height. Do not write bottom_height: 0.\n" +
-  "When a terrain mesh is pasted, a building or canopy polygon sets bottom_height\n" +
-  "to the top of that mesh under the footprint and top_height to that bottom plus the\n" +
-  "building height or the foliage height. A hill under 20 m is included.\n" +
+  "When a terrain mesh is pasted, a building sets bottom_height to the downhill\n" +
+  "ground under that piece and top_height to that bottom plus the building height.\n" +
+  "The uphill side of the piece is cut into the ramp. Canopy still uses the uphill\n" +
+  "slope under that canopy. A hill under 20 m is included.\n" +
   "Ground under 1 m omits bottom_height.\n";
 
 const LIFT_SURFACE =
   "This export used Copernicus DEM GLO-30, a surface model.\n" +
-  "Building and canopy polygons set bottom_height to the DEM under that footprint\n" +
-  "and top_height to that bottom plus the building or foliage height.\n" +
+  "A building sets bottom_height to the downhill ground under that piece and\n" +
+  "top_height to that bottom plus the building height. Canopy still uses the\n" +
+  "uphill slope under that canopy, plus the foliage height.\n" +
   "The 20 m ski-hill gate does not apply. Ground under 1 m omits bottom_height.\n" +
   "Do not write bottom_height: 0.\n";
 
@@ -289,15 +291,17 @@ const TERRAIN_README =
   "The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
   "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
   "Building attenuating objects stay in this OpenIntent zip. When this mesh is pasted,\n" +
-  "bottom_height is bottom height from floor (the top of the slope under the footprint,\n" +
+  "bottom_height is bottom height from floor (the downhill ground under that piece,\n" +
   "including a hill under 20 m) and top_height is top height from floor (that bottom\n" +
-  "plus the building height).\n" +
+  "plus the building height). The uphill side of the piece is cut into the ramp.\n" +
   "With Include foliage on, canopy polygons use the same pair: bottom_height is the\n" +
   "slope top under that canopy, and top_height is that bottom plus the foliage height.\n" +
   "Clipboard zone types use the same pair as bottomEdge and topEdge. Flat ground\n" +
   "omits bottom_height so the bottom stays on the floor.\n" +
-  "A footprint that climbs more than about 8 m is split, and each piece uses the\n" +
-  "slope top under that piece. A taller plan inside a shorter one is two objects:\n" +
+  "A footprint that climbs more than about 2.5 m is split. Each piece meets the\n" +
+  "downhill ground under that piece, and its top is that ground plus the building\n" +
+  "height, so the roof stays at the measured height and the downhill face does not\n" +
+  "hang above the ramp. A taller plan inside a shorter one is two objects:\n" +
   "the lower footprint up to its height, then the upper footprint from that height\n" +
   "to the taller top. A single simple box stays one object.\n" +
   "Retest Granite Peak: Import this zip (Projects → Import → OpenIntent), Copy terrain,\n" +
@@ -344,13 +348,16 @@ const TERRAIN_README_SURFACE =
   "slopedFloors are open xyz quads (z = meters above that same low point).\n" +
   "The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
   "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
-  "Building attenuating objects stay in this OpenIntent zip. They sit on this DEM:\n" +
-  "bottom_height is the slope top under that footprint, and top_height is that\n" +
-  "bottom plus the building height. Canopy polygons use that bottom plus the\n" +
-  "foliage height. The bare-earth 20 m ski-hill gate does not apply here.\n" +
+  "Building attenuating objects stay in this OpenIntent zip. They are cut into this DEM:\n" +
+  "bottom_height is the downhill ground under that piece, and top_height is that\n" +
+  "bottom plus the building height. The uphill side of the piece is in the ramp.\n" +
+  "Canopy polygons still use the uphill slope under that canopy, plus the foliage\n" +
+  "height. The bare-earth 20 m ski-hill gate does not apply here.\n" +
   "A footprint whose ground is under 1 m omits bottom_height. Do not write bottom_height: 0.\n" +
-  "A footprint that climbs more than about 8 m is split, and each piece uses the\n" +
-  "slope top under that piece. A taller plan inside a shorter one is two objects:\n" +
+  "A footprint that climbs more than about 2.5 m is split. Each piece meets the\n" +
+  "downhill ground under that piece, and its top is that ground plus the building\n" +
+  "height, so the roof stays at the measured height and the downhill face does not\n" +
+  "hang above the ramp. A taller plan inside a shorter one is two objects:\n" +
   "the lower footprint up to its height, then the upper footprint from that height\n" +
   "to the taller top. A single simple box stays one object.\n" +
   "Retest: Import this zip (Projects → Import → OpenIntent), Copy terrain,\n" +
@@ -1220,6 +1227,27 @@ function maxSlopeTop(slopeTop, rings) {
   return bottom;
 }
 
+/**
+ * Downhill ground under the piece. Hamina draws the pasted floor as a ramp,
+ * so a single bottom at the uphill end floats and the downhill face hangs
+ * past the slope. The lowest seat is where the box meets the hill. The roof
+ * stays the measured height above that ground.
+ */
+function slopeSeat(slopeTop, rings) {
+  if (typeof slopeTop !== "function" || !rings) return 0;
+  const seatFn = typeof slopeTop.seat === "function" ? slopeTop.seat : null;
+  if (!seatFn) return maxSlopeTop(slopeTop, rings);
+  let bottom = Infinity;
+  let n = 0;
+  for (let i = 0; i < rings.length; i++) {
+    const z = Number(seatFn(rings[i]));
+    if (!Number.isFinite(z)) continue;
+    if (z < bottom) bottom = z;
+    n++;
+  }
+  return n ? bottom : 0;
+}
+
 /** Source ring, the simplified ring, and the ring actually drawn on the image. */
 function slopeRingsForEmit(source, simple, pixelRing, frame) {
   const rings = [];
@@ -1264,9 +1292,9 @@ function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase
       shapePart === true ||
       (measuredSource && measuredExceedsStock(thickness)),
   });
-  // Each ring is this piece, not the parent footprint. The drawn ring can
-  // cover higher ground than the source ring, so the bottom clears all of them.
-  let bottom = maxSlopeTop(slopeTop, rings);
+  // Each piece meets the downhill ground under its own ring and keeps the
+  // measured height above that ground. A flat pad under 1 m omits the bottom.
+  let bottom = slopeSeat(slopeTop, rings);
   bottom += base;
   if (bottom >= LIFT_LOCAL_M) return liftPickedBuilding(picked, bottom);
   return picked;

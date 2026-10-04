@@ -13,7 +13,7 @@
  * No itu_material_type. bottom_height is omitted on flat sites (Hamina rejected
  * bottom_height: 0 on a gold material as "Invalid OpenIntent format").
  * Bare-earth ski hills, and any surface DEM mesh, set it: bottom height from
- * floor is the slope top under the footprint, and top_height is that bottom
+ * floor is the downhill ground under that piece, and top_height is that bottom
  * plus the building or canopy height. The 20 m gate is bare-earth only.
  *
  * Picker (2026-09): Foliage - Heavy is 19.68 ft / 2 dB/m, Foliage - Light is
@@ -209,7 +209,7 @@ function liftedMeasuredBuildingMaterial(base, bottomM) {
 
 /**
  * OpenIntent material for one building on a slope.
- * bottom_height = bottom height from floor (slope top under the footprint).
+ * bottom_height = bottom height from floor (downhill ground under that piece).
  * top_height = that bottom + the stock building height (top height from floor).
  * The name stays a Building - * Floor prefix so it is not "Building N.N m".
  */
