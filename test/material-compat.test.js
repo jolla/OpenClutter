@@ -4,6 +4,8 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { buildClutter, validateOiArea, MAX_ATTENUATION_AREAS } = require("../netlify/lib/pipeline");
+const fs = require("node:fs");
+const path = require("node:path");
 const {
   catalogMaterials,
   buildingCatalog,
@@ -11,9 +13,20 @@ const {
   OI_BUILDING_NAMES,
   OI_BUILDING_TYPES,
   materialForVegetation,
+  materialForBuilding,
+  measuredOiBuildingMaterial,
+  buildingColor,
   stockFoliageMaterial,
   isVegetationOiName,
   isPoisonedOiName,
+  BUILDING_NEUTRAL_COLOR,
+  BUILDING_COLOR_SHORT,
+  BUILDING_COLOR_LOW,
+  BUILDING_COLOR_MID,
+  BUILDING_COLOR_TALL,
+  BUILDING_COLOR_TOWER,
+  FOLIAGE_HEAVY_NAME,
+  FOLIAGE_LIGHT_NAME,
 } = require("../netlify/lib/materials");
 const { scoreMaterialCompatibility } = require("./eval/score");
 const { canopyHitsGrid } = require("./canopy-grid");
@@ -452,5 +465,83 @@ describe("Hamina OpenIntent material compatibility", () => {
     );
     assert.equal(withBottom.ok, false);
     assert.equal(withBottom.reason, "material");
+  });
+
+  it("colors buildings from vertical height and leaves foliage alone", () => {
+    const stops = [4.5, 7.62, 15.24, 32, 187];
+    const colors = stops.map((h) => buildingColor(h));
+    assert.equal(new Set(colors).size, 5);
+    assert.deepEqual(colors, [
+      BUILDING_COLOR_SHORT,
+      BUILDING_COLOR_LOW,
+      BUILDING_COLOR_MID,
+      BUILDING_COLOR_TALL,
+      BUILDING_COLOR_TOWER,
+    ]);
+    assert.equal(buildingColor(4.5), "#377EB8");
+    assert.equal(buildingColor(187), "#F0E442");
+    assert.notEqual(buildingColor(4.5), buildingColor(187));
+    for (const h of [0, 2, NaN, null, undefined]) {
+      assert.equal(buildingColor(h), BUILDING_NEUTRAL_COLOR);
+    }
+    assert.equal(BUILDING_NEUTRAL_COLOR, "#8B949E");
+    const old = new Set(["#9AA5AC", "#9A4159"]);
+    for (const c of colors.concat([BUILDING_NEUTRAL_COLOR])) {
+      assert.equal(old.has(c), false, c);
+    }
+    for (const t of OI_BUILDING_TYPES) {
+      assert.equal(t.color, buildingColor(t.topEdge), t.name);
+      assert.equal(t.attenuationDbPerMeter, 5);
+    }
+    assert.deepEqual(
+      OI_BUILDING_TYPES.map((t) => t.name),
+      [
+        "Building - One Floor",
+        "Building - Two Floor",
+        "Building - Five Floor",
+        "Building - Ten Floor",
+      ]
+    );
+    assert.deepEqual(
+      OI_BUILDING_TYPES.map((t) => t.topEdge),
+      [4.5, 7.620092660326749, 15.240185320653499, 32]
+    );
+    const one = catalogMaterials().find((m) => m.name === "Building - One Floor");
+    const tower = measuredOiBuildingMaterial(187);
+    assert.equal(one.display_color, "#377EB8");
+    assert.equal(one.top_height, 4.5);
+    assert.equal(tower.name, "Building - 187.0");
+    assert.equal(tower.top_height, 187);
+    assert.equal(tower.display_color, "#F0E442");
+    const shortMeasured = measuredOiBuildingMaterial(4.5);
+    assert.equal(shortMeasured.display_color, "#377EB8");
+    const stockShort = materialForBuilding(4.5, 80);
+    assert.equal(stockShort.material.name, "Building - One Floor");
+    assert.equal(stockShort.material.display_color, "#377EB8");
+    const exactTower = materialForBuilding(187, 80, { exactMetres: true });
+    assert.equal(exactTower.material.display_color, "#F0E442");
+    assert.equal(exactTower.material.name, "Building - 187.0");
+    // A missing height does not become a tower color. The stock object keeps
+    // the height it already had. The color function itself stays neutral.
+    const unknownLarge = materialForBuilding(0, 9000);
+    assert.equal(unknownLarge.material.name, "Building - Ten Floor");
+    assert.equal(unknownLarge.material.top_height, 32);
+    assert.equal(unknownLarge.material.display_color, BUILDING_COLOR_TALL);
+    assert.notEqual(unknownLarge.material.display_color, BUILDING_COLOR_TOWER);
+    const heavy = stockFoliageMaterial("heavy");
+    const light = stockFoliageMaterial("light");
+    assert.equal(heavy.name, FOLIAGE_HEAVY_NAME);
+    assert.equal(light.name, FOLIAGE_LIGHT_NAME);
+    assert.equal(heavy.display_color, "#3F7D2A");
+    assert.equal(light.display_color, "#6FA84A");
+    const buildingColors = new Set(colors.concat([BUILDING_NEUTRAL_COLOR]));
+    assert.equal(buildingColors.has(heavy.display_color), false);
+    assert.equal(buildingColors.has(light.display_color), false);
+    const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+    const app = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
+    assert.equal(html.includes("building-legend"), false);
+    assert.equal(html.includes("height-color"), false);
+    assert.equal(app.includes("building-legend"), false);
+    assert.equal(app.includes("height-color"), false);
   });
 });
