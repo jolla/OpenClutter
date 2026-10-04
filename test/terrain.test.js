@@ -817,7 +817,7 @@ describe("foliage height from floor on a slope", () => {
         area.area_material.top_height,
         Math.round((area.area_material.bottom_height + 14.2) * 10) / 10
       );
-      assert.equal(area.area_material.transparencyEnabled, true);
+      assert.equal("transparencyEnabled" in area.area_material, false);
     }
     const zone = built.clipboard.attenuatingZones.find((z) => String(z.typeId).indexOf("foliage-m-14_2-b") === 0);
     const type = built.clipboard.attenuatingZoneTypes.find((t) => t.id === zone.typeId);
@@ -864,14 +864,13 @@ describe("foliage height from floor on a slope", () => {
     assert.ok(hillMat.bottom_height >= 50, "bottom " + hillMat.bottom_height);
     assert.equal(hillMat.top_height, Math.round((hillMat.bottom_height + stockTop) * 10) / 10);
     assert.equal(hillMat.name, "Foliage - Light @ " + hillMat.bottom_height.toFixed(1));
-    assert.equal(hillMat.transparencyEnabled, true);
+    assert.equal("transparencyEnabled" in hillMat, false);
     assert.deepEqual(Object.keys(hillMat), [
       "name",
       "rf_properties",
       "top_height",
       "bottom_height",
       "display_color",
-      "transparencyEnabled",
     ]);
     assert.equal(hillMat.rf_properties.attenuation_per_m, 1);
     assert.equal(hillMat.display_color, "#6FA84A");

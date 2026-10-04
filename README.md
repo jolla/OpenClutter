@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.43** on `dev` — OpenIntent has no transparency field. Canopy and tree materials in the zip use the same keys as buildings. Hamina’s OpenIntent import does not read Transparency in 3D, so the zip cannot make tree tops see-through. Include foliage stays off and Experimental. Buildings stay opaque. The badge stays (`dev · v1.1.43`).
+
 **v1.1.42** on `dev` — A building on a slope is cut into the hill. Bottom height from floor is the downhill ground under that piece, and top height from floor is that bottom plus the building height, so the footprint meets the slope on the uphill side and continues down into the hillside on the downhill side. The roof stays the measured height above that ground. A footprint that climbs more than about 2.5 m is split so each piece keeps that height. A building on flat ground stays on the floor. Terrain paste stays a separate paste. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.42`).
 
 **v1.1.41** on `dev` — Include foliage stays off and Experimental. When it is on, a compact measured crown is one tree: a stem under the crown, the crown bottom above the ground, and the crown top still at the measured height. A continuous canopy stays one mass on the ground. Tree points are not turned into trees. Buildings stay as they are. There is no extra switch on the page. The badge stays (`dev · v1.1.41`).
@@ -59,7 +61,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.42`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, choose **Sloped** (default, one ramp or pad per cell) or **Raised layers** (stacked plates, at most 400 floors). The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The style radios hide when Terrain is off, and both the checkbox and the radios stay hidden off this host.
+- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.43`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, choose **Sloped** (default, one ramp or pad per cell) or **Raised layers** (stacked plates, at most 400 floors). The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The style radios hide when Terrain is off, and both the checkbox and the radios stay hidden off this host.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 
@@ -79,7 +81,7 @@ One bbox drives everything:
 
 ### Materials that import
 
-Building `area_material` objects keep exactly these keys: `name`, `rf_properties.attenuation_per_m`, `top_height`, `display_color`. Foliage adds `transparencyEnabled: true`, the flag Hamina already uses for Transparent in 3D on an attenuating zone type. Buildings omit that key. No `itu_material_type`, no `bottom_height` on a flat site. The object deep-equals its catalog entry (a stock name with a different `top_height` is rejected). Buildings are always the gold prefix. A vegetation material is added only when an area uses it, so a buildings-only zip stays the four gold objects. Clipboard foliage types set the same `transparencyEnabled` flag; building types leave it false. Hamina only draws that transparency when Transparency effects are on in Settings.
+Building and foliage `area_material` objects keep exactly these keys: `name`, `rf_properties.attenuation_per_m`, `top_height`, `display_color`. A slope adds `bottom_height`. OpenIntent 2.0.1’s material object is `name`, `itu_material_type`, `rf_properties`, `thickness_m`, `bottom_height`, `top_height`, `display_color`. There is no transparency or opacity property. Hamina’s support matrix marks Transparency in 3D as not supported in the schema on export and on import, so the zip cannot make a tree top see-through. No `itu_material_type`. No `bottom_height` on a flat site. The object deep-equals its catalog entry (a stock name with a different `top_height` is rejected). Buildings are always the gold prefix. A vegetation material is added only when an area uses it, so a buildings-only zip stays the four gold objects. Clipboard foliage zone types still set Hamina’s own `transparencyEnabled` (Transparent in 3D). Building clipboard types leave it false. That flag is on the paste file. Importing the zip does not set it.
 
 | Name | Color | Top height | dB/m | Used for |
 |---|---|---|---|---|

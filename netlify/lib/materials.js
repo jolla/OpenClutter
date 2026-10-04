@@ -3,14 +3,16 @@
 /**
  * Buildings keep Hamina's gold outdoor objects (Jerry's export).
  * Canopy uses the stock outdoor foliage objects from the Attenuating Objects
- * picker, with the same four keys as those buildings, plus the flag Hamina's
- * 3D view already reads on an attenuating zone type:
- *   name, rf_properties.attenuation_per_m, top_height, display_color,
- *   transparencyEnabled
- * OpenIntent 2.0.1 has no opacity property. Hamina's client schema strips
- * unknown keys and does not fail the document for them. transparencyEnabled
- * is the Transparent-in-3D flag (true on foliage and trees, omitted on buildings).
- * No itu_material_type. bottom_height is omitted on flat sites (Hamina rejected
+ * picker, with the same keys as those buildings:
+ *   name, rf_properties.attenuation_per_m, top_height, display_color
+ * OpenIntent 2.0.1 material properties (google/openintent oi-wifi.schema.json,
+ * tags 2.0.1 and 2.0.2) are name, itu_material_type, rf_properties, thickness_m,
+ * bottom_height, top_height, display_color. There is no transparency or opacity
+ * field. Hamina's OpenIntent support matrix marks Transparency in 3D as not
+ * supported in the schema on export and on import, so a key on the zip is
+ * ignored. transparencyEnabled belongs to Hamina's clipboard zone type
+ * (Transparent in 3D), not to area_material. Buildings and tree tops both omit
+ * it on OpenIntent. No itu_material_type. bottom_height is omitted on flat sites (Hamina rejected
  * bottom_height: 0 on a gold material as "Invalid OpenIntent format").
  * Bare-earth ski hills, and any surface DEM mesh, set it: bottom height from
  * floor is the downhill ground under that piece, and top_height is that bottom
@@ -132,15 +134,9 @@ function oiMaterial(name, color, top, dbPerM) {
   };
 }
 
-/** Same object as a building material, plus Hamina's see-through flag. Buildings never get this key. */
+/** Same keys as a building material. OpenIntent has no transparency field. */
 function foliageOiMaterial(name, color, top, dbPerM) {
-  return {
-    name,
-    rf_properties: { attenuation_per_m: dbPerM },
-    top_height: top,
-    display_color: color,
-    transparencyEnabled: true,
-  };
+  return oiMaterial(name, color, top, dbPerM);
 }
 
 function roundTenths(n) {
@@ -323,7 +319,6 @@ function liftedFoliageMaterial(material, bottomM) {
     top_height: top,
     bottom_height: bottom,
     display_color: material.display_color,
-    transparencyEnabled: true,
   };
 }
 
@@ -442,7 +437,6 @@ function trunkOiMaterial(stemM, groundM) {
       top_height: roundTenths(ground + stem),
       bottom_height: ground,
       display_color: TRUNK_COLOR,
-      transparencyEnabled: true,
     };
   }
   return {
@@ -450,7 +444,6 @@ function trunkOiMaterial(stemM, groundM) {
     rf_properties: { attenuation_per_m: TRUNK_DB },
     top_height: stem,
     display_color: TRUNK_COLOR,
-    transparencyEnabled: true,
   };
 }
 
@@ -519,15 +512,19 @@ function individualTreeParts(material, groundM) {
   return { crownMat, crownClip, trunkMat, trunkClip };
 }
 
+function inventedTransparencyKey(material) {
+  return "transparencyEnabled" in material || "opacity" in material || "alpha" in material;
+}
+
 function canonicalTrunk(material) {
   if (!material || typeof material !== "object" || Array.isArray(material)) return null;
-  if ("itu_material_type" in material || material.transparencyEnabled !== true) return null;
+  if ("itu_material_type" in material || inventedTransparencyKey(material)) return null;
   const lifted = LIFTED_TRUNK_NAME.exec(material.name || "");
   if (lifted) {
     if (!("bottom_height" in material)) return null;
     const keys = Object.keys(material);
-    if (keys.length !== 6) return null;
-    if (!keys.every((k) => ["name", "rf_properties", "top_height", "bottom_height", "display_color", "transparencyEnabled"].includes(k))) return null;
+    if (keys.length !== 5) return null;
+    if (!keys.every((k) => ["name", "rf_properties", "top_height", "bottom_height", "display_color"].includes(k))) return null;
     const canon = trunkOiMaterial(Number(lifted[1]), Number(lifted[2]));
     if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
     return canon;
@@ -535,8 +532,8 @@ function canonicalTrunk(material) {
   const plain = TRUNK_NAME.exec(material.name || "");
   if (!plain || "bottom_height" in material) return null;
   const keys = Object.keys(material);
-  if (keys.length !== 5) return null;
-  if (!keys.every((k) => ["name", "rf_properties", "top_height", "display_color", "transparencyEnabled"].includes(k))) return null;
+  if (keys.length !== 4) return null;
+  if (!keys.every((k) => ["name", "rf_properties", "top_height", "display_color"].includes(k))) return null;
   const canon = trunkOiMaterial(Number(plain[1]), 0);
   if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
   return canon;
@@ -674,11 +671,10 @@ function canonicalLiftedBuilding(material) {
 
 function canonicalLiftedFoliage(material) {
   if (!material || typeof material !== "object" || Array.isArray(material)) return null;
-  if ("itu_material_type" in material || !("bottom_height" in material)) return null;
+  if ("itu_material_type" in material || inventedTransparencyKey(material) || !("bottom_height" in material)) return null;
   const keys = Object.keys(material);
-  if (keys.length !== 6) return null;
-  if (material.transparencyEnabled !== true) return null;
-  if (!keys.every((k) => ["name", "rf_properties", "top_height", "bottom_height", "display_color", "transparencyEnabled"].includes(k))) return null;
+  if (keys.length !== 5) return null;
+  if (!keys.every((k) => ["name", "rf_properties", "top_height", "bottom_height", "display_color"].includes(k))) return null;
   const parsed = LIFTED_FOLIAGE_NAME.exec(material.name || "");
   if (!parsed) return null;
   const tier = parsed[1] === "Light" ? "light" : "heavy";
@@ -720,7 +716,7 @@ function canonicalLiftedMeasuredBuilding(material) {
 
 function canonicalAreaMaterial(material) {
   if (!material || typeof material !== "object" || Array.isArray(material)) return null;
-  if ("itu_material_type" in material) return null;
+  if ("itu_material_type" in material || inventedTransparencyKey(material)) return null;
   if (isTrunkOiName(material.name)) return canonicalTrunk(material);
   if ("bottom_height" in material) {
     if (isLiftedFoliageName(material.name)) return canonicalLiftedFoliage(material);
