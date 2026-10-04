@@ -33,9 +33,14 @@ const IMAGERY_STEPDOWN_MS = [8000, 6000];
 // Step down immediately when the sharp request fails at once. A multi-second
 // wait that then aborts can still use the next size, but only inside the
 // time left before the gateway closes a silent export (~30s). A slow fine
-// JPEG that succeeds is kept and never reaches this step.
+// JPEG that succeeds is kept and never reaches this step. A second image
+// is not started once this window is gone: that extra fetch, then the zip,
+// stayed silent until the gateway returned an empty failure.
 const IMAGERY_STEPDOWN_QUICK_MS = 2000;
-const IMAGERY_RETURN_MS = 22000;
+const IMAGERY_RETURN_MS = 18000;
+// Optional reads stop here so the zip is the response. The gateway closes
+// a silent export around 30s and the page then has no JSON error to show.
+const EXPORT_ANSWER_MS = 21000;
 // Live Oak Creek metadata was ~3.0s and pads latitude by ~500 m at the same
 // pixel size. The content extent is derived from the drawn box and the JPEG
 // pixel size (the same pad export?f=json returns), so a slow JSON cannot
@@ -51,10 +56,11 @@ const SKIP_OPTIONAL_AFTER_MS = 5000;
 const OVERTURE_GRACE_MS = 4500;
 // A dense campus row group (Universal Hollywood, ~23k rows) still needs about
 // 14s after a fast core. The short grace stays for smaller draws so a hung
-// read cannot stretch Oak Creek. hardMs still cuts a slow core at 23s.
+// read cannot stretch Oak Creek. hardMs cuts the wait at EXPORT_ANSWER_MS
+// so a slow aerial still leaves time to return the zip.
 const OVERTURE_LARGE_GRACE_MS = 15000;
 const LARGE_DRAW_SIDE_M = 1500;
-const OVERTURE_HARD_MS = 23000;
+const OVERTURE_HARD_MS = EXPORT_ANSWER_MS;
 // Terrain overlaps the JPEG. On the dev host it starts with the JPEG, on the
 // predicted content grid, so a slow metadata response does not eat the read.
 // Production still waits for that snap. grace/hard match joinOptional.
@@ -1238,7 +1244,11 @@ async function handleClutter(event) {
   return result;
 }
 
-exports.handler = async (event) => {
+exports.handler = async (event, context) => {
+  // An image or footprint socket that is still open must not hold the zip.
+  // The gateway turns that silence into an empty 504, and the page has no
+  // JSON error to show.
+  if (context) context.callbackWaitsForEmptyEventLoop = false;
   try {
     return await handleClutter(event);
   } catch (e) {
@@ -1256,6 +1266,7 @@ exports.imageryAttemptMs = imageryAttemptMs;
 exports.IMAGERY_ATTEMPT_MS = IMAGERY_ATTEMPT_MS;
 exports.IMAGERY_ATTEMPT_MS_DEV = IMAGERY_ATTEMPT_MS_DEV;
 exports.IMAGERY_RETURN_MS = IMAGERY_RETURN_MS;
+exports.EXPORT_ANSWER_MS = EXPORT_ANSWER_MS;
 exports.imageryStepBudget = imageryStepBudget;
 exports.beginOptional = beginOptional;
 exports.joinOptional = joinOptional;

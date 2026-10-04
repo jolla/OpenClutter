@@ -722,7 +722,8 @@ document.getElementById("export").onclick = async () => {
         (warnLines.length ? "\n" + warnLines.join("\n") : "")
     );
   } catch (err) {
-    setStatus(String(err && err.message ? err.message : "Export failed. Retry."), true);
+    const message = err && err.message ? String(err.message) : "";
+    if (message) setStatus(message, true);
   } finally {
     exportBtn.disabled = false;
   }
