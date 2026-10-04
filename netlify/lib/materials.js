@@ -90,8 +90,23 @@ const POISONED_OI_NAMES = ["Tree Trunk", "Hotel podium"];
 
 function roundHeightM(heightM) {
   const n = Number(heightM);
+  // Foliage and trunk customs stay under 80 m. A building uses roundBuildingHeightM.
   if (!(n > 2 && n < 80)) return 0;
   return Math.round(n * 10) / 10;
+}
+
+/** Same rounding as a foliage height, up to the ingest cap. A 190 m tower is kept. */
+function roundBuildingHeightM(heightM) {
+  const n = Number(heightM);
+  if (!(n > 2 && n < 400)) return 0;
+  return Math.round(n * 10) / 10;
+}
+
+/** True when a measured building is taller than Hamina's Ten Floor stock (32 m). */
+function measuredExceedsStock(heightM) {
+  const h = roundBuildingHeightM(heightM);
+  const ten = OI_BUILDING_BY_ID["bldg-ten"].topEdge;
+  return h > ten + STOCK_HEIGHT_TOL_M;
 }
 
 function buildingColor(h) {
@@ -164,7 +179,7 @@ function isLiftedMeasuredBuildingName(name) {
  * Name is "Building - H.H", the foliage custom shape, not "Building N.N m".
  */
 function measuredOiBuildingMaterial(heightM) {
-  const h = roundHeightM(heightM);
+  const h = roundBuildingHeightM(heightM);
   if (!h) return null;
   const name = "Building - " + h.toFixed(1);
   if (!isMeasuredBuildingOiName(name) || isPoisonedOiName(name)) return null;
@@ -350,7 +365,7 @@ function clipType(id, name, color, top, dbPerM, opts) {
 }
 
 function measuredBuildingMaterial(heightM) {
-  const h = roundHeightM(heightM);
+  const h = roundBuildingHeightM(heightM);
   if (!h) return null;
   const name = "Building " + h.toFixed(1) + " m";
   const color = buildingColor(h);
@@ -459,8 +474,9 @@ function pickOiBuildingTypeId(areaM2, heightM) {
 
 /**
  * OpenIntent material is one of the four Hamina Building-* types, unless
- * opts.exactMetres is set (NLS laser). Then it is "Building - H.H" at the
- * measured top_height. Clipboard still keeps the bldg-m-* type either way.
+ * opts.exactMetres is set (NLS laser, a stacked upper level, or any
+ * measured height above the Ten Floor stock). Then it is "Building - H.H"
+ * at the measured top_height. Clipboard still keeps the bldg-m-* type.
  */
 function materialForBuilding(heightM, areaM2, opts) {
   const exact = measuredBuildingMaterial(heightM);
@@ -669,6 +685,8 @@ function documentMaterials(areas) {
 
 module.exports = {
   roundHeightM,
+  roundBuildingHeightM,
+  measuredExceedsStock,
   buildingColor,
   measuredBuildingMaterial,
   measuredFoliageMaterial,

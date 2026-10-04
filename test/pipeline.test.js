@@ -558,7 +558,8 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(cap.stats.droppedMega, 0);
     assert.equal(cap.stats.droppedTiny, 0);
     assert.equal(cap.stats.droppedClip, 0);
-    assert.equal(cap.oiAreas[0].area_material.name, "Building - Ten Floor");
+    assert.equal(cap.oiAreas[0].area_material.name, "Building - 112.0");
+    assert.equal(cap.oiAreas[0].area_material.top_height, 112);
     assert.equal(covers(clipped, cap, -115.1621, 36.1216), true);
     const { oiPixelCoords, validateOiCoords } = require("../netlify/lib/pipeline");
     const spherePx = oiPixelCoords(cap.oiAreas[0].area.coordinates);
@@ -570,7 +571,8 @@ describe("pipeline: footprints + trees share the frame", () => {
     const disk = footprintsToClutter([sphere], full, null);
     assert.equal(disk.stats.buildings, 1);
     assert.equal(disk.stats.droppedMega, 0);
-    assert.equal(disk.oiAreas[0].area_material.name, "Building - Ten Floor");
+    assert.equal(disk.oiAreas[0].area_material.name, "Building - 112.0");
+    assert.equal(disk.oiAreas[0].area_material.top_height, 112);
     assert.equal(covers(full, disk, -115.16208, 36.12123), true);
     const diskPx = oiPixelCoords(disk.oiAreas[0].area.coordinates);
     assert.ok(diskPx.length - 1 <= MAX_OI_RING_VERTS, `full sphere OI verts ${diskPx.length - 1}`);
