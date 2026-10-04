@@ -8,8 +8,9 @@
  * the rest of the DEM budget can finish a GLO-30 grid — coarser when little
  * time is left. The handler can skip that probe on a follow-up read and pass
  * budgetMs for the slice still left after the aerial. GLO-30 is a surface DSM.
- * kind "surface" does not use the bare-earth 20 m ski-hill gate. Attenuating objects still take bottom
- * height from the DEM under the footprint. Production callers leave that
+ * A pasted mesh lifts attenuating objects on bare earth and on a surface DEM,
+ * including relief under 20 m. The old ski-hill gate applies only when the
+ * paste was left out. Production callers leave that
  * fallback off and never call GLO-30. A US 3DEP hit is still preferred.
  * OpenIntent has no raisedFloorZones / slopedFloors. Copy terrain is the paste
  * path. The same JSON is stored in the OpenIntent zip when 3DEP hits; Export
@@ -362,9 +363,10 @@ function formatCellM(m) {
 }
 
 /**
- * Lift building bottoms only when the DEM rises this far above its lowest
- * sample. Oak Creek (~6 m), Long Meadow (~15 m), and the Las Vegas Sphere
- * box (~17 m) stay on the floor. Granite Peak (~200 m) lifts.
+ * Relief at or above this is a ski hill for grid notes, and for a DEM that
+ * was not pasted. A pasted mesh lifts buildings at any relief. Oak Creek
+ * (~6 m), Long Meadow (~15 m), and the Las Vegas Sphere box (~17 m) used to
+ * stay at bottom 0 while the hill was still pasted, which put them under it.
  */
 const LIFT_RELIEF_M = 20;
 /** Local ground under this is bottom height from floor ≈ 0 (field omitted). */
@@ -1474,6 +1476,8 @@ function floorZones(terrain) {
  * small as the floor under the object.
  */
 const FLOOR_EDGE_M = 0.05;
+/** Inside a cell by this much, the footprint is on that cell, not on the shared edge. */
+const FLOOR_INSIDE_M = 0.001;
 
 function quadBox(quad) {
   const n = Math.min(ringPointCount(quad), 4);
@@ -1511,6 +1515,53 @@ function dist2ToRing(ring, x, y) {
   return best;
 }
 
+function strictlyInsideQuad(quad, x, y) {
+  const n = Math.min(ringPointCount(quad), 4);
+  if (n < 3) return false;
+  for (let k = 0; k < n; k++) {
+    const a = quad[k];
+    const b = quad[(k + 1) % n];
+    const cross = (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    // Pasted quads are counterclockwise. Positive cross is the interior.
+    if (!(cross > FLOOR_INSIDE_M * Math.max(len, 1))) return false;
+  }
+  return true;
+}
+
+function boundaryDist2(ring, x, y) {
+  const n = ringPointCount(ring);
+  let best = Infinity;
+  for (let i = 0; i < n; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % n];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len2 = dx * dx + dy * dy;
+    let t = len2 > 0 ? ((x - a[0]) * dx + (y - a[1]) * dy) / len2 : 0;
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+    const px = a[0] + t * dx;
+    const py = a[1] + t * dy;
+    const d2 = (x - px) * (x - px) + (y - py) * (y - py);
+    if (d2 < best) best = d2;
+  }
+  return best;
+}
+
+function strictlyInsideRing(ring, x, y) {
+  if (!pointInOrOnRing(x, y, ring)) return false;
+  return boundaryDist2(ring, x, y) > FLOOR_INSIDE_M * FLOOR_INSIDE_M;
+}
+
+/** High edge of a ramp, or the plate height of a raised floor. */
+function quadHighZ(zone) {
+  const ring = zone && zone.area && zone.area.coordinates && zone.area.coordinates[0];
+  if (!ring || !ring[0]) return 0;
+  if (ring[0].length >= 3) return Math.max(Number(ring[0][2]) || 0, Number(ring[2][2]) || 0);
+  return Number(zone.height) || 0;
+}
+
 /** Highest and lowest pasted floor on the overlap of the footprint and the mesh. */
 function pastedFloorExtent(terrain, xy) {
   const zones = floorZones(terrain);
@@ -1533,9 +1584,11 @@ function pastedFloorExtent(terrain, xy) {
     for (let k = 0; k < pts.length; k++) consider(pastedFloorZ(zone, pts[k][0], pts[k][1]));
     const box = quadBox(quad);
     const nv = ringPointCount(xy);
+    let inCell = false;
     for (let k = 0; k < nv; k++) {
       const x = xy[k][0];
       const y = xy[k][1];
+      if (strictlyInsideQuad(quad, x, y)) inCell = true;
       const cx = Math.min(box.R, Math.max(box.L, x));
       const cy = Math.min(box.T, Math.max(box.B, y));
       if ((x - cx) * (x - cx) + (y - cy) * (y - cy) > edge2) continue;
@@ -1543,9 +1596,12 @@ function pastedFloorExtent(terrain, xy) {
     }
     const nq = Math.min(ringPointCount(quad), 4);
     for (let k = 0; k < nq; k++) {
+      if (strictlyInsideRing(xy, quad[k][0], quad[k][1])) inCell = true;
       if (dist2ToRing(xy, quad[k][0], quad[k][1]) > edge2) continue;
       consider(pastedFloorZ(zone, quad[k][0], quad[k][1]));
     }
+    // The footprint sits in this cell. Clear the high edge, not the low side of the ramp.
+    if (inCell) consider(quadHighZ(zone));
   }
   if (!n) return null;
   return { min, max };
@@ -1597,9 +1653,11 @@ function roundUpTenth(n) {
 
 /**
  * Top of the slope under a lon/lat ring, in terrain-clipboard meters.
- * The value is the highest pasted floor under the footprint, including a
- * cell the ring only shares an edge with. DEM samples cover a mesh that was
- * not pasted. Rounded up to 0.1 m so the bottom is not under that surface.
+ * A cell the footprint sits in counts as its high edge: Hamina stores one z
+ * on that edge, and a sample on the low side of the same ramp leaves the
+ * object under it. A cell the ring only shares a boundary with counts as the
+ * height at that boundary, not the far edge. DEM samples cover a mesh that
+ * was not pasted. Rounded up to 0.1 m so the bottom is not under that surface.
  */
 function slopeTopUnderRing(terrain, ring) {
   return roundUpTenth(floorExtentUnderRing(terrain, ring).max);
@@ -1793,24 +1851,20 @@ function slopeSampler(terrain) {
 /**
  * Ring → meters above the terrain datum for attenuating-object bottoms.
  * Null when objects stay on the floor.
- * Bare earth uses the ski-hill gate (relief at least 20 m).
- * A surface DEM skips that gate and still samples the mesh, including relief
- * under 20 m. The value is the slope top under the ring, not a flat 20 m.
- * Ground under LIFT_LOCAL_M still omits bottom_height inside the lifters.
- * fn.split cuts a footprint that climbs more than SPLIT_FLOOR_M.
+ * A pasted mesh (sloped ramps or raised plates) is sampled for bare earth and
+ * for a surface DEM, including relief under 20 m. The ski-hill gate remains
+ * only when the paste was left out. The value is the slope top under the
+ * ring, not a flat 20 m. Ground under LIFT_LOCAL_M still omits bottom_height
+ * inside the lifters. fn.split cuts a footprint that climbs more than
+ * SPLIT_FLOOR_M.
  */
 function demUnderFootprint(terrain) {
   if (!terrain) return null;
   const zones = (terrain.raised || 0) + (terrain.sloped || 0);
-  if (zones <= 0 && !terrain.pasteOmitted) return null;
-  if (terrain.pasteOmitted) {
-    if (terrain.kind !== "surface" && !(terrain.reliefM >= LIFT_RELIEF_M)) return null;
-    return slopeSampler(terrain);
-  }
-  if (terrain.kind === "surface" || siteWarrantsLift(terrain)) {
-    return slopeSampler(terrain);
-  }
-  return null;
+  if (zones > 0) return slopeSampler(terrain);
+  if (!terrain.pasteOmitted) return null;
+  if (terrain.kind !== "surface" && !(terrain.reliefM >= LIFT_RELIEF_M)) return null;
+  return slopeSampler(terrain);
 }
 
 function terrainSourceLabel(terrain) {
