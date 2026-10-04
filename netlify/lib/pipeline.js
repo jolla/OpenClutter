@@ -2,6 +2,7 @@
 
 const {
   llToPx,
+  pxToLl,
   pxToClipboard,
   applyAffine,
   publicFrame,
@@ -23,7 +24,7 @@ const {
 const { treePairsFromPoints } = require("./vegetation");
 const { dedupeStackedFootprints } = require("./conflate");
 const { zipStore } = require("./zip-store");
-const { TERRAIN_FILENAME, demUnderFootprint, normalizeTerrainResolution, GLO30_CREDIT } = require("./terrain");
+const { TERRAIN_FILENAME, demUnderFootprint, normalizeTerrainResolution, GLO30_CREDIT, LIFT_LOCAL_M } = require("./terrain");
 const { overlaySvg, frameLockJson } = require("./overlay");
 const { version: OPENCLUTTER_VERSION } = require("./version");
 const { applyNlsBuildingHeights, NLS_CREDIT, HEIGHT_SOURCE } = require("./nls-building-height");
@@ -68,9 +69,10 @@ const ZIP_README =
 const LIFT_BARE_EARTH =
   "Flat sites omit bottom_height, so bottom height from floor stays the floor (about 0)\n" +
   "and top height from floor stays the building or canopy height. Do not write bottom_height: 0.\n" +
-  "When the DEM rises at least 20 m, a building or canopy polygon sets bottom_height\n" +
-  "to the slope top under that footprint and top_height to that bottom plus the\n" +
-  "building height or the foliage height.\n";
+  "When a terrain mesh is pasted, a building or canopy polygon sets bottom_height\n" +
+  "to the top of that mesh under the footprint and top_height to that bottom plus the\n" +
+  "building height or the foliage height. A hill under 20 m is included.\n" +
+  "Ground under 1 m omits bottom_height.\n";
 
 const LIFT_SURFACE =
   "This export used Copernicus DEM GLO-30, a surface model.\n" +
@@ -257,7 +259,7 @@ const TERRAIN_README =
   "the stack would pass 400 floors). A band covers every cell that reaches that height,\n" +
   "merged into rectangles, so higher plates sit on lower ones. Flat ground in that\n" +
   "mode is one pad. The page offers both when Terrain is on.\n" +
-  "Auto fills the paste budget on either style: about 1 m cells, at most 20×20 quads,\n" +
+  "Auto is the default. It fills the paste budget on either style: about 1 m cells, at most 20×20 quads,\n" +
   "including a mild hill. A larger draw is coarser because that cap is the limit\n" +
   "Planner Plus accepts, not because relief under 20 m drops to 6×5. Raised layers\n" +
   "keep that same plan and only coarsen the height band when the stack would pass\n" +
@@ -284,13 +286,14 @@ const TERRAIN_README =
   "slopedFloors are open xyz quads (z = meters above that same low point).\n" +
   "The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
   "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
-  "Building attenuating objects stay in this OpenIntent zip. On a ski-hill DEM their\n" +
-  "bottom_height is bottom height from floor (slope top under the footprint) and\n" +
-  "top_height is top height from floor (that bottom plus the building height).\n" +
+  "Building attenuating objects stay in this OpenIntent zip. When this mesh is pasted,\n" +
+  "bottom_height is bottom height from floor (the top of the slope under the footprint,\n" +
+  "including a hill under 20 m) and top_height is top height from floor (that bottom\n" +
+  "plus the building height).\n" +
   "With Include foliage on, canopy polygons use the same pair: bottom_height is the\n" +
   "slope top under that canopy, and top_height is that bottom plus the foliage height.\n" +
-  "Clipboard zone types use the same pair as bottomEdge and topEdge. Flatter sites\n" +
-  "omit bottom_height so the bottom stays on the floor.\n" +
+  "Clipboard zone types use the same pair as bottomEdge and topEdge. Flat ground\n" +
+  "omits bottom_height so the bottom stays on the floor.\n" +
   "A footprint that climbs more than about 8 m is split, and each piece uses the\n" +
   "slope top under that piece. A taller plan inside a shorter one is two objects:\n" +
   "the lower footprint up to its height, then the upper footprint from that height\n" +
@@ -1175,17 +1178,50 @@ function featureExteriorRings(geometry) {
   return out;
 }
 
-function pickedForRing(ring, heightM, areaM2, slopeTop, heightSource, levelBase) {
+function maxSlopeTop(slopeTop, rings) {
+  if (typeof slopeTop !== "function" || !rings) return 0;
+  let bottom = 0;
+  for (let i = 0; i < rings.length; i++) {
+    const z = Number(slopeTop(rings[i]));
+    if (z > bottom) bottom = z;
+  }
+  return bottom;
+}
+
+/** Source ring, the simplified ring, and the ring actually drawn on the image. */
+function slopeRingsForEmit(source, simple, pixelRing, frame) {
+  const rings = [];
+  if (source && source.length >= 3) rings.push(source);
+  if (simple && simple.length >= 4) rings.push(simple);
+  if (pixelRing && pixelRing.length >= 3 && frame) {
+    const ll = [];
+    for (let i = 0; i < pixelRing.length; i++) {
+      const p = pixelRing[i];
+      if (!p || !Number.isFinite(+p[0]) || !Number.isFinite(+p[1])) continue;
+      ll.push(pxToLl(+p[0], +p[1], frame));
+    }
+    if (ll.length >= 3) {
+      const a = ll[0];
+      const b = ll[ll.length - 1];
+      if (a[0] !== b[0] || a[1] !== b[1]) ll.push([a[0], a[1]]);
+      rings.push(ll);
+    }
+  }
+  return rings;
+}
+
+function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase) {
   const base = levelBase > 0 ? levelBase : 0;
   // A stepped plan uses the band above the lower footprint, not the full height.
   const band = base > 0 ? Math.round((heightM - base) * 10) / 10 : heightM;
   const picked = materialForBuilding(band > 2 ? band : heightM, areaM2, {
     exactMetres: heightSource === HEIGHT_SOURCE || base > 0,
   });
-  let bottom = 0;
-  if (typeof slopeTop === "function") bottom = slopeTop(ring) || 0;
+  // Each ring is this piece, not the parent footprint. The drawn ring can
+  // cover higher ground than the source ring, so the bottom clears all of them.
+  let bottom = maxSlopeTop(slopeTop, rings);
   bottom += base;
-  if (bottom >= 1) return liftPickedBuilding(picked, bottom);
+  if (bottom >= LIFT_LOCAL_M) return liftPickedBuilding(picked, bottom);
   return picked;
 }
 
@@ -1290,11 +1326,12 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
   const am = pxRingAreaM2(clippedPts, frame.mpuX, frame.mpuY);
   if (isMegaCampus(am, detailVerts)) return "mega";
   if (am < MIN_AREA_M2) return "tiny";
+  const slopeRings = slopeRingsForEmit(ring, simple, clippedPts, frame);
   const minSpan = minOiSpanPx(frame.mpuX);
   if (thinSliverDrop(clippedPts, minSpan)) {
     // Clipboard keeps the exact sliver. OpenIntent must not, or Hamina drops
     // every attenuating object.
-    const pickedThin = pickedForRing(ring, heightM, am, slopeTop, heightSource, levelBase);
+    const pickedThin = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase);
     if (pickedThin.lifted) buckets.lifted++;
     stashBuilding(buckets, frame, affine, clipRing, clippedPts, clippedPts, pickedThin);
     return "span";
@@ -1304,7 +1341,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     if (ringVertexCount(clippedPts) > MAX_OI_RING_VERTS) return "verts";
     return "clip";
   }
-  const picked = pickedForRing(ring, heightM, am, slopeTop, heightSource, levelBase);
+  const picked = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase);
   const area = emitIfValid(makeOiArea(oiCoords, picked.material), frame.imgW, frame.imgH);
   if (!area) return "invalid";
   buckets.oiAreas.push(area);
