@@ -48,7 +48,7 @@ const ZONE_TYPES = [
     bottomEdge: null,
     attenuationDbPerMeter: 10.0,
     ituRModelEnabled: true,
-    transparencyEnabled: false,
+    transparencyEnabled: true,
   },
   {
     id: "bldg-one",

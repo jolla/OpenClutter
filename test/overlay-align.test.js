@@ -271,10 +271,11 @@ describe("clipboard ↔ alignment-overlay scale", () => {
 
     const sphere = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/wynn-golf/sphere-overture.geojson"), "utf8"));
     const disk = footprintsToClutter([sphere], content, null);
-    assert.equal(disk.stats.buildings, 1, "Sphere ring dropped on the content grid");
+    assert.ok(disk.stats.buildings >= 2, "Sphere ground ring dropped on the content grid");
     assert.equal(disk.stats.droppedMega, 0);
-    assert.equal(disk.oiAreas[0].area_material.name, "Building - 112.0");
-    assert.equal(disk.oiAreas[0].area_material.top_height, 112);
+    assert.ok(disk.oiAreas[0].area_material.top_height < 40, "ground band is not the full 112 m cylinder");
+    const diskTops = disk.oiAreas.map((a) => a.area_material.top_height);
+    assert.ok(Math.max(...diskTops) >= 111.5 && Math.max(...diskTops) <= 112.05);
     const [sx, sy] = llToPx(-115.16208136, 36.12122561, content);
     const sp = oiPixelCoords(disk.oiAreas[0].area.coordinates);
     let inside = false;
