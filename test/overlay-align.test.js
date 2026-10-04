@@ -273,7 +273,8 @@ describe("clipboard ↔ alignment-overlay scale", () => {
     const disk = footprintsToClutter([sphere], content, null);
     assert.equal(disk.stats.buildings, 1, "Sphere ring dropped on the content grid");
     assert.equal(disk.stats.droppedMega, 0);
-    assert.equal(disk.oiAreas[0].area_material.name, "Building - Ten Floor");
+    assert.equal(disk.oiAreas[0].area_material.name, "Building - 112.0");
+    assert.equal(disk.oiAreas[0].area_material.top_height, 112);
     const [sx, sy] = llToPx(-115.16208136, 36.12122561, content);
     const sp = oiPixelCoords(disk.oiAreas[0].area.coordinates);
     let inside = false;
