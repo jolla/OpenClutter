@@ -86,7 +86,7 @@ map.addLayer(drawn);
 
 /** Finished outline; the chip returns here if a redraw is cancelled. */
 let committedBounds = null;
-/** Null uses the box L×W chip. A string is the polygon sq ft chip. */
+/** Null uses the box readout. A polygon readout is the closed ring. */
 let committedLabel = null;
 let areaChip = null;
 let sketchHidden = false;
@@ -120,7 +120,8 @@ function hideAreaChip() {
 }
 
 function showAreaChip(bounds, label) {
-  const text = label == null ? OpenClutterArea.formatBboxFeet(chipBbox(bounds)) : label;
+  const line = label == null ? OpenClutterArea.bboxReadout(chipBbox(bounds)) : label;
+  const text = line && line.text;
   if (!text) {
     hideAreaChip();
     return;
@@ -134,7 +135,7 @@ function showAreaChip(bounds, label) {
       interactive: false,
     });
   }
-  areaChip.setLatLng(bounds.getCenter()).setContent(text);
+  areaChip.setLatLng(bounds.getCenter()).setContent(line.html || text);
   if (!map.hasLayer(areaChip)) areaChip.addTo(map);
 }
 
@@ -266,7 +267,7 @@ function commitPolygon(vertices) {
   drawn.addLayer(layer);
   if (!map.hasLayer(drawn)) map.addLayer(drawn);
   sketchHidden = false;
-  applyExtent(layer.getBounds(), OpenClutterArea.formatPolygonSqFt(vertices));
+  applyExtent(layer.getBounds(), OpenClutterArea.polygonReadout(vertices));
   resumeDrawMode();
 }
 
@@ -312,7 +313,7 @@ function showVertexPreview(vertices) {
     );
   }
   if (vertices.length >= 3) {
-    showAreaChip(L.latLngBounds(latlngs), OpenClutterArea.formatPolygonSqFt(vertices));
+    showAreaChip(L.latLngBounds(latlngs), OpenClutterArea.polygonReadout(vertices));
   } else {
     hideAreaChip();
   }

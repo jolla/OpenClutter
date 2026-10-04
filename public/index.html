@@ -80,13 +80,18 @@
       box-shadow: none;
       backdrop-filter: blur(8px);
       pointer-events: none;
+      white-space: nowrap;
+    }
+    .leaflet-tooltip.area-chip .area-quiet {
+      color: #8b949e;
+      font-weight: 500;
     }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <div class="panel">
-    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.45</span></p>
+    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.46</span></p>
     <h1>OpenClutter</h1>
     <div class="sub">Export a zip. Import it in Hamina for the aerial map and buildings.</div>
     <form id="search">
