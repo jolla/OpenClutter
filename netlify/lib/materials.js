@@ -17,11 +17,14 @@
  * plus the building or canopy height. The 20 m gate is bare-earth only.
  *
  * Picker (2026-09): Foliage - Heavy is 19.68 ft / 2 dB/m, Foliage - Light is
- * 19.68 ft / 1 dB/m. There is no Tree type, so OpenIntent does not emit trunks.
- * A measured or CHM height that is not that stock height becomes
- * "Foliage - Heavy 14.2" / "Foliage - Light 7.5": same color and dB/m, real
- * top_height. That is not "Foliage 14.2 m".
- * Still off OpenIntent: Tree Trunk, Hotel podium, "Foliage N.N m",
+ * 19.68 ft / 1 dB/m. A compact measured crown is one tree: the crown's
+ * bottom sits above the ground and its top stays the measured height, with
+ * a stem ("Foliage - Trunk H.H") from the ground up to that crown bottom.
+ * A continuous canopy stays a ground-level foliage mass. A measured or CHM
+ * height that is not the stock height becomes "Foliage - Heavy 14.2" /
+ * "Foliage - Light 7.5": same color and dB/m, real top_height. That is not
+ * "Foliage 14.2 m".
+ * Still off OpenIntent: the names Tree Trunk, Hotel podium, "Foliage N.N m",
  * "Tree Trunk N.N m", "Building N.N m".
  * A laser-measured building height uses the same custom shape as foliage:
  * "Building - 8.3" (thickness, top_height 8.3). On a slope it is
@@ -406,6 +409,139 @@ function measuredTrunkMaterial(heightM) {
   };
 }
 
+/** Brown stem. The safe name is "Foliage - Trunk H.H", not the poisoned "Tree Trunk". */
+const TRUNK_COLOR = "#8B6B4F";
+const TRUNK_DB = 10;
+const TRUNK_NAME = /^Foliage - Trunk (\d+\.\d)$/;
+const LIFTED_TRUNK_NAME = /^Foliage - Trunk (\d+\.\d) @ (\d+\.\d)$/;
+
+/**
+ * Crown base for one measured tree, in metres above local ground.
+ * About a third of the height, at least 2.5 m, and the crown itself stays
+ * at least 2.5 m thick. Shorter vegetation stays a single ground-level mass.
+ */
+function individualTreeCrownBase(heightM) {
+  const h = roundHeightM(heightM);
+  if (!(h >= 5)) return 0;
+  let base = Math.round(h * 0.35 * 10) / 10;
+  if (base < 2.5) base = 2.5;
+  const crown = Math.round((h - base) * 10) / 10;
+  if (crown < 2.5) return 0;
+  return base;
+}
+
+function trunkOiMaterial(stemM, groundM) {
+  const stem = roundHeightM(stemM);
+  if (!stem) return null;
+  const ground = roundTenths(groundM);
+  const name = "Foliage - Trunk " + stem.toFixed(1);
+  if (ground >= LIFT_LOCAL_M) {
+    return {
+      name: name + " @ " + ground.toFixed(1),
+      rf_properties: { attenuation_per_m: TRUNK_DB },
+      top_height: roundTenths(ground + stem),
+      bottom_height: ground,
+      display_color: TRUNK_COLOR,
+      transparencyEnabled: true,
+    };
+  }
+  return {
+    name,
+    rf_properties: { attenuation_per_m: TRUNK_DB },
+    top_height: stem,
+    display_color: TRUNK_COLOR,
+    transparencyEnabled: true,
+  };
+}
+
+function trunkClipPair(stemM, groundM) {
+  const mat = trunkOiMaterial(stemM, groundM);
+  if (!mat) return null;
+  const stem = roundHeightM(stemM);
+  const ground = roundTenths(groundM);
+  const lifted = ground >= LIFT_LOCAL_M;
+  const id = idFor("trunk-m-", stem) + (lifted ? "-b" + ground.toFixed(1).replace(".", "_") : "");
+  return {
+    typeId: id,
+    clipType: {
+      id,
+      name: mat.name,
+      color: TRUNK_COLOR,
+      shortcutKey: "",
+      topEdge: mat.top_height,
+      bottomEdge: lifted ? ground : null,
+      attenuationDbPerMeter: TRUNK_DB,
+      ituRModelEnabled: true,
+      transparencyEnabled: true,
+    },
+  };
+}
+
+function isTrunkOiName(name) {
+  return TRUNK_NAME.test(name || "") || LIFTED_TRUNK_NAME.test(name || "");
+}
+
+/**
+ * Stem plus a raised crown for one discrete tree.
+ * Crown top stays the measured height above local ground. Crown bottom and
+ * the stem top are the same clearance. A slope adds that ground under both.
+ * Null when the height cannot hold a stem and a crown.
+ */
+function individualTreeParts(material, groundM) {
+  if (!material || !isVegetationOiName(material.name) || isLiftedFoliageName(material.name)) return null;
+  const height = roundHeightM(material.top_height);
+  if (!height) return null;
+  let clearance = individualTreeCrownBase(height);
+  if (!clearance) return null;
+  const tier = String(material.name).indexOf(FOLIAGE_LIGHT_NAME) >= 0 ? "light" : "heavy";
+  let thickness = roundTenths(height - clearance);
+  let base = materialForVegetation(thickness, tier);
+  if (base && Math.abs(Number(base.top_height) - thickness) > 0.05) {
+    const nudged = roundTenths(clearance + 0.4);
+    const next = roundTenths(height - nudged);
+    const retry = next >= 2.5 && nudged >= 2.5 ? materialForVegetation(next, tier) : null;
+    if (!retry || Math.abs(Number(retry.top_height) - next) > 0.05) return null;
+    clearance = nudged;
+    thickness = next;
+    base = retry;
+  }
+  if (!base) return null;
+  const localGround = Number(groundM) >= LIFT_LOCAL_M ? roundTenths(groundM) : 0;
+  const bottom = roundTenths(localGround + clearance);
+  const crownMat = liftedFoliageMaterial(base, bottom);
+  const crownClip = liftFoliagePair(base, bottom);
+  const trunkMat = trunkOiMaterial(clearance, localGround);
+  const trunkClip = trunkClipPair(clearance, localGround);
+  if (!crownMat || !crownClip || !trunkMat || !trunkClip) return null;
+  const expectTop = roundTenths(localGround + height);
+  if (Math.abs(crownMat.top_height - expectTop) > 0.05) return null;
+  if (Math.abs(trunkMat.top_height - crownMat.bottom_height) > 0.05) return null;
+  return { crownMat, crownClip, trunkMat, trunkClip };
+}
+
+function canonicalTrunk(material) {
+  if (!material || typeof material !== "object" || Array.isArray(material)) return null;
+  if ("itu_material_type" in material || material.transparencyEnabled !== true) return null;
+  const lifted = LIFTED_TRUNK_NAME.exec(material.name || "");
+  if (lifted) {
+    if (!("bottom_height" in material)) return null;
+    const keys = Object.keys(material);
+    if (keys.length !== 6) return null;
+    if (!keys.every((k) => ["name", "rf_properties", "top_height", "bottom_height", "display_color", "transparencyEnabled"].includes(k))) return null;
+    const canon = trunkOiMaterial(Number(lifted[1]), Number(lifted[2]));
+    if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
+    return canon;
+  }
+  const plain = TRUNK_NAME.exec(material.name || "");
+  if (!plain || "bottom_height" in material) return null;
+  const keys = Object.keys(material);
+  if (keys.length !== 5) return null;
+  if (!keys.every((k) => ["name", "rf_properties", "top_height", "display_color", "transparencyEnabled"].includes(k))) return null;
+  const canon = trunkOiMaterial(Number(plain[1]), 0);
+  if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
+  return canon;
+}
+
 const COMPATIBILITY_MODE = "stock-foliage";
 
 function cloneMaterial(material) {
@@ -585,6 +721,7 @@ function canonicalLiftedMeasuredBuilding(material) {
 function canonicalAreaMaterial(material) {
   if (!material || typeof material !== "object" || Array.isArray(material)) return null;
   if ("itu_material_type" in material) return null;
+  if (isTrunkOiName(material.name)) return canonicalTrunk(material);
   if ("bottom_height" in material) {
     if (isLiftedFoliageName(material.name)) return canonicalLiftedFoliage(material);
     if (isLiftedMeasuredBuildingName(material.name)) return canonicalLiftedMeasuredBuilding(material);
@@ -644,9 +781,18 @@ function documentMaterials(areas) {
   const veg = new Map();
   const lifted = new Map();
   const measured = new Map();
+  const trunks = new Map();
   for (const a of areas || []) {
     const mat = a && a.area_material;
     if (!mat || typeof mat !== "object") continue;
+    if (isTrunkOiName(mat.name)) {
+      const canon = canonicalTrunk(mat);
+      if (!canon) continue;
+      if ("bottom_height" in canon) {
+        if (!lifted.has(canon.name)) lifted.set(canon.name, canon);
+      } else if (!trunks.has(canon.name)) trunks.set(canon.name, canon);
+      continue;
+    }
     if (isVegetationOiName(mat.name) && !isLiftedFoliageName(mat.name)) {
       if (!veg.has(mat.name)) veg.set(mat.name, JSON.parse(JSON.stringify(mat)));
       continue;
@@ -681,7 +827,8 @@ function documentMaterials(areas) {
     const kb = vegetationSortKey(b.name);
     return ka < kb ? -1 : ka > kb ? 1 : 0;
   });
-  return buildingCatalog().concat(measuredList, slope, extra);
+  const trunkList = Array.from(trunks.values()).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return buildingCatalog().concat(measuredList, slope, extra, trunkList);
 }
 
 module.exports = {
@@ -692,6 +839,10 @@ module.exports = {
   measuredBuildingMaterial,
   measuredFoliageMaterial,
   measuredTrunkMaterial,
+  individualTreeCrownBase,
+  individualTreeParts,
+  trunkOiMaterial,
+  isTrunkOiName,
   materialForBuilding,
   measuredOiBuildingMaterial,
   liftedMeasuredBuildingMaterial,

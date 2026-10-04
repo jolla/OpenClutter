@@ -59,11 +59,11 @@ const ZIP_README =
   "the status says so. Buildings still export.\n" +
   "Materials are Foliage - Heavy / Foliage - Light, or Foliage - Heavy H.H /\n" +
   "Foliage - Light H.H at the measured height.\n" +
-  "Individual tree-point circles and trunks are not emitted. OpenIntent has no Tree type,\n" +
-  "so trunks cannot be imported that way.\n" +
+  "A compact measured crown is one tree: a stem under the crown, the crown bottom above the ground,\n" +
+  "and the crown top at the measured height. A continuous canopy stays one mass on the ground.\n" +
+  "Tree points are not turned into trees. The names Tree Trunk and Foliage N.N m stay off OpenIntent.\n" +
   "Buildings use Hamina's outdoor Building - One/Two/Five/Ten Floor materials.\n" +
   "Canopy cells on building footprints and on pavement or roads are cleared, and rings are cut around footprints (4 m buffer) and water, so foliage does not cover roofs, parking, or ponds.\n" +
-  "There is no Tree type, so OpenIntent does not emit trunks. Tree Trunk and Foliage N.N m stay off OpenIntent.\n" +
   "hamina-clipboard.json matches the toggle: buildings only when foliage is off, or the same canopy polygons when it is on.\n" +
   "Schema: OpenIntent 2.0.1, pixels+meters+feet per vertex, isotropic meter/pixel aspect.\n" +
   "(Optional) Unzip and open alignment-overlay.svg next to images/ to check rooftops and, when foliage is on, canopy.\n";
@@ -94,7 +94,7 @@ const ZIP_TROUBLESHOOT =
   "  3. In Hamina, check the Attenuating Objects sidebar count.\n" +
   "     0 = OpenIntent import dropped the areas. >0 = they imported but did not draw.\n" +
   "  4. Optional: paste hamina-clipboard.json. It has buildings only unless Include foliage was on,\n" +
-  "     in which case it has the same canopy polygons (no trunks, no tree-point circles).\n" +
+  "     in which case it has the same canopy polygons. A discrete tree also has its stem.\n" +
   "  5. Console WebGL texSubImage2D / Rive warnings can hide objects after a successful import.\n" +
   "     Try Hamina’s 2D map view, and turn hardware acceleration off, then zoom the full extent.\n" +
   "Floorplan dimensions.height is Hamina outdoor 2.5 m (8.202 ft); meters match JPEG pixel aspect.\n" +
@@ -105,7 +105,7 @@ const ZIP_TROUBLESHOOT =
   "Foliage and tree objects set transparencyEnabled true (Hamina Transparent in 3D).\n" +
   "Buildings omit that key. Turn on Transparency effects in Hamina settings to see through canopy.\n" +
   LIFT_BARE_EARTH +
-  "Tree Trunk and Foliage N.N m stay off OpenIntent. Clipboard foliage types are canopy polygons only.\n" +
+  "The names Tree Trunk and Foliage N.N m stay off OpenIntent. A discrete tree uses Foliage - Trunk H.H.\n" +
   "Each ring vertex is pixels+meters+feet. Materials omit itu_material_type.\n" +
   "Rings thinner than 4 px on one axis, or over the Hamina vertex cap, are omitted from OpenIntent\n" +
   "(VERIFY.txt warning) so one bad ring cannot drop the import. Those shapes stay on the clipboard.\n";
@@ -457,9 +457,9 @@ const ALIGNMENT = [
   "   Include foliage is off by default. Checked, it adds traced canopy polygons (CHM contours when the height model resolves them, otherwise NLCD polygons).",
   "   Buildings: Building - One / Two / Five / Ten Floor.",
   "   Canopy: Foliage - Heavy / Foliage - Light (19.68 ft). Measured heights use Foliage - Heavy H.H / Foliage - Light H.H.",
-  "   Individual tree-point circles and trunks are not emitted.",
+  "   A compact measured crown is a stem under a raised crown. A continuous canopy stays one mass. Tree points are not trees.",
   "2. hamina-clipboard.json is optional legacy paste. Foliage off keeps buildings only.",
-  "   Foliage on pastes the same canopy polygons, not trunks or tree-point circles.",
+  "   Foliage on pastes the same canopy polygons, including a stem under a discrete tree.",
   "3. Extra files (alignment-overlay.svg, frame-lock.json) are ignored on OpenIntent import.",
   "Clipboard meters use that same widthM × lengthM. Origin: " + CLIPBOARD_ORIGIN,
   "Do NOT use a Google Earth screenshot as the map — Hamina auto-scale will not",
@@ -1116,6 +1116,36 @@ function capAttenuationAreas(areas, buildingCount, max, opts) {
   return { areas: kept, dropped: areas.length - kept.length };
 }
 
+/**
+ * Buildings fill the cap first. A trunk is kept only with the canopy it
+ * follows, so the cap never leaves a stem without its crown.
+ */
+function capBuildingsAndTrees(buildings, trees, kinds, max) {
+  const limit = max == null ? MAX_ATTENUATION_AREAS : max;
+  const srcB = buildings || [];
+  const keptB = srcB.slice(0, Math.min(srcB.length, limit));
+  const treeList = trees || [];
+  const kindList = kinds || [];
+  const kept = [];
+  let i = 0;
+  while (i < treeList.length) {
+    if (kindList[i] === "trunk") {
+      i++;
+      continue;
+    }
+    const pair = kindList[i + 1] === "trunk";
+    const need = pair ? 2 : 1;
+    if (keptB.length + kept.length + need > limit) break;
+    kept.push(treeList[i]);
+    if (pair) kept.push(treeList[i + 1]);
+    i += need;
+  }
+  return {
+    areas: keptB.concat(kept),
+    dropped: srcB.length + treeList.length - keptB.length - kept.length,
+  };
+}
+
 function siteName(raw) {
   const name = String(raw || "Site")
     .replace(/[^\w \-]/g, "")
@@ -1720,16 +1750,7 @@ function buildClutter({
   // A poisoned or drifted vegetation material fails makeOiArea and that ring
   // is omitted, so it cannot empty the buildings.
   const treeOi = treesToOi(veg.oiAreas, frame.imgW, frame.imgH, frame.mpuX);
-  const canopies = [];
-  const trunks = [];
-  for (let i = 0; i < treeOi.areas.length; i++) {
-    if (treeOi.kinds[i] === "trunk") trunks.push(treeOi.areas[i]);
-    else canopies.push(treeOi.areas[i]);
-  }
-  const uncapped = fp.oiAreas.concat(canopies, trunks);
-  const capped = capAttenuationAreas(uncapped, fp.oiAreas.length, MAX_ATTENUATION_AREAS, {
-    pairTail: false,
-  });
+  const capped = capBuildingsAndTrees(fp.oiAreas, treeOi.areas, treeOi.kinds, MAX_ATTENUATION_AREAS);
   const areas = capped.areas;
   const clip = emptyClipboard();
   const seenTypes = new Set(clip.attenuatingZoneTypes.map((t) => t.id));
@@ -1758,23 +1779,11 @@ function buildClutter({
     if (t.id && String(t.id).indexOf("foliage-m-") === 0) exactFoliageHeights++;
   }
   const oi = buildOpenIntent(frame, name, imgName, areas, materials);
-  const treeOverlayPts = [];
-  for (const t of veg.oiAreas || []) {
-    if (t.kind !== "trunk" || !t.ringPx || !t.ringPx.length) continue;
-    let sx = 0;
-    let sy = 0;
-    const n = t.ringPx.length - 1;
-    for (let i = 0; i < n; i++) {
-      sx += t.ringPx[i][0];
-      sy += t.ringPx[i][1];
-    }
-    treeOverlayPts.push([sx / n, sy / n]);
-  }
   const overlay = overlaySvg({
     frame,
     imgName,
     buildingRingsYUp: fp.overlayRings,
-    treePointsYUp: veg.overlayPoints && veg.overlayPoints.length ? veg.overlayPoints : treeOverlayPts,
+    treePointsYUp: veg.overlayPoints || [],
     treeRingsYUp: veg.overlayRings,
   });
   const lock = frameLockJson(frame, imgName);

@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.41** on `dev` — Include foliage stays off and Experimental. When it is on, a compact measured crown is one tree: a stem under the crown, the crown bottom above the ground, and the crown top still at the measured height. A continuous canopy stays one mass on the ground. Tree points are not turned into trees. Buildings stay as they are. There is no extra switch on the page. The badge stays (`dev · v1.1.41`).
+
 **v1.1.40** on `dev` — Include foliage stays off and Experimental. When it is on, canopy and tree attenuating objects export with Hamina’s Transparent in 3D flag (`transparencyEnabled: true`), so they are see-through in 3D. Buildings omit that flag and stay opaque. There is no extra switch on the page. Hamina still draws that transparency only when Transparency effects are on in Settings. The badge stays (`dev · v1.1.40`).
 
 **v1.1.39** on `dev` — A recorded dome, including the MSG Sphere at its measured 112 m, is stacked rings that shrink toward that top, so the plan stays round and the height is a dome. A roof that records both a high side and a low side is several pieces whose tops follow those two heights. A plain box stays one object. The curved Wynn tower still has one measured height and no low side in the source, so it stays one flat top; a second height is not invented. Finish shape stays gone. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.39`).
@@ -55,7 +57,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.40`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, choose **Sloped** (default, one ramp or pad per cell) or **Raised layers** (stacked plates, at most 400 floors). The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The style radios hide when Terrain is off, and both the checkbox and the radios stay hidden off this host.
+- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.41`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, choose **Sloped** (default, one ramp or pad per cell) or **Raised layers** (stacked plates, at most 400 floors). The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The style radios hide when Terrain is off, and both the checkbox and the radios stay hidden off this host.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 
@@ -129,7 +131,7 @@ With **Include foliage** checked, canopy extent and height come from the **Meta/
    - `alignment-overlay.svg` — buildings (red). Canopy polygons (green) only when Include foliage was on. No tree-point circles
    - `frame-lock.json` — pixel/meter corners for Hamina vs OpenIntent vs JPEG
    - `export-warnings.json`
-   - `hamina-clipboard.json` — optional legacy paste. Buildings only by default. With Include foliage on, the same canopy polygons (no trunks, no tree-point circles). Raised and sloped floors stay empty here
+   - `hamina-clipboard.json` — optional legacy paste. Buildings only by default. With Include foliage on, the same canopy polygons. A discrete tree also has its stem. Raised and sloped floors stay empty here
    - `terrain-clipboard.json` — the same Planner Plus JSON as **Copy terrain**, stored in the zip when 3DEP returns a grid. Absent when the DEM request fails. Export does not download this as a second file. Do not import it as OpenIntent.
    - `README.txt` — import-only instructions, coverage stats, terrain paste steps, and troubleshooting if Hamina shows the map but no objects
    - `export-stats.json` — same coverage numbers as machine-readable JSON, including `attenuationAreasEmitted` and `openclutterVersion`

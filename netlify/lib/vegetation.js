@@ -2,7 +2,7 @@
 
 const { llToPx, pxToLl, pxToClipboard, applyAffine } = require("./geo-frame");
 const { clipZone } = require("./hamina-clipboard");
-const { measuredFoliageMaterial, materialForVegetation, liftFoliagePair } = require("./materials");
+const { measuredFoliageMaterial, materialForVegetation, liftFoliagePair, individualTreeParts } = require("./materials");
 
 const { MAX_TREES, maxTreesForBbox, canopyHeightM } = require("./tree-source");
 const { crownsForExport } = require("./canopy-height");
@@ -383,11 +383,103 @@ function clipboardForCanopy(material) {
  * NLCD percent can only extend a cell that already has a measured height.
  * A canopy-height timeout sets omitFoliage and emits nothing.
  * Otherwise multi-cell NLCD patches become canopy polygons. Tree points,
- * median dots, and crown circles are not emitted. There is no Tree type, so
- * trunks stay off OpenIntent. Clipboard gets the same polygons and no trunks.
+ * median dots, and crown circles are not emitted and do not become trees.
+ * A compact measured crown is one tree: a stem under that crown, the crown
+ * bottom above the ground, and the crown top at the measured height. A wide
+ * or long canopy stays one mass on the ground, with no invented stem.
  * `treePoints` is accepted so callers can keep passing placed points; they
  * do not become attenuation areas.
  */
+
+/** A crown this wide, or wider, reads as canopy rather than one stem. */
+const TREE_MAX_SIDE_M = 22;
+const TREE_MIN_SIDE_M = 6;
+const TREE_MAX_AREA_M2 = 320;
+const TREE_MIN_AREA_M2 = 20;
+const TREE_MAX_ASPECT = 1.8;
+const TRUNK_WIDTH_M = 3.2;
+
+function ringPxArea(ring) {
+  if (!ring || ring.length < 3) return 0;
+  let a = 0;
+  const n = ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? ring.length - 1 : ring.length;
+  for (let i = 0; i < n; i++) {
+    const p = ring[i];
+    const q = ring[(i + 1) % n];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return Math.abs(a / 2);
+}
+
+function ringCentroidPx(ring) {
+  const n = ring && ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+    ? ring.length - 1
+    : (ring && ring.length) || 0;
+  if (n < 3) return null;
+  let x = 0;
+  let y = 0;
+  for (let i = 0; i < n; i++) {
+    x += ring[i][0];
+    y += ring[i][1];
+  }
+  return [x / n, y / n];
+}
+
+/**
+ * True when an existing canopy ring is one discrete tree. A woods, a tree
+ * line, and a 30 m canopy cell are not. This does not create a ring.
+ */
+function looksLikeIndividualTree(ringPx, frame, heightM) {
+  const h = Number(heightM);
+  if (!(h >= 5 && h < 50) || !ringPx || ringPx.length < 4 || !frame) return false;
+  const mpuX = frame.mpuX || frame.mpu || 1;
+  const mpuY = frame.mpuY || mpuX;
+  if (!(mpuX > 0) || !(mpuY > 0)) return false;
+  const area = ringPxArea(ringPx) * mpuX * mpuY;
+  if (!(area >= TREE_MIN_AREA_M2 && area <= TREE_MAX_AREA_M2)) return false;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ringPx.length; i++) {
+    const x = ringPx[i][0];
+    const y = ringPx[i][1];
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  const w = (maxX - minX) * mpuX;
+  const ht = (maxY - minY) * mpuY;
+  const side = Math.max(w, ht);
+  const short = Math.min(w, ht);
+  if (!(short >= TREE_MIN_SIDE_M) || side > TREE_MAX_SIDE_M) return false;
+  if (side / short > TREE_MAX_ASPECT) return false;
+  if (area / (w * ht) < 0.45) return false;
+  const c = ringCentroidPx(ringPx);
+  if (!c || !pointInRing(c, ringPx)) return false;
+  return true;
+}
+
+function trunkRingPx(ringPx, frame) {
+  const c = ringCentroidPx(ringPx);
+  if (!c || !frame) return null;
+  const mpuX = frame.mpuX || frame.mpu || 1;
+  const mpuY = frame.mpuY || mpuX;
+  const hx = TRUNK_WIDTH_M / 2 / mpuX;
+  const hy = TRUNK_WIDTH_M / 2 / mpuY;
+  const ring = [
+    [c[0] - hx, c[1] - hy],
+    [c[0] + hx, c[1] - hy],
+    [c[0] + hx, c[1] + hy],
+    [c[0] - hx, c[1] + hy],
+    [c[0] - hx, c[1] - hy],
+  ];
+  for (let i = 0; i < 4; i++) {
+    if (!pointInRing(ring[i], ringPx)) return null;
+  }
+  return ring;
+}
 function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
   void treePoints;
   const oiAreas = [];
@@ -444,34 +536,78 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
   overlayRings.length = 0;
   const slopeTop = opts && typeof opts.slopeTop === "function" ? opts.slopeTop : null;
   let foliageLifted = 0;
+  const pending = [];
   for (const area of dissolved) {
     let clip = null;
+    let trunk = null;
+    let ground = 0;
     if (slopeTop && area.ringPx && area.ringPx.length >= 3) {
       const ll = area.ringPx.map((p) => pxToLl(p[0], p[1], frame));
-      const lifted = liftFoliagePair(area.material, slopeTop(ll));
+      ground = Number(slopeTop(ll)) || 0;
+    }
+    const height = area.material && Number(area.material.top_height);
+    if (looksLikeIndividualTree(area.ringPx, frame, height)) {
+      const parts = individualTreeParts(area.material, ground);
+      const stem = parts && trunkRingPx(area.ringPx, frame);
+      if (parts && stem) {
+        area.material = parts.crownMat;
+        clip = parts.crownClip;
+        trunk = {
+          ringPx: stem,
+          material: parts.trunkMat,
+          kind: "trunk",
+          shape: "polygon",
+          clip: parts.trunkClip,
+        };
+        if (ground >= 1) foliageLifted++;
+      }
+    }
+    if (!clip && ground >= 1 && area.material) {
+      const lifted = liftFoliagePair(area.material, ground);
       if (lifted) {
         area.material = lifted.material;
         clip = { typeId: lifted.typeId, clipType: lifted.clipType };
         foliageLifted++;
       }
     }
+    pending.push({ area, clip, trunk });
+  }
+  let canopyCount = 0;
+  for (const row of pending) {
+    const area = row.area;
     oiAreas.push(area);
+    if (area.kind !== "trunk") canopyCount++;
     if (area.ringPx) overlayRings.push(area.ringPx);
+    let clip = row.clip;
     if (!clip) clip = clipboardForCanopy(area.material);
-    if (!clip) continue;
-    if (clip.clipType && !seenClip.has(clip.clipType.id)) {
-      seenClip.add(clip.clipType.id);
-      clipTypes.push(clip.clipType);
+    if (clip) {
+      if (clip.clipType && !seenClip.has(clip.clipType.id)) {
+        seenClip.add(clip.clipType.id);
+        clipTypes.push(clip.clipType);
+      }
+      const zone = clipZone(clip.typeId, toClipRing(area.ringPx, frame, affine, null));
+      if (zone) clipZones.push(zone);
     }
-    const zone = clipZone(clip.typeId, toClipRing(area.ringPx, frame, affine, null));
-    if (zone) clipZones.push(zone);
+    const trunk = row.trunk;
+    if (!trunk) continue;
+    oiAreas.push(trunk);
+    if (trunk.ringPx) overlayRings.push(trunk.ringPx);
+    const tclip = trunk.clip;
+    if (tclip && tclip.clipType && !seenClip.has(tclip.clipType.id)) {
+      seenClip.add(tclip.clipType.id);
+      clipTypes.push(tclip.clipType);
+    }
+    if (tclip) {
+      const zone = clipZone(tclip.typeId, toClipRing(trunk.ringPx, frame, affine, null));
+      if (zone) clipZones.push(zone);
+    }
   }
   return {
     oiAreas,
     clipZones,
     clipTypes,
     materials,
-    count: oiAreas.length,
+    count: canopyCount,
     foliageLifted,
     foliageGeometry,
     foliageCoarsened: coarsened,
