@@ -1199,6 +1199,12 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /function selectedTerrainStyle/);
     assert.match(app, /terrainStyle: terrain \? selectedTerrainStyle\(\) : undefined/);
     assert.match(app, /style\.hidden = !dev \|\| !input \|\| !input\.checked/);
+    assert.match(app, /const ESRI_TILE_MAX_ZOOM = 23/);
+    assert.match(app, /const mapZoom = devPage\(\) \? ESRI_TILE_MAX_ZOOM : 18/);
+    assert.match(app, /L\.map\("map", \{ maxZoom: mapZoom \}\)/);
+    assert.match(app, /World_Imagery\/MapServer\/tile/);
+    assert.match(app, /imageryTiles\.options\.maxNativeZoom = z - 1/);
+    assert.equal(/resolution slider|imagery source/i.test(html + app), false);
   });
 
   it("distinguishes a drag box from a click polygon and still exports one bbox", () => {

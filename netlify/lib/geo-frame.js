@@ -89,20 +89,40 @@ function geodesicSpans(frame) {
 }
 
 /**
- * Production long side. An Oak Creek-scale box (~0.9–1.4 km) stays near a
- * 1000px JPEG. Callers on the dev host pass imageryMaxSide(true) instead.
+ * Production long side at 1 m/px. An Oak Creek-scale box (~0.9–1.4 km) stays
+ * near a 1000px JPEG. Callers on the dev host pass imageryMaxSide(true).
  */
 const IMAGERY_MAX_SIDE = 1040;
+const IMAGERY_METERS_PER_PX = 1;
 /**
- * Dev-host long side. 2048 would be ~1 m/px on a 2 km box, but a live Esri
- * export of a ~2.4 km square at 2048 took ~12s and at 1600 took ~10s.
- * 1600 still leaves a ~1.4 km campus at ~1 m/px (under the cap) and a large
- * box closer to 1 m/px than 1040. 1600² is under the 6 MP jpeg-js decode cap.
+ * Dev-host export. Esri's dynamic export allows 4096 px, and the roof decode
+ * refuses above 6 MP, so a square stops at 2048 (2048² is 4.2 MP). 0.5 m/px
+ * is World Imagery's resolution across the United States. A live 500 m box
+ * at that size (~1000 px) returned in about 3.5s. The same box at 2400 px
+ * did not return within 18s, so 2400 is not the request. A timeout steps
+ * down to the previous 1600 px / 1 m export, then to the production 1040 px.
  */
-const IMAGERY_MAX_SIDE_DEV = 1600;
+const IMAGERY_MAX_SIDE_DEV = 2048;
+const IMAGERY_METERS_PER_PX_DEV = 0.5;
 
 function imageryMaxSide(devHost) {
   return devHost ? IMAGERY_MAX_SIDE_DEV : IMAGERY_MAX_SIDE;
+}
+
+function imageryMetersPerPx(devHost) {
+  return devHost ? IMAGERY_METERS_PER_PX_DEV : IMAGERY_METERS_PER_PX;
+}
+
+/** Sharpest request first. Later steps are the same bbox with fewer pixels. */
+function imageryExportPlan(devHost) {
+  if (!devHost) {
+    return [{ maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX }];
+  }
+  return [
+    { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: IMAGERY_METERS_PER_PX_DEV },
+    { maxSide: 1600, metersPerPx: IMAGERY_METERS_PER_PX },
+    { maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX },
+  ];
 }
 
 function geoFrame(bbox, opts = {}) {
@@ -802,7 +822,11 @@ module.exports = {
   CLIPBOARD_ORIGIN,
   IMAGERY_MAX_SIDE,
   IMAGERY_MAX_SIDE_DEV,
+  IMAGERY_METERS_PER_PX,
+  IMAGERY_METERS_PER_PX_DEV,
   imageryMaxSide,
+  imageryMetersPerPx,
+  imageryExportPlan,
   metersPerDeg,
   groundMeterStretch,
   GROUND_METER_STRETCH,

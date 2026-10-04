@@ -955,28 +955,64 @@ describe("dev-host Esri long side", () => {
     global.fetch = prev;
   });
 
-  it("keeps production at 8.5s and gives the dev host 12s for the larger JPEG", () => {
+  it("keeps production at 8.5s and gives the dev host 11s for the larger JPEG", () => {
     assert.equal(IMAGERY_ATTEMPT_MS, 8500);
-    assert.equal(IMAGERY_ATTEMPT_MS_DEV, 12000);
+    assert.equal(IMAGERY_ATTEMPT_MS_DEV, 11000);
     assert.equal(imageryAttemptMs(false), 8500);
-    assert.equal(imageryAttemptMs(true), 12000);
+    assert.equal(imageryAttemptMs(true), 11000);
   });
 
-  it("asks Esri for 1600 px only on the dev host", async () => {
-    assert.equal(await longSideFor({ headers: { host: "dev--openclutter.netlify.app" } }), 1600);
+  it("asks Esri for 2048 px only on the dev host", async () => {
+    assert.equal(await longSideFor({ headers: { host: "dev--openclutter.netlify.app" } }), 2048);
     assert.equal(
       await longSideFor({ headers: { host: "deploy-preview-12--openclutter.netlify.app" } }),
-      1600
+      2048
     );
     assert.equal(
       await longSideFor({ headers: { host: "openclutter.netlify.app" }, path: "/dev" }),
-      1600
+      2048
     );
     assert.equal(await longSideFor({ headers: { host: "openclutter.netlify.app" } }), 1040);
     assert.equal(
       await longSideFor({ headers: { host: "openclutter.netlify.app" }, path: "/api/clutter" }),
       1040
     );
+  });
+
+  it("steps down to 1600 px when the 2048 px export fails", async () => {
+    const seen = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      seen.push(u);
+      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=2048,")) {
+        throw new Error("The operation was aborted due to timeout");
+      }
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: WYNN.west, ymin: WYNN.south, xmax: WYNN.east, ymax: WYNN.north },
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+      if (u.includes("getSamples") || u.includes("USFS_EDW_NLCD_TCC")) {
+        return { ok: true, json: async () => ({ samples: samples() }) };
+      }
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...WYNN, format: "bundle" }),
+    });
+    assert.equal(res.statusCode, 200, res.body);
+    const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
+    assert.ok(images.some((u) => /size=2048,/.test(u)), images.join("\n"));
+    assert.ok(images.some((u) => /size=1600,/.test(u)), images.join("\n"));
+    assert.equal(images.some((u) => /size=1040,/.test(u)), false);
   });
 });
 
