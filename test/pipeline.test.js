@@ -148,6 +148,8 @@ describe("HaminaClipboard schema", () => {
       assert.ok("shortcutKey" in t);
     }
     assert.equal(ZONE_TYPES.find((t) => t.id === "foliage-heavy").transparencyEnabled, true);
+    assert.equal(ZONE_TYPES.find((t) => t.id === "foliage-light").transparencyEnabled, true);
+    assert.equal(ZONE_TYPES.find((t) => t.id === "tree-trunk").transparencyEnabled, true);
     assert.equal(ZONE_TYPES.find((t) => t.id === "bldg-one").transparencyEnabled, false);
   });
 });

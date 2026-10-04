@@ -102,8 +102,8 @@ const ZIP_TROUBLESHOOT =
   "Tree materials, only when Include foliage was on, are stock Foliage - Heavy / Light,\n" +
   "or Foliage - Heavy H.H / Foliage - Light H.H at the measured height.\n" +
   "Buildings are name + rf_properties + top_height + display_color.\n" +
-  "Foliage adds transparencyEnabled true (Hamina Transparent in 3D). Buildings omit that key.\n" +
-  "No itu_material_type. Turn on Transparency effects in Hamina settings to see through canopy.\n" +
+  "Foliage and tree objects set transparencyEnabled true (Hamina Transparent in 3D).\n" +
+  "Buildings omit that key. Turn on Transparency effects in Hamina settings to see through canopy.\n" +
   LIFT_BARE_EARTH +
   "Tree Trunk and Foliage N.N m stay off OpenIntent. Clipboard foliage types are canopy polygons only.\n" +
   "Each ring vertex is pixels+meters+feet. Materials omit itu_material_type.\n" +

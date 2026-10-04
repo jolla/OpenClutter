@@ -9,7 +9,7 @@
  *   transparencyEnabled
  * OpenIntent 2.0.1 has no opacity property. Hamina's client schema strips
  * unknown keys and does not fail the document for them. transparencyEnabled
- * is the Transparent-in-3D flag (true on foliage, omitted on buildings).
+ * is the Transparent-in-3D flag (true on foliage and trees, omitted on buildings).
  * No itu_material_type. bottom_height is omitted on flat sites (Hamina rejected
  * bottom_height: 0 on a gold material as "Invalid OpenIntent format").
  * Bare-earth ski hills, and any surface DEM mesh, set it: bottom height from
@@ -400,7 +400,7 @@ function measuredTrunkMaterial(heightM) {
   const name = "Tree Trunk " + h.toFixed(1) + " m";
   return {
     material: oiMaterial(name, "#8B6B4F", h, 10),
-    clipType: clipType(idFor("trunk-m-", h), name, "#8B6B4F", h, 10),
+    clipType: clipType(idFor("trunk-m-", h), name, "#8B6B4F", h, 10, { transparent: true }),
     typeId: idFor("trunk-m-", h),
     measured: true,
   };

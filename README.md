@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.40** on `dev` — Include foliage stays off and Experimental. When it is on, canopy and tree attenuating objects export with Hamina’s Transparent in 3D flag (`transparencyEnabled: true`), so they are see-through in 3D. Buildings omit that flag and stay opaque. There is no extra switch on the page. Hamina still draws that transparency only when Transparency effects are on in Settings. The badge stays (`dev · v1.1.40`).
+
 **v1.1.39** on `dev` — A recorded dome, including the MSG Sphere at its measured 112 m, is stacked rings that shrink toward that top, so the plan stays round and the height is a dome. A roof that records both a high side and a low side is several pieces whose tops follow those two heights. A plain box stays one object. The curved Wynn tower still has one measured height and no low side in the source, so it stays one flat top; a second height is not invented. Finish shape stays gone. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.39`).
 
 **v1.1.38** on `dev` — A measured tower taller than Hamina’s Ten Floor stock keeps that height. A wider lower footprint with a taller inset inside it is two attenuating objects: the podium on its own plan, and the tower on its plan at the measured height. A plain box stays one object. A height no source recorded is not invented. Finish shape stays gone. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.38`).
@@ -53,7 +55,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.39`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, choose **Sloped** (default, one ramp or pad per cell) or **Raised layers** (stacked plates, at most 400 floors). The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The style radios hide when Terrain is off, and both the checkbox and the radios stay hidden off this host.
+- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.40`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, choose **Sloped** (default, one ramp or pad per cell) or **Raised layers** (stacked plates, at most 400 floors). The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The style radios hide when Terrain is off, and both the checkbox and the radios stay hidden off this host.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 
