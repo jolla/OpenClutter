@@ -960,9 +960,10 @@ describe("dev-host Esri long side", () => {
     assert.equal(IMAGERY_ATTEMPT_MS_DEV, 18000);
     assert.equal(imageryAttemptMs(false), 8500);
     assert.equal(imageryAttemptMs(true), 18000);
-    assert.equal(IMAGERY_RETURN_MS, 22000);
+    assert.equal(IMAGERY_RETURN_MS, 18000);
     assert.equal(imageryStepBudget(0, 8000), 8000);
-    assert.equal(imageryStepBudget(18000, 8000), 4000);
+    assert.equal(imageryStepBudget(2100, 8000), 8000);
+    assert.equal(imageryStepBudget(18000, 8000), 0);
     assert.equal(imageryStepBudget(21000, 8000), 0);
   });
 
@@ -1109,6 +1110,73 @@ describe("dev-host Esri long side", () => {
       images.map((u) => (u.match(/size=\d+,\d+/) || [""])[0]),
       ["size=2048,1529"]
     );
+  });
+
+  it("returns a zip when a slow dev image is followed by hung footprint reads", async () => {
+    function hang(signal) {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve({ ok: false, status: 504, json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0) }), 30000);
+        const abort = () => {
+          clearTimeout(timer);
+          const err = new Error("The operation was aborted due to timeout");
+          err.name = "AbortError";
+          reject(err);
+        };
+        if (signal && signal.aborted) abort();
+        else if (signal) signal.addEventListener("abort", abort, { once: true });
+      });
+    }
+    global.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes("overturemaps") || u.includes("blob.core.windows.net/release") || u.includes("elevation.nationalmap.gov") || u.includes("getSamples")) {
+        return hang(init && init.signal);
+      }
+      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=2048,")) {
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(resolve, 12000);
+          const signal = init && init.signal;
+          const abort = () => {
+            clearTimeout(timer);
+            reject(Object.assign(new Error("The operation was aborted due to timeout"), { name: "AbortError" }));
+          };
+          if (signal) {
+            if (signal.aborted) abort();
+            else signal.addEventListener("abort", abort, { once: true });
+          }
+        });
+        return { ok: true, arrayBuffer: async () => jpeg };
+      }
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: WYNN.west, ymin: WYNN.south, xmax: WYNN.east, ymax: WYNN.north },
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+    const t0 = Date.now();
+    const res = await handler(
+      {
+        httpMethod: "POST",
+        headers: { host: "dev--openclutter.netlify.app" },
+        body: JSON.stringify({ ...WYNN, format: "bundle" }),
+      },
+      {}
+    );
+    const elapsed = Date.now() - t0;
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
+    assert.ok(elapsed < 26000, "elapsed " + elapsed);
+    assert.equal(/Export failed\. Retry\./.test(res.body), false);
+    assert.equal(/too large to finish in one export/.test(res.body), false);
+    assert.equal(/did not finish/i.test(res.body), false);
+    const body = JSON.parse(res.body);
+    assert.ok(body.zipBase64);
+    assert.equal(res.headers && res.headers["content-type"], "application/json");
   });
 
   it("still asks a smaller site for the finer image", async () => {
