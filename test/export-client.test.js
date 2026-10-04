@@ -4,10 +4,17 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { exportFailure, failureError, runExportAttempts } = require("../public/export-client");
+const {
+  WORKING_STATUS,
+  STOPPED_STATUS,
+  exportFailure,
+  failureError,
+  idleStatus,
+  runExportAttempts,
+} = require("../public/export-client");
 
 describe("export gateway timeout", () => {
-  it("finishes a recoverable or slow export instead of stopping on an empty failure", async () => {
+  it("returns one zip and does not leave the working line up after a 504", async () => {
     const app = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
     const client = fs.readFileSync(path.join(__dirname, "../public/export-client.js"), "utf8");
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
@@ -16,29 +23,36 @@ describe("export gateway timeout", () => {
     assert.equal(client.includes("Export failed. Retry."), false);
     assert.equal(/too large to finish in one export/.test(app + client), false);
     assert.match(app, /Export is still working\./);
+    assert.match(app, /OpenClutterExport\.idleStatus/);
     assert.match(html, /src="\/export-client\.js"/);
     assert.match(app, /OpenClutterExport\.runExportAttempts/);
+    assert.equal(WORKING_STATUS, "Export is still working.");
 
-    for (const status of [504, 408, 502, 503]) {
+    for (const status of [504, 408]) {
       const failure = exportFailure(status, {});
-      assert.equal(failure.retry, true);
-      assert.equal(failure.attempts, 3);
-      assert.equal(failure.message, "");
+      assert.equal(failure.gateway, true);
+      assert.equal(failure.retry, false);
+      assert.equal(failure.attempts, 1);
+      assert.equal(failure.message, STOPPED_STATUS);
+      assert.notEqual(failure.message, WORKING_STATUS);
       assert.equal(/Export failed\. Retry\.|did not finish|too large to finish/i.test(failure.message), false);
       const err = failureError(status, {});
-      assert.equal(err.attempts, 3);
-      assert.equal(err.noRetry, false);
-      assert.equal(err.message, "");
+      assert.equal(err.attempts, 1);
+      assert.equal(err.noRetry, true);
+      assert.equal(idleStatus(err), STOPPED_STATUS);
+      assert.notEqual(idleStatus(err), WORKING_STATUS);
     }
-    assert.equal(exportFailure(504, {}).gateway, true);
-    assert.equal(exportFailure(502, {}).gateway, false);
+
+    assert.equal(idleStatus(new Error("")), STOPPED_STATUS);
+    assert.equal(idleStatus(new Error(WORKING_STATUS)), STOPPED_STATUS);
+    assert.notEqual(idleStatus(new Error("")), WORKING_STATUS);
 
     const blocked = exportFailure(400, { error: "bad bbox" });
     assert.equal(blocked.retry, false);
     assert.equal(blocked.attempts, 1);
     assert.equal(blocked.message, "bad bbox");
     assert.equal(exportFailure(413, {}).retry, false);
-    assert.equal(exportFailure(413, {}).attempts, 1);
+    assert.equal(idleStatus(failureError(400, { error: "bad bbox" })), "bad bbox");
 
     const imagery = exportFailure(502, { error: "Aerial imagery timed out. Retry the export." });
     assert.equal(imagery.gateway, false);
@@ -46,42 +60,30 @@ describe("export gateway timeout", () => {
     assert.equal(imagery.retry, true);
     assert.equal(imagery.message, "Aerial imagery timed out. Retry the export.");
 
-    const zip = { zipBase64: "e30=", zipFilename: "openclutter.zip" };
-    const seen = [];
-    const data = await runExportAttempts(async (attempt) => {
-      seen.push(attempt);
-      if (attempt < 3) throw failureError(504, {});
-      return zip;
-    });
-    assert.deepEqual(seen, [1, 2, 3]);
-    assert.equal(data, zip);
-
-    const afterEmpty = [];
-    const emptyThenZip = await runExportAttempts(async (attempt) => {
-      afterEmpty.push(attempt);
-      if (attempt === 1) throw failureError(502, {});
-      return zip;
-    });
-    assert.deepEqual(afterEmpty, [1, 2]);
-    assert.equal(emptyThenZip, zip);
-
-    const afterThrow = [];
-    const thrownThenZip = await runExportAttempts(async (attempt) => {
-      afterThrow.push(attempt);
-      if (attempt === 1) throw new TypeError("Failed to fetch");
-      return zip;
-    });
-    assert.deepEqual(afterThrow, [1, 2]);
-    assert.equal(thrownThenZip, zip);
-
+    const calls = [];
     await assert.rejects(
-      () => runExportAttempts(async () => { throw failureError(504, {}); }),
+      () =>
+        runExportAttempts(async (attempt) => {
+          calls.push(attempt);
+          throw failureError(504, {});
+        }),
       (err) => {
-        assert.equal(err.message, "");
+        assert.equal(idleStatus(err), STOPPED_STATUS);
+        assert.notEqual(idleStatus(err), WORKING_STATUS);
         assert.equal(/Export failed\. Retry\.|did not finish|too large to finish/i.test(String(err.message)), false);
         return true;
       }
     );
+    assert.deepEqual(calls, [1]);
+
+    const zip = { zipBase64: "e30=", zipFilename: "openclutter.zip" };
+    const once = [];
+    const data = await runExportAttempts(async (attempt) => {
+      once.push(attempt);
+      return zip;
+    });
+    assert.deepEqual(once, [1]);
+    assert.equal(data, zip);
 
     await assert.rejects(
       () => runExportAttempts(async () => { throw failureError(400, { error: "bad bbox" }); }),

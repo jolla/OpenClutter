@@ -1,12 +1,11 @@
 /**
  * How the page treats an export response.
  *
- * A gateway timeout (empty 504 or 408) and an empty 5xx are a slow export
- * the platform closed before the function answered. A thrown fetch error is
- * the same kind of miss. Try again while the status line stays
- * "Export is still working." A later zip is the export. A 400 or 413 is the
- * request itself and is not retried. The page does not report that wait as
- * an area that is too large.
+ * The function has to return the zip before the gateway closes the request.
+ * An empty 504 or 408 means that already happened. Asking for the same long
+ * request again does not finish it, so it is not retried. When the export
+ * stops, the status line leaves "Export is still working." A 400 or 413 is
+ * the request itself. The page does not call the draw too large.
  *
  * Browser + Node.
  */
@@ -17,13 +16,16 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
+  const WORKING_STATUS = "Export is still working.";
+  const STOPPED_STATUS = "The export stopped before a zip was ready.";
+
   function exportFailure(status, data) {
     const gateway = status === 504 || status === 408;
     const blocked = status === 400 || status === 413;
     const serverMessage = data && data.error ? String(data.error) : "";
-    const recoverable = !blocked;
+    const recoverable = !blocked && !gateway;
     return {
-      message: serverMessage || (blocked ? "Export failed (" + status + ")." : ""),
+      message: serverMessage || (gateway ? STOPPED_STATUS : blocked ? "Export failed (" + status + ")." : ""),
       retry: recoverable,
       gateway: gateway,
       attempts: recoverable ? 3 : 1,
@@ -39,10 +41,17 @@
     return err;
   }
 
+  /** Status once Export is idle again. Never the in-progress line. */
+  function idleStatus(err) {
+    const message = err && err.message ? String(err.message) : "";
+    if (!message || message === WORKING_STATUS) return STOPPED_STATUS;
+    return message;
+  }
+
   /**
    * Run the export until it returns or the failure says to stop.
-   * A recoverable miss gets three tries. A later success is the zip.
-   * A thrown error with no attempt budget is recoverable too.
+   * A gateway timeout is one try. Another miss can still be tried, and a
+   * later zip is the export.
    */
   async function runExportAttempts(attemptFn) {
     let lastErr = null;
@@ -60,8 +69,11 @@
   }
 
   return {
+    WORKING_STATUS: WORKING_STATUS,
+    STOPPED_STATUS: STOPPED_STATUS,
     exportFailure: exportFailure,
     failureError: failureError,
+    idleStatus: idleStatus,
     runExportAttempts: runExportAttempts,
   };
 });

@@ -99,10 +99,10 @@ const IMAGERY_METERS_PER_PX = 1;
  * refuses above 6 MP, so a square stops at 2048 (2048² is 4.2 MP). 0.5 m/px
  * is World Imagery's resolution across the United States. A live 500 m box
  * at that size (~1000 px) returned in about 3.5s. A ~2221 m box at 2048 px
- * returned in about 12.5s, so that request is allowed to finish. The same
- * 500 m box at 2400 px did not return within 18s, so 2400 is not the request.
- * A fast failure can still use the previous 1600 px / 1 m export, then the
- * production 1040 px. A slow fine image is not replaced.
+ * can take longer than the gateway will wait, so that request steps down
+ * when it is still out. The same 500 m box at 2400 px did not return within
+ * 18s, so 2400 is not the request. The next sizes are 1600 px / 1 m, then
+ * the production 1040 px. A sharp JPEG that arrives in time is kept.
  */
 const IMAGERY_MAX_SIDE_DEV = 2048;
 const IMAGERY_METERS_PER_PX_DEV = 0.5;
