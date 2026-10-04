@@ -1229,8 +1229,11 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.equal(/leaflet-draw/.test(html), false);
     assert.equal(/<dialog/i.test(html), false);
     assert.equal(/<select/i.test(html), false);
-    assert.match(app, /formatBboxFeet/);
-    assert.match(app, /formatPolygonSqFt/);
+    assert.match(app, /bboxReadout/);
+    assert.match(app, /polygonReadout/);
+    assert.match(html, /area-quiet/);
+    assert.equal(/formatBboxFeet|formatPolygonSqFt|SQFT/.test(app), false);
+    assert.equal(/unit toggle|id="unit/.test(html + app), false);
     assert.match(app, /contextmenu/);
     const menuAt = app.indexOf('"contextmenu"');
     const menuBody = app.slice(menuAt, menuAt + 160);

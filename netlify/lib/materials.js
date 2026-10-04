@@ -37,33 +37,47 @@
 const { ZONE_TYPES, TYPE_BY_ID, oiMaterialFromType, pickBuildingTypeId } = require("./hamina-clipboard");
 const { LIFT_LOCAL_M } = require("./terrain");
 
+/**
+ * Height colors for the building Hamina draws. A small discrete set, so a
+ * short building and a tower are not the same gray (or the old Two Floor
+ * magenta). These are display_color on the OpenIntent object. Foliage greens
+ * are not in this set. A missing height stays the quiet neutral — this does
+ * not estimate a height from the footprint.
+ */
+const BUILDING_NEUTRAL_COLOR = "#8B949E";
+const BUILDING_COLOR_SHORT = "#377EB8";
+const BUILDING_COLOR_LOW = "#FF7F00";
+const BUILDING_COLOR_MID = "#984EA3";
+const BUILDING_COLOR_TALL = "#E41A1C";
+const BUILDING_COLOR_TOWER = "#F0E442";
+
 /** Hamina-native outdoor building materials (from Jerry's gold OpenIntent zip). */
 const OI_BUILDING_TYPES = [
   {
     id: "bldg-one",
     name: "Building - One Floor",
-    color: "#9AA5AC",
+    color: BUILDING_COLOR_SHORT,
     topEdge: 4.5,
     attenuationDbPerMeter: 5,
   },
   {
     id: "bldg-two",
     name: "Building - Two Floor",
-    color: "#9A4159",
+    color: BUILDING_COLOR_LOW,
     topEdge: 7.620092660326749,
     attenuationDbPerMeter: 5,
   },
   {
     id: "bldg-five",
     name: "Building - Five Floor",
-    color: "#9AA5AC",
+    color: BUILDING_COLOR_MID,
     topEdge: 15.240185320653499,
     attenuationDbPerMeter: 5,
   },
   {
     id: "bldg-ten",
     name: "Building - Ten Floor",
-    color: "#9AA5AC",
+    color: BUILDING_COLOR_TALL,
     topEdge: 32,
     attenuationDbPerMeter: 5,
   },
@@ -83,8 +97,6 @@ const FOLIAGE_HEAVY_NAME = "Foliage - Heavy";
 const FOLIAGE_LIGHT_NAME = "Foliage - Light";
 const FOLIAGE_HEAVY_COLOR = "#3F7D2A";
 const FOLIAGE_LIGHT_COLOR = "#6FA84A";
-/** Same gray as Building - One Floor. Continuous metres stay in that family. */
-const MEASURED_BUILDING_COLOR = "#9AA5AC";
 
 const OI_VEGETATION_NAMES = [FOLIAGE_HEAVY_NAME, FOLIAGE_LIGHT_NAME];
 
@@ -112,11 +124,21 @@ function measuredExceedsStock(heightM) {
   return h > ten + STOCK_HEIGHT_TOL_M;
 }
 
+/**
+ * Color for a real vertical height. Bands match the stock floor cuts
+ * (under 6 m, under 11 m, under 24 m, through Ten Floor). Anything taller
+ * than Ten Floor is the tower color. No height stays neutral. Footprint
+ * area is not a height and is not read here.
+ */
 function buildingColor(h) {
-  const t = Math.max(0, Math.min(1, (h - 3) / 18));
-  const v = Math.round(198 - t * 78);
-  const hex = v.toString(16).padStart(2, "0");
-  return "#" + hex + hex + hex;
+  const n = Number(h);
+  if (!(n > 2)) return BUILDING_NEUTRAL_COLOR;
+  if (n < 6) return BUILDING_COLOR_SHORT;
+  if (n < 11) return BUILDING_COLOR_LOW;
+  if (n < 24) return BUILDING_COLOR_MID;
+  const ten = OI_BUILDING_BY_ID["bldg-ten"].topEdge;
+  if (n <= ten + STOCK_HEIGHT_TOL_M) return BUILDING_COLOR_TALL;
+  return BUILDING_COLOR_TOWER;
 }
 
 function idFor(prefix, h) {
@@ -186,7 +208,7 @@ function measuredOiBuildingMaterial(heightM) {
   if (!h) return null;
   const name = "Building - " + h.toFixed(1);
   if (!isMeasuredBuildingOiName(name) || isPoisonedOiName(name)) return null;
-  return oiMaterial(name, MEASURED_BUILDING_COLOR, h, 5);
+  return oiMaterial(name, buildingColor(h), h, 5);
 }
 
 /** Slope pair for a measured thickness. Null when the bottom stays under 1 m. */
@@ -836,6 +858,12 @@ module.exports = {
   roundBuildingHeightM,
   measuredExceedsStock,
   buildingColor,
+  BUILDING_NEUTRAL_COLOR,
+  BUILDING_COLOR_SHORT,
+  BUILDING_COLOR_LOW,
+  BUILDING_COLOR_MID,
+  BUILDING_COLOR_TALL,
+  BUILDING_COLOR_TOWER,
   measuredBuildingMaterial,
   measuredFoliageMaterial,
   measuredTrunkMaterial,

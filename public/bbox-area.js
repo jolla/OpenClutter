@@ -1,10 +1,15 @@
 /**
- * Draw-chip size of a lon/lat bounding box, in feet.
+ * Draw-chip size of a lon/lat box.
  *
  * Each side uses the same mid-latitude meters-per-degree as
- * netlify/lib/geo-frame.js (111320·cos(lat) east-west, 110540 north-south),
- * then × 3.280839895. A flat degree grid would be badly short at Vegas
- * (~36°N) and Wisconsin (~43°N).
+ * netlify/lib/geo-frame.js (111320·cos(lat) east-west, 110540 north-south).
+ * A flat degree grid would be badly short at Vegas (~36°N) and Wisconsin (~43°N).
+ *
+ * The chip leads with how far across the draw is. Under a kilometer that is
+ * meters, with feet beside it. A campus (about a kilometer, such as Wynn at
+ * about 2 km) is kilometers, with miles beside it. Area follows on the same
+ * line: square meters, with square feet quieter, or hectares and acres when
+ * the square-meter figure is huge. No unit toggle.
  *
  * Browser + Node. Not used by the OpenIntent export path.
  */
@@ -46,20 +51,89 @@
     };
   }
 
-  /** US grouping, nearest foot. Empty when there is nothing to show. */
-  function formatFeet(feet) {
-    if (!Number.isFinite(feet) || feet < 0.5) return "";
-    return Math.round(feet).toLocaleString("en-US");
+  /** US grouping, nearest whole number. Empty when there is nothing to show. */
+  function formatCount(n) {
+    if (!Number.isFinite(n) || n < 0.5) return "";
+    return Math.round(n).toLocaleString("en-US");
   }
 
-  // Chip order is map X×Y: east–west width × north–south length, in feet.
-  function formatBboxFeet(bbox) {
-    const sides = bboxSidesFt(bbox);
-    if (!sides) return "";
-    const width = formatFeet(sides.widthFt);
-    const length = formatFeet(sides.lengthFt);
-    if (!width || !length) return "";
-    return width + " × " + length + " ft";
+  function formatFeet(feet) {
+    return formatCount(feet);
+  }
+
+  /** One decimal. Used for kilometers and miles. */
+  function formatOneDecimal(n) {
+    if (!Number.isFinite(n) || n < 0) return "";
+    return (Math.round(n * 10) / 10).toFixed(1);
+  }
+
+  /**
+   * Hectares and acres. Whole numbers from 100 up. One decimal below that,
+   * without a trailing .0.
+   */
+  function formatStepped(n) {
+    if (!Number.isFinite(n) || n < 0.05) return "";
+    if (n >= 100) return Math.round(n).toLocaleString("en-US");
+    const tenths = Math.round(n * 10) / 10;
+    if (Math.abs(tenths - Math.round(tenths)) < 1e-9) return String(Math.round(tenths));
+    return tenths.toFixed(1);
+  }
+
+  /** Longer side. A kilometer or more reads as km and miles. */
+  const SPAN_CAMPUS_M = 1000;
+  /** Square meters at which the area figure steps up to hectares. */
+  const AREA_HECTARE_M2 = 100000;
+  const SQ_FT_PER_ACRE = 43560;
+
+  function formatSpan(meters) {
+    if (!(meters >= 1)) return null;
+    if (meters >= SPAN_CAMPUS_M) {
+      const km = meters / 1000;
+      const mi = (meters * FEET_PER_M) / 5280;
+      return { metric: formatOneDecimal(km) + " km", imperial: formatOneDecimal(mi) + " mi" };
+    }
+    const metric = formatCount(meters);
+    const imperial = formatCount(meters * FEET_PER_M);
+    if (!metric || !imperial) return null;
+    return { metric: metric + " m", imperial: imperial + " ft" };
+  }
+
+  function formatArea(m2) {
+    if (!(m2 > 0)) return null;
+    if (m2 >= AREA_HECTARE_M2) {
+      const ha = m2 / 10000;
+      const acres = (m2 * FEET_PER_M * FEET_PER_M) / SQ_FT_PER_ACRE;
+      const metric = formatStepped(ha);
+      const imperial = formatStepped(acres);
+      if (!metric || !imperial) return null;
+      return { metric: metric + " ha", imperial: imperial + " acres" };
+    }
+    const metric = formatCount(m2);
+    const imperial = formatCount(m2 * FEET_PER_M * FEET_PER_M);
+    if (!metric || !imperial) return null;
+    return { metric: metric + " m²", imperial: imperial + " sq ft" };
+  }
+
+  function joinReadout(span, area) {
+    if (!span || !area) return null;
+    return {
+      text: span.metric + " · " + span.imperial + " · " + area.metric + " · " + area.imperial,
+      html:
+        span.metric +
+        ' · <span class="area-quiet">' +
+        span.imperial +
+        "</span> · " +
+        area.metric +
+        ' · <span class="area-quiet">' +
+        area.imperial +
+        "</span>",
+    };
+  }
+
+  function bboxReadout(bbox) {
+    const sides = bboxSidesM(bbox);
+    if (!sides) return null;
+    return joinReadout(formatSpan(Math.max(sides.widthM, sides.lengthM)), formatArea(sides.widthM * sides.lengthM));
   }
 
   /**
@@ -93,23 +167,41 @@
     return Math.abs(twice) / 2;
   }
 
-  /** Polygon chip: area in square feet, not the box’s L×W. */
-  function formatPolygonSqFt(vertices) {
-    const m2 = ringAreaM2(vertices);
-    if (!Number.isFinite(m2)) return "";
-    const text = formatFeet(m2 * FEET_PER_M * FEET_PER_M);
-    if (!text) return "";
-    return text + " sq ft";
+  function polygonReadout(vertices) {
+    const area = ringAreaM2(vertices);
+    if (!Number.isFinite(area)) return null;
+    let south = Infinity;
+    let north = -Infinity;
+    let west = Infinity;
+    let east = -Infinity;
+    for (let i = 0; i < vertices.length; i++) {
+      const v = vertices[i];
+      if (!v) return null;
+      const lat = +v.lat;
+      const lng = +(v.lng != null ? v.lng : v.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+      if (lat < south) south = lat;
+      if (lat > north) north = lat;
+      if (lng < west) west = lng;
+      if (lng > east) east = lng;
+    }
+    const sides = bboxSidesM({ west: west, south: south, east: east, north: north });
+    if (!sides) return null;
+    return joinReadout(formatSpan(Math.max(sides.widthM, sides.lengthM)), formatArea(area));
   }
 
   return {
     FEET_PER_M: FEET_PER_M,
+    SPAN_CAMPUS_M: SPAN_CAMPUS_M,
+    AREA_HECTARE_M2: AREA_HECTARE_M2,
     metersPerDeg: metersPerDeg,
     bboxSidesM: bboxSidesM,
     bboxSidesFt: bboxSidesFt,
     formatFeet: formatFeet,
-    formatBboxFeet: formatBboxFeet,
+    formatSpan: formatSpan,
+    formatArea: formatArea,
+    bboxReadout: bboxReadout,
     ringAreaM2: ringAreaM2,
-    formatPolygonSqFt: formatPolygonSqFt,
+    polygonReadout: polygonReadout,
   };
 });
