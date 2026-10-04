@@ -79,7 +79,6 @@ let panLast = null;
 const drawSession = OpenClutterDraw.createSession();
 const statusEl = document.getElementById("status");
 const exportBtn = document.getElementById("export");
-const finishBtn = document.getElementById("finish-shape");
 const copyTerrainBtn = document.getElementById("copy-terrain");
 let terrainPasteJson = "";
 
@@ -190,9 +189,8 @@ function committedExportBlocked() {
   return w > 2500 || h > 2500 || w < 40 || h < 40;
 }
 
-function syncFinishControl() {
+function syncExportReady() {
   const n = drawSession.phase === "polygon" ? drawSession.vertices.length : 0;
-  if (finishBtn) finishBtn.hidden = n < 3;
   if (n > 0) {
     exportBtn.disabled = false;
     return;
@@ -206,7 +204,7 @@ function enterDrawMode(message) {
   OpenClutterDraw.arm(drawSession);
   restoreCommitted();
   syncDrawMode();
-  syncFinishControl();
+  syncExportReady();
   if (message) setStatus(message);
 }
 
@@ -214,7 +212,7 @@ function resumeDrawMode() {
   if (drawSession.vertices.length || drawSession.down) return;
   if (!drawSession.armed) OpenClutterDraw.arm(drawSession);
   syncDrawMode();
-  syncFinishControl();
+  syncExportReady();
 }
 
 function applyExtent(bounds, label) {
@@ -222,7 +220,7 @@ function applyExtent(bounds, label) {
   committedLabel = label == null ? null : label;
   bbox = chipBbox(bounds);
   showAreaChip(bounds, committedLabel);
-  syncFinishControl();
+  syncExportReady();
   if (exportBtn.disabled) setStatus("Area must be between 40 m and 2.5 km on a side.", true);
   else setStatus("Ready to export.");
 }
@@ -308,7 +306,7 @@ function handleDraw(result) {
   if (result.type === "vertex") {
     showVertexPreview(result.vertices);
     const n = result.vertices.length;
-    syncFinishControl();
+    syncExportReady();
     if (n < 3) setStatus("Corner " + n + ". Click the next corner. Esc cancels.");
     else setStatus("Corner " + n + ". Click the first corner to close. Double-click also finishes. Esc cancels.");
     return;
@@ -538,13 +536,6 @@ document.getElementById("draw").onclick = () => {
 
 enterDrawMode("Click the map to draw. Drag a box, or click corners and click the first corner to close. Right-drag or hold Space to pan.");
 
-if (finishBtn) {
-  finishBtn.onclick = () => {
-    activePointer = null;
-    handleDraw(OpenClutterDraw.finish(drawSession));
-  };
-}
-
 document.getElementById("search").onsubmit = async (e) => {
   e.preventDefault();
   const q = document.getElementById("q").value.trim();
@@ -656,7 +647,7 @@ function openRingExportStatus(count) {
 document.getElementById("export").onclick = async () => {
   const pending = OpenClutterDraw.prepareExport(drawSession);
   if (pending.type === "blocked") {
-    syncFinishControl();
+    syncExportReady();
     setStatus(openRingExportStatus(pending.count), true);
     return;
   }
@@ -666,7 +657,6 @@ document.getElementById("export").onclick = async () => {
   }
   if (!bbox) return;
   exportBtn.disabled = true;
-  if (finishBtn) finishBtn.hidden = true;
   const includeFoliage = document.getElementById("include-foliage").checked;
   const includeTerrain = terrainExportEnabled();
   setStatus(includeFoliage ? "Building map + buildings + canopy…" : "Building map + buildings…");
