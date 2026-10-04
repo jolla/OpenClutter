@@ -24,6 +24,7 @@ const {
 } = require("./materials");
 const { treePairsFromPoints } = require("./vegetation");
 const { dedupeStackedFootprints } = require("./conflate");
+const { piecesForFeature } = require("./roof-form");
 const { zipStore } = require("./zip-store");
 const { TERRAIN_FILENAME, demUnderFootprint, normalizeTerrainResolution, GLO30_CREDIT, LIFT_LOCAL_M } = require("./terrain");
 const { overlaySvg, frameLockJson } = require("./overlay");
@@ -58,11 +59,11 @@ const ZIP_README =
   "the status says so. Buildings still export.\n" +
   "Materials are Foliage - Heavy / Foliage - Light, or Foliage - Heavy H.H /\n" +
   "Foliage - Light H.H at the measured height.\n" +
-  "Individual tree-point circles and trunks are not emitted. OpenIntent has no Tree type,\n" +
-  "so trunks cannot be imported that way.\n" +
+  "A compact measured crown is one tree: a stem under the crown, the crown bottom above the ground,\n" +
+  "and the crown top at the measured height. A continuous canopy stays one mass on the ground.\n" +
+  "Tree points are not turned into trees. The names Tree Trunk and Foliage N.N m stay off OpenIntent.\n" +
   "Buildings use Hamina's outdoor Building - One/Two/Five/Ten Floor materials.\n" +
   "Canopy cells on building footprints and on pavement or roads are cleared, and rings are cut around footprints (4 m buffer) and water, so foliage does not cover roofs, parking, or ponds.\n" +
-  "There is no Tree type, so OpenIntent does not emit trunks. Tree Trunk and Foliage N.N m stay off OpenIntent.\n" +
   "hamina-clipboard.json matches the toggle: buildings only when foliage is off, or the same canopy polygons when it is on.\n" +
   "Schema: OpenIntent 2.0.1, pixels+meters+feet per vertex, isotropic meter/pixel aspect.\n" +
   "(Optional) Unzip and open alignment-overlay.svg next to images/ to check rooftops and, when foliage is on, canopy.\n";
@@ -70,15 +71,17 @@ const ZIP_README =
 const LIFT_BARE_EARTH =
   "Flat sites omit bottom_height, so bottom height from floor stays the floor (about 0)\n" +
   "and top height from floor stays the building or canopy height. Do not write bottom_height: 0.\n" +
-  "When a terrain mesh is pasted, a building or canopy polygon sets bottom_height\n" +
-  "to the top of that mesh under the footprint and top_height to that bottom plus the\n" +
-  "building height or the foliage height. A hill under 20 m is included.\n" +
+  "When a terrain mesh is pasted, a building sets bottom_height to the downhill\n" +
+  "ground under that piece and top_height to that bottom plus the building height.\n" +
+  "The uphill side of the piece is cut into the ramp. Canopy still uses the uphill\n" +
+  "slope under that canopy. A hill under 20 m is included.\n" +
   "Ground under 1 m omits bottom_height.\n";
 
 const LIFT_SURFACE =
   "This export used Copernicus DEM GLO-30, a surface model.\n" +
-  "Building and canopy polygons set bottom_height to the DEM under that footprint\n" +
-  "and top_height to that bottom plus the building or foliage height.\n" +
+  "A building sets bottom_height to the downhill ground under that piece and\n" +
+  "top_height to that bottom plus the building height. Canopy still uses the\n" +
+  "uphill slope under that canopy, plus the foliage height.\n" +
   "The 20 m ski-hill gate does not apply. Ground under 1 m omits bottom_height.\n" +
   "Do not write bottom_height: 0.\n";
 
@@ -93,7 +96,7 @@ const ZIP_TROUBLESHOOT =
   "  3. In Hamina, check the Attenuating Objects sidebar count.\n" +
   "     0 = OpenIntent import dropped the areas. >0 = they imported but did not draw.\n" +
   "  4. Optional: paste hamina-clipboard.json. It has buildings only unless Include foliage was on,\n" +
-  "     in which case it has the same canopy polygons (no trunks, no tree-point circles).\n" +
+  "     in which case it has the same canopy polygons. A discrete tree also has its stem.\n" +
   "  5. Console WebGL texSubImage2D / Rive warnings can hide objects after a successful import.\n" +
   "     Try Hamina’s 2D map view, and turn hardware acceleration off, then zoom the full extent.\n" +
   "Floorplan dimensions.height is Hamina outdoor 2.5 m (8.202 ft); meters match JPEG pixel aspect.\n" +
@@ -101,10 +104,10 @@ const ZIP_TROUBLESHOOT =
   "Tree materials, only when Include foliage was on, are stock Foliage - Heavy / Light,\n" +
   "or Foliage - Heavy H.H / Foliage - Light H.H at the measured height.\n" +
   "Buildings are name + rf_properties + top_height + display_color.\n" +
-  "Foliage adds transparencyEnabled true (Hamina Transparent in 3D). Buildings omit that key.\n" +
-  "No itu_material_type. Turn on Transparency effects in Hamina settings to see through canopy.\n" +
+  "Foliage and tree objects set transparencyEnabled true (Hamina Transparent in 3D).\n" +
+  "Buildings omit that key. Turn on Transparency effects in Hamina settings to see through canopy.\n" +
   LIFT_BARE_EARTH +
-  "Tree Trunk and Foliage N.N m stay off OpenIntent. Clipboard foliage types are canopy polygons only.\n" +
+  "The names Tree Trunk and Foliage N.N m stay off OpenIntent. A discrete tree uses Foliage - Trunk H.H.\n" +
   "Each ring vertex is pixels+meters+feet. Materials omit itu_material_type.\n" +
   "Rings thinner than 4 px on one axis, or over the Hamina vertex cap, are omitted from OpenIntent\n" +
   "(VERIFY.txt warning) so one bad ring cannot drop the import. Those shapes stay on the clipboard.\n";
@@ -288,15 +291,17 @@ const TERRAIN_README =
   "The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
   "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
   "Building attenuating objects stay in this OpenIntent zip. When this mesh is pasted,\n" +
-  "bottom_height is bottom height from floor (the top of the slope under the footprint,\n" +
+  "bottom_height is bottom height from floor (the downhill ground under that piece,\n" +
   "including a hill under 20 m) and top_height is top height from floor (that bottom\n" +
-  "plus the building height).\n" +
+  "plus the building height). The uphill side of the piece is cut into the ramp.\n" +
   "With Include foliage on, canopy polygons use the same pair: bottom_height is the\n" +
   "slope top under that canopy, and top_height is that bottom plus the foliage height.\n" +
   "Clipboard zone types use the same pair as bottomEdge and topEdge. Flat ground\n" +
   "omits bottom_height so the bottom stays on the floor.\n" +
-  "A footprint that climbs more than about 8 m is split, and each piece uses the\n" +
-  "slope top under that piece. A taller plan inside a shorter one is two objects:\n" +
+  "A footprint that climbs more than about 2.5 m is split. Each piece meets the\n" +
+  "downhill ground under that piece, and its top is that ground plus the building\n" +
+  "height, so the roof stays at the measured height and the downhill face does not\n" +
+  "hang above the ramp. A taller plan inside a shorter one is two objects:\n" +
   "the lower footprint up to its height, then the upper footprint from that height\n" +
   "to the taller top. A single simple box stays one object.\n" +
   "Retest Granite Peak: Import this zip (Projects → Import → OpenIntent), Copy terrain,\n" +
@@ -343,13 +348,16 @@ const TERRAIN_README_SURFACE =
   "slopedFloors are open xyz quads (z = meters above that same low point).\n" +
   "The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
   "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
-  "Building attenuating objects stay in this OpenIntent zip. They sit on this DEM:\n" +
-  "bottom_height is the slope top under that footprint, and top_height is that\n" +
-  "bottom plus the building height. Canopy polygons use that bottom plus the\n" +
-  "foliage height. The bare-earth 20 m ski-hill gate does not apply here.\n" +
+  "Building attenuating objects stay in this OpenIntent zip. They are cut into this DEM:\n" +
+  "bottom_height is the downhill ground under that piece, and top_height is that\n" +
+  "bottom plus the building height. The uphill side of the piece is in the ramp.\n" +
+  "Canopy polygons still use the uphill slope under that canopy, plus the foliage\n" +
+  "height. The bare-earth 20 m ski-hill gate does not apply here.\n" +
   "A footprint whose ground is under 1 m omits bottom_height. Do not write bottom_height: 0.\n" +
-  "A footprint that climbs more than about 8 m is split, and each piece uses the\n" +
-  "slope top under that piece. A taller plan inside a shorter one is two objects:\n" +
+  "A footprint that climbs more than about 2.5 m is split. Each piece meets the\n" +
+  "downhill ground under that piece, and its top is that ground plus the building\n" +
+  "height, so the roof stays at the measured height and the downhill face does not\n" +
+  "hang above the ramp. A taller plan inside a shorter one is two objects:\n" +
   "the lower footprint up to its height, then the upper footprint from that height\n" +
   "to the taller top. A single simple box stays one object.\n" +
   "Retest: Import this zip (Projects → Import → OpenIntent), Copy terrain,\n" +
@@ -456,9 +464,9 @@ const ALIGNMENT = [
   "   Include foliage is off by default. Checked, it adds traced canopy polygons (CHM contours when the height model resolves them, otherwise NLCD polygons).",
   "   Buildings: Building - One / Two / Five / Ten Floor.",
   "   Canopy: Foliage - Heavy / Foliage - Light (19.68 ft). Measured heights use Foliage - Heavy H.H / Foliage - Light H.H.",
-  "   Individual tree-point circles and trunks are not emitted.",
+  "   A compact measured crown is a stem under a raised crown. A continuous canopy stays one mass. Tree points are not trees.",
   "2. hamina-clipboard.json is optional legacy paste. Foliage off keeps buildings only.",
-  "   Foliage on pastes the same canopy polygons, not trunks or tree-point circles.",
+  "   Foliage on pastes the same canopy polygons, including a stem under a discrete tree.",
   "3. Extra files (alignment-overlay.svg, frame-lock.json) are ignored on OpenIntent import.",
   "Clipboard meters use that same widthM × lengthM. Origin: " + CLIPBOARD_ORIGIN,
   "Do NOT use a Google Earth screenshot as the map — Hamina auto-scale will not",
@@ -1115,6 +1123,36 @@ function capAttenuationAreas(areas, buildingCount, max, opts) {
   return { areas: kept, dropped: areas.length - kept.length };
 }
 
+/**
+ * Buildings fill the cap first. A trunk is kept only with the canopy it
+ * follows, so the cap never leaves a stem without its crown.
+ */
+function capBuildingsAndTrees(buildings, trees, kinds, max) {
+  const limit = max == null ? MAX_ATTENUATION_AREAS : max;
+  const srcB = buildings || [];
+  const keptB = srcB.slice(0, Math.min(srcB.length, limit));
+  const treeList = trees || [];
+  const kindList = kinds || [];
+  const kept = [];
+  let i = 0;
+  while (i < treeList.length) {
+    if (kindList[i] === "trunk") {
+      i++;
+      continue;
+    }
+    const pair = kindList[i + 1] === "trunk";
+    const need = pair ? 2 : 1;
+    if (keptB.length + kept.length + need > limit) break;
+    kept.push(treeList[i]);
+    if (pair) kept.push(treeList[i + 1]);
+    i += need;
+  }
+  return {
+    areas: keptB.concat(kept),
+    dropped: srcB.length + treeList.length - keptB.length - kept.length,
+  };
+}
+
 function siteName(raw) {
   const name = String(raw || "Site")
     .replace(/[^\w \-]/g, "")
@@ -1189,6 +1227,27 @@ function maxSlopeTop(slopeTop, rings) {
   return bottom;
 }
 
+/**
+ * Downhill ground under the piece. Hamina draws the pasted floor as a ramp,
+ * so a single bottom at the uphill end floats and the downhill face hangs
+ * past the slope. The lowest seat is where the box meets the hill. The roof
+ * stays the measured height above that ground.
+ */
+function slopeSeat(slopeTop, rings) {
+  if (typeof slopeTop !== "function" || !rings) return 0;
+  const seatFn = typeof slopeTop.seat === "function" ? slopeTop.seat : null;
+  if (!seatFn) return maxSlopeTop(slopeTop, rings);
+  let bottom = Infinity;
+  let n = 0;
+  for (let i = 0; i < rings.length; i++) {
+    const z = Number(seatFn(rings[i]));
+    if (!Number.isFinite(z)) continue;
+    if (z < bottom) bottom = z;
+    n++;
+  }
+  return n ? bottom : 0;
+}
+
 /** Source ring, the simplified ring, and the ring actually drawn on the image. */
 function slopeRingsForEmit(source, simple, pixelRing, frame) {
   const rings = [];
@@ -1211,13 +1270,15 @@ function slopeRingsForEmit(source, simple, pixelRing, frame) {
   return rings;
 }
 
-function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase) {
+function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase, shapePart) {
   const base = levelBase > 0 ? levelBase : 0;
   // A stepped plan uses the band above the lower footprint, not the full height.
   const band = base > 0 ? Math.round((heightM - base) * 10) / 10 : heightM;
   const thickness = band > 2 ? band : heightM;
   // Gold One/Two/Five/Ten Floor stop at 32 m. A measured tower above that
   // is its own material. Nearby guesses stay in the stock buckets.
+  // A dome band or a slope strip is a measured piece even when it is shorter
+  // than Ten Floor, so the steps stay at the recorded metres.
   const measuredSource =
     heightSource === "overture" ||
     heightSource === "ms-global" ||
@@ -1225,17 +1286,21 @@ function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase
     heightSource === "overture-floors" ||
     heightSource === HEIGHT_SOURCE;
   const picked = materialForBuilding(thickness, areaM2, {
-    exactMetres: heightSource === HEIGHT_SOURCE || base > 0 || (measuredSource && measuredExceedsStock(thickness)),
+    exactMetres:
+      heightSource === HEIGHT_SOURCE ||
+      base > 0 ||
+      shapePart === true ||
+      (measuredSource && measuredExceedsStock(thickness)),
   });
-  // Each ring is this piece, not the parent footprint. The drawn ring can
-  // cover higher ground than the source ring, so the bottom clears all of them.
-  let bottom = maxSlopeTop(slopeTop, rings);
+  // Each piece meets the downhill ground under its own ring and keeps the
+  // measured height above that ground. A flat pad under 1 m omits the bottom.
+  let bottom = slopeSeat(slopeTop, rings);
   bottom += base;
   if (bottom >= LIFT_LOCAL_M) return liftPickedBuilding(picked, bottom);
   return picked;
 }
 
-function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase) {
+function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase, shapePart) {
   const amRaw = ringAreaM2(ring, frame.mpd);
   // Large detailed roofs (Wynn casino) self-intersect if Douglas–Peucker is too
   // aggressive; try a tighter pass before giving up as clip. These budgets
@@ -1262,7 +1327,19 @@ function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSou
 
   let lastFail = "skip";
   for (const [maxPts, eps] of budgets) {
-    const result = emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase);
+    const result = emitBuildingSimplified(
+      ring,
+      heightM,
+      frame,
+      affine,
+      buckets,
+      maxPts,
+      eps,
+      slopeTop,
+      heightSource,
+      levelBase,
+      shapePart
+    );
     if (result === "keep") return "keep";
     // Tiny clipped area will not grow with more verts. A one-axis sliver
     // will not grow a short side either — do not retry and double-count it.
@@ -1309,7 +1386,7 @@ function stashBuilding(buckets, frame, affine, clipRing, overlayPts, clipPx, pic
   );
 }
 
-function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase) {
+function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase, shapePart) {
   const simple = simplifyRing(ring, maxPts, eps);
   if (!simple || simple.length < 4) return "skip";
   const detailVerts = ringVertexCount(simple);
@@ -1341,7 +1418,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
   if (thinSliverDrop(clippedPts, minSpan)) {
     // Clipboard keeps the exact sliver. OpenIntent must not, or Hamina drops
     // every attenuating object.
-    const pickedThin = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase);
+    const pickedThin = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart);
     if (pickedThin.lifted) buckets.lifted++;
     stashBuilding(buckets, frame, affine, clipRing, clippedPts, clippedPts, pickedThin);
     return "span";
@@ -1351,7 +1428,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     if (ringVertexCount(clippedPts) > MAX_OI_RING_VERTS) return "verts";
     return "clip";
   }
-  const picked = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase);
+  const picked = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart);
   const area = emitIfValid(makeOiArea(oiCoords, picked.material), frame.imgW, frame.imgH);
   if (!area) return "invalid";
   buckets.oiAreas.push(area);
@@ -1506,35 +1583,52 @@ function footprintsToClutter(features, frame, affine, slopeTop) {
     lifted: 0,
   };
   for (const f of list) {
-    const g = f.geometry;
-    if (!g) continue;
-    const props = f.properties || {};
-    const heightM = Number(props.height || props.Height || props.HEIGHT || 0) || 0;
-    const heightSource = props.heightSource || "";
-    const levelBase = Number(props.levelBaseM) > 0 ? Number(props.levelBaseM) : 0;
-    const rings = featureExteriorRings(g);
-    if (!rings.length) continue;
-    for (const ring of rings) {
-      const parts = slopeTop && typeof slopeTop.split === "function" ? slopeTop.split(ring) : [ring];
-      for (let p = 0; p < parts.length; p++) {
-        if (oiAreas.length >= MAX_BUILDINGS) {
-          stats.droppedCap++;
-          continue;
-        }
-        const result = emitBuilding(parts[p], heightM, frame, affine, buckets, slopeTop, heightSource, levelBase);
-        if (result === "keep") {
-          stats.buildings++;
-          if (heightSource === HEIGHT_SOURCE && heightM > 2) {
-            stats.nlsHeights++;
-            if (!stats.nlsHeightMin || heightM < stats.nlsHeightMin) stats.nlsHeightMin = heightM;
-            if (heightM > stats.nlsHeightMax) stats.nlsHeightMax = heightM;
+    // Dome rings and slope strips are built after dedupe. Concentric copies
+    // fed through dedupe would be merged back into one slab.
+    const shaped = piecesForFeature(f);
+    for (let s = 0; s < shaped.length; s++) {
+      const piece = shaped[s];
+      const g = piece.geometry;
+      if (!g) continue;
+      const props = piece.properties || {};
+      const heightM = Number(props.height || props.Height || props.HEIGHT || 0) || 0;
+      const heightSource = props.heightSource || "";
+      const levelBase = Number(props.levelBaseM) > 0 ? Number(props.levelBaseM) : 0;
+      const shapePart = props.shapePart === true;
+      const rings = featureExteriorRings(g);
+      if (!rings.length) continue;
+      for (const ring of rings) {
+        const parts = slopeTop && typeof slopeTop.split === "function" ? slopeTop.split(ring) : [ring];
+        for (let p = 0; p < parts.length; p++) {
+          if (oiAreas.length >= MAX_BUILDINGS) {
+            stats.droppedCap++;
+            continue;
           }
-        } else if (result === "mega") stats.droppedMega++;
-        else if (result === "tiny") stats.droppedTiny++;
-        else if (result === "clip") stats.droppedClip++;
-        else if (result === "invalid") stats.droppedInvalid++;
-        else if (result === "span") stats.droppedSpan++;
-        else if (result === "verts") stats.droppedVerts++;
+          const result = emitBuilding(
+            parts[p],
+            heightM,
+            frame,
+            affine,
+            buckets,
+            slopeTop,
+            heightSource,
+            levelBase,
+            shapePart
+          );
+          if (result === "keep") {
+            stats.buildings++;
+            if (heightSource === HEIGHT_SOURCE && heightM > 2) {
+              stats.nlsHeights++;
+              if (!stats.nlsHeightMin || heightM < stats.nlsHeightMin) stats.nlsHeightMin = heightM;
+              if (heightM > stats.nlsHeightMax) stats.nlsHeightMax = heightM;
+            }
+          } else if (result === "mega") stats.droppedMega++;
+          else if (result === "tiny") stats.droppedTiny++;
+          else if (result === "clip") stats.droppedClip++;
+          else if (result === "invalid") stats.droppedInvalid++;
+          else if (result === "span") stats.droppedSpan++;
+          else if (result === "verts") stats.droppedVerts++;
+        }
       }
     }
   }
@@ -1684,16 +1778,7 @@ function buildClutter({
   // A poisoned or drifted vegetation material fails makeOiArea and that ring
   // is omitted, so it cannot empty the buildings.
   const treeOi = treesToOi(veg.oiAreas, frame.imgW, frame.imgH, frame.mpuX);
-  const canopies = [];
-  const trunks = [];
-  for (let i = 0; i < treeOi.areas.length; i++) {
-    if (treeOi.kinds[i] === "trunk") trunks.push(treeOi.areas[i]);
-    else canopies.push(treeOi.areas[i]);
-  }
-  const uncapped = fp.oiAreas.concat(canopies, trunks);
-  const capped = capAttenuationAreas(uncapped, fp.oiAreas.length, MAX_ATTENUATION_AREAS, {
-    pairTail: false,
-  });
+  const capped = capBuildingsAndTrees(fp.oiAreas, treeOi.areas, treeOi.kinds, MAX_ATTENUATION_AREAS);
   const areas = capped.areas;
   const clip = emptyClipboard();
   const seenTypes = new Set(clip.attenuatingZoneTypes.map((t) => t.id));
@@ -1722,23 +1807,11 @@ function buildClutter({
     if (t.id && String(t.id).indexOf("foliage-m-") === 0) exactFoliageHeights++;
   }
   const oi = buildOpenIntent(frame, name, imgName, areas, materials);
-  const treeOverlayPts = [];
-  for (const t of veg.oiAreas || []) {
-    if (t.kind !== "trunk" || !t.ringPx || !t.ringPx.length) continue;
-    let sx = 0;
-    let sy = 0;
-    const n = t.ringPx.length - 1;
-    for (let i = 0; i < n; i++) {
-      sx += t.ringPx[i][0];
-      sy += t.ringPx[i][1];
-    }
-    treeOverlayPts.push([sx / n, sy / n]);
-  }
   const overlay = overlaySvg({
     frame,
     imgName,
     buildingRingsYUp: fp.overlayRings,
-    treePointsYUp: veg.overlayPoints && veg.overlayPoints.length ? veg.overlayPoints : treeOverlayPts,
+    treePointsYUp: veg.overlayPoints || [],
     treeRingsYUp: veg.overlayRings,
   });
   const lock = frameLockJson(frame, imgName);

@@ -5,6 +5,7 @@
     "geomSource": "overture",
     "height": 112,
     "heightSource": "overture",
+    "roofShape": "dome",
     "note": "Overture 2026-08-19.0 building at MSG Sphere. Absent from Microsoft Global ML quadkey 023013100 (2026-07-24) and FEMA USA Structures."
   },
   "geometry": {

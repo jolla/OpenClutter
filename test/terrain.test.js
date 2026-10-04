@@ -51,8 +51,10 @@ const {
   siteWarrantsLift,
   demUnderFootprint,
   slopeTopUnderRing,
+  slopeSeatUnderRing,
   splitRingByFloor,
   SPLIT_FLOOR_M,
+  SPLIT_MAX_PIECES,
   pasteableQuad,
   slopedRing,
 } = require("../netlify/lib/terrain");
@@ -684,7 +686,8 @@ describe("building height from floor on a slope", () => {
     assert.equal(siteWarrantsLift(terrain), false);
     assert.equal(typeof demUnderFootprint(terrain), "function");
     assert.equal(built.stats.buildingsLifted, 1);
-    const expected = slopeTopUnderRing(terrain, feature.geometry.coordinates[0]);
+    const expected = slopeSeatUnderRing(terrain, feature.geometry.coordinates[0]);
+    const uphill = slopeTopUnderRing(terrain, feature.geometry.coordinates[0]);
     assert.ok(expected >= 1 && expected < LIFT_RELIEF_M, "bottom " + expected);
     const area = built.openintent.floorplans[0].attenuation_areas[0];
     assert.equal(area.area_material.bottom_height, expected);
@@ -695,8 +698,8 @@ describe("building height from floor on a slope", () => {
     assert.equal(type.bottomEdge, expected);
     assert.equal(type.topEdge, Math.round((expected + 4.5) * 10) / 10);
     assert.ok(type.topEdge > type.bottomEdge);
-    const floor = maxPastedFloor(terrain, zone.area.coordinates[0]);
-    assert.ok(type.bottomEdge + 0.12 >= floor, "bottom " + type.bottomEdge + " floor " + floor);
+    assert.ok(type.topEdge + 0.15 >= uphill, "roof " + type.topEdge + " uphill " + uphill);
+    assert.ok(type.bottomEdge <= uphill + 0.05, "bottom " + type.bottomEdge + " uphill " + uphill);
     assert.ok(terrain.raised + terrain.sloped > 9);
     for (const z of terrain.clipboard.slopedFloors) assertSlopedRamp(z.area.coordinates[0]);
     for (const z of terrain.clipboard.raisedFloorZones) assertOpenQuad(z.area.coordinates[0], 2);
@@ -731,36 +734,41 @@ describe("building height from floor on a slope", () => {
     assert.ok(terrain.sloped <= ABSOLUTE_MAX_GRID * ABSOLUTE_MAX_GRID);
     for (const z of terrain.clipboard.slopedFloors) assertSlopedRamp(z.area.coordinates[0]);
     const areas = built.openintent.floorplans[0].attenuation_areas;
-    assert.equal(areas.length, 2);
     const valley = areas.find((a) => a.area_material.name === "Building - One Floor");
-    const hill = areas.find((a) => String(a.area_material.name).indexOf("Building - Two Floor ") === 0);
+    const hills = areas.filter((a) => String(a.area_material.name).indexOf("Building - Two Floor ") === 0);
+    assert.equal(areas.length, 1 + hills.length);
     assert.ok(valley, "valley building stays on the floor");
     assert.equal("bottom_height" in valley.area_material, false);
     assert.equal(valley.area_material.top_height, 4.5);
-    assert.ok(hill);
-    assert.ok(hill.area_material.bottom_height >= 50, "bottom " + hill.area_material.bottom_height);
-    assert.equal(
-      hill.area_material.top_height,
-      Math.round((hill.area_material.bottom_height + 7.620092660326749) * 10) / 10
-    );
-    assert.equal(hill.area_material.name, "Building - Two Floor " + hill.area_material.bottom_height.toFixed(1));
-    assert.deepEqual(Object.keys(hill.area_material), [
-      "name",
-      "rf_properties",
-      "top_height",
-      "bottom_height",
-      "display_color",
-    ]);
+    assert.ok(hills.length >= 1, "uphill pieces " + hills.length);
+    for (const hill of hills) {
+      assert.ok(hill.area_material.bottom_height >= 50, "bottom " + hill.area_material.bottom_height);
+      assert.equal(
+        hill.area_material.top_height,
+        Math.round((hill.area_material.bottom_height + 7.620092660326749) * 10) / 10
+      );
+      assert.equal(hill.area_material.name, "Building - Two Floor " + hill.area_material.bottom_height.toFixed(1));
+      assert.deepEqual(Object.keys(hill.area_material), [
+        "name",
+        "rf_properties",
+        "top_height",
+        "bottom_height",
+        "display_color",
+      ]);
+      const hillZone = built.clipboard.attenuatingZones.find((z) => {
+        const type = built.clipboard.attenuatingZoneTypes.find((t) => t.id === z.typeId);
+        return type && type.bottomEdge === hill.area_material.bottom_height;
+      });
+      const hillType = built.clipboard.attenuatingZoneTypes.find((t) => t.id === hillZone.typeId);
+      assert.equal(hillType.bottomEdge, hill.area_material.bottom_height);
+      assert.equal(hillType.topEdge, Math.round((hillType.bottomEdge + 6.4) * 10) / 10);
+      assert.ok(hillType.topEdge > hillType.bottomEdge);
+    }
     const gold = built.openintent.area_materials.slice(0, 4).map((m) => m.name);
     assert.deepEqual(gold, ["Building - One Floor", "Building - Two Floor", "Building - Five Floor", "Building - Ten Floor"]);
-    assert.ok(built.openintent.area_materials.some((m) => m.name === hill.area_material.name));
+    assert.ok(built.openintent.area_materials.some((m) => m.name === hills[0].area_material.name));
     assert.equal(JSON.stringify(built.openintent).includes("raisedFloorZones"), false);
-    const hillZone = built.clipboard.attenuatingZones.find((z) => String(z.typeId).indexOf("-b") > 0);
-    const hillType = built.clipboard.attenuatingZoneTypes.find((t) => t.id === hillZone.typeId);
-    assert.equal(hillType.bottomEdge, hill.area_material.bottom_height);
-    assert.equal(hillType.topEdge, Math.round((hillType.bottomEdge + 6.4) * 10) / 10);
-    assert.ok(hillType.topEdge > hillType.bottomEdge);
-    assert.equal(built.stats.buildingsLifted, 1);
+    assert.equal(built.stats.buildingsLifted, hills.length);
   });
 });
 
@@ -1572,21 +1580,31 @@ describe("Copernicus GLO-30 when 3DEP misses", () => {
     });
     assert.equal(siteWarrantsLift(surface), false);
     assert.equal(typeof demUnderFootprint(surface), "function");
-    assert.equal(built.stats.buildingsLifted, 1);
     assert.equal(built.stats.demKind, "surface");
     const hillRing = hill.geometry.coordinates[0];
-    const expectedBottom = slopeTopUnderRing(surface, hillRing);
+    const expectedBottom = slopeSeatUnderRing(surface, hillRing);
     assert.ok(expectedBottom >= 20, "slope top " + expectedBottom);
     assert.notEqual(expectedBottom, LIFT_RELIEF_M);
-    const area = built.openintent.floorplans[0].attenuation_areas[0];
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    assert.ok(areas.length >= 1);
+    assert.equal(built.stats.buildingsLifted, areas.length);
     const stockTwo = 7.620092660326749;
-    assert.equal(area.area_material.bottom_height, expectedBottom);
-    assert.equal(area.area_material.top_height, Math.round((expectedBottom + stockTwo) * 10) / 10);
-    assert.equal(area.area_material.name, "Building - Two Floor " + expectedBottom.toFixed(1));
-    const zone = built.clipboard.attenuatingZones[0];
-    const type = built.clipboard.attenuatingZoneTypes.find((t) => t.id === zone.typeId);
-    assert.equal(type.bottomEdge, expectedBottom);
-    assert.equal(type.topEdge, Math.round((expectedBottom + 6.4) * 10) / 10);
+    let lowest = Infinity;
+    for (const area of areas) {
+      const bottom = area.area_material.bottom_height;
+      assert.equal(area.area_material.top_height, Math.round((bottom + stockTwo) * 10) / 10);
+      assert.equal(area.area_material.name, "Building - Two Floor " + bottom.toFixed(1));
+      assert.ok(bottom + 0.2 >= expectedBottom, "piece " + bottom);
+      if (bottom < lowest) lowest = bottom;
+      const zone = built.clipboard.attenuatingZones.find((z) => {
+        const type = built.clipboard.attenuatingZoneTypes.find((t) => t.id === z.typeId);
+        return type && type.bottomEdge === bottom;
+      });
+      const type = built.clipboard.attenuatingZoneTypes.find((t) => t.id === zone.typeId);
+      assert.equal(type.bottomEdge, bottom);
+      assert.equal(type.topEdge, Math.round((bottom + 6.4) * 10) / 10);
+    }
+    assert.ok(Math.abs(lowest - expectedBottom) <= 0.2, "lowest " + lowest + " seat " + expectedBottom);
     const readme = unzipStore(built.zip)["README.txt"].toString();
     assert.match(readme, /Copernicus DEM GLO-30/);
     assert.match(readme, /EGM2008/);
@@ -1604,8 +1622,10 @@ describe("Copernicus GLO-30 when 3DEP misses", () => {
       imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
       terrain: bare,
     });
-    assert.equal(lifted.stats.buildingsLifted, 1);
-    assert.ok(lifted.openintent.floorplans[0].attenuation_areas[0].area_material.bottom_height >= 20);
+    const liftedAreas = lifted.openintent.floorplans[0].attenuation_areas;
+    assert.ok(liftedAreas.length >= 1);
+    assert.equal(lifted.stats.buildingsLifted, liftedAreas.length);
+    for (const area of liftedAreas) assert.ok(area.area_material.bottom_height >= 20);
   });
 
   it("places buildings and foliage on a surface slope, including relief under 20 m", () => {
@@ -1656,7 +1676,7 @@ describe("Copernicus GLO-30 when 3DEP misses", () => {
       terrain: bare,
     });
     assert.ok(bareBuilt.stats.buildingsLifted >= 1);
-    const bareExpected = slopeTopUnderRing(bare, hill.geometry.coordinates[0]);
+    const bareExpected = slopeSeatUnderRing(bare, hill.geometry.coordinates[0]);
     const bareHill = bareBuilt.openintent.floorplans[0].attenuation_areas.find(
       (a) => a.area_material.bottom_height >= bareExpected
     );
@@ -1665,8 +1685,8 @@ describe("Copernicus GLO-30 when 3DEP misses", () => {
     const areas = built.openintent.floorplans[0].attenuation_areas;
     const buildings = areas.filter((a) => String(a.area_material.name).indexOf("Building") === 0);
     assert.equal(buildings.length, 2);
-    const southBottom = slopeTopUnderRing(surface, valley.geometry.coordinates[0]);
-    const expected = slopeTopUnderRing(surface, hill.geometry.coordinates[0]);
+    const southBottom = slopeSeatUnderRing(surface, valley.geometry.coordinates[0]);
+    const expected = slopeSeatUnderRing(surface, hill.geometry.coordinates[0]);
     assert.ok(expected > southBottom, "hill " + expected + " valley " + southBottom);
     assert.ok(expected >= 1 && expected < LIFT_RELIEF_M, "bottom " + expected);
     const hillArea = buildings.find((a) => a.area_material.bottom_height === expected);
@@ -1861,7 +1881,7 @@ describe("Finland terrain does not wait on 3DEP", () => {
       terrain: surface,
     });
     const bottom = built.openintent.floorplans[0].attenuation_areas[0].area_material.bottom_height;
-    assert.equal(bottom, slopeTopUnderRing(surface, hill.geometry.coordinates[0]));
+    assert.equal(bottom, slopeSeatUnderRing(surface, hill.geometry.coordinates[0]));
     assert.ok(bottom >= 1 && bottom < LIFT_RELIEF_M, "bottom " + bottom);
     assert.equal(built.stats.demKind, "surface");
     assert.equal(built.stats.buildingsLifted, 1);
@@ -1983,9 +2003,11 @@ describe("Finland terrain does not wait on 3DEP", () => {
       }
     }
     assert.ok(picked, "expected a raised layer above the DEM sample");
-    const bottom = slopeTopUnderRing(surface, picked.ring);
-    assert.ok(bottom + 0.05 >= picked.floor, "bottom " + bottom + " floor " + picked.floor);
-    assert.ok(bottom > picked.dem, "bottom " + bottom + " dem " + picked.dem);
+    const uphill = slopeTopUnderRing(surface, picked.ring);
+    const bottom = slopeSeatUnderRing(surface, picked.ring);
+    assert.ok(uphill + 0.05 >= picked.floor, "uphill " + uphill + " floor " + picked.floor);
+    assert.ok(bottom + 0.2 >= Math.min(picked.dem, picked.floor), "bottom " + bottom + " dem " + picked.dem);
+    assert.ok(bottom <= picked.floor + 0.05, "bottom " + bottom + " floats above " + picked.floor);
 
     const feature = squareFeature(picked.lon, picked.lat, picked.lon + dLon, picked.lat + dLat, { height: 8.3 });
     const built = buildClutter({
@@ -2036,10 +2058,14 @@ describe("Finland terrain does not wait on 3DEP", () => {
       imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
       terrain: bare,
     });
-    const usMat = usBuilt.openintent.floorplans[0].attenuation_areas[0].area_material;
-    assert.ok(usMat.bottom_height >= 50, "us bottom " + usMat.bottom_height);
-    assert.equal(usMat.top_height, Math.round((usMat.bottom_height + 7.620092660326749) * 10) / 10);
-    assert.equal(usBuilt.stats.buildingsLifted, 1);
+    const usAreas = usBuilt.openintent.floorplans[0].attenuation_areas;
+    assert.ok(usAreas.length >= 1);
+    for (const usArea of usAreas) {
+      const usMat = usArea.area_material;
+      assert.ok(usMat.bottom_height >= 50, "us bottom " + usMat.bottom_height);
+      assert.equal(usMat.top_height, Math.round((usMat.bottom_height + 7.620092660326749) * 10) / 10);
+    }
+    assert.equal(usBuilt.stats.buildingsLifted, usAreas.length);
     const mild = terrainFromSamples(
       usSamples.map((s) => ({ lon: s.lon, lat: s.lat, z: 400 + ((s.lat - us.south) / span) * 12 })),
       us
@@ -2383,13 +2409,17 @@ describe("Finland paste quads are square ground meters", () => {
 });
 
 function pastedFloorAt(terrain, x, y) {
-  let floor = 0;
+  let floor = null;
   const zones = (terrain.clipboard.slopedFloors || []).concat(terrain.clipboard.raisedFloorZones || []);
   for (let i = 0; i < zones.length; i++) {
     const zone = zones[i];
     const quad = zone.area.coordinates[0];
     let inside = true;
-    const n = quad.length >= 4 && quad[0][0] === quad[quad.length - 1][0] ? quad.length - 1 : quad.length;
+    const closed =
+      quad.length > 4 &&
+      quad[0][0] === quad[quad.length - 1][0] &&
+      quad[0][1] === quad[quad.length - 1][1];
+    const n = closed ? quad.length - 1 : quad.length;
     const m = Math.min(n, 4);
     for (let k = 0; k < m; k++) {
       const a = quad[k];
@@ -2421,7 +2451,7 @@ function pastedFloorAt(terrain, x, y) {
       else if (t > 1) t = 1;
       z = z0 + t * (z1 - z0);
     } else z = Number(zone.height) || 0;
-    if (z > floor) floor = z;
+    if (floor == null || z > floor) floor = z;
   }
   return floor;
 }
@@ -2470,46 +2500,18 @@ function maxPastedFloor(terrain, clipRing) {
       const y = minY + (r / N) * (maxY - minY);
       if (!inside(x, y)) continue;
       const z = pastedFloorAt(terrain, x, y);
-      if (z > max) max = z;
+      if (z == null || !(z > max)) continue;
+      max = z;
     }
   }
   return max;
 }
 
-function zoneHighZ(zone) {
-  const quad = zone.area.coordinates[0];
-  if (quad[0].length >= 3) return Math.max(quad[0][2], quad[2][2]);
-  return Number(zone.height) || 0;
-}
-
-function boundaryDistance(ring, x, y) {
-  const n =
-    ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
-      ? ring.length - 1
-      : ring.length;
-  let best = Infinity;
-  for (let i = 0; i < n; i++) {
-    const a = ring[i];
-    const b = ring[(i + 1) % n];
-    const dx = b[0] - a[0];
-    const dy = b[1] - a[1];
-    const len2 = dx * dx + dy * dy;
-    let t = len2 > 0 ? ((x - a[0]) * dx + (y - a[1]) * dy) / len2 : 0;
-    if (t < 0) t = 0;
-    else if (t > 1) t = 1;
-    const d = Math.hypot(x - (a[0] + t * dx), y - (a[1] + t * dy));
-    if (d < best) best = d;
-  }
-  return best;
-}
-
 /**
- * Highest pasted floor the footprint has to clear: the ramp plane under it,
- * and the high edge of any cell it sits more than a metre inside.
+ * Visible pasted floor under a clipboard ring: the low and high ends of the
+ * ramp Hamina draws, or the plate height where raised layers are flat.
  */
-function floorToClear(terrain, clipRing) {
-  const plane = maxPastedFloor(terrain, clipRing);
-  const zones = (terrain.clipboard.slopedFloors || []).concat(terrain.clipboard.raisedFloorZones || []);
+function pastedSpan(terrain, clipRing) {
   const n =
     clipRing.length > 1 &&
     clipRing[0][0] === clipRing[clipRing.length - 1][0] &&
@@ -2526,46 +2528,36 @@ function floorToClear(terrain, clipRing) {
     minY = Math.min(minY, clipRing[i][1]);
     maxY = Math.max(maxY, clipRing[i][1]);
   }
-  let high = plane;
-  const N = 22;
+  let min = Infinity;
+  let max = 0;
+  let samples = 0;
+  const N = 28;
   for (let r = 0; r <= N; r++) {
     for (let c = 0; c <= N; c++) {
-      const x = minX + ((c + 0.5) / (N + 1)) * (maxX - minX);
-      const y = minY + ((r + 0.5) / (N + 1)) * (maxY - minY);
-      let inside = false;
+      const x = minX + (c / N) * (maxX - minX);
+      const y = minY + (r / N) * (maxY - minY);
       let inn = false;
       for (let i = 0, j = n - 1; i < n; j = i++) {
         const yi = clipRing[i][1];
         const yj = clipRing[j][1];
-        const inter = yi > y !== yj > y && x < ((clipRing[j][0] - clipRing[i][0]) * (y - yi)) / (yj - yi || 1e-20) + clipRing[i][0];
+        const inter =
+          yi > y !== yj > y &&
+          x < ((clipRing[j][0] - clipRing[i][0]) * (y - yi)) / (yj - yi || 1e-20) + clipRing[i][0];
         if (inter) inn = !inn;
       }
-      inside = inn;
-      if (!inside) continue;
-      for (let i = 0; i < zones.length; i++) {
-        const quad = zones[i].area.coordinates[0];
-        let inQuad = true;
-        const m = Math.min(quad.length, 4);
-        for (let k = 0; k < m; k++) {
-          const a = quad[k];
-          const b = quad[(k + 1) % m];
-          const cross = (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
-          if (cross < -0.02 * Math.max(1, Math.hypot(b[0] - a[0], b[1] - a[1]))) {
-            inQuad = false;
-            break;
-          }
-        }
-        if (!inQuad) continue;
-        if (boundaryDistance(quad, x, y) <= 1) continue;
-        const z = zoneHighZ(zones[i]);
-        if (z > high) high = z;
-      }
+      if (!inn) continue;
+      const z = pastedFloorAt(terrain, x, y);
+      if (z == null) continue;
+      if (z < min) min = z;
+      if (z > max) max = z;
+      samples++;
     }
   }
-  return high;
+  if (!samples) return { min: 0, max: 0 };
+  return { min, max };
 }
 
-describe("buildings stay above the pasted slope", () => {
+describe("buildings are cut into the pasted slope", () => {
   const frame = geoFrame({
     west: 27.18,
     south: 60.565,
@@ -2589,26 +2581,67 @@ describe("buildings stay above the pasted slope", () => {
     return samples;
   }
 
-  function assertNothingBuried(terrain, built) {
+  function assertCutIntoHill(terrain, built) {
     const types = built.clipboard.attenuatingZoneTypes;
     const zones = built.clipboard.attenuatingZones.filter((z) => String(z.typeId).indexOf("bldg") === 0);
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    assert.equal(areas.length, zones.length);
     assert.ok(zones.length >= 1);
-    for (const zone of zones) {
+    assert.equal(JSON.stringify(built.openintent).includes("slopedFloors"), false);
+    assert.equal(JSON.stringify(built.openintent).includes("raisedFloorZones"), false);
+    for (let i = 0; i < zones.length; i++) {
+      const zone = zones[i];
       const type = types.find((t) => t.id === zone.typeId);
       const bottom = type && type.bottomEdge != null ? type.bottomEdge : 0;
-      const floor = maxPastedFloor(terrain, zone.area.coordinates[0]);
+      const oiBottom = "bottom_height" in areas[i].area_material ? areas[i].area_material.bottom_height : 0;
+      assert.equal(oiBottom, bottom, areas[i].area_material.name);
+      const span = pastedSpan(terrain, zone.area.coordinates[0]);
+      if (bottom === 0) {
+        assert.ok(
+          span.min < 1.3,
+          (type && type.id) + " bottom 0 is buried under downhill " + span.min
+        );
+        continue;
+      }
+      if (bottom > span.max + 0.3) {
+        assert.ok(type.topEdge > type.bottomEdge);
+        continue;
+      }
       assert.ok(
-        bottom + 0.12 >= floor,
-        type.id + " bottom " + bottom + " is under floor " + floor
+        bottom <= span.min + 3,
+        (type && type.id) + " bottom " + bottom + " floats above downhill " + span.min
       );
+      assert.ok(
+        bottom + 0.25 >= span.min,
+        (type && type.id) + " bottom " + bottom + " is buried under downhill " + span.min
+      );
+      if (span.max > span.min + 1.5) {
+        assert.ok(
+          bottom + 0.3 < span.max,
+          (type && type.id) + " bottom " + bottom + " is the high edge " + span.max
+        );
+      } else {
+        assert.ok(
+          bottom + 1.6 >= span.max,
+          (type && type.id) + " bottom " + bottom + " digs under a flat pad " + span.max
+        );
+        assert.ok(
+          bottom <= span.max + 0.15,
+          (type && type.id) + " bottom " + bottom + " floats above a flat pad " + span.max
+        );
+      }
       if (type && type.bottomEdge != null) {
         assert.ok(type.topEdge > type.bottomEdge);
+        assert.ok(
+          type.topEdge + 0.2 >= span.max,
+          (type && type.id) + " roof " + type.topEdge + " is under the uphill ground " + span.max
+        );
       }
     }
   }
 
   for (const style of ["sloped", "raised"]) {
-    it("keeps every building on or above a " + style + " floor, including shared cell edges", () => {
+    it("cuts every building into a " + style + " floor, including shared cell edges", () => {
       const terrain = terrainFromSamples(checkerSamples(), frame, {
         kind: "surface",
         terrainStyle: style,
@@ -2634,14 +2667,17 @@ describe("buildings stay above the pasted slope", () => {
         terrain,
       });
       // A box that climbs more than SPLIT_FLOOR_M becomes more than one object.
-      // The rest stay one. Nothing in either case is left under the floor.
+      // Each piece meets its own downhill ground. A flat pad is not buried.
       assert.ok(built.stats.buildings >= features.length);
-      assert.ok(built.stats.buildings < features.length * 2, "buildings " + built.stats.buildings);
-      assertNothingBuried(terrain, built);
+      assert.ok(
+        built.stats.buildings <= features.length * SPLIT_MAX_PIECES,
+        "buildings " + built.stats.buildings
+      );
+      assertCutIntoHill(terrain, built);
     });
   }
 
-  it("splits a footprint that climbs a large slope and keeps each piece above the floor", () => {
+  it("splits a footprint that climbs a large slope and cuts each piece into the hill", () => {
     const terrain = terrainFromSamples(checkerSamples(), frame, {
       kind: "surface",
       terrainResolution: "default",
@@ -2679,7 +2715,7 @@ describe("buildings stay above the pasted slope", () => {
       terrain,
     });
     assert.ok(built.stats.buildings >= 3, "buildings " + built.stats.buildings);
-    assertNothingBuried(terrain, built);
+    assertCutIntoHill(terrain, built);
     const tops = new Set(
       built.clipboard.attenuatingZones.map((z) => {
         const type = built.clipboard.attenuatingZoneTypes.find((t) => t.id === z.typeId);
@@ -2720,30 +2756,9 @@ describe("buildings stay above the pasted slope", () => {
     return samples;
   }
 
-  function assertBottomsClearOwnFloor(terrain, built) {
-    const types = built.clipboard.attenuatingZoneTypes;
-    const zones = built.clipboard.attenuatingZones.filter((z) => String(z.typeId).indexOf("bldg") === 0);
-    const areas = built.openintent.floorplans[0].attenuation_areas;
-    assert.equal(areas.length, zones.length);
-    assert.ok(zones.length >= 1);
-    for (let i = 0; i < zones.length; i++) {
-      const zone = zones[i];
-      const type = types.find((t) => t.id === zone.typeId);
-      const bottom = type && type.bottomEdge != null ? type.bottomEdge : 0;
-      const oiBottom = "bottom_height" in areas[i].area_material ? areas[i].area_material.bottom_height : 0;
-      assert.equal(oiBottom, bottom, areas[i].area_material.name);
-      const need = floorToClear(terrain, zone.area.coordinates[0]);
-      assert.ok(
-        bottom + 0.12 >= need,
-        (type && type.id) + " bottom " + bottom + " is under its own floor " + need
-      );
-      if (type && type.bottomEdge != null) assert.ok(type.topEdge > type.bottomEdge);
-    }
-  }
-
   for (const kind of ["surface", "bare-earth"]) {
     for (const style of ["sloped", "raised"]) {
-      it("keeps every " + kind + " " + style + " building on its own floor, including shared edges", () => {
+      it("cuts every " + kind + " " + style + " building into its own floor, including shared edges", () => {
         const terrain = terrainFromSamples(rampSamples(kind === "bare-earth" ? 8 : 42, kind === "bare-earth" ? 3 : 14), frame, {
           kind,
           terrainStyle: style,
@@ -2761,13 +2776,17 @@ describe("buildings stay above the pasted slope", () => {
           terrain,
         });
         assert.ok(built.stats.buildings >= features.length);
-        assertBottomsClearOwnFloor(terrain, built);
+        assert.ok(
+          built.stats.buildings <= features.length * SPLIT_MAX_PIECES,
+          "buildings " + built.stats.buildings
+        );
+        assertCutIntoHill(terrain, built);
       });
     }
   }
 
   for (const style of ["sloped", "raised"]) {
-    it("keeps split pieces and a stacked upper level above a " + style + " floor", () => {
+    it("cuts split pieces and a stacked upper level into a " + style + " floor", () => {
       const terrain = terrainFromSamples(rampSamples(48), frame, {
         kind: "surface",
         terrainStyle: style,
@@ -2806,7 +2825,8 @@ describe("buildings stay above the pasted slope", () => {
         terrain,
       });
       assert.ok(built.stats.buildings >= 4, "buildings " + built.stats.buildings);
-      assertBottomsClearOwnFloor(terrain, built);
+      assert.ok(built.stats.buildings <= 3 * SPLIT_MAX_PIECES, "buildings " + built.stats.buildings);
+      assertCutIntoHill(terrain, built);
       const bottoms = built.clipboard.attenuatingZones.map((z) => {
         const type = built.clipboard.attenuatingZoneTypes.find((t) => t.id === z.typeId);
         return type && type.bottomEdge != null ? type.bottomEdge : 0;
@@ -2814,4 +2834,110 @@ describe("buildings stay above the pasted slope", () => {
       assert.ok(new Set(bottoms).size >= 2, "bottoms " + bottoms.join(","));
     });
   }
+});
+
+describe("a sloped building is cut into the hill", () => {
+  const frame = geoFrame({ west: -89.7, south: 44.91, east: -89.684, north: 44.926, name: "Granite Peak" });
+
+  it("meets the downhill ramp, keeps the measured roof, and leaves flat ground alone", () => {
+    const span = frame.north - frame.south;
+    const spanLon = frame.east - frame.west;
+    const terrain = terrainFromSamples(
+      gridSamples(frame, (r, c, lon, lat) => 400 + ((lat - frame.south) / span) * 40),
+      frame,
+      { terrainResolution: "default" }
+    );
+    assert.equal(terrain.terrainStyle, "sloped");
+    assert.ok(terrain.clipboard.slopedFloors.length > 0);
+    const long = squareFeature(
+      frame.west + spanLon * 0.3,
+      frame.south + span * 0.12,
+      frame.west + spanLon * 0.46,
+      frame.south + span * 0.88,
+      { height: 10 }
+    );
+    const ring = long.geometry.coordinates[0];
+    const wholeSeat = slopeSeatUnderRing(terrain, ring);
+    const wholeTop = slopeTopUnderRing(terrain, ring);
+    assert.ok(wholeTop > wholeSeat + SPLIT_FLOOR_M, "rise " + (wholeTop - wholeSeat));
+    const parts = splitRingByFloor(terrain, ring);
+    assert.ok(parts.length >= 2 && parts.length <= SPLIT_MAX_PIECES, "pieces " + parts.length);
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [long] },
+      treePoints: [],
+      name: "Granite Peak",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain,
+    });
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    const hill = areas;
+    assert.ok(hill.length >= 2, "hill pieces " + hill.length);
+    let lowest = Infinity;
+    for (const area of hill) {
+      const bottom = area.area_material.bottom_height;
+      const top = area.area_material.top_height;
+      if (bottom == null) continue;
+      const stockTwo = 7.620092660326749;
+      assert.equal(top, Math.round((bottom + stockTwo) * 10) / 10);
+      assert.ok(bottom + 0.2 >= wholeSeat, "piece under the downhill ground " + bottom);
+      assert.ok(bottom <= wholeTop - 0.4, "piece seated on the high edge " + bottom);
+      if (bottom < lowest) lowest = bottom;
+    }
+    assert.ok(Math.abs(lowest - wholeSeat) <= 0.2, "lowest " + lowest + " seat " + wholeSeat);
+    assert.equal(JSON.stringify(built.openintent).includes("slopedFloors"), false);
+    assert.equal(JSON.stringify(built.openintent).includes("raisedFloorZones"), false);
+  });
+
+  it("does not bury a building on flat ground", () => {
+    const span = frame.north - frame.south;
+    const spanLon = frame.east - frame.west;
+    const terrain = terrainFromSamples(gridSamples(frame, () => 400), frame, { terrainResolution: "default" });
+    const lon = frame.west + spanLon * 0.4;
+    const lat = frame.south + span * 0.4;
+    const feature = squareFeature(lon, lat, lon + spanLon * 0.12, lat + span * 0.1, { height: 4.2 });
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [feature] },
+      treePoints: [],
+      name: "Granite Peak",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain,
+    });
+    assert.equal(built.stats.buildings, 1);
+    const mat = built.openintent.floorplans[0].attenuation_areas[0].area_material;
+    assert.equal("bottom_height" in mat, false);
+    assert.equal(mat.top_height, 4.5);
+    assert.equal(mat.name, "Building - One Floor");
+  });
+
+  it("sits on a level pad instead of digging under it", () => {
+    const span = frame.north - frame.south;
+    const spanLon = frame.east - frame.west;
+    const terrain = terrainFromSamples(
+      gridSamples(frame, (r, c, lon, lat) => ((lat - frame.south) / span < 0.45 ? 300 : 312)),
+      frame,
+      { terrainStyle: "raised", terrainResolution: "default" }
+    );
+    const lon = frame.west + spanLon * 0.55;
+    const lat = frame.south + span * 0.7;
+    const feature = squareFeature(lon, lat, lon + spanLon * 0.06, lat + span * 0.05, { height: 6.4 });
+    const seat = slopeSeatUnderRing(terrain, feature.geometry.coordinates[0]);
+    const uphill = slopeTopUnderRing(terrain, feature.geometry.coordinates[0]);
+    assert.ok(seat >= 1, "pad " + seat);
+    assert.ok(Math.abs(uphill - seat) <= 0.3, "pad rise " + (uphill - seat));
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [feature] },
+      treePoints: [],
+      name: "Granite Peak",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain,
+    });
+    assert.equal(built.stats.buildings, 1);
+    const mat = built.openintent.floorplans[0].attenuation_areas[0].area_material;
+    assert.equal(mat.bottom_height, seat);
+    assert.equal(mat.top_height, Math.round((seat + 7.620092660326749) * 10) / 10);
+    assert.ok(mat.bottom_height + 0.2 >= uphill, "dug under the pad");
+  });
 });

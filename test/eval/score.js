@@ -14,6 +14,7 @@ const {
   isLiftedBuildingName,
   isLiftedMeasuredBuildingName,
   isMeasuredBuildingOiName,
+  isTrunkOiName,
   buildingCatalog,
   isPoisonedOiName,
   COMPATIBILITY_MODE,
@@ -634,6 +635,7 @@ function scoreMaterialCompatibility(openintent) {
   const extras = mats.slice(gold.length);
   const allowedExtra = (name) =>
     isVegetationOiName(name) ||
+    isTrunkOiName(name) ||
     isLiftedBuildingName(name) ||
     isLiftedMeasuredBuildingName(name) ||
     isMeasuredBuildingOiName(name);

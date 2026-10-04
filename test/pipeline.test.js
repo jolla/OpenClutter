@@ -148,6 +148,8 @@ describe("HaminaClipboard schema", () => {
       assert.ok("shortcutKey" in t);
     }
     assert.equal(ZONE_TYPES.find((t) => t.id === "foliage-heavy").transparencyEnabled, true);
+    assert.equal(ZONE_TYPES.find((t) => t.id === "foliage-light").transparencyEnabled, true);
+    assert.equal(ZONE_TYPES.find((t) => t.id === "tree-trunk").transparencyEnabled, true);
     assert.equal(ZONE_TYPES.find((t) => t.id === "bldg-one").transparencyEnabled, false);
   });
 });
@@ -554,25 +556,32 @@ describe("pipeline: footprints + trees share the frame", () => {
     // Jerry's export extent clips the southern half. The visible cap stays.
     const clipped = frameFor(lock.extent.south);
     const cap = footprintsToClutter([sphere], clipped, null);
-    assert.equal(cap.stats.buildings, 1);
+    assert.ok(cap.stats.buildings >= 2 && cap.stats.buildings <= 6, `dome bands ${cap.stats.buildings}`);
     assert.equal(cap.stats.droppedMega, 0);
     assert.equal(cap.stats.droppedTiny, 0);
     assert.equal(cap.stats.droppedClip, 0);
-    assert.equal(cap.oiAreas[0].area_material.name, "Building - 112.0");
-    assert.equal(cap.oiAreas[0].area_material.top_height, 112);
+    const capTops = cap.oiAreas.map((a) => a.area_material.top_height);
+    assert.ok(Math.max(...capTops) >= 111.5 && Math.max(...capTops) <= 112.05, `apex ${Math.max(...capTops)}`);
+    assert.ok(cap.oiAreas[0].area_material.top_height < 40, "ground band is not the full 112 m cylinder");
+    assert.notEqual(cap.oiAreas[0].area_material.name, "Building - 112.0");
     assert.equal(covers(clipped, cap, -115.1621, 36.1216), true);
     const { oiPixelCoords, validateOiCoords } = require("../netlify/lib/pipeline");
     const spherePx = oiPixelCoords(cap.oiAreas[0].area.coordinates);
     assert.ok(spherePx.length - 1 <= MAX_OI_RING_VERTS, `sphere OI verts ${spherePx.length - 1}`);
     assert.equal(validateOiCoords(cap.oiAreas[0].area.coordinates, clipped.imgW, clipped.imgH).ok, true);
 
-    // Bbox that includes the center keeps the full disk on the same material.
+    // Bbox that includes the center keeps the round ground ring and stacks
+    // shorter rings up to the measured 112 m. It is not one full-height cylinder.
     const full = frameFor(36.119);
     const disk = footprintsToClutter([sphere], full, null);
-    assert.equal(disk.stats.buildings, 1);
+    assert.ok(disk.stats.buildings >= 4 && disk.stats.buildings <= 6, `dome bands ${disk.stats.buildings}`);
     assert.equal(disk.stats.droppedMega, 0);
-    assert.equal(disk.oiAreas[0].area_material.name, "Building - 112.0");
-    assert.equal(disk.oiAreas[0].area_material.top_height, 112);
+    const diskTops = disk.oiAreas.map((a) => a.area_material.top_height);
+    assert.ok(Math.max(...diskTops) >= 111.5 && Math.max(...diskTops) <= 112.05, `apex ${Math.max(...diskTops)}`);
+    assert.ok(disk.oiAreas[0].area_material.top_height < 40, "ground band is not the full 112 m cylinder");
+    assert.notEqual(disk.oiAreas[0].area_material.name, "Building - 112.0");
+    const fullHeight = disk.oiAreas.filter((a) => a.area_material.top_height >= 100);
+    assert.equal(fullHeight.length >= 1, true);
     assert.equal(covers(full, disk, -115.16208, 36.12123), true);
     const diskPx = oiPixelCoords(disk.oiAreas[0].area.coordinates);
     assert.ok(diskPx.length - 1 <= MAX_OI_RING_VERTS, `full sphere OI verts ${diskPx.length - 1}`);
@@ -590,6 +599,14 @@ describe("pipeline: footprints + trees share the frame", () => {
     }
     const areaM2 = (Math.abs(areaPx) / 2) * full.mpuX * full.mpuY;
     assert.ok(areaM2 > 15000 && areaM2 < 40000, `emitted sphere area ${areaM2}`);
+    const bandAreas = disk.overlayRings.map((r) => {
+      let a = 0;
+      for (let i = 0; i < r.length - 1; i++) a += r[i][0] * r[i + 1][1] - r[i + 1][0] * r[i][1];
+      return (Math.abs(a) / 2) * full.mpuX * full.mpuY;
+    });
+    const tallest = diskTops.indexOf(Math.max(...diskTops));
+    assert.ok(bandAreas[tallest] < areaM2 * 0.5, `apex plan ${bandAreas[tallest]} vs ground ${areaM2}`);
+    assert.ok(Math.min(...bandAreas) < Math.max(...bandAreas) * 0.35, "upper rings shrink toward the top");
   });
 
   it("caps a 100+ vertex ring and drops a one-axis sliver from OpenIntent", () => {

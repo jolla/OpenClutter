@@ -101,7 +101,7 @@ describe("eval gate (cached fixtures, no Hamina)", () => {
 
 describe("eval gate with Include foliage on", () => {
   it("emits canopy polygons only and keeps foliage overlap guards", () => {
-    const { isVegetationOiName } = require("../netlify/lib/materials");
+    const { isVegetationOiName, isTrunkOiName } = require("../netlify/lib/materials");
     for (const site of loadSitesIndex()) {
       const loaded = loadFixture(site);
       const next = runLoaded(loaded, { rgbPolicy: T.RGB_POLICY_PREFER_NLCD, includeFoliage: true });
@@ -120,13 +120,13 @@ describe("eval gate with Include foliage on", () => {
       );
       const areas = next.built.openintent.floorplans[0].attenuation_areas;
       const veg = areas.filter((a) => isVegetationOiName(a.area_material && a.area_material.name));
-      assert.equal(veg.length, next.exportStats.openIntentTrees.emitted);
-      assert.equal(
-        next.built.clipboard.attenuatingZones.some(
-          (z) => z.typeId === "tree-trunk" || String(z.typeId).indexOf("trunk") === 0
-        ),
-        false
-      );
+      const trunks = areas.filter((a) => isTrunkOiName(a.area_material && a.area_material.name));
+      assert.equal(veg.length + trunks.length, next.exportStats.openIntentTrees.emitted);
+      assert.ok(veg.length >= 1, site.id);
+      for (const trunk of trunks) {
+        assert.equal(trunk.area_material.transparencyEnabled, true);
+        assert.ok(trunk.area_material.top_height > 0);
+      }
       const { unzipStore } = require("../netlify/lib/zip-store");
       const files = unzipStore(next.built.zip);
       const svg = files["alignment-overlay.svg"].toString();

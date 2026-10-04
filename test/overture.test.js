@@ -68,6 +68,49 @@ describe("Overture buildings", () => {
     assert.equal(featureFromRow(underground, OAK), null);
   });
 
+  it("keeps a dome roof and a shed rise, and does not treat min_height as a low eave", () => {
+    const dome = featureFromRow(
+      {
+        height: 112,
+        roof_shape: "dome",
+        roof_direction: null,
+        roof_height: null,
+        min_height: 4,
+        bbox: { xmin: -87.92, xmax: -87.919, ymin: 42.9, ymax: 42.901 },
+        geometry: {
+          type: "Polygon",
+          coordinates: [[[-87.92, 42.9], [-87.919, 42.9], [-87.919, 42.901], [-87.92, 42.901], [-87.92, 42.9]]],
+        },
+      },
+      OAK
+    );
+    assert.equal(dome.properties.roofShape, "dome");
+    assert.equal(dome.properties.height, 112);
+    assert.equal(dome.properties.roofDirection, undefined);
+    assert.equal(dome.properties.roofHeight, undefined);
+    assert.equal(dome.properties.lowHeight, undefined);
+    assert.equal(dome.properties.minHeight, undefined);
+    const shed = featureFromRow(
+      {
+        height: 80,
+        roof_shape: "shed",
+        roof_direction: 0,
+        roof_height: 24,
+        min_height: 3,
+        bbox: { xmin: -87.918, xmax: -87.917, ymin: 42.898, ymax: 42.899 },
+        geometry: {
+          type: "Polygon",
+          coordinates: [[[-87.918, 42.898], [-87.917, 42.898], [-87.917, 42.899], [-87.918, 42.899], [-87.918, 42.898]]],
+        },
+      },
+      OAK
+    );
+    assert.equal(shed.properties.roofShape, "shed");
+    assert.equal(shed.properties.roofDirection, 0);
+    assert.equal(shed.properties.roofHeight, 24);
+    assert.equal(shed.properties.lowHeight, undefined);
+  });
+
   it("reads the Las Vegas Sphere row group before the southern neighbor", () => {
     const lat = 36.1206;
     const lon = -115.1614;
