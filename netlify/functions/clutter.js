@@ -30,9 +30,12 @@ const IMAGERY_BACKOFF_MS = 400;
 // step down. A slow fine image is the export. 2400 px is not the request.
 const IMAGERY_ATTEMPT_MS_DEV = 18000;
 const IMAGERY_STEPDOWN_MS = [8000, 6000];
-// Step down only when the sharp request fails immediately. A multi-second
-// wait is the fine image still coming back, not a reason to start another.
+// Step down immediately when the sharp request fails at once. A multi-second
+// wait that then aborts can still use the next size, but only inside the
+// time left before the gateway closes a silent export (~30s). A slow fine
+// JPEG that succeeds is kept and never reaches this step.
 const IMAGERY_STEPDOWN_QUICK_MS = 2000;
+const IMAGERY_RETURN_MS = 22000;
 // Live Oak Creek metadata was ~3.0s and pads latitude by ~500 m at the same
 // pixel size. The content extent is derived from the drawn box and the JPEG
 // pixel size (the same pad export?f=json returns), so a slow JSON cannot
@@ -191,16 +194,34 @@ function imagerySteps(devHost) {
   );
 }
 
-/** Same drawn box. A fast failure of the sharp JPEG may use the next smaller size. A slow fine JPEG is kept. */
+/**
+ * Budget for a later, smaller JPEG. A fast failure keeps that step's own
+ * wait. A late abort gets only the time left under IMAGERY_RETURN_MS, so the
+ * function can still answer. 0 means do not start another image.
+ */
+function imageryStepBudget(elapsed, attemptMs) {
+  const elapsedMs = Math.max(0, +elapsed || 0);
+  const attempt = attemptMs > 0 ? attemptMs : IMAGERY_ATTEMPT_MS;
+  if (elapsedMs < IMAGERY_STEPDOWN_QUICK_MS) return attempt;
+  const room = IMAGERY_RETURN_MS - elapsedMs;
+  if (room < 1500) return 0;
+  return Math.min(attempt, room);
+}
+
+/** Same drawn box. A failed sharp JPEG may use the next smaller size. A slow fine JPEG that succeeds is kept. */
 async function fetchImageryStepped(bbox, steps) {
   let last;
   const started = Date.now();
   for (let i = 0; i < steps.length; i++) {
-    if (i > 0 && Date.now() - started >= IMAGERY_STEPDOWN_QUICK_MS) break;
     const step = steps[i];
+    let attemptMs = step.attemptMs;
+    if (i > 0) {
+      attemptMs = imageryStepBudget(Date.now() - started, step.attemptMs);
+      if (!(attemptMs >= 1500)) break;
+    }
     const frame = geoFrame(bbox, { maxSide: step.maxSide, metersPerPx: step.metersPerPx });
     try {
-      return await fetchImageryJpeg(esriImageryUrl(frame), step.attemptMs);
+      return await fetchImageryJpeg(esriImageryUrl(frame), attemptMs);
     } catch (e) {
       last = e;
     }
@@ -1234,6 +1255,8 @@ exports.UA = UA;
 exports.imageryAttemptMs = imageryAttemptMs;
 exports.IMAGERY_ATTEMPT_MS = IMAGERY_ATTEMPT_MS;
 exports.IMAGERY_ATTEMPT_MS_DEV = IMAGERY_ATTEMPT_MS_DEV;
+exports.IMAGERY_RETURN_MS = IMAGERY_RETURN_MS;
+exports.imageryStepBudget = imageryStepBudget;
 exports.beginOptional = beginOptional;
 exports.joinOptional = joinOptional;
 exports.OVERTURE_GRACE_MS = OVERTURE_GRACE_MS;

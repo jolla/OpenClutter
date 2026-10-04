@@ -2,7 +2,7 @@
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
-const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures, imageryAttemptMs, IMAGERY_ATTEMPT_MS, IMAGERY_ATTEMPT_MS_DEV, lambdaPayloadBytes, EXPORT_PAYLOAD_BUDGET, LAMBDA_SYNC_PAYLOAD_MAX, terrainSettleMs, terrainRescueBudget, TERRAIN_RESERVE_MS, TERRAIN_HARD_MS, TERRAIN_FULL_MS, TERRAIN_COARSE_SAMPLES, setFetchTerrainDemForTests } = require("../netlify/functions/clutter");
+const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures, imageryAttemptMs, imageryStepBudget, IMAGERY_ATTEMPT_MS, IMAGERY_ATTEMPT_MS_DEV, IMAGERY_RETURN_MS, lambdaPayloadBytes, EXPORT_PAYLOAD_BUDGET, LAMBDA_SYNC_PAYLOAD_MAX, terrainSettleMs, terrainRescueBudget, TERRAIN_RESERVE_MS, TERRAIN_HARD_MS, TERRAIN_FULL_MS, TERRAIN_COARSE_SAMPLES, setFetchTerrainDemForTests } = require("../netlify/functions/clutter");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
 const { unzipStore } = require("../netlify/lib/zip-store");
@@ -960,6 +960,10 @@ describe("dev-host Esri long side", () => {
     assert.equal(IMAGERY_ATTEMPT_MS_DEV, 18000);
     assert.equal(imageryAttemptMs(false), 8500);
     assert.equal(imageryAttemptMs(true), 18000);
+    assert.equal(IMAGERY_RETURN_MS, 22000);
+    assert.equal(imageryStepBudget(0, 8000), 8000);
+    assert.equal(imageryStepBudget(18000, 8000), 4000);
+    assert.equal(imageryStepBudget(21000, 8000), 0);
   });
 
   it("asks Esri for 2048 px only on the dev host", async () => {
@@ -1013,6 +1017,44 @@ describe("dev-host Esri long side", () => {
     assert.ok(images.some((u) => /size=2048,/.test(u)), images.join("\n"));
     assert.ok(images.some((u) => /size=1600,/.test(u)), images.join("\n"));
     assert.equal(images.some((u) => /size=1040,/.test(u)), false);
+  });
+
+  it("still exports when the sharp JPEG aborts after the quick window", async () => {
+    const seen = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      seen.push(u);
+      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=2048,")) {
+        await new Promise((resolve) => setTimeout(resolve, 2100));
+        throw new Error("The operation was aborted due to timeout");
+      }
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: WYNN.west, ymin: WYNN.south, xmax: WYNN.east, ymax: WYNN.north },
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+      if (u.includes("getSamples") || u.includes("USFS_EDW_NLCD_TCC")) {
+        return { ok: true, json: async () => ({ samples: samples() }) };
+      }
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...WYNN, format: "bundle" }),
+    });
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(/too large to finish in one export/.test(res.body), false);
+    assert.equal(/did not finish/i.test(res.body), false);
+    const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
+    assert.ok(images.some((u) => /size=2048,/.test(u)), images.join("\n"));
+    assert.ok(images.some((u) => /size=1600,/.test(u)), images.join("\n"));
   });
 
   it("keeps a slow 2048 px Wynn image instead of treating the draw as too large", async () => {
