@@ -1187,8 +1187,8 @@ describe("main UI: import buildings, optional foliage", () => {
     const app = fs.readFileSync(path.join(root, "app.js"), "utf8");
     assert.match(html, /id="draw-hint"/);
     assert.match(html, /Click the map to draw\. Drag a box, or click corners and click the first corner to close\. Right-drag or hold Space to pan\. Double-click also finishes\. Esc cancels\./);
-    assert.match(html, /id="finish-shape"[^>]*hidden/);
-    assert.match(html, />Finish shape</);
+    assert.equal(/finish-shape/.test(html), false);
+    assert.equal(/Finish shape/.test(html + app), false);
     assert.match(app, /Click the first corner to close\. Double-click also finishes/);
     assert.match(app, /function enterDrawMode/);
     const afterDraw = app.split('getElementById("draw").onclick')[1] || "";
