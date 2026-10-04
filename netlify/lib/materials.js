@@ -38,18 +38,17 @@ const { ZONE_TYPES, TYPE_BY_ID, oiMaterialFromType, pickBuildingTypeId } = requi
 const { LIFT_LOCAL_M } = require("./terrain");
 
 /**
- * Height colors for the building Hamina draws. A small discrete set, so a
- * short building and a tower are not the same gray (or the old Two Floor
- * magenta). These are display_color on the OpenIntent object. Foliage greens
- * are not in this set. A missing height stays the quiet neutral — this does
- * not estimate a height from the footprint.
+ * One cool gray for every building. Height is only a small lightness step:
+ * shorter is slightly lighter, taller is slightly darker. A missing height
+ * is the middle gray. Footprint area is not a height and is not read here.
+ * Foliage greens are not in this set. These values are display_color.
  */
-const BUILDING_NEUTRAL_COLOR = "#8B949E";
-const BUILDING_COLOR_SHORT = "#377EB8";
-const BUILDING_COLOR_LOW = "#FF7F00";
-const BUILDING_COLOR_MID = "#984EA3";
-const BUILDING_COLOR_TALL = "#E41A1C";
-const BUILDING_COLOR_TOWER = "#F0E442";
+const BUILDING_NEUTRAL_COLOR = "#B4BAC0";
+const BUILDING_COLOR_SHORT = "#C5CBD1";
+const BUILDING_COLOR_LOW = "#BDC3C9";
+const BUILDING_COLOR_MID = "#B4BAC0";
+const BUILDING_COLOR_TALL = "#ABB1B7";
+const BUILDING_COLOR_TOWER = "#A2A8AE";
 
 /** Hamina-native outdoor building materials (from Jerry's gold OpenIntent zip). */
 const OI_BUILDING_TYPES = [
@@ -125,9 +124,9 @@ function measuredExceedsStock(heightM) {
 }
 
 /**
- * Color for a real vertical height. Bands match the stock floor cuts
+ * Cool gray for a real vertical height. Bands match the stock floor cuts
  * (under 6 m, under 11 m, under 24 m, through Ten Floor). Anything taller
- * than Ten Floor is the tower color. No height stays neutral. Footprint
+ * than Ten Floor is one step darker. No height is the middle gray. Footprint
  * area is not a height and is not read here.
  */
 function buildingColor(h) {
