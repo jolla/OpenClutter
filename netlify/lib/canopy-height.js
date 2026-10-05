@@ -3,10 +3,13 @@
 /**
  * Meta / WRI canopy height (CHM v2), ~1.2 m uint8 metres, anonymous COG.
  * One zoom-10 Web-Mercator quadkey covers a commercial site. The reader
- * requests only the pixel window over the export bbox (resampled), so the
- * ~200 MB tile is not downloaded. NLCD percent can add a cell only where
- * cover is denser and a measured height is already on the grid. It does not
- * invent a height. A sample ≥ 2 m is a measured top. 0 / nodata is not.
+ * requests only the pixel window over the export bbox, so the ~200 MB tile
+ * is not downloaded. Each export cell keeps the tallest measured sample in
+ * it, and only when two or more samples are canopy. Averaging those samples
+ * was flattening a narrow crown into the grass. One spike is not a tree.
+ * NLCD percent can add a cell only where cover is denser and a measured
+ * height is already on the grid. It does not invent a height. A sample ≥ 2 m
+ * is a measured top. 0 / nodata is not.
  * crownsFromChm traces each connected canopy as one simplified polygon: the
  * ring follows the CHM edge, and the height is the measured top inside it.
  * It does not emit grid squares, circles, trunks, or a point scatter.
@@ -24,8 +27,17 @@ const MIN_CELL_M = 1.4;
 const CROWN_MIN_H = 3;
 const CROWN_MIN_AREA_M2 = 12;
 const CROWN_MAX_VERTS = 32;
-/** Safety cap. Export trims further by keeping the largest outlines. */
+/**
+ * Safety cap before the export budget. The largest masses fill the first
+ * 480 slots (the previous budget). Further slots are compact measured crowns,
+ * so a busy site does not spend the whole cap on woods and drop every tree.
+ */
 const CROWN_CAP = 800;
+const BULK_POLYGONS = 480;
+const COMPACT_AREA_M2 = 80;
+const COMPACT_MIN_H = 5;
+/** Native samples at or above the canopy floor required before a cell is real. */
+const MIN_PEAK_SAMPLES = 2;
 
 function chmUrl(quadkey) {
   return (
@@ -126,7 +138,16 @@ function gridToJson(grid) {
   };
 }
 
-async function readTileWindow(image, frame, width, height) {
+function lonLatFromMercator(x, y) {
+  const R = 20037508.342789244;
+  // Inverse of mercator() above. That Y is the web-mercator Y divided by π,
+  // which is the CRS on the Meta canopy tiles.
+  const lon = (x * 180) / R;
+  const lat = (Math.atan(Math.exp((y * Math.PI) / R)) * 360) / Math.PI - 90;
+  return [lon, lat];
+}
+
+async function readTileWindow(image, frame) {
   const origin = image.getOrigin();
   const res = image.getResolution();
   const px = (x) => (x - origin[0]) / res[0];
@@ -140,7 +161,6 @@ async function readTileWindow(image, frame, width, height) {
   const iw = image.getWidth();
   const ih = image.getHeight();
   if (right <= 0 || bottom <= 0 || left >= iw || top >= ih) return null;
-  const covers = left >= 0 && top >= 0 && right <= iw && bottom <= ih;
   left = Math.max(0, left);
   top = Math.max(0, top);
   right = Math.min(iw, right);
@@ -148,40 +168,77 @@ async function readTileWindow(image, frame, width, height) {
   if (right - left < 2 || bottom - top < 2) return null;
   const ras = await image.readRasters({
     window: [left, top, right, bottom],
-    width: covers ? width : Math.min(width, right - left),
-    height: covers ? height : Math.min(height, bottom - top),
-    resampleMethod: "bilinear",
     interleave: true,
   });
   const data = valuesOf(ras);
   return {
-    covers,
     data,
-    width: covers ? width : ras.width || Math.min(width, right - left),
-    height: covers ? height : ras.height || Math.min(height, bottom - top),
+    width: right - left,
+    height: bottom - top,
     left,
     top,
-    right,
-    bottom,
     origin,
     res,
   };
 }
 
-function paintPartial(target, tile, frame) {
-  const { width, height } = target;
-  for (let j = 0; j < height; j++) {
-    const lat = frame.north - ((j + 0.5) / height) * (frame.north - frame.south);
-    for (let i = 0; i < width; i++) {
-      const lon = frame.west + ((i + 0.5) / width) * (frame.east - frame.west);
-      const [x, y] = mercator(lon, lat);
-      const px = (x - tile.origin[0]) / tile.res[0];
-      const py = (y - tile.origin[1]) / tile.res[1];
-      if (px < tile.left || px > tile.right || py < tile.top || py > tile.bottom) continue;
-      const tx = ((px - tile.left) / (tile.right - tile.left || 1)) * (tile.width - 1);
-      const ty = ((py - tile.top) / (tile.bottom - tile.top || 1)) * (tile.height - 1);
-      const v = sampleBilinear(tile.data, tile.width, tile.height, tx, ty);
-      if (v >= 1 && v < 80) target.values[j * width + i] = Math.round(v);
+/**
+ * Collapse a finer canopy raster onto the export grid by index.
+ * A cell keeps its tallest sample only when two or more samples are at
+ * least 3 m. Grass (under 3 m) and a one-pixel spike do not become a cell.
+ */
+function peakPool(src, srcW, srcH, dstW, dstH) {
+  const dw = dstW | 0;
+  const dh = dstH | 0;
+  const sw = srcW | 0;
+  const sh = srcH | 0;
+  const max = new Uint8Array(dw * dh);
+  const count = new Uint16Array(dw * dh);
+  if (!src || dw < 1 || dh < 1 || sw < 1 || sh < 1) return max;
+  for (let y = 0; y < sh; y++) {
+    const dy = Math.min(dh - 1, Math.floor((y * dh) / sh));
+    const row = y * sw;
+    for (let x = 0; x < sw; x++) {
+      const v = src[row + x] || 0;
+      if (v < CROWN_MIN_H || v >= 80) continue;
+      const dx = Math.min(dw - 1, Math.floor((x * dw) / sw));
+      const i = dy * dw + dx;
+      count[i]++;
+      if (v > max[i]) max[i] = v;
+    }
+  }
+  const out = new Uint8Array(dw * dh);
+  for (let i = 0; i < out.length; i++) {
+    if (count[i] >= MIN_PEAK_SAMPLES) out[i] = max[i];
+  }
+  return out;
+}
+
+function accumulatePeaks(max, count, tile, frame, dstW, dstH) {
+  const data = tile.data;
+  const sw = tile.width | 0;
+  const sh = tile.height | 0;
+  if (!data || sw < 1 || sh < 1) return;
+  const dLon = +frame.east - +frame.west || 1e-9;
+  const dLat = +frame.north - +frame.south || 1e-9;
+  const resX = tile.res[0];
+  const resY = tile.res[1];
+  for (let y = 0; y < sh; y++) {
+    const my = tile.origin[1] + (tile.top + y + 0.5) * resY;
+    const lat = lonLatFromMercator(0, my)[1];
+    if (lat < +frame.south || lat > +frame.north) continue;
+    const iy = Math.min(dstH - 1, Math.max(0, Math.floor(((+frame.north - lat) / dLat) * dstH)));
+    const row = y * sw;
+    for (let x = 0; x < sw; x++) {
+      const v = data[row + x] || 0;
+      if (v < CROWN_MIN_H || v >= 80) continue;
+      const mx = tile.origin[0] + (tile.left + x + 0.5) * resX;
+      const lon = lonLatFromMercator(mx, 0)[0];
+      if (lon < +frame.west || lon > +frame.east) continue;
+      const ix = Math.min(dstW - 1, Math.max(0, Math.floor(((lon - +frame.west) / dLon) * dstW)));
+      const i = iy * dstW + ix;
+      count[i]++;
+      if (v > max[i]) max[i] = v;
     }
   }
 }
@@ -191,25 +248,24 @@ async function fetchChmGrid(frame, opts) {
   if (!keys.length || keys.length > MAX_TILES) return null;
   const geotiff = require("geotiff");
   const { width, height } = gridSize(frame);
-  const values = new Uint8Array(width * height);
+  const max = new Uint8Array(width * height);
+  const count = new Uint16Array(width * height);
   const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
   for (const key of keys) {
     const tiff = await geotiff.fromUrl(chmUrl(key), { cacheSize: 16 }, signal);
     const image = await tiff.getImage();
-    const tile = await readTileWindow(image, frame, width, height);
+    const tile = await readTileWindow(image, frame);
     if (!tile || !tile.data) continue;
-    if (tile.covers && keys.length === 1) {
-      const n = Math.min(values.length, tile.data.length);
-      for (let i = 0; i < n; i++) {
-        const v = tile.data[i];
-        if (v >= 1 && v < 80) values[i] = Math.round(v);
-      }
-    } else {
-      paintPartial({ values, width, height }, tile, frame);
+    accumulatePeaks(max, count, tile, frame, width, height);
+  }
+  const values = new Uint8Array(width * height);
+  let nz = 0;
+  for (let i = 0; i < values.length; i++) {
+    if (count[i] >= MIN_PEAK_SAMPLES && max[i] >= CROWN_MIN_H && max[i] < 80) {
+      values[i] = max[i];
+      nz++;
     }
   }
-  let nz = 0;
-  for (let i = 0; i < values.length; i++) if (values[i] >= 2) nz++;
   if (!nz) return null;
   return {
     west: +frame.west,
@@ -538,7 +594,50 @@ function crownsFromChm(grid) {
     }
   }
   crowns.sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
-  return crowns.length > CROWN_CAP ? crowns.slice(0, CROWN_CAP) : crowns;
+  return crowns.length > CROWN_CAP ? selectCrownsForExport(crowns, CROWN_CAP) : crowns;
+}
+
+function ringOpen(ring) {
+  if (!ring || ring.length < 2) return ring || [];
+  const closed =
+    ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1];
+  return closed ? ring.slice(0, -1) : ring;
+}
+
+/** Largest traced canopies, then the tallest small boxes, up to `max`. */
+function selectBulk(crowns, max) {
+  const traced = [];
+  const boxes = [];
+  for (let i = 0; i < crowns.length; i++) {
+    const open = ringOpen(crowns[i].ringLonLat);
+    if (isAxisRect(open) && crowns[i].areaM2 < 140) boxes.push(crowns[i]);
+    else traced.push(crowns[i]);
+  }
+  traced.sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
+  boxes.sort((a, b) => b.heightM - a.heightM || b.areaM2 - a.areaM2);
+  return traced.concat(boxes).slice(0, max);
+}
+
+/**
+ * Under the old 480 budget, keep the largest canopies (same set as before).
+ * Above that, the extra slots are compact measured crowns — individual trees
+ * and small groups — tallest first. A short speck never reaches this list.
+ */
+function selectCrownsForExport(crowns, max) {
+  const limit = max > 0 ? max | 0 : BULK_POLYGONS;
+  const list = crowns || [];
+  if (list.length <= limit) return list;
+  const bulk = selectBulk(list, Math.min(limit, BULK_POLYGONS));
+  if (bulk.length >= limit) return bulk;
+  const seen = new Set(bulk);
+  const extra = [];
+  for (let i = 0; i < list.length; i++) {
+    const c = list[i];
+    if (seen.has(c)) continue;
+    if (c.heightM >= COMPACT_MIN_H && c.areaM2 <= COMPACT_AREA_M2) extra.push(c);
+  }
+  extra.sort((a, b) => b.heightM - a.heightM || b.areaM2 - a.areaM2);
+  return bulk.concat(extra.slice(0, limit - bulk.length));
 }
 
 function copyGrid(grid, values, nonzero) {
@@ -655,33 +754,21 @@ function poolChmGrid(grid, stride) {
 
 /**
  * Canopy outlines for an export. Roof and pavement cells are cleared first.
- * Over the polygon budget, the smallest outlines are dropped. The grid is not
- * max-pooled: that merge turned canopy edges into squares and erased crowns
- * that did not survive the coarser cell.
+ * The first 480 slots stay the largest canopies. A higher budget fills the
+ * rest with compact measured crowns instead of dropping every small tree.
+ * The grid is not max-pooled after this: that merge turned canopy edges into
+ * squares and erased crowns that did not survive the coarser cell. The fetch
+ * already kept each cell's peak.
  */
 function crownsForExport(grid, opts) {
   const prepared = maskChmGrid(grid, opts);
   if (!prepared || !(prepared.nonzero > 0)) return { crowns: [], coarsened: false, stride: 1 };
-  const max = opts && opts.maxPolygons > 0 ? opts.maxPolygons | 0 : 480;
+  const max = opts && opts.maxPolygons > 0 ? opts.maxPolygons | 0 : BULK_POLYGONS;
   let crowns = crownsFromChm(prepared);
   let trimmed = false;
   if (crowns.length > max) {
     trimmed = true;
-    const traced = [];
-    const boxes = [];
-    for (let i = 0; i < crowns.length; i++) {
-      const open =
-        crowns[i].ringLonLat.length > 1 &&
-        crowns[i].ringLonLat[0][0] === crowns[i].ringLonLat[crowns[i].ringLonLat.length - 1][0] &&
-        crowns[i].ringLonLat[0][1] === crowns[i].ringLonLat[crowns[i].ringLonLat.length - 1][1]
-          ? crowns[i].ringLonLat.slice(0, -1)
-          : crowns[i].ringLonLat;
-      if (isAxisRect(open) && crowns[i].areaM2 < 140) boxes.push(crowns[i]);
-      else traced.push(crowns[i]);
-    }
-    traced.sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
-    boxes.sort((a, b) => b.heightM - a.heightM || b.areaM2 - a.areaM2);
-    crowns = traced.concat(boxes).slice(0, max);
+    crowns = selectCrownsForExport(crowns, max);
   }
   return { crowns, coarsened: trimmed, stride: 1 };
 }
@@ -691,6 +778,7 @@ module.exports = {
   MAX_DIM,
   chmUrl,
   mercator,
+  lonLatFromMercator,
   sampleChmGrid,
   applyChmToTrees,
   gridToJson,
@@ -699,5 +787,7 @@ module.exports = {
   crownsFromChm,
   maskChmGrid,
   poolChmGrid,
+  peakPool,
+  selectCrownsForExport,
   crownsForExport,
 };

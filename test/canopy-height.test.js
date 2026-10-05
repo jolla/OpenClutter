@@ -4,7 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { sampleChmGrid, applyChmToTrees, chmUrl, CHM_ZOOM, crownsFromChm } = require("../netlify/lib/canopy-height");
+const { sampleChmGrid, applyChmToTrees, chmUrl, CHM_ZOOM, crownsFromChm, peakPool, selectCrownsForExport, mercator, lonLatFromMercator } = require("../netlify/lib/canopy-height");
 const { quadkeysForBbox } = require("../netlify/lib/ms-global");
 const { treePairsFromPoints } = require("../netlify/lib/vegetation");
 const { geoFrame, llToPx } = require("../netlify/lib/geo-frame");
@@ -655,5 +655,77 @@ describe("canopy height replaces the color guess", () => {
     assert.equal(areas.some((a) => String(a.area_material.name).indexOf("Foliage") === 0), false);
     assert.ok(areas.some((a) => String(a.area_material.name).indexOf("Building") === 0));
     assert.ok(omitted.zip && omitted.zip.length > 50);
+  });
+
+  it("reads canopy-tile coordinates back to the same lon/lat", () => {
+    const [x, y] = mercator(-87.9226, 42.8904);
+    const [lon, lat] = lonLatFromMercator(x, y);
+    assert.ok(Math.abs(lon + 87.9226) < 1e-9);
+    assert.ok(Math.abs(lat - 42.8904) < 1e-9);
+  });
+
+  it("keeps a narrow measured crown and does not turn a spike or low grass into one", () => {
+    const srcW = 12;
+    const srcH = 12;
+    const dstW = 4;
+    const dstH = 4;
+    const src = new Uint8Array(srcW * srcH);
+    for (let y = 3; y <= 5; y++) {
+      for (let x = 3; x <= 5; x++) src[y * srcW + x] = 9;
+    }
+    src[1 * srcW + 10] = 12;
+    for (let y = 9; y <= 11; y++) {
+      for (let x = 3; x <= 5; x++) src[y * srcW + x] = 2;
+    }
+    for (let y = 9; y <= 11; y++) {
+      for (let x = 9; x <= 11; x++) src[y * srcW + x] = 4;
+    }
+    const values = peakPool(src, srcW, srcH, dstW, dstH);
+    assert.equal(values[1 * dstW + 1], 9);
+    assert.equal(values[0 * dstW + 3], 0, "one native spike is not a cell");
+    assert.equal(values[3 * dstW + 1], 0, "grass under 3 m is not canopy");
+    assert.equal(values[3 * dstW + 3], 4);
+    const cell = 2.2;
+    const mLon = 111320 * Math.cos((42.9 * Math.PI) / 180);
+    const grid = {
+      west: -87.9,
+      south: 42.9,
+      east: -87.9 + (dstW * cell) / mLon,
+      north: 42.9 + (dstH * cell) / 110540,
+      width: dstW,
+      height: dstH,
+      values,
+    };
+    const crowns = crownsFromChm(grid);
+    assert.equal(crowns.length, 1, "crowns " + crowns.map((c) => c.heightM + ":" + c.areaM2).join(","));
+    assert.equal(crowns[0].heightM, 9);
+    assert.equal(
+      crowns.some((c) => c.heightM <= 4),
+      false,
+      "a lone 4 m cell is not a tree"
+    );
+  });
+
+  it("uses foliage budget above 480 for compact crowns and leaves the 480 largest in place", () => {
+    const traced = [[0, 0], [3, 0], [3.4, 1], [1, 2], [0, 1.2]];
+    const box = [[0, 0], [1, 0], [1, 1], [0, 1]];
+    const crowns = [];
+    for (let i = 0; i < 500; i++) {
+      crowns.push({ areaM2: 200 + i, heightM: 11, ringLonLat: traced });
+    }
+    for (let i = 0; i < 250; i++) {
+      crowns.push({ areaM2: 22, heightM: 5 + (i % 20), ringLonLat: box });
+    }
+    crowns.push({ areaM2: 18, heightM: 3, ringLonLat: box });
+    const at480 = selectCrownsForExport(crowns, 480);
+    assert.equal(at480.length, 480);
+    assert.equal(at480.every((c) => c.areaM2 >= 200), true);
+    const at720 = selectCrownsForExport(crowns, 720);
+    assert.equal(at720.length, 720);
+    assert.equal(at720.filter((c) => c.areaM2 >= 200).length, 480);
+    const compact = at720.filter((c) => c.areaM2 === 22);
+    assert.equal(compact.length, 240);
+    assert.equal(at720.some((c) => c.heightM === 3), false, "a short speck does not take a tree slot");
+    assert.equal(compact[0].heightM >= compact[compact.length - 1].heightM, true);
   });
 });
