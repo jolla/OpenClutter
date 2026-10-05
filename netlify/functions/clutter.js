@@ -22,23 +22,22 @@ const CORE_FETCH_MS = 7000;
 const IMAGERY_ATTEMPT_MS = 8500;
 const IMAGERY_ATTEMPTS = 2;
 const IMAGERY_BACKOFF_MS = 400;
-// Dev host asks for a 2048 px / 0.5 m JPEG first. A Wynn-sized box at that
-// size can sit past 12s. Waiting that out, then still reading footprints,
-// kept the function silent until the gateway closed it (~30s, empty 504).
-// The sharp request has this long. If it has not arrived, the next smaller
-// image must still finish, and the zip must be on the way, before
-// EXPORT_ANSWER_MS. 2400 px is not the request.
-const IMAGERY_ATTEMPT_MS_DEV = 7000;
-const IMAGERY_STEPDOWN_MS = [4000, 3500];
-// Step down immediately when the sharp request fails at once. A request
-// that is still out at the end of the sharp window steps down too, using
-// only the time left under IMAGERY_RETURN_MS. A sharp JPEG that arrives
-// inside the window is kept.
+// Dev host asks for a 2048 px / 0.5 m JPEG first. A small site returns in
+// a few seconds and that image is kept. A Wynn-sized box at 2048 px sits
+// past this window. The production-size image is what used to finish, so
+// that is the step-down, with the same 8.5s the production export allows.
+// A 4s try at 1600 px, then 3.5s at 1040 px, timed out every size and the
+// page said the aerial timed out. 2400 px is not the request.
+const IMAGERY_ATTEMPT_MS_DEV = 5000;
+const IMAGERY_STEPDOWN_MS = [4000, 8500];
+// A failure in this first slice can still try 1600 px. Once the sharp
+// window is gone, skip that middle size and use the production image,
+// which has a full attempt under IMAGERY_RETURN_MS.
 const IMAGERY_STEPDOWN_QUICK_MS = 2000;
 const IMAGERY_RETURN_MS = 15000;
 // Network waits stop here so the zip is the response. The gateway closes a
 // silent export around 30s, including cold start, so this stays well under that.
-const EXPORT_ANSWER_MS = 17000;
+const EXPORT_ANSWER_MS = 16000;
 // Live Oak Creek metadata was ~3.0s and pads latitude by ~500 m at the same
 // pixel size. The content extent is derived from the drawn box and the JPEG
 // pixel size (the same pad export?f=json returns), so a slow JSON cannot
@@ -212,15 +211,22 @@ function imageryStepBudget(elapsed, attemptMs) {
   return Math.min(attempt, room);
 }
 
-/** Same drawn box. A failed sharp JPEG may use the next smaller size. A slow fine JPEG that succeeds is kept. */
+/**
+ * Same drawn box. A sharp JPEG that arrives inside its window is kept.
+ * If that request is still out, the next fetch is the production-size
+ * image with a full attempt, not a short try at every size in between.
+ * A failure that happens at once can still use the middle size.
+ */
 async function fetchImageryStepped(bbox, steps) {
   let last;
   const started = Date.now();
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
+    const elapsed = Date.now() - started;
+    if (i > 0 && elapsed >= IMAGERY_STEPDOWN_QUICK_MS && step.maxSide > 1040) continue;
     let attemptMs = step.attemptMs;
     if (i > 0) {
-      attemptMs = imageryStepBudget(Date.now() - started, step.attemptMs);
+      attemptMs = imageryStepBudget(elapsed, step.attemptMs);
       if (!(attemptMs >= 1500)) break;
     }
     const frame = geoFrame(bbox, { maxSide: step.maxSide, metersPerPx: step.metersPerPx });
@@ -263,22 +269,22 @@ async function fetchImageryJpeg(url, attemptMs) {
     if (budget < 1200) break;
     const ctrl = new AbortController();
     const deadline = imageryDeadline(budget, ctrl);
+    const work = (async () => {
+      const r = await fetch(url, { headers: { "user-agent": UA }, signal: ctrl.signal });
+      if (!r.ok) {
+        const err = fail("imagery", "HTTP " + r.status);
+        if (r.status < 500) throw err;
+        throw Object.assign(new Error("HTTP " + r.status), { httpStatus: r.status });
+      }
+      const body = Buffer.from(await r.arrayBuffer());
+      if (body.length < 100 || body[0] !== 0xff || body[1] !== 0xd8) throw fail("imagery", "imagery not jpeg");
+      return body;
+    })();
+    // The deadline can win while the body is still open. Swallow that
+    // rejection so it cannot fail the export after a smaller image arrives.
+    work.catch(() => {});
     try {
-      const buf = await Promise.race([
-        (async () => {
-          const r = await fetch(url, { headers: { "user-agent": UA }, signal: ctrl.signal });
-          if (!r.ok) {
-            const err = fail("imagery", "HTTP " + r.status);
-            if (r.status < 500) throw err;
-            throw Object.assign(new Error("HTTP " + r.status), { httpStatus: r.status });
-          }
-          const body = Buffer.from(await r.arrayBuffer());
-          if (body.length < 100 || body[0] !== 0xff || body[1] !== 0xd8) throw fail("imagery", "imagery not jpeg");
-          return body;
-        })(),
-        deadline.timeout,
-      ]);
-      return buf;
+      return await Promise.race([work, deadline.timeout]);
     } catch (e) {
       if (e && e.source) throw e;
       last = String(e && e.message ? e.message : e);
