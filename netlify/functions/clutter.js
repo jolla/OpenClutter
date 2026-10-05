@@ -1070,7 +1070,9 @@ async function handleClutter(event) {
     }
   }
 
-  const FOLIAGE_CAPS = [480, 160, 48, 12];
+  // 720 keeps today's 480 largest canopies and fills the rest with compact
+  // crowns. A zip that does not fit steps back to 480 before it drops to 160.
+  const FOLIAGE_CAPS = [720, 480, 160, 48, 12];
   let foliageCap = FOLIAGE_CAPS[0];
 
   function emitClutter(list, extraWarnings) {
