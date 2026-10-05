@@ -6,7 +6,6 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {
   WORKING_STATUS,
-  STOPPED_STATUS,
   exportFailure,
   failureError,
   idleStatus,
@@ -20,6 +19,8 @@ describe("export gateway timeout", () => {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     assert.equal(app.includes("Export did not finish. Try again."), false);
     assert.equal(app.includes("Export failed. Retry."), false);
+    assert.equal(app.includes("The export stopped before a zip was ready."), false);
+    assert.equal(client.includes("The export stopped before a zip was ready."), false);
     assert.equal(client.includes("Export failed. Retry."), false);
     assert.equal(/too large to finish in one export/.test(app + client), false);
     assert.match(app, /Export is still working\./);
@@ -33,19 +34,27 @@ describe("export gateway timeout", () => {
       assert.equal(failure.gateway, true);
       assert.equal(failure.retry, false);
       assert.equal(failure.attempts, 1);
-      assert.equal(failure.message, STOPPED_STATUS);
+      assert.equal(failure.message, "");
       assert.notEqual(failure.message, WORKING_STATUS);
-      assert.equal(/Export failed\. Retry\.|did not finish|too large to finish/i.test(failure.message), false);
+      assert.equal(/stopped before a zip was ready|Aerial imagery timed out|did not finish|too large to finish/i.test(failure.message), false);
       const err = failureError(status, {});
       assert.equal(err.attempts, 1);
       assert.equal(err.noRetry, true);
-      assert.equal(idleStatus(err), STOPPED_STATUS);
+      assert.equal(idleStatus(err), "");
       assert.notEqual(idleStatus(err), WORKING_STATUS);
     }
 
-    assert.equal(idleStatus(new Error("")), STOPPED_STATUS);
-    assert.equal(idleStatus(new Error(WORKING_STATUS)), STOPPED_STATUS);
+    assert.equal(idleStatus(new Error("")), "");
+    assert.equal(idleStatus(new Error(WORKING_STATUS)), "");
     assert.notEqual(idleStatus(new Error("")), WORKING_STATUS);
+    assert.equal(
+      idleStatus(failureError(502, { error: "Aerial imagery timed out. Retry the export." })),
+      ""
+    );
+    assert.equal(
+      idleStatus(new Error("The export stopped before a zip was ready.")),
+      ""
+    );
 
     const blocked = exportFailure(400, { error: "bad bbox" });
     assert.equal(blocked.retry, false);
@@ -68,8 +77,9 @@ describe("export gateway timeout", () => {
           throw failureError(504, {});
         }),
       (err) => {
-        assert.equal(idleStatus(err), STOPPED_STATUS);
+        assert.equal(idleStatus(err), "");
         assert.notEqual(idleStatus(err), WORKING_STATUS);
+        assert.equal(/stopped before a zip was ready|Aerial imagery timed out/.test(idleStatus(err)), false);
         assert.equal(/Export failed\. Retry\.|did not finish|too large to finish/i.test(String(err.message)), false);
         return true;
       }

@@ -955,18 +955,16 @@ describe("dev-host Esri long side", () => {
     global.fetch = prev;
   });
 
-  it("keeps production at 8.5s and steps a slow dev JPEG down inside the gateway", () => {
+  it("keeps production at 8.5s and gives a slow dev JPEG that same attempt", () => {
     assert.equal(IMAGERY_ATTEMPT_MS, 8500);
-    assert.equal(IMAGERY_ATTEMPT_MS_DEV, 7000);
+    assert.equal(IMAGERY_ATTEMPT_MS_DEV, 5000);
     assert.equal(imageryAttemptMs(false), 8500);
-    assert.equal(imageryAttemptMs(true), 7000);
+    assert.equal(imageryAttemptMs(true), 5000);
     assert.equal(IMAGERY_RETURN_MS, 15000);
-    assert.ok(IMAGERY_ATTEMPT_MS_DEV < IMAGERY_RETURN_MS);
-    assert.ok(IMAGERY_RETURN_MS < 26000);
-    assert.equal(imageryStepBudget(0, 4000), 4000);
-    assert.equal(imageryStepBudget(2100, 4000), 4000);
-    assert.equal(imageryStepBudget(7000, 4000), 4000);
-    assert.equal(imageryStepBudget(14000, 4000), 0);
+    assert.ok(IMAGERY_ATTEMPT_MS_DEV + IMAGERY_ATTEMPT_MS <= IMAGERY_RETURN_MS);
+    assert.equal(imageryStepBudget(0, 8500), 8500);
+    assert.equal(imageryStepBudget(5000, 8500), 8500);
+    assert.equal(imageryStepBudget(14000, 8500), 0);
   });
 
   it("asks Esri for 2048 px only on the dev host", async () => {
@@ -1055,9 +1053,14 @@ describe("dev-host Esri long side", () => {
     assert.equal(res.statusCode, 200, res.body);
     assert.equal(/too large to finish in one export/.test(res.body), false);
     assert.equal(/did not finish/i.test(res.body), false);
+    assert.equal(/Aerial imagery timed out/.test(res.body), false);
+    assert.equal(/stopped before a zip was ready/.test(res.body), false);
     const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
     assert.ok(images.some((u) => /size=2048,/.test(u)), images.join("\n"));
-    assert.ok(images.some((u) => /size=1600,/.test(u)), images.join("\n"));
+    assert.ok(images.some((u) => /size=1040,/.test(u)), images.join("\n"));
+    assert.equal(images.some((u) => /size=1600,/.test(u)), false);
+    const body = JSON.parse(res.body);
+    assert.ok(body.zipBase64);
   });
 
   it("keeps a slow 2048 px Wynn image instead of treating the draw as too large", async () => {
@@ -1168,7 +1171,10 @@ describe("dev-host Esri long side", () => {
     assert.equal(/did not finish/i.test(res.body), false);
     const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
     assert.ok(images.some((u) => /size=2048,/.test(u)), images.join("\n"));
-    assert.ok(images.some((u) => /size=1600,/.test(u)), images.join("\n"));
+    assert.ok(images.some((u) => /size=1040,/.test(u)), images.join("\n"));
+    assert.equal(images.some((u) => /size=1600,/.test(u)), false);
+    assert.equal(/Aerial imagery timed out/.test(res.body), false);
+    assert.equal(/stopped before a zip was ready/.test(res.body), false);
     const body = JSON.parse(res.body);
     assert.ok(body.zipBase64);
     assert.equal(res.headers && res.headers["content-type"], "application/json");

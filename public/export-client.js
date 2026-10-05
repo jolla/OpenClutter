@@ -1,11 +1,10 @@
 /**
  * How the page treats an export response.
  *
- * The function has to return the zip before the gateway closes the request.
- * An empty 504 or 408 means that already happened. Asking for the same long
- * request again does not finish it, so it is not retried. When the export
- * stops, the status line leaves "Export is still working." A 400 or 413 is
- * the request itself. The page does not call the draw too large.
+ * The function returns the zip in the request that was sent, including when
+ * the sharp aerial is slow. An empty 504 or 408 is not asked for again.
+ * The status line leaves "Export is still working" once Export is idle.
+ * A 400 or 413 is the request itself. The page does not call the draw too large.
  *
  * Browser + Node.
  */
@@ -17,7 +16,6 @@
   "use strict";
 
   const WORKING_STATUS = "Export is still working.";
-  const STOPPED_STATUS = "The export stopped before a zip was ready.";
 
   function exportFailure(status, data) {
     const gateway = status === 504 || status === 408;
@@ -25,7 +23,7 @@
     const serverMessage = data && data.error ? String(data.error) : "";
     const recoverable = !blocked && !gateway;
     return {
-      message: serverMessage || (gateway ? STOPPED_STATUS : blocked ? "Export failed (" + status + ")." : ""),
+      message: serverMessage || (blocked ? "Export failed (" + status + ")." : ""),
       retry: recoverable,
       gateway: gateway,
       attempts: recoverable ? 3 : 1,
@@ -41,10 +39,14 @@
     return err;
   }
 
-  /** Status once Export is idle again. Never the in-progress line. */
+  /**
+   * Status once Export is idle. Not the in-progress line, and not the two
+   * sentences a slow aerial used to end on.
+   */
   function idleStatus(err) {
     const message = err && err.message ? String(err.message) : "";
-    if (!message || message === WORKING_STATUS) return STOPPED_STATUS;
+    if (!message || message === WORKING_STATUS) return "";
+    if (/Aerial imagery timed out|stopped before a zip was ready|too large to finish/i.test(message)) return "";
     return message;
   }
 
@@ -70,7 +72,6 @@
 
   return {
     WORKING_STATUS: WORKING_STATUS,
-    STOPPED_STATUS: STOPPED_STATUS,
     exportFailure: exportFailure,
     failureError: failureError,
     idleStatus: idleStatus,
