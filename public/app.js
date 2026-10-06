@@ -721,9 +721,13 @@ async function fetchTerrainPaste() {
   return last;
 }
 
-async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain) {
+async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain, terrainPaste) {
   const foliage = includeFoliage === true;
   const terrain = includeTerrain !== false;
+  const liftSamples =
+    terrain && devPage() && terrainPaste && Array.isArray(terrainPaste.liftSamples)
+      ? terrainPaste.liftSamples
+      : undefined;
   const r = await fetch("/api/clutter", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -736,6 +740,8 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       deferTerrain: terrain && devPage(),
       terrainResolution: terrain ? "auto" : undefined,
       terrainStyle: terrain ? "sloped" : undefined,
+      liftSamples,
+      liftKind: liftSamples && terrainPaste.liftKind ? terrainPaste.liftKind : undefined,
       imageryQuality: devPage() ? selectedImageryQuality() : undefined,
       trees: foliage ? trees : [],
       treesSource: foliage ? treesSource : "none",
@@ -801,21 +807,21 @@ document.getElementById("export").onclick = async () => {
           ? canopy.parsed.hits
           : null;
     }
+    // The elevation read overlaps canopy detection. The zip then uses those
+    // samples so building bottoms match the mesh that Copy terrain pastes.
+    const paste = terrainPromise ? await terrainPromise : null;
     const data = await OpenClutterExport.runExportAttempts(() =>
-      exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain)
+      exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain, paste)
     );
     downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
-    if (terrainPromise) {
-      const paste = await terrainPromise;
-      if (paste && paste.terrainClipboard) {
-        data.terrainClipboard = paste.terrainClipboard;
-        data.terrainStatus = paste.terrainStatus || "";
-        if (Array.isArray(data.warnings)) {
-          data.warnings = data.warnings.filter((w) => !/terrain omitted|export budget spent/i.test(String(w)));
-        }
-      } else if (!data.terrainClipboard) {
-        data.terrainStatus = (paste && paste.terrainStatus) || "Terrain did not return. Export again.";
+    if (paste && paste.terrainClipboard) {
+      data.terrainClipboard = paste.terrainClipboard;
+      data.terrainStatus = paste.terrainStatus || "";
+      if (Array.isArray(data.warnings)) {
+        data.warnings = data.warnings.filter((w) => !/terrain omitted|export budget spent/i.test(String(w)));
       }
+    } else if (paste && !data.terrainClipboard) {
+      data.terrainStatus = paste.terrainStatus || "Terrain did not return. Export again.";
     }
     const terrainOff = includeTerrain === false;
     if (terrainOff) {

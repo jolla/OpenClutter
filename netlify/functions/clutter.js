@@ -138,6 +138,7 @@ const {
   normalizeTerrainStyle,
   isDevDemHost,
   frameHas3dep,
+  ABSOLUTE_MAX_SAMPLES,
   EXPORT_PAYLOAD_BUDGET,
   LAMBDA_SYNC_PAYLOAD_MAX,
   estimateBundlePayload,
@@ -867,8 +868,32 @@ async function respondTerrainAside(frame, body, event, cors) {
     terrainFilename: fields.terrainFilename,
     terrainClipboard: fields.terrainClipboard,
     terrainStatus: fields.terrainStatus,
+    // The zip does not read this DEM. These are the samples the mesh used,
+    // so each building bottom can sit on that same ground.
+    liftSamples: liftSamplePayload(samples),
+    liftKind: kind === "surface" ? "surface" : "bare-earth",
     warnings,
   });
+}
+
+function liftSamplePayload(samples) {
+  const out = [];
+  const list = samples || [];
+  const n = Math.min(list.length, ABSOLUTE_MAX_SAMPLES);
+  for (let i = 0; i < n; i++) {
+    const s = list[i];
+    if (!s) continue;
+    const lon = +s.lon;
+    const lat = +s.lat;
+    const z = +s.z;
+    if (!Number.isFinite(lon) || !Number.isFinite(lat) || !Number.isFinite(z)) continue;
+    out.push({ lon, lat, z });
+  }
+  return out;
+}
+
+function normalizeLiftSamples(raw) {
+  return liftSamplePayload(raw);
 }
 
 /** Client-supplied NLCD hits, capped. Used to re-place trees off rooftops. */
@@ -938,6 +963,10 @@ async function handleClutter(event) {
   // then does not start a DEM, so the map cannot omit it.
   const deferTerrain = devHost && (body.deferTerrain === true || body.deferTerrain === "true");
   const readTerrain = includeTerrain && !deferTerrain;
+  // The dev page already fetched this grid for Copy terrain. The zip uses it
+  // only to set building bottoms, and does not start another DEM.
+  const clientLift = deferTerrain ? normalizeLiftSamples(body.liftSamples) : [];
+  const clientLiftKind = body.liftKind === "surface" ? "surface" : "bare-earth";
   if (body.format === "terrain") {
     if (!devHost) return json(404, cors, { error: "not found" });
     return respondTerrainAside(frame, body, event, cors);
@@ -1374,7 +1403,17 @@ async function handleClutter(event) {
   }
 
   let terrain = null;
-  if (demSamples && demSamples.length && frame) {
+  if (clientLift.length >= 4 && frame) {
+    try {
+      terrain = terrainFromSamples(clientLift, frame, {
+        terrainResolution,
+        terrainStyle,
+        kind: clientLiftKind,
+      });
+    } catch {
+      terrain = null;
+    }
+  } else if (demSamples && demSamples.length && frame) {
     try {
       terrain = terrainFromSamples(demSamples, frame, {
         terrainResolution,

@@ -1162,6 +1162,8 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /terrainOff \? "Terrain off"/);
     assert.match(app, /includeTerrain: terrain/);
     assert.match(app, /deferTerrain: terrain && devPage\(\)/);
+    assert.match(app, /liftSamples/);
+    assert.match(app, /liftKind/);
     assert.match(app, /format: "terrain"/);
     assert.match(app, /function fetchTerrainPaste/);
     assert.match(app, /Terrain did not return\. Export again\./);
