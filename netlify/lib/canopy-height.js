@@ -34,12 +34,19 @@ const CROWN_MAX_VERTS = 32;
  */
 const CROWN_CAP = 800;
 const BULK_POLYGONS = 480;
-const COMPACT_AREA_M2 = 80;
+/** A fairway tree, not a woods mass. Extra slots stay available for these. */
+const COMPACT_AREA_M2 = 180;
 const COMPACT_MIN_H = 5;
 /** Native samples at or above the canopy floor required before a cell is real. */
 const MIN_PEAK_SAMPLES = 2;
 /** Rows per canopy read. Short enough that an abort can stop the next strip. */
 const CHM_STRIP_ROWS = 256;
+/**
+ * Long side of a full-site overview. Native strips walk north to south, so an
+ * abort used to keep only the north band and leave the rest of a course empty.
+ * One overview covers the whole draw first. Strips then sharpen it.
+ */
+const SURVEY_MAX_SIDE = 1400;
 
 function chmUrl(quadkey) {
   return (
@@ -211,6 +218,73 @@ async function readPeakStrips(image, frame, dstW, dstH, max, count, signal) {
   return !(signal && signal.aborted);
 }
 
+/** Finest overview that still covers the whole draw in one read. Null when strips are enough. */
+async function surveyImage(tiff, fullImage, frame, signal) {
+  const full = tileWindow(fullImage, frame);
+  if (!full || !tiff || typeof tiff.getImageCount !== "function") return null;
+  const fullSide = Math.max(full.right - full.left, full.bottom - full.top);
+  if (fullSide <= SURVEY_MAX_SIDE) return null;
+  let n = 1;
+  try {
+    const count = await tiff.getImageCount();
+    if (count > 1 && count < 12) n = count;
+  } catch {
+    return null;
+  }
+  let coarsest = null;
+  for (let i = 1; i < n; i++) {
+    if (signal && signal.aborted) return coarsest;
+    let image;
+    try {
+      image = await tiff.getImage(i);
+    } catch {
+      break;
+    }
+    const win = tileWindow(image, frame);
+    if (!win) continue;
+    const side = Math.max(win.right - win.left, win.bottom - win.top);
+    if (side < 8) continue;
+    coarsest = { image, win };
+    if (side <= SURVEY_MAX_SIDE) return coarsest;
+  }
+  return coarsest;
+}
+
+/**
+ * One full-draw read before the native strips. Peaks from this pass stay if
+ * the strip walk is aborted, so the south of a course is not left empty.
+ */
+async function readSurveyPeaks(tiff, fullImage, frame, dstW, dstH, max, count, signal) {
+  const chosen = await surveyImage(tiff, fullImage, frame, signal);
+  if (!chosen) return true;
+  if (signal && signal.aborted) return false;
+  const win = chosen.win;
+  const ras = await chosen.image.readRasters({
+    window: [win.left, win.top, win.right, win.bottom],
+    interleave: true,
+    signal,
+  });
+  accumulatePeaks(
+    max,
+    count,
+    {
+      data: valuesOf(ras),
+      width: win.right - win.left,
+      height: win.bottom - win.top,
+      left: win.left,
+      top: win.top,
+      origin: win.origin,
+      res: win.res,
+    },
+    frame,
+    dstW,
+    dstH,
+    { confirmTall: true, fillFootprint: true }
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  return !(signal && signal.aborted);
+}
+
 /**
  * Collapse a finer canopy raster onto the export grid by index.
  * A cell keeps its tallest sample only when two or more samples are at
@@ -243,11 +317,17 @@ function peakPool(src, srcW, srcH, dstW, dstH) {
   return out;
 }
 
-function accumulatePeaks(max, count, tile, frame, dstW, dstH) {
+function accumulatePeaks(max, count, tile, frame, dstW, dstH, opts) {
   const data = tile.data;
   const sw = tile.width | 0;
   const sh = tile.height | 0;
   if (!data || sw < 1 || sh < 1) return;
+  // An overview pixel is already a pooled sample. A tall one is a crown even
+  // when it lands in a single export cell. A short speck still needs a neighbor.
+  // Fill that pixel's ground footprint so a coarser overview does not shatter
+  // one crown into a scatter of squares.
+  const confirmTall = !!(opts && opts.confirmTall);
+  const fillFootprint = !!(opts && opts.fillFootprint);
   const dLon = +frame.east - +frame.west || 1e-9;
   const dLat = +frame.north - +frame.south || 1e-9;
   const west = +frame.west;
@@ -256,27 +336,58 @@ function accumulatePeaks(max, count, tile, frame, dstW, dstH) {
   const north = +frame.north;
   const resX = tile.res[0];
   const resY = tile.res[1];
-  const lonOf = new Float64Array(sw);
-  for (let x = 0; x < sw; x++) {
-    const mx = tile.origin[0] + (tile.left + x + 0.5) * resX;
-    lonOf[x] = lonLatFromMercator(mx, 0)[0];
+  const lonEdge = new Float64Array(sw + 1);
+  for (let x = 0; x <= sw; x++) {
+    const mx = tile.origin[0] + (tile.left + x + (fillFootprint ? 0 : 0.5)) * resX;
+    lonEdge[x] = lonLatFromMercator(mx, 0)[0];
   }
+  const ixOf = (lon) => Math.min(dstW - 1, Math.max(0, Math.floor(((lon - west) / dLon) * dstW)));
+  const iyOf = (lat) => Math.min(dstH - 1, Math.max(0, Math.floor(((north - lat) / dLat) * dstH)));
+  const stamp = (ix, iy, v) => {
+    if (ix < 0 || iy < 0 || ix >= dstW || iy >= dstH) return;
+    const i = iy * dstW + ix;
+    if (confirmTall && v >= 5) {
+      if (count[i] < MIN_PEAK_SAMPLES) count[i] = MIN_PEAK_SAMPLES;
+    } else {
+      count[i]++;
+    }
+    if (v > max[i]) max[i] = v;
+  };
   for (let y = 0; y < sh; y++) {
-    const my = tile.origin[1] + (tile.top + y + 0.5) * resY;
-    const lat = lonLatFromMercator(0, my)[1];
-    if (lat < south || lat > north) continue;
-    const iy = Math.min(dstH - 1, Math.max(0, Math.floor(((north - lat) / dLat) * dstH)));
+    const yEdge = tile.top + y;
+    const lat0 = lonLatFromMercator(0, tile.origin[1] + (yEdge + (fillFootprint ? 0 : 0.5)) * resY)[1];
+    const lat1 = fillFootprint ? lonLatFromMercator(0, tile.origin[1] + (yEdge + 1) * resY)[1] : lat0;
+    if (Math.max(lat0, lat1) < south || Math.min(lat0, lat1) > north) continue;
     const row = y * sw;
-    const base = iy * dstW;
     for (let x = 0; x < sw; x++) {
       const v = data[row + x] || 0;
       if (v < CROWN_MIN_H || v >= 80) continue;
-      const lon = lonOf[x];
-      if (lon < west || lon > east) continue;
-      const ix = Math.min(dstW - 1, Math.max(0, Math.floor(((lon - west) / dLon) * dstW)));
-      const i = base + ix;
-      count[i]++;
-      if (v > max[i]) max[i] = v;
+      if (!fillFootprint) {
+        const lon = lonEdge[x];
+        if (lon < west || lon > east || lat0 < south || lat0 > north) continue;
+        stamp(ixOf(lon), iyOf(lat0), v);
+        continue;
+      }
+      const lon0 = lonEdge[x];
+      const lon1 = lonEdge[x + 1];
+      if (Math.max(lon0, lon1) < west || Math.min(lon0, lon1) > east) continue;
+      let x0 = ixOf(Math.min(lon0, lon1));
+      let x1 = ixOf(Math.max(lon0, lon1));
+      let y0 = iyOf(Math.max(lat0, lat1));
+      let y1 = iyOf(Math.min(lat0, lat1));
+      if (x1 < x0) {
+        const swap = x0;
+        x0 = x1;
+        x1 = swap;
+      }
+      if (y1 < y0) {
+        const swap = y0;
+        y0 = y1;
+        y1 = swap;
+      }
+      for (let iy = y0; iy <= y1; iy++) {
+        for (let ix = x0; ix <= x1; ix++) stamp(ix, iy, v);
+      }
     }
   }
 }
@@ -320,6 +431,8 @@ async function fetchChmGrid(frame, opts) {
       if (signal.aborted) return pack();
       const tiff = await geotiff.fromUrl(chmUrl(key), { cacheSize: 16 }, signal);
       const image = await tiff.getImage();
+      const surveyed = await readSurveyPeaks(tiff, image, frame, width, height, max, count, signal);
+      if (!surveyed) return pack();
       const finished = await readPeakStrips(image, frame, width, height, max, count, signal);
       if (!finished) return pack();
     }

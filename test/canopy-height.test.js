@@ -797,4 +797,69 @@ describe("canopy height replaces the color guess", () => {
     assert.ok(grid && grid.nonzero > 0, "peaks already read stay on the grid");
     assert.equal(strips, 1, "the abort stops the next strip");
   });
+
+  it("keeps a southern crown from the full-site overview when native strips do not run", async () => {
+    const frame = { west: -87.93, south: 42.89, east: -87.928, north: 42.892 };
+    const [xW, yS] = mercator(frame.west, frame.south);
+    const [xE, yN] = mercator(frame.east, frame.north);
+    const origin = [Math.min(xW, xE), Math.max(yS, yN)];
+    const spanX = Math.max(xW, xE) - origin[0];
+    const spanY = Math.min(yS, yN) - origin[1];
+    let nativeReads = 0;
+    const full = {
+      getWidth: () => 80,
+      getHeight: () => 1600,
+      getOrigin: () => origin,
+      getResolution: () => [spanX / 80, spanY / 1600],
+      readRasters: async () => {
+        nativeReads++;
+        return new Uint8Array(80 * 256);
+      },
+    };
+    const ctrl = new AbortController();
+    const overview = {
+      getWidth: () => 48,
+      getHeight: () => 48,
+      getOrigin: () => origin,
+      getResolution: () => [spanX / 48, spanY / 48],
+      readRasters: async () => {
+        const data = new Uint8Array(48 * 48);
+        for (let y = 0; y < 48; y++) {
+          for (let x = 0; x < 48; x++) {
+            if (Math.hypot(x - 24, y - 40) <= 6) data[y * 48 + x] = 14;
+          }
+        }
+        ctrl.abort();
+        return data;
+      },
+    };
+    const grid = await fetchChmGrid(frame, {
+      signal: ctrl.signal,
+      loader: {
+        fromUrl: async () => ({
+          getImageCount: async () => 2,
+          getImage: async (index) => (index ? overview : full),
+        }),
+      },
+    });
+    assert.equal(nativeReads, 0);
+    assert.ok(grid && grid.nonzero > 10, "the overview still covers the draw");
+    const midLon = (frame.west + frame.east) / 2;
+    const southLat = frame.north - (40.5 / 48) * (frame.north - frame.south);
+    const northLat = frame.north - (4 / 48) * (frame.north - frame.south);
+    assert.ok(sampleChmGrid(grid, midLon, southLat) >= 5, "south " + sampleChmGrid(grid, midLon, southLat));
+    assert.equal(sampleChmGrid(grid, midLon, northLat), 0);
+    const crowns = crownsFromChm(grid);
+    assert.equal(crowns.length, 1);
+    assert.ok(crowns[0].ringLonLat.length >= 6, "ring verts " + crowns[0].ringLonLat.length);
+  });
+
+  it("keeps a fairway-sized crown when the largest masses fill the first 480", () => {
+    const traced = [[0, 0], [3, 0], [3.4, 1], [1, 2], [0, 1.2]];
+    const crowns = [];
+    for (let i = 0; i < 500; i++) crowns.push({ areaM2: 400 + i, heightM: 14, ringLonLat: traced });
+    crowns.push({ areaM2: 120, heightM: 16, ringLonLat: traced });
+    const kept = selectCrownsForExport(crowns, 720);
+    assert.ok(kept.some((c) => c.areaM2 === 120 && c.heightM === 16));
+  });
 });
