@@ -153,4 +153,59 @@ describe("pavement footprints", () => {
     assert.equal(out.dropped, 1);
     assert.equal(out.features[0].properties.height, 8);
   });
+
+  it("keeps a measured roof under trees and still drops a gray lot", () => {
+    const frame = geoFrame(
+      { west: -73.83, south: 45.424, east: -73.822, north: 45.43 },
+      { imgW: 220, imgH: 220, maxSpanM: 5000 }
+    );
+    const data = new Uint8Array(220 * 220 * 4);
+    for (let y = 0; y < 220; y++) {
+      for (let x = 0; x < 220; x++) {
+        const i = (y * 220 + x) * 4;
+        const trees = x >= 30 && x <= 110 && y >= 40 && y <= 130;
+        const lot = x >= 130 && x <= 200 && y >= 40 && y <= 140;
+        let rgb = [40, 70, 35];
+        if (trees) {
+          const canopy = (x + y) % 9 === 0;
+          rgb = canopy ? [70, 98, 55] : [96, 104, 94];
+        } else if (lot) {
+          const block = ((x / 5) | 0) % 2 !== ((y / 5) | 0) % 2;
+          rgb = block ? [78, 80, 82] : [160, 158, 154];
+        }
+        data[i] = rgb[0];
+        data[i + 1] = rgb[1];
+        data[i + 2] = rgb[2];
+        data[i + 3] = 255;
+      }
+    }
+    function ringAt(x0, y0, x1, y1) {
+      const ll = (x, y) => [
+        frame.west + (x / 220) * (frame.east - frame.west),
+        frame.north - (y / 220) * (frame.north - frame.south),
+      ];
+      return [ll(x0, y0), ll(x1, y0), ll(x1, y1), ll(x0, y1), ll(x0, y0)];
+    }
+    const features = [
+      {
+        type: "Feature",
+        properties: { height: 9.9, heightSource: "overture" },
+        geometry: { type: "Polygon", coordinates: [ringAt(30, 40, 110, 130)] },
+      },
+      {
+        type: "Feature",
+        properties: { height: 6, heightSource: "overture" },
+        geometry: { type: "Polygon", coordinates: [ringAt(130, 40, 200, 140)] },
+      },
+    ];
+    const raw = { data, width: 220, height: 220 };
+    const treeImg = ringAt(30, 40, 110, 130).map(([lon, lat]) => llToImagePx(lon, lat, frame));
+    const treeEv = pavementEvidence(raw, treeImg, frame.mpuX);
+    assert.ok(treeEv.greenFrac >= 0.05, JSON.stringify(treeEv));
+    assert.equal(evidenceIsPavement(treeEv, 9.9), false);
+    const out = rejectPavementFootprints(raw, frame, features);
+    assert.equal(out.dropped, 1);
+    assert.equal(out.features.length, 1);
+    assert.equal(out.features[0].properties.height, 9.9);
+  });
 });
