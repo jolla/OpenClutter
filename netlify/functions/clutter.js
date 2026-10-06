@@ -914,8 +914,14 @@ async function handleClutter(event) {
   const overturePromise = overtureJob
     ? joinOptional(warnings, started, "Overture buildings", overtureJob, overtureWait(frame))
     : Promise.resolve(null);
+  // The height read overlaps the aerial. It may use the time left under the
+  // export clock, then it stops. A read that ignores that stop used to hold
+  // the function until the gateway answered 502 with an empty body.
   const chmPromise = chmJob
-    ? joinOptional(warnings, started, "Canopy height", chmJob)
+    ? joinOptional(warnings, started, "Canopy height", chmJob, {
+        graceMs: 8000,
+        hardMs: EXPORT_ANSWER_MS,
+      })
     : Promise.resolve(null);
   const terrainFollow = includeTerrain
     ? await followUpTerrain(terrainJob, started, frame, devHost, terrainResolution, terrainStyle)

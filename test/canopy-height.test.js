@@ -4,7 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { sampleChmGrid, applyChmToTrees, chmUrl, CHM_ZOOM, crownsFromChm, peakPool, selectCrownsForExport, mercator, lonLatFromMercator } = require("../netlify/lib/canopy-height");
+const { sampleChmGrid, applyChmToTrees, chmUrl, CHM_ZOOM, crownsFromChm, peakPool, selectCrownsForExport, mercator, lonLatFromMercator, fetchChmGrid } = require("../netlify/lib/canopy-height");
 const { quadkeysForBbox } = require("../netlify/lib/ms-global");
 const { treePairsFromPoints } = require("../netlify/lib/vegetation");
 const { geoFrame, llToPx } = require("../netlify/lib/geo-frame");
@@ -655,6 +655,16 @@ describe("canopy height replaces the color guess", () => {
     assert.equal(areas.some((a) => String(a.area_material.name).indexOf("Foliage") === 0), false);
     assert.ok(areas.some((a) => String(a.area_material.name).indexOf("Building") === 0));
     assert.ok(omitted.zip && omitted.zip.length > 50);
+  });
+
+  it("does not start a canopy read after the export has aborted", async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const grid = await fetchChmGrid(
+      { west: -87.93, south: 42.89, east: -87.91, north: 42.91 },
+      { signal: ctrl.signal }
+    );
+    assert.equal(grid, null);
   });
 
   it("reads canopy-tile coordinates back to the same lon/lat", () => {

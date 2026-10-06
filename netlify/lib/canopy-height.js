@@ -38,6 +38,8 @@ const COMPACT_AREA_M2 = 80;
 const COMPACT_MIN_H = 5;
 /** Native samples at or above the canopy floor required before a cell is real. */
 const MIN_PEAK_SAMPLES = 2;
+/** Rows per canopy read. Short enough that an abort can stop the next strip. */
+const CHM_STRIP_ROWS = 256;
 
 function chmUrl(quadkey) {
   return (
@@ -147,7 +149,7 @@ function lonLatFromMercator(x, y) {
   return [lon, lat];
 }
 
-async function readTileWindow(image, frame) {
+function tileWindow(image, frame) {
   const origin = image.getOrigin();
   const res = image.getResolution();
   const px = (x) => (x - origin[0]) / res[0];
@@ -166,20 +168,47 @@ async function readTileWindow(image, frame) {
   right = Math.min(iw, right);
   bottom = Math.min(ih, bottom);
   if (right - left < 2 || bottom - top < 2) return null;
-  const ras = await image.readRasters({
-    window: [left, top, right, bottom],
-    interleave: true,
-  });
-  const data = valuesOf(ras);
-  return {
-    data,
-    width: right - left,
-    height: bottom - top,
-    left,
-    top,
-    origin,
-    res,
-  };
+  return { left, top, right, bottom, origin, res };
+}
+
+/**
+ * Read the native canopy window in short strips. One full-frame decode held
+ * the function until the gateway returned an empty 502, and the abort on
+ * that read was ignored. A strip that is still running stops when the export
+ * aborts, and the event loop can finish the zip between strips.
+ */
+async function readPeakStrips(image, frame, dstW, dstH, max, count, signal) {
+  const win = tileWindow(image, frame);
+  if (!win) return false;
+  const width = win.right - win.left;
+  for (let row = win.top; row < win.bottom; row += CHM_STRIP_ROWS) {
+    if (signal && signal.aborted) return false;
+    const row1 = Math.min(win.bottom, row + CHM_STRIP_ROWS);
+    const ras = await image.readRasters({
+      window: [win.left, row, win.right, row1],
+      interleave: true,
+      signal,
+    });
+    const data = valuesOf(ras);
+    accumulatePeaks(
+      max,
+      count,
+      {
+        data,
+        width,
+        height: row1 - row,
+        left: win.left,
+        top: row,
+        origin: win.origin,
+        res: win.res,
+      },
+      frame,
+      dstW,
+      dstH
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  return !(signal && signal.aborted);
 }
 
 /**
@@ -221,22 +250,31 @@ function accumulatePeaks(max, count, tile, frame, dstW, dstH) {
   if (!data || sw < 1 || sh < 1) return;
   const dLon = +frame.east - +frame.west || 1e-9;
   const dLat = +frame.north - +frame.south || 1e-9;
+  const west = +frame.west;
+  const east = +frame.east;
+  const south = +frame.south;
+  const north = +frame.north;
   const resX = tile.res[0];
   const resY = tile.res[1];
+  const lonOf = new Float64Array(sw);
+  for (let x = 0; x < sw; x++) {
+    const mx = tile.origin[0] + (tile.left + x + 0.5) * resX;
+    lonOf[x] = lonLatFromMercator(mx, 0)[0];
+  }
   for (let y = 0; y < sh; y++) {
     const my = tile.origin[1] + (tile.top + y + 0.5) * resY;
     const lat = lonLatFromMercator(0, my)[1];
-    if (lat < +frame.south || lat > +frame.north) continue;
-    const iy = Math.min(dstH - 1, Math.max(0, Math.floor(((+frame.north - lat) / dLat) * dstH)));
+    if (lat < south || lat > north) continue;
+    const iy = Math.min(dstH - 1, Math.max(0, Math.floor(((north - lat) / dLat) * dstH)));
     const row = y * sw;
+    const base = iy * dstW;
     for (let x = 0; x < sw; x++) {
       const v = data[row + x] || 0;
       if (v < CROWN_MIN_H || v >= 80) continue;
-      const mx = tile.origin[0] + (tile.left + x + 0.5) * resX;
-      const lon = lonLatFromMercator(mx, 0)[0];
-      if (lon < +frame.west || lon > +frame.east) continue;
-      const ix = Math.min(dstW - 1, Math.max(0, Math.floor(((lon - +frame.west) / dLon) * dstW)));
-      const i = iy * dstW + ix;
+      const lon = lonOf[x];
+      if (lon < west || lon > east) continue;
+      const ix = Math.min(dstW - 1, Math.max(0, Math.floor(((lon - west) / dLon) * dstW)));
+      const i = base + ix;
       count[i]++;
       if (v > max[i]) max[i] = v;
     }
@@ -244,20 +282,27 @@ function accumulatePeaks(max, count, tile, frame, dstW, dstH) {
 }
 
 async function fetchChmGrid(frame, opts) {
+  const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
+  if (signal.aborted) return null;
   const keys = quadkeysForBbox(frame.west, frame.south, frame.east, frame.north, CHM_ZOOM);
   if (!keys.length || keys.length > MAX_TILES) return null;
   const geotiff = require("geotiff");
   const { width, height } = gridSize(frame);
   const max = new Uint8Array(width * height);
   const count = new Uint16Array(width * height);
-  const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
-  for (const key of keys) {
-    const tiff = await geotiff.fromUrl(chmUrl(key), { cacheSize: 16 }, signal);
-    const image = await tiff.getImage();
-    const tile = await readTileWindow(image, frame);
-    if (!tile || !tile.data) continue;
-    accumulatePeaks(max, count, tile, frame, width, height);
+  try {
+    for (const key of keys) {
+      if (signal.aborted) return null;
+      const tiff = await geotiff.fromUrl(chmUrl(key), { cacheSize: 16 }, signal);
+      const image = await tiff.getImage();
+      const finished = await readPeakStrips(image, frame, width, height, max, count, signal);
+      if (!finished) return null;
+    }
+  } catch (e) {
+    if (signal.aborted || /abort|timeout/i.test(String(e && e.message ? e.message : e))) return null;
+    throw e;
   }
+  if (signal.aborted) return null;
   const values = new Uint8Array(width * height);
   let nz = 0;
   for (let i = 0; i < values.length; i++) {

@@ -619,8 +619,8 @@ if (copyTerrainBtn) {
 }
 
 function exportError(status, data) {
-  // A gateway timeout is a slow export the platform closed. It is tried again.
-  // It is not a draw that is too large.
+  // A gateway close is a slow export the platform ended. An empty 502 is one
+  // try and a sentence on the page. It is not a draw that is too large.
   return OpenClutterExport.failureError(status, data);
 }
 
