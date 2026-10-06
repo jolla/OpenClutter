@@ -213,10 +213,9 @@ describe("3DEP terrain clipboard", () => {
       imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
       terrain: sloped,
     });
-    const readme = unzipStore(built.zip)["README.txt"].toString();
-    assert.match(readme, /slabOnly is false/);
-    assert.match(readme, /solid floor/);
-    const clip = JSON.parse(unzipStore(built.zip)["terrain-clipboard.json"].toString());
+    assert.equal(unzipStore(built.zip)["README.txt"], undefined);
+    assert.equal(unzipStore(built.zip)["terrain-clipboard.json"], undefined);
+    const clip = built.terrain.clipboard;
     const zones = clip.raisedFloorZones.concat(clip.slopedFloors);
     assert.ok(zones.length >= 1);
     assert.ok(zones.every((z) => z.slabOnly === false));
@@ -432,15 +431,13 @@ describe("3DEP terrain clipboard", () => {
       terrain,
     });
     const files = unzipStore(built.zip);
-    assert.ok(files["terrain-clipboard.json"]);
+    assert.equal(files["terrain-clipboard.json"], undefined);
     assert.equal(built.clipboard.raisedFloorZones.length, 0);
     assert.equal(built.clipboard.slopedFloors.length, 0);
     const oi = JSON.stringify(built.openintent);
     assert.equal(oi.includes("raisedFloorZones"), false);
-    assert.match(files["README.txt"].toString(), /terrain-clipboard\.json/);
-    assert.match(files["README.txt"].toString(), /bottom height from floor/);
-    assert.match(files["README.txt"].toString(), /Do not import/);
-    const clip = JSON.parse(files["terrain-clipboard.json"].toString());
+    assert.match(built.alignment, /Copy terrain is a separate paste/);
+    const clip = built.terrain.clipboard;
     assert.ok(clip.raisedFloorZones.length + clip.slopedFloors.length >= 1);
     assert.equal(clip.header.type, "HaminaClipboard");
   });
@@ -1058,13 +1055,10 @@ describe("terrain resolution presets", () => {
       terrain: finest,
       terrainResolution: "finest",
     });
-    const readme = unzipStore(built.zip)["README.txt"].toString();
-    assert.match(readme, /about 40 m quads, at most 16×16/);
-    assert.match(readme, /about 25 m quads, at most 20×20/);
-    assert.match(readme, /^terrainResolution: finest$/m);
-    assert.match(readme, /slabOnly is false/);
-    assert.match(readme, /^terrainStyle: sloped$/m);
-    const clip = JSON.parse(unzipStore(built.zip)["terrain-clipboard.json"].toString());
+    assert.equal(built.stats.terrainResolution, "finest");
+    assert.equal(built.stats.terrainStyle, "sloped");
+    assert.equal(unzipStore(built.zip)["terrain-clipboard.json"], undefined);
+    const clip = built.terrain.clipboard;
     assert.equal(clip.slopedFloors.length + clip.raisedFloorZones.length, 20 * 20);
     assert.ok(clip.slopedFloors.concat(clip.raisedFloorZones).every((z) => z.slabOnly === false));
   });
@@ -1605,13 +1599,8 @@ describe("Copernicus GLO-30 when 3DEP misses", () => {
       assert.equal(type.topEdge, Math.round((bottom + 6.4) * 10) / 10);
     }
     assert.ok(Math.abs(lowest - expectedBottom) <= 0.2, "lowest " + lowest + " seat " + expectedBottom);
-    const readme = unzipStore(built.zip)["README.txt"].toString();
-    assert.match(readme, /Copernicus DEM GLO-30/);
-    assert.match(readme, /EGM2008/);
-    assert.match(readme, new RegExp(GLO30_CREDIT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.match(readme, /20 m ski-hill gate does not apply/);
-    assert.equal(/omit bottom_height even when relief is at least 20 m/.test(readme), false);
-    assert.match(readme, /^demKind: surface$/m);
+    assert.equal(built.stats.demKind, "surface");
+    assert.equal(unzipStore(built.zip)["README.txt"], undefined);
     assert.match(terrainBundleFields(surface, []).terrainStatus, /Copernicus DEM GLO-30 surface/);
     assert.equal(/3DEP/.test(terrainBundleFields(surface, []).terrainStatus), false);
     const lifted = buildClutter({

@@ -98,11 +98,11 @@ const TERRAIN_RESCUE_MIN_MS = 800;
 // Roof fill scans every footprint. On a dense draw that already spent 10s
 // fetching, skip it and emit the vector buildings.
 const DENSE_FEATURES = 1500;
-// OpenIntent triples plus the clipboard and overlay for every roof on a
-// campus blow past the response limit (Hollywood at 982 areas was ~6.5 MB).
-// Stay under it so the zip actually downloads. The bundle repeats
-// terrain-clipboard.json beside that zip, so a fine paste is fitted again
-// against the synchronous payload budget before the response is returned.
+// OpenIntent triples for every roof on a campus blow past the response
+// limit (Hollywood at 982 areas was ~6.5 MB). Stay under it so the zip
+// actually downloads. Copy terrain is only in the bundle JSON, and a fine
+// paste is fitted again against the synchronous payload budget before the
+// response is returned.
 const ZIP_FIT_BYTES = 4200000;
 const ZIP_SHRINK_STEPS = [640, 400, 240];
 const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, padFootprintBbox, imageryExportPlan } = require("../lib/geo-frame");
@@ -1285,8 +1285,8 @@ async function handleClutter(event) {
     built = emitClutter(exportFeatures);
   }
 
-  // The zip stores the paste and the bundle JSON stores it again. Fit to the
-  // leftover budget, then drop the paste and keep the zip if it still will not.
+  // Copy terrain is the bundle JSON, not a second copy inside the zip. Fit
+  // that paste to the leftover budget, then drop it and keep the zip.
   if (built.zip && demSamples && demSamples.length) {
     let guard = 0;
     while (guard < 6 && terrain && terrain.clipboard && built.zip) {
@@ -1294,7 +1294,7 @@ async function handleClutter(event) {
       const zipTooBig = built.zip.length > 4500000;
       const payloadTooBig = estimateBundlePayload(built.zip.length, clipJson) > EXPORT_PAYLOAD_BUDGET;
       if (!zipTooBig && !payloadTooBig) break;
-      const companion = Math.max(0, built.zip.length - clipJson.length);
+      const companion = built.zip.length;
       let nextMax = maxPasteJsonForCompanion(companion);
       if (!(nextMax < clipJson.length)) nextMax = Math.floor(clipJson.length * 0.7);
       if (!(nextMax >= 8000)) {

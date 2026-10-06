@@ -107,9 +107,10 @@ const EXPORT_PAYLOAD_BUDGET = 5800000;
  */
 const BUNDLE_ENVELOPE_BYTES = 64 * 1024;
 /**
- * One clipboard byte is stored in the zip (then base64'd by 4/3) and repeated
- * in the bundle body. Lambda JSON-encodes that body, so each quote grows by a
- * byte. Sloped quads are about 7.5% quotes; 1.08 leaves a little slack.
+ * The paste is only in the bundle body. The 4/3 term is leftover slack from
+ * when the same JSON was also stored in the zip, so a fine mesh still fits
+ * the old response budget. Lambda JSON-encodes the body, so each quote grows
+ * by a byte. Sloped quads are about 7.5% quotes; 1.08 leaves a little slack.
  */
 const PASTE_RESPONSE_BYTE_COST = 4 / 3 + 1.08;
 
@@ -1910,7 +1911,8 @@ function terrainSourceLabel(terrain) {
 /**
  * Bundle fields for the export API. The OpenIntent zip stays the only download.
  * terrainClipboard is the in-memory Planner Plus paste for Copy terrain.
- * terrainFilename names that JSON inside the zip, or both are null when 3DEP misses.
+ * terrainFilename names that paste. The zip does not contain the file.
+ * Both are null when 3DEP misses.
  */
 function terrainBundleFields(terrain, warnings) {
   if (terrain && terrain.pasteOmitted) {
