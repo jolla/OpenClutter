@@ -93,7 +93,7 @@
 <body>
   <div id="map"></div>
   <div class="panel">
-    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.64</span></p>
+    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.65</span></p>
     <h1>OpenClutter</h1>
     <div class="sub">Export a zip. Import it in Hamina for the aerial map and buildings.</div>
     <form id="search">
@@ -113,6 +113,7 @@
       <input type="checkbox" id="include-terrain" checked />
       Terrain
     </label>
+    <p id="terrain-hint" class="hint" hidden>Copy and paste in Planner Plus. Do not import as OpenIntent.</p>
     <label id="map-quality-row" class="map-quality" hidden>
       Map
       <select id="map-quality" aria-label="Map quality">
@@ -123,7 +124,7 @@
         <option value="sharp">Sharp · 2048 px</option>
       </select>
     </label>
-    <p id="map-quality-hint" class="hint" hidden>Auto is fast. High and Sharp wait longer. 4K does not return.</p>
+    <p id="map-quality-hint" class="hint" hidden>Auto is fast. High and Sharp wait for a bigger plate.</p>
     <button type="button" id="copy-terrain" class="secondary" hidden>Copy terrain</button>
     <div id="status">
       <p id="status-line">Click the map to draw the site.</p>

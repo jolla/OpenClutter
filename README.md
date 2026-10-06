@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.65** on `dev` — The draw label leads with area, such as `5,000 m² · 53,820 ft²`, and leaves the side lengths off that line. Space pans the map while a site is being drawn, and it does not toggle the last checkbox or button. The Map note says Auto is fast and High and Sharp wait for a bigger plate. Terrain has a short note: copy and paste in Planner Plus, and do not import it as OpenIntent. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.65`).
+
 **v1.1.64** on `dev` — The export note is one line, with the rest under Details. The foliage control is labeled **Foliage**, on by default, with no Experimental tag. Terrain and the Map menu stay as they are. Include foliage stays a request flag on the API. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.64`).
 
 **v1.1.63** on `dev` — High on the ~850 m draw was the same 400 px plate as Auto, because that 1040 px request was cut off at 2.5 s and the zip stepped down. High now waits for the 1040 px plate, and Sharp asks for 2048 px. Buildings and terrain start after that plate is in hand. The status names the pixels that landed, and says when a plate was still out. A 4K plate does not come back inside the gateway, so it is not a choice. Auto is unchanged. Terrain on still pastes the sloped mesh. Include foliage stays off and Experimental. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.63`).
@@ -101,7 +103,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.64`). **Foliage** is on by default. **Terrain** is on by default and pastes the sloped mesh. A Map menu picks Auto, Low · 256 px, Standard · 640 px, High · 1040 px, or Sharp · 2048 px. Auto is fast. High and Sharp wait longer. A 4K plate is not a choice. After export, the panel shows one line; Details holds the rest. The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. Terrain and the map menu stay hidden off this host.
+- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.65`). **Foliage** is on by default. **Terrain** is on by default and pastes the sloped mesh. Copy that paste into Planner Plus. Do not import it as OpenIntent. A Map menu picks Auto, Low · 256 px, Standard · 640 px, High · 1040 px, or Sharp · 2048 px. Auto is fast. High and Sharp wait for a bigger plate. Space pans the map and does not toggle the last checkbox. The draw label shows area in m² and ft². After export, the panel shows one line; Details holds the rest. The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. Terrain and the map menu stay hidden off this host.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 
