@@ -144,9 +144,46 @@ function showAreaChip(bounds, label) {
   if (!map.hasLayer(areaChip)) areaChip.addTo(map);
 }
 
+function exportHeadline(stats, warnings, foliageOn) {
+  const bits = [];
+  const buildings = stats && +stats.buildingsKept;
+  const trees = stats && +stats.treesKept;
+  if (Number.isFinite(buildings)) bits.push(buildings + (buildings === 1 ? " building" : " buildings"));
+  if (foliageOn && Number.isFinite(trees)) bits.push(trees + (trees === 1 ? " tree" : " trees"));
+  const mapLine = (warnings || []).find((w) => /^Map image /.test(String(w)));
+  const px = mapLine && String(mapLine).match(/(\d+) px/);
+  if (px) bits.push(px[1] + " px");
+  if (!bits.length) return "Zip ready.";
+  return "Zip ready. " + bits.join(", ") + ".";
+}
+
 function setStatus(msg, err) {
-  statusEl.textContent = msg;
+  const text = String(msg || "");
+  const parts = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const lineEl = document.getElementById("status-line");
+  const more = document.getElementById("status-more");
+  const body = document.getElementById("status-body");
   statusEl.className = err ? "err" : "";
+  if (!lineEl || !more || !body) {
+    statusEl.textContent = text;
+    return;
+  }
+  if (err || parts.length <= 1) {
+    lineEl.textContent = err ? text : parts[0] || "";
+    more.hidden = true;
+    more.open = false;
+    body.replaceChildren();
+    return;
+  }
+  lineEl.textContent = parts[0];
+  body.replaceChildren();
+  for (let i = 1; i < parts.length; i++) {
+    const p = document.createElement("p");
+    p.textContent = parts[i];
+    body.appendChild(p);
+  }
+  more.hidden = false;
+  more.open = false;
 }
 
 function clearRubber() {
@@ -558,10 +595,10 @@ window.addEventListener("keyup", (ev) => {
 map.on("zoomend moveend", refreshVertexPixels);
 
 document.getElementById("draw").onclick = () => {
-  enterDrawMode("Click corners, then click the first corner to close. Right-drag or hold Space to pan.");
+  enterDrawMode("Click the map to draw the site.");
 };
 
-enterDrawMode("Click the map to draw. Drag a box, or click corners and click the first corner to close. Right-drag or hold Space to pan.");
+enterDrawMode();
 
 document.getElementById("search").onsubmit = async (e) => {
   e.preventDefault();
@@ -721,12 +758,12 @@ document.getElementById("export").onclick = async () => {
     const terrainNote = terrainOff ? "Terrain off" : (data.terrainStatus || "");
     const warnLines = (Array.isArray(data.warnings) ? data.warnings.filter(Boolean) : [])
       .filter((line) => !terrainOff || !/terrain/i.test(line));
-    setStatus(
-      "Import this zip in Hamina (Projects → Import → OpenIntent)." +
-        (terrainNote ? "\n" + terrainNote : "") +
-        (summary ? "\n" + summary : "") +
-        (warnLines.length ? "\n" + warnLines.join("\n") : "")
-    );
+    const lines = [exportHeadline(data.stats, warnLines, includeFoliage)];
+    lines.push("Import this zip in Hamina (Projects → Import → OpenIntent).");
+    if (terrainNote) lines.push(terrainNote);
+    if (summary) lines.push(summary);
+    for (let i = 0; i < warnLines.length; i++) lines.push(warnLines[i]);
+    setStatus(lines.join("\n"));
   } catch (err) {
     setStatus(OpenClutterExport.idleStatus(err), true);
   } finally {
