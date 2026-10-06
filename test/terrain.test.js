@@ -2068,6 +2068,68 @@ describe("Finland terrain does not wait on 3DEP", () => {
     assert.equal(typeof demUnderFootprint(mild), "function");
   });
 
+  it("keeps Copernicus when a US 3DEP read is still out at the aside abort", async () => {
+    const glo = gloGeotiff((lon, lat) => 620 + (lat - vegas.south) * 2000);
+    const seen = [];
+    const ctrl = new AbortController();
+    const t0 = Date.now();
+    const job = fetchTerrainDem(vegas, hangUntilAbort(seen), {
+      allowSurfaceFallback: true,
+      parallelSurface: true,
+      geotiff: glo.geotiff,
+      terrainResolution: "auto",
+      budgetMs: 4500,
+      fitAnswerClock: true,
+      signal: ctrl.signal,
+    });
+    setTimeout(() => ctrl.abort(), 300);
+    const pack = await job;
+    assert.ok(Date.now() - t0 < 2000, "elapsed " + (Date.now() - t0));
+    assert.equal(pack.kind, "surface");
+    assert.equal(pack.attribution, GLO30_CREDIT);
+    assert.ok(pack.samples.length >= 4, "samples " + pack.samples.length);
+    assert.ok(glo.urls.length >= 1);
+    assert.ok(seen.length >= 1);
+    const terrain = terrainFromSamples(pack.samples, vegas, {
+      kind: pack.kind,
+      terrainStyle: "sloped",
+      terrainResolution: "auto",
+    });
+    assert.ok(terrain.clipboard);
+    assert.ok(terrain.sloped + terrain.raised > 0, "floors " + terrain.sloped + " " + terrain.raised);
+    assert.match(terrainBundleFields(terrain, pack.notes).terrainStatus, /Copernicus DEM GLO-30 surface/);
+    assert.match(terrainBundleFields(terrain, pack.notes).terrainStatus, /Copy terrain/);
+  });
+
+  it("still prefers 3DEP on the aside when bare earth returns in time", async () => {
+    const glo = gloGeotiff(() => 900);
+    const samples = [];
+    for (let i = 0; i < 4; i++) {
+      samples.push({
+        location: {
+          x: vegas.west + ((i % 2) + 0.5) * (vegas.east - vegas.west) * 0.5,
+          y: vegas.south + (Math.floor(i / 2) + 0.5) * (vegas.north - vegas.south) * 0.5,
+        },
+        value: String(600 + i * 10),
+      });
+    }
+    const pack = await fetchTerrainDem(
+      vegas,
+      async () => ({ ok: true, json: async () => ({ samples }) }),
+      {
+        allowSurfaceFallback: true,
+        parallelSurface: true,
+        geotiff: glo.geotiff,
+        terrainResolution: "auto",
+        budgetMs: 4500,
+        fitAnswerClock: true,
+      }
+    );
+    assert.equal(pack.kind, "bare-earth");
+    assert.equal(pack.attribution, "USGS 3DEP");
+    assert.equal(pack.samples.length, 4);
+  });
+
   it("still prefers a US 3DEP grid over GLO-30", async () => {
     const glo = gloGeotiff(() => 40);
     const samples = [];

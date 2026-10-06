@@ -818,6 +818,11 @@ async function respondTerrainAside(frame, body, event, cors) {
       terrainResolution,
       terrainStyle,
       allowSurfaceFallback: true,
+      // A US getSamples at this count often misses the first clock and
+      // returns on the next try. Copernicus starts beside it and is the
+      // paste when bare earth is still out. Sites outside 3DEP ignore this
+      // and keep the GLO-30-only read.
+      parallelSurface: true,
       budgetMs: 4500,
       fitAnswerClock: true,
       skip3depProbe: !frameHas3dep(frame),

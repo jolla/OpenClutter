@@ -2701,6 +2701,44 @@ describe("terrain aside from the zip clock", () => {
     setFetchTerrainDemForTests(null);
   });
 
+  it("asks a US elevation request to read Copernicus beside 3DEP", async () => {
+    let opts = null;
+    global.fetch = async () => ({ ok: true, json: async () => ({ features: [] }) });
+    setFetchTerrainDemForTests(async (_frame, _fetchFn, o) => {
+      opts = o;
+      return {
+        samples: [
+          { lon: -115.165, lat: 36.127, z: 620 },
+          { lon: -115.155, lat: 36.127, z: 628 },
+          { lon: -115.165, lat: 36.134, z: 640 },
+          { lon: -115.155, lat: 36.134, z: 648 },
+        ],
+        kind: "surface",
+        attribution: "Copernicus DEM GLO-30",
+      };
+    });
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({
+        west: -115.1655,
+        south: 36.1265,
+        east: -115.1545,
+        north: 36.135,
+        name: "Wynn Golf",
+        format: "terrain",
+        includeTerrain: true,
+        terrainStyle: "sloped",
+      }),
+    });
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 300));
+    assert.equal(opts && opts.parallelSurface, true);
+    assert.equal(opts.allowSurfaceFallback, true);
+    assert.equal(opts.skip3depProbe, false);
+    const body = JSON.parse(res.body);
+    assert.ok(body.terrainClipboard && body.terrainClipboard.slopedFloors.length > 0);
+  });
+
   it("reads elevation without the map when format is terrain", async () => {
     const urls = [];
     global.fetch = async (url) => {
