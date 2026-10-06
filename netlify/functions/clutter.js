@@ -22,21 +22,23 @@ const CORE_FETCH_MS = 7000;
 const IMAGERY_ATTEMPT_MS = 8500;
 const IMAGERY_ATTEMPTS = 2;
 const IMAGERY_BACKOFF_MS = 400;
-// Dev export uses the same 8.5s first image as production (1040 px / 1 m).
-// A 2048 px first request spent this clock and the function answered 502
-// before a zip existed. The next image is 640 px. 2400 px is not a request.
+// Dev export does not use the 8.5s production image. A 1040 px plate plus a
+// second try pushed the function past the gateway, which answered 504 with
+// no zip. 640 px gets this long, then 400 px. 2400 px is not a request.
+const IMAGERY_ATTEMPT_MS_DEV = 4500;
 const IMAGERY_STEPDOWN_MS = 6000;
+const IMAGERY_STEPDOWN_MS_DEV = 2500;
 // A later step larger than the production image is skipped once this much
-// of the export has already run. The current plan has no such step.
+// of the export has already run. The current dev plan has no such step.
 const IMAGERY_STEPDOWN_QUICK_MS = 2000;
 const IMAGERY_RETURN_MS = 15000;
-// After the plan misses, one more smallest JPEG while this much of the
-// function clock is left. The gateway closes a silent export around 30s,
-// including cold start, so the zip is still built after this attempt.
-const IMAGERY_LAST_MS = 20000;
 // Network waits stop here so the zip is the response. The gateway closes a
-// silent export around 30s, including cold start, so this stays well under that.
+// silent export around 26s, including cold start. Production may use this
+// longer Overture window. The dev host answers sooner (DEV_ANSWER_MS).
 const EXPORT_ANSWER_MS = 16000;
+// Dev must send the zip before that gateway. Imagery, terrain, foliage, and
+// a still-running Overture read all stop by this clock.
+const DEV_ANSWER_MS = 10000;
 // Live Oak Creek metadata was ~3.0s and pads latitude by ~500 m at the same
 // pixel size. The content extent is derived from the drawn box and the JPEG
 // pixel size (the same pad export?f=json returns), so a slow JSON cannot
@@ -70,10 +72,9 @@ const OVERTURE_HARD_MS = EXPORT_ANSWER_MS;
 // the buildings, then one coarser retry if it is still open.
 const TERRAIN_GRACE_MS = 1500;
 const TERRAIN_HARD_MS = 9000;
-// Dev used to let an in-flight DEM ride to 18s. That hold, on top of a slow
-// aerial, is how the function missed the gateway. A grid that is still open
-// at 12s is omitted and the buildings zip returns.
-const TERRAIN_HARD_MS_DEV = 12000;
+// A DEM still open when the dev answer clock is up is omitted. Waiting it
+// out, then building the zip, is how the gateway returned 504.
+const TERRAIN_HARD_MS_DEV = 8000;
 // Fast maps still give a full getSamples this long before the coarse retry.
 // A map that already ran longer has had that time; the retry is not a second wait.
 const TERRAIN_FULL_MS = 4000;
@@ -184,15 +185,18 @@ async function fetchImageryMeta(url) {
   }
 }
 
-/** Both hosts give the first export image the production ceiling. Dev's second image is shorter. */
-function imageryAttemptMs() {
-  return IMAGERY_ATTEMPT_MS;
+/** Production keeps 8.5s. Dev's first image is shorter so the zip can still be sent. */
+function imageryAttemptMs(devHost) {
+  return devHost ? IMAGERY_ATTEMPT_MS_DEV : IMAGERY_ATTEMPT_MS;
 }
 
 function imagerySteps(devHost) {
   const plan = imageryExportPlan(devHost);
+  if (!devHost) {
+    return plan.map((step) => Object.assign({ attemptMs: IMAGERY_ATTEMPT_MS }, step));
+  }
   return plan.map((step, i) =>
-    Object.assign({ attemptMs: i === 0 ? IMAGERY_ATTEMPT_MS : IMAGERY_STEPDOWN_MS }, step)
+    Object.assign({ attemptMs: i === 0 ? IMAGERY_ATTEMPT_MS_DEV : IMAGERY_STEPDOWN_MS_DEV }, step)
   );
 }
 
@@ -211,10 +215,8 @@ function imageryStepBudget(elapsed, attemptMs) {
 }
 
 /**
- * Same drawn box, smaller image when the first one misses. The first step
- * is the production size. A later step is fewer pixels, not a sharper plate.
- * When every planned step misses and the gateway is still open, the smallest
- * image is asked for once more in this same request.
+ * Same drawn box, smaller image when the first one misses. There is no
+ * third fetch after the plan. That extra wait ran into the gateway.
  */
 async function fetchImageryStepped(bbox, steps) {
   let last;
@@ -230,15 +232,6 @@ async function fetchImageryStepped(bbox, steps) {
     }
     try {
       return await fetchImageryJpeg(esriImageryUrl(imageryFrame(bbox, step)), attemptMs);
-    } catch (e) {
-      last = e;
-    }
-  }
-  const rescue = steps.length ? steps[steps.length - 1] : null;
-  const rescueMs = rescue ? Math.min(IMAGERY_ATTEMPT_MS, IMAGERY_LAST_MS - (Date.now() - started)) : 0;
-  if (rescue && rescueMs >= 1500) {
-    try {
-      return await fetchImageryJpeg(esriImageryUrl(imageryFrame(bbox, rescue)), rescueMs);
     } catch (e) {
       last = e;
     }
@@ -507,6 +500,10 @@ async function followUpTerrain(terrainJob, started, frame, devHost, terrainResol
   const done = await finishedTerrain(terrainJob);
   if (done && done.pack) return { job: null, join, preset: done.pack };
   if (done && !done.timedOut) return { job: terrainJob, join, preset: null };
+  if (devHost && Date.now() - started >= TERRAIN_HARD_MS_DEV) {
+    if (terrainJob && !terrainJob.isSettled()) terrainJob.ctrl.abort();
+    return { job: null, join, preset: null };
+  }
   return rescueTerrain(
     terrainJob,
     started,
@@ -647,6 +644,19 @@ function overtureWait(frame) {
     graceMs: large ? OVERTURE_LARGE_GRACE_MS : OVERTURE_GRACE_MS,
     hardMs: OVERTURE_HARD_MS,
   };
+}
+
+/** Dev stops optional reads at DEV_ANSWER_MS so the zip is the response. */
+function capDevWait(devHost, started, opts) {
+  if (!devHost || !opts) return opts;
+  const hardMs = Math.min(opts.hardMs > 0 ? opts.hardMs : DEV_ANSWER_MS, DEV_ANSWER_MS);
+  const graceMs = Math.min(opts.graceMs > 0 ? opts.graceMs : 0, hardMs);
+  const capped = { graceMs: graceMs, hardMs: hardMs };
+  if (opts.reserveMs > 0) {
+    const left = Math.max(0, hardMs - (Date.now() - started));
+    capped.reserveMs = Math.min(opts.reserveMs, left);
+  }
+  return capped;
 }
 
 function wantOsm(body) {
@@ -923,16 +933,28 @@ async function handleClutter(event) {
   // eat their grace. The DEM follow-up may replace terrainJob with a coarser
   // GLO-30 read once that settle window misses.
   const overturePromise = overtureJob
-    ? joinOptional(warnings, started, "Overture buildings", overtureJob, overtureWait(frame))
+    ? joinOptional(
+        warnings,
+        started,
+        "Overture buildings",
+        overtureJob,
+        capDevWait(devHost, started, overtureWait(frame))
+      )
     : Promise.resolve(null);
-  // The height read overlaps the aerial. It may use the time left under the
-  // export clock, then it stops. A read that ignores that stop used to hold
-  // the function until the gateway answered 502 with an empty body.
+  // The height read overlaps the aerial. On dev it stops with the answer
+  // clock. A read that ignores that stop used to hold the function until
+  // the gateway answered with no zip.
   const chmPromise = chmJob
-    ? joinOptional(warnings, started, "Canopy height", chmJob, {
-        graceMs: 8000,
-        hardMs: EXPORT_ANSWER_MS,
-      })
+    ? joinOptional(
+        warnings,
+        started,
+        "Canopy height",
+        chmJob,
+        capDevWait(devHost, started, {
+          graceMs: devHost ? 2500 : 8000,
+          hardMs: devHost ? DEV_ANSWER_MS : EXPORT_ANSWER_MS,
+        })
+      )
     : Promise.resolve(null);
   const terrainFollow = includeTerrain
     ? await followUpTerrain(terrainJob, started, frame, devHost, terrainResolution, terrainStyle)
@@ -1311,9 +1333,10 @@ exports.handler = async (event, context) => {
 exports.UA = UA;
 exports.imageryAttemptMs = imageryAttemptMs;
 exports.IMAGERY_ATTEMPT_MS = IMAGERY_ATTEMPT_MS;
+exports.IMAGERY_ATTEMPT_MS_DEV = IMAGERY_ATTEMPT_MS_DEV;
 exports.IMAGERY_RETURN_MS = IMAGERY_RETURN_MS;
-exports.IMAGERY_LAST_MS = IMAGERY_LAST_MS;
 exports.EXPORT_ANSWER_MS = EXPORT_ANSWER_MS;
+exports.DEV_ANSWER_MS = DEV_ANSWER_MS;
 exports.imageryStepBudget = imageryStepBudget;
 exports.beginOptional = beginOptional;
 exports.joinOptional = joinOptional;
