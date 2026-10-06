@@ -82,20 +82,19 @@ describe("eval gate (cached fixtures, no Hamina)", () => {
     }
   });
 
-  it("writes alignment-overlay.svg and export-stats.json from the zip", () => {
+  it("writes only the OpenIntent JSON and the aerial", () => {
     const site = loadSitesIndex()[0];
     const result = runLoaded(loadFixture(site), { rgbPolicy: T.RGB_POLICY_PREFER_NLCD });
     const { unzipStore } = require("../netlify/lib/zip-store");
     const files = unzipStore(result.built.zip);
-    assert.ok(files["alignment-overlay.svg"]);
-    assert.ok(files["export-stats.json"]);
-    assert.ok(files["VERIFY.txt"]);
-    assert.match(files["alignment-overlay.svg"].toString(), /<polygon /);
-    assert.equal(/<circle /.test(files["alignment-overlay.svg"].toString()), false);
-    assert.match(files["VERIFY.txt"].toString(), /^attenuation_areas: \d+$/m);
-    assert.match(files["VERIFY.txt"].toString(), /^includeFoliage: false$/m);
-    assert.match(files["VERIFY.txt"].toString(), new RegExp(`^openclutter_version: ${APP_VERSION}$`, "m"));
-    assert.match(files["README.txt"].toString(), /Include foliage is off by default/);
+    const names = Object.keys(files);
+    assert.equal(names.length, 2);
+    assert.ok(names.some((name) => name.startsWith("openIntent_") && name.endsWith(".json")));
+    assert.ok(names.some((name) => name.startsWith("images/") && name.endsWith(".jpg")));
+    assert.equal(result.built.stats.includeFoliage, false);
+    assert.equal(result.built.stats.openclutterVersion, APP_VERSION);
+    assert.ok(result.built.stats.attenuationAreasEmitted > 0);
+    assert.match(result.built.alignment, /Include foliage is off by default/);
   });
 });
 
@@ -129,9 +128,12 @@ describe("eval gate with Include foliage on", () => {
       }
       const { unzipStore } = require("../netlify/lib/zip-store");
       const files = unzipStore(next.built.zip);
-      const svg = files["alignment-overlay.svg"].toString();
-      assert.match(svg, /<polygon /);
-      assert.equal(/<circle /.test(svg), false, site.id + " overlay has tree-point circles");
+      assert.equal(files["alignment-overlay.svg"], undefined, site.id);
+      assert.equal(
+        areas.some((a) => a.area_material && a.area_material.name === "Tree Trunk"),
+        false,
+        site.id
+      );
       assert.ok(next.exportStats.foliageOverlap.overlapM2 <= 5, site.id);
       assert.ok(next.exportStats.foliageSelfOverlap.overlapM2 <= 80, site.id);
       if (site.id === "oak-creek-commercial") {

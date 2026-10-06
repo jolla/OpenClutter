@@ -24,9 +24,8 @@
  * only when a tree area uses that material. Every
  * area_material is a catalog-equal object (a name string is Invalid
  * OpenIntent format). Poisoned names (Tree Trunk, Foliage
- * N.N m) fail the check. JPEG SOI, clipboard
- * vertices inside the meter frame, and VERIFY.txt / export-stats.json
- * agreeing with that length. When ajv is installed, the OpenIntent JSON is
+ * N.N m) fail the check. JPEG SOI. The zip is the OpenIntent JSON and the
+ * aerial. When ajv is installed, the OpenIntent JSON is
  * also checked against google/openintent 2.0.1.
  */
 
@@ -89,8 +88,8 @@ function checkZip(zipBuf) {
   const failures = [];
   if (!oiName) failures.push("missing openIntent JSON");
   if (!jpegName) failures.push("missing JPEG");
-  if (!files["VERIFY.txt"]) failures.push("missing VERIFY.txt");
-  if (!files["export-stats.json"]) failures.push("missing export-stats.json");
+  const extra = Object.keys(files).filter((name) => name !== oiName && name !== jpegName);
+  if (extra.length) failures.push("zip has files Hamina OpenIntent does not import: " + extra.join(", "));
   let areas = 0;
   let materials = [];
   let verifyAreas = null;

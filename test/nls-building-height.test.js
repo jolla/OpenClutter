@@ -129,11 +129,9 @@ describe("NLS Hamina building heights", { concurrency: false }, () => {
     assert.equal(on.stats.nlsHeightMin, fixture.ringHeightM);
     assert.equal(on.stats.nlsHeightMax, fixture.ringHeightM);
     const files = unzipStore(on.zip);
-    const readme = files["README.txt"].toString();
-    assert.match(readme, /National Land Survey of Finland/);
-    assert.match(readme, /CC BY 4\.0/);
-    assert.match(readme, /Building - H\.H/);
-    assert.doesNotMatch(readme, /Building N\.N m is the material/);
+    assert.equal(files["README.txt"], undefined);
+    assert.ok(Object.keys(files).some((name) => name.startsWith("openIntent_")));
+    assert.match(area.area_material.name, /Building - \d/);
     const clipId = "bldg-m-" + fixture.ringHeightM.toFixed(1).replace(".", "_");
     assert.ok(on.clipboard.attenuatingZoneTypes.some((t) => t.id === clipId && t.topEdge === fixture.ringHeightM));
 
@@ -160,7 +158,7 @@ describe("NLS Hamina building heights", { concurrency: false }, () => {
     });
     assert.equal(us.openintent.floorplans[0].attenuation_areas[0].area_material.name, "Building - Two Floor");
     assert.equal(us.stats.nlsHeights, 0);
-    assert.doesNotMatch(unzipStore(us.zip)["README.txt"].toString(), /National Land Survey of Finland/);
+    assert.equal(unzipStore(us.zip)["README.txt"], undefined);
   });
 
   it("lifts a measured thickness onto a slope without using the poisoned name", () => {

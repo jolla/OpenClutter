@@ -117,41 +117,22 @@ describe("clutter handler (mocked Esri)", () => {
     assert.equal(body.terrainClipboard.attenuatingZones.length, 0);
     assert.match(body.zipFilename, /\.zip$/);
     const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
-    assert.ok(files["openIntent_Wynn-Golf.json"]);
-    assert.ok(files["images/Wynn-Golf.jpg"]);
-    assert.ok(files["export-warnings.json"]);
-    assert.ok(files["hamina-clipboard.json"]);
-    assert.ok(files["README.txt"]);
-    assert.ok(files["alignment-overlay.svg"]);
-    assert.ok(files["frame-lock.json"]);
-    assert.ok(files["export-stats.json"]);
-    assert.ok(files["VERIFY.txt"]);
-    const exportStats = JSON.parse(files["export-stats.json"].toString());
+    assert.deepEqual(Object.keys(files).sort(), ["images/Wynn-Golf.jpg", "openIntent_Wynn-Golf.json"]);
+    const exportStats = body.stats;
     assert.equal(typeof exportStats.buildingsKept, "number");
     assert.equal(typeof exportStats.treesKept, "number");
     assert.ok(exportStats.treesSource);
-    const clip = JSON.parse(files["hamina-clipboard.json"].toString());
-    assert.equal(clip.header.type, "HaminaClipboard");
-    assert.ok(clip.attenuatingZones.length >= 1);
-    assert.equal(clip.raisedFloorZones.length, 0);
-    assert.equal(clip.slopedFloors.length, 0);
-    assert.ok(files["terrain-clipboard.json"]);
-    const terrainFile = JSON.parse(files["terrain-clipboard.json"].toString());
-    assert.deepEqual(terrainFile.raisedFloorZones, body.terrainClipboard.raisedFloorZones);
-    assert.deepEqual(terrainFile.slopedFloors, body.terrainClipboard.slopedFloors);
+    assert.equal(files["terrain-clipboard.json"], undefined);
+    assert.equal(files["hamina-clipboard.json"], undefined);
     const oiText = files["openIntent_Wynn-Golf.json"].toString();
     assert.equal(oiText.includes("raisedFloorZones"), false);
     assert.equal(oiText.includes("slopedFloors"), false);
     assert.deepEqual(body.frame.clipboardCorners.ne, [0, 0]);
     assert.match(body.alignment, /Import this zip in Hamina/);
-    assert.match(files["README.txt"].toString(), /Import this zip in Hamina \(Projects → Import → OpenIntent\)/);
     const oi = JSON.parse(files["openIntent_Wynn-Golf.json"].toString());
     assert.ok(oi.floorplans[0].attenuation_areas.length >= 1);
     assert.equal(exportStats.attenuationAreasEmitted, oi.floorplans[0].attenuation_areas.length);
     assert.equal(exportStats.openclutterVersion, APP_VERSION);
-    assert.match(files["README.txt"].toString(), new RegExp(`^openclutter_version: ${APP_VERSION}$`, "m"));
-    assert.match(files["VERIFY.txt"].toString(), new RegExp(`^attenuation_areas: ${exportStats.attenuationAreasEmitted}$`, "m"));
-    assert.match(files["VERIFY.txt"].toString(), new RegExp(`^openclutter_version: ${APP_VERSION}$`, "m"));
     assert.equal(body.stats.openIntentBuildingAreas, body.stats.buildings);
     assert.equal(body.stats.includeFoliage, false);
     assert.equal(body.stats.openIntentTreeAreas, 0);
@@ -160,7 +141,9 @@ describe("clutter handler (mocked Esri)", () => {
       body.stats.openIntentBuildingAreas + body.stats.openIntentTreeAreas
     );
     assert.equal(
-      clip.attenuatingZones.some((z) => z.typeId === "tree-trunk" || String(z.typeId).indexOf("foliage") === 0 || String(z.typeId).indexOf("trunk") === 0),
+      oi.floorplans[0].attenuation_areas.some(
+        (a) => a.area_material && /foliage|tree trunk/i.test(String(a.area_material.name))
+      ),
       false
     );
     assert.ok(!urls.some((u) => u.includes("overpass")));
@@ -180,12 +163,10 @@ describe("clutter handler (mocked Esri)", () => {
     assert.ok(dem);
     assert.equal(new URL(dem).searchParams.get("sampleCount"), "576");
     assert.equal(body.stats.terrainResolution, "auto");
-    assert.match(files["README.txt"].toString(), /Auto is the default/);
     assert.match(body.terrainStatus, /USGS 3DEP bare-earth/);
     assert.equal(/Copernicus/.test(body.terrainStatus), false);
     assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
-    assert.match(files["README.txt"].toString(), /USGS 3DEP bare-earth/);
-    assert.equal(/Airbus Defence/.test(files["README.txt"].toString()), false);
+    assert.equal(/Airbus Defence/.test(body.terrainStatus), false);
     assert.equal(exportStats.demKind, "bare-earth");
   });
 
@@ -268,7 +249,7 @@ describe("clutter handler (mocked Esri)", () => {
     assert.ok(Number(res.headers["x-hamina-width-m"]) > 2000);
   });
 
-  it("format=zip bytes already contain hamina-clipboard.json", async () => {
+  it("format=zip is the OpenIntent JSON and the aerial", async () => {
     const res = await handler({
       httpMethod: "POST",
       body: JSON.stringify({ ...WYNN, trees: [{ lon: -115.17, lat: 36.122 }], format: "zip" }),
@@ -276,8 +257,7 @@ describe("clutter handler (mocked Esri)", () => {
     assert.equal(res.statusCode, 200);
     assert.equal(res.headers["content-type"], "application/zip");
     const files = unzipStore(Buffer.from(res.body, "base64"));
-    const clip = JSON.parse(files["hamina-clipboard.json"].toString());
-    assert.equal(clip.header.type, "HaminaClipboard");
+    assert.deepEqual(Object.keys(files).sort(), ["images/Wynn-Golf.jpg", "openIntent_Wynn-Golf.json"]);
     assert.ok(files["openIntent_Wynn-Golf.json"]);
   });
 
@@ -309,8 +289,11 @@ describe("clutter handler (mocked Esri)", () => {
     const oi = JSON.parse(files["openIntent_Wynn-Golf.json"].toString());
     const veg = oi.floorplans[0].attenuation_areas.filter((a) => String(a.area_material.name).indexOf("Foliage") === 0);
     assert.ok(veg.length >= 1);
-    const clip = JSON.parse(files["hamina-clipboard.json"].toString());
-    assert.equal(clip.attenuatingZones.some((z) => z.typeId === "tree-trunk"), false);
+    assert.equal(files["hamina-clipboard.json"], undefined);
+    assert.equal(
+      oi.floorplans[0].attenuation_areas.some((a) => a.area_material && a.area_material.name === "Tree Trunk"),
+      false
+    );
     assert.ok(!urls.some((u) => u.includes("USFS_EDW_NLCD_TCC")));
   });
 });
@@ -409,8 +392,8 @@ describe("optional sources cannot fail the export", () => {
     assert.equal(body.stats.fetched >= 1, true);
     const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
     assert.ok(files["openIntent_Wynn-Golf.json"]);
-    const warnings = JSON.parse(files["export-warnings.json"].toString());
-    const text = warnings.warnings.join("\n");
+    assert.equal(files["export-warnings.json"], undefined);
+    const text = (body.warnings || []).join("\n");
     assert.match(text, /Overture buildings omitted/);
     assert.match(text, /Canopy height omitted/);
     assert.match(text, /Foliage omitted: canopy height timed out/);
@@ -475,7 +458,7 @@ describe("optional sources cannot fail the export", () => {
     assert.equal(pad.slabOnly, false);
     assert.equal(pad.attenuationDbPerMeter, 0);
     const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
-    assert.ok(files["terrain-clipboard.json"]);
+    assert.equal(files["terrain-clipboard.json"], undefined);
     assert.equal(files["openIntent_Wynn-Golf.json"].toString().includes("raisedFloorZones"), false);
     assert.equal(body.stats.includeFoliage, false);
   });
@@ -895,10 +878,10 @@ describe("oversized Microsoft footprint tile", () => {
     assert.equal(/esri/i.test(tileNote), false);
     assert.ok(body.zipBase64);
     const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
-    const stats = JSON.parse(files["export-stats.json"].toString());
+    assert.equal(files["export-stats.json"], undefined);
+    const stats = body.stats;
     assert.match(stats.warnings.join("\n"), /179 MB/);
-    const zipNotes = JSON.parse(files["export-warnings.json"].toString());
-    assert.match(zipNotes.warnings.join("\n"), /omitted/);
+    assert.match((body.warnings || []).join("\n"), /omitted/);
     assert.ok(stats.attenuationAreasEmitted >= 1);
   });
 });
@@ -1598,7 +1581,8 @@ describe("dev-host Copernicus fallback", () => {
     assert.equal(body.stats.nlsHeights >= 1, true);
     assert.equal((body.warnings || []).some((w) => /Finland building heights omitted/.test(String(w))), false);
     const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
-    assert.match(files["README.txt"].toString(), /National Land Survey of Finland/);
+    assert.equal(files["README.txt"], undefined);
+    assert.ok(Object.keys(files).some((name) => name.startsWith("openIntent_")));
 
     setNlsGridPathForTests("/tmp/openclutter-missing-nls-grid.gz");
     try {
@@ -1876,7 +1860,8 @@ describe("campus terrain paste stays inside the synchronous response", () => {
       assert.ok(quads < 214 * 178, stop + " quads " + quads);
       assert.ok(quads >= 6 * 5, stop + " quads " + quads);
       const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
-      assert.ok(files["terrain-clipboard.json"]);
+      assert.equal(files["terrain-clipboard.json"], undefined);
+      assert.ok(body.terrainClipboard);
     }
   });
 
