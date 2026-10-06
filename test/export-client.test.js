@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {
   WORKING_STATUS,
+  EMPTY_502_STATUS,
   exportFailure,
   failureError,
   idleStatus,
@@ -69,6 +70,17 @@ describe("export gateway timeout", () => {
     assert.equal(imagery.retry, true);
     assert.equal(imagery.message, "Aerial imagery timed out. Retry the export.");
 
+    const empty502 = exportFailure(502, {});
+    assert.equal(empty502.gateway, true);
+    assert.equal(empty502.retry, false);
+    assert.equal(empty502.attempts, 1);
+    assert.equal(empty502.message, EMPTY_502_STATUS);
+    assert.equal(EMPTY_502_STATUS, "The export did not return a zip.");
+    assert.equal(/Export failed\. Retry\.|did not finish|stopped before a zip|Aerial imagery timed out|too large to finish/i.test(EMPTY_502_STATUS), false);
+    assert.equal(idleStatus(failureError(502, {})), EMPTY_502_STATUS);
+    assert.notEqual(idleStatus(failureError(502, {})), "");
+    assert.notEqual(idleStatus(failureError(502, {})), WORKING_STATUS);
+
     const calls = [];
     await assert.rejects(
       () =>
@@ -85,6 +97,22 @@ describe("export gateway timeout", () => {
       }
     );
     assert.deepEqual(calls, [1]);
+
+    const emptyCalls = [];
+    await assert.rejects(
+      () =>
+        runExportAttempts(async (attempt) => {
+          emptyCalls.push(attempt);
+          throw failureError(502, {});
+        }),
+      (err) => {
+        assert.equal(err.message, EMPTY_502_STATUS);
+        assert.equal(idleStatus(err), EMPTY_502_STATUS);
+        assert.equal(err.noRetry, true);
+        return true;
+      }
+    );
+    assert.deepEqual(emptyCalls, [1]);
 
     const zip = { zipBase64: "e30=", zipFilename: "openclutter.zip" };
     const once = [];
