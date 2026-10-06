@@ -689,28 +689,36 @@ function exportError(status, data) {
 }
 
 async function fetchTerrainPaste() {
-  try {
-    const r = await fetch("/api/clutter", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        ...bbox,
-        name: document.getElementById("q").value || "Site",
-        includeTerrain: true,
-        terrainResolution: "auto",
-        terrainStyle: "sloped",
-        format: "terrain",
-      }),
-    });
-    const data = await r.json().catch(() => ({}));
-    if (r.ok && data && data.terrainClipboard) return data;
-    return {
-      terrainClipboard: null,
-      terrainStatus: (data && data.terrainStatus) || "Terrain did not return. Export again.",
-    };
-  } catch {
-    return { terrainClipboard: null, terrainStatus: "Terrain did not return. Export again." };
+  const body = JSON.stringify({
+    ...bbox,
+    name: document.getElementById("q").value || "Site",
+    includeTerrain: true,
+    terrainResolution: "auto",
+    terrainStyle: "sloped",
+    format: "terrain",
+  });
+  let last = { terrainClipboard: null, terrainStatus: "Terrain did not return. Export again." };
+  // The first elevation response can come back empty while the elevation
+  // service is still cold. One more request in this same export, so Copy
+  // terrain does not wait on a second click.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = await fetch("/api/clutter", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      });
+      const data = await r.json().catch(() => ({}));
+      if (r.ok && data && data.terrainClipboard) return data;
+      last = {
+        terrainClipboard: null,
+        terrainStatus: (data && data.terrainStatus) || "Terrain did not return. Export again.",
+      };
+    } catch {
+      last = { terrainClipboard: null, terrainStatus: "Terrain did not return. Export again." };
+    }
   }
+  return last;
 }
 
 async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain) {

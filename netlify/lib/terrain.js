@@ -3,8 +3,10 @@
 /**
  * USGS 3DEP bare-earth DEM → a HaminaClipboard JSON for Planner Plus paste.
  * On the dev host, fetchTerrainDem tries Copernicus DEM GLO-30 when 3DEP
- * returns no usable grid. A frame outside 3DEP coverage (Finland and the
- * rest of Europe) only probes 3DEP briefly, with a tiny sample count, so
+ * returns no usable grid. parallelSurface starts that read beside a US
+ * getSamples, so a first request that runs out of clock still keeps the
+ * surface grid. A frame outside 3DEP coverage (Finland and the rest of
+ * Europe) only probes 3DEP briefly, with a tiny sample count, so
  * the rest of the DEM budget can finish a GLO-30 grid — coarser when little
  * time is left. The handler can skip that probe on a follow-up read and pass
  * budgetMs for the slice still left after the aerial. GLO-30 is a surface DSM.
@@ -2105,14 +2107,79 @@ function isDevDemHost(eventOrHeaders) {
   );
 }
 
+function packSurfaceDem(samples, plan, requested, opts, frame) {
+  const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
+  const notes = [];
+  const density = demDensityNote(preset, frame, samples.length);
+  if (density) notes.push(density);
+  else if (plan.sampleCount < requested) {
+    notes.push(
+      "DEM samples stepped down to " +
+        samples.length +
+        " so the elevation read can finish. Elevations between samples are interpolated."
+    );
+  }
+  return {
+    samples,
+    kind: "surface",
+    attribution: GLO30_CREDIT,
+    notes,
+  };
+}
+
+/**
+ * Copernicus beside 3DEP. Its signal is not the caller's abort: that abort
+ * is what ends a slow US getSamples, and the surface grid has to survive it.
+ */
+function beginParallelSurface(frame, opts) {
+  if (!(opts && opts.parallelSurface && opts.allowSurfaceFallback && frameHas3dep(frame))) return null;
+  const requested = sampleCountForResolution(opts.terrainResolution, frame);
+  const plan = glo30SamplePlan(requested, demRemainingMs(opts));
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  if (timer.unref) timer.unref();
+  const work = fetchCopernicusDemSamples(frame, {
+    signal: ctrl.signal,
+    geotiff: opts.geotiff,
+    sampleCount: plan.sampleCount,
+    maxRasterSide: plan.maxRasterSide,
+  }).then(
+    (samples) => ({ samples }),
+    (error) => ({ error })
+  );
+  return {
+    cancel() {
+      clearTimeout(timer);
+      ctrl.abort();
+    },
+    async take() {
+      clearTimeout(timer);
+      const got = await work;
+      if (!got || got.error || !got.samples) return null;
+      const usable = usableDemSamples(got.samples);
+      if (usable.length < 4) return null;
+      return packSurfaceDem(usable, plan, requested, opts, frame);
+    },
+  };
+}
+
+function abortedDem() {
+  const err = new Error("The operation was aborted due to timeout");
+  err.name = "AbortError";
+  return err;
+}
+
 /**
  * Try USGS 3DEP. On the dev host, a miss reads Copernicus GLO-30 for the same
- * frame. 3DEP success never calls GLO-30. Both failures keep today's omission.
+ * frame. 3DEP success never waits on GLO-30. parallelSurface starts GLO-30
+ * with the 3DEP read so a US getSamples that is still out when the caller
+ * aborts does not throw away a surface grid that already finished.
  * @returns {Promise<{samples:{lon:number,lat:number,z:number}[], kind:string, attribution:string}>}
  */
 async function fetchTerrainDem(frame, fetchFn, opts) {
   const allowSurface = !!(opts && opts.allowSurfaceFallback);
   const parent = opts && opts.signal;
+  const surfaceEarly = beginParallelSurface(frame, opts);
   const outside = allowSurface && !frameHas3dep(frame);
   // The Finland follow-up already probed 3DEP. A second probe would spend
   // the reserved slice on a request that cannot succeed.
@@ -2131,7 +2198,7 @@ async function fetchTerrainDem(frame, fetchFn, opts) {
         : opts;
       samples = await fetchDemSamples(frame, fetchFn, demOpts);
     } catch (e) {
-      if (parent && parent.aborted) throw e;
+      if (parent && parent.aborted && !surfaceEarly) throw e;
       if (!allowSurface) throw e;
     } finally {
       if (probe) probe.done();
@@ -2139,6 +2206,7 @@ async function fetchTerrainDem(frame, fetchFn, opts) {
   }
   const usable = usableDemSamples(samples);
   if (usable.length >= 4) {
+    if (surfaceEarly) surfaceEarly.cancel();
     const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
     const notes = [];
     const density = demDensityNote(preset, frame, usable.length);
@@ -2163,13 +2231,16 @@ async function fetchTerrainDem(frame, fetchFn, opts) {
     };
   }
   if (!allowSurface) {
+    if (surfaceEarly) surfaceEarly.cancel();
     return { samples: samples || [], kind: "bare-earth", attribution: USGS_3DEP_ATTRIBUTION };
   }
-  if (parent && parent.aborted) {
-    const err = new Error("The operation was aborted due to timeout");
-    err.name = "AbortError";
-    throw err;
+  if (surfaceEarly) {
+    const pack = await surfaceEarly.take();
+    if (pack) return pack;
+    if (parent && parent.aborted) throw abortedDem();
+    throw new Error("USGS 3DEP did not return a usable grid");
   }
+  if (parent && parent.aborted) throw abortedDem();
   const requested = sampleCountForResolution(opts && opts.terrainResolution, frame);
   const plan = glo30SamplePlan(requested, demRemainingMs(opts));
   try {
@@ -2181,23 +2252,7 @@ async function fetchTerrainDem(frame, fetchFn, opts) {
     });
     const gloUsable = usableDemSamples(glo);
     if (gloUsable.length < 4) throw new Error("GLO-30 short");
-    const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
-    const notes = [];
-    const density = demDensityNote(preset, frame, gloUsable.length);
-    if (density) notes.push(density);
-    else if (plan.sampleCount < requested) {
-      notes.push(
-        "DEM samples stepped down to " +
-          gloUsable.length +
-          " so the elevation read can finish. Elevations between samples are interpolated."
-      );
-    }
-    return {
-      samples: gloUsable,
-      kind: "surface",
-      attribution: GLO30_CREDIT,
-      notes,
-    };
+    return packSurfaceDem(gloUsable, plan, requested, opts, frame);
   } catch (e) {
     if (parent && parent.aborted) throw e;
     if (e && e.name === "AbortError") throw e;
