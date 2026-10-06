@@ -5,8 +5,6 @@ const assert = require("node:assert/strict");
 const { metersPerDeg: frameMetersPerDeg } = require("../netlify/lib/geo-frame");
 const {
   FEET_PER_M,
-  SPAN_CAMPUS_M,
-  AREA_HECTARE_M2,
   metersPerDeg,
   bboxSidesM,
   bboxSidesFt,
@@ -47,10 +45,9 @@ describe("bbox width × length in feet", () => {
     assert.ok(Math.abs(feet.widthFt - 328.0839895) < 1e-6);
     assert.ok(Math.abs(feet.lengthFt - 164.04199475) < 1e-6);
     const line = bboxReadout(bbox);
-    assert.equal(line.text, "100 m · 328 ft · 5,000 m² · 53,820 sq ft");
-    assert.match(line.html, /<span class="area-quiet">328 ft<\/span>/);
-    assert.match(line.html, /<span class="area-quiet">53,820 sq ft<\/span>/);
-    assert.equal(line.text.startsWith("100 m"), true);
+    assert.equal(line.text, "5,000 m² · 53,820 ft²");
+    assert.match(line.html, /^5,000 m² · <span class="area-quiet">53,820 ft²<\/span>$/);
+    assert.equal(/\d m ·/.test(line.text), false);
   });
 
   it("shrinks east-west feet at Wisconsin latitude versus Las Vegas", () => {
@@ -88,9 +85,9 @@ describe("bbox width × length in feet", () => {
       north: lat + spanM / 2 / mpd.lat,
     };
     const line = bboxReadout(bbox);
-    assert.equal(line.text.startsWith("40 m · 131 ft"), true);
+    assert.equal(line.text, "1,600 m² · 17,222 ft²");
     assert.equal(line.text.includes("km"), false);
-    assert.equal(/0\.0\d km/.test(line.text), false);
+    assert.equal(/\d m ·/.test(line.text), false);
   });
 
   it("treats swapped corners as the same box", () => {
@@ -101,23 +98,20 @@ describe("bbox width × length in feet", () => {
   });
 });
 
-describe("span steps up to kilometers on a campus", () => {
-  it("reads a Wynn-sized site in kilometers and miles, with hectares", () => {
-    assert.equal(SPAN_CAMPUS_M, 1000);
-    assert.equal(AREA_HECTARE_M2, 100000);
+describe("area readout stays in square meters and square feet", () => {
+  it("reads a Wynn-sized site as square meters and square feet", () => {
     const sides = bboxSidesM(WYNN);
     const span = Math.max(sides.widthM, sides.lengthM);
     assert.ok(span > 2000 && span < 2500, span);
     const line = bboxReadout(WYNN);
-    assert.equal(line.text, "2.2 km · 1.4 mi · 368 ha · 910 acres");
-    assert.equal(line.text.startsWith("2.2 km"), true);
-    assert.equal(/\bft\b/.test(line.text), false);
-    assert.equal(/sq ft/.test(line.text), false);
-    assert.match(line.html, /<span class="area-quiet">1\.4 mi<\/span>/);
-    assert.match(line.html, /<span class="area-quiet">910 acres<\/span>/);
+    assert.equal(line.text, "3,682,408 m² · 39,637,114 ft²");
+    assert.match(line.text, /ft²$/);
+    assert.equal(/\bkm\b|\bmi\b|\bha\b|acres/.test(line.text), false);
+    assert.equal(/\d m ·/.test(line.text), false);
+    assert.match(line.html, /<span class="area-quiet">[^<]+ ft²<\/span>/);
   });
 
-  it("keeps a few-hundred-meter site in meters and steps a large area to hectares", () => {
+  it("keeps a few-hundred-meter site in square meters and square feet", () => {
     const lat = 36.13;
     const mpd = metersPerDeg(lat);
     const bbox = {
@@ -126,13 +120,13 @@ describe("span steps up to kilometers on a campus", () => {
       south: lat - 150 / mpd.lat,
       north: lat + 150 / mpd.lat,
     };
-    assert.equal(bboxReadout(bbox).text, "400 m · 1,312 ft · 12 ha · 29.7 acres");
+    assert.equal(bboxReadout(bbox).text, "120,000 m² · 1,291,669 ft²");
   });
 
-  it("does not lead a campus with thousands of feet", () => {
+  it("does not lead a campus with the side length", () => {
     const line = bboxReadout(WYNN).text;
-    assert.equal(/^\d{1,3}(,\d{3})+ ft/.test(line), false);
-    assert.equal(line.includes("7,287"), false);
+    assert.equal(/^\d+(\.\d+)? km/.test(line), false);
+    assert.equal(line.includes("2.2 km"), false);
   });
 });
 
@@ -157,8 +151,8 @@ describe("polygon area readout", () => {
     const box = bboxReadout({ west: west, south: south, east: east, north: north });
     const ring = polygonReadout(rect);
     assert.equal(ring.text, box.text);
-    assert.equal(ring.text, "100 m · 328 ft · 5,000 m² · 53,820 sq ft");
-    assert.equal(ring.text.startsWith("sq ft"), false);
+    assert.equal(ring.text, "5,000 m² · 53,820 ft²");
+    assert.equal(ring.text.startsWith("5,000 m²"), true);
   });
 
   it("keeps a triangle smaller than the box and ignores winding and a closing vertex", () => {
@@ -175,7 +169,8 @@ describe("polygon area readout", () => {
     assert.equal(polygonReadout(null), null);
     const triLine = polygonReadout([rect[0], rect[1], rect[2]]);
     assert.ok(triLine.text.includes("m²"));
-    assert.ok(triLine.text.includes("sq ft"));
-    assert.equal(triLine.text.startsWith("100 m"), true);
+    assert.ok(triLine.text.includes("ft²"));
+    assert.equal(triLine.text.startsWith("2,500 m²"), true);
+    assert.equal(/\d m ·/.test(triLine.text), false);
   });
 });
