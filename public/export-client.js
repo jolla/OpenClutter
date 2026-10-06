@@ -3,8 +3,11 @@
  *
  * The function returns the zip in the request that was sent, including when
  * the sharp aerial is slow. An empty 504 or 408 is not asked for again.
- * The status line leaves "Export is still working" once Export is idle.
- * A 400 or 413 is the request itself. The page does not call the draw too large.
+ * An empty 502 is the gateway closing the function. It is one try, and the
+ * page says the zip did not come back. A 502 that carries a JSON error is
+ * still that error. The status line leaves "Export is still working" once
+ * Export is idle. A 400 or 413 is the request itself. The page does not
+ * call the draw too large.
  *
  * Browser + Node.
  */
@@ -16,14 +19,16 @@
   "use strict";
 
   const WORKING_STATUS = "Export is still working.";
+  const EMPTY_502_STATUS = "The export did not return a zip.";
 
   function exportFailure(status, data) {
-    const gateway = status === 504 || status === 408;
-    const blocked = status === 400 || status === 413;
     const serverMessage = data && data.error ? String(data.error) : "";
+    const empty502 = status === 502 && !serverMessage;
+    const gateway = status === 504 || status === 408 || empty502;
+    const blocked = status === 400 || status === 413;
     const recoverable = !blocked && !gateway;
     return {
-      message: serverMessage || (blocked ? "Export failed (" + status + ")." : ""),
+      message: serverMessage || (empty502 ? EMPTY_502_STATUS : blocked ? "Export failed (" + status + ")." : ""),
       retry: recoverable,
       gateway: gateway,
       attempts: recoverable ? 3 : 1,
@@ -72,6 +77,7 @@
 
   return {
     WORKING_STATUS: WORKING_STATUS,
+    EMPTY_502_STATUS: EMPTY_502_STATUS,
     exportFailure: exportFailure,
     failureError: failureError,
     idleStatus: idleStatus,
