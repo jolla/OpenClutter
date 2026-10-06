@@ -95,14 +95,12 @@ function geodesicSpans(frame) {
 const IMAGERY_MAX_SIDE = 1040;
 const IMAGERY_METERS_PER_PX = 1;
 /**
- * Dev-host export. Esri's dynamic export allows 4096 px, and the roof decode
- * refuses above 6 MP, so a square stops at 2048 (2048² is 4.2 MP). 0.5 m/px
- * is World Imagery's resolution across the United States. A live 500 m box
- * at that size (~1000 px) returned in about 3.5s. A ~2221 m box at 2048 px
- * can take longer than the gateway will wait, so that request steps down
- * when it is still out. The same 500 m box at 2400 px did not return within
- * 18s, so 2400 is not the request. The next sizes are 1600 px / 1 m, then
- * the production 1040 px. A sharp JPEG that arrives in time is kept.
+ * The frame helper can still build a 2048 px / 0.5 m plate. Esri allows
+ * 4096 px, and the roof decode refuses above 6 MP, so a square stops at
+ * 2048 (2048² is 4.2 MP). 2400 px did not return within 18s. Export does
+ * not ask for that plate: a ~2221 m box at 2048 px used the function clock
+ * and came back as a 502 with no zip. imageryMaxSide(true) stays 2048 for
+ * callers that measure the cap. The export plan is imageryExportPlan.
  */
 const IMAGERY_MAX_SIDE_DEV = 2048;
 const IMAGERY_METERS_PER_PX_DEV = 0.5;
@@ -115,15 +113,19 @@ function imageryMetersPerPx(devHost) {
   return devHost ? IMAGERY_METERS_PER_PX_DEV : IMAGERY_METERS_PER_PX;
 }
 
-/** Sharpest request first. Later steps are the same bbox with fewer pixels. */
+/**
+ * Export asks for an image that can finish inside the function clock.
+ * Dev and production both start at 1040 px / 1 m. Dev then tries 640 px
+ * on the same box when that image does not arrive. The 2048 px plate is
+ * not an export request.
+ */
 function imageryExportPlan(devHost) {
   if (!devHost) {
     return [{ maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX }];
   }
   return [
-    { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: IMAGERY_METERS_PER_PX_DEV },
-    { maxSide: 1600, metersPerPx: IMAGERY_METERS_PER_PX },
     { maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX },
+    { maxSide: 640, metersPerPx: IMAGERY_METERS_PER_PX },
   ];
 }
 

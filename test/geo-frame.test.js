@@ -92,7 +92,7 @@ describe("shared geo frame", () => {
     const plan = imageryExportPlan(true);
     assert.deepEqual(
       plan.map((step) => step.maxSide),
-      [2048, 1600, 1040]
+      [1040, 640]
     );
     assert.deepEqual(imageryExportPlan(false), [{ maxSide: 1040, metersPerPx: 1 }]);
     const prod = geoFrame(oak);
