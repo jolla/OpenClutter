@@ -801,6 +801,71 @@ function wantTerrain(event, body) {
   return !(raw === false || raw === 0 || raw === "0" || raw === "false");
 }
 
+// The zip and the elevation read no longer share one clock. This request
+// does only the DEM, so a slow plate or canopy cannot abort it.
+const TERRAIN_ASIDE_MS = 8000;
+
+async function respondTerrainAside(frame, body, event, cors) {
+  const terrainResolution = terrainResolutionFromRequest(event, body);
+  const terrainStyle = terrainStyleFromRequest(event, body);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), Math.max(1000, TERRAIN_ASIDE_MS - 400));
+  const warnings = [];
+  let demPack = null;
+  try {
+    demPack = await fetchTerrainDemImpl(frame, null, {
+      signal: ctrl.signal,
+      terrainResolution,
+      terrainStyle,
+      allowSurfaceFallback: true,
+      budgetMs: 4500,
+      fitAnswerClock: true,
+      skip3depProbe: !frameHas3dep(frame),
+    });
+  } catch {
+    demPack = null;
+  } finally {
+    clearTimeout(timer);
+  }
+  const samples = demPack && (Array.isArray(demPack) ? demPack : demPack.samples);
+  const kind = demPack && !Array.isArray(demPack) ? demPack.kind : null;
+  const attribution = demPack && !Array.isArray(demPack) ? demPack.attribution : null;
+  if (demPack && !Array.isArray(demPack) && Array.isArray(demPack.notes)) {
+    for (let i = 0; i < demPack.notes.length; i++) warnings.push(demPack.notes[i]);
+  }
+  let terrain = null;
+  if (samples && samples.length && frame) {
+    try {
+      terrain = terrainFromSamples(samples, frame, {
+        terrainResolution,
+        terrainStyle,
+        kind,
+        attribution,
+      });
+    } catch {
+      terrain = null;
+    }
+  }
+  const ready = !!(terrain && ((terrain.raised || 0) > 0 || (terrain.sloped || 0) > 0) && terrain.clipboard);
+  if (!ready) {
+    return json(200, cors, {
+      ok: false,
+      terrainFilename: null,
+      terrainClipboard: null,
+      terrainStatus: "Terrain did not return. Export again.",
+      warnings: ["Terrain did not return. Export again."],
+    });
+  }
+  const fields = terrainBundleFields(terrain, warnings);
+  return json(200, cors, {
+    ok: true,
+    terrainFilename: fields.terrainFilename,
+    terrainClipboard: fields.terrainClipboard,
+    terrainStatus: fields.terrainStatus,
+    warnings,
+  });
+}
+
 /** Client-supplied NLCD hits, capped. Used to re-place trees off rooftops. */
 function normalizeCanopyHits(raw) {
   if (!Array.isArray(raw)) return [];
@@ -864,6 +929,14 @@ async function handleClutter(event) {
   const imgMetaUrl = esriImageryMetaUrl(frame);
   const includeFoliage = wantFoliage(event, body);
   const includeTerrain = wantTerrain(event, body);
+  // The dev page sets this and reads elevation on its own request. The zip
+  // then does not start a DEM, so the map cannot omit it.
+  const deferTerrain = devHost && (body.deferTerrain === true || body.deferTerrain === "true");
+  const readTerrain = includeTerrain && !deferTerrain;
+  if (body.format === "terrain") {
+    if (!devHost) return json(404, cors, { error: "not found" });
+    return respondTerrainAside(frame, body, event, cors);
+  }
 
   let treePoints = includeFoliage && Array.isArray(body.trees) ? body.trees.slice() : [];
   let treesSource = includeFoliage && ["nlcd-canopy", "imagery-rgb", "none"].includes(body.treesSource)
@@ -915,7 +988,7 @@ async function handleClutter(event) {
     // plate returns left the DEM a few hundred milliseconds, which is
     // "Terrain omitted: export budget spent on the map and footprints".
     // Buildings still wait on that plate so a parquet parse cannot abort it.
-    if (devHost && includeTerrain && needImage && !terrainJob) {
+    if (devHost && readTerrain && needImage && !terrainJob) {
       terrainJob = beginOptional((signal) =>
         fetchTerrainDemImpl(frame, null, {
           signal,
@@ -976,7 +1049,7 @@ async function handleClutter(event) {
       if (needImage) {
         imgMeta = await fetchImageryMeta(imgMetaUrl);
         if (imgMeta) frame = applyImageryMeta(frame, imgMeta, null, { requestBbox });
-        if (includeTerrain && !terrainJob) {
+        if (readTerrain && !terrainJob) {
           terrainJob = beginOptional((signal) =>
             fetchTerrainDemImpl(frame, null, {
               signal,
@@ -1109,7 +1182,7 @@ async function handleClutter(event) {
         fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
       );
     }
-    if (includeTerrain && !terrainJob) {
+    if (readTerrain && !terrainJob) {
       terrainJob = beginOptional((signal) =>
         fetchTerrainDemImpl(frame, null, {
           signal,
@@ -1308,7 +1381,7 @@ async function handleClutter(event) {
       terrain = null;
     }
   }
-  if (includeTerrain && needImage) noteMissingTerrain(terrain, warnings);
+  if (readTerrain && needImage) noteMissingTerrain(terrain, warnings);
 
   let maskRings = [];
   let maskPolygons = [];
@@ -1498,9 +1571,11 @@ async function handleClutter(event) {
   }
 
   function bundleResult() {
-    const terrainFields = includeTerrain
-      ? terrainBundleFields(built.terrain, warnings)
-      : { terrainFilename: null, terrainClipboard: null, terrainStatus: "Terrain off" };
+    const terrainFields = !includeTerrain
+      ? { terrainFilename: null, terrainClipboard: null, terrainStatus: "Terrain off" }
+      : deferTerrain
+        ? { terrainFilename: null, terrainClipboard: null, terrainStatus: "" }
+        : terrainBundleFields(built.terrain, warnings);
     return json(200, cors, {
       ok: true,
       alignment: ALIGNMENT,

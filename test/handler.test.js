@@ -2593,3 +2593,130 @@ describe("Pointe-Claire dev export", () => {
     assert.ok(Math.max(+size[1], +size[2]) <= 1040, images[0]);
   });
 });
+
+describe("terrain aside from the zip clock", () => {
+  const prev = global.fetch;
+  const WICO = {
+    west: -73.8293,
+    south: 45.42485,
+    east: -73.81842,
+    north: 45.42966,
+    name: "Wi-Co",
+  };
+  const dem = {
+    samples: [
+      { lon: -73.829, lat: 45.425, z: 18 },
+      { lon: -73.819, lat: 45.425, z: 22 },
+      { lon: -73.829, lat: 45.4295, z: 30 },
+      { lon: -73.819, lat: 45.4295, z: 36 },
+    ],
+    kind: "surface",
+    attribution: "Copernicus DEM GLO-30",
+  };
+
+  after(() => {
+    global.fetch = prev;
+    setFetchTerrainDemForTests(null);
+  });
+
+  it("reads elevation without the map when format is terrain", async () => {
+    const urls = [];
+    global.fetch = async (url) => {
+      urls.push(String(url));
+      return { ok: true, json: async () => ({ features: [] }), arrayBuffer: async () => jpeg };
+    };
+    setFetchTerrainDemForTests(async () => dem);
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...WICO, format: "terrain", includeTerrain: true, terrainStyle: "sloped" }),
+    });
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
+    const body = JSON.parse(res.body);
+    assert.ok(body.terrainClipboard && body.terrainClipboard.slopedFloors.length > 0, body.terrainStatus);
+    assert.match(body.terrainStatus, /Copy terrain/);
+    assert.equal(body.zipBase64, undefined);
+    assert.equal(urls.some((u) => u.includes("World_Imagery")), false);
+    assert.equal(/export budget spent/.test(body.terrainStatus), false);
+  });
+
+  it("keeps a slow elevation read that the zip clock would have aborted", async () => {
+    global.fetch = async () => ({ ok: true, json: async () => ({ features: [] }) });
+    setFetchTerrainDemForTests(
+      () => new Promise((resolve) => setTimeout(() => resolve(dem), 1500))
+    );
+    const t0 = Date.now();
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...WICO, format: "terrain", includeTerrain: true }),
+    });
+    assert.ok(Date.now() - t0 >= 1400);
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 300));
+    const body = JSON.parse(res.body);
+    assert.ok(body.terrainClipboard, body.terrainStatus);
+    assert.equal(/export budget spent/.test(body.terrainStatus || ""), false);
+  });
+
+  it("does not start the DEM inside a deferred zip", async () => {
+    const calls = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: WICO.west, ymin: WICO.south, xmax: WICO.east, ymax: WICO.north },
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+    setFetchTerrainDemForTests(async () => {
+      calls.push("dem");
+      return dem;
+    });
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({
+        ...WICO,
+        format: "bundle",
+        includeTerrain: true,
+        includeFoliage: false,
+        deferTerrain: true,
+      }),
+    });
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
+    const body = JSON.parse(res.body);
+    assert.equal(calls.length, 0);
+    assert.ok(body.zipBase64);
+    assert.equal(body.terrainClipboard, null);
+    assert.equal(body.terrainStatus, "");
+    assert.equal(/export budget spent|terrain omitted/i.test((body.warnings || []).join("\n") + body.terrainStatus), false);
+    const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+    assert.equal(files["terrain-clipboard.json"], undefined);
+    assert.ok(Object.keys(files).some((name) => name.endsWith(".json")));
+    assert.ok(Object.keys(files).some((name) => name.endsWith(".jpg")));
+  });
+
+  it("says to export again when the aside read does not return", async () => {
+    global.fetch = async () => ({ ok: true, json: async () => ({}) });
+    setFetchTerrainDemForTests(async () => {
+      throw new Error("The operation was aborted due to timeout");
+    });
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...WICO, format: "terrain" }),
+    });
+    const body = JSON.parse(res.body);
+    assert.equal(res.statusCode, 200);
+    assert.equal(body.terrainClipboard, null);
+    assert.equal(body.terrainStatus, "Terrain did not return. Export again.");
+    assert.equal(/export budget spent/.test(body.terrainStatus), false);
+  });
+});

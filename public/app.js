@@ -688,6 +688,31 @@ function exportError(status, data) {
   return OpenClutterExport.failureError(status, data);
 }
 
+async function fetchTerrainPaste() {
+  try {
+    const r = await fetch("/api/clutter", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...bbox,
+        name: document.getElementById("q").value || "Site",
+        includeTerrain: true,
+        terrainResolution: "auto",
+        terrainStyle: "sloped",
+        format: "terrain",
+      }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (r.ok && data && data.terrainClipboard) return data;
+    return {
+      terrainClipboard: null,
+      terrainStatus: (data && data.terrainStatus) || "Terrain did not return. Export again.",
+    };
+  } catch {
+    return { terrainClipboard: null, terrainStatus: "Terrain did not return. Export again." };
+  }
+}
+
 async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain) {
   const foliage = includeFoliage === true;
   const terrain = includeTerrain !== false;
@@ -700,6 +725,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       name: document.getElementById("q").value || "Site",
       includeFoliage: foliage,
       includeTerrain: terrain,
+      deferTerrain: terrain && devPage(),
       terrainResolution: terrain ? "auto" : undefined,
       terrainStyle: terrain ? "sloped" : undefined,
       imageryQuality: devPage() ? selectedImageryQuality() : undefined,
@@ -741,6 +767,8 @@ document.getElementById("export").onclick = async () => {
   exportBtn.disabled = true;
   const includeFoliage = document.getElementById("include-foliage").checked;
   const includeTerrain = terrainExportEnabled();
+  const terrainPromise = includeTerrain && devPage() ? fetchTerrainPaste() : null;
+  if (terrainPromise) terrainPromise.catch(() => {});
   setStatus("Export is still working.");
   try {
     let trees = [];
@@ -769,6 +797,18 @@ document.getElementById("export").onclick = async () => {
       exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain)
     );
     downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
+    if (terrainPromise) {
+      const paste = await terrainPromise;
+      if (paste && paste.terrainClipboard) {
+        data.terrainClipboard = paste.terrainClipboard;
+        data.terrainStatus = paste.terrainStatus || "";
+        if (Array.isArray(data.warnings)) {
+          data.warnings = data.warnings.filter((w) => !/terrain omitted|export budget spent/i.test(String(w)));
+        }
+      } else if (!data.terrainClipboard) {
+        data.terrainStatus = (paste && paste.terrainStatus) || "Terrain did not return. Export again.";
+      }
+    }
     const terrainOff = includeTerrain === false;
     if (terrainOff) {
       terrainPasteJson = "";
