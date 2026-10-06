@@ -95,6 +95,23 @@ describe("shared geo frame", () => {
       [400, 256]
     );
     assert.deepEqual(imageryExportPlan(false), [{ maxSide: 1040, metersPerPx: 1 }]);
+    const pointeClaire = {
+      west: -73.8285,
+      south: 45.4272,
+      east: -73.8239,
+      north: 45.4305,
+    };
+    const sharp = imageryExportPlan(true, pointeClaire);
+    assert.deepEqual(
+      sharp.map((step) => [step.maxSide, step.metersPerPx]),
+      [
+        [1040, 0.5],
+        [400, 1],
+      ]
+    );
+    const sharpFrame = geoFrame(pointeClaire, { maxSide: sharp[0].maxSide, metersPerPx: sharp[0].metersPerPx });
+    assert.ok(Math.max(sharpFrame.imgW, sharpFrame.imgH) >= 600);
+    assert.ok(Math.max(sharpFrame.imgW, sharpFrame.imgH) <= 1040);
     const prod = geoFrame(oak);
     const dev = geoFrame(oak, { maxSide: imageryMaxSide(true), metersPerPx: imageryMetersPerPx(true) });
     assert.ok(Math.max(prod.imgW, prod.imgH) <= 1040);

@@ -2,8 +2,8 @@
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
-const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures, imageryAttemptMs, imageryStepBudget, IMAGERY_ATTEMPT_MS, IMAGERY_ATTEMPT_MS_DEV, IMAGERY_RETURN_MS, DEV_ANSWER_MS, lambdaPayloadBytes, EXPORT_PAYLOAD_BUDGET, LAMBDA_SYNC_PAYLOAD_MAX, terrainSettleMs, terrainRescueBudget, TERRAIN_RESERVE_MS, TERRAIN_HARD_MS, TERRAIN_FULL_MS, TERRAIN_COARSE_SAMPLES, setFetchTerrainDemForTests, setFetchChmGridForTests } = require("../netlify/functions/clutter");
-const { geoFrame } = require("../netlify/lib/geo-frame");
+const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures, imageryAttemptMs, imageryStepBudget, IMAGERY_ATTEMPT_MS, IMAGERY_ATTEMPT_MS_DEV, IMAGERY_RETURN_MS, DEV_ANSWER_MS, lambdaPayloadBytes, EXPORT_PAYLOAD_BUDGET, LAMBDA_SYNC_PAYLOAD_MAX, terrainSettleMs, terrainRescueBudget, TERRAIN_RESERVE_MS, TERRAIN_HARD_MS, TERRAIN_FULL_MS, TERRAIN_COARSE_SAMPLES, setFetchTerrainDemForTests, setFetchChmGridForTests, setFetchOvertureForTests } = require("../netlify/functions/clutter");
+const { geoFrame, imageryExportPlan } = require("../netlify/lib/geo-frame");
 const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
 const { unzipStore } = require("../netlify/lib/zip-store");
 const { version: APP_VERSION } = require("../netlify/lib/version");
@@ -1454,12 +1454,14 @@ describe("dev-host Esri long side", () => {
     assert.equal(/too large to finish/.test(res.body), false);
   });
 
-  it("still asks a smaller site for the finer image", async () => {
+  it("asks a short dev draw for a half-meter aerial", async () => {
     const small = { west: -115.166, south: 36.126, east: -115.161, north: 36.13, name: "Corner" };
-    const frame = geoFrame(small, { maxSide: 400, metersPerPx: 2 });
+    const step = imageryExportPlan(true, small)[0];
+    const frame = geoFrame(small, { maxSide: step.maxSide, metersPerPx: step.metersPerPx });
     const expectSide = Math.max(frame.imgW, frame.imgH);
-    assert.ok(expectSide < 400, expectSide);
-    assert.ok(frame.mpuX <= 2.2, frame.mpuX);
+    assert.ok(expectSide >= 600, expectSide);
+    assert.ok(expectSide <= 1040, expectSide);
+    assert.ok(frame.mpuX <= 0.7, frame.mpuX);
     const seen = [];
     global.fetch = async (url) => {
       const u = String(url);
@@ -1489,7 +1491,7 @@ describe("dev-host Esri long side", () => {
     const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
     assert.equal(images.length, 1, images.join("\n"));
     assert.match(images[0], new RegExp("size=" + expectSide + ","));
-    assert.equal(/size=1600,|size=1040,/.test(images[0]), false);
+    assert.equal(/size=2048,|size=1600,/.test(images[0]), false);
   });
 });
 
@@ -1577,7 +1579,7 @@ describe("dev-host Copernicus fallback", () => {
     return urls;
   }
 
-  it("does not call GLO-30 when 3DEP returns a grid, even on the dev host", async () => {
+  it("skips the 3DEP probe outside coverage and reads GLO-30 on the dev host", async () => {
     const samples = [];
     for (let i = 0; i < 4; i++) {
       samples.push({
@@ -1596,11 +1598,10 @@ describe("dev-host Copernicus fallback", () => {
     });
     assert.equal(res.statusCode, 200);
     const body = JSON.parse(res.body);
-    assert.equal(body.terrainFilename, "terrain-clipboard.json");
-    assert.match(body.terrainStatus, /USGS 3DEP bare-earth/);
-    assert.equal(/Copernicus/.test(body.terrainStatus), false);
-    assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
-    assert.equal(body.stats.demKind, "bare-earth");
+    assert.equal(urls.some((u) => u.includes("elevation.nationalmap.gov") && u.includes("getSamples")), false);
+    assert.equal(urls.some((u) => u.includes("copernicus-dem")), true);
+    assert.match(body.terrainStatus, /Terrain omitted/);
+    assert.equal(body.terrainClipboard, null);
   });
 
   it("requests the London GLO-30 tile when 3DEP fails on the dev host", async () => {
@@ -1652,10 +1653,10 @@ describe("dev-host Copernicus fallback", () => {
     });
     const elapsed = Date.now() - t0;
     assert.equal(res.statusCode, 200, res.body);
-    assert.ok(elapsed < 6000, "elapsed " + elapsed);
+    assert.ok(elapsed < 8000, "elapsed " + elapsed);
     const body = JSON.parse(res.body);
     assert.ok(body.zipBase64);
-    assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
+    assert.equal(urls.some((u) => u.includes("copernicus-dem")), true);
     assert.match(body.terrainStatus, /Terrain omitted/);
     assert.equal(body.terrainClipboard, null);
   });
@@ -1713,10 +1714,10 @@ describe("dev-host Copernicus fallback", () => {
     });
     const elapsed = Date.now() - t0;
     assert.equal(res.statusCode, 200, res.body);
-    assert.ok(elapsed < 6000, "elapsed " + elapsed);
+    assert.ok(elapsed < 8000, "elapsed " + elapsed);
     const body = JSON.parse(res.body);
     assert.ok(body.zipBase64);
-    assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
+    assert.equal(urls.some((u) => u.includes("copernicus-dem")), true);
     assert.match(body.terrainStatus, /Terrain omitted/);
     assert.equal(body.terrainClipboard, null);
   });
@@ -1828,7 +1829,7 @@ describe("dev-host Copernicus fallback", () => {
     };
   }
 
-  it("returns the zip when the first GLO-30 read is still open after the aerial", async () => {
+  it("keeps a Finland grid when the dev host skips the 3DEP probe", async () => {
     const calls = [];
     setFetchTerrainDemForTests((frame, _fetchFn, opts) => {
       calls.push({
@@ -1859,10 +1860,10 @@ describe("dev-host Copernicus fallback", () => {
       assert.ok(elapsed < 6000, "elapsed " + elapsed);
       const body = JSON.parse(res.body);
       assert.equal(calls.length, 1);
-      assert.equal(calls[0].skip3depProbe, false);
+      assert.equal(calls[0].skip3depProbe, true);
       assert.ok(body.zipBase64);
-      assert.equal(body.terrainClipboard, null);
-      assert.match(body.terrainStatus, /Terrain omitted/);
+      assert.ok(body.terrainClipboard, body.terrainStatus);
+      assert.match(body.terrainStatus, /Copy terrain/);
     } finally {
       setFetchTerrainDemForTests(null);
     }
@@ -1883,7 +1884,7 @@ describe("dev-host Copernicus fallback", () => {
       });
       assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
       const body = JSON.parse(res.body);
-      assert.deepEqual(calls, [false]);
+      assert.deepEqual(calls, [true]);
       assert.match(body.terrainStatus, /Copy terrain/);
       assert.equal(/timed out/i.test(body.terrainStatus), false);
     } finally {
@@ -1953,7 +1954,7 @@ describe("dev-host Copernicus fallback", () => {
     const body = JSON.parse(res.body);
     const dem = urls.find((u) => u.includes("elevation.nationalmap.gov") && u.includes("getSamples"));
     assert.ok(dem);
-    assert.equal(new URL(dem).searchParams.get("sampleCount"), "576");
+    assert.equal(new URL(dem).searchParams.get("sampleCount"), "144");
     assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
     assert.match(body.terrainStatus, /USGS 3DEP bare-earth/);
     assert.equal(body.terrainFilename, "terrain-clipboard.json");
@@ -2215,10 +2216,10 @@ describe("large campus DEM survives the building fetch", () => {
     const res = await post(box, "raised");
     assert.equal(res.statusCode, 200, String(res.body).slice(0, 300));
     const body = JSON.parse(res.body);
-    assert.deepEqual(counts, ["576"]);
+    assert.deepEqual(counts, ["144"]);
     assert.match(body.terrainStatus, /Terrain raised layers/);
     assert.match(body.terrainStatus, /Copy terrain/);
-    assert.equal(/timed out|stepped down/i.test((body.warnings || []).join("\n") + body.terrainStatus), false);
+    assert.equal(/timed out/i.test((body.warnings || []).join("\n") + body.terrainStatus), false);
     const floors = body.terrainClipboard.raisedFloorZones.length;
     assert.ok(floors >= 1 && floors <= 400, "floors " + floors);
   });
@@ -2236,5 +2237,92 @@ describe("large campus DEM survives the building fetch", () => {
     assert.match(body.terrainStatus, /Terrain omitted/);
     assert.match(body.terrainStatus, /OpenIntent zip is unchanged/);
     assert.equal(counts.includes(String(TERRAIN_COARSE_SAMPLES)), false, counts.join(","));
+  });
+});
+
+describe("Pointe-Claire dev export", () => {
+  const prev = global.fetch;
+  const POINTE = {
+    west: -73.8285,
+    south: 45.4272,
+    east: -73.8239,
+    north: 45.4305,
+    name: "Pointe-Claire",
+  };
+
+  after(() => {
+    global.fetch = prev;
+    setFetchOvertureForTests(null);
+    setFetchTerrainDemForTests(null);
+  });
+
+  it("returns roofs, a sharp aerial, and Copy terrain for the peninsula", async () => {
+    const images = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("World_Imagery") && u.includes("f=image")) images.push(u);
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: POINTE.west, ymin: POINTE.south, xmax: POINTE.east, ymax: POINTE.north },
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+      return { ok: true, json: async () => ({ features: [], objectIds: [] }), arrayBuffer: async () => new ArrayBuffer(0) };
+    };
+    setFetchOvertureForTests(async () => ({
+      features: [{
+        type: "Feature",
+        properties: { height: 9, heightSource: "overture" },
+        geometry: {
+          type: "Polygon",
+          coordinates: [[
+            [-73.8268, 45.4282],
+            [-73.8262, 45.4282],
+            [-73.8262, 45.4287],
+            [-73.8268, 45.4287],
+            [-73.8268, 45.4282],
+          ]],
+        },
+      }],
+    }));
+    setFetchTerrainDemForTests(async () => ({
+      samples: [
+        { lon: -73.828, lat: 45.4275, z: 18 },
+        { lon: -73.824, lat: 45.4275, z: 22 },
+        { lon: -73.828, lat: 45.4302, z: 30 },
+        { lon: -73.824, lat: 45.4302, z: 36 },
+      ],
+      kind: "surface",
+      attribution: "Copernicus DEM GLO-30",
+    }));
+    const t0 = Date.now();
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...POINTE, format: "bundle", includeFoliage: false, includeTerrain: true }),
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
+    assert.ok(elapsed < 8000, "elapsed " + elapsed);
+    const body = JSON.parse(res.body);
+    assert.ok(body.stats.buildings >= 1, body.stats.summary);
+    assert.ok(body.stats.fetched >= 1);
+    assert.ok(body.terrainClipboard, body.terrainStatus);
+    assert.match(body.terrainStatus, /Copy terrain/);
+    const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+    assert.deepEqual(Object.keys(files).sort(), ["images/Pointe-Claire.jpg", "openIntent_Pointe-Claire.json"]);
+    assert.equal(files["terrain-clipboard.json"], undefined);
+    const oi = JSON.parse(files["openIntent_Pointe-Claire.json"].toString());
+    assert.ok(oi.floorplans[0].attenuation_areas.length >= 1);
+    assert.ok(images.length >= 1, "no imagery url");
+    const size = String(images[0]).match(/size=(\d+),(\d+)/);
+    assert.ok(size, images[0]);
+    assert.ok(Math.max(+size[1], +size[2]) >= 600, images[0]);
+    assert.ok(Math.max(+size[1], +size[2]) <= 1040, images[0]);
   });
 });

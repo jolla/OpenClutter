@@ -114,15 +114,39 @@ function imageryMetersPerPx(devHost) {
 }
 
 /**
- * Export asks for an image that can finish inside the function clock.
- * Production stays at 1040 px / 1 m. Dev starts at 400 px. A larger plate
- * still used the gateway window and the platform answered 504 before a zip
- * was sent. The next dev image is 256 px. The 2048 px plate is not an
- * export request.
+ * A town-scale draw (the Wi-Co peninsula is about 360 m) at half a meter
+ * is a few hundred pixels. A 2 km campus at that pitch is the plate that
+ * used the gateway window. Dev keeps the coarse plate for the long draws.
  */
-function imageryExportPlan(devHost) {
+const DEV_SHARP_DRAW_M = 800;
+
+function bboxLongSideM(bbox) {
+  if (!bbox) return 0;
+  const south = +bbox.south;
+  const north = +bbox.north;
+  const west = +bbox.west;
+  const east = +bbox.east;
+  if (![south, north, west, east].every(Number.isFinite)) return 0;
+  const mpd = metersPerDeg((south + north) / 2);
+  return Math.max(Math.abs(east - west) * mpd.lon, Math.abs(north - south) * mpd.lat);
+}
+
+/**
+ * Export asks for an image that can finish inside the function clock.
+ * Production stays at 1040 px / 1 m. A short dev draw starts at 0.5 m,
+ * capped at 1040 px, then 1 m. A long dev draw stays at 400 px / 2 m,
+ * then 256 px. The 2048 px plate is not an export request.
+ */
+function imageryExportPlan(devHost, bbox) {
   if (!devHost) {
     return [{ maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX }];
+  }
+  const long = bboxLongSideM(bbox);
+  if (long > 0 && long <= DEV_SHARP_DRAW_M) {
+    return [
+      { maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX_DEV },
+      { maxSide: 400, metersPerPx: IMAGERY_METERS_PER_PX },
+    ];
   }
   return [
     { maxSide: 400, metersPerPx: 2 },
@@ -832,6 +856,8 @@ module.exports = {
   imageryMaxSide,
   imageryMetersPerPx,
   imageryExportPlan,
+  bboxLongSideM,
+  DEV_SHARP_DRAW_M,
   metersPerDeg,
   groundMeterStretch,
   GROUND_METER_STRETCH,

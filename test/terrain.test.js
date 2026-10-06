@@ -1821,6 +1821,11 @@ describe("Finland terrain does not wait on 3DEP", () => {
       true
     );
     assert.equal(DEP3_PROBE_SAMPLES, 4);
+    assert.equal(
+      frameHas3dep({ west: -73.8305, south: 45.4262, east: -73.8235, north: 45.4312 }),
+      false
+    );
+    assert.equal(frameHas3dep({ west: -73.48, south: 44.68, east: -73.45, north: 44.72 }), true);
   });
 
   it("returns a surface grid for Hamina without waiting on a slow 3DEP", async () => {

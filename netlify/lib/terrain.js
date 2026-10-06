@@ -260,16 +260,27 @@ function sampleCountForResolution(resolution, frame) {
 }
 
 /** True when the frame center can get a USGS 3DEP grid. */
+function pointInBox(lon, lat, box) {
+  return lon >= box.west && lon <= box.east && lat >= box.south && lat <= box.north;
+}
+
 function frameHas3dep(frame) {
   if (!frame) return false;
   const lon = (+frame.west + +frame.east) / 2;
   const lat = (+frame.south + +frame.north) / 2;
   if (!Number.isFinite(lon) || !Number.isFinite(lat)) return false;
+  let covered = false;
   for (let i = 0; i < DEP3_COVERAGE.length; i++) {
-    const box = DEP3_COVERAGE[i];
-    if (lon >= box.west && lon <= box.east && lat >= box.south && lat <= box.north) return true;
+    if (pointInBox(lon, lat, DEP3_COVERAGE[i])) {
+      covered = true;
+      break;
+    }
   }
-  return false;
+  if (!covered) return false;
+  for (let i = 0; i < DEP3_HOLES.length; i++) {
+    if (pointInBox(lon, lat, DEP3_HOLES[i])) return false;
+  }
+  return true;
 }
 
 function demSampleCount(opts, frame) {
@@ -278,6 +289,14 @@ function demSampleCount(opts, frame) {
   }
   const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
   const requested = sampleCountForResolution(preset.id, frame);
+  // A campus getSamples near 576 points took about 6s. The dev answer clock
+  // leaves about 5.6s. Cap that read at the lattice that still fills a 20×20
+  // paste and has returned in about 4s.
+  if (opts && opts.fitAnswerClock) {
+    const remaining = demRemainingMs(opts);
+    const budget = remaining == null ? 4500 : Math.min(Math.max(0, remaining), 4500);
+    return glo30SamplePlan(requested, budget).sampleCount;
+  }
   if (!preset.experimental) return requested;
   return glo30SamplePlan(requested, demRemainingMs(opts)).sampleCount;
 }
@@ -375,7 +394,9 @@ const LIFT_LOCAL_M = 1;
 /**
  * USGS 3DEP Elevation ImageServer has data here. A center outside every box
  * cannot succeed, so the dev host must not spend the DEM budget on it.
- * The rectangle includes some border water; a US hit is still preferred.
+ * The rectangle includes some border water and the southern edge of Canada.
+ * DEP3_HOLES are places inside that rectangle where 3DEP has no grid
+ * (Montreal, Toronto, Vancouver). Those reads go to Copernicus.
  */
 const DEP3_COVERAGE = [
   { west: -125.5, south: 24.0, east: -66.0, north: 49.6 },
@@ -384,6 +405,18 @@ const DEP3_COVERAGE = [
   { west: -67.5, south: 17.6, east: -64.5, north: 18.6 },
   { west: 144.6, south: 13.2, east: 145.0, north: 13.7 },
   { west: -170.9, south: -14.4, east: -169.4, north: -14.2 },
+];
+const DEP3_HOLES = [
+  // Southern Quebec and the Ottawa valley, west of Maine.
+  { west: -80.0, south: 45.02, east: -71.25, north: 49.6 },
+  // Toronto and the north shore of Lake Ontario.
+  { west: -83.2, south: 43.25, east: -78.6, north: 45.02 },
+  // Kingston and the Canadian shore of eastern Lake Ontario.
+  { west: -77.3, south: 44.05, east: -76.0, north: 45.02 },
+  // Windsor.
+  { west: -83.12, south: 42.02, east: -82.45, north: 42.55 },
+  // Vancouver, Victoria, and the lower mainland.
+  { west: -123.7, south: 48.15, east: -122.2, north: 49.45 },
 ];
 /** Outside coverage, give 3DEP this long, then read GLO-30. */
 const DEP3_OUTSIDE_MS = 400;

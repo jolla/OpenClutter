@@ -49,18 +49,15 @@ if (includeTerrainInput) includeTerrainInput.addEventListener("change", syncTerr
 const ESRI_TILE_MAX_ZOOM = 23;
 const mapZoom = devPage() ? ESRI_TILE_MAX_ZOOM : 18;
 const map = L.map("map", { maxZoom: mapZoom }).setView([36.128, -115.16], 15);
-L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-  attribution: "&copy; OSM &copy; CARTO",
-  maxZoom: mapZoom,
-  maxNativeZoom: 20,
-}).addTo(map);
+// CARTO's keyless dark tiles now paint "API KEY REQUIRED" through the aerial.
+// The draw sits on World Imagery. The page background shows where a tile misses.
 const imageryTiles = L.tileLayer(
   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
   {
-    opacity: 0.85,
+    opacity: 1,
     maxZoom: devPage() ? ESRI_TILE_MAX_ZOOM : 19,
     maxNativeZoom: devPage() ? ESRI_TILE_MAX_ZOOM : 19,
-    attribution: "Esri",
+    attribution: "Tiles &copy; Esri",
   }
 ).addTo(map);
 if (devPage()) {

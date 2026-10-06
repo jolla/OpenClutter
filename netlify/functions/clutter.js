@@ -113,6 +113,10 @@ const { fetchMsGlobalFootprints, globalSkipWarning } = require("../lib/ms-global
 const { fetchUsaStructures } = require("../lib/usa-structures");
 const { assembleFootprints } = require("../lib/conflate");
 const { fetchOvertureFootprints } = require("../lib/overture");
+let fetchOvertureImpl = fetchOvertureFootprints;
+function setFetchOvertureForTests(fn) {
+  fetchOvertureImpl = typeof fn === "function" ? fn : fetchOvertureFootprints;
+}
 const { fetchChmGrid, applyChmToTrees, sampleChmGrid } = require("../lib/canopy-height");
 const {
   fetchTerrainDem,
@@ -198,8 +202,8 @@ function imageryAttemptMs(devHost) {
   return devHost ? IMAGERY_ATTEMPT_MS_DEV : IMAGERY_ATTEMPT_MS;
 }
 
-function imagerySteps(devHost) {
-  const plan = imageryExportPlan(devHost);
+function imagerySteps(devHost, bbox) {
+  const plan = imageryExportPlan(devHost, bbox);
   if (!devHost) {
     return plan.map((step) => Object.assign({ attemptMs: IMAGERY_ATTEMPT_MS }, step));
   }
@@ -762,7 +766,7 @@ async function handleClutter(event) {
   }
 
   const devHost = isDevDemHost(event);
-  const steps = imagerySteps(devHost);
+  const steps = imagerySteps(devHost, body);
   const maxSide = steps[0].maxSide;
   let frame;
   try {
@@ -813,6 +817,9 @@ async function handleClutter(event) {
   let terrainJob = null;
   let chmJob = null;
   let overtureFrame = null;
+  // A short draw, and anywhere 3DEP has no grid, starts Overture with the
+  // aerial. The 400 ms slice after a finished core aborted Montreal's roofs.
+  let devEarlyFootprints = false;
   try {
     // JPEG and Overture together. Meta may confirm the footprint query, but it
     // must not gate the image or the Overture read — the Las Vegas row group
@@ -838,17 +845,20 @@ async function handleClutter(event) {
       north: frame.north,
     };
     const coreBudget = devHost ? DEV_CORE_MS : CORE_FETCH_MS;
-    // Dev does not open Overture or the DEM until the aerial and the building
-    // footprints are back. A parquet parse was still running when the gateway
-    // returned 504. Canopy height starts with the JPEG on every host. The
-    // strip reader yields between strips, and an abort keeps peaks already
-    // read so those crowns stay traced. Production still starts Overture
-    // with the JPEG.
+    // A long US draw does not open Overture until the aerial is back. A
+    // parquet parse on that draw was still running when the gateway returned
+    // 504. A short draw, and a frame outside 3DEP, starts Overture with the
+    // JPEG so a few-thousand-row group can finish inside the answer clock.
+    // Canopy height starts with the JPEG on every host. The strip reader
+    // yields between strips, and an abort keeps peaks already read.
+    // Production still starts Overture with the JPEG. The dev DEM starts
+    // here too: a 3DEP or Copernicus read is network-bound, and the old
+    // 400 ms slice after core aborted it.
     let metaDone = false;
     let metaReady = null;
     if (!devHost) {
       overtureJob = beginOptional((signal) =>
-        fetchOvertureFootprints(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
+        fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
       );
       if (needImage) {
         imgMeta = await fetchImageryMeta(imgMetaUrl);
@@ -871,6 +881,26 @@ async function handleClutter(event) {
         metaReady = meta;
         return meta;
       });
+      const drawLongM = Math.max(+frame.widthM || 0, +frame.lengthM || 0);
+      devEarlyFootprints = drawLongM <= 800 || !frameHas3dep(frame);
+      if (devEarlyFootprints && !overtureJob) {
+        overtureJob = beginOptional((signal) =>
+          fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
+        );
+      }
+      if (includeTerrain && !terrainJob) {
+        terrainJob = beginOptional((signal) =>
+          fetchTerrainDemImpl(frame, null, {
+            signal,
+            terrainResolution,
+            terrainStyle,
+            allowSurfaceFallback: true,
+            deadlineMs: started + DEV_ANSWER_MS,
+            fitAnswerClock: true,
+            skip3depProbe: !frameHas3dep(frame),
+          })
+        );
+      }
     }
     const globalJob = fetchMsGlobalFootprints(frame, (url) =>
       fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(coreBudget) })
@@ -965,16 +995,18 @@ async function handleClutter(event) {
     return json(502, cors, { error: describeCoreFailure(e) });
   }
 
-  // Production: Overture already started with the JPEG. Dev starts it only
-  // after the aerial and footprints are in hand, and only for a short slice,
-  // so a slow read cannot hold the zip past the gateway.
+  // Production: Overture already started with the JPEG. A long US dev draw
+  // starts it here, for a short slice, so a slow parse cannot hold the zip.
+  // A short draw and a frame outside 3DEP already started it with the aerial.
   const devLeft = DEV_ANSWER_MS - (Date.now() - started);
   const devSlice = devHost && devLeft >= 800 ? Math.min(DEV_OPTIONAL_MS, devLeft - 400) : 0;
   if (devHost && devSlice >= 200 && overtureFrame && needImage) {
-    overtureJob = beginOptional((signal) =>
-      fetchOvertureFootprints(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
-    );
-    if (includeTerrain) {
+    if (!overtureJob) {
+      overtureJob = beginOptional((signal) =>
+        fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
+      );
+    }
+    if (includeTerrain && !terrainJob) {
       terrainJob = beginOptional((signal) =>
         fetchTerrainDemImpl(frame, null, {
           signal,
@@ -982,6 +1014,8 @@ async function handleClutter(event) {
           terrainStyle,
           allowSurfaceFallback: true,
           deadlineMs: started + DEV_ANSWER_MS,
+          fitAnswerClock: true,
+          skip3depProbe: !frameHas3dep(frame),
         })
       );
     }
@@ -1006,7 +1040,7 @@ async function handleClutter(event) {
         started,
         "Overture buildings",
         overtureJob,
-        devHost ? devQuick : overtureWait(frame)
+        devHost ? (devEarlyFootprints ? devChmWait(started) : devQuick) : overtureWait(frame)
       )
     : Promise.resolve(null);
   // The height read overlaps the aerial. On dev it stops with the answer
@@ -1033,7 +1067,7 @@ async function handleClutter(event) {
   const demPromise = terrainFollow.preset
     ? Promise.resolve(terrainFollow.preset)
     : terrainFollow.job
-      ? joinOptional(warnings, started, "Terrain", terrainFollow.job, devHost ? devQuick : terrainFollow.join)
+      ? joinOptional(warnings, started, "Terrain", terrainFollow.job, devHost ? devChmWait(started) : terrainFollow.join)
       : Promise.resolve(null);
   const optional = await Promise.all([overturePromise, demPromise, chmPromise]);
   overturePack = optional[0] || { features: [] };
@@ -1434,4 +1468,5 @@ exports.terrainSettleMs = terrainSettleMs;
 exports.terrainRescueBudget = terrainRescueBudget;
 exports.setFetchTerrainDemForTests = setFetchTerrainDemForTests;
 exports.setFetchChmGridForTests = setFetchChmGridForTests;
+exports.setFetchOvertureForTests = setFetchOvertureForTests;
 exports.devChmWait = devChmWait;
