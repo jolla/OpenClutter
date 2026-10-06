@@ -563,7 +563,7 @@ document.getElementById("search").onsubmit = async (e) => {
     const r = await fetch("/api/geocode?q=" + encodeURIComponent(q));
     const hits = await r.json();
     if (!r.ok) throw new Error(hits.error || "Geocode failed");
-    if (!hits.length) throw new Error("No results");
+    if (!hits.length) throw new Error("No results. Try the street address.");
     const hit = hits[0];
     map.setView([+hit.lat, +hit.lon], 16);
     setStatus("Click the map to trace the site.");
