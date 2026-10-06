@@ -1174,6 +1174,88 @@ describe("dev-host Esri long side", () => {
     assert.equal(imageryStepBudget(14000, 8500), 0);
   });
 
+  it("keeps a measured roof that crosses the edge of a long dev draw", async () => {
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: WYNN.west, ymin: WYNN.south, xmax: WYNN.east, ymax: WYNN.north },
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+    setFetchOvertureForTests(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                features: [
+                  {
+                    type: "Feature",
+                    properties: { height: 112, heightSource: "overture" },
+                    geometry: {
+                      type: "Polygon",
+                      coordinates: [[
+                        [-115.176, 36.128],
+                        [-115.17, 36.128],
+                        [-115.17, 36.131],
+                        [-115.176, 36.131],
+                        [-115.176, 36.128],
+                      ]],
+                    },
+                  },
+                  {
+                    type: "Feature",
+                    properties: { height: 112, heightSource: "overture" },
+                    geometry: {
+                      type: "Polygon",
+                      coordinates: [[
+                        [-115.164, 36.118],
+                        [-115.16, 36.118],
+                        [-115.16, 36.12],
+                        [-115.164, 36.12],
+                        [-115.164, 36.118],
+                      ]],
+                    },
+                  },
+                ],
+              }),
+            1100
+          )
+        )
+    );
+    try {
+      const t0 = Date.now();
+      const res = await handler({
+        httpMethod: "POST",
+        headers: { host: "dev--openclutter.netlify.app" },
+        body: JSON.stringify({ ...WYNN, format: "bundle", includeFoliage: false, deferTerrain: true }),
+      });
+      const elapsed = Date.now() - t0;
+      assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
+      assert.ok(elapsed >= 1000, "elapsed " + elapsed);
+      assert.ok(elapsed < 8000, "elapsed " + elapsed);
+      const body = JSON.parse(res.body);
+      const notes = (body.warnings || []).join("\n");
+      assert.equal(/Overture buildings omitted/.test(notes), false, notes);
+      const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+      const oi = JSON.parse(files["openIntent_Wynn-Golf.json"].toString());
+      const tops = (oi.floorplans[0].attenuation_areas || [])
+        .map((a) => a.area_material && a.area_material.top_height)
+        .filter((n) => n >= 100);
+      assert.equal(tops.length, 1, JSON.stringify(tops));
+    } finally {
+      setFetchOvertureForTests(null);
+    }
+  });
+
   it("asks the dev host for a 400 px export image", async () => {
     assert.equal(await longSideFor({ headers: { host: "dev--openclutter.netlify.app" } }), 400);
     assert.equal(

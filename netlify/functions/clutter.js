@@ -1032,10 +1032,13 @@ async function handleClutter(event) {
       north: frame.north,
     };
     const coreBudget = devHost ? DEV_CORE_MS : CORE_FETCH_MS;
-    // A long US draw does not open Overture until the aerial is back. A
-    // parquet parse on that draw was still running when the gateway returned
-    // 504. A short draw, and a frame outside 3DEP, starts Overture with the
-    // JPEG so a few-thousand-row group can finish inside the answer clock.
+    // Auto starts Overture with the JPEG, including a long US draw. The Vegas
+    // group is a few seconds. Waiting until the aerial was back and then
+    // allowing 400 ms dropped those roofs and their measured heights while
+    // canopy height still finished, so the course had trees and flat buildings.
+    // The join still stops at the answer clock, so a parse that runs long is
+    // omitted and the zip returns. High and Sharp wait until the plate is back
+    // so that parse cannot abort the JPEG.
     // Canopy height starts with the JPEG on every host. The strip reader
     // yields between strips, and an abort keeps peaks already read.
     // Production still starts Overture with the JPEG. The dev DEM already
@@ -1067,9 +1070,17 @@ async function handleClutter(event) {
         metaReady = meta;
         return meta;
       });
-      const drawLongM = Math.max(+frame.widthM || 0, +frame.lengthM || 0);
-      devEarlyFootprints = !sharpRoom && (drawLongM <= 800 || !frameHas3dep(frame));
+      // Auto, including a long US draw. High and Sharp stay false so the plate
+      // returns before parquet starts.
+      devEarlyFootprints = !sharpRoom;
       if (devEarlyFootprints && !overtureJob) {
+        overtureJob = beginOptional((signal) =>
+          fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
+        );
+      }
+      // High and Sharp already waited out the plate above. Open the building
+      // read now, before footprints, so it gets the rest of that clock.
+      if (sharpRoom && !overtureJob) {
         overtureJob = beginOptional((signal) =>
           fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
         );
@@ -1171,9 +1182,9 @@ async function handleClutter(event) {
     return json(502, cors, { error: describeCoreFailure(e) });
   }
 
-  // Production: Overture already started with the JPEG. A long US dev draw
-  // starts it here, for a short slice, so a slow parse cannot hold the zip.
-  // A short draw and a frame outside 3DEP already started it with the aerial.
+  // Production already started Overture with the JPEG. On dev, Auto started
+  // it with the JPEG too, and High and Sharp started it after the plate.
+  // This opens the read only when that start did not happen.
   const devLeft = answerMs - (Date.now() - started);
   const devSlice = devHost && devLeft >= 800 ? Math.min(DEV_OPTIONAL_MS, devLeft - 400) : 0;
   if (devHost && (sharpRoom ? devLeft >= 800 : devSlice >= 200) && overtureFrame && needImage) {
@@ -1209,20 +1220,13 @@ async function handleClutter(event) {
       );
     }
   }
-  const devQuick = { graceMs: devSlice, hardMs: DEV_ANSWER_MS, budgetMs: devSlice, flushMs: 80 };
   const overturePromise = overtureJob
     ? joinOptional(
         warnings,
         started,
         "Overture buildings",
         overtureJob,
-        devHost
-          ? sharpRoom
-            ? devChmWait(started, answerMs)
-            : devEarlyFootprints
-              ? devChmWait(started)
-              : devQuick
-          : overtureWait(frame)
+        devHost ? devChmWait(started, sharpRoom ? answerMs : undefined) : overtureWait(frame)
       )
     : Promise.resolve(null);
   // The height read overlaps the aerial. On dev it stops with the answer
