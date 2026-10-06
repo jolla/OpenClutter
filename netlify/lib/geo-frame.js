@@ -115,17 +115,18 @@ function imageryMetersPerPx(devHost) {
 
 /**
  * Export asks for an image that can finish inside the function clock.
- * Dev and production both start at 1040 px / 1 m. Dev then tries 640 px
- * on the same box when that image does not arrive. The 2048 px plate is
- * not an export request.
+ * Production stays at 1040 px / 1 m. Dev starts at 640 px. A 1040 px plate
+ * on a large box used the whole gateway window and the platform answered
+ * 504 before a zip was sent. The next dev image is 400 px. The 2048 px
+ * plate is not an export request.
  */
 function imageryExportPlan(devHost) {
   if (!devHost) {
     return [{ maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX }];
   }
   return [
-    { maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX },
     { maxSide: 640, metersPerPx: IMAGERY_METERS_PER_PX },
+    { maxSide: 400, metersPerPx: 2 },
   ];
 }
 

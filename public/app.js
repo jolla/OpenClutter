@@ -619,8 +619,8 @@ if (copyTerrainBtn) {
 }
 
 function exportError(status, data) {
-  // A 502 is one try and a sentence on the page, including a JSON body that
-  // only says the aerial timed out. It is not a draw that is too large.
+  // A 502 or 504 is one try and a sentence on the page. It is not a draw
+  // that is too large, and the status does not stay blank.
   return OpenClutterExport.failureError(status, data);
 }
 

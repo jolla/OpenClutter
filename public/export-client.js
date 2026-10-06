@@ -1,12 +1,11 @@
 /**
  * How the page treats an export response.
  *
- * The function returns the zip in the request that was sent. A 502 is one
- * try, whether the body is empty or JSON. The aerial-timeout sentence is
- * not shown and is not asked for again; the page says the zip did not come
- * back. An empty 504 or 408 is also one try. The status line leaves
- * "Export is still working" once Export is idle. A 400 or 413 is the
- * request itself. The page does not call the draw too large.
+ * The function returns the zip in the request that was sent. A 502, 504,
+ * or 408 is one try. The page says the zip did not come back. It does not
+ * stay blank, and it does not ask again. The status line leaves "Export is
+ * still working" once Export is idle. A 400 or 413 is the request itself.
+ * The page does not call the draw too large.
  *
  * Browser + Node.
  */
@@ -30,10 +29,11 @@
     const gateway = status === 504 || status === 408 || is502;
     const blocked = status === 400 || status === 413;
     const recoverable = !blocked && !gateway;
+    const gatewayStatus = status === 504 || status === 408;
     let message = serverMessage;
-    if (is502 && (!serverMessage || quietServerMessage(serverMessage))) message = EMPTY_502_STATUS;
+    if ((is502 || gatewayStatus) && (!serverMessage || quietServerMessage(serverMessage))) message = EMPTY_502_STATUS;
     else if (blocked && !serverMessage) message = "Export failed (" + status + ").";
-    else if (!is502 && !blocked) message = serverMessage;
+    else if (!is502 && !gatewayStatus && !blocked) message = serverMessage;
     return {
       message: message,
       retry: recoverable,
