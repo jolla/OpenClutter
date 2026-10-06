@@ -619,8 +619,8 @@ if (copyTerrainBtn) {
 }
 
 function exportError(status, data) {
-  // A gateway close is a slow export the platform ended. An empty 502 is one
-  // try and a sentence on the page. It is not a draw that is too large.
+  // A 502 is one try and a sentence on the page, including a JSON body that
+  // only says the aerial timed out. It is not a draw that is too large.
   return OpenClutterExport.failureError(status, data);
 }
 

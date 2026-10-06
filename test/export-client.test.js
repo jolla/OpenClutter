@@ -50,7 +50,7 @@ describe("export gateway timeout", () => {
     assert.notEqual(idleStatus(new Error("")), WORKING_STATUS);
     assert.equal(
       idleStatus(failureError(502, { error: "Aerial imagery timed out. Retry the export." })),
-      ""
+      EMPTY_502_STATUS
     );
     assert.equal(
       idleStatus(new Error("The export stopped before a zip was ready.")),
@@ -65,10 +65,17 @@ describe("export gateway timeout", () => {
     assert.equal(idleStatus(failureError(400, { error: "bad bbox" })), "bad bbox");
 
     const imagery = exportFailure(502, { error: "Aerial imagery timed out. Retry the export." });
-    assert.equal(imagery.gateway, false);
-    assert.equal(imagery.attempts, 3);
-    assert.equal(imagery.retry, true);
-    assert.equal(imagery.message, "Aerial imagery timed out. Retry the export.");
+    assert.equal(imagery.gateway, true);
+    assert.equal(imagery.attempts, 1);
+    assert.equal(imagery.retry, false);
+    assert.equal(imagery.message, EMPTY_502_STATUS);
+    assert.equal(/Aerial imagery timed out/.test(imagery.message), false);
+
+    const footprints = exportFailure(502, { error: "Building footprints timed out. Retry the export." });
+    assert.equal(footprints.attempts, 1);
+    assert.equal(footprints.retry, false);
+    assert.equal(footprints.message, "Building footprints timed out. Retry the export.");
+    assert.equal(idleStatus(failureError(502, { error: footprints.message })), footprints.message);
 
     const empty502 = exportFailure(502, {});
     assert.equal(empty502.gateway, true);
@@ -113,6 +120,23 @@ describe("export gateway timeout", () => {
       }
     );
     assert.deepEqual(emptyCalls, [1]);
+
+    const jsonCalls = [];
+    await assert.rejects(
+      () =>
+        runExportAttempts(async (attempt) => {
+          jsonCalls.push(attempt);
+          throw failureError(502, { error: "Aerial imagery timed out. Retry the export." });
+        }),
+      (err) => {
+        assert.equal(err.message, EMPTY_502_STATUS);
+        assert.equal(idleStatus(err), EMPTY_502_STATUS);
+        assert.equal(err.noRetry, true);
+        assert.equal(/Aerial imagery timed out/.test(idleStatus(err)), false);
+        return true;
+      }
+    );
+    assert.deepEqual(jsonCalls, [1]);
 
     const zip = { zipBase64: "e30=", zipFilename: "openclutter.zip" };
     const once = [];
