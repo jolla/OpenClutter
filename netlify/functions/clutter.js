@@ -600,6 +600,11 @@ async function joinOptional(warnings, started, label, job, opts) {
     budget = Math.min(graceMs, Math.max(0, hardMs - elapsed));
   }
   if (budget < 200) {
+    const hardLeft = hardMs - elapsed;
+    if (opts && opts.keepOpen && hardLeft >= 200 && !job.isSettled()) {
+      const flushedOpen = await flushOptional(job, Math.max(150, Math.min(hardLeft - 80, 2000)));
+      if (flushedOpen) return flushedOpen;
+    }
     job.ctrl.abort();
     const flushed = await flushOptional(job, flushMs != null ? flushMs : 1200);
     if (flushed) {
@@ -705,6 +710,19 @@ function devChmWait(started, answerMs) {
   const left = clock - (Date.now() - started);
   const budget = Math.max(0, left - 400);
   return { graceMs: budget, hardMs: clock, budgetMs: budget, flushMs: 80 };
+}
+
+/**
+ * In-flight DEM on the dev host. The read starts with the map, so this wait
+ * is only the slice still inside the answer clock. keepOpen means a grid
+ * that resolves in that slice is kept; it is not aborted just because the
+ * optional-start reserve has already passed.
+ */
+function devTerrainWait(started, answerMs) {
+  const clock = answerMs > 0 ? answerMs : DEV_ANSWER_MS;
+  const left = clock - (Date.now() - started);
+  const budget = Math.max(0, left - 250);
+  return { graceMs: budget, hardMs: clock, budgetMs: budget, flushMs: 150, keepOpen: true };
 }
 
 function mapImageNote(plate, frame, jpegBuf) {
@@ -889,11 +907,29 @@ async function handleClutter(event) {
       east: frame.east,
       north: frame.north,
     };
+    if (needImage) {
+      frame = applyImageryMeta(frame, null, { width: frame.imgW, height: frame.imgH }, { requestBbox });
+    }
+    // The elevation read is network-bound and starts with the map on every
+    // quality, on the predicted content grid. Waiting until a High or Sharp
+    // plate returns left the DEM a few hundred milliseconds, which is
+    // "Terrain omitted: export budget spent on the map and footprints".
+    // Buildings still wait on that plate so a parquet parse cannot abort it.
+    if (devHost && includeTerrain && needImage && !terrainJob) {
+      terrainJob = beginOptional((signal) =>
+        fetchTerrainDemImpl(frame, null, {
+          signal,
+          terrainResolution,
+          terrainStyle,
+          allowSurfaceFallback: true,
+          deadlineMs: started + answerMs - 250,
+          fitAnswerClock: true,
+          skip3depProbe: !frameHas3dep(frame),
+        })
+      );
+    }
     let imageryJob;
     if (sharpRoom && needImage) {
-      // Buildings and the elevation read wait. A parquet parse on this same
-      // turn was aborting the 1040 px plate inside the Auto budget, and the
-      // zip came back on the 400 px plate.
       let sharpTimer;
       const sharpWall = new Promise((_, reject) => {
         sharpTimer = setTimeout(
@@ -916,9 +952,6 @@ async function handleClutter(event) {
           })
         : Promise.resolve(null);
     }
-    if (needImage) {
-      frame = applyImageryMeta(frame, null, { width: frame.imgW, height: frame.imgH }, { requestBbox });
-    }
     overtureFrame = {
       west: frame.west,
       south: frame.south,
@@ -932,9 +965,8 @@ async function handleClutter(event) {
     // JPEG so a few-thousand-row group can finish inside the answer clock.
     // Canopy height starts with the JPEG on every host. The strip reader
     // yields between strips, and an abort keeps peaks already read.
-    // Production still starts Overture with the JPEG. The dev DEM starts
-    // here too: a 3DEP or Copernicus read is network-bound, and the old
-    // 400 ms slice after core aborted it.
+    // Production still starts Overture with the JPEG. The dev DEM already
+    // started with the map, including High and Sharp.
     let metaDone = false;
     let metaReady = null;
     if (!devHost) {
@@ -967,19 +999,6 @@ async function handleClutter(event) {
       if (devEarlyFootprints && !overtureJob) {
         overtureJob = beginOptional((signal) =>
           fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
-        );
-      }
-      if (includeTerrain && !terrainJob && !sharpRoom) {
-        terrainJob = beginOptional((signal) =>
-          fetchTerrainDemImpl(frame, null, {
-            signal,
-            terrainResolution,
-            terrainStyle,
-            allowSurfaceFallback: true,
-            deadlineMs: started + DEV_ANSWER_MS,
-            fitAnswerClock: true,
-            skip3depProbe: !frameHas3dep(frame),
-          })
         );
       }
     }
@@ -1162,7 +1181,7 @@ async function handleClutter(event) {
           started,
           "Terrain",
           terrainFollow.job,
-          devHost ? devChmWait(started, sharpRoom ? answerMs : undefined) : terrainFollow.join
+          devHost ? devTerrainWait(started, answerMs) : terrainFollow.join
         )
       : Promise.resolve(null);
   const optional = await Promise.all([overturePromise, demPromise, chmPromise]);
