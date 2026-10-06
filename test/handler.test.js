@@ -2,7 +2,7 @@
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
-const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures, imageryAttemptMs, imageryStepBudget, IMAGERY_ATTEMPT_MS, IMAGERY_ATTEMPT_MS_DEV, IMAGERY_RETURN_MS, DEV_ANSWER_MS, lambdaPayloadBytes, EXPORT_PAYLOAD_BUDGET, LAMBDA_SYNC_PAYLOAD_MAX, terrainSettleMs, terrainRescueBudget, TERRAIN_RESERVE_MS, TERRAIN_HARD_MS, TERRAIN_FULL_MS, TERRAIN_COARSE_SAMPLES, setFetchTerrainDemForTests } = require("../netlify/functions/clutter");
+const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures, imageryAttemptMs, imageryStepBudget, IMAGERY_ATTEMPT_MS, IMAGERY_ATTEMPT_MS_DEV, IMAGERY_RETURN_MS, DEV_ANSWER_MS, lambdaPayloadBytes, EXPORT_PAYLOAD_BUDGET, LAMBDA_SYNC_PAYLOAD_MAX, terrainSettleMs, terrainRescueBudget, TERRAIN_RESERVE_MS, TERRAIN_HARD_MS, TERRAIN_FULL_MS, TERRAIN_COARSE_SAMPLES, setFetchTerrainDemForTests, setFetchChmGridForTests } = require("../netlify/functions/clutter");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
 const { unzipStore } = require("../netlify/lib/zip-store");
@@ -261,7 +261,7 @@ describe("clutter handler (mocked Esri)", () => {
     assert.ok(files["openIntent_Wynn-Golf.json"]);
   });
 
-  it("echoes client treesSource and does not re-fetch canopy when trees are provided", async () => {
+  it("echoes client treesSource and does not draw NLCD squares when canopy height misses", async () => {
     urls.length = 0;
     const res = await handler({
       httpMethod: "POST",
@@ -283,18 +283,225 @@ describe("clutter handler (mocked Esri)", () => {
     const body = JSON.parse(res.body);
     assert.equal(body.stats.includeFoliage, true);
     assert.equal(body.stats.treesSource, "nlcd-canopy");
-    assert.ok(body.stats.trees >= 1);
-    assert.ok(body.stats.openIntentTreeAreas >= 1);
+    assert.equal(body.stats.trees, 0);
+    assert.equal(body.stats.openIntentTreeAreas, 0);
+    assert.equal(body.stats.foliageGeometry === "nlcd-polygon", false);
     const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
     const oi = JSON.parse(files["openIntent_Wynn-Golf.json"].toString());
     const veg = oi.floorplans[0].attenuation_areas.filter((a) => String(a.area_material.name).indexOf("Foliage") === 0);
-    assert.ok(veg.length >= 1);
+    assert.equal(veg.length, 0);
     assert.equal(files["hamina-clipboard.json"], undefined);
     assert.equal(
       oi.floorplans[0].attenuation_areas.some((a) => a.area_material && a.area_material.name === "Tree Trunk"),
       false
     );
     assert.ok(!urls.some((u) => u.includes("USFS_EDW_NLCD_TCC")));
+  });
+});
+
+describe("dev foliage traces canopy height", () => {
+  const orig = global.fetch;
+  const { oiPixelCoords } = require("../netlify/lib/pipeline");
+  const { isVegetationOiName, isTrunkOiName } = require("../netlify/lib/materials");
+  const { devChmWait } = require("../netlify/functions/clutter");
+
+  function axisRect(ring) {
+    const open =
+      ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+        ? ring.slice(0, -1)
+        : ring.slice();
+    if (open.length !== 4) return false;
+    for (let i = 0; i < 4; i++) {
+      const a = open[i];
+      const b = open[(i + 1) % 4];
+      const dx = Math.abs(a[0] - b[0]);
+      const dy = Math.abs(a[1] - b[1]);
+      if (dx > 1e-3 && dy > 1e-3) return false;
+    }
+    return true;
+  }
+
+  function roundCrown() {
+    const w = 48;
+    const h = 48;
+    const cell = 2.2;
+    const values = new Uint8Array(w * h);
+    let nz = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (Math.hypot(x - 24, y - 24) <= 3.4) {
+          values[y * w + x] = 16;
+          nz++;
+        }
+      }
+    }
+    const midLat = 36.128;
+    const mLon = 111320 * Math.cos((midLat * Math.PI) / 180);
+    const west = -115.162;
+    const south = 36.127;
+    return {
+      west,
+      south,
+      east: west + (w * cell) / mLon,
+      north: south + (h * cell) / 110540,
+      width: w,
+      height: h,
+      values,
+      nonzero: nz,
+    };
+  }
+
+  function hang(signal) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve(null), 30000);
+      const abort = () => {
+        clearTimeout(timer);
+        const err = new Error("The operation was aborted due to timeout");
+        err.name = "AbortError";
+        reject(err);
+      };
+      if (signal && signal.aborted) abort();
+      else if (signal) signal.addEventListener("abort", abort, { once: true });
+    });
+  }
+
+  before(() => {
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("MSBFP2")) {
+        return {
+          ok: true,
+          json: async () => ({
+            features: [{
+              type: "Feature",
+              properties: {},
+              geometry: {
+                type: "Polygon",
+                coordinates: [[
+                  [-115.165, 36.126], [-115.164, 36.126], [-115.164, 36.127], [-115.165, 36.127], [-115.165, 36.126],
+                ]],
+              },
+            }],
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) {
+        if (u.includes("f=json")) {
+          return {
+            ok: true,
+            json: async () => ({
+              width: 64,
+              height: 64,
+              extent: {
+                xmin: WYNN.west,
+                ymin: WYNN.south,
+                xmax: WYNN.east,
+                ymax: WYNN.north,
+                spatialReference: { wkid: 4326 },
+              },
+            }),
+          };
+        }
+        return { ok: true, arrayBuffer: async () => jpeg };
+      }
+      if (u.includes("getSamples") || u.includes("USFS_EDW_NLCD_TCC")) {
+        return { ok: true, json: async () => ({ samples: [] }) };
+      }
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+  });
+
+  after(() => {
+    setFetchChmGridForTests(null);
+    global.fetch = orig;
+  });
+
+  it("gives canopy height the rest of the dev answer clock", () => {
+    const wait = devChmWait(Date.now());
+    assert.ok(wait.budgetMs > 400, "budget " + wait.budgetMs);
+    assert.ok(wait.budgetMs <= DEV_ANSWER_MS - 400);
+    assert.equal(wait.flushMs, 80);
+  });
+
+  it("exports a traced crown and a trunk when canopy height is ready", async () => {
+    setFetchChmGridForTests(async () => roundCrown());
+    const hits = [
+      { lon: -115.17, lat: 36.122, pct: 80 },
+      { lon: -115.1697, lat: 36.122, pct: 80 },
+      { lon: -115.17, lat: 36.12225, pct: 80 },
+      { lon: -115.1697, lat: 36.12225, pct: 80 },
+    ];
+    const t0 = Date.now();
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({
+        ...WYNN,
+        includeFoliage: true,
+        treesSource: "nlcd-canopy",
+        canopyHits: hits,
+        format: "bundle",
+      }),
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 300));
+    assert.ok(elapsed < 8000, "elapsed " + elapsed);
+    const body = JSON.parse(res.body);
+    assert.equal(body.stats.foliageGeometry, "chm-contour");
+    assert.ok(body.stats.openIntentTreeAreas >= 1);
+    const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+    assert.deepEqual(Object.keys(files).sort(), ["images/Wynn-Golf.jpg", "openIntent_Wynn-Golf.json"]);
+    const oi = JSON.parse(files["openIntent_Wynn-Golf.json"].toString());
+    const areas = oi.floorplans[0].attenuation_areas;
+    const crowns = areas.filter((a) => isVegetationOiName(a.area_material.name));
+    const trunks = areas.filter((a) => isTrunkOiName(a.area_material.name));
+    assert.equal(crowns.length, 1);
+    assert.equal(trunks.length, 1);
+    const crown = crowns[0];
+    assert.equal(crown.area_material.transparencyEnabled, true);
+    assert.ok(crown.area_material.bottom_height >= 2.5);
+    assert.ok(crown.area_material.bottom_height < crown.area_material.top_height);
+    assert.equal(trunks[0].area_material.top_height, crown.area_material.bottom_height);
+    const ring = oiPixelCoords(crown.area.coordinates).map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
+    assert.equal(axisRect(ring), false, "crown ring " + JSON.stringify(ring));
+    assert.ok(ring.length >= 6, "traced ring has " + ring.length + " corners");
+  });
+
+  it("returns the buildings zip when canopy height hangs and does not draw squares", async () => {
+    setFetchChmGridForTests((_frame, opts) => hang(opts && opts.signal));
+    const t0 = Date.now();
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({
+        ...WYNN,
+        includeFoliage: true,
+        treesSource: "nlcd-canopy",
+        canopyHits: [
+          { lon: -115.17, lat: 36.122, pct: 80 },
+          { lon: -115.1697, lat: 36.122, pct: 80 },
+          { lon: -115.17, lat: 36.12225, pct: 80 },
+          { lon: -115.1697, lat: 36.12225, pct: 80 },
+        ],
+        format: "bundle",
+      }),
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 300));
+    assert.ok(elapsed >= 4000, "elapsed " + elapsed);
+    assert.ok(elapsed < 8000, "elapsed " + elapsed);
+    const body = JSON.parse(res.body);
+    assert.match((body.warnings || []).join("\n"), /Foliage omitted: canopy height timed out/);
+    assert.equal(body.stats.openIntentTreeAreas, 0);
+    assert.equal(body.stats.foliageGeometry, "omitted");
+    assert.ok(body.stats.openIntentBuildingAreas >= 1);
+    const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+    assert.deepEqual(Object.keys(files).sort(), ["images/Wynn-Golf.jpg", "openIntent_Wynn-Golf.json"]);
+    const oi = JSON.parse(files["openIntent_Wynn-Golf.json"].toString());
+    assert.equal(
+      oi.floorplans[0].attenuation_areas.some((a) => /foliage|tree trunk/i.test(String(a.area_material && a.area_material.name))),
+      false
+    );
   });
 });
 

@@ -135,6 +135,10 @@ let fetchTerrainDemImpl = fetchTerrainDem;
 function setFetchTerrainDemForTests(fn) {
   fetchTerrainDemImpl = typeof fn === "function" ? fn : fetchTerrainDem;
 }
+let fetchChmGridImpl = fetchChmGrid;
+function setFetchChmGridForTests(fn) {
+  fetchChmGridImpl = typeof fn === "function" ? fn : fetchChmGrid;
+}
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
 const { surfaceMasksFromImage } = require("../lib/surface-mask");
@@ -653,6 +657,17 @@ function overtureWait(frame) {
   };
 }
 
+/**
+ * Canopy height on dev keeps running until the answer clock, minus a slice
+ * to build the zip. It is not the 400 ms Overture slice: that window starts
+ * too late to trace a crown, and the miss was exported as NLCD squares.
+ */
+function devChmWait(started) {
+  const left = DEV_ANSWER_MS - (Date.now() - started);
+  const budget = Math.max(0, left - 400);
+  return { graceMs: budget, hardMs: DEV_ANSWER_MS, budgetMs: budget, flushMs: 80 };
+}
+
 /** Dev stops optional reads at DEV_ANSWER_MS so the zip is the response. */
 function capDevWait(devHost, started, opts) {
   if (!devHost || !opts) return opts;
@@ -823,10 +838,12 @@ async function handleClutter(event) {
       north: frame.north,
     };
     const coreBudget = devHost ? DEV_CORE_MS : CORE_FETCH_MS;
-    // Dev does not open Overture, the DEM, or canopy height until the aerial
-    // and the building footprints are back. Those reads were still running
-    // when the gateway returned 504, and a parquet parse can block the
-    // imagery deadline. Production still starts Overture with the JPEG.
+    // Dev does not open Overture or the DEM until the aerial and the building
+    // footprints are back. A parquet parse was still running when the gateway
+    // returned 504. Canopy height starts with the JPEG on every host. The
+    // strip reader yields between strips, and an abort keeps peaks already
+    // read so those crowns stay traced. Production still starts Overture
+    // with the JPEG.
     let metaDone = false;
     let metaReady = null;
     if (!devHost) {
@@ -865,14 +882,14 @@ async function handleClutter(event) {
     )
       .catch(() => ({ features: [] }))
       .finally(() => clearTimeout(usaTimer));
-    if (!devHost && includeFoliage && needImage && !chmJob) {
+    if (includeFoliage && needImage && !chmJob) {
       const chmFrame = {
         west: frame.west,
         south: frame.south,
         east: frame.east,
         north: frame.north,
       };
-      chmJob = beginOptional((signal) => fetchChmGrid(chmFrame, { signal }));
+      chmJob = beginOptional((signal) => fetchChmGridImpl(chmFrame, { signal }));
     }
     const clientHitsEarly = includeFoliage ? normalizeCanopyHits(body.canopyHits) : [];
     const canopyJob =
@@ -970,7 +987,7 @@ async function handleClutter(event) {
     }
     if (includeFoliage && !chmJob) {
       chmJob = beginOptional((signal) =>
-        fetchChmGrid(
+        fetchChmGridImpl(
           {
             west: frame.west,
             south: frame.south,
@@ -1002,7 +1019,7 @@ async function handleClutter(event) {
         "Canopy height",
         chmJob,
         devHost
-          ? devQuick
+          ? devChmWait(started)
           : {
               graceMs: 8000,
               hardMs: EXPORT_ANSWER_MS,
@@ -1187,6 +1204,7 @@ async function handleClutter(event) {
       maskPolygons,
       includeFoliage,
       omitFoliage: chmTimedOut,
+      chmRequired: includeFoliage,
       maxFoliagePolygons: foliageCap,
       terrainResolution,
       terrainStyle,
@@ -1415,3 +1433,5 @@ exports.TERRAIN_RESCUE_MIN_MS = TERRAIN_RESCUE_MIN_MS;
 exports.terrainSettleMs = terrainSettleMs;
 exports.terrainRescueBudget = terrainRescueBudget;
 exports.setFetchTerrainDemForTests = setFetchTerrainDemForTests;
+exports.setFetchChmGridForTests = setFetchChmGridForTests;
+exports.devChmWait = devChmWait;

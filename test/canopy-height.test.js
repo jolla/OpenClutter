@@ -738,4 +738,128 @@ describe("canopy height replaces the color guess", () => {
     assert.equal(at720.some((c) => c.heightM === 3), false, "a short speck does not take a tree slot");
     assert.equal(compact[0].heightM >= compact[compact.length - 1].heightM, true);
   });
+
+  it("does not turn NLCD hits into squares when canopy height was required", () => {
+    const frame = geoFrame({ west: -87.93, south: 42.89, east: -87.91, north: 42.91, name: "Req" });
+    const cellLon = 30 / (111320 * Math.cos((42.9 * Math.PI) / 180));
+    const cellLat = 30 / 110540;
+    const lon0 = frame.west + (frame.east - frame.west) * 0.4;
+    const lat0 = frame.south + (frame.north - frame.south) * 0.4;
+    const hits = [];
+    for (let iy = 0; iy < 3; iy++) {
+      for (let ix = 0; ix < 4; ix++) hits.push({ lon: lon0 + ix * cellLon, lat: lat0 + iy * cellLat, pct: 80 });
+    }
+    const squares = treePairsFromPoints([], frame, [], null, { canopyHits: hits, heightSample: () => 14 });
+    assert.equal(squares.foliageGeometry, "nlcd-polygon");
+    assert.ok(squares.oiAreas.length >= 1);
+    const required = treePairsFromPoints([], frame, [], null, {
+      canopyHits: hits,
+      heightSample: () => 14,
+      chmRequired: true,
+    });
+    assert.equal(required.oiAreas.length, 0);
+    assert.equal(required.foliageGeometry, "none");
+  });
+
+  it("keeps canopy peaks from strips read before the abort", async () => {
+    const frame = { west: -87.93, south: 42.89, east: -87.929, north: 42.891 };
+    const [xW, yS] = mercator(frame.west, frame.south);
+    const [xE, yN] = mercator(frame.east, frame.north);
+    const width = 80;
+    const height = 600;
+    const origin = [Math.min(xW, xE), Math.max(yS, yN)];
+    const res = [(Math.max(xW, xE) - origin[0]) / width, (Math.min(yS, yN) - origin[1]) / height];
+    const ctrl = new AbortController();
+    let strips = 0;
+    const image = {
+      getWidth: () => width,
+      getHeight: () => height,
+      getOrigin: () => origin,
+      getResolution: () => res,
+      readRasters: async ({ window }) => {
+        strips++;
+        const cols = window[2] - window[0];
+        const rows = window[3] - window[1];
+        const data = new Uint8Array(cols * rows);
+        if (window[1] < 256) {
+          for (let y = 0; y < rows; y++) {
+            for (let x = 8; x < 48; x++) data[y * cols + x] = 14;
+          }
+        }
+        ctrl.abort();
+        return data;
+      },
+    };
+    const grid = await fetchChmGrid(frame, {
+      signal: ctrl.signal,
+      loader: { fromUrl: async () => ({ getImage: async () => image }) },
+    });
+    assert.ok(grid && grid.nonzero > 0, "peaks already read stay on the grid");
+    assert.equal(strips, 1, "the abort stops the next strip");
+  });
+
+  it("keeps a southern crown from the full-site overview when native strips do not run", async () => {
+    const frame = { west: -87.93, south: 42.89, east: -87.928, north: 42.892 };
+    const [xW, yS] = mercator(frame.west, frame.south);
+    const [xE, yN] = mercator(frame.east, frame.north);
+    const origin = [Math.min(xW, xE), Math.max(yS, yN)];
+    const spanX = Math.max(xW, xE) - origin[0];
+    const spanY = Math.min(yS, yN) - origin[1];
+    let nativeReads = 0;
+    const full = {
+      getWidth: () => 80,
+      getHeight: () => 1600,
+      getOrigin: () => origin,
+      getResolution: () => [spanX / 80, spanY / 1600],
+      readRasters: async () => {
+        nativeReads++;
+        return new Uint8Array(80 * 256);
+      },
+    };
+    const ctrl = new AbortController();
+    const overview = {
+      getWidth: () => 48,
+      getHeight: () => 48,
+      getOrigin: () => origin,
+      getResolution: () => [spanX / 48, spanY / 48],
+      readRasters: async () => {
+        const data = new Uint8Array(48 * 48);
+        for (let y = 0; y < 48; y++) {
+          for (let x = 0; x < 48; x++) {
+            if (Math.hypot(x - 24, y - 40) <= 6) data[y * 48 + x] = 14;
+          }
+        }
+        ctrl.abort();
+        return data;
+      },
+    };
+    const grid = await fetchChmGrid(frame, {
+      signal: ctrl.signal,
+      loader: {
+        fromUrl: async () => ({
+          getImageCount: async () => 2,
+          getImage: async (index) => (index ? overview : full),
+        }),
+      },
+    });
+    assert.equal(nativeReads, 0);
+    assert.ok(grid && grid.nonzero > 10, "the overview still covers the draw");
+    const midLon = (frame.west + frame.east) / 2;
+    const southLat = frame.north - (40.5 / 48) * (frame.north - frame.south);
+    const northLat = frame.north - (4 / 48) * (frame.north - frame.south);
+    assert.ok(sampleChmGrid(grid, midLon, southLat) >= 5, "south " + sampleChmGrid(grid, midLon, southLat));
+    assert.equal(sampleChmGrid(grid, midLon, northLat), 0);
+    const crowns = crownsFromChm(grid);
+    assert.equal(crowns.length, 1);
+    assert.ok(crowns[0].ringLonLat.length >= 6, "ring verts " + crowns[0].ringLonLat.length);
+  });
+
+  it("keeps a fairway-sized crown when the largest masses fill the first 480", () => {
+    const traced = [[0, 0], [3, 0], [3.4, 1], [1, 2], [0, 1.2]];
+    const crowns = [];
+    for (let i = 0; i < 500; i++) crowns.push({ areaM2: 400 + i, heightM: 14, ringLonLat: traced });
+    crowns.push({ areaM2: 120, heightM: 16, ringLonLat: traced });
+    const kept = selectCrownsForExport(crowns, 720);
+    assert.ok(kept.some((c) => c.areaM2 === 120 && c.heightM === 16));
+  });
 });

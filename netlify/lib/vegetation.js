@@ -382,7 +382,10 @@ function clipboardForCanopy(material) {
  * Cells on a building footprint or a pavement/road polygon are cleared first.
  * NLCD percent can only extend a cell that already has a measured height.
  * A canopy-height timeout sets omitFoliage and emits nothing.
- * Otherwise multi-cell NLCD patches become canopy polygons. Tree points,
+ * An export that asked for measured crowns (chmRequired) does not draw
+ * NLCD cell outlines when the height grid is missing. Those outlines are
+ * axis-aligned squares. Multi-cell NLCD patches are only the geometry when
+ * the caller did not ask for a canopy-height grid. Tree points,
  * median dots, and crown circles are not emitted and do not become trees.
  * A compact measured crown is one tree: a stem under that crown, the crown
  * bottom above the ground, and the crown top at the measured height. A wide
@@ -498,13 +501,18 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     coarsened = !!polygons.coarsened;
     if (polygons.length) foliageGeometry = "chm-contour";
   }
-  if (!polygons.length && !(opts && opts.omitFoliage)) {
+  if (
+    !polygons.length &&
+    !(opts && opts.omitFoliage) &&
+    !(opts && opts.chmGrid) &&
+    !(opts && opts.chmRequired)
+  ) {
     polygons = canopyPolygonsFromHits(
       opts && opts.canopyHits,
       frame,
       buildingAabbs,
       opts && opts.heightSample,
-      !!(opts && opts.chmGrid)
+      false
     );
     if (polygons.length) foliageGeometry = "nlcd-polygon";
   }
