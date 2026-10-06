@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.54** on `dev` — One Export click returns a zip or one clear sentence. The export image starts at the production size (1040 px) and steps down to 640 px in that same request, including one more try while the function clock is still open. A 502 is not sent three times, and the page does not go quiet after “Aerial imagery timed out.” It says “The export did not return a zip.” A slow terrain read stops at 12s so the buildings zip can still download. Include foliage stays off and Experimental. The measured crowns from v1.1.52 stay. Buildings stay the quiet cool gray from v1.1.48. There is no new control. The badge stays (`dev · v1.1.54`).
+
 **v1.1.53** on `dev` — The first Export returns a zip. The canopy-height read is taken in short strips and stops when the export clock runs out, so that read cannot hold the function until the gateway answers with an empty 502. Foliage is left out of that zip when the height read does not finish; buildings still download. An empty 502 is one try, and the page says “The export did not return a zip.” It is not asked for three times with no sentence. Include foliage stays off and Experimental. The measured crowns from v1.1.52 stay. Buildings stay the quiet cool gray from v1.1.48. There is no new control. The badge stays (`dev · v1.1.53`).
 
 **v1.1.52** on `dev` — Include foliage stays off and Experimental. When it is on, a measured crown is kept even when it is one tree: the canopy grid keeps the peak instead of averaging it into the grass, and the extra foliage budget is used for those compact crowns. The larger canopy masses stay. Roofs, pavement, water, and ground under 3 m stay clear. A one-pixel spike is not a tree. Buildings stay the quiet cool gray from v1.1.48. There is no new control. The badge stays (`dev · v1.1.52`).
@@ -79,7 +81,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.53`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, choose **Sloped** (default, one ramp or pad per cell) or **Raised layers** (stacked plates, at most 400 floors). The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The style radios hide when Terrain is off, and both the checkbox and the radios stay hidden off this host.
+- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.54`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. With Terrain on, choose **Sloped** (default, one ramp or pad per cell) or **Raised layers** (stacked plates, at most 400 floors). The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The style radios hide when Terrain is off, and both the checkbox and the radios stay hidden off this host.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 

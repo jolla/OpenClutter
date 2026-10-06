@@ -22,19 +22,18 @@ const CORE_FETCH_MS = 7000;
 const IMAGERY_ATTEMPT_MS = 8500;
 const IMAGERY_ATTEMPTS = 2;
 const IMAGERY_BACKOFF_MS = 400;
-// Dev host asks for a 2048 px / 0.5 m JPEG first. A small site returns in
-// a few seconds and that image is kept. A Wynn-sized box at 2048 px sits
-// past this window. The production-size image is what used to finish, so
-// that is the step-down, with the same 8.5s the production export allows.
-// A 4s try at 1600 px, then 3.5s at 1040 px, timed out every size and the
-// page said the aerial timed out. 2400 px is not the request.
-const IMAGERY_ATTEMPT_MS_DEV = 5000;
-const IMAGERY_STEPDOWN_MS = [4000, 8500];
-// A failure in this first slice can still try 1600 px. Once the sharp
-// window is gone, skip that middle size and use the production image,
-// which has a full attempt under IMAGERY_RETURN_MS.
+// Dev export uses the same 8.5s first image as production (1040 px / 1 m).
+// A 2048 px first request spent this clock and the function answered 502
+// before a zip existed. The next image is 640 px. 2400 px is not a request.
+const IMAGERY_STEPDOWN_MS = 6000;
+// A later step larger than the production image is skipped once this much
+// of the export has already run. The current plan has no such step.
 const IMAGERY_STEPDOWN_QUICK_MS = 2000;
 const IMAGERY_RETURN_MS = 15000;
+// After the plan misses, one more smallest JPEG while this much of the
+// function clock is left. The gateway closes a silent export around 30s,
+// including cold start, so the zip is still built after this attempt.
+const IMAGERY_LAST_MS = 20000;
 // Network waits stop here so the zip is the response. The gateway closes a
 // silent export around 30s, including cold start, so this stays well under that.
 const EXPORT_ANSWER_MS = 16000;
@@ -71,7 +70,10 @@ const OVERTURE_HARD_MS = EXPORT_ANSWER_MS;
 // the buildings, then one coarser retry if it is still open.
 const TERRAIN_GRACE_MS = 1500;
 const TERRAIN_HARD_MS = 9000;
-const TERRAIN_HARD_MS_DEV = 18000;
+// Dev used to let an in-flight DEM ride to 18s. That hold, on top of a slow
+// aerial, is how the function missed the gateway. A grid that is still open
+// at 12s is omitted and the buildings zip returns.
+const TERRAIN_HARD_MS_DEV = 12000;
 // Fast maps still give a full getSamples this long before the coarse retry.
 // A map that already ran longer has had that time; the retry is not a second wait.
 const TERRAIN_FULL_MS = 4000;
@@ -182,18 +184,15 @@ async function fetchImageryMeta(url) {
   }
 }
 
-/** Production stays on the 8.5s ceiling. The dev host gets a longer first try for the 2048px JPEG. */
-function imageryAttemptMs(devHost) {
-  return devHost ? IMAGERY_ATTEMPT_MS_DEV : IMAGERY_ATTEMPT_MS;
+/** Both hosts give the first export image the production ceiling. Dev's second image is shorter. */
+function imageryAttemptMs() {
+  return IMAGERY_ATTEMPT_MS;
 }
 
 function imagerySteps(devHost) {
   const plan = imageryExportPlan(devHost);
-  if (!devHost) {
-    return plan.map((step) => Object.assign({ attemptMs: IMAGERY_ATTEMPT_MS }, step));
-  }
   return plan.map((step, i) =>
-    Object.assign({ attemptMs: i === 0 ? IMAGERY_ATTEMPT_MS_DEV : IMAGERY_STEPDOWN_MS[i - 1] }, step)
+    Object.assign({ attemptMs: i === 0 ? IMAGERY_ATTEMPT_MS : IMAGERY_STEPDOWN_MS }, step)
   );
 }
 
@@ -212,10 +211,10 @@ function imageryStepBudget(elapsed, attemptMs) {
 }
 
 /**
- * Same drawn box. A sharp JPEG that arrives inside its window is kept.
- * If that request is still out, the next fetch is the production-size
- * image with a full attempt, not a short try at every size in between.
- * A failure that happens at once can still use the middle size.
+ * Same drawn box, smaller image when the first one misses. The first step
+ * is the production size. A later step is fewer pixels, not a sharper plate.
+ * When every planned step misses and the gateway is still open, the smallest
+ * image is asked for once more in this same request.
  */
 async function fetchImageryStepped(bbox, steps) {
   let last;
@@ -229,14 +228,26 @@ async function fetchImageryStepped(bbox, steps) {
       attemptMs = imageryStepBudget(elapsed, step.attemptMs);
       if (!(attemptMs >= 1500)) break;
     }
-    const frame = geoFrame(bbox, { maxSide: step.maxSide, metersPerPx: step.metersPerPx });
     try {
-      return await fetchImageryJpeg(esriImageryUrl(frame), attemptMs);
+      return await fetchImageryJpeg(esriImageryUrl(imageryFrame(bbox, step)), attemptMs);
+    } catch (e) {
+      last = e;
+    }
+  }
+  const rescue = steps.length ? steps[steps.length - 1] : null;
+  const rescueMs = rescue ? Math.min(IMAGERY_ATTEMPT_MS, IMAGERY_LAST_MS - (Date.now() - started)) : 0;
+  if (rescue && rescueMs >= 1500) {
+    try {
+      return await fetchImageryJpeg(esriImageryUrl(imageryFrame(bbox, rescue)), rescueMs);
     } catch (e) {
       last = e;
     }
   }
   throw last;
+}
+
+function imageryFrame(bbox, step) {
+  return geoFrame(bbox, { maxSide: step.maxSide, metersPerPx: step.metersPerPx });
 }
 
 /**
@@ -1300,8 +1311,8 @@ exports.handler = async (event, context) => {
 exports.UA = UA;
 exports.imageryAttemptMs = imageryAttemptMs;
 exports.IMAGERY_ATTEMPT_MS = IMAGERY_ATTEMPT_MS;
-exports.IMAGERY_ATTEMPT_MS_DEV = IMAGERY_ATTEMPT_MS_DEV;
 exports.IMAGERY_RETURN_MS = IMAGERY_RETURN_MS;
+exports.IMAGERY_LAST_MS = IMAGERY_LAST_MS;
 exports.EXPORT_ANSWER_MS = EXPORT_ANSWER_MS;
 exports.imageryStepBudget = imageryStepBudget;
 exports.beginOptional = beginOptional;
