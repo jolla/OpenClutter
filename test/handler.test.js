@@ -923,6 +923,21 @@ describe("Overture join keeps a finished read after the core budget", () => {
     };
   }
 
+  it("keeps a DEM that resolves in the last slice of the dev answer clock", async () => {
+    const warnings = [];
+    const job = beginOptional(() => new Promise((resolve) => setTimeout(() => resolve(demPack()), 120)));
+    const started = Date.now() - 5750;
+    const result = await joinOptional(warnings, started, "Terrain", job, {
+      graceMs: 0,
+      hardMs: 6000,
+      budgetMs: 0,
+      flushMs: 80,
+      keepOpen: true,
+    });
+    assert.equal(result && result.samples && result.samples.length, 4);
+    assert.equal(warnings.length, 0);
+  });
+
   it("keeps a DEM grid that resolves as the terrain abort fires", async () => {
     const warnings = [];
     const job = beginOptional(
@@ -1695,6 +1710,55 @@ describe("dev-host Esri long side", () => {
     const notes = (JSON.parse(res.body).warnings || []).join("\n");
     assert.match(notes, /Map image \d+ px/);
     assert.equal(/Map image stepped down/.test(notes), false);
+  });
+
+  it("reads terrain during a High plate instead of omitting it when the plate uses the clock", async () => {
+    const order = [];
+    global.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=1040,")) {
+        order.push("image-start");
+        const signal = init && init.signal;
+        await new Promise((resolve, reject) => {
+          const fail = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          if (signal && signal.aborted) fail();
+          else if (signal) signal.addEventListener("abort", fail, { once: true });
+          else setTimeout(fail, 7000);
+        });
+      }
+      if (u.includes("World_Imagery") && u.includes("f=image")) {
+        order.push("image-step");
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        return { ok: true, arrayBuffer: async () => jpeg };
+      }
+      if (u.includes("elevation.nationalmap.gov") && u.includes("getSamples")) {
+        order.push("dem");
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        return { ok: true, json: async () => ({ samples: samples() }) };
+      }
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: WYNN.west, ymin: WYNN.south, xmax: WYNN.east, ymax: WYNN.north },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...WYNN, format: "bundle", imageryQuality: "high", includeFoliage: false, includeTerrain: true }),
+    });
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 500));
+    assert.ok(order.indexOf("dem") >= 0 && order.indexOf("dem") < order.indexOf("image-step"), order.join(","));
+    const body = JSON.parse(res.body);
+    assert.ok(body.terrainClipboard, body.terrainStatus);
+    assert.match(body.terrainStatus, /Copy terrain/);
+    assert.equal(/export budget spent/.test(body.terrainStatus + (body.warnings || []).join("\n")), false);
   });
 });
 
