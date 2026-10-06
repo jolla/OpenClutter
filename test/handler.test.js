@@ -2755,6 +2755,8 @@ describe("terrain aside from the zip clock", () => {
     const body = JSON.parse(res.body);
     assert.ok(body.terrainClipboard && body.terrainClipboard.slopedFloors.length > 0, body.terrainStatus);
     assert.match(body.terrainStatus, /Copy terrain/);
+    assert.ok(Array.isArray(body.liftSamples) && body.liftSamples.length >= 4);
+    assert.equal(body.liftKind, "surface");
     assert.equal(body.zipBase64, undefined);
     assert.equal(urls.some((u) => u.includes("World_Imagery")), false);
     assert.equal(/export budget spent/.test(body.terrainStatus), false);
@@ -2821,6 +2823,89 @@ describe("terrain aside from the zip clock", () => {
     assert.equal(files["terrain-clipboard.json"], undefined);
     assert.ok(Object.keys(files).some((name) => name.endsWith(".json")));
     assert.ok(Object.keys(files).some((name) => name.endsWith(".jpg")));
+  });
+
+  it("lifts a building onto the pasted mesh without putting that mesh in the zip", async () => {
+    const calls = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: WYNN.west, ymin: WYNN.south, xmax: WYNN.east, ymax: WYNN.north },
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+    setFetchTerrainDemForTests(async () => {
+      calls.push("dem");
+      throw new Error("zip must not read a DEM");
+    });
+    setFetchOvertureForTests(async () => ({
+      features: [
+        {
+          type: "Feature",
+          properties: { height: 40, heightSource: "overture" },
+          geometry: {
+            type: "Polygon",
+            coordinates: [[
+              [-115.161, 36.129],
+              [-115.159, 36.129],
+              [-115.159, 36.131],
+              [-115.161, 36.131],
+              [-115.161, 36.129],
+            ]],
+          },
+        },
+      ],
+    }));
+    try {
+      const res = await handler({
+        httpMethod: "POST",
+        headers: { host: "dev--openclutter.netlify.app" },
+        body: JSON.stringify({
+          ...WYNN,
+          format: "bundle",
+          includeFoliage: false,
+          includeTerrain: true,
+          deferTerrain: true,
+          terrainStyle: "sloped",
+          liftKind: "bare-earth",
+          liftSamples: [
+            { lon: WYNN.west, lat: WYNN.south, z: 600 },
+            { lon: WYNN.east, lat: WYNN.south, z: 600 },
+            { lon: WYNN.west, lat: WYNN.north, z: 640 },
+            { lon: WYNN.east, lat: WYNN.north, z: 640 },
+          ],
+        }),
+      });
+      assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
+      const body = JSON.parse(res.body);
+      assert.equal(calls.length, 0);
+      assert.equal(body.terrainClipboard, null);
+      assert.ok(body.stats.buildingsLifted >= 1, body.stats.summary);
+      const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+      assert.equal(files["terrain-clipboard.json"], undefined);
+      const names = Object.keys(files);
+      assert.ok(names.some((name) => name.endsWith(".json")));
+      assert.ok(names.some((name) => name.endsWith(".jpg")));
+      const oiName = names.find((name) => name.indexOf("openIntent_") === 0);
+      const oi = JSON.parse(files[oiName].toString());
+      const bottoms = (oi.floorplans[0].attenuation_areas || [])
+        .map((a) => a.area_material && a.area_material.bottom_height)
+        .filter((n) => n >= 5);
+      assert.ok(bottoms.length >= 1, JSON.stringify(oi.floorplans[0].attenuation_areas.map((a) => a.area_material)));
+      const mat = oi.floorplans[0].attenuation_areas.find((a) => a.area_material && a.area_material.bottom_height >= 5).area_material;
+      assert.ok(mat.top_height > mat.bottom_height + 10, JSON.stringify(mat));
+    } finally {
+      setFetchOvertureForTests(null);
+      setFetchTerrainDemForTests(null);
+    }
   });
 
   it("says to export again when the aside read does not return", async () => {
