@@ -1097,17 +1097,21 @@ describe("main UI: import buildings, optional foliage", () => {
   const path = require("node:path");
   const root = path.join(__dirname, "..", "public");
 
-  it("index and app keep one Include foliage toggle, off unless checked", () => {
+  it("index and app keep one Foliage toggle, on unless unchecked", () => {
     const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
     const app = fs.readFileSync(path.join(root, "app.js"), "utf8");
     assert.match(html, /Export a zip\. Import it in Hamina for the aerial map and buildings\./);
     assert.equal(/Import OpenIntent for the map and buildings/i.test(html), false);
     assert.equal(/One zip\./i.test(html), false);
-    assert.match(html, /Include foliage/);
-    assert.match(html, /<span class="tag">Experimental<\/span>/);
-    assert.match(html, /id="include-foliage"/);
-    assert.equal(/id="include-foliage"[^>]*checked/.test(html), false);
-    assert.equal(/checked/.test(html.split("include-foliage")[1].slice(0, 80)), false);
+    assert.match(html, />\s*Foliage\s*</);
+    assert.equal(/Include foliage|Experimental/.test(html + app), false);
+    assert.match(html, /id="include-foliage"[^>]*checked/);
+    assert.match(html, /id="status-line"/);
+    assert.match(html, /id="status-more"[^>]*hidden/);
+    assert.equal(/<details[^>]*\sopen/.test(html), false);
+    assert.match(app, /function exportHeadline/);
+    assert.match(app, /Zip ready\./);
+    assert.match(app, /more\.open = false/);
     assert.match(html, /id="include-terrain-row"[^>]*hidden/);
     assert.match(html, /id="include-terrain"[^>]*checked/);
     assert.match(html, />\s*Terrain\s*</);
@@ -1182,6 +1186,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /function enterDrawMode/);
     const afterDraw = app.split('getElementById("draw").onclick')[1] || "";
     assert.ok((afterDraw.match(/enterDrawMode\(/g) || []).length >= 2);
+    assert.equal(/enterDrawMode\("Click the map to draw\. Drag a box/.test(app), false);
     assert.match(app, /if \(!drawSession\.armed\)/);
     assert.match(app, /prepareExport/);
     assert.match(app, /dblclick/);

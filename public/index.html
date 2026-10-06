@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>OpenClutter</title>
-  <meta name="description" content="OpenClutter: search, draw, export one OpenIntent zip. Import in Hamina for the map and buildings. Include foliage adds canopy." />
+  <meta name="description" content="OpenClutter: search, draw, export one OpenIntent zip. Import in Hamina for the map and buildings. Foliage adds canopy." />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23238636'/><text x='8' y='12' text-anchor='middle' font-size='10' fill='white'>OC</text></svg>" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
@@ -37,11 +37,6 @@
     }
     .check[hidden] { display: none; }
     .check input { width: 16px; height: 16px; margin: 0; accent-color: #238636; }
-    .tag {
-      font-size: 10px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase;
-      color: #d29922; border: 1px solid #d2992266; border-radius: 999px;
-      padding: 0 6px; line-height: 16px;
-    }
     #copy-terrain { width: 100%; margin-top: 10px; }
     .map-quality {
       display: flex; align-items: center; gap: 8px; margin-top: 10px;
@@ -55,8 +50,15 @@
     .row { display: flex; gap: 8px; margin-top: 10px; }
     .row button { flex: 1; }
     .hint { margin: 8px 0 0; font-size: 11px; line-height: 1.35; color: #6e7681; }
-    #status { margin-top: 10px; font-size: 12px; color: #8b949e; min-height: 16px; white-space: pre-wrap; }
-    #status.err { color: #f85149; }
+    #status { margin-top: 10px; font-size: 12px; color: #8b949e; min-height: 16px; }
+    #status-line { margin: 0; line-height: 1.4; }
+    #status.err #status-line { color: #f85149; }
+    #status-more { margin-top: 6px; }
+    #status-more[hidden] { display: none; }
+    #status-more summary {
+      cursor: pointer; color: #8b949e; font-size: 12px; user-select: none;
+    }
+    #status-body p { margin: 6px 0 0; line-height: 1.4; }
     .build {
       float: right; margin: 3px 0 0 12px;
       font-size: 10px; line-height: 1.2; font-weight: 500; color: #6e7681;
@@ -91,7 +93,7 @@
 <body>
   <div id="map"></div>
   <div class="panel">
-    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.63</span></p>
+    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.64</span></p>
     <h1>OpenClutter</h1>
     <div class="sub">Export a zip. Import it in Hamina for the aerial map and buildings.</div>
     <form id="search">
@@ -104,9 +106,8 @@
     </div>
     <p id="draw-hint" class="hint">Click the map to draw. Drag a box, or click corners and click the first corner to close. Right-drag or hold Space to pan. Double-click also finishes. Esc cancels.</p>
     <label class="check" for="include-foliage">
-      <input type="checkbox" id="include-foliage" />
-      Include foliage
-      <span class="tag">Experimental</span>
+      <input type="checkbox" id="include-foliage" checked />
+      Foliage
     </label>
     <label class="check" id="include-terrain-row" for="include-terrain" hidden>
       <input type="checkbox" id="include-terrain" checked />
@@ -122,9 +123,15 @@
         <option value="sharp">Sharp · 2048 px</option>
       </select>
     </label>
-    <p id="map-quality-hint" class="hint" hidden>Auto stays fast. High and Sharp wait longer for a bigger plate. A 4K plate does not come back in time.</p>
+    <p id="map-quality-hint" class="hint" hidden>Auto is fast. High and Sharp wait longer. 4K does not return.</p>
     <button type="button" id="copy-terrain" class="secondary" hidden>Copy terrain</button>
-    <div id="status">Click the map to draw the site.</div>
+    <div id="status">
+      <p id="status-line">Click the map to draw the site.</p>
+      <details id="status-more" hidden>
+        <summary>Details</summary>
+        <div id="status-body"></div>
+      </details>
+    </div>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/tree-detect.js"></script>
