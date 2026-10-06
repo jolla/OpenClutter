@@ -35,13 +35,15 @@ describe("export gateway timeout", () => {
       assert.equal(failure.gateway, true);
       assert.equal(failure.retry, false);
       assert.equal(failure.attempts, 1);
-      assert.equal(failure.message, "");
+      assert.equal(failure.message, EMPTY_502_STATUS);
+      assert.notEqual(failure.message, "");
       assert.notEqual(failure.message, WORKING_STATUS);
       assert.equal(/stopped before a zip was ready|Aerial imagery timed out|did not finish|too large to finish/i.test(failure.message), false);
       const err = failureError(status, {});
       assert.equal(err.attempts, 1);
       assert.equal(err.noRetry, true);
-      assert.equal(idleStatus(err), "");
+      assert.equal(idleStatus(err), EMPTY_502_STATUS);
+      assert.notEqual(idleStatus(err), "");
       assert.notEqual(idleStatus(err), WORKING_STATUS);
     }
 
@@ -96,7 +98,8 @@ describe("export gateway timeout", () => {
           throw failureError(504, {});
         }),
       (err) => {
-        assert.equal(idleStatus(err), "");
+        assert.equal(idleStatus(err), EMPTY_502_STATUS);
+        assert.notEqual(idleStatus(err), "");
         assert.notEqual(idleStatus(err), WORKING_STATUS);
         assert.equal(/stopped before a zip was ready|Aerial imagery timed out/.test(idleStatus(err)), false);
         assert.equal(/Export failed\. Retry\.|did not finish|too large to finish/i.test(String(err.message)), false);
