@@ -132,15 +132,47 @@ function bboxLongSideM(bbox) {
 }
 
 /**
- * Export asks for an image that can finish inside the function clock.
- * Production stays at 1040 px / 1 m. A short dev draw starts at 0.5 m,
- * capped at 1040 px, then 1 m. A long dev draw stays at 400 px / 2 m,
- * then 256 px. The 2048 px plate is not an export request.
+ * Dev map-quality choices. Auto is null and keeps the size-aware plan.
+ * Low / Standard / High are explicit plates. Each larger plate keeps a
+ * smaller step so a slow Esri answer can still return a zip.
  */
-function imageryExportPlan(devHost, bbox) {
+function imageryQualityPlan(quality) {
+  const q = String(quality || "")
+    .trim()
+    .toLowerCase();
+  if (!q || q === "auto") return null;
+  if (q === "low" || q === "lower" || q === "256") {
+    return [{ maxSide: 256, metersPerPx: 2 }];
+  }
+  if (q === "standard" || q === "640") {
+    return [
+      { maxSide: 640, metersPerPx: 1 },
+      { maxSide: 400, metersPerPx: 2 },
+    ];
+  }
+  if (q === "high" || q === "higher" || q === "1040") {
+    return [
+      { maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX_DEV },
+      { maxSide: 400, metersPerPx: 2 },
+    ];
+  }
+  return null;
+}
+
+/**
+ * Export asks for an image that can finish inside the function clock.
+ * Production stays at 1040 px / 1 m and ignores a quality choice.
+ * Auto on a short dev draw starts at 0.5 m, capped at 1040 px, then 1 m.
+ * Auto on a long dev draw stays at 400 px / 2 m, then 256 px.
+ * Low, Standard, and High replace that plan on the dev host only.
+ * The 2048 px plate is not an export request.
+ */
+function imageryExportPlan(devHost, bbox, quality) {
   if (!devHost) {
     return [{ maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX }];
   }
+  const picked = imageryQualityPlan(quality);
+  if (picked) return picked;
   const long = bboxLongSideM(bbox);
   if (long > 0 && long <= DEV_SHARP_DRAW_M) {
     return [
@@ -856,6 +888,7 @@ module.exports = {
   imageryMaxSide,
   imageryMetersPerPx,
   imageryExportPlan,
+  imageryQualityPlan,
   bboxLongSideM,
   DEV_SHARP_DRAW_M,
   metersPerDeg,

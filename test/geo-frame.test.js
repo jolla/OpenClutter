@@ -32,6 +32,9 @@ const {
   imageryMaxSide,
   imageryMetersPerPx,
   imageryExportPlan,
+  imageryQualityPlan,
+  bboxLongSideM,
+  DEV_SHARP_DRAW_M,
   msFootprintsUrl,
   fetchMsFootprints,
   padFootprintBbox,
@@ -120,6 +123,47 @@ describe("shared geo frame", () => {
     assert.ok(dev.mpuX < 0.8, String(dev.mpuX));
     assert.ok(dev.mpuX < prod.mpuX);
     assert.ok(Math.abs(dev.imgW / dev.imgH - dev.widthM / dev.lengthM) < 0.02);
+  });
+
+  it("lets a dev export pick a map plate and keeps Auto on a long draw", () => {
+    const wico = {
+      west: -73.8293,
+      south: 45.42485,
+      east: -73.81842,
+      north: 45.42966,
+    };
+    assert.ok(bboxLongSideM(wico) > DEV_SHARP_DRAW_M);
+    assert.deepEqual(
+      imageryExportPlan(true, wico).map((step) => [step.maxSide, step.metersPerPx]),
+      [
+        [400, 2],
+        [256, 2],
+      ]
+    );
+    assert.deepEqual(
+      imageryExportPlan(true, wico, "auto").map((step) => [step.maxSide, step.metersPerPx]),
+      [
+        [400, 2],
+        [256, 2],
+      ]
+    );
+    assert.deepEqual(imageryExportPlan(true, wico, "low"), [{ maxSide: 256, metersPerPx: 2 }]);
+    assert.deepEqual(
+      imageryExportPlan(true, wico, "standard").map((step) => [step.maxSide, step.metersPerPx]),
+      [
+        [640, 1],
+        [400, 2],
+      ]
+    );
+    assert.deepEqual(
+      imageryExportPlan(true, wico, "high").map((step) => [step.maxSide, step.metersPerPx]),
+      [
+        [1040, 0.5],
+        [400, 2],
+      ]
+    );
+    assert.deepEqual(imageryExportPlan(false, wico, "high"), [{ maxSide: 1040, metersPerPx: 1 }]);
+    assert.equal(imageryQualityPlan("nope"), null);
   });
 
   it("caps a large box at 2048 on the dev side and 1040 in production", () => {

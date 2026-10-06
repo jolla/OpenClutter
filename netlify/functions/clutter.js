@@ -203,7 +203,8 @@ function imageryAttemptMs(devHost) {
 }
 
 function imagerySteps(devHost, bbox) {
-  const plan = imageryExportPlan(devHost, bbox);
+  const quality = devHost && bbox ? bbox.imageryQuality : undefined;
+  const plan = imageryExportPlan(devHost, bbox, quality);
   if (!devHost) {
     return plan.map((step) => Object.assign({ attemptMs: IMAGERY_ATTEMPT_MS }, step));
   }
@@ -243,7 +244,9 @@ async function fetchImageryStepped(bbox, steps) {
       if (!(attemptMs >= 1500)) break;
     }
     try {
-      return await fetchImageryJpeg(esriImageryUrl(imageryFrame(bbox, step)), attemptMs);
+      const plate = imageryFrame(bbox, step);
+      const buf = await fetchImageryJpeg(esriImageryUrl(plate), attemptMs);
+      return { buf, stepped: i > 0, imgW: plate.imgW, imgH: plate.imgH };
     } catch (e) {
       last = e;
     }
@@ -803,6 +806,7 @@ async function handleClutter(event) {
       : "none";
 
   let imgBuf = null;
+  let imageryPlate = null;
   let gj;
   let imgMeta = null;
   let globalFeatures = [];
@@ -834,7 +838,12 @@ async function handleClutter(event) {
       east: frame.east,
       north: frame.north,
     };
-    const imageryJob = needImage ? fetchImageryStepped(requestBbox, steps) : Promise.resolve(null);
+    const imageryJob = needImage
+      ? fetchImageryStepped(requestBbox, steps).then((got) => {
+          imageryPlate = got;
+          return got && got.buf;
+        })
+      : Promise.resolve(null);
     if (needImage) {
       frame = applyImageryMeta(frame, null, { width: frame.imgW, height: frame.imgH }, { requestBbox });
     }
@@ -977,6 +986,17 @@ async function handleClutter(event) {
       const locked = lockIsotropicImagery(frame, imgBuf, { maxSide });
       frame = locked.frame;
       imgBuf = locked.jpegBuf;
+      if (devHost && imageryPlate) {
+        const sized = jpegSize(imgBuf);
+        const side = sized
+          ? Math.max(sized.width, sized.height)
+          : Math.max(+imageryPlate.imgW || 0, +imageryPlate.imgH || 0);
+        warnings.push(
+          imageryPlate.stepped
+            ? "Map image stepped down to " + side + " px. The sharper plate was still out."
+            : "Map image " + side + " px."
+        );
+      }
     }
     const canopy = fetched[4];
     if (canopy && canopy.parsed && canopy.parsed.hits && canopy.parsed.hits.length) {

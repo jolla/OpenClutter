@@ -1493,6 +1493,122 @@ describe("dev-host Esri long side", () => {
     assert.match(images[0], new RegExp("size=" + expectSide + ","));
     assert.equal(/size=2048,|size=1600,/.test(images[0]), false);
   });
+
+  it("asks a long dev draw for the High plate and steps down when that plate misses", async () => {
+    const seen = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      seen.push(u);
+      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=1040,")) {
+        return { ok: false, status: 500, arrayBuffer: async () => new ArrayBuffer(0) };
+      }
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: WYNN.west, ymin: WYNN.south, xmax: WYNN.east, ymax: WYNN.north },
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+      if (u.includes("getSamples") || u.includes("USFS_EDW_NLCD_TCC")) {
+        return { ok: true, json: async () => ({ samples: samples() }) };
+      }
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...WYNN, format: "bundle", imageryQuality: "high" }),
+    });
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 500));
+    const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
+    assert.ok(images.some((u) => /size=1040,/.test(u)), images.join("\n"));
+    assert.ok(images.some((u) => /size=400,/.test(u)), images.join("\n"));
+    assert.equal(images.some((u) => /size=256,/.test(u)), false);
+    const body = JSON.parse(res.body);
+    assert.ok(body.zipBase64);
+    const notes = (body.warnings || []).join("\n");
+    assert.match(notes, /Map image stepped down to \d+ px\. The sharper plate was still out\./);
+    assert.equal(/did not finish|timed out|too large to finish|stopped before a zip/i.test(notes), false);
+  });
+
+  it("keeps the High plate when that image returns", async () => {
+    const seen = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      seen.push(u);
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: WYNN.west, ymin: WYNN.south, xmax: WYNN.east, ymax: WYNN.north },
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+      if (u.includes("getSamples") || u.includes("USFS_EDW_NLCD_TCC")) {
+        return { ok: true, json: async () => ({ samples: samples() }) };
+      }
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...WYNN, format: "bundle", imageryQuality: "high" }),
+    });
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 500));
+    const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
+    assert.equal(images.length, 1, images.join("\n"));
+    assert.match(images[0], /size=1040,/);
+    const notes = (JSON.parse(res.body).warnings || []).join("\n");
+    assert.match(notes, /Map image \d+ px\./);
+    assert.equal(/Map image stepped down/.test(notes), false);
+  });
+
+  it("ignores a map quality choice off the dev host", async () => {
+    const small = { west: -115.166, south: 36.126, east: -115.161, north: 36.13, name: "Corner" };
+    const prod = imageryExportPlan(false, small)[0];
+    const high = imageryExportPlan(true, small, "high")[0];
+    const prodFrame = geoFrame(small, { maxSide: prod.maxSide, metersPerPx: prod.metersPerPx });
+    const highFrame = geoFrame(small, { maxSide: high.maxSide, metersPerPx: high.metersPerPx });
+    const prodSide = Math.max(prodFrame.imgW, prodFrame.imgH);
+    const highSide = Math.max(highFrame.imgW, highFrame.imgH);
+    assert.notEqual(prodSide, highSide);
+    const seen = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      seen.push(u);
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: prodFrame.imgW,
+            height: prodFrame.imgH,
+            extent: { xmin: small.west, ymin: small.south, xmax: small.east, ymax: small.north },
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "openclutter.netlify.app" },
+      body: JSON.stringify({ ...small, format: "bundle", imageryQuality: "high" }),
+    });
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 500));
+    const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
+    assert.equal(images.length, 1, images.join("\n"));
+    assert.match(images[0], new RegExp("size=" + prodSide + ","));
+    assert.equal(new RegExp("size=" + highSide + ",").test(images[0]), false);
+    const notes = (JSON.parse(res.body).warnings || []).join("\n");
+    assert.equal(/Map image/.test(notes), false);
+  });
 });
 
 describe("dev-host Copernicus fallback", () => {

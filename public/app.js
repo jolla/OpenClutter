@@ -12,15 +12,23 @@ function devPage() {
 function syncTerrainControls() {
   const dev = devPage();
   const row = document.getElementById("include-terrain-row");
-  const style = document.getElementById("terrain-style");
-  const input = document.getElementById("include-terrain");
   if (row) row.hidden = !dev;
-  if (style) style.hidden = !dev || !input || !input.checked;
+  syncMapQuality();
 }
 
-function selectedTerrainStyle() {
-  const picked = document.querySelector('#terrain-style input[name="terrain-style"]:checked');
-  return picked && picked.value === "raised" ? "raised" : "sloped";
+function syncMapQuality() {
+  const dev = devPage();
+  const row = document.getElementById("map-quality-row");
+  const hint = document.getElementById("map-quality-hint");
+  if (row) row.hidden = !dev;
+  if (hint) hint.hidden = !dev;
+}
+
+function selectedImageryQuality() {
+  const sel = document.getElementById("map-quality");
+  const value = sel ? String(sel.value || "") : "";
+  if (value === "low" || value === "standard" || value === "high") return value;
+  return "auto";
 }
 
 function terrainExportEnabled() {
@@ -634,7 +642,8 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       includeFoliage: foliage,
       includeTerrain: terrain,
       terrainResolution: terrain ? "auto" : undefined,
-      terrainStyle: terrain ? selectedTerrainStyle() : undefined,
+      terrainStyle: terrain ? "sloped" : undefined,
+      imageryQuality: devPage() ? selectedImageryQuality() : undefined,
       trees: foliage ? trees : [],
       treesSource: foliage ? treesSource : "none",
       canopyHits: foliage && canopyHits && canopyHits.length ? canopyHits : undefined,
