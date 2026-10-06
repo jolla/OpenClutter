@@ -1531,7 +1531,7 @@ describe("dev-host Esri long side", () => {
     const body = JSON.parse(res.body);
     assert.ok(body.zipBase64);
     const notes = (body.warnings || []).join("\n");
-    assert.match(notes, /Map image stepped down to \d+ px\. The sharper plate was still out\./);
+    assert.match(notes, /Map image stepped down to \d+ px.*The 1040 px plate was still out\./);
     assert.equal(/did not finish|timed out|too large to finish|stopped before a zip/i.test(notes), false);
   });
 
@@ -1608,6 +1608,93 @@ describe("dev-host Esri long side", () => {
     assert.equal(new RegExp("size=" + highSide + ",").test(images[0]), false);
     const notes = (JSON.parse(res.body).warnings || []).join("\n");
     assert.equal(/Map image/.test(notes), false);
+  });
+
+  it("keeps a High plate that arrives after the Auto imagery budget", async () => {
+    const seen = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      seen.push(u);
+      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=1040,")) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        return { ok: true, arrayBuffer: async () => jpeg };
+      }
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: WYNN.west, ymin: WYNN.south, xmax: WYNN.east, ymax: WYNN.north },
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+      if (u.includes("getSamples") || u.includes("USFS_EDW_NLCD_TCC")) {
+        return { ok: true, json: async () => ({ samples: samples() }) };
+      }
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...WYNN, format: "bundle", imageryQuality: "high" }),
+    });
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 500));
+    const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
+    assert.equal(images.length, 1, images.join("\n"));
+    assert.match(images[0], /size=1040,/);
+    const notes = (JSON.parse(res.body).warnings || []).join("\n");
+    assert.match(notes, /Map image \d+ px/);
+    assert.equal(/Map image stepped down/.test(notes), false);
+  });
+
+  it("asks Sharp for 2048 px and does not open building parquet until that plate is back", async () => {
+    const order = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("World_Imagery") && u.includes("f=image")) {
+        order.push(u);
+        order.push("image-start");
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        order.push("image-end");
+        return { ok: true, arrayBuffer: async () => jpeg };
+      }
+      if (u.includes("overturemaps") || u.includes("blob.core.windows.net/release")) {
+        order.push("overture");
+        return { ok: true, json: async () => ({ features: [] }) };
+      }
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: WYNN.west, ymin: WYNN.south, xmax: WYNN.east, ymax: WYNN.north },
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+      if (u.includes("getSamples") || u.includes("USFS_EDW_NLCD_TCC")) {
+        return { ok: true, json: async () => ({ samples: samples() }) };
+      }
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...WYNN, format: "bundle", imageryQuality: "sharp", includeFoliage: false }),
+    });
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 500));
+    const imageAt = order.indexOf("image-end");
+    const overtureAt = order.indexOf("overture");
+    assert.ok(imageAt >= 0, order.join(","));
+    assert.ok(overtureAt > imageAt, order.join(","));
+    assert.ok(order[0].includes("size=2048,"), order.join("\n"));
+    assert.equal(order.filter((e) => String(e).includes("size=1040,") || String(e).includes("size=400,")).length, 0);
+    const notes = (JSON.parse(res.body).warnings || []).join("\n");
+    assert.match(notes, /Map image \d+ px/);
+    assert.equal(/Map image stepped down/.test(notes), false);
   });
 });
 

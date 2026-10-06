@@ -162,7 +162,23 @@ describe("shared geo frame", () => {
         [400, 2],
       ]
     );
-    assert.deepEqual(imageryExportPlan(false, wico, "high"), [{ maxSide: 1040, metersPerPx: 1 }]);
+    assert.deepEqual(
+      imageryExportPlan(true, wico, "sharp").map((step) => [step.maxSide, step.metersPerPx]),
+      [
+        [2048, 0.4],
+        [1040, 0.5],
+        [400, 2],
+      ]
+    );
+    assert.equal(imageryQualityPlan("4k"), null);
+    assert.deepEqual(
+      imageryExportPlan(true, wico, "4k").map((step) => [step.maxSide, step.metersPerPx]),
+      [
+        [400, 2],
+        [256, 2],
+      ]
+    );
+    assert.deepEqual(imageryExportPlan(false, wico, "sharp"), [{ maxSide: 1040, metersPerPx: 1 }]);
     assert.equal(imageryQualityPlan("nope"), null);
   });
 

@@ -27,7 +27,7 @@ function syncMapQuality() {
 function selectedImageryQuality() {
   const sel = document.getElementById("map-quality");
   const value = sel ? String(sel.value || "") : "";
-  if (value === "low" || value === "standard" || value === "high") return value;
+  if (value === "low" || value === "standard" || value === "high" || value === "sharp") return value;
   return "auto";
 }
 

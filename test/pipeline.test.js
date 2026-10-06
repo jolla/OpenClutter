@@ -1133,6 +1133,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(html, /value="low">Low · 256 px</);
     assert.match(html, /value="standard">Standard · 640 px</);
     assert.match(html, /value="high">High · 1040 px</);
+    assert.match(html, /value="sharp">Sharp · 2048 px</);
     assert.match(html, /id="map-quality-hint"[^>]*hidden/);
     assert.equal(/type="range"/i.test(html), false);
     assert.equal(/DEM source|3DEP source/i.test(html + app), false);
