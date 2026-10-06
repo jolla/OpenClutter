@@ -247,59 +247,20 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.ok(built.zip.length > 100);
     assert.equal(built.openintent.openintent_version, "2.0.1");
     const zipped = unzipStore(built.zip);
-    assert.ok(zipped[`openIntent_${built.slug}.json`]);
-    assert.ok(zipped[`images/${built.slug}.jpg`]);
-    assert.ok(zipped["export-warnings.json"]);
-    assert.ok(zipped["hamina-clipboard.json"]);
-    assert.ok(zipped["README.txt"]);
-    const fromZip = JSON.parse(zipped["hamina-clipboard.json"].toString());
-    assert.equal(fromZip.header.type, "HaminaClipboard");
-    assert.deepEqual(fromZip.attenuatingZones, built.clipboard.attenuatingZones);
-    const readme = zipped["README.txt"].toString();
-    assert.match(readme, /Import this zip in Hamina \(Projects → Import → OpenIntent\)/);
-    assert.match(readme, /Building - One\/Two\/Five\/Ten Floor|buildings only|hamina-clipboard/i);
-    assert.match(readme, /Coverage/);
-    assert.match(readme, /buildingsKept: 1/);
-    assert.match(readme, /includeFoliage: false/);
-    assert.match(readme, /Foliage off/);
-    assert.match(readme, /treesKept: 0/);
-    assert.match(readme, /treesSource: none/);
-    assert.ok(!/click map, paste/i.test(readme));
+    assert.deepEqual(Object.keys(zipped).sort(), [`images/${built.slug}.jpg`, `openIntent_${built.slug}.json`].sort());
+    assert.equal(built.clipboard.header.type, "HaminaClipboard");
+    assert.ok(built.clipboard.attenuatingZones.length >= 1);
+    assert.match(built.alignment, /Import this zip in Hamina \(Projects → Import → OpenIntent\)/);
+    assert.match(built.stats.summary, /Foliage off/);
+    assert.equal(built.stats.buildingsKept, 1);
+    assert.equal(built.stats.includeFoliage, false);
+    assert.equal(built.stats.treesKept, 0);
+    assert.equal(built.stats.treesSource, "none");
     const oiZip = JSON.parse(zipped[`openIntent_${built.slug}.json`].toString());
     assert.equal(oiZip.floorplans[0].attenuation_areas.length, areas.length);
-    assert.ok(zipped["alignment-overlay.svg"]);
-    assert.ok(zipped["frame-lock.json"]);
-    const svg = zipped["alignment-overlay.svg"].toString();
-    assert.match(svg, /images\/Wynn-Golf\.jpg/);
-    assert.match(svg, /polygon /);
-    const lock = JSON.parse(zipped["frame-lock.json"].toString());
-    assert.equal(lock.clipboard.convention.includes("NE"), true);
-    assert.equal(lock.openintent.yRelation, "y_up + y_img = imgH");
-    assert.match(lock.note, /OpenIntent/);
-    assert.ok(zipped["export-stats.json"]);
-    const exportStats = JSON.parse(zipped["export-stats.json"].toString());
-    assert.equal(exportStats.buildingsKept, 1);
-    assert.equal(exportStats.includeFoliage, false);
-    assert.equal(exportStats.treesKept, 0);
-    assert.equal(exportStats.treesSource, "none");
-    assert.equal(exportStats.attenuationAreasEmitted, areas.length);
-    assert.equal(exportStats.openintentVersion, "2.0.1");
-    assert.equal(exportStats.openclutterVersion, APP_VERSION);
-    assert.match(readme, new RegExp(`^openclutter_version: ${APP_VERSION}$`, "m"));
-    assert.ok(zipped["VERIFY.txt"]);
-    const verify = zipped["VERIFY.txt"].toString();
-    assert.match(verify, new RegExp(`^attenuation_areas: ${areas.length}$`, "m"));
-    assert.match(verify, new RegExp(`^openclutter_version: ${APP_VERSION}$`, "m"));
-    assert.match(readme, /VERIFY\.txt/);
-    assert.match(readme, /alignment-overlay\.svg/);
-    assert.match(readme, /hamina-clipboard\.json/);
-    assert.match(readme, /WebGL/);
-    assert.match(readme, /2D/);
-    assert.match(readme, /sidebar/);
-    assert.match(readme, /paste hamina-clipboard\.json/i);
-    assert.match(readme, /hardware acceleration/);
-    assert.match(readme, /attenuationAreasEmitted: /);
-    assert.equal(Object.keys(zipped).length, 9);
+    assert.equal(built.stats.attenuationAreasEmitted, areas.length);
+    assert.equal(built.stats.openintentVersion, "2.0.1");
+    assert.equal(built.stats.openclutterVersion, APP_VERSION);
   });
 
   it("drops campus mega-polygons and tiny sheds", () => {
@@ -323,10 +284,10 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(built.stats.fetched, 2);
     assert.match(built.stats.summary, /Buildings 0 kept/);
     assert.match(built.stats.summary, /dropped mega/);
-    const readme = unzipStore(built.zip)["README.txt"].toString();
-    assert.match(readme, /buildingsKept: 0/);
-    assert.match(readme, /treesKept: 0/);
-    assert.match(readme, /droppedMega: /);
+    assert.equal(built.stats.buildingsKept, 0);
+    assert.equal(built.stats.treesKept, 0);
+    assert.ok(built.stats.droppedMega >= 1);
+    assert.equal(unzipStore(built.zip)["README.txt"], undefined);
   });
 
   it("keeps a big-box roof on a tight commercial bbox (Oak Creek)", () => {
@@ -363,9 +324,9 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(built.stats.droppedMega, 0);
     assert.equal(built.stats.treesKept, 0);
     assert.equal(built.stats.treesSource, "none");
-    const readme = unzipStore(built.zip)["README.txt"].toString();
-    assert.match(readme, /buildingsKept: 1/);
-    assert.match(readme, /treesSource: none/);
+    assert.equal(built.stats.buildingsKept, 1);
+    assert.equal(built.stats.treesSource, "none");
+    assert.equal(unzipStore(built.zip)["README.txt"], undefined);
   });
 
   it("emits every MultiPolygon part and Polygon sibling ring", () => {
@@ -665,11 +626,10 @@ describe("pipeline: footprints + trees share the frame", () => {
       assert.ok(Math.max(...ys) - Math.min(...ys) >= 4 - 0.01);
     }
     assert.ok(maxVerts >= 8, "capped ring still has a real outline");
-    const verify = unzipStore(built.zip)["VERIFY.txt"].toString();
-    assert.match(verify, /warning: omitted 1 thin-span and 0 over-vertex ring/);
-    const stats = JSON.parse(unzipStore(built.zip)["export-stats.json"].toString());
-    assert.equal(stats.droppedSpan, 1);
-    assert.equal(stats.attenuationAreasEmitted, 1);
+    assert.equal(built.stats.droppedSpan, 1);
+    assert.equal(built.stats.droppedVerts, 0);
+    assert.equal(built.stats.attenuationAreasEmitted, 1);
+    assert.equal(unzipStore(built.zip)["VERIFY.txt"], undefined);
   });
 
   it("skips trees that land inside a building AABB", () => {
@@ -762,9 +722,7 @@ describe("pipeline: footprints + trees share the frame", () => {
       false
     );
     assert.ok(on.clipboard.attenuatingZones.some((z) => String(z.typeId).indexOf("foliage") === 0));
-    const svg = unzipStore(on.zip)["alignment-overlay.svg"].toString();
-    assert.match(svg, /<polygon /);
-    assert.equal(/<circle /.test(svg), false);
+    assert.equal(unzipStore(on.zip)["alignment-overlay.svg"], undefined);
     const pointsOnly = buildClutter({
       frame,
       footprintsGeojson: { features: [] },
@@ -792,7 +750,7 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(built.frame.clipboardCorners.ne[1], 0);
     assert.match(built.alignment, /Import this zip in Hamina/);
     assert.match(built.alignment, /Google Earth/);
-    assert.match(built.alignment, /optional legacy paste/i);
+    assert.match(built.alignment, /aerial JPEG/);
     assert.equal(/Paste hamina-clipboard\.json for trees/i.test(built.alignment), false);
     assert.ok(!/click the map, paste/i.test(built.alignment));
   });
@@ -857,13 +815,12 @@ describe("OpenIntent attenuation_areas", () => {
     assert.equal(names.some((n) => n === "Foliage - Heavy" || n === "Foliage - Light"), false);
     assert.ok(!names.includes("Tree Trunk"));
     const zipped = unzipStore(built.zip);
-    assert.ok(zipped["alignment-overlay.svg"]);
-    assert.match(zipped["alignment-overlay.svg"].toString(), /polygon /);
+    assert.equal(zipped["alignment-overlay.svg"], undefined);
+    assert.equal(zipped["hamina-clipboard.json"], undefined);
     const fromZip = JSON.parse(zipped[`openIntent_${built.slug}.json`].toString());
     assert.equal(fromZip.floorplans[0].attenuation_areas.length, oi.attenuation_areas.length);
-    const clip = JSON.parse(zipped["hamina-clipboard.json"].toString());
     assert.equal(
-      clip.attenuatingZones.some((z) => z.typeId === "tree-trunk" || String(z.typeId).indexOf("foliage") === 0 || String(z.typeId).indexOf("trunk") === 0),
+      built.clipboard.attenuatingZones.some((z) => z.typeId === "tree-trunk" || String(z.typeId).indexOf("foliage") === 0 || String(z.typeId).indexOf("trunk") === 0),
       false
     );
   });

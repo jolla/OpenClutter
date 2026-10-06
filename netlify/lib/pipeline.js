@@ -26,8 +26,7 @@ const { treePairsFromPoints } = require("./vegetation");
 const { dedupeStackedFootprints } = require("./conflate");
 const { piecesForFeature } = require("./roof-form");
 const { zipStore } = require("./zip-store");
-const { TERRAIN_FILENAME, demUnderFootprint, normalizeTerrainResolution, GLO30_CREDIT, LIFT_LOCAL_M } = require("./terrain");
-const { overlaySvg, frameLockJson } = require("./overlay");
+const { demUnderFootprint, normalizeTerrainResolution, GLO30_CREDIT, LIFT_LOCAL_M } = require("./terrain");
 const { version: OPENCLUTTER_VERSION } = require("./version");
 const { applyNlsBuildingHeights, NLS_CREDIT, HEIGHT_SOURCE } = require("./nls-building-height");
 
@@ -465,9 +464,9 @@ const ALIGNMENT = [
   "   Buildings: Building - One / Two / Five / Ten Floor.",
   "   Canopy: Foliage - Heavy / Foliage - Light (19.68 ft). Measured heights use Foliage - Heavy H.H / Foliage - Light H.H.",
   "   A compact measured crown is a stem under a raised crown. A continuous canopy stays one mass. Tree points are not trees.",
-  "2. hamina-clipboard.json is optional legacy paste. Foliage off keeps buildings only.",
-  "   Foliage on pastes the same canopy polygons, including a stem under a discrete tree.",
-  "3. Extra files (alignment-overlay.svg, frame-lock.json) are ignored on OpenIntent import.",
+  "2. The zip is the OpenIntent JSON and the aerial JPEG. Buildings are attenuation areas in that JSON.",
+  "   Include foliage adds canopy polygons to the same file. Copy terrain is a separate paste.",
+  "3. hamina-clipboard.json, terrain paste, and debug notes are not in the zip.",
   "Clipboard meters use that same widthM × lengthM. Origin: " + CLIPBOARD_ORIGIN,
   "Do NOT use a Google Earth screenshot as the map — Hamina auto-scale will not",
   "match lon/lat footprints. Dual-scale nudges are a legacy escape hatch only.",
@@ -1807,14 +1806,6 @@ function buildClutter({
     if (t.id && String(t.id).indexOf("foliage-m-") === 0) exactFoliageHeights++;
   }
   const oi = buildOpenIntent(frame, name, imgName, areas, materials);
-  const overlay = overlaySvg({
-    frame,
-    imgName,
-    buildingRingsYUp: fp.overlayRings,
-    treePointsYUp: veg.overlayPoints || [],
-    treeRingsYUp: veg.overlayRings,
-  });
-  const lock = frameLockJson(frame, imgName);
   const buildingEmitted = Math.min(fp.oiAreas.length, areas.length);
   const treeEmitted = areas.length - buildingEmitted;
   const stats = {
@@ -1874,27 +1865,12 @@ function buildClutter({
   Object.assign(stats, coverageStats(stats));
   let zip = null;
   if (imgBuf) {
-    const zipFiles = [
+    // Hamina OpenIntent import reads the JSON and the aerial. Clipboard JSON,
+    // the terrain paste, and the debug notes stay out of this zip.
+    zip = zipStore([
       { name: `openIntent_${slug}.json`, data: Buffer.from(JSON.stringify(oi)) },
       { name: "images/" + imgName, data: imgBuf },
-      {
-        name: "export-warnings.json",
-        data: Buffer.from(JSON.stringify({ errors: [], warnings: (warnings || []).filter(Boolean).map(String) })),
-      },
-      { name: "export-stats.json", data: Buffer.from(JSON.stringify(coverageStats(stats), null, 2)) },
-      { name: "VERIFY.txt", data: Buffer.from(verifyTxt(stats)) },
-      { name: "hamina-clipboard.json", data: Buffer.from(JSON.stringify(clip)) },
-      { name: "README.txt", data: zipReadme(stats) },
-      { name: "alignment-overlay.svg", data: Buffer.from(overlay) },
-      { name: "frame-lock.json", data: Buffer.from(JSON.stringify(lock, null, 2)) },
-    ];
-    if (terrain && terrain.clipboard && (terrain.raised || terrain.sloped)) {
-      zipFiles.push({
-        name: TERRAIN_FILENAME,
-        data: Buffer.from(JSON.stringify(terrain.clipboard)),
-      });
-    }
-    zip = zipStore(zipFiles);
+    ]);
   }
   return {
     name,
