@@ -957,27 +957,27 @@ describe("dev-host Esri long side", () => {
 
   it("keeps the first export image inside the production attempt", () => {
     assert.equal(IMAGERY_ATTEMPT_MS, 8500);
-    assert.equal(IMAGERY_ATTEMPT_MS_DEV, 4500);
+    assert.equal(IMAGERY_ATTEMPT_MS_DEV, 2500);
     assert.equal(imageryAttemptMs(false), 8500);
-    assert.equal(imageryAttemptMs(true), 4500);
+    assert.equal(imageryAttemptMs(true), 2500);
     assert.equal(IMAGERY_RETURN_MS, 15000);
-    assert.equal(DEV_ANSWER_MS, 10000);
-    assert.ok(DEV_ANSWER_MS < 15000);
-    assert.ok(IMAGERY_ATTEMPT_MS_DEV + 2500 <= DEV_ANSWER_MS);
+    assert.equal(DEV_ANSWER_MS, 6000);
+    assert.ok(DEV_ANSWER_MS <= 8000);
+    assert.ok(IMAGERY_ATTEMPT_MS_DEV + 1500 < DEV_ANSWER_MS);
     assert.equal(imageryStepBudget(0, 8500), 8500);
     assert.equal(imageryStepBudget(5000, 8500), 8500);
     assert.equal(imageryStepBudget(14000, 8500), 0);
   });
 
-  it("asks the dev host for a 640 px export image", async () => {
-    assert.equal(await longSideFor({ headers: { host: "dev--openclutter.netlify.app" } }), 640);
+  it("asks the dev host for a 400 px export image", async () => {
+    assert.equal(await longSideFor({ headers: { host: "dev--openclutter.netlify.app" } }), 400);
     assert.equal(
       await longSideFor({ headers: { host: "deploy-preview-12--openclutter.netlify.app" } }),
-      640
+      400
     );
     assert.equal(
       await longSideFor({ headers: { host: "openclutter.netlify.app" }, path: "/dev" }),
-      640
+      400
     );
     assert.equal(await longSideFor({ headers: { host: "openclutter.netlify.app" } }), 1040);
     assert.equal(
@@ -986,12 +986,12 @@ describe("dev-host Esri long side", () => {
     );
   });
 
-  it("steps down to 400 px when the 640 px export fails", async () => {
+  it("steps down to 256 px when the 400 px export fails", async () => {
     const seen = [];
     global.fetch = async (url) => {
       const u = String(url);
       seen.push(u);
-      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=640,")) {
+      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=400,")) {
         throw new Error("The operation was aborted due to timeout");
       }
       if (u.includes("World_Imagery") && u.includes("f=json")) {
@@ -1017,10 +1017,10 @@ describe("dev-host Esri long side", () => {
     });
     assert.equal(res.statusCode, 200, res.body);
     const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
-    assert.ok(images.some((u) => /size=640,/.test(u)), images.join("\n"));
     assert.ok(images.some((u) => /size=400,/.test(u)), images.join("\n"));
+    assert.ok(images.some((u) => /size=256,/.test(u)), images.join("\n"));
+    assert.equal(images.some((u) => /size=640,/.test(u)), false);
     assert.equal(images.some((u) => /size=1040,/.test(u)), false);
-    assert.equal(images.some((u) => /size=2048,/.test(u)), false);
   });
 
   it("still exports when the first JPEG aborts after the quick window", async () => {
@@ -1028,8 +1028,8 @@ describe("dev-host Esri long side", () => {
     global.fetch = async (url) => {
       const u = String(url);
       seen.push(u);
-      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=640,")) {
-        await new Promise((resolve) => setTimeout(resolve, 2100));
+      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=400,")) {
+        await new Promise((resolve) => setTimeout(resolve, 1800));
         throw new Error("The operation was aborted due to timeout");
       }
       if (u.includes("World_Imagery") && u.includes("f=json")) {
@@ -1059,22 +1059,22 @@ describe("dev-host Esri long side", () => {
     assert.equal(/Aerial imagery timed out/.test(res.body), false);
     assert.equal(/stopped before a zip was ready/.test(res.body), false);
     const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
-    assert.ok(images.some((u) => /size=640,/.test(u)), images.join("\n"));
     assert.ok(images.some((u) => /size=400,/.test(u)), images.join("\n"));
+    assert.ok(images.some((u) => /size=256,/.test(u)), images.join("\n"));
+    assert.equal(images.some((u) => /size=640,/.test(u)), false);
     assert.equal(images.some((u) => /size=1040,/.test(u)), false);
-    assert.equal(images.some((u) => /size=2048,/.test(u)), false);
     const body = JSON.parse(res.body);
     assert.ok(body.zipBase64);
   });
 
-  it("keeps a 640 px image that arrives inside its window", async () => {
+  it("keeps a 400 px image that arrives inside its window", async () => {
     const seen = [];
     global.fetch = async (url, init) => {
       const u = String(url);
       seen.push(u);
-      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=640,")) {
+      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=400,")) {
         await new Promise((resolve, reject) => {
-          const timer = setTimeout(resolve, 4000);
+          const timer = setTimeout(resolve, 1600);
           const signal = init && init.signal;
           const abort = () => {
             clearTimeout(timer);
@@ -1112,20 +1112,20 @@ describe("dev-host Esri long side", () => {
     const elapsed = Date.now() - t0;
     assert.equal(res.statusCode, 200, res.body);
     assert.equal(/too large to finish in one export/.test(res.body), false);
-    assert.ok(elapsed >= 3500, "elapsed " + elapsed);
-    assert.ok(elapsed < 12000, "elapsed " + elapsed);
+    assert.ok(elapsed >= 1400, "elapsed " + elapsed);
+    assert.ok(elapsed < 8000, "elapsed " + elapsed);
     const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
     assert.equal(images.length, 1, images.join("\n"));
-    assert.match(images[0], /size=640,/);
-    assert.equal(/size=2048,|size=1600,|size=1040,|size=400,/.test(images[0]), false);
+    assert.match(images[0], /size=400,/);
+    assert.equal(/size=2048,|size=1600,|size=1040,|size=256,/.test(images[0]), false);
   });
 
-  it("returns a zip when the 640 px image misses and the smaller one arrives", async () => {
+  it("returns a zip when the 400 px image misses and the smaller one arrives", async () => {
     const seen = [];
     global.fetch = async (url) => {
       const u = String(url);
       seen.push(u);
-      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=640,")) {
+      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=400,")) {
         throw new Error("The operation was aborted due to timeout");
       }
       if (u.includes("World_Imagery") && u.includes("f=json")) {
@@ -1152,12 +1152,12 @@ describe("dev-host Esri long side", () => {
     });
     const elapsed = Date.now() - t0;
     assert.equal(res.statusCode, 200, res.body);
-    assert.ok(elapsed < 12000, "elapsed " + elapsed);
+    assert.ok(elapsed < 8000, "elapsed " + elapsed);
     assert.equal(/Aerial imagery timed out/.test(res.body), false);
     assert.equal(/too large to finish in one export/.test(res.body), false);
     const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
-    assert.ok(images.some((u) => /size=640,/.test(u)), images.join("\n"));
     assert.ok(images.some((u) => /size=400,/.test(u)), images.join("\n"));
+    assert.ok(images.some((u) => /size=256,/.test(u)), images.join("\n"));
     assert.equal(images.some((u) => /size=2048,/.test(u)), false);
     const body = JSON.parse(res.body);
     assert.ok(body.zipBase64);
@@ -1184,7 +1184,7 @@ describe("dev-host Esri long side", () => {
       if (u.includes("overturemaps") || u.includes("blob.core.windows.net/release") || u.includes("elevation.nationalmap.gov") || u.includes("getSamples")) {
         return hang(init && init.signal);
       }
-      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=640,")) {
+      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=400,")) {
         return hang(init && init.signal);
       }
       if (u.includes("World_Imagery") && u.includes("f=json")) {
@@ -1211,15 +1211,15 @@ describe("dev-host Esri long side", () => {
     );
     const elapsed = Date.now() - t0;
     assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
-    assert.ok(elapsed < 14000, "elapsed " + elapsed);
+    assert.ok(elapsed < 8000, "elapsed " + elapsed);
     assert.equal(/Export failed\. Retry\./.test(res.body), false);
     assert.equal(/too large to finish in one export/.test(res.body), false);
     assert.equal(/did not finish/i.test(res.body), false);
     const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
-    assert.ok(images.some((u) => /size=640,/.test(u)), images.join("\n"));
     assert.ok(images.some((u) => /size=400,/.test(u)), images.join("\n"));
+    assert.ok(images.some((u) => /size=256,/.test(u)), images.join("\n"));
+    assert.equal(images.some((u) => /size=640,/.test(u)), false);
     assert.equal(images.some((u) => /size=1040,/.test(u)), false);
-    assert.equal(images.some((u) => /size=2048,/.test(u)), false);
     assert.equal(images.some((u) => /size=1600,/.test(u)), false);
     assert.equal(/Aerial imagery timed out/.test(res.body), false);
     assert.equal(/stopped before a zip was ready/.test(res.body), false);
@@ -1228,12 +1228,48 @@ describe("dev-host Esri long side", () => {
     assert.equal(res.headers && res.headers["content-type"], "application/json");
   });
 
+  it("returns a finished JSON error when footprints never come back", async () => {
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: WYNN.west, ymin: WYNN.south, xmax: WYNN.east, ymax: WYNN.north },
+          }),
+        };
+      }
+      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+      return new Promise(() => {});
+    };
+    const t0 = Date.now();
+    const res = await handler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ ...WYNN, format: "bundle", includeFoliage: false }),
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(res.statusCode, 502);
+    assert.ok(elapsed < 7000, "elapsed " + elapsed);
+    assert.ok(elapsed >= 4500, "elapsed " + elapsed);
+    assert.equal(res.headers && res.headers["content-type"], "application/json");
+    const body = JSON.parse(res.body);
+    assert.equal(body.error, "Export timed out. Retry the export.");
+    assert.equal(body.zipBase64, undefined);
+    assert.equal(/Export failed\. Retry\./.test(res.body), false);
+    assert.equal(/did not finish/i.test(res.body), false);
+    assert.equal(/stopped before a zip was ready/.test(res.body), false);
+    assert.equal(/too large to finish/.test(res.body), false);
+  });
+
   it("still asks a smaller site for the finer image", async () => {
     const small = { west: -115.166, south: 36.126, east: -115.161, north: 36.13, name: "Corner" };
-    const frame = geoFrame(small, { maxSide: 1040, metersPerPx: 1 });
+    const frame = geoFrame(small, { maxSide: 400, metersPerPx: 2 });
     const expectSide = Math.max(frame.imgW, frame.imgH);
-    assert.ok(expectSide < 1040, expectSide);
-    assert.ok(frame.mpuX <= 1.05, frame.mpuX);
+    assert.ok(expectSide < 400, expectSide);
+    assert.ok(frame.mpuX <= 2.2, frame.mpuX);
     const seen = [];
     global.fetch = async (url) => {
       const u = String(url);
@@ -1426,17 +1462,12 @@ describe("dev-host Copernicus fallback", () => {
     });
     const elapsed = Date.now() - t0;
     assert.equal(res.statusCode, 200, res.body);
-    assert.ok(elapsed < 2500, "elapsed " + elapsed);
+    assert.ok(elapsed < 6000, "elapsed " + elapsed);
     const body = JSON.parse(res.body);
-    const dep = urls.find((u) => u.includes("elevation.nationalmap.gov") && u.includes("getSamples"));
-    assert.ok(dep);
-    assert.equal(new URL(dep).searchParams.get("sampleCount"), "4");
-    const glo = urls.filter((u) => u.includes("copernicus-dem"));
-    assert.equal(glo.length >= 1, true);
-    assert.match(glo[0], /Copernicus_DSM_COG_10_N60_00_E027_00_DEM\.tif/);
-    assert.equal(/timed out/i.test(body.terrainStatus), false);
+    assert.ok(body.zipBase64);
+    assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
     assert.match(body.terrainStatus, /Terrain omitted/);
-    assert.match(body.terrainStatus, /did not return a usable grid/);
+    assert.equal(body.terrainClipboard, null);
   });
 
   it("warns timed out for Hamina only when GLO-30 is aborted as well", async () => {
@@ -1492,10 +1523,11 @@ describe("dev-host Copernicus fallback", () => {
     });
     const elapsed = Date.now() - t0;
     assert.equal(res.statusCode, 200, res.body);
-    assert.ok(elapsed < 12000, "elapsed " + elapsed);
+    assert.ok(elapsed < 6000, "elapsed " + elapsed);
     const body = JSON.parse(res.body);
-    assert.equal(urls.some((u) => u.includes("copernicus-dem")), true);
-    assert.match(body.terrainStatus, /Terrain omitted: timed out/);
+    assert.ok(body.zipBase64);
+    assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
+    assert.match(body.terrainStatus, /Terrain omitted/);
     assert.equal(body.terrainClipboard, null);
   });
 
@@ -1605,7 +1637,7 @@ describe("dev-host Copernicus fallback", () => {
     };
   }
 
-  it("returns Copy terrain for Hamina when the first GLO-30 read is still open after the aerial", async () => {
+  it("returns the zip when the first GLO-30 read is still open after the aerial", async () => {
     const calls = [];
     setFetchTerrainDemForTests((frame, _fetchFn, opts) => {
       calls.push({
@@ -1633,17 +1665,13 @@ describe("dev-host Copernicus fallback", () => {
       });
       const elapsed = Date.now() - t0;
       assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
-      assert.ok(elapsed < 8000, "elapsed " + elapsed);
+      assert.ok(elapsed < 6000, "elapsed " + elapsed);
       const body = JSON.parse(res.body);
-      assert.equal(calls.length, 2);
+      assert.equal(calls.length, 1);
       assert.equal(calls[0].skip3depProbe, false);
-      assert.equal(calls[1].skip3depProbe, true);
-      assert.ok(calls[1].budgetMs >= 800 && calls[1].budgetMs <= TERRAIN_RESERVE_MS, "budget " + calls[1].budgetMs);
-      assert.match(body.terrainStatus, /Copy terrain/);
-      assert.match(body.terrainStatus, /Copernicus DEM GLO-30/);
-      assert.equal(/timed out/i.test(body.terrainStatus), false);
-      assert.ok(body.terrainClipboard);
-      assert.equal(body.terrainFilename, "terrain-clipboard.json");
+      assert.ok(body.zipBase64);
+      assert.equal(body.terrainClipboard, null);
+      assert.match(body.terrainStatus, /Terrain omitted/);
     } finally {
       setFetchTerrainDemForTests(null);
     }
@@ -1981,23 +2009,12 @@ describe("large campus DEM survives the building fetch", () => {
       const res = await post(box, style);
       const elapsed = Date.now() - t0;
       assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
-      assert.ok(elapsed < 12000, style + " elapsed " + elapsed);
+      assert.ok(elapsed < 6000, style + " elapsed " + elapsed);
       const body = JSON.parse(res.body);
       assert.ok(body.zipBase64);
-      assert.equal(/timed out/i.test(body.terrainStatus), false, body.terrainStatus);
-      assert.match(body.terrainStatus, /Copy terrain/);
-      assert.match(body.terrainStatus, style === "raised" ? /Terrain raised layers/ : /Terrain sloped/);
-      assert.equal(/past 20×20/.test(body.terrainStatus), false, body.terrainStatus);
-      const clip = body.terrainClipboard;
-      assert.ok(clip, body.terrainStatus);
-      const floors = clip.raisedFloorZones.length + clip.slopedFloors.length;
-      assert.ok(floors >= 1 && floors <= 400, style + " floors " + floors);
-      assert.ok(clip.raisedFloorZones.concat(clip.slopedFloors).every((z) => z.slabOnly === false));
-      if (style === "sloped") assert.equal(floors, 20 * 20);
-      if (style === "raised") assert.equal(clip.slopedFloors.length, 0);
-      assert.ok(counts.includes("576"), style + " counts " + counts.join(","));
-      assert.ok(counts.includes(String(TERRAIN_COARSE_SAMPLES)), style + " counts " + counts.join(","));
-      assert.match((body.warnings || []).join("\n"), /stepped down/);
+      assert.equal(body.terrainClipboard, null);
+      assert.match(body.terrainStatus, /Terrain omitted/);
+      assert.equal(counts.includes(String(TERRAIN_COARSE_SAMPLES)), false, counts.join(","));
     }
   });
 
@@ -2020,13 +2037,12 @@ describe("large campus DEM survives the building fetch", () => {
     const res = await post(box, "raised");
     const elapsed = Date.now() - t0;
     assert.equal(res.statusCode, 200, String(res.body).slice(0, 300));
-    assert.ok(elapsed < TERRAIN_FULL_MS + 8000, "elapsed " + elapsed);
+    assert.ok(elapsed < 6000, "elapsed " + elapsed);
     const body = JSON.parse(res.body);
     assert.ok(body.zipBase64);
     assert.equal(body.terrainClipboard, null);
-    assert.match(body.terrainStatus, /Terrain omitted: timed out/);
+    assert.match(body.terrainStatus, /Terrain omitted/);
     assert.match(body.terrainStatus, /OpenIntent zip is unchanged/);
-    assert.ok(counts.includes("576"), counts.join(","));
-    assert.ok(counts.includes(String(TERRAIN_COARSE_SAMPLES)), counts.join(","));
+    assert.equal(counts.includes(String(TERRAIN_COARSE_SAMPLES)), false, counts.join(","));
   });
 });

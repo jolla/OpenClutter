@@ -22,12 +22,12 @@ const CORE_FETCH_MS = 7000;
 const IMAGERY_ATTEMPT_MS = 8500;
 const IMAGERY_ATTEMPTS = 2;
 const IMAGERY_BACKOFF_MS = 400;
-// Dev export does not use the 8.5s production image. A 1040 px plate plus a
-// second try pushed the function past the gateway, which answered 504 with
-// no zip. 640 px gets this long, then 400 px. 2400 px is not a request.
-const IMAGERY_ATTEMPT_MS_DEV = 4500;
+// Dev export does not use the production image. 640 px plus the waits after
+// it still ran into the 10s gateway and the platform answered 504. The first
+// dev image is 400 px for this long, then 256 px. 2400 px is not a request.
+const IMAGERY_ATTEMPT_MS_DEV = 2500;
 const IMAGERY_STEPDOWN_MS = 6000;
-const IMAGERY_STEPDOWN_MS_DEV = 2500;
+const IMAGERY_STEPDOWN_MS_DEV = 1500;
 // A later step larger than the production image is skipped once this much
 // of the export has already run. The current dev plan has no such step.
 const IMAGERY_STEPDOWN_QUICK_MS = 2000;
@@ -36,9 +36,12 @@ const IMAGERY_RETURN_MS = 15000;
 // silent export around 26s, including cold start. Production may use this
 // longer Overture window. The dev host answers sooner (DEV_ANSWER_MS).
 const EXPORT_ANSWER_MS = 16000;
-// Dev must send the zip before that gateway. Imagery, terrain, foliage, and
-// a still-running Overture read all stop by this clock.
-const DEV_ANSWER_MS = 10000;
+// Dev must send the zip inside the platform's default ~10s, including cold
+// start. Core stops at DEV_CORE_MS. Optional reads get DEV_OPTIONAL_MS only
+// after that core is back, and only when this clock still has room.
+const DEV_ANSWER_MS = 6000;
+const DEV_CORE_MS = 3500;
+const DEV_OPTIONAL_MS = 400;
 // Live Oak Creek metadata was ~3.0s and pads latitude by ~500 m at the same
 // pixel size. The content extent is derived from the drawn box and the JPEG
 // pixel size (the same pad export?f=json returns), so a slow JSON cannot
@@ -155,12 +158,13 @@ function fail(source, message) {
   return err;
 }
 
-async function fetchOk(url, source) {
+async function fetchOk(url, source, timeoutMs) {
   let last = "fetch failed";
   let timedOut = false;
+  const ms = timeoutMs > 0 ? timeoutMs : CORE_FETCH_MS;
   for (let i = 0; i < 2; i++) {
     try {
-      const r = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(CORE_FETCH_MS) });
+      const r = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(ms) });
       if (r.ok) return r;
       last = "HTTP " + r.status;
       if (r.status < 500) break;
@@ -535,8 +539,11 @@ async function joinOptional(warnings, started, label, job, opts) {
     return result;
   }
   const elapsed = Date.now() - started;
+  const flushMs = opts && opts.flushMs != null ? opts.flushMs : null;
   let budget = 0;
-  if (opts && opts.reserveMs > 0) {
+  if (opts && opts.budgetMs != null) {
+    budget = Math.max(0, opts.budgetMs);
+  } else if (opts && opts.reserveMs > 0) {
     // A follow-up DEM slice. The 5s optional window and the 9s hard cap
     // already passed with the aerial; this wait is the coarsened read.
     budget = Math.min(opts.reserveMs, Math.max(0, hardMs - elapsed));
@@ -552,7 +559,7 @@ async function joinOptional(warnings, started, label, job, opts) {
   }
   if (budget < 200) {
     job.ctrl.abort();
-    const flushed = await flushOptional(job, 1200);
+    const flushed = await flushOptional(job, flushMs != null ? flushMs : 1200);
     if (flushed) {
       if (Array.isArray(flushed.features)) {
         warnings.push(label + " partial: kept " + flushed.features.length + " footprints already read");
@@ -572,7 +579,7 @@ async function joinOptional(warnings, started, label, job, opts) {
   try {
     const result = await Promise.race([job.work, timeout]);
     if (result === TIMED_OUT) {
-      const flushed = await flushOptional(job, 1500);
+      const flushed = await flushOptional(job, flushMs != null ? flushMs : 1500);
       if (flushed) {
         if (Array.isArray(flushed.features)) {
           warnings.push(label + " partial: kept " + flushed.features.length + " footprints already read");
@@ -790,6 +797,7 @@ async function handleClutter(event) {
   let overtureJob = null;
   let terrainJob = null;
   let chmJob = null;
+  let overtureFrame = null;
   try {
     // JPEG and Overture together. Meta may confirm the footprint query, but it
     // must not gate the image or the Overture read — the Las Vegas row group
@@ -808,67 +816,56 @@ async function handleClutter(event) {
     if (needImage) {
       frame = applyImageryMeta(frame, null, { width: frame.imgW, height: frame.imgH }, { requestBbox });
     }
-    const overtureFrame = {
+    overtureFrame = {
       west: frame.west,
       south: frame.south,
       east: frame.east,
       north: frame.north,
     };
-    // Content-grid bbox (same center as the draw, so the Sphere row group is
-    // still first). Latitude pad matches the JPEG so an Esri N/S snap does
-    // not drop roofs the row group already contains.
-    overtureJob = beginOptional((signal) =>
-      fetchOvertureFootprints(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
-    );
-    // Dev host: start the DEM on the predicted content grid, in parallel with
-    // metadata. A large campus used to await that JSON (up to 4s) and then
-    // abort the read at 9s while footprints were still downloading. Raised
-    // layers do not fetch again; terrainStyle is applied when the mesh is built.
-    // Production still starts after the snap below.
-    if (includeTerrain && needImage && devHost) {
-      const terrainFrame = Object.assign({}, frame);
-      terrainJob = beginOptional((signal) =>
-        fetchTerrainDemImpl(terrainFrame, null, {
-          signal,
-          terrainResolution,
-          terrainStyle,
-          allowSurfaceFallback: true,
-          deadlineMs: started + TERRAIN_HARD_MS_DEV,
-        })
+    const coreBudget = devHost ? DEV_CORE_MS : CORE_FETCH_MS;
+    // Dev does not open Overture, the DEM, or canopy height until the aerial
+    // and the building footprints are back. Those reads were still running
+    // when the gateway returned 504, and a parquet parse can block the
+    // imagery deadline. Production still starts Overture with the JPEG.
+    let metaDone = false;
+    let metaReady = null;
+    if (!devHost) {
+      overtureJob = beginOptional((signal) =>
+        fetchOvertureFootprints(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
       );
-    }
-    if (needImage) {
-      imgMeta = await fetchImageryMeta(imgMetaUrl);
-      if (imgMeta) frame = applyImageryMeta(frame, imgMeta, null, { requestBbox });
-      // Same lon/lat extent the JPEG will lock. Meters are applied later with
-      // the isotropic frame, so pads line up with hamina-clipboard.json.
-      // 3DEP where that service has a grid. On the dev host, a miss reads
-      // Copernicus GLO-30 inside this same optional budget. Outside coverage
-      // the 3DEP probe is short so GLO-30 gets the remaining time.
-      // includeTerrain false skips the DEM, the follow-up, and Copy terrain.
-      if (includeTerrain && !terrainJob) {
-        terrainJob = beginOptional((signal) =>
-          fetchTerrainDemImpl(frame, null, {
-            signal,
-            terrainResolution,
-            terrainStyle,
-            allowSurfaceFallback: devHost,
-            deadlineMs: started + TERRAIN_HARD_MS,
-          })
-        );
+      if (needImage) {
+        imgMeta = await fetchImageryMeta(imgMetaUrl);
+        if (imgMeta) frame = applyImageryMeta(frame, imgMeta, null, { requestBbox });
+        if (includeTerrain && !terrainJob) {
+          terrainJob = beginOptional((signal) =>
+            fetchTerrainDemImpl(frame, null, {
+              signal,
+              terrainResolution,
+              terrainStyle,
+              allowSurfaceFallback: devHost,
+              deadlineMs: started + TERRAIN_HARD_MS,
+            })
+          );
+        }
       }
+    } else if (needImage) {
+      fetchImageryMeta(imgMetaUrl).then((meta) => {
+        metaDone = true;
+        metaReady = meta;
+        return meta;
+      });
     }
     const globalJob = fetchMsGlobalFootprints(frame, (url) =>
-      fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(CORE_FETCH_MS) })
+      fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(coreBudget) })
     ).catch(() => ({ features: [] }));
     const usaCtrl = new AbortController();
-    const usaTimer = setTimeout(() => usaCtrl.abort(), CORE_FETCH_MS);
+    const usaTimer = setTimeout(() => usaCtrl.abort(), coreBudget);
     const usaJob = fetchUsaStructures(frame, (url) =>
       fetch(url, { headers: { "user-agent": UA }, signal: usaCtrl.signal })
     )
       .catch(() => ({ features: [] }))
       .finally(() => clearTimeout(usaTimer));
-    if (includeFoliage && needImage && !chmJob) {
+    if (!devHost && includeFoliage && needImage && !chmJob) {
       const chmFrame = {
         west: frame.west,
         south: frame.south,
@@ -879,16 +876,38 @@ async function handleClutter(event) {
     }
     const clientHitsEarly = includeFoliage ? normalizeCanopyHits(body.canopyHits) : [];
     const canopyJob =
-      includeFoliage && !clientHitsEarly.length
+      includeFoliage && !clientHitsEarly.length && !devHost
         ? fetchCanopyTrees(frame, (url) => fetchOk(url, "canopy"), { maxTrees: maxTreesForBbox(frame) }).catch(() => null)
         : null;
-    const fetched = await Promise.all([
-      fetchMsFootprints(frame, (url) => fetchOk(url, "footprints"), { pad: false, budgetMs: CORE_FETCH_MS }),
+    const core = Promise.all([
+      fetchMsFootprints(frame, (url) => fetchOk(url, "footprints", coreBudget), { pad: false, budgetMs: coreBudget }),
       globalJob,
       usaJob,
       imageryJob,
       canopyJob,
     ]);
+    core.catch(() => {});
+    let fetched;
+    if (devHost) {
+      let wallTimer;
+      const wall = new Promise((_, reject) => {
+        wallTimer = setTimeout(
+          () => reject(fail("export", "The operation was aborted due to timeout")),
+          Math.max(1000, DEV_ANSWER_MS - 800)
+        );
+      });
+      try {
+        fetched = await Promise.race([core, wall]);
+      } finally {
+        clearTimeout(wallTimer);
+      }
+    } else {
+      fetched = await core;
+    }
+    if (devHost && metaDone && metaReady) {
+      imgMeta = metaReady;
+      frame = applyImageryMeta(frame, imgMeta, null, { requestBbox });
+    }
     gj = fetched[0];
     const globalPack = fetched[1] || { features: [] };
     globalFeatures = globalPack.features || [];
@@ -929,16 +948,48 @@ async function handleClutter(event) {
     return json(502, cors, { error: describeCoreFailure(e) });
   }
 
-  // Overture and canopy start now so the Finland DEM settle wait does not
-  // eat their grace. The DEM follow-up may replace terrainJob with a coarser
-  // GLO-30 read once that settle window misses.
+  // Production: Overture already started with the JPEG. Dev starts it only
+  // after the aerial and footprints are in hand, and only for a short slice,
+  // so a slow read cannot hold the zip past the gateway.
+  const devLeft = DEV_ANSWER_MS - (Date.now() - started);
+  const devSlice = devHost && devLeft >= 800 ? Math.min(DEV_OPTIONAL_MS, devLeft - 400) : 0;
+  if (devHost && devSlice >= 200 && overtureFrame && needImage) {
+    overtureJob = beginOptional((signal) =>
+      fetchOvertureFootprints(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
+    );
+    if (includeTerrain) {
+      terrainJob = beginOptional((signal) =>
+        fetchTerrainDemImpl(frame, null, {
+          signal,
+          terrainResolution,
+          terrainStyle,
+          allowSurfaceFallback: true,
+          deadlineMs: started + DEV_ANSWER_MS,
+        })
+      );
+    }
+    if (includeFoliage && !chmJob) {
+      chmJob = beginOptional((signal) =>
+        fetchChmGrid(
+          {
+            west: frame.west,
+            south: frame.south,
+            east: frame.east,
+            north: frame.north,
+          },
+          { signal }
+        )
+      );
+    }
+  }
+  const devQuick = { graceMs: devSlice, hardMs: DEV_ANSWER_MS, budgetMs: devSlice, flushMs: 80 };
   const overturePromise = overtureJob
     ? joinOptional(
         warnings,
         started,
         "Overture buildings",
         overtureJob,
-        capDevWait(devHost, started, overtureWait(frame))
+        devHost ? devQuick : overtureWait(frame)
       )
     : Promise.resolve(null);
   // The height read overlaps the aerial. On dev it stops with the answer
@@ -950,19 +1001,22 @@ async function handleClutter(event) {
         started,
         "Canopy height",
         chmJob,
-        capDevWait(devHost, started, {
-          graceMs: devHost ? 2500 : 8000,
-          hardMs: devHost ? DEV_ANSWER_MS : EXPORT_ANSWER_MS,
-        })
+        devHost
+          ? devQuick
+          : {
+              graceMs: 8000,
+              hardMs: EXPORT_ANSWER_MS,
+            }
       )
     : Promise.resolve(null);
-  const terrainFollow = includeTerrain
-    ? await followUpTerrain(terrainJob, started, frame, devHost, terrainResolution, terrainStyle)
-    : { preset: null, job: null, join: null };
+  const terrainFollow =
+    !includeTerrain || devHost
+      ? { preset: null, job: devHost ? terrainJob : null, join: null }
+      : await followUpTerrain(terrainJob, started, frame, devHost, terrainResolution, terrainStyle);
   const demPromise = terrainFollow.preset
     ? Promise.resolve(terrainFollow.preset)
     : terrainFollow.job
-      ? joinOptional(warnings, started, "Terrain", terrainFollow.job, terrainFollow.join)
+      ? joinOptional(warnings, started, "Terrain", terrainFollow.job, devHost ? devQuick : terrainFollow.join)
       : Promise.resolve(null);
   const optional = await Promise.all([overturePromise, demPromise, chmPromise]);
   overturePack = optional[0] || { features: [] };
