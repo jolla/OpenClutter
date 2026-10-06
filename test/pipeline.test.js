@@ -1161,6 +1161,10 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /const terrainOff = includeTerrain === false/);
     assert.match(app, /terrainOff \? "Terrain off"/);
     assert.match(app, /includeTerrain: terrain/);
+    assert.match(app, /deferTerrain: terrain && devPage\(\)/);
+    assert.match(app, /format: "terrain"/);
+    assert.match(app, /function fetchTerrainPaste/);
+    assert.match(app, /Terrain did not return\. Export again\./);
     assert.match(app, /terrainResolution: terrain \? "auto" : undefined/);
     assert.equal(/id="terrain-style"|name="terrain-style"|Raised layers/.test(html + app), false);
     assert.equal(/selectedTerrainStyle/.test(app), false);
