@@ -175,6 +175,10 @@ function evidenceIsPavement(e, heightM) {
   if (smoothMembrane(e, heightM)) return false;
   if (e.roofFrac >= MAX_ROOF_FRAC) return false;
   if (e.greenFrac >= MAX_GREEN_FRAC) return false;
+  // Pointe-Claire's convent is a measured roof under trees. At 2 m/px those
+  // trees sit in the asphalt luma band and only a few pixels count as green.
+  // A parking lot in the same test is grayer than that. Keep the building.
+  if (heightM >= 3.5 && e.greenFrac >= 0.05 && e.medianStd >= 10) return false;
   if (e.meanY < DARK_ROOF_LUMA && e.asphaltFrac < 0.45) return false;
   if (e.asphaltFrac >= 0.38 && e.roofFrac < 0.1 && e.meanY >= 100 && e.meanY <= 150 && e.meanSat < 0.22) {
     return true;
