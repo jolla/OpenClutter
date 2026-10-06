@@ -12,7 +12,9 @@ function devPage() {
 function syncTerrainControls() {
   const dev = devPage();
   const row = document.getElementById("include-terrain-row");
+  const hint = document.getElementById("terrain-hint");
   if (row) row.hidden = !dev;
+  if (hint) hint.hidden = !dev;
   syncMapQuality();
 }
 
@@ -235,9 +237,26 @@ function syncDrawMode() {
 
 function typingTarget(el) {
   if (!el || !el.tagName) return false;
+  if (el.isContentEditable) return true;
   const tag = el.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
-  return !!el.isContentEditable;
+  if (tag === "TEXTAREA") return true;
+  if (tag !== "INPUT") return false;
+  const type = String(el.type || "text").toLowerCase();
+  return (
+    type === "text" ||
+    type === "search" ||
+    type === "email" ||
+    type === "url" ||
+    type === "tel" ||
+    type === "password" ||
+    type === "number"
+  );
+}
+
+function releasePanelFocus() {
+  const el = document.activeElement;
+  if (!el || el === document.body || typingTarget(el)) return;
+  if (el.closest && el.closest(".panel")) el.blur();
 }
 
 function panGesture(ev) {
@@ -263,6 +282,7 @@ function syncExportReady() {
 }
 
 function enterDrawMode(message) {
+  releasePanelFocus();
   activePointer = null;
   clearRubber();
   OpenClutterDraw.arm(drawSession);
@@ -478,6 +498,7 @@ mapEl.addEventListener(
       beginPan(ev);
       return;
     }
+    releasePanelFocus();
     if (activePointer != null) return;
     if (ev.button !== 0) return;
     if (!drawSession.armed) {
@@ -572,6 +593,7 @@ mapEl.addEventListener(
 
 window.addEventListener("keydown", (ev) => {
   if (ev.code === "Space" && !typingTarget(ev.target)) {
+    releasePanelFocus();
     spacePan = true;
     ev.preventDefault();
     if (panPointer == null) releaseDrawPress();

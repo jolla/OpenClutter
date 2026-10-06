@@ -1138,7 +1138,10 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(html, /value="standard">Standard · 640 px</);
     assert.match(html, /value="high">High · 1040 px</);
     assert.match(html, /value="sharp">Sharp · 2048 px</);
-    assert.match(html, /id="map-quality-hint"[^>]*hidden/);
+    assert.match(html, /id="terrain-hint"[^>]*hidden/);
+    assert.match(html, /Copy and paste in Planner Plus\. Do not import as OpenIntent\./);
+    assert.match(html, /id="map-quality-hint"[^>]*hidden>Auto is fast\. High and Sharp wait for a bigger plate\./);
+    assert.equal(/4K does not return/.test(html), false);
     assert.equal(/type="range"/i.test(html), false);
     assert.equal(/DEM source|3DEP source/i.test(html + app), false);
     assert.equal(/id="terrain-resolution"/.test(html), false);
@@ -1208,6 +1211,15 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(menuBody, /preventDefault/);
     assert.equal(/finish\(/.test(menuBody), false);
     assert.match(app, /map\.panBy/);
+    assert.match(app, /function releasePanelFocus/);
+    assert.match(app, /function typingTarget/);
+    const typingFn = app.slice(app.indexOf("function typingTarget"), app.indexOf("function panGesture"));
+    assert.match(typingFn, /type === "search"/);
+    assert.equal(/tag === "INPUT" \|\| tag === "TEXTAREA" \|\| tag === "SELECT"/.test(typingFn), false);
+    const spaceAt = app.indexOf('ev.code === "Space"');
+    const spaceBody = app.slice(spaceAt, spaceAt + 220);
+    assert.match(spaceBody, /releasePanelFocus/);
+    assert.match(spaceBody, /preventDefault/);
     assert.match(app, /ev\.code === "Space"/);
     assert.match(app, /ev\.button === 2/);
     assert.match(app, /Escape/);
