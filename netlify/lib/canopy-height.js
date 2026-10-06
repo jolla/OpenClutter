@@ -281,28 +281,7 @@ function accumulatePeaks(max, count, tile, frame, dstW, dstH) {
   }
 }
 
-async function fetchChmGrid(frame, opts) {
-  const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
-  if (signal.aborted) return null;
-  const keys = quadkeysForBbox(frame.west, frame.south, frame.east, frame.north, CHM_ZOOM);
-  if (!keys.length || keys.length > MAX_TILES) return null;
-  const geotiff = require("geotiff");
-  const { width, height } = gridSize(frame);
-  const max = new Uint8Array(width * height);
-  const count = new Uint16Array(width * height);
-  try {
-    for (const key of keys) {
-      if (signal.aborted) return null;
-      const tiff = await geotiff.fromUrl(chmUrl(key), { cacheSize: 16 }, signal);
-      const image = await tiff.getImage();
-      const finished = await readPeakStrips(image, frame, width, height, max, count, signal);
-      if (!finished) return null;
-    }
-  } catch (e) {
-    if (signal.aborted || /abort|timeout/i.test(String(e && e.message ? e.message : e))) return null;
-    throw e;
-  }
-  if (signal.aborted) return null;
+function packPeakGrid(frame, width, height, max, count) {
   const values = new Uint8Array(width * height);
   let nz = 0;
   for (let i = 0; i < values.length; i++) {
@@ -322,6 +301,33 @@ async function fetchChmGrid(frame, opts) {
     values,
     nonzero: nz,
   };
+}
+
+async function fetchChmGrid(frame, opts) {
+  const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
+  if (signal.aborted) return null;
+  const keys = quadkeysForBbox(frame.west, frame.south, frame.east, frame.north, CHM_ZOOM);
+  if (!keys.length || keys.length > MAX_TILES) return null;
+  const geotiff = (opts && opts.loader) || require("geotiff");
+  const { width, height } = gridSize(frame);
+  const max = new Uint8Array(width * height);
+  const count = new Uint16Array(width * height);
+  // An abort used to throw away every strip already read, and the export
+  // then drew NLCD cell squares. Peaks in hand are enough to trace those crowns.
+  const pack = () => packPeakGrid(frame, width, height, max, count);
+  try {
+    for (const key of keys) {
+      if (signal.aborted) return pack();
+      const tiff = await geotiff.fromUrl(chmUrl(key), { cacheSize: 16 }, signal);
+      const image = await tiff.getImage();
+      const finished = await readPeakStrips(image, frame, width, height, max, count, signal);
+      if (!finished) return pack();
+    }
+  } catch (e) {
+    if (signal.aborted || /abort|timeout/i.test(String(e && e.message ? e.message : e))) return pack();
+    throw e;
+  }
+  return pack();
 }
 
 function gridValues(grid) {

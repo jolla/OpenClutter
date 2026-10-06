@@ -767,14 +767,16 @@ function expandShortAxis(pts, imgW, imgH, span) {
  * Sub-pixel tree trunks used to emit near-degenerate hexagons. After toFixed(3)
  * those can be duplicate/NaN-adjacent and Hamina then dropped every area.
  * Expand collapsed blobs and near-miss short sides. Drop one-axis slivers.
+ * A collapsed building becomes a square. A canopy keeps its traced outline
+ * and is scaled up to the span, so a crown on a coarse aerial is not a box.
  */
-function ensureMinSpan(pts, imgW, imgH, minSpan) {
+function ensureMinSpan(pts, imgW, imgH, minSpan, keepShape) {
   if (!pts || pts.length < 3) return pts;
   const span = minSpan == null ? MIN_OI_SPAN_PX : minSpan;
   const klass = ringSpanClass(pts, span);
   if (klass === "ok") return pts;
-  if (klass === "thin") {
-    if (thinSliverDrop(pts, span)) return [];
+  if (klass === "thin" || (klass === "collapsed" && keepShape)) {
+    if (klass === "thin" && thinSliverDrop(pts, span)) return [];
     return expandShortAxis(pts, imgW, imgH, span);
   }
   const b = ringBBox(pts);
@@ -1069,13 +1071,13 @@ function capOiRingPx(ring, maxPts) {
   return best ? best.c.concat([best.c[0]]) : [];
 }
 
-function ringToOi(pts, imgW, imgH, mpuX) {
+function ringToOi(pts, imgW, imgH, mpuX, opts) {
   if (!pts || pts.length < 3) return null;
   let clipped = clipRingToRect(pts, imgW, imgH);
   if (clipped.length < 3) return null;
   const span = minOiSpanPx(mpuX);
   if (thinSliverDrop(clipped, span)) return null;
-  clipped = ensureMinSpan(clipped, imgW, imgH, span);
+  clipped = ensureMinSpan(clipped, imgW, imgH, span, !!(opts && opts.keepShape));
   if (!clipped || clipped.length < 3) return null;
   if (ringSpanClass(clipped, span) !== "ok") return null;
   clipped = capOiRingPx(clipped, MAX_OI_RING_VERTS);
@@ -1650,7 +1652,7 @@ function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
   const kinds = [];
   let droppedInvalid = 0;
   for (const t of oiTreeAreas || []) {
-    const coords = ringToOi(t.ringPx, imgW, imgH, mpuX);
+    const coords = ringToOi(t.ringPx, imgW, imgH, mpuX, { keepShape: true });
     const area = emitIfValid(makeOiArea(coords, t.material), imgW, imgH);
     if (!area) {
       droppedInvalid++;
@@ -1729,6 +1731,7 @@ function buildClutter({
   terrainResolution,
   nlsHeights,
   omitFoliage,
+  chmRequired,
   maxFoliagePolygons,
 }) {
   const featureList = footprintsGeojson?.features || [];
@@ -1755,6 +1758,7 @@ function buildClutter({
         maskPolygons,
         slopeTop,
         omitFoliage: omitFoliage === true,
+        chmRequired: chmRequired === true,
         maxPolygons: maxFoliagePolygons,
       })
     : {

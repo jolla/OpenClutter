@@ -738,4 +738,63 @@ describe("canopy height replaces the color guess", () => {
     assert.equal(at720.some((c) => c.heightM === 3), false, "a short speck does not take a tree slot");
     assert.equal(compact[0].heightM >= compact[compact.length - 1].heightM, true);
   });
+
+  it("does not turn NLCD hits into squares when canopy height was required", () => {
+    const frame = geoFrame({ west: -87.93, south: 42.89, east: -87.91, north: 42.91, name: "Req" });
+    const cellLon = 30 / (111320 * Math.cos((42.9 * Math.PI) / 180));
+    const cellLat = 30 / 110540;
+    const lon0 = frame.west + (frame.east - frame.west) * 0.4;
+    const lat0 = frame.south + (frame.north - frame.south) * 0.4;
+    const hits = [];
+    for (let iy = 0; iy < 3; iy++) {
+      for (let ix = 0; ix < 4; ix++) hits.push({ lon: lon0 + ix * cellLon, lat: lat0 + iy * cellLat, pct: 80 });
+    }
+    const squares = treePairsFromPoints([], frame, [], null, { canopyHits: hits, heightSample: () => 14 });
+    assert.equal(squares.foliageGeometry, "nlcd-polygon");
+    assert.ok(squares.oiAreas.length >= 1);
+    const required = treePairsFromPoints([], frame, [], null, {
+      canopyHits: hits,
+      heightSample: () => 14,
+      chmRequired: true,
+    });
+    assert.equal(required.oiAreas.length, 0);
+    assert.equal(required.foliageGeometry, "none");
+  });
+
+  it("keeps canopy peaks from strips read before the abort", async () => {
+    const frame = { west: -87.93, south: 42.89, east: -87.929, north: 42.891 };
+    const [xW, yS] = mercator(frame.west, frame.south);
+    const [xE, yN] = mercator(frame.east, frame.north);
+    const width = 80;
+    const height = 600;
+    const origin = [Math.min(xW, xE), Math.max(yS, yN)];
+    const res = [(Math.max(xW, xE) - origin[0]) / width, (Math.min(yS, yN) - origin[1]) / height];
+    const ctrl = new AbortController();
+    let strips = 0;
+    const image = {
+      getWidth: () => width,
+      getHeight: () => height,
+      getOrigin: () => origin,
+      getResolution: () => res,
+      readRasters: async ({ window }) => {
+        strips++;
+        const cols = window[2] - window[0];
+        const rows = window[3] - window[1];
+        const data = new Uint8Array(cols * rows);
+        if (window[1] < 256) {
+          for (let y = 0; y < rows; y++) {
+            for (let x = 8; x < 48; x++) data[y * cols + x] = 14;
+          }
+        }
+        ctrl.abort();
+        return data;
+      },
+    };
+    const grid = await fetchChmGrid(frame, {
+      signal: ctrl.signal,
+      loader: { fromUrl: async () => ({ getImage: async () => image }) },
+    });
+    assert.ok(grid && grid.nonzero > 0, "peaks already read stay on the grid");
+    assert.equal(strips, 1, "the abort stops the next strip");
+  });
 });
