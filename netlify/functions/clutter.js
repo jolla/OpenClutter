@@ -28,6 +28,12 @@ const IMAGERY_BACKOFF_MS = 400;
 const IMAGERY_ATTEMPT_MS_DEV = 2500;
 const IMAGERY_STEPDOWN_MS = 6000;
 const IMAGERY_STEPDOWN_MS_DEV = 1500;
+// High and Sharp wait longer than Auto. A 1040 px plate of the ~850 m
+// Wi-Co box missed the 2.5s Auto budget and came back as the same 400 px
+// JPEG. These waits stay under the ~10s gateway. 4K did not return in 9s.
+const IMAGERY_HIGH_FIRST_MS = 6200;
+const IMAGERY_SHARP_FIRST_MS = 5000;
+const IMAGERY_SHARP_MID_MS = 1800;
 // A later step larger than the production image is skipped once this much
 // of the export has already run. The current dev plan has no such step.
 const IMAGERY_STEPDOWN_QUICK_MS = 2000;
@@ -40,6 +46,10 @@ const EXPORT_ANSWER_MS = 16000;
 // start. Core stops at DEV_CORE_MS. Optional reads get DEV_OPTIONAL_MS only
 // after that core is back, and only when this clock still has room.
 const DEV_ANSWER_MS = 6000;
+// High and Sharp only. Auto stays on DEV_ANSWER_MS so a campus export
+// still answers inside the gateway. 9000 leaves a slice to build the zip
+// before the platform closes the request.
+const DEV_SHARP_ANSWER_MS = 9000;
 const DEV_CORE_MS = 3500;
 const DEV_OPTIONAL_MS = 400;
 // Live Oak Creek metadata was ~3.0s and pads latitude by ~500 m at the same
@@ -202,15 +212,30 @@ function imageryAttemptMs(devHost) {
   return devHost ? IMAGERY_ATTEMPT_MS_DEV : IMAGERY_ATTEMPT_MS;
 }
 
+function imageryRoomKind(quality) {
+  const q = String(quality || "")
+    .trim()
+    .toLowerCase();
+  if (q === "sharp" || q === "2048" || q === "2k") return "sharp";
+  if (q === "high" || q === "higher" || q === "1040") return "high";
+  return "";
+}
+
 function imagerySteps(devHost, bbox) {
   const quality = devHost && bbox ? bbox.imageryQuality : undefined;
   const plan = imageryExportPlan(devHost, bbox, quality);
+  const kind = devHost ? imageryRoomKind(quality) : "";
   if (!devHost) {
     return plan.map((step) => Object.assign({ attemptMs: IMAGERY_ATTEMPT_MS }, step));
   }
-  return plan.map((step, i) =>
-    Object.assign({ attemptMs: i === 0 ? IMAGERY_ATTEMPT_MS_DEV : IMAGERY_STEPDOWN_MS_DEV }, step)
-  );
+  return plan.map((step, i) => {
+    let attemptMs = i === 0 ? IMAGERY_ATTEMPT_MS_DEV : IMAGERY_STEPDOWN_MS_DEV;
+    if (kind === "high") attemptMs = i === 0 ? IMAGERY_HIGH_FIRST_MS : IMAGERY_STEPDOWN_MS_DEV;
+    if (kind === "sharp") {
+      attemptMs = i === 0 ? IMAGERY_SHARP_FIRST_MS : i === 1 ? IMAGERY_SHARP_MID_MS : IMAGERY_STEPDOWN_MS_DEV;
+    }
+    return Object.assign({ attemptMs }, step);
+  });
 }
 
 /**
@@ -246,7 +271,13 @@ async function fetchImageryStepped(bbox, steps) {
     try {
       const plate = imageryFrame(bbox, step);
       const buf = await fetchImageryJpeg(esriImageryUrl(plate), attemptMs);
-      return { buf, stepped: i > 0, imgW: plate.imgW, imgH: plate.imgH };
+      return {
+        buf,
+        stepped: i > 0,
+        imgW: plate.imgW,
+        imgH: plate.imgH,
+        askedSide: steps[0] && steps[0].maxSide,
+      };
     } catch (e) {
       last = e;
     }
@@ -669,10 +700,28 @@ function overtureWait(frame) {
  * to build the zip. It is not the 400 ms Overture slice: that window starts
  * too late to trace a crown, and the miss was exported as NLCD squares.
  */
-function devChmWait(started) {
-  const left = DEV_ANSWER_MS - (Date.now() - started);
+function devChmWait(started, answerMs) {
+  const clock = answerMs > 0 ? answerMs : DEV_ANSWER_MS;
+  const left = clock - (Date.now() - started);
   const budget = Math.max(0, left - 400);
-  return { graceMs: budget, hardMs: DEV_ANSWER_MS, budgetMs: budget, flushMs: 80 };
+  return { graceMs: budget, hardMs: clock, budgetMs: budget, flushMs: 80 };
+}
+
+function mapImageNote(plate, frame, jpegBuf) {
+  const sized = jpegSize(jpegBuf);
+  const side = sized
+    ? Math.max(sized.width, sized.height)
+    : Math.max(+plate.imgW || 0, +plate.imgH || 0);
+  let mpp = "";
+  if (sized && frame && frame.mpuX > 0) {
+    const n = frame.mpuX >= 1 ? frame.mpuX.toFixed(1) : frame.mpuX.toFixed(2);
+    mpp = ", " + n + " m per pixel";
+  }
+  if (plate.stepped) {
+    const asked = plate.askedSide > 0 ? plate.askedSide : side;
+    return "Map image stepped down to " + side + " px" + mpp + ". The " + asked + " px plate was still out.";
+  }
+  return "Map image " + side + " px" + mpp + ".";
 }
 
 /** Dev stops optional reads at DEV_ANSWER_MS so the zip is the response. */
@@ -817,6 +866,8 @@ async function handleClutter(event) {
   let chmGrid = null;
   const warnings = [];
   const started = Date.now();
+  const sharpRoom = devHost && imageryRoomKind(body.imageryQuality) !== "";
+  const answerMs = sharpRoom ? DEV_SHARP_ANSWER_MS : DEV_ANSWER_MS;
   let overtureJob = null;
   let terrainJob = null;
   let chmJob = null;
@@ -838,12 +889,33 @@ async function handleClutter(event) {
       east: frame.east,
       north: frame.north,
     };
-    const imageryJob = needImage
-      ? fetchImageryStepped(requestBbox, steps).then((got) => {
-          imageryPlate = got;
-          return got && got.buf;
-        })
-      : Promise.resolve(null);
+    let imageryJob;
+    if (sharpRoom && needImage) {
+      // Buildings and the elevation read wait. A parquet parse on this same
+      // turn was aborting the 1040 px plate inside the Auto budget, and the
+      // zip came back on the 400 px plate.
+      let sharpTimer;
+      const sharpWall = new Promise((_, reject) => {
+        sharpTimer = setTimeout(
+          () => reject(fail("imagery", "The operation was aborted due to timeout")),
+          Math.max(1000, answerMs - 400)
+        );
+      });
+      try {
+        const got = await Promise.race([fetchImageryStepped(requestBbox, steps), sharpWall]);
+        imageryPlate = got;
+        imageryJob = Promise.resolve(got && got.buf);
+      } finally {
+        clearTimeout(sharpTimer);
+      }
+    } else {
+      imageryJob = needImage
+        ? fetchImageryStepped(requestBbox, steps).then((got) => {
+            imageryPlate = got;
+            return got && got.buf;
+          })
+        : Promise.resolve(null);
+    }
     if (needImage) {
       frame = applyImageryMeta(frame, null, { width: frame.imgW, height: frame.imgH }, { requestBbox });
     }
@@ -891,13 +963,13 @@ async function handleClutter(event) {
         return meta;
       });
       const drawLongM = Math.max(+frame.widthM || 0, +frame.lengthM || 0);
-      devEarlyFootprints = drawLongM <= 800 || !frameHas3dep(frame);
+      devEarlyFootprints = !sharpRoom && (drawLongM <= 800 || !frameHas3dep(frame));
       if (devEarlyFootprints && !overtureJob) {
         overtureJob = beginOptional((signal) =>
           fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
         );
       }
-      if (includeTerrain && !terrainJob) {
+      if (includeTerrain && !terrainJob && !sharpRoom) {
         terrainJob = beginOptional((signal) =>
           fetchTerrainDemImpl(frame, null, {
             signal,
@@ -921,7 +993,7 @@ async function handleClutter(event) {
     )
       .catch(() => ({ features: [] }))
       .finally(() => clearTimeout(usaTimer));
-    if (includeFoliage && needImage && !chmJob) {
+    if (includeFoliage && needImage && !chmJob && !sharpRoom) {
       const chmFrame = {
         west: frame.west,
         south: frame.south,
@@ -949,7 +1021,9 @@ async function handleClutter(event) {
       const wall = new Promise((_, reject) => {
         wallTimer = setTimeout(
           () => reject(fail("export", "The operation was aborted due to timeout")),
-          Math.max(1000, DEV_ANSWER_MS - 800)
+          sharpRoom
+            ? Math.max(1000, answerMs - (Date.now() - started) - 400)
+            : Math.max(1000, DEV_ANSWER_MS - 800)
         );
       });
       try {
@@ -986,17 +1060,7 @@ async function handleClutter(event) {
       const locked = lockIsotropicImagery(frame, imgBuf, { maxSide });
       frame = locked.frame;
       imgBuf = locked.jpegBuf;
-      if (devHost && imageryPlate) {
-        const sized = jpegSize(imgBuf);
-        const side = sized
-          ? Math.max(sized.width, sized.height)
-          : Math.max(+imageryPlate.imgW || 0, +imageryPlate.imgH || 0);
-        warnings.push(
-          imageryPlate.stepped
-            ? "Map image stepped down to " + side + " px. The sharper plate was still out."
-            : "Map image " + side + " px."
-        );
-      }
+      if (devHost && imageryPlate) warnings.push(mapImageNote(imageryPlate, frame, imgBuf));
     }
     const canopy = fetched[4];
     if (canopy && canopy.parsed && canopy.parsed.hits && canopy.parsed.hits.length) {
@@ -1018,9 +1082,9 @@ async function handleClutter(event) {
   // Production: Overture already started with the JPEG. A long US dev draw
   // starts it here, for a short slice, so a slow parse cannot hold the zip.
   // A short draw and a frame outside 3DEP already started it with the aerial.
-  const devLeft = DEV_ANSWER_MS - (Date.now() - started);
+  const devLeft = answerMs - (Date.now() - started);
   const devSlice = devHost && devLeft >= 800 ? Math.min(DEV_OPTIONAL_MS, devLeft - 400) : 0;
-  if (devHost && devSlice >= 200 && overtureFrame && needImage) {
+  if (devHost && (sharpRoom ? devLeft >= 800 : devSlice >= 200) && overtureFrame && needImage) {
     if (!overtureJob) {
       overtureJob = beginOptional((signal) =>
         fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
@@ -1033,7 +1097,7 @@ async function handleClutter(event) {
           terrainResolution,
           terrainStyle,
           allowSurfaceFallback: true,
-          deadlineMs: started + DEV_ANSWER_MS,
+          deadlineMs: started + answerMs,
           fitAnswerClock: true,
           skip3depProbe: !frameHas3dep(frame),
         })
@@ -1060,7 +1124,13 @@ async function handleClutter(event) {
         started,
         "Overture buildings",
         overtureJob,
-        devHost ? (devEarlyFootprints ? devChmWait(started) : devQuick) : overtureWait(frame)
+        devHost
+          ? sharpRoom
+            ? devChmWait(started, answerMs)
+            : devEarlyFootprints
+              ? devChmWait(started)
+              : devQuick
+          : overtureWait(frame)
       )
     : Promise.resolve(null);
   // The height read overlaps the aerial. On dev it stops with the answer
@@ -1073,7 +1143,7 @@ async function handleClutter(event) {
         "Canopy height",
         chmJob,
         devHost
-          ? devChmWait(started)
+          ? devChmWait(started, sharpRoom ? answerMs : undefined)
           : {
               graceMs: 8000,
               hardMs: EXPORT_ANSWER_MS,
@@ -1087,7 +1157,13 @@ async function handleClutter(event) {
   const demPromise = terrainFollow.preset
     ? Promise.resolve(terrainFollow.preset)
     : terrainFollow.job
-      ? joinOptional(warnings, started, "Terrain", terrainFollow.job, devHost ? devChmWait(started) : terrainFollow.join)
+      ? joinOptional(
+          warnings,
+          started,
+          "Terrain",
+          terrainFollow.job,
+          devHost ? devChmWait(started, sharpRoom ? answerMs : undefined) : terrainFollow.join
+        )
       : Promise.resolve(null);
   const optional = await Promise.all([overturePromise, demPromise, chmPromise]);
   overturePack = optional[0] || { features: [] };

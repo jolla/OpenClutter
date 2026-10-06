@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.63** on `dev` — High on the ~850 m draw was the same 400 px plate as Auto, because that 1040 px request was cut off at 2.5 s and the zip stepped down. High now waits for the 1040 px plate, and Sharp asks for 2048 px. Buildings and terrain start after that plate is in hand. The status names the pixels that landed, and says when a plate was still out. A 4K plate does not come back inside the gateway, so it is not a choice. Auto is unchanged. Terrain on still pastes the sloped mesh. Include foliage stays off and Experimental. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.63`).
+
 **v1.1.62** on `dev` — The dev page has a Map menu: Auto, Low · 256 px, Standard · 640 px, or High · 1040 px. Auto is the same plate as before: a short draw at half a meter, a long draw at 400 px. High asks for a 1040 px plate and steps down to 400 px when that plate is still out. The status names the plate that landed. Terrain is on or off, and Terrain on pastes the sloped mesh. Include foliage stays off and Experimental. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.62`).
 
 **v1.1.61** on `dev` — The white-roof convent at the south tip of the Pointe-Claire peninsula stays in the zip. OpenStreetMap already had that roof, and the export was dropping it because the trees on it looked like a parking lot. A measured building with trees on the roof is kept. A gray parking lot is still dropped. The ~850 m draw stays on the workable aerial so the zip still returns inside the gateway. Include foliage stays off and Experimental. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.61`).
@@ -97,7 +99,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.62`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. Terrain on pastes the sloped mesh. A Map menu on that host picks Auto, Low · 256 px, Standard · 640 px, or High · 1040 px. Auto matches the draw. A larger plate steps down if it is still out, and the status names the plate that landed. The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The checkbox and the map menu stay hidden off this host.
+- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.63`). The same dev host shows **Include foliage** with an Experimental tag (off unless checked) and **Terrain**, on by default. Terrain on pastes the sloped mesh. A Map menu on that host picks Auto, Low · 256 px, Standard · 640 px, High · 1040 px, or Sharp · 2048 px. Auto stays on the fast plate. High and Sharp wait longer, and the status names the pixels that landed. A 4K plate is not a choice. The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. The checkbox and the map menu stay hidden off this host.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 
