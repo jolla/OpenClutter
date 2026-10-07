@@ -34,6 +34,12 @@ const IMAGERY_STEPDOWN_MS_DEV = 1500;
 const IMAGERY_HIGH_FIRST_MS = 6200;
 const IMAGERY_SHARP_FIRST_MS = 5000;
 const IMAGERY_SHARP_MID_MS = 1800;
+// A nearly square Sharp plate is about 4 MP. That JPEG was still out after
+// 7s on downtown Montreal, and the 1.8s left for 1040 was not enough either
+// (that plate returned in about 4.5s). Wi-Co at 2048×1281 is under this and
+// still returns. Above it, Sharp asks for 1040 first.
+const SHARP_HEAVY_PIXELS = 3200000;
+const SHARP_HEAVY_FIRST_MS = 5500;
 // A later step larger than the production image is skipped once this much
 // of the export has already run. The current dev plan has no such step.
 const IMAGERY_STEPDOWN_QUICK_MS = 2000;
@@ -115,7 +121,7 @@ const DENSE_FEATURES = 1500;
 // response is returned.
 const ZIP_FIT_BYTES = 4200000;
 const ZIP_SHRINK_STEPS = [640, 400, 240];
-const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, padFootprintBbox, imageryExportPlan } = require("../lib/geo-frame");
+const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, padFootprintBbox, imageryExportPlan, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
@@ -222,6 +228,15 @@ function imageryRoomKind(quality) {
   return "";
 }
 
+function sharpFrameHeavy(bbox) {
+  try {
+    const frame = geoFrame(bbox, { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.4 });
+    return frame.imgW * frame.imgH > SHARP_HEAVY_PIXELS;
+  } catch {
+    return false;
+  }
+}
+
 function imagerySteps(devHost, bbox) {
   const quality = devHost && bbox ? bbox.imageryQuality : undefined;
   const plan = imageryExportPlan(devHost, bbox, quality);
@@ -229,7 +244,7 @@ function imagerySteps(devHost, bbox) {
   if (!devHost) {
     return plan.map((step) => Object.assign({ attemptMs: IMAGERY_ATTEMPT_MS }, step));
   }
-  return plan.map((step, i) => {
+  let steps = plan.map((step, i) => {
     let attemptMs = i === 0 ? IMAGERY_ATTEMPT_MS_DEV : IMAGERY_STEPDOWN_MS_DEV;
     if (kind === "high") attemptMs = i === 0 ? IMAGERY_HIGH_FIRST_MS : IMAGERY_STEPDOWN_MS_DEV;
     if (kind === "sharp") {
@@ -237,6 +252,13 @@ function imagerySteps(devHost, bbox) {
     }
     return Object.assign({ attemptMs }, step);
   });
+  if (kind === "sharp" && bbox && sharpFrameHeavy(bbox)) {
+    steps = steps.filter((step) => step.maxSide <= IMAGERY_MAX_SIDE);
+    if (steps[0]) {
+      steps[0] = Object.assign({}, steps[0], { attemptMs: SHARP_HEAVY_FIRST_MS, sharpCapped: true });
+    }
+  }
+  return steps;
 }
 
 /**
@@ -278,6 +300,7 @@ async function fetchImageryStepped(bbox, steps) {
         imgW: plate.imgW,
         imgH: plate.imgH,
         askedSide: steps[0] && steps[0].maxSide,
+        sharpCapped: !!(steps[0] && steps[0].sharpCapped),
       };
     } catch (e) {
       last = e;
@@ -736,11 +759,12 @@ function mapImageNote(plate, frame, jpegBuf) {
     const n = frame.mpuX >= 1 ? frame.mpuX.toFixed(1) : frame.mpuX.toFixed(2);
     mpp = ", " + n + " m per pixel";
   }
+  const capped = plate.sharpCapped ? " A 2048 px plate does not fit this draw." : "";
   if (plate.stepped) {
     const asked = plate.askedSide > 0 ? plate.askedSide : side;
-    return "Map image stepped down to " + side + " px" + mpp + ". The " + asked + " px plate was still out.";
+    return "Map image stepped down to " + side + " px" + mpp + ". The " + asked + " px plate was still out." + capped;
   }
-  return "Map image " + side + " px" + mpp + ".";
+  return "Map image " + side + " px" + mpp + "." + capped;
 }
 
 /** Dev stops optional reads at DEV_ANSWER_MS so the zip is the response. */
@@ -997,9 +1021,6 @@ async function handleClutter(event) {
   let terrainJob = null;
   let chmJob = null;
   let overtureFrame = null;
-  // A short draw, and anywhere 3DEP has no grid, starts Overture with the
-  // aerial. The 400 ms slice after a finished core aborted Montreal's roofs.
-  let devEarlyFootprints = false;
   try {
     // JPEG and Overture together. Meta may confirm the footprint query, but it
     // must not gate the image or the Overture read — the Las Vegas row group
@@ -1021,7 +1042,9 @@ async function handleClutter(event) {
     // quality, on the predicted content grid. Waiting until a High or Sharp
     // plate returns left the DEM a few hundred milliseconds, which is
     // "Terrain omitted: export budget spent on the map and footprints".
-    // Buildings still wait on that plate so a parquet parse cannot abort it.
+    // Buildings and canopy height start with that same plate. Waiting for a
+    // 2048 JPEG on a downtown box used the whole clock, so the zip kept
+    // 0 buildings and 0 trees.
     if (devHost && readTerrain && needImage && !terrainJob) {
       terrainJob = beginOptional((signal) =>
         fetchTerrainDemImpl(frame, null, {
@@ -1035,30 +1058,12 @@ async function handleClutter(event) {
         })
       );
     }
-    let imageryJob;
-    if (sharpRoom && needImage) {
-      let sharpTimer;
-      const sharpWall = new Promise((_, reject) => {
-        sharpTimer = setTimeout(
-          () => reject(fail("imagery", "The operation was aborted due to timeout")),
-          Math.max(1000, answerMs - 400)
-        );
-      });
-      try {
-        const got = await Promise.race([fetchImageryStepped(requestBbox, steps), sharpWall]);
-        imageryPlate = got;
-        imageryJob = Promise.resolve(got && got.buf);
-      } finally {
-        clearTimeout(sharpTimer);
-      }
-    } else {
-      imageryJob = needImage
-        ? fetchImageryStepped(requestBbox, steps).then((got) => {
-            imageryPlate = got;
-            return got && got.buf;
-          })
-        : Promise.resolve(null);
-    }
+    const imageryJob = needImage
+      ? fetchImageryStepped(requestBbox, steps).then((got) => {
+          imageryPlate = got;
+          return got && got.buf;
+        })
+      : Promise.resolve(null);
     overtureFrame = {
       west: frame.west,
       south: frame.south,
@@ -1066,17 +1071,17 @@ async function handleClutter(event) {
       north: frame.north,
     };
     const coreBudget = devHost ? DEV_CORE_MS : CORE_FETCH_MS;
-    // Auto starts Overture with the JPEG, including a long US draw. The Vegas
-    // group is a few seconds. Waiting until the aerial was back and then
-    // allowing 400 ms dropped those roofs and their measured heights while
-    // canopy height still finished, so the course had trees and flat buildings.
-    // The join still stops at the answer clock, so a parse that runs long is
-    // omitted and the zip returns. High and Sharp wait until the plate is back
-    // so that parse cannot abort the JPEG.
-    // Canopy height starts with the JPEG on every host. The strip reader
-    // yields between strips, and an abort keeps peaks already read.
-    // Production still starts Overture with the JPEG. The dev DEM already
-    // started with the map, including High and Sharp.
+    // Every quality starts Overture with the JPEG, including a long US draw
+    // and a Sharp downtown box. The Vegas group is a few seconds. Waiting
+    // until the aerial was back and then allowing 400 ms dropped those roofs.
+    // Waiting out a 2048 plate on downtown Montreal did the same: the plate
+    // never returned, and roofs and canopy never started. The join still
+    // stops at the answer clock, so a parse that runs long is omitted and
+    // the zip returns.
+    // Canopy height starts with the JPEG on every host and every quality.
+    // The strip reader yields between strips, and an abort keeps peaks
+    // already read. Production still starts Overture with the JPEG. The dev
+    // DEM already started with the map, including High and Sharp.
     let metaDone = false;
     let metaReady = null;
     if (!devHost) {
@@ -1104,17 +1109,7 @@ async function handleClutter(event) {
         metaReady = meta;
         return meta;
       });
-      // Auto, including a long US draw. High and Sharp stay false so the plate
-      // returns before parquet starts.
-      devEarlyFootprints = !sharpRoom;
-      if (devEarlyFootprints && !overtureJob) {
-        overtureJob = beginOptional((signal) =>
-          fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
-        );
-      }
-      // High and Sharp already waited out the plate above. Open the building
-      // read now, before footprints, so it gets the rest of that clock.
-      if (sharpRoom && !overtureJob) {
+      if (!overtureJob) {
         overtureJob = beginOptional((signal) =>
           fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
         );
@@ -1130,7 +1125,7 @@ async function handleClutter(event) {
     )
       .catch(() => ({ features: [] }))
       .finally(() => clearTimeout(usaTimer));
-    if (includeFoliage && needImage && !chmJob && !sharpRoom) {
+    if (includeFoliage && needImage && !chmJob) {
       const chmFrame = {
         west: frame.west,
         south: frame.south,
@@ -1216,8 +1211,7 @@ async function handleClutter(event) {
     return json(502, cors, { error: describeCoreFailure(e) });
   }
 
-  // Production already started Overture with the JPEG. On dev, Auto started
-  // it with the JPEG too, and High and Sharp started it after the plate.
+  // Production and every dev quality already started Overture with the JPEG.
   // This opens the read only when that start did not happen.
   const devLeft = answerMs - (Date.now() - started);
   const devSlice = devHost && devLeft >= 800 ? Math.min(DEV_OPTIONAL_MS, devLeft - 400) : 0;
