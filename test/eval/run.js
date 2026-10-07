@@ -26,6 +26,7 @@ const { conflateFootprints, countHeightSources } = require("../../netlify/lib/co
 const { terrainFromSamples } = require("../../netlify/lib/terrain");
 const { applyChmToTrees, sampleChmGrid } = require("../../netlify/lib/canopy-height");
 const { isVegetationOiName } = require("../../netlify/lib/materials");
+const { intersectionAreaPx } = require("../../netlify/lib/poly-clip");
 const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, scoreMeasuredHeights, scoreMaterialCompatibility, scoreFoliageBuildingOverlap, scorePairwiseOverlap, evaluate, pointInRing, THRESHOLDS } = require("./score");
 const { surfaceMasksFromImage } = require("../../netlify/lib/surface-mask");
 const { supplementFootprints } = require("../../netlify/lib/roof-mask");
@@ -132,6 +133,38 @@ function resolveFromSources(frame, tcc, jpegDecoded, rgbPolicy, buildingAabbs) {
   }
   const resolved = T.resolveTrees(frame, canopy, rgb, { rgbPolicy, maxTrees: budget });
   return { canopy, rgb, resolved, parsed };
+}
+
+function ringAreaPx(ring) {
+  if (!ring || ring.length < 3) return 0;
+  let a = 0;
+  const n = ring.length;
+  const closed = ring[0][0] === ring[n - 1][0] && ring[0][1] === ring[n - 1][1];
+  const last = closed ? n - 1 : n;
+  for (let i = 0; i < last; i++) {
+    const p = ring[i];
+    const q = ring[(i + 1) % last];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return Math.abs(a) / 2;
+}
+
+/** Drop a band that sits inside a larger foliage ring. Those are one crown. */
+function outerFoliageRings(rings) {
+  const areas = (rings || []).map(ringAreaPx);
+  const keep = [];
+  for (let i = 0; i < rings.length; i++) {
+    let nested = false;
+    for (let j = 0; j < rings.length; j++) {
+      if (i === j || !(areas[j] > areas[i] * 1.05)) continue;
+      if (intersectionAreaPx(rings[i], rings[j]) >= areas[i] * 0.9) {
+        nested = true;
+        break;
+      }
+    }
+    if (!nested) keep.push(rings[i]);
+  }
+  return keep;
 }
 
 function vegetationRingsFromOi(oi) {
@@ -330,7 +363,9 @@ function runLoaded(loaded, opts) {
   const foliageRings = vegetationRingsFromOi(built.openintent);
   const foliageOverlap = scoreFoliageBuildingOverlap(foliageRings, fp.overlayRings, frame);
   const buildingOverlap = scorePairwiseOverlap(oiRings, frame);
-  const foliageSelfOverlap = scorePairwiseOverlap(foliageRings, frame);
+  // Inset crown bands sit inside the traced footprint. Self-overlap is two
+  // different canopies on the same ground, not the bands of one crown.
+  const foliageSelfOverlap = scorePairwiseOverlap(outerFoliageRings(foliageRings), frame);
   const drift = scoreOiContentGrid(fp.overlayRings, oiRings);
   const jpegWH = jpegSize(locked.jpegBuf || loaded.jpeg);
   const retail = (probes || []).find((p) => p.id === "big-white-retail") || { lon: frame.west, lat: frame.south };

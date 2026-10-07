@@ -6,7 +6,7 @@ const { measuredFoliageMaterial, materialForVegetation, liftFoliagePair, individ
 
 const { MAX_TREES, maxTreesForBbox, canopyHeightM } = require("./tree-source");
 const { crownsForExport } = require("./canopy-height");
-const { BUILDING_BUFFER_M, createClipSet, clipFoliageRing, dissolveFoliageRings, pointInRing } = require("./poly-clip");
+const { BUILDING_BUFFER_M, createClipSet, clipFoliageRing, dissolveFoliageRings, pointInRing, intersectionAreaPx } = require("./poly-clip");
 
 function pointInAabb(x, y, boxes, pad) {
   for (const b of boxes) {
@@ -389,8 +389,11 @@ function clipboardForCanopy(material) {
  * median dots, and crown circles are not emitted and do not become trees.
  * A compact measured crown is one tree: a round stem under that crown, the
  * crown bottom above the ground, and the crown top at the measured height.
+ * The crown is two to four stacked footprints that step inward with height,
+ * full size through the middle, so it reads as a dome instead of a cylinder.
+ * A wide canopy is two layers when the stand is small enough to afford them.
  * The stem is about 1 m across and stays well inside the crown. A wide or
- * long canopy stays one mass on the ground, with no invented stem.
+ * long canopy has no invented stem.
  * `treePoints` is accepted so callers can keep passing placed points; they
  * do not become attenuation areas.
  */
@@ -406,6 +409,13 @@ const TRUNK_MAX_M = 1;
 /** Also scale with the crown, so a small traced crown cannot grow a 1 m stem. */
 const TRUNK_OF_CROWN = 0.18;
 const TRUNK_SIDES = 12;
+/**
+ * Foliage areas, including stems. Above this, extra crown layers come off
+ * so a woods stays inside the attenuation cap and the export clock.
+ */
+const CROWN_LAYER_BUDGET = 400;
+/** Each band stays thicker than 2 m, which is the custom-height floor. */
+const MIN_CROWN_BAND_M = 2.1;
 
 function ringPxArea(ring) {
   if (!ring || ring.length < 3) return 0;
@@ -531,6 +541,237 @@ function trunkRingPx(ringPx, frame) {
   }
   return null;
 }
+
+function roundTenths(n) {
+  return Math.round(Number(n) * 10) / 10;
+}
+
+function crownThicknessM(material) {
+  if (!material) return 0;
+  const top = Number(material.top_height);
+  const bottom = Number(material.bottom_height) >= 1 ? Number(material.bottom_height) : 0;
+  if (!(top > bottom)) return 0;
+  return roundTenths(top - bottom);
+}
+
+/**
+ * Discrete trees: 4 bands for a short stand of tall crowns, 3 for a
+ * modest stand, otherwise 2. A merged canopy is 2. A band under 2 m
+ * stays the single footprint.
+ */
+function wantedCrownLayers(discrete, thickness, treeCount, massCount) {
+  const fit = Math.floor(thickness / MIN_CROWN_BAND_M);
+  if (fit < 2) return 1;
+  if (!discrete) return massCount <= 220 ? 2 : 1;
+  if (treeCount <= 24 && fit >= 4) return 4;
+  if (treeCount <= 64 && thickness >= 5.5 && fit >= 3) return 3;
+  return 2;
+}
+
+/** Lowest band first. The full traced ring sits in the middle when there are 3 or 4. */
+function crownScales(n, discrete) {
+  if (!(n >= 2)) return [1];
+  if (!discrete) return [1, 0.64];
+  if (n === 2) return [1, 0.58];
+  const scales = [0.84, 1];
+  const above = n - 2;
+  for (let step = 1; step <= above; step++) {
+    scales.push(Math.max(0.42, Math.round((1 - 0.52 * (step / above)) * 100) / 100));
+  }
+  return scales;
+}
+
+function scaleRingAbout(ring, scale) {
+  if (!ring || ring.length < 4) return null;
+  if (!(scale > 0)) return null;
+  if (scale >= 0.999) return ring;
+  const c = ringCentroidPx(ring);
+  if (!c) return null;
+  const closed =
+    ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1];
+  const last = closed ? ring.length - 1 : ring.length;
+  const out = [];
+  for (let i = 0; i < last; i++) {
+    out.push([c[0] + (ring[i][0] - c[0]) * scale, c[1] + (ring[i][1] - c[1]) * scale]);
+  }
+  if (out.length < 3) return null;
+  out.push([out[0][0], out[0][1]]);
+  return out;
+}
+
+function ringSpanPx(ring) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const n =
+    ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+      ? ring.length - 1
+      : ring.length;
+  for (let i = 0; i < n; i++) {
+    const x = ring[i][0];
+    const y = ring[i][1];
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return { w: maxX - minX, h: maxY - minY };
+}
+
+/** Same 3 m / 4 px floor the OpenIntent emitter uses. An inset under it is skipped. */
+function crownSpanFloorPx(frame) {
+  const mpuX = (frame && (frame.mpuX || frame.mpu)) || 1;
+  return Math.max(4, 3 / Math.max(mpuX, 0.01));
+}
+
+function ringClearsSpan(ring, floorPx) {
+  const b = ringSpanPx(ring);
+  return b.w >= floorPx && b.h >= floorPx;
+}
+
+/** An inset that leaves the traced ring would cover a roof or pond the clip removed. */
+function insetStaysIn(inner, outer) {
+  if (!inner || !outer) return false;
+  const closed =
+    inner.length > 1 && inner[0][0] === inner[inner.length - 1][0] && inner[0][1] === inner[inner.length - 1][1];
+  const n = closed ? inner.length - 1 : inner.length;
+  for (let i = 0; i < n; i++) {
+    if (!pointInRing(inner[i], outer)) return false;
+  }
+  const area = ringPxArea(inner);
+  if (!(area > 1)) return false;
+  return intersectionAreaPx(inner, outer) >= area * 0.95;
+}
+
+/**
+ * Split one canopy into bands that share the class dB/m. A stock snap that
+ * opens a gap, or a band that no longer ends on the measured top, returns
+ * null so the caller keeps the single footprint.
+ */
+function buildCrownBands(material, n) {
+  if (!material || !(n >= 2)) return null;
+  const lifted = Number(material.bottom_height) >= 1;
+  const bottom0 = lifted ? roundTenths(material.bottom_height) : 0;
+  const top0 = Number(material.top_height);
+  if (!(top0 > bottom0)) return null;
+  const thickness = roundTenths(top0 - bottom0);
+  if (!(thickness > 2)) return null;
+  const tier = String(material.name || "").indexOf("Light") >= 0 ? "light" : "heavy";
+  const edges = [bottom0];
+  for (let i = 1; i < n; i++) edges.push(roundTenths(bottom0 + (thickness * i) / n));
+  edges.push(roundTenths(top0));
+  const bands = [];
+  for (let i = 0; i < n; i++) {
+    const b = edges[i];
+    const thick = roundTenths(edges[i + 1] - b);
+    if (!(thick > 2)) return null;
+    const base = materialForVegetation(thick, tier);
+    if (!base) return null;
+    let mat = base;
+    let clip = clipboardForCanopy(base);
+    if (b >= 1) {
+      const pair = liftFoliagePair(base, b);
+      if (!pair || !pair.material) return null;
+      mat = pair.material;
+      clip = { typeId: pair.typeId, clipType: pair.clipType };
+    }
+    const actualBottom = mat.bottom_height != null ? Number(mat.bottom_height) : 0;
+    const actualTop = Number(mat.top_height);
+    if (Math.abs(actualBottom - b) > 0.15) return null;
+    if (bands.length && Math.abs(actualBottom - Number(bands[bands.length - 1].material.top_height)) > 0.15) {
+      return null;
+    }
+    if (i === n - 1 && Math.abs(actualTop - top0) > 0.15) return null;
+    bands.push({ material: mat, clip });
+  }
+  return bands;
+}
+
+function layerCounts(pending) {
+  let treeCount = 0;
+  let massCount = 0;
+  for (let i = 0; i < pending.length; i++) {
+    if (pending[i].trunk) treeCount++;
+    else massCount++;
+  }
+  const plans = pending.map((row) => {
+    const discrete = !!row.trunk;
+    const thickness = crownThicknessM(row.area && row.area.material);
+    return {
+      n: wantedCrownLayers(discrete, thickness, treeCount, massCount),
+      discrete,
+      area: ringPxArea(row.area && row.area.ringPx),
+    };
+  });
+  const cost = () => {
+    let n = 0;
+    for (let i = 0; i < plans.length; i++) n += plans[i].n + (plans[i].discrete ? 1 : 0);
+    return n;
+  };
+  const shrink = (pred, next) => {
+    while (cost() > CROWN_LAYER_BUDGET) {
+      let best = -1;
+      for (let i = 0; i < plans.length; i++) {
+        if (!pred(plans[i])) continue;
+        if (best < 0 || plans[i].area < plans[best].area) best = i;
+      }
+      if (best < 0) return;
+      plans[best].n = next(plans[best].n);
+    }
+  };
+  shrink((p) => p.discrete && p.n >= 4, () => 3);
+  shrink((p) => p.discrete && p.n >= 3, () => 2);
+  shrink((p) => !p.discrete && p.n >= 2, () => 1);
+  shrink((p) => p.discrete && p.n >= 2, () => 1);
+  return plans.map((p) => p.n);
+}
+
+/**
+ * Inset rings that would be stretched up to the shared span floor are
+ * dropped by asking for fewer bands. The scale-1 ring is always kept.
+ */
+function crownStack(row, frame, want) {
+  const ring = row.area && row.area.ringPx;
+  if (!ring || !(want >= 2)) return null;
+  const floor = crownSpanFloorPx(frame);
+  const discrete = !!row.trunk;
+  for (let n = want; n >= 2; n--) {
+    const scales = crownScales(n, discrete);
+    if (scales.length !== n) continue;
+    const bands = buildCrownBands(row.area.material, n);
+    if (!bands || bands.length !== n) continue;
+    const parts = [];
+    let ok = true;
+    for (let i = 0; i < n; i++) {
+      const scaled = scaleRingAbout(ring, scales[i]);
+      if (!scaled || (scales[i] < 0.999 && (!ringClearsSpan(scaled, floor) || !insetStaysIn(scaled, ring)))) {
+        ok = false;
+        break;
+      }
+      parts.push({
+        ringPx: scaled,
+        material: bands[i].material,
+        clip: bands[i].clip,
+        scale: scales[i],
+      });
+    }
+    if (ok) return parts;
+  }
+  return null;
+}
+
+function pushFoliageClip(clip, ringPx, frame, affine, seenClip, clipTypes, clipZones) {
+  if (!clip) return;
+  if (clip.clipType && !seenClip.has(clip.clipType.id)) {
+    seenClip.add(clip.clipType.id);
+    clipTypes.push(clip.clipType);
+  }
+  if (!clip.typeId) return;
+  const zone = clipZone(clip.typeId, toClipRing(ringPx, frame, affine, null));
+  if (zone) clipZones.push(zone);
+}
+
 function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
   void treePoints;
   const oiAreas = [];
@@ -629,34 +870,37 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     pending.push({ area, clip, trunk });
   }
   let canopyCount = 0;
-  for (const row of pending) {
+  const counts = layerCounts(pending);
+  for (let r = 0; r < pending.length; r++) {
+    const row = pending[r];
     const area = row.area;
-    oiAreas.push(area);
-    if (area.kind !== "trunk") canopyCount++;
-    if (area.ringPx) overlayRings.push(area.ringPx);
-    let clip = row.clip;
-    if (!clip) clip = clipboardForCanopy(area.material);
-    if (clip) {
-      if (clip.clipType && !seenClip.has(clip.clipType.id)) {
-        seenClip.add(clip.clipType.id);
-        clipTypes.push(clip.clipType);
-      }
-      const zone = clipZone(clip.typeId, toClipRing(area.ringPx, frame, affine, null));
-      if (zone) clipZones.push(zone);
+    const stack = crownStack(row, frame, counts[r]);
+    const parts = stack || [
+      {
+        ringPx: area.ringPx,
+        material: area.material,
+        clip: row.clip || clipboardForCanopy(area.material),
+        scale: 1,
+      },
+    ];
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      oiAreas.push({
+        ringPx: part.ringPx,
+        material: part.material,
+        kind: i === 0 ? "canopy" : "layer",
+        shape: area.shape || "polygon",
+      });
+      if (part.ringPx && !(part.scale < 0.999)) overlayRings.push(part.ringPx);
+      if (part.material) materials.push(part.material);
+      pushFoliageClip(part.clip, part.ringPx, frame, affine, seenClip, clipTypes, clipZones);
     }
+    canopyCount++;
     const trunk = row.trunk;
     if (!trunk) continue;
     oiAreas.push(trunk);
     if (trunk.ringPx) overlayRings.push(trunk.ringPx);
-    const tclip = trunk.clip;
-    if (tclip && tclip.clipType && !seenClip.has(tclip.clipType.id)) {
-      seenClip.add(tclip.clipType.id);
-      clipTypes.push(tclip.clipType);
-    }
-    if (tclip) {
-      const zone = clipZone(tclip.typeId, toClipRing(trunk.ringPx, frame, affine, null));
-      if (zone) clipZones.push(zone);
-    }
+    pushFoliageClip(trunk.clip, trunk.ringPx, frame, affine, seenClip, clipTypes, clipZones);
   }
   return {
     oiAreas,

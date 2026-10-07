@@ -742,7 +742,7 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(on.stats.treesSource, "nlcd-canopy");
     const areas = on.openintent.floorplans[0].attenuation_areas;
     assert.ok(areas.every((a) => isVegetationOiName(a.area_material.name)));
-    assert.ok(areas.some((a) => a.area_material.name === "Foliage - Heavy 14.2"));
+    assert.ok(areas.some((a) => a.area_material.top_height === 14.2 && a.area_material.rf_properties.attenuation_per_m === 1.5));
     assert.equal(areas.some((a) => a.area_material.name === "Tree Trunk"), false);
     assert.equal(
       on.clipboard.attenuatingZones.some((z) => z.typeId === "tree-trunk" || String(z.typeId).indexOf("trunk") === 0),

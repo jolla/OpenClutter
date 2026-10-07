@@ -115,20 +115,8 @@ describe("an individual tree has a stem and a raised crown", () => {
     assert.equal("bottom_height" in buildings[0].area_material, false);
     assert.equal(trunks.length, 1, "one discrete tree, one stem");
     assert.ok(crowns.length >= 2, "the tree crown and the woods");
-    const crown = crowns.find((a) => a.area_material.top_height === treeH);
-    assert.ok(crown, "crown top stays the measured height");
-    assert.ok(crown.area_material.bottom_height >= 2.5);
-    assert.ok(crown.area_material.bottom_height < crown.area_material.top_height);
-    assert.equal(crown.area_material.transparencyEnabled, true);
     const trunk = trunks[0];
-    assert.equal(trunk.area_material.top_height, crown.area_material.bottom_height);
-    assert.equal("bottom_height" in trunk.area_material, false);
-    assert.equal(trunk.area_material.transparencyEnabled, true);
-    assert.equal(isPoisonedOiName(trunk.area_material.name), false);
-    assert.equal(trunk.area_material.name.indexOf("Tree Trunk"), -1);
-    const crownRing = oiRing(crown);
     const trunkRing = oiRing(trunk);
-    assert.ok(ringArea(trunkRing) < ringArea(crownRing));
     let sx = 0;
     let sy = 0;
     const n = trunkRing.length > 1 && trunkRing[0][0] === trunkRing[trunkRing.length - 1][0] ? trunkRing.length - 1 : trunkRing.length;
@@ -136,9 +124,29 @@ describe("an individual tree has a stem and a raised crown", () => {
       sx += trunkRing[i][0];
       sy += trunkRing[i][1];
     }
-    assert.equal(pointInRing([sx / n, sy / n], crownRing), true);
+    const trunkCenter = [sx / n, sy / n];
+    const treeBands = crowns.filter((a) => pointInRing(trunkCenter, oiRing(a)));
+    assert.ok(treeBands.length >= 2 && treeBands.length <= 4, "crown layers " + treeBands.length);
+    const tip = treeBands.find((a) => a.area_material.top_height === treeH);
+    assert.ok(tip, "crown top stays the measured height");
+    const lowest = Math.min(...treeBands.map((a) => a.area_material.bottom_height));
+    assert.ok(lowest >= 2.5);
+    assert.equal(trunk.area_material.top_height, lowest);
+    const fullest = treeBands.reduce((a, b) => (ringArea(oiRing(a)) >= ringArea(oiRing(b)) ? a : b));
+    assert.ok(ringArea(oiRing(tip)) < ringArea(oiRing(fullest)), "the top band steps inward");
+    for (const band of treeBands) {
+      assert.equal(band.area_material.transparencyEnabled, true);
+      assert.equal(band.area_material.rf_properties.attenuation_per_m, 1.5);
+      assert.ok(band.area_material.bottom_height < band.area_material.top_height);
+    }
+    assert.equal("bottom_height" in trunk.area_material, false);
+    assert.equal(trunk.area_material.transparencyEnabled, true);
+    assert.equal(isPoisonedOiName(trunk.area_material.name), false);
+    assert.equal(trunk.area_material.name.indexOf("Tree Trunk"), -1);
+    const crownRing = oiRing(fullest);
+    assert.ok(ringArea(trunkRing) < ringArea(crownRing));
+    assert.equal(pointInRing(trunkCenter, crownRing), true);
     assert.equal(trunk.area_material.rf_properties.attenuation_per_m, 3);
-    assert.equal(crown.area_material.rf_properties.attenuation_per_m, 1.5);
     assert.ok(n >= 12, "stem corners " + n);
     let axis = true;
     for (let i = 0; i < n; i++) {
@@ -155,11 +163,16 @@ describe("an individual tree has a stem and a raised crown", () => {
     assert.ok(trunkM <= 1.05, "stem width m " + trunkM);
     assert.ok(trunkM >= 0.7, "stem width m " + trunkM);
     assert.ok(trunkM < Math.min(crownW, crownH) * 0.5, "stem " + trunkM + " crown " + crownW + "x" + crownH);
-    const woods = crowns.filter((a) => a !== crown);
-    assert.ok(woods.length >= 1);
+    const woods = crowns.filter((a) => treeBands.indexOf(a) < 0);
+    assert.ok(woods.length >= 2, "a canopy mass is two layers");
+    const woodsFull = woods.reduce((a, b) => (ringArea(oiRing(a)) >= ringArea(oiRing(b)) ? a : b));
+    const woodsTop = woods.reduce((a, b) => (a.area_material.top_height >= b.area_material.top_height ? a : b));
+    assert.equal("bottom_height" in woodsFull.area_material, false);
+    assert.equal(woodsTop.area_material.top_height, 12);
+    assert.ok(ringArea(oiRing(woodsTop)) < ringArea(oiRing(woodsFull)));
     for (const mass of woods) {
-      assert.equal("bottom_height" in mass.area_material, false, mass.area_material.name);
       assert.equal(mass.area_material.transparencyEnabled, true);
+      assert.equal(mass.area_material.rf_properties.attenuation_per_m, 1.5);
     }
     for (const a of areas) {
       const cat = built.openintent.area_materials.find((m) => m.name === a.area_material.name);
@@ -202,9 +215,13 @@ describe("an individual tree has a stem and a raised crown", () => {
     const trunks = areas.filter((a) => isTrunkOiName(a.area_material.name));
     const crowns = areas.filter((a) => isVegetationOiName(a.area_material.name) && "bottom_height" in a.area_material);
     assert.equal(trunks.length, 1);
-    assert.equal(crowns.length, 1);
+    assert.ok(crowns.length >= 2, "raised bands " + crowns.length);
     const trunkRing = oiRing(trunks[0]);
-    const crownRing = oiRing(crowns[0]);
+    const tc = trunkRing.reduce((s, p) => [s[0] + p[0], s[1] + p[1]], [0, 0]).map((v) => v / trunkRing.length);
+    const treeCrowns = crowns.filter((a) => pointInRing(tc, oiRing(a)));
+    const crownRing = oiRing(treeCrowns.reduce((a, b) => (ringArea(oiRing(a)) >= ringArea(oiRing(b)) ? a : b)));
+    const tipRing = oiRing(treeCrowns.reduce((a, b) => (a.area_material.top_height >= b.area_material.top_height ? a : b)));
+    assert.ok(ringArea(tipRing) < ringArea(crownRing));
     const span = (ring) => {
       const xs = ring.map((p) => p[0]);
       const ys = ring.map((p) => p[1]);
@@ -245,8 +262,9 @@ describe("an individual tree has a stem and a raised crown", () => {
       includeFoliage: true,
     });
     const areas = built.openintent.floorplans[0].attenuation_areas;
-    const masses = areas.filter((a) => isVegetationOiName(a.area_material.name) && !("bottom_height" in a.area_material));
+    const veg = areas.filter((a) => isVegetationOiName(a.area_material.name));
+    const masses = veg.filter((a) => !("bottom_height" in a.area_material));
     assert.ok(masses.length >= 1);
-    assert.ok(masses.some((a) => a.area_material.top_height === 12));
+    assert.ok(veg.some((a) => a.area_material.top_height === 12));
   });
 });
