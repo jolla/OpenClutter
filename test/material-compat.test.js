@@ -168,7 +168,7 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.equal(bare.stats.openIntentTreeAreas, 0);
     assert.deepEqual(withTrees.openintent.area_materials.slice(0, 4), bare.openintent.area_materials);
     const extra = withTrees.openintent.area_materials.slice(4).map((m) => m.name);
-    assert.deepEqual(extra, ["Foliage - Heavy 7.1 @ 7.1", "Foliage - Heavy 7.1"]);
+    assert.deepEqual(extra, ["Foliage - Heavy 4.8 @ 4.7", "Foliage - Heavy 4.7 @ 9.5", "Foliage - Heavy 4.7"]);
     const foliage = withTrees.openintent.floorplans[0].attenuation_areas.find(
       (a) => a.area_material.top_height === 14.2
     );
@@ -294,12 +294,15 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.deepEqual(built.openintent.area_materials.slice(0, 4), catalogMaterials());
     const vegNames = names.slice(4);
     assert.deepEqual(vegNames, [
-      "Foliage - Light 3.7 @ 3.8",
-      "Foliage - Light 4.5 @ 4.6",
-      "Foliage - Heavy 7.1 @ 7.1",
-      "Foliage - Heavy 7.1",
-      "Foliage - Light 3.8",
-      "Foliage - Light 4.6",
+      "Foliage - Light 2.5 @ 2.5",
+      "Foliage - Light 3.1 @ 3.0",
+      "Foliage - Heavy 4.8 @ 4.7",
+      "Foliage - Light 2.5 @ 5.0",
+      "Foliage - Light 3.0 @ 6.1",
+      "Foliage - Heavy 4.7 @ 9.5",
+      "Foliage - Heavy 4.7",
+      "Foliage - Light 2.5",
+      "Foliage - Light 3.0",
     ]);
     assert.ok(vegNames.every((n) => isVegetationOiName(n)));
     for (let i = 0; i < OI_BUILDING_TYPES.length; i++) {
@@ -313,11 +316,11 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.equal(compat.mode, COMPATIBILITY_MODE);
     assert.equal(compat.stockOnly, true);
     assert.equal(compat.consistent, true);
-    assert.equal(compat.materials, 10);
-    assert.equal(compat.vegetationHeights, 6);
+    assert.equal(compat.materials, 13);
+    assert.equal(compat.vegetationHeights, 9);
     assert.equal(compat.vegetationAreas >= 3, true);
     assert.equal(built.stats.compatibilityMode, COMPATIBILITY_MODE);
-    assert.equal(built.stats.areaMaterials, 10);
+    assert.equal(built.stats.areaMaterials, 13);
     assert.ok(built.openintent.area_materials.every((m) => !isPoisonedOiName(m.name)));
     assert.ok(names.some((n) => n.indexOf("Foliage - Heavy") === 0));
     assert.ok(names.some((n) => n.indexOf("Foliage - Light") === 0));

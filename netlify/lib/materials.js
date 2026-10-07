@@ -466,7 +466,16 @@ function individualTreeCrownBase(heightM) {
   if (!(h >= 5)) return 0;
   let base = Math.round(h * 0.35 * 10) / 10;
   if (base < 2.5) base = 2.5;
-  const crown = Math.round((h - base) * 10) / 10;
+  let crown = Math.round((h - base) * 10) / 10;
+  if (crown < 2.5) return 0;
+  // Three bands need just over 6.3 m of crown. Lower the stem only to 2.1 m.
+  if (crown < 6.3) {
+    const lower = Math.round((h - 6.3) * 10) / 10;
+    if (lower >= 2.1) {
+      base = lower;
+      crown = Math.round((h - base) * 10) / 10;
+    }
+  }
   if (crown < 2.5) return 0;
   return base;
 }
