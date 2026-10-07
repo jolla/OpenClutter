@@ -6,6 +6,8 @@ const { geoFrame, llToClipboard, cornerClipboard, llToPx } = require("../netlify
 const {
   ZONE_TYPES,
   emptyClipboard,
+  gpsTiePoints,
+  gpsClipboard,
   CLIPBOARD_COLLECTION_KEYS,
   pickBuildingTypeId,
 } = require("../netlify/lib/hamina-clipboard");
@@ -127,6 +129,7 @@ describe("HaminaClipboard schema", () => {
       type: "HaminaClipboard",
       version: [1, 0, 0],
       id: "00000000-0000-4000-8000-000000000000",
+      isCut: false,
     });
     for (const k of CLIPBOARD_COLLECTION_KEYS) {
       assert.ok(Array.isArray(clip[k]), k);
@@ -151,6 +154,30 @@ describe("HaminaClipboard schema", () => {
     assert.equal(ZONE_TYPES.find((t) => t.id === "foliage-light").transparencyEnabled, true);
     assert.equal(ZONE_TYPES.find((t) => t.id === "tree-trunk").transparencyEnabled, true);
     assert.equal(ZONE_TYPES.find((t) => t.id === "bldg-one").transparencyEnabled, false);
+  });
+
+  it("places two GPS tie points on the southwest and northeast corners of the imported map", () => {
+    const frame = geoFrame(WYNN);
+    const points = gpsTiePoints(frame);
+    const corners = cornerClipboard(frame);
+    assert.equal(points.length, 2);
+    assert.equal(points[0].lat, frame.south);
+    assert.equal(points[0].lon, frame.west);
+    assert.equal(points[0].x, +corners.sw[0].toFixed(6));
+    assert.equal(points[0].y, +corners.sw[1].toFixed(6));
+    assert.equal(points[1].lat, frame.north);
+    assert.equal(points[1].lon, frame.east);
+    assert.equal(points[1].x, 0);
+    assert.equal(points[1].y, 0);
+    assert.ok(Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y) > 100);
+    const paste = gpsClipboard(frame);
+    assert.equal(paste.header.type, "HaminaClipboard");
+    assert.equal(paste.header.isCut, false);
+    assert.deepEqual(paste.tiePoints, points);
+    assert.equal(paste.slopedFloors.length, 0);
+    assert.equal(paste.raisedFloorZones.length, 0);
+    assert.equal(paste.attenuatingZoneTypes.length, 0);
+    assert.equal(JSON.stringify(paste).includes("reference_markers"), false);
   });
 });
 
@@ -1122,6 +1149,9 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /stats\.summary/);
     assert.match(app, /terrainClipboard/);
     assert.match(app, /Copied terrain\. Paste it in Planner Plus/);
+    assert.match(app, /gpsClipboard/);
+    assert.match(app, /Copy GPS points/);
+    assert.match(app, /southwest and northeast corners of the imported map/);
     const afterDownloadFn = app.split("function downloadBlob")[1] || "";
     assert.equal((afterDownloadFn.match(/downloadBlob\(/g) || []).length, 1);
     assert.match(app, /downloadBlob\(b64ToBlob\(data\.zipBase64/);

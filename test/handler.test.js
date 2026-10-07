@@ -115,6 +115,16 @@ describe("clutter handler (mocked Esri)", () => {
     assert.match(body.terrainStatus, /Planner Plus/);
     assert.equal(/terrain-clipboard\.json/.test(body.terrainStatus), false);
     assert.equal(body.terrainClipboard.attenuatingZones.length, 0);
+    assert.equal(body.gpsClipboard.tiePoints.length, 2);
+    assert.deepEqual(body.terrainClipboard.tiePoints, body.gpsClipboard.tiePoints);
+    assert.deepEqual(body.terrainClipboard.tiePoints[1], {
+      lat: body.frame.north,
+      lon: body.frame.east,
+      x: 0,
+      y: 0,
+    });
+    assert.equal(body.terrainClipboard.tiePoints[0].lat, body.frame.south);
+    assert.equal(body.terrainClipboard.tiePoints[0].lon, body.frame.west);
     assert.match(body.zipFilename, /\.zip$/);
     const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
     assert.deepEqual(Object.keys(files).sort(), ["images/Wynn-Golf.jpg", "openIntent_Wynn-Golf.json"]);
@@ -127,6 +137,7 @@ describe("clutter handler (mocked Esri)", () => {
     const oiText = files["openIntent_Wynn-Golf.json"].toString();
     assert.equal(oiText.includes("raisedFloorZones"), false);
     assert.equal(oiText.includes("slopedFloors"), false);
+    assert.equal(oiText.includes("tiePoints"), false);
     assert.deepEqual(body.frame.clipboardCorners.ne, [0, 0]);
     assert.match(body.alignment, /Import this zip in Hamina/);
     const oi = JSON.parse(files["openIntent_Wynn-Golf.json"].toString());
@@ -188,6 +199,20 @@ describe("clutter handler (mocked Esri)", () => {
       assert.equal(body.terrainStatus, "Terrain off");
       assert.equal(body.terrainClipboard, null);
       assert.equal(body.terrainFilename, null);
+      assert.equal(body.gpsClipboard.header.type, "HaminaClipboard");
+      assert.equal(body.gpsClipboard.tiePoints.length, 2);
+      assert.equal(body.gpsClipboard.tiePoints[0].lat, body.frame.south);
+      assert.equal(body.gpsClipboard.tiePoints[0].lon, body.frame.west);
+      assert.equal(body.gpsClipboard.tiePoints[1].lat, body.frame.north);
+      assert.equal(body.gpsClipboard.tiePoints[1].lon, body.frame.east);
+      assert.equal(body.gpsClipboard.tiePoints[1].x, 0);
+      assert.equal(body.gpsClipboard.tiePoints[1].y, 0);
+      assert.equal(body.gpsClipboard.slopedFloors.length, 0);
+      assert.equal(body.gpsClipboard.raisedFloorZones.length, 0);
+      assert.ok(Math.hypot(
+        body.gpsClipboard.tiePoints[1].x - body.gpsClipboard.tiePoints[0].x,
+        body.gpsClipboard.tiePoints[1].y - body.gpsClipboard.tiePoints[0].y
+      ) > 100);
       assert.equal(calls.length, 0);
       assert.equal(urls.some((u) => u.includes("elevation.nationalmap.gov")), false);
       assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);

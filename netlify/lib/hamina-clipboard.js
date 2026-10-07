@@ -1,5 +1,7 @@
 "use strict";
 
+const { llToClipboard } = require("./geo-frame");
+
 /**
  * HaminaClipboard schema matching the working Wynn geo paste
  * (header, empty collections, zone types with ituRModelEnabled /
@@ -104,9 +106,53 @@ const CLIPBOARD_COLLECTION_KEYS = [
   "slopedFloors",
 ];
 
+function round6(n) {
+  return +(+n).toFixed(6);
+}
+
+/**
+ * Two GPS anchors for the imported map. HaminaClipboard tiePoints, not
+ * OpenIntent. Southwest then northeast. After an OpenIntent import the
+ * northeast corner of that aerial is (0, 0) and the southwest corner is
+ * (−widthM, −lengthM). lat/lon are those same corners.
+ */
+function gpsTiePoints(frame) {
+  if (!frame) return [];
+  const west = +frame.west;
+  const south = +frame.south;
+  const east = +frame.east;
+  const north = +frame.north;
+  if (![west, south, east, north, +frame.widthM, +frame.lengthM, +frame.mpuX, +frame.mpuY].every(Number.isFinite)) {
+    return [];
+  }
+  if (!(east > west) || !(north > south)) return [];
+  const sw = llToClipboard(west, south, frame);
+  const ne = llToClipboard(east, north, frame);
+  return [
+    { lat: south, lon: west, x: round6(sw[0]), y: round6(sw[1]) },
+    { lat: north, lon: east, x: round6(ne[0]), y: round6(ne[1]) },
+  ];
+}
+
+/** Planner Plus paste that is only the two map-corner GPS points. */
+function gpsClipboard(frame) {
+  const clip = emptyClipboard();
+  clip.header.isCut = false;
+  clip.attenuatingZoneTypes = [];
+  clip.tiePoints = gpsTiePoints(frame);
+  return clip;
+}
+
+function stampGpsTiePoints(clip, frame) {
+  if (!clip) return clip;
+  const points = gpsTiePoints(frame);
+  if (points.length >= 2) clip.tiePoints = points;
+  return clip;
+}
+
 function emptyClipboard(id) {
   const clip = {
-    header: { type: "HaminaClipboard", version: [1, 0, 0], id: id || uuid() },
+    header: { type: "HaminaClipboard", version: [1, 0, 0], id: id || uuid(), isCut: false },
     walls: [],
     wallEndpoints: [],
     wallTypes: [],
@@ -178,6 +224,9 @@ module.exports = {
   TYPE_BY_ID,
   CLIPBOARD_COLLECTION_KEYS,
   emptyClipboard,
+  gpsTiePoints,
+  gpsClipboard,
+  stampGpsTiePoints,
   oiMaterialFromType,
   pickBuildingTypeId,
   clipZone,
