@@ -106,7 +106,9 @@ describe("Hamina-native OpenIntent gold shape", () => {
     for (const mat of built.openintent.area_materials) {
       if (isVegetationOiName(mat.name)) {
         assert.equal(mat.transparencyEnabled, true);
-        assert.deepEqual(Object.keys(mat), ["name", "rf_properties", "top_height", "display_color", "transparencyEnabled"]);
+        const keys = ["name", "rf_properties", "top_height", "display_color", "transparencyEnabled"];
+        if ("bottom_height" in mat) keys.splice(3, 0, "bottom_height");
+        assert.deepEqual(Object.keys(mat), keys);
       } else {
         assert.equal("transparencyEnabled" in mat, false);
         assert.deepEqual(Object.keys(mat), ["name", "rf_properties", "top_height", "display_color"]);

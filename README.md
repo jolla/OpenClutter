@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.75** on `dev` — A tree crown is stacked attenuating layers that step inward with height, so it reads as a rounded crown instead of a flat cylinder. A small stand uses more layers; a woods uses two; a crowd of trees stays at two so the first export still returns a zip. The stem stays about 1 m across, round, at 3 dB/m. Dense canopy stays 1.5 dB/m. Light foliage stays 1. Buildings stay 5. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.75`).
+
 **v1.1.74** on `dev` — The first Export tries once more in that same click when the gateway returns an empty response, and the status says the first export did not return a zip while that second try is still working. If that try is also empty, the status stays “The export did not return a zip.” A discrete-tree stem stays about 1 m across and round. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.74`).
 
 **v1.1.73** on `dev` — Dense canopy (Foliage - Heavy, and a measured canopy at or above 12 m) is 1.5 dB/m. A discrete-tree stem is 3 dB/m and about 1 m across, a round footprint under the crown, so it stays thinner than the canopy. Light foliage stays 1 dB/m. Buildings stay 5 dB/m. Terrain paste stays 0. These are 5 GHz per-meter figures. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.73`).
@@ -121,7 +123,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.74`). **Foliage** is on by default. **Terrain** is on by default and pastes the sloped mesh. Copy that paste into Planner Plus. Do not import it as OpenIntent. A Map menu picks Auto, Low · 256 px, Standard · 640 px, High · 1040 px, or Sharp · 2048 px. Auto is fast. High and Sharp wait for a bigger plate. Space pans the map and does not toggle the last checkbox. The draw label shows area in m² and ft². After export, the panel shows one line; Details holds the rest. The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. Terrain and the map menu stay hidden off this host.
+- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.75`). **Foliage** is on by default. **Terrain** is on by default and pastes the sloped mesh. Copy that paste into Planner Plus. Do not import it as OpenIntent. A Map menu picks Auto, Low · 256 px, Standard · 640 px, High · 1040 px, or Sharp · 2048 px. Auto is fast. High and Sharp wait for a bigger plate. Space pans the map and does not toggle the last checkbox. The draw label shows area in m² and ft². After export, the panel shows one line; Details holds the rest. The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. Terrain and the map menu stay hidden off this host.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 

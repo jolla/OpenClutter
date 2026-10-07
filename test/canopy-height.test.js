@@ -149,10 +149,14 @@ describe("canopy height grid", () => {
       heightSample: () => 14.2,
     });
     const canopies = pairs.oiAreas.filter((a) => a.kind === "canopy");
+    const layers = pairs.oiAreas.filter((a) => a.kind === "layer");
     assert.equal(canopies.length, 1);
+    assert.equal(layers.length, 1);
     assert.equal(canopies[0].shape, "polygon");
-    assert.equal(canopies[0].material.name, "Foliage - Heavy 14.2");
-    assert.equal(canopies[0].material.top_height, 14.2);
+    assert.equal(canopies[0].material.name, "Foliage - Heavy 7.1");
+    assert.equal(canopies[0].material.top_height, 7.1);
+    assert.equal(layers[0].material.top_height, 14.2);
+    assert.equal(layers[0].material.rf_properties.attenuation_per_m, 1.5);
     assert.ok(canopies[0].ringPx.length >= 5);
     assert.ok(canopies[0].ringPx.length <= 41);
     let minX = Infinity;
@@ -167,8 +171,21 @@ describe("canopy height grid", () => {
     }
     const aspect = Math.max(maxX - minX, maxY - minY) / Math.min(maxX - minX, maxY - minY);
     assert.ok(aspect > 1.3, "patch outline follows the 3×2 cells, not a circle");
+    let layerShort = Infinity;
+    let minLX = Infinity;
+    let maxLX = -Infinity;
+    let minLY = Infinity;
+    let maxLY = -Infinity;
+    for (const p of layers[0].ringPx) {
+      minLX = Math.min(minLX, p[0]);
+      maxLX = Math.max(maxLX, p[0]);
+      minLY = Math.min(minLY, p[1]);
+      maxLY = Math.max(maxLY, p[1]);
+    }
+    layerShort = Math.min(maxLX - minLX, maxLY - minLY);
+    assert.ok(layerShort < Math.min(maxX - minX, maxY - minY), "upper band steps in");
     assert.equal(pairs.oiAreas.some((a) => a.kind === "trunk"), false);
-    assert.ok(pairs.clipTypes.some((t) => t.id === "foliage-m-14_2"));
+    assert.ok(pairs.clipTypes.some((t) => t.id === "foliage-m-7_1"));
   });
 
   it("draws separate CHM crowns with measured shape and height", () => {
@@ -193,7 +210,8 @@ describe("canopy height grid", () => {
     assert.equal(pairs.overlayPoints.length, 0);
     const heavy = pairs.oiAreas.filter((a) => a.material.top_height >= 14);
     assert.equal(heavy.length, 1);
-    assert.equal(heavy[0].material.name, "Foliage - Heavy 16.0");
+    assert.equal(heavy[0].material.top_height, 16);
+    assert.equal(heavy[0].material.rf_properties.attenuation_per_m, 1.5);
     assert.ok(bboxAspect(heavy[0].ringPx) > 1.6, "wide crown is not a circle");
     const tall = pairs.oiAreas.find((a) => a.material.top_height === 9);
     assert.ok(tall, "tall crown is kept");
@@ -269,7 +287,8 @@ describe("canopy height grid", () => {
     }
     const nlcd = treePairsFromPoints([], frame, [], null, { canopyHits: hits, heightSample: () => 14 });
     assert.equal(nlcd.foliageGeometry, "nlcd-polygon");
-    assert.equal(nlcd.oiAreas.length, 1);
+    assert.equal(nlcd.oiAreas.filter((a) => a.kind === "canopy").length, 1);
+    assert.equal(nlcd.oiAreas.length, 2);
     const mLon = 111320 * Math.cos((42.9 * Math.PI) / 180);
     const w = 36;
     const h = 36;
@@ -445,15 +464,14 @@ describe("canopy height grid", () => {
     assert.equal(built.stats.foliageGeometry, "chm-contour");
     assert.equal(built.stats.includeFoliage, true);
     assert.ok(built.stats.foliageLifted >= 1);
-    const area = built.openintent.floorplans[0].attenuation_areas.find((a) =>
-      String(a.area_material.name).indexOf("Foliage - Heavy 14") === 0
+    const foliage = built.openintent.floorplans[0].attenuation_areas.filter((a) =>
+      String(a.area_material.name).indexOf("Foliage - Heavy") === 0
     );
-    assert.ok(area);
-    assert.ok(area.area_material.bottom_height >= 20);
-    assert.equal(
-      area.area_material.top_height,
-      Math.round((area.area_material.bottom_height + 14) * 10) / 10
-    );
+    assert.ok(foliage.length >= 2);
+    const base = Math.min(...foliage.map((a) => a.area_material.bottom_height || 0));
+    const tip = Math.max(...foliage.map((a) => a.area_material.top_height));
+    assert.ok(base >= 20);
+    assert.equal(tip, Math.round((base + 14) * 10) / 10);
     assert.equal(built.stats.openIntentTreeAreas >= 1, true);
     assert.equal(
       built.clipboard.attenuatingZones.some((z) => String(z.typeId).indexOf("trunk") === 0),
@@ -566,9 +584,9 @@ describe("canopy height replaces the color guess", () => {
     let overlap = 0;
     for (const area of foliage) overlap += intersectionAreaPx(area.ringPx, road);
     assert.ok(overlap < 1, "road overlap px " + overlap);
-    assert.ok(foliage.some((a) => a.material.top_height === 9));
+    assert.ok(pairs.oiAreas.some((a) => a.material.top_height === 9));
     assert.equal(
-      foliage.some((a) => a.material.top_height === 15),
+      pairs.oiAreas.some((a) => a.material.top_height === 15),
       false,
       "the crown centered on the road is not exported"
     );
@@ -586,7 +604,7 @@ describe("canopy height replaces the color guess", () => {
     const pairs = treePairsFromPoints([], frame, [], null, { chmGrid: g.grid, canopyHits: hits });
     const area = pairs.oiAreas.find((a) => a.material && a.material.top_height === 22);
     assert.ok(area, "measured 22 m crown is present");
-    assert.equal(area.material.name, "Foliage - Heavy 22.0");
+    assert.equal(area.material.rf_properties.attenuation_per_m, 1.5);
     assert.equal(area.material.top_height, 22);
     assert.notEqual(area.material.top_height, bucket);
     assert.equal(area.shape, "polygon");

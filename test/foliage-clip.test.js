@@ -158,7 +158,8 @@ describe("foliage rings stay off buildings and water", () => {
       canopyHits: hits,
       buildingRings: fp.overlayRings,
     });
-    const foliage = pairs.oiAreas.map((a) => a.ringPx);
+    const foliage = pairs.oiAreas.filter((a) => a.kind === "canopy").map((a) => a.ringPx);
+    const all = pairs.oiAreas.map((a) => a.ringPx);
     const before = Math.abs(canopy.ringPx.reduce((s, p, i, arr) => {
       const q = arr[(i + 1) % arr.length];
       return s + p[0] * q[1] - q[0] * p[1];
@@ -169,7 +170,7 @@ describe("foliage rings stay off buildings and water", () => {
     }, 0) / 2), 0);
     assert.ok(after > 100, "foliage outside the roof remains");
     assert.ok(after < before, "the roof bite removes area");
-    assert.ok(overlapM2(foliage, fp.overlayRings, frame) < 1);
+    assert.ok(overlapM2(all, fp.overlayRings, frame) < 1);
   });
 
   it("reads a blue pond and a dark pond out of the aerial and keeps canopy off them", () => {
@@ -246,9 +247,26 @@ describe("foliage rings stay off buildings and water", () => {
       built.clipboard.attenuatingZones.some((z) => z.typeId === "tree-trunk"),
       false
     );
+    const areas = foliage.map((ring) => {
+      let a = 0;
+      const n = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] ? ring.length - 1 : ring.length;
+      for (let i = 0; i < n; i++) {
+        const p = ring[i];
+        const q = ring[(i + 1) % n];
+        a += p[0] * q[1] - q[0] * p[1];
+      }
+      return Math.abs(a) / 2;
+    });
+    const outer = foliage.filter((ring, i) => {
+      for (let j = 0; j < foliage.length; j++) {
+        if (i === j || !(areas[j] > areas[i] * 1.05)) continue;
+        if (intersectionAreaPx(ring, foliage[j]) >= areas[i] * 0.9) return false;
+      }
+      return true;
+    });
     let pair = 0;
-    for (let i = 0; i < foliage.length; i++) {
-      for (let j = i + 1; j < foliage.length; j++) pair += intersectionAreaPx(foliage[i], foliage[j]);
+    for (let i = 0; i < outer.length; i++) {
+      for (let j = i + 1; j < outer.length; j++) pair += intersectionAreaPx(outer[i], outer[j]);
     }
     const pairM2 = pair * frame.mpuX * frame.mpuY;
     assert.ok(pairM2 < 1, `crown intersection ${pairM2.toFixed(2)} m²`);
