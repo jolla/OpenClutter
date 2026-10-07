@@ -2,10 +2,13 @@
  * How the page treats an export response.
  *
  * The function returns the zip in the request that was sent. A 502, 504,
- * or 408 is one try. The page says the zip did not come back. It does not
- * stay blank, and it does not ask again. The status line leaves "Export is
- * still working" once Export is idle. A 400 or 413 is the request itself.
- * The page does not call the draw too large.
+ * or 408 with no sentence is the gateway closing an empty first attempt
+ * (a cold start). That click tries once more. The page says the first
+ * export did not return a zip and that export is still working. If the
+ * second attempt is also empty, the status is "The export did not return
+ * a zip." A 502 that already carries a sentence is one try. The status
+ * line leaves "Export is still working" once Export is idle. A 400 or
+ * 413 is the request itself. The page does not call the draw too large.
  *
  * Browser + Node.
  */
@@ -30,15 +33,18 @@
     const blocked = status === 400 || status === 413;
     const recoverable = !blocked && !gateway;
     const gatewayStatus = status === 504 || status === 408;
+    // An empty gateway body is the platform closing the first attempt.
+    // A sentence from the function is already an answer, so it is not tried again.
+    const emptyGateway = gateway && !serverMessage;
     let message = serverMessage;
     if ((is502 || gatewayStatus) && (!serverMessage || quietServerMessage(serverMessage))) message = EMPTY_502_STATUS;
     else if (blocked && !serverMessage) message = "Export failed (" + status + ").";
     else if (!is502 && !gatewayStatus && !blocked) message = serverMessage;
     return {
       message: message,
-      retry: recoverable,
+      retry: emptyGateway || recoverable,
       gateway: gateway,
-      attempts: recoverable ? 3 : 1,
+      attempts: emptyGateway ? 2 : recoverable ? 3 : 1,
     };
   }
 

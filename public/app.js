@@ -707,8 +707,8 @@ if (copyTerrainBtn) {
 }
 
 function exportError(status, data) {
-  // A 502 or 504 is one try and a sentence on the page. It is not a draw
-  // that is too large, and the status does not stay blank.
+  // An empty 502 or 504 is tried once more in this same click. A sentence
+  // from the function is shown as-is. The status does not stay blank.
   return OpenClutterExport.failureError(status, data);
 }
 
@@ -834,9 +834,12 @@ document.getElementById("export").onclick = async () => {
     // The elevation read overlaps canopy detection. The zip then uses those
     // samples so building bottoms match the mesh that Copy terrain pastes.
     const paste = terrainPromise ? await terrainPromise : null;
-    const data = await OpenClutterExport.runExportAttempts(() =>
-      exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain, paste)
-    );
+    const data = await OpenClutterExport.runExportAttempts((attempt) => {
+      if (attempt > 1) {
+        setStatus("The first export did not return a zip. Export is still working.");
+      }
+      return exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain, paste);
+    });
     downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
     if (paste && paste.terrainClipboard) {
       data.terrainClipboard = paste.terrainClipboard;
