@@ -160,6 +160,7 @@ let fetchChmGridImpl = fetchChmGrid;
 function setFetchChmGridForTests(fn) {
   fetchChmGridImpl = typeof fn === "function" ? fn : fetchChmGrid;
 }
+const { gpsClipboard, stampGpsTiePoints } = require("../lib/hamina-clipboard");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
 const { surfaceMasksFromImage } = require("../lib/surface-mask");
@@ -1618,6 +1619,10 @@ async function handleClutter(event) {
       : deferTerrain
         ? { terrainFilename: null, terrainClipboard: null, terrainStatus: "" }
         : terrainBundleFields(built.terrain, warnings);
+    // Tie points use the imported aerial, northeast at (0, 0). They are not
+    // an OpenIntent field and they are not a DEM read.
+    const gpsPaste = gpsClipboard(frame);
+    if (terrainFields.terrainClipboard) stampGpsTiePoints(terrainFields.terrainClipboard, frame);
     return json(200, cors, {
       ok: true,
       alignment: ALIGNMENT,
@@ -1628,6 +1633,7 @@ async function handleClutter(event) {
       terrainFilename: terrainFields.terrainFilename,
       terrainClipboard: terrainFields.terrainClipboard,
       terrainStatus: terrainFields.terrainStatus,
+      gpsClipboard: gpsPaste.tiePoints.length >= 2 ? gpsPaste : null,
       warnings,
     });
   }

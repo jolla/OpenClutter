@@ -49,6 +49,7 @@ function terrainExportEnabled() {
 })();
 
 let bbox = null;
+let terrainPasteGpsOnly = false;
 const includeTerrainInput = document.getElementById("include-terrain");
 if (includeTerrainInput) includeTerrainInput.addEventListener("change", syncTerrainControls);
 
@@ -661,12 +662,26 @@ function b64ToBlob(b64, type) {
   return new Blob([bytes], { type });
 }
 
-function rememberTerrain(data) {
-  const clip = data && data.terrainClipboard;
+function pasteFloors(clip) {
   const raised = clip && clip.raisedFloorZones ? clip.raisedFloorZones.length : 0;
   const sloped = clip && clip.slopedFloors ? clip.slopedFloors.length : 0;
-  terrainPasteJson = raised || sloped ? JSON.stringify(clip) : "";
-  if (copyTerrainBtn) copyTerrainBtn.hidden = !terrainPasteJson;
+  return raised + sloped;
+}
+
+function rememberTerrain(data) {
+  const gps = data && data.gpsClipboard;
+  const points = gps && Array.isArray(gps.tiePoints) ? gps.tiePoints : [];
+  let clip = data && data.terrainClipboard;
+  if (clip && points.length >= 2) clip.tiePoints = points;
+  else if (pasteFloors(clip) === 0 && points.length >= 2) clip = gps;
+  const floors = pasteFloors(clip);
+  const ties = clip && Array.isArray(clip.tiePoints) ? clip.tiePoints.length : 0;
+  terrainPasteJson = floors || ties >= 2 ? JSON.stringify(clip) : "";
+  terrainPasteGpsOnly = !!(terrainPasteJson && floors === 0);
+  if (copyTerrainBtn) {
+    copyTerrainBtn.hidden = !terrainPasteJson;
+    copyTerrainBtn.textContent = terrainPasteGpsOnly ? "Copy GPS points" : "Copy terrain";
+  }
   return terrainPasteJson;
 }
 
@@ -675,9 +690,18 @@ if (copyTerrainBtn) {
     if (!terrainPasteJson) return;
     try {
       await navigator.clipboard.writeText(terrainPasteJson);
-      setStatus("Copied terrain. Paste it in Planner Plus. Do not import it as OpenIntent.");
+      setStatus(
+        terrainPasteGpsOnly
+          ? "Copied two GPS points. Paste them in Planner Plus. Do not import them as OpenIntent."
+          : "Copied terrain. Paste it in Planner Plus. Do not import it as OpenIntent."
+      );
     } catch (e) {
-      setStatus("Could not copy terrain. Allow clipboard access and try Copy terrain again.", true);
+      setStatus(
+        terrainPasteGpsOnly
+          ? "Could not copy the GPS points. Allow clipboard access and try Copy GPS points again."
+          : "Could not copy terrain. Allow clipboard access and try Copy terrain again.",
+        true
+      );
     }
   };
 }
@@ -824,19 +848,18 @@ document.getElementById("export").onclick = async () => {
       data.terrainStatus = paste.terrainStatus || "Terrain did not return. Export again.";
     }
     const terrainOff = includeTerrain === false;
-    if (terrainOff) {
-      terrainPasteJson = "";
-      if (copyTerrainBtn) copyTerrainBtn.hidden = true;
-    } else {
-      rememberTerrain(data);
-    }
+    rememberTerrain(data);
     const summary = (data.stats && data.stats.summary) || "";
     const terrainNote = terrainOff ? "Terrain off" : (data.terrainStatus || "");
+    const gpsNote = terrainPasteJson
+      ? "Two GPS points, the southwest and northeast corners of the imported map, are on the paste."
+      : "";
     const warnLines = (Array.isArray(data.warnings) ? data.warnings.filter(Boolean) : [])
       .filter((line) => !terrainOff || !/terrain/i.test(line));
     const lines = [exportHeadline(data.stats, warnLines, includeFoliage)];
     lines.push("Import this zip in Hamina (Projects → Import → OpenIntent).");
     if (terrainNote) lines.push(terrainNote);
+    if (gpsNote) lines.push(gpsNote);
     if (summary) lines.push(summary);
     for (let i = 0; i < warnLines.length; i++) lines.push(warnLines[i]);
     setStatus(lines.join("\n"));
