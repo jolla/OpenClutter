@@ -60,7 +60,7 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.equal(lightStock.name, "Foliage - Light");
     assert.equal((heavyStock.top_height * 3.280839895).toFixed(2), "19.68");
     assert.equal(lightStock.top_height, heavyStock.top_height);
-    assert.equal(heavyStock.rf_properties.attenuation_per_m, 2);
+    assert.equal(heavyStock.rf_properties.attenuation_per_m, 1.5);
     assert.equal(lightStock.rf_properties.attenuation_per_m, 1);
     assert.equal(heavyStock.display_color, "#3F7D2A");
     assert.equal(lightStock.display_color, "#6FA84A");
@@ -73,7 +73,7 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.equal(light.display_color, "#6FA84A");
     assert.equal(heavy.name, "Foliage - Heavy 14.2");
     assert.equal(heavy.top_height, 14.2);
-    assert.equal(heavy.rf_properties.attenuation_per_m, 2);
+    assert.equal(heavy.rf_properties.attenuation_per_m, 1.5);
     assert.equal(heavy.display_color, "#3F7D2A");
     assert.notEqual(heavy.display_color, "#9AA5AC");
     assert.notEqual(heavy.display_color, "#9A4159");
@@ -173,7 +173,7 @@ describe("Hamina OpenIntent material compatibility", () => {
       (a) => a.area_material.name === "Foliage - Heavy 14.2"
     );
     assert.equal(foliage.area_material.top_height, 14.2);
-    assert.equal(foliage.area_material.rf_properties.attenuation_per_m, 2);
+    assert.equal(foliage.area_material.rf_properties.attenuation_per_m, 1.5);
     assert.equal(foliage.area_material.display_color, "#3F7D2A");
     assert.ok(foliage.area.coordinates.length / 3 <= 40);
     assert.equal(
