@@ -55,7 +55,7 @@
 
 const { llToClipboard, clipboardToLl, needsGroundMeterImage } = require("./geo-frame");
 const polygonClipping = require("polygon-clipping");
-const { emptyClipboard } = require("./hamina-clipboard");
+const { emptyClipboard, stampGpsTiePoints } = require("./hamina-clipboard");
 const { fetchCopernicusDemSamples, GLO30_CREDIT } = require("./copernicus-dem");
 
 const DEM_URL = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/getSamples";
@@ -1108,6 +1108,7 @@ function buildRaisedLayerClipboard(samples, frame, cols, rows, elevationAt) {
   clip.raisedFloorZones = best.zones;
   clip.slopedFloors = [];
   clip.attenuatingZones = [];
+  stampGpsTiePoints(clip, frame);
   return {
     grid,
     clip,
@@ -1149,6 +1150,7 @@ function buildTerrainClipboard(samples, frame, cols, rows, elevationAt) {
   clip.raisedFloorZones = raised;
   clip.slopedFloors = sloped;
   clip.attenuatingZones = [];
+  stampGpsTiePoints(clip, frame);
   return { grid, clip, raised: raised.length, sloped: sloped.length };
 }
 
