@@ -126,14 +126,18 @@ describe("an individual tree has a stem and a raised crown", () => {
     }
     const trunkCenter = [sx / n, sy / n];
     const treeBands = crowns.filter((a) => pointInRing(trunkCenter, oiRing(a)));
-    assert.ok(treeBands.length >= 2 && treeBands.length <= 4, "crown layers " + treeBands.length);
+    assert.ok(treeBands.length >= 3 && treeBands.length <= 4, "crown layers " + treeBands.length);
     const tip = treeBands.find((a) => a.area_material.top_height === treeH);
     assert.ok(tip, "crown top stays the measured height");
     const lowest = Math.min(...treeBands.map((a) => a.area_material.bottom_height));
     assert.ok(lowest >= 2.5);
     assert.equal(trunk.area_material.top_height, lowest);
     const fullest = treeBands.reduce((a, b) => (ringArea(oiRing(a)) >= ringArea(oiRing(b)) ? a : b));
-    assert.ok(ringArea(oiRing(tip)) < ringArea(oiRing(fullest)), "the top band steps inward");
+    const topRatio = ringArea(oiRing(tip)) / ringArea(oiRing(fullest));
+    assert.ok(topRatio >= 0.22 && topRatio <= 0.45, "top area ratio " + topRatio);
+    const under = treeBands.filter((a) => a.area_material.bottom_height < fullest.area_material.bottom_height);
+    assert.ok(under.length >= 1, "a band sits under the widest");
+    assert.ok(under.some((a) => ringArea(oiRing(a)) < ringArea(oiRing(fullest)) * 0.9), "the bottom band is narrower");
     for (const band of treeBands) {
       assert.equal(band.area_material.transparencyEnabled, true);
       assert.equal(band.area_material.rf_properties.attenuation_per_m, 1.5);
@@ -164,9 +168,11 @@ describe("an individual tree has a stem and a raised crown", () => {
     assert.ok(trunkM >= 0.7, "stem width m " + trunkM);
     assert.ok(trunkM < Math.min(crownW, crownH) * 0.5, "stem " + trunkM + " crown " + crownW + "x" + crownH);
     const woods = crowns.filter((a) => treeBands.indexOf(a) < 0);
-    assert.ok(woods.length >= 2, "a canopy mass is two layers");
+    assert.ok(woods.length >= 2, "a canopy mass is stacked");
     const woodsFull = woods.reduce((a, b) => (ringArea(oiRing(a)) >= ringArea(oiRing(b)) ? a : b));
     const woodsTop = woods.reduce((a, b) => (a.area_material.top_height >= b.area_material.top_height ? a : b));
+    const woodsRatio = ringArea(oiRing(woodsTop)) / ringArea(oiRing(woodsFull));
+    assert.ok(woodsRatio <= 0.7, "woods top rolls in " + woodsRatio);
     assert.equal("bottom_height" in woodsFull.area_material, false);
     assert.equal(woodsTop.area_material.top_height, 12);
     assert.ok(ringArea(oiRing(woodsTop)) < ringArea(oiRing(woodsFull)));

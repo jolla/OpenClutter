@@ -389,9 +389,12 @@ function clipboardForCanopy(material) {
  * median dots, and crown circles are not emitted and do not become trees.
  * A compact measured crown is one tree: a round stem under that crown, the
  * crown bottom above the ground, and the crown top at the measured height.
- * The crown is two to four stacked footprints that step inward with height,
- * full size through the middle, so it reads as a dome instead of a cylinder.
- * A wide canopy is two layers when the stand is small enough to afford them.
+ * The crown is three or four stacked footprints. The widest band sits in the
+ * lower middle, the bottom band is narrower, and the top is about a third of
+ * the traced area, so the side view is a dome. A merged canopy keeps the
+ * traced outline on the ground and insets each upper layer from the edge,
+ * so the perimeter rolls off instead of standing up as a wall. A crowd keeps
+ * that shape; extra trees are left out before a crown is flattened to one layer.
  * The stem is about 1 m across and stays well inside the crown. A wide or
  * long canopy has no invented stem.
  * `treePoints` is accepted so callers can keep passing placed points; they
@@ -410,10 +413,11 @@ const TRUNK_MAX_M = 1;
 const TRUNK_OF_CROWN = 0.18;
 const TRUNK_SIDES = 12;
 /**
- * Foliage areas, including stems. Above this, extra crown layers come off
- * so a woods stays inside the attenuation cap and the export clock.
+ * Foliage areas, including stems. Above this, the smallest crowns lose a
+ * layer. They are not flattened to one slab, and the attenuation cap still
+ * drops whole trees once the Hamina area budget is full.
  */
-const CROWN_LAYER_BUDGET = 400;
+const CROWN_LAYER_BUDGET = 720;
 /** Each band stays thicker than 2 m, which is the custom-height floor. */
 const MIN_CROWN_BAND_M = 2.1;
 
@@ -555,30 +559,33 @@ function crownThicknessM(material) {
 }
 
 /**
- * Discrete trees: 4 bands for a short stand of tall crowns, 3 for a
- * modest stand, otherwise 2. A merged canopy is 2. A band under 2 m
- * stays the single footprint.
+ * Discrete trees get 3 bands whenever the crown is thick enough, and 4 on a
+ * short stand of tall crowns. A merged canopy gets 3, then 2. A crown that
+ * cannot hold two bands thicker than 2 m stays one footprint.
  */
-function wantedCrownLayers(discrete, thickness, treeCount, massCount) {
-  const fit = Math.floor(thickness / MIN_CROWN_BAND_M);
+function wantedCrownLayers(discrete, thickness, treeCount) {
+  const fit = Math.floor((Number(thickness) + 1e-6) / MIN_CROWN_BAND_M);
   if (fit < 2) return 1;
-  if (!discrete) return massCount <= 220 ? 2 : 1;
-  if (treeCount <= 24 && fit >= 4) return 4;
-  if (treeCount <= 64 && thickness >= 5.5 && fit >= 3) return 3;
+  if (!discrete) return fit >= 3 ? 3 : 2;
+  if (fit >= 4 && treeCount <= 60) return 4;
+  if (fit >= 3) return 3;
   return 2;
 }
 
-/** Lowest band first. The full traced ring sits in the middle when there are 3 or 4. */
-function crownScales(n, discrete) {
+/**
+ * Area of each band relative to the traced crown, lowest first.
+ * A tree is narrow, widest, then a top near a third. A woods stays full
+ * at the ground and steps in.
+ */
+function domeAreaFractions(n, discrete) {
   if (!(n >= 2)) return [1];
-  if (!discrete) return [1, 0.64];
-  if (n === 2) return [1, 0.58];
-  const scales = [0.84, 1];
-  const above = n - 2;
-  for (let step = 1; step <= above; step++) {
-    scales.push(Math.max(0.42, Math.round((1 - 0.52 * (step / above)) * 100) / 100));
+  if (!discrete) {
+    if (n === 2) return [1, 0.36];
+    return [1, 0.68, 0.34];
   }
-  return scales;
+  if (n === 2) return [1, 0.36];
+  if (n === 3) return [0.66, 1, 0.36];
+  return [0.62, 1, 0.64, 0.38];
 }
 
 function scaleRingAbout(ring, scale) {
@@ -644,6 +651,21 @@ function insetStaysIn(inner, outer) {
   return intersectionAreaPx(inner, outer) >= area * 0.95;
 }
 
+/** A thickness near the stock 6 m picker is nudged so the band stays custom. */
+function pickBandMaterial(target, tier) {
+  let h = roundTenths(target);
+  if (!(h > 2)) return null;
+  let base = materialForVegetation(h, tier);
+  if (!base) return null;
+  if (Math.abs(Number(base.top_height) - h) > 0.05) {
+    const snapped = Number(base.top_height);
+    h = roundTenths(h >= snapped ? snapped + 0.4 : Math.max(2.1, snapped - 0.4));
+    base = materialForVegetation(h, tier);
+    if (!base || Math.abs(Number(base.top_height) - h) > 0.05) return null;
+  }
+  return { h, base };
+}
+
 /**
  * Split one canopy into bands that share the class dB/m. A stock snap that
  * opens a gap, or a band that no longer ends on the measured top, returns
@@ -656,18 +678,24 @@ function buildCrownBands(material, n) {
   const top0 = Number(material.top_height);
   if (!(top0 > bottom0)) return null;
   const thickness = roundTenths(top0 - bottom0);
-  if (!(thickness > 2)) return null;
+  if (!(thickness > 2 * n)) return null;
   const tier = String(material.name || "").indexOf("Light") >= 0 ? "light" : "heavy";
-  const edges = [bottom0];
-  for (let i = 1; i < n; i++) edges.push(roundTenths(bottom0 + (thickness * i) / n));
-  edges.push(roundTenths(top0));
   const bands = [];
+  let bottom = bottom0;
+  let remain = thickness;
   for (let i = 0; i < n; i++) {
-    const b = edges[i];
-    const thick = roundTenths(edges[i + 1] - b);
-    if (!(thick > 2)) return null;
-    const base = materialForVegetation(thick, tier);
-    if (!base) return null;
+    const left = n - i;
+    let target = left === 1 ? remain : roundTenths(remain / left);
+    if (left > 1) {
+      const minRest = (left - 1) * 2.1;
+      if (target > remain - minRest) target = roundTenths(remain - minRest);
+      if (!(target > 2)) target = 2.1;
+    }
+    const picked = pickBandMaterial(target, tier);
+    if (!picked) return null;
+    if (left === 1 && Math.abs(picked.h - remain) > 0.15) return null;
+    const b = roundTenths(bottom);
+    const base = picked.base;
     let mat = base;
     let clip = clipboardForCanopy(base);
     if (b >= 1) {
@@ -684,22 +712,20 @@ function buildCrownBands(material, n) {
     }
     if (i === n - 1 && Math.abs(actualTop - top0) > 0.15) return null;
     bands.push({ material: mat, clip });
+    bottom = roundTenths(b + picked.h);
+    remain = roundTenths(top0 - bottom);
   }
-  return bands;
+  return bands.length === n ? bands : null;
 }
 
 function layerCounts(pending) {
   let treeCount = 0;
-  let massCount = 0;
-  for (let i = 0; i < pending.length; i++) {
-    if (pending[i].trunk) treeCount++;
-    else massCount++;
-  }
+  for (let i = 0; i < pending.length; i++) if (pending[i].trunk) treeCount++;
   const plans = pending.map((row) => {
     const discrete = !!row.trunk;
     const thickness = crownThicknessM(row.area && row.area.material);
     return {
-      n: wantedCrownLayers(discrete, thickness, treeCount, massCount),
+      n: wantedCrownLayers(discrete, thickness, treeCount),
       discrete,
       area: ringPxArea(row.area && row.area.ringPx),
     };
@@ -721,39 +747,154 @@ function layerCounts(pending) {
     }
   };
   shrink((p) => p.discrete && p.n >= 4, () => 3);
+  shrink((p) => !p.discrete && p.n >= 3, () => 2);
   shrink((p) => p.discrete && p.n >= 3, () => 2);
-  shrink((p) => !p.discrete && p.n >= 2, () => 1);
-  shrink((p) => p.discrete && p.n >= 2, () => 1);
   return plans.map((p) => p.n);
 }
 
+function openCrownRing(ring) {
+  if (!ring || ring.length < 4) return null;
+  const out = [];
+  for (let i = 0; i < ring.length; i++) {
+    const p = ring[i];
+    const prev = out[out.length - 1];
+    if (prev && Math.abs(prev[0] - p[0]) < 1e-6 && Math.abs(prev[1] - p[1]) < 1e-6) continue;
+    out.push([p[0], p[1]]);
+  }
+  if (out.length >= 2) {
+    const a = out[0];
+    const b = out[out.length - 1];
+    if (Math.abs(a[0] - b[0]) < 1e-6 && Math.abs(a[1] - b[1]) < 1e-6) out.pop();
+  }
+  return out.length >= 3 ? out : null;
+}
+
+/** Move each edge inward by `insetM`. A flipped or spiked ring is rejected. */
+function insetRingPx(ring, insetM, frame) {
+  const open = openCrownRing(ring);
+  const c = ringCentroidPx(ring);
+  const mpuX = (frame && (frame.mpuX || frame.mpu)) || 1;
+  const mpuY = (frame && (frame.mpuY || mpuX)) || 1;
+  if (!open || !c || !(insetM > 0) || !(mpuX > 0) || !(mpuY > 0)) return null;
+  const meters = open.map((p) => [(p[0] - c[0]) * mpuX, (p[1] - c[1]) * mpuY]);
+  const n = meters.length;
+  let area = 0;
+  for (let i = 0; i < n; i++) {
+    const p = meters[i];
+    const q = meters[(i + 1) % n];
+    area += p[0] * q[1] - q[0] * p[1];
+  }
+  if (Math.abs(area) < 1e-4) return null;
+  const ccw = area > 0;
+  const lines = [];
+  for (let i = 0; i < n; i++) {
+    const p = meters[i];
+    const q = meters[(i + 1) % n];
+    let dx = q[0] - p[0];
+    let dy = q[1] - p[1];
+    const len = Math.hypot(dx, dy);
+    if (!(len > 1e-4)) continue;
+    dx /= len;
+    dy /= len;
+    const nx = ccw ? -dy : dy;
+    const ny = ccw ? dx : -dx;
+    lines.push({ x: p[0] + nx * insetM, y: p[1] + ny * insetM, dx, dy });
+  }
+  if (lines.length < 3) return null;
+  const m = lines.length;
+  const shifted = [];
+  for (let i = 0; i < m; i++) {
+    const A = lines[(i + m - 1) % m];
+    const B = lines[i];
+    const det = A.dx * B.dy - A.dy * B.dx;
+    let pt;
+    if (Math.abs(det) < 1e-8) pt = [B.x, B.y];
+    else {
+      const t = ((B.x - A.x) * B.dy - (B.y - A.y) * B.dx) / det;
+      pt = [A.x + A.dx * t, A.y + A.dy * t];
+      if (Math.hypot(pt[0] - B.x, pt[1] - B.y) > insetM * 2.5) pt = [B.x, B.y];
+    }
+    if (!Number.isFinite(pt[0]) || !Number.isFinite(pt[1])) return null;
+    const prev = shifted[shifted.length - 1];
+    if (!prev || Math.hypot(prev[0] - pt[0], prev[1] - pt[1]) > 0.15) shifted.push(pt);
+  }
+  if (shifted.length < 3) return null;
+  let area2 = 0;
+  for (let i = 0; i < shifted.length; i++) {
+    const p = shifted[i];
+    const q = shifted[(i + 1) % shifted.length];
+    area2 += p[0] * q[1] - q[0] * p[1];
+  }
+  if (ccw ? area2 <= 0 : area2 >= 0) return null;
+  if (Math.abs(area2) >= Math.abs(area) * 0.97) return null;
+  const keep = Math.min(24, shifted.length);
+  const simple = [];
+  for (let i = 0; i < keep; i++) {
+    const idx = Math.round((i * (shifted.length - 1)) / Math.max(1, keep - 1));
+    simple.push(shifted[idx]);
+  }
+  const px = simple.map((p) => [c[0] + p[0] / mpuX, c[1] + p[1] / mpuY]);
+  px.push([px[0][0], px[0][1]]);
+  return px;
+}
+
+/** Inset from the traced edge. A round crown falls back to a center scale. */
+function ringForFraction(ring, frame, fraction) {
+  if (!(fraction > 0)) return null;
+  if (fraction >= 0.98) return ring;
+  const mpuX = (frame && (frame.mpuX || frame.mpu)) || 1;
+  const mpuY = (frame && (frame.mpuY || mpuX)) || 1;
+  const areaM = ringPxArea(ring) * mpuX * mpuY;
+  const short = crownShortM(ring, frame);
+  const floorPx = crownSpanFloorPx(frame);
+  const floorM = Math.max(3.2, floorPx * Math.min(mpuX, mpuY));
+  const limit = (short - floorM) / 2;
+  const radius = Math.sqrt(Math.max(areaM, 1) / Math.PI);
+  let inset = radius * (1 - Math.sqrt(Math.max(fraction, 0.22))) * 0.86;
+  if (limit > 0.35 && inset > limit) inset = limit * 0.96;
+  const floor = floorPx;
+  if (inset > 0.35) {
+    const next = insetRingPx(ring, inset, frame);
+    if (
+      next &&
+      ringClearsSpan(next, floor) &&
+      insetStaysIn(next, ring) &&
+      ringPxArea(next) < ringPxArea(ring) * 0.94
+    ) {
+      return next;
+    }
+  }
+  const scaled = scaleRingAbout(ring, Math.sqrt(Math.max(fraction, 0.25)));
+  if (scaled && ringClearsSpan(scaled, floor) && insetStaysIn(scaled, ring)) return scaled;
+  return null;
+}
+
 /**
- * Inset rings that would be stretched up to the shared span floor are
- * dropped by asking for fewer bands. The scale-1 ring is always kept.
+ * Bands that cannot clear the span floor are dropped by asking for fewer
+ * layers. The traced ring is always one of the bands that remain.
  */
 function crownStack(row, frame, want) {
   const ring = row.area && row.area.ringPx;
   if (!ring || !(want >= 2)) return null;
-  const floor = crownSpanFloorPx(frame);
   const discrete = !!row.trunk;
-  for (let n = want; n >= 2; n--) {
-    const scales = crownScales(n, discrete);
-    if (scales.length !== n) continue;
+  for (let n = Math.min(want, 4); n >= 2; n--) {
+    const fractions = domeAreaFractions(n, discrete);
+    if (fractions.length !== n) continue;
     const bands = buildCrownBands(row.area.material, n);
     if (!bands || bands.length !== n) continue;
     const parts = [];
     let ok = true;
     for (let i = 0; i < n; i++) {
-      const scaled = scaleRingAbout(ring, scales[i]);
-      if (!scaled || (scales[i] < 0.999 && (!ringClearsSpan(scaled, floor) || !insetStaysIn(scaled, ring)))) {
+      const shaped = ringForFraction(ring, frame, fractions[i]);
+      if (!shaped) {
         ok = false;
         break;
       }
       parts.push({
-        ringPx: scaled,
+        ringPx: shaped,
         material: bands[i].material,
         clip: bands[i].clip,
-        scale: scales[i],
+        scale: fractions[i],
       });
     }
     if (ok) return parts;

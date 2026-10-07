@@ -151,12 +151,12 @@ describe("canopy height grid", () => {
     const canopies = pairs.oiAreas.filter((a) => a.kind === "canopy");
     const layers = pairs.oiAreas.filter((a) => a.kind === "layer");
     assert.equal(canopies.length, 1);
-    assert.equal(layers.length, 1);
+    assert.equal(layers.length, 2);
     assert.equal(canopies[0].shape, "polygon");
-    assert.equal(canopies[0].material.name, "Foliage - Heavy 7.1");
-    assert.equal(canopies[0].material.top_height, 7.1);
-    assert.equal(layers[0].material.top_height, 14.2);
-    assert.equal(layers[0].material.rf_properties.attenuation_per_m, 1.5);
+    const top = layers.reduce((a, b) => (a.material.top_height >= b.material.top_height ? a : b));
+    assert.equal(top.material.top_height, 14.2);
+    assert.equal(top.material.rf_properties.attenuation_per_m, 1.5);
+    assert.equal(canopies[0].material.rf_properties.attenuation_per_m, 1.5);
     assert.ok(canopies[0].ringPx.length >= 5);
     assert.ok(canopies[0].ringPx.length <= 41);
     let minX = Infinity;
@@ -176,7 +176,7 @@ describe("canopy height grid", () => {
     let maxLX = -Infinity;
     let minLY = Infinity;
     let maxLY = -Infinity;
-    for (const p of layers[0].ringPx) {
+    for (const p of top.ringPx) {
       minLX = Math.min(minLX, p[0]);
       maxLX = Math.max(maxLX, p[0]);
       minLY = Math.min(minLY, p[1]);
@@ -185,7 +185,7 @@ describe("canopy height grid", () => {
     layerShort = Math.min(maxLX - minLX, maxLY - minLY);
     assert.ok(layerShort < Math.min(maxX - minX, maxY - minY), "upper band steps in");
     assert.equal(pairs.oiAreas.some((a) => a.kind === "trunk"), false);
-    assert.ok(pairs.clipTypes.some((t) => t.id === "foliage-m-7_1"));
+    assert.ok(pairs.clipTypes.some((t) => t.topEdge === 14.2));
   });
 
   it("draws separate CHM crowns with measured shape and height", () => {
@@ -220,7 +220,7 @@ describe("canopy height grid", () => {
     assert.equal(flat.length, 1, "a flat clump is one outline, not a scatter");
     assert.ok(bboxAspect(flat[0].ringPx) > 1.8);
     assert.equal(
-      pairs.oiAreas.some((a) => a.material.top_height <= 4),
+      pairs.oiAreas.some((a) => a.material.top_height === 2 || a.material.top_height === 4),
       false,
       "sub-5 m spikes are not trees"
     );
@@ -288,7 +288,7 @@ describe("canopy height grid", () => {
     const nlcd = treePairsFromPoints([], frame, [], null, { canopyHits: hits, heightSample: () => 14 });
     assert.equal(nlcd.foliageGeometry, "nlcd-polygon");
     assert.equal(nlcd.oiAreas.filter((a) => a.kind === "canopy").length, 1);
-    assert.equal(nlcd.oiAreas.length, 2);
+    assert.equal(nlcd.oiAreas.length, 3);
     const mLon = 111320 * Math.cos((42.9 * Math.PI) / 180);
     const w = 36;
     const h = 36;
