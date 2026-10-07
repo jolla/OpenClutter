@@ -405,7 +405,7 @@ const TREE_MAX_ASPECT = 1.8;
 const TRUNK_MAX_M = 1;
 /** Also scale with the crown, so a small traced crown cannot grow a 1 m stem. */
 const TRUNK_OF_CROWN = 0.18;
-const TRUNK_SIDES = 16;
+const TRUNK_SIDES = 12;
 
 function ringPxArea(ring) {
   if (!ring || ring.length < 3) return 0;
@@ -511,7 +511,7 @@ function circleFits(ring, crown) {
 /**
  * Stem under one discrete crown. About 1 m across, and never more than a
  * fraction of the crown, so the stem stays clearly thinner. The footprint is
- * a 16-gon, not a square. Vertices stay inside the crown; a tight crown
+ * a 12-gon, not a square. Vertices stay inside the crown; a tight crown
  * shrinks the stem instead of dropping it or poking out.
  */
 function trunkRingPx(ringPx, frame) {

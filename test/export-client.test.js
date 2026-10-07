@@ -33,15 +33,15 @@ describe("export gateway timeout", () => {
     for (const status of [504, 408]) {
       const failure = exportFailure(status, {});
       assert.equal(failure.gateway, true);
-      assert.equal(failure.retry, false);
-      assert.equal(failure.attempts, 1);
+      assert.equal(failure.retry, true);
+      assert.equal(failure.attempts, 2);
       assert.equal(failure.message, EMPTY_502_STATUS);
       assert.notEqual(failure.message, "");
       assert.notEqual(failure.message, WORKING_STATUS);
       assert.equal(/stopped before a zip was ready|Aerial imagery timed out|did not finish|too large to finish/i.test(failure.message), false);
       const err = failureError(status, {});
-      assert.equal(err.attempts, 1);
-      assert.equal(err.noRetry, true);
+      assert.equal(err.attempts, 2);
+      assert.equal(err.noRetry, false);
       assert.equal(idleStatus(err), EMPTY_502_STATUS);
       assert.notEqual(idleStatus(err), "");
       assert.notEqual(idleStatus(err), WORKING_STATUS);
@@ -81,8 +81,8 @@ describe("export gateway timeout", () => {
 
     const empty502 = exportFailure(502, {});
     assert.equal(empty502.gateway, true);
-    assert.equal(empty502.retry, false);
-    assert.equal(empty502.attempts, 1);
+    assert.equal(empty502.retry, true);
+    assert.equal(empty502.attempts, 2);
     assert.equal(empty502.message, EMPTY_502_STATUS);
     assert.equal(EMPTY_502_STATUS, "The export did not return a zip.");
     assert.equal(/Export failed\. Retry\.|did not finish|stopped before a zip|Aerial imagery timed out|too large to finish/i.test(EMPTY_502_STATUS), false);
@@ -106,7 +106,7 @@ describe("export gateway timeout", () => {
         return true;
       }
     );
-    assert.deepEqual(calls, [1]);
+    assert.deepEqual(calls, [1, 2]);
 
     const emptyCalls = [];
     await assert.rejects(
@@ -118,11 +118,21 @@ describe("export gateway timeout", () => {
       (err) => {
         assert.equal(err.message, EMPTY_502_STATUS);
         assert.equal(idleStatus(err), EMPTY_502_STATUS);
-        assert.equal(err.noRetry, true);
+        assert.equal(err.noRetry, false);
         return true;
       }
     );
-    assert.deepEqual(emptyCalls, [1]);
+    assert.deepEqual(emptyCalls, [1, 2]);
+
+    const recovered = [];
+    const zipAfterMiss = await runExportAttempts(async (attempt) => {
+      recovered.push(attempt);
+      if (attempt === 1) throw failureError(502, {});
+      return { zipBase64: "e30=", zipFilename: "openclutter.zip" };
+    });
+    assert.deepEqual(recovered, [1, 2]);
+    assert.equal(zipAfterMiss.zipFilename, "openclutter.zip");
+    assert.match(app, /The first export did not return a zip\. Export is still working\./);
 
     const jsonCalls = [];
     await assert.rejects(
