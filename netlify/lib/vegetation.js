@@ -7,6 +7,7 @@ const { measuredFoliageMaterial, materialForVegetation, liftFoliagePair, individ
 const { MAX_TREES, maxTreesForBbox, canopyHeightM } = require("./tree-source");
 const { crownsForExport } = require("./canopy-height");
 const { BUILDING_BUFFER_M, createClipSet, clipFoliageRing, dissolveFoliageRings, pointInRing, intersectionAreaPx } = require("./poly-clip");
+const polygonClipping = require("polygon-clipping");
 
 function pointInAabb(x, y, boxes, pad) {
   for (const b of boxes) {
@@ -392,8 +393,10 @@ function clipboardForCanopy(material) {
  * The crown is three or four stacked footprints. The widest band sits in the
  * lower middle, the bottom band is narrower, and the top is about a third of
  * the traced area, so the side view is a dome. A merged canopy keeps the
- * traced outline on the ground and insets each upper layer from the edge,
- * so the perimeter rolls off instead of standing up as a wall. A crowd keeps
+ * traced outline on the ground and insets each upper layer from the edge.
+ * A notched woods whose vertex average sits outside the ring is scaled toward
+ * an interior point and clipped back to that outline, so the perimeter still
+ * rolls off instead of standing up as a wall. A crowd keeps
  * that shape; extra trees are left out before a crown is flattened to one layer.
  * The stem is about 1 m across and stays well inside the crown. A wide or
  * long canopy has no invented stem.
@@ -838,11 +841,182 @@ function insetRingPx(ring, insetM, frame) {
   return px;
 }
 
+function distToSeg(p, a, b) {
+  const vx = b[0] - a[0];
+  const vy = b[1] - a[1];
+  const len2 = vx * vx + vy * vy;
+  if (!(len2 > 1e-8)) return Math.hypot(p[0] - a[0], p[1] - a[1]);
+  let t = ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / len2;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  return Math.hypot(p[0] - (a[0] + vx * t), p[1] - (a[1] + vy * t));
+}
+
+/** A point inside the crown. The vertex average of a notched woods often is not. */
+function interiorAnchor(ring) {
+  const c = ringCentroidPx(ring);
+  if (c && pointInRing(c, ring)) return c;
+  const open = openCrownRing(ring);
+  if (!open) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < open.length; i++) {
+    const p = open[i];
+    if (p[0] < minX) minX = p[0];
+    if (p[1] < minY) minY = p[1];
+    if (p[0] > maxX) maxX = p[0];
+    if (p[1] > maxY) maxY = p[1];
+  }
+  const steps = 8;
+  let best = null;
+  let bestD = 0;
+  for (let iy = 0; iy < steps; iy++) {
+    for (let ix = 0; ix < steps; ix++) {
+      const q = [
+        minX + ((ix + 0.5) / steps) * (maxX - minX),
+        minY + ((iy + 0.5) / steps) * (maxY - minY),
+      ];
+      if (!pointInRing(q, ring)) continue;
+      let d = Infinity;
+      for (let i = 0; i < open.length; i++) {
+        const sep = distToSeg(q, open[i], open[(i + 1) % open.length]);
+        if (sep < d) d = sep;
+      }
+      if (d > bestD) {
+        bestD = d;
+        best = q;
+      }
+    }
+  }
+  return best;
+}
+
+function closeCrownRing(pts) {
+  if (!pts || pts.length < 3) return null;
+  const out = [];
+  for (let i = 0; i < pts.length; i++) out.push([pts[i][0], pts[i][1]]);
+  const a = out[0];
+  const b = out[out.length - 1];
+  if (a[0] !== b[0] || a[1] !== b[1]) out.push([a[0], a[1]]);
+  return out.length >= 4 ? out : null;
+}
+
+function largestExterior(multi) {
+  let best = null;
+  let bestA = 0;
+  for (const poly of multi || []) {
+    const r = poly && poly[0];
+    if (!r || r.length < 4) continue;
+    const aa = ringPxArea(r);
+    if (aa > bestA) {
+      bestA = aa;
+      best = r;
+    }
+  }
+  return best;
+}
+
+function subsampleCrown(ring, maxVerts) {
+  const open = openCrownRing(ring);
+  if (!open) return null;
+  if (open.length <= maxVerts) return closeCrownRing(open);
+  const simple = [];
+  for (let i = 0; i < maxVerts; i++) simple.push(open[Math.floor((i * open.length) / maxVerts)]);
+  return closeCrownRing(simple);
+}
+
+/** Scale toward an interior point, then keep only the part that stays on the traced crown. */
+function clipScaledRing(ring, scale) {
+  const origin = interiorAnchor(ring);
+  const open = openCrownRing(ring);
+  if (!origin || !open || !(scale > 0) || scale >= 0.999) return null;
+  const scaled = [];
+  for (let i = 0; i < open.length; i++) {
+    const p = open[i];
+    scaled.push([origin[0] + (p[0] - origin[0]) * scale, origin[1] + (p[1] - origin[1]) * scale]);
+  }
+  const pulled = pullRingInside(closeCrownRing(scaled), ring) || closeCrownRing(scaled);
+  const pulledOpen = openCrownRing(pulled);
+  if (!pulledOpen) return null;
+  let inter;
+  try {
+    inter = polygonClipping.intersection([closeCrownRing(open)], [closeCrownRing(pulledOpen)]);
+  } catch {
+    return null;
+  }
+  const best = largestExterior(inter);
+  if (!best) return null;
+  let shaped = subsampleCrown(best, 24);
+  if (shaped && openCrownRing(shaped).length < openCrownRing(best).length) {
+    try {
+      const again = polygonClipping.intersection([closeCrownRing(open)], [shaped]);
+      const clipped = largestExterior(again);
+      if (clipped && openCrownRing(clipped).length <= 36) shaped = closeCrownRing(openCrownRing(clipped));
+    } catch {
+      shaped = openCrownRing(best).length <= 36 ? closeCrownRing(openCrownRing(best)) : shaped;
+    }
+  }
+  const n = shaped && openCrownRing(shaped);
+  if (!n || n.length > 36) return null;
+  return shaped;
+}
+
+/**
+ * A notched woods has no clean parallel inset: the offset self-intersects and
+ * the vertex average sits in the notch. Search a scale whose clipped footprint
+ * is near the target fraction of the traced area.
+ */
+function clippedFraction(ring, frame, fraction) {
+  const floor = crownSpanFloorPx(frame);
+  const base = ringPxArea(ring);
+  if (!(base > 1)) return null;
+  const short = crownShortM(ring, frame);
+  const mpuX = (frame && (frame.mpuX || frame.mpu)) || 1;
+  const mpuY = (frame && (frame.mpuY || mpuX)) || 1;
+  const floorM = Math.max(3.2, floor * Math.min(mpuX, mpuY));
+  const minScale = short > floorM ? floorM / short : 1;
+  if (!(minScale < 0.98)) return null;
+  const target = Math.sqrt(Math.max(fraction, 0.22));
+  let lo = Math.max(minScale, target * 0.72);
+  let hi = Math.min(0.94, Math.max(target * 1.55, lo + 0.04));
+  if (!(hi > lo)) return null;
+  let best = null;
+  let bestErr = Infinity;
+  for (let k = 0; k < 5; k++) {
+    const mid = (lo + hi) / 2;
+    const shaped = clipScaledRing(ring, mid);
+    if (!shaped || !ringClearsSpan(shaped, floor)) {
+      hi = mid;
+      continue;
+    }
+    const ratio = ringPxArea(shaped) / base;
+    if (!(ratio > 0.12) || !(ratio < 0.92)) {
+      if (ratio >= 0.92) hi = mid;
+      else lo = mid;
+      continue;
+    }
+    const err = Math.abs(ratio - fraction);
+    if (err < bestErr) {
+      bestErr = err;
+      best = shaped;
+    }
+    if (err < 0.05) return shaped;
+    if (ratio > fraction) hi = mid;
+    else lo = mid;
+  }
+  if (!best) return null;
+  const ratio = ringPxArea(best) / base;
+  if (!(ratio < 0.85) || !(ratio > 0.12)) return null;
+  return best;
+}
+
 /** Pull vertices that left the traced crown back to its boundary. */
 function pullRingInside(ring, outer) {
   const open = openCrownRing(ring);
-  const c = ringCentroidPx(outer);
-  if (!open || !c || !pointInRing(c, outer)) return null;
+  const c = interiorAnchor(outer);
+  if (!open || !c) return null;
   const out = [];
   for (let i = 0; i < open.length; i++) {
     const p = open[i];
@@ -890,17 +1064,20 @@ function ringForFraction(ring, frame, fraction) {
       return next;
     }
   }
-  const scaled = scaleRingAbout(ring, Math.sqrt(Math.max(fraction, 0.22)));
-  const pulled = scaled && (insetStaysIn(scaled, ring) ? scaled : pullRingInside(scaled, ring));
-  if (
-    pulled &&
-    ringClearsSpan(pulled, floor) &&
-    insetStaysIn(pulled, ring) &&
-    ringPxArea(pulled) < ringPxArea(ring) * 0.96
-  ) {
-    return pulled;
+  const centroid = ringCentroidPx(ring);
+  if (centroid && pointInRing(centroid, ring)) {
+    const scaled = scaleRingAbout(ring, Math.sqrt(Math.max(fraction, 0.22)));
+    const pulled = scaled && (insetStaysIn(scaled, ring) ? scaled : pullRingInside(scaled, ring));
+    if (
+      pulled &&
+      ringClearsSpan(pulled, floor) &&
+      insetStaysIn(pulled, ring) &&
+      ringPxArea(pulled) < ringPxArea(ring) * 0.96
+    ) {
+      return pulled;
+    }
   }
-  return null;
+  return clippedFraction(ring, frame, fraction);
 }
 
 /**

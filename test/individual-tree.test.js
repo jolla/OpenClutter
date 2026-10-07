@@ -273,4 +273,66 @@ describe("an individual tree has a stem and a raised crown", () => {
     assert.ok(masses.length >= 1);
     assert.ok(veg.some((a) => a.area_material.top_height === 12));
   });
+
+  it("insets a notched woods so the upper layers are narrower than the traced outline", () => {
+    const w = 48;
+    const h = 48;
+    const cell = 2.2;
+    const values = new Uint8Array(w * h);
+    const set = (x, y) => {
+      if (x >= 0 && y >= 0 && x < w && y < h) values[y * w + x] = 18;
+    };
+    for (let y = 8; y <= 28; y++) {
+      for (let x = 6; x <= 12; x++) set(x, y);
+    }
+    for (let y = 8; y <= 14; y++) {
+      for (let x = 6; x <= 28; x++) set(x, y);
+    }
+    for (let y = 22; y <= 28; y++) {
+      for (let x = 6; x <= 28; x++) set(x, y);
+    }
+    const midLat = 42.9;
+    const mLon = 111320 * Math.cos((midLat * Math.PI) / 180);
+    const west = -87.93;
+    const south = 42.89;
+    const grid = {
+      west,
+      south,
+      east: west + (w * cell) / mLon,
+      north: south + (h * cell) / 110540,
+      width: w,
+      height: h,
+      values,
+    };
+    const frame = geoFrame({ west, south, east: grid.east, north: grid.north, name: "Notched woods" });
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [] },
+      treePoints: [],
+      name: "Notched woods",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      chmGrid: grid,
+      includeFoliage: true,
+    });
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    const veg = areas.filter((a) => isVegetationOiName(a.area_material.name));
+    const trunks = areas.filter((a) => isTrunkOiName(a.area_material.name));
+    assert.equal(trunks.length, 0, "a notched woods is not a discrete tree");
+    assert.ok(veg.length >= 3, "upper layers " + veg.length);
+    const ground = veg.filter((a) => !("bottom_height" in a.area_material));
+    assert.equal(ground.length, 1);
+    const top = veg.reduce((a, b) => (a.area_material.top_height >= b.area_material.top_height ? a : b));
+    assert.equal(top.area_material.top_height, 18);
+    const ratio = ringArea(oiRing(top)) / ringArea(oiRing(ground[0]));
+    assert.ok(ratio >= 0.18 && ratio <= 0.55, "notched top area ratio " + ratio);
+    const spanOf = (ring) => {
+      const xs = ring.map((p) => p[0]);
+      const ys = ring.map((p) => p[1]);
+      return Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+    };
+    const spanRatio = spanOf(oiRing(top)) / spanOf(oiRing(ground[0]));
+    assert.ok(spanRatio <= 0.85, "notched top span ratio " + spanRatio);
+    assert.equal(top.area_material.transparencyEnabled, true);
+    assert.equal(top.area_material.rf_properties.attenuation_per_m, 1.5);
+  });
 });
