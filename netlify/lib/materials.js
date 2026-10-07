@@ -17,9 +17,11 @@
  * plus the building or canopy height. The 20 m gate is bare-earth only.
  *
  * Picker (2026-09): Foliage - Heavy is 19.68 ft / 2 dB/m, Foliage - Light is
- * 19.68 ft / 1 dB/m. A compact measured crown is one tree: the crown's
- * bottom sits above the ground and its top stays the measured height, with
- * a stem ("Foliage - Trunk H.H") from the ground up to that crown bottom.
+ * 19.68 ft / 1 dB/m. Outdoor /dev uses 1.5 dB/m for Heavy (and any canopy
+ * at or above 12 m). Light stays 1. A compact measured crown is one tree:
+ * the crown's bottom sits above the ground and its top stays the measured
+ * height, with a stem ("Foliage - Trunk H.H") from the ground up to that
+ * crown bottom. The stem is 3 dB/m. These are 5 GHz per-meter figures.
  * A continuous canopy stays a ground-level foliage mass. A measured or CHM
  * height that is not the stock height becomes "Foliage - Heavy 14.2" /
  * "Foliage - Light 7.5": same color and dB/m, real top_height. That is not
@@ -96,6 +98,9 @@ const FOLIAGE_HEAVY_NAME = "Foliage - Heavy";
 const FOLIAGE_LIGHT_NAME = "Foliage - Light";
 const FOLIAGE_HEAVY_COLOR = "#3F7D2A";
 const FOLIAGE_LIGHT_COLOR = "#6FA84A";
+/** Outdoor tune. Hamina's indoor picker is 2 dB/m; a long canopy never saturates. */
+const FOLIAGE_HEAVY_DB = 1.5;
+const FOLIAGE_LIGHT_DB = 1;
 
 const OI_VEGETATION_NAMES = [FOLIAGE_HEAVY_NAME, FOLIAGE_LIGHT_NAME];
 
@@ -406,7 +411,7 @@ function measuredFoliageMaterial(heightM) {
   if (!h) return null;
   const name = "Foliage " + h.toFixed(1) + " m";
   const color = h >= 12 ? "#3F7D2A" : "#6FA84A";
-  const db = h >= 12 ? 2 : 1;
+  const db = h >= 12 ? FOLIAGE_HEAVY_DB : FOLIAGE_LIGHT_DB;
   return {
     material: oiMaterial(name, color, h, db),
     clipType: clipType(idFor("foliage-m-", h), name, color, h, db, {
@@ -423,16 +428,20 @@ function measuredTrunkMaterial(heightM) {
   if (!h) return null;
   const name = "Tree Trunk " + h.toFixed(1) + " m";
   return {
-    material: oiMaterial(name, "#8B6B4F", h, 10),
-    clipType: clipType(idFor("trunk-m-", h), name, "#8B6B4F", h, 10, { transparent: true }),
+    material: oiMaterial(name, "#8B6B4F", h, TRUNK_DB),
+    clipType: clipType(idFor("trunk-m-", h), name, "#8B6B4F", h, TRUNK_DB, { transparent: true }),
     typeId: idFor("trunk-m-", h),
     measured: true,
   };
 }
 
-/** Brown stem. The safe name is "Foliage - Trunk H.H", not the poisoned "Tree Trunk". */
+/**
+ * Brown stem. The safe name is "Foliage - Trunk H.H", not the poisoned "Tree Trunk".
+ * 3 dB/m on a ~1 m stem is about the same crossing loss as Hamina's 1 m example
+ * trunk at 10 dB/m. The stem stays that narrow; the rate is not 10.
+ */
 const TRUNK_COLOR = "#8B6B4F";
-const TRUNK_DB = 10;
+const TRUNK_DB = 3;
 const TRUNK_NAME = /^Foliage - Trunk (\d+\.\d)$/;
 const LIFTED_TRUNK_NAME = /^Foliage - Trunk (\d+\.\d) @ (\d+\.\d)$/;
 
@@ -569,8 +578,8 @@ function cloneMaterial(material) {
   return JSON.parse(JSON.stringify(material));
 }
 
-const FOLIAGE_HEAVY = foliageOiMaterial(FOLIAGE_HEAVY_NAME, FOLIAGE_HEAVY_COLOR, OI_FOLIAGE_TOP_M, 2);
-const FOLIAGE_LIGHT = foliageOiMaterial(FOLIAGE_LIGHT_NAME, FOLIAGE_LIGHT_COLOR, OI_FOLIAGE_TOP_M, 1);
+const FOLIAGE_HEAVY = foliageOiMaterial(FOLIAGE_HEAVY_NAME, FOLIAGE_HEAVY_COLOR, OI_FOLIAGE_TOP_M, FOLIAGE_HEAVY_DB);
+const FOLIAGE_LIGHT = foliageOiMaterial(FOLIAGE_LIGHT_NAME, FOLIAGE_LIGHT_COLOR, OI_FOLIAGE_TOP_M, FOLIAGE_LIGHT_DB);
 const STOCK_FOLIAGE_BY_NAME = {
   [FOLIAGE_HEAVY_NAME]: FOLIAGE_HEAVY,
   [FOLIAGE_LIGHT_NAME]: FOLIAGE_LIGHT,
@@ -666,7 +675,7 @@ function materialForVegetation(heightM, kind) {
   if (!h || Math.abs(h - OI_FOLIAGE_TOP_M) <= STOCK_HEIGHT_TOL_M) return cloneMaterial(stock);
   const name = (heavy ? FOLIAGE_HEAVY_NAME : FOLIAGE_LIGHT_NAME) + " " + h.toFixed(1);
   if (!isVegetationOiName(name)) return null;
-  return foliageOiMaterial(name, heavy ? FOLIAGE_HEAVY_COLOR : FOLIAGE_LIGHT_COLOR, h, heavy ? 2 : 1);
+  return foliageOiMaterial(name, heavy ? FOLIAGE_HEAVY_COLOR : FOLIAGE_LIGHT_COLOR, h, heavy ? FOLIAGE_HEAVY_DB : FOLIAGE_LIGHT_DB);
 }
 
 /** Exact picker object. kind is "heavy" or "light". */

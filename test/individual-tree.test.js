@@ -137,6 +137,24 @@ describe("an individual tree has a stem and a raised crown", () => {
       sy += trunkRing[i][1];
     }
     assert.equal(pointInRing([sx / n, sy / n], crownRing), true);
+    assert.equal(trunk.area_material.rf_properties.attenuation_per_m, 3);
+    assert.equal(crown.area_material.rf_properties.attenuation_per_m, 1.5);
+    assert.ok(n >= 12, "stem corners " + n);
+    let axis = true;
+    for (let i = 0; i < n; i++) {
+      const p = trunkRing[i];
+      const q = trunkRing[(i + 1) % n];
+      if (p[0] !== q[0] && p[1] !== q[1]) axis = false;
+    }
+    assert.equal(axis, false, "stem is a round footprint, not a square");
+    const tw = Math.max(...trunkRing.map((p) => p[0])) - Math.min(...trunkRing.map((p) => p[0]));
+    const th = Math.max(...trunkRing.map((p) => p[1])) - Math.min(...trunkRing.map((p) => p[1]));
+    const trunkM = Math.max(tw * frame.mpuX, th * frame.mpuY);
+    const crownW = (Math.max(...crownRing.map((p) => p[0])) - Math.min(...crownRing.map((p) => p[0]))) * frame.mpuX;
+    const crownH = (Math.max(...crownRing.map((p) => p[1])) - Math.min(...crownRing.map((p) => p[1]))) * frame.mpuY;
+    assert.ok(trunkM <= 1.05, "stem width m " + trunkM);
+    assert.ok(trunkM >= 0.7, "stem width m " + trunkM);
+    assert.ok(trunkM < Math.min(crownW, crownH) * 0.5, "stem " + trunkM + " crown " + crownW + "x" + crownH);
     const woods = crowns.filter((a) => a !== crown);
     assert.ok(woods.length >= 1);
     for (const mass of woods) {
@@ -158,6 +176,51 @@ describe("an individual tree has a stem and a raised crown", () => {
     });
     assert.equal(off.stats.openIntentTreeAreas, 0);
     assert.equal(off.stats.includeFoliage, false);
+  });
+
+  it("keeps the stem near 1 m on a coarse plate instead of growing it up to the crown", () => {
+    const { grid, frame } = treeAndWoods();
+    const coarse = geoFrame({
+      west: frame.west,
+      south: frame.south,
+      east: frame.east,
+      north: frame.north,
+      name: "Coarse",
+      metersPerPx: 2,
+      maxSide: 64,
+    });
+    const built = buildClutter({
+      frame: coarse,
+      footprintsGeojson: { features: [] },
+      treePoints: [],
+      name: "Coarse",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      chmGrid: grid,
+      includeFoliage: true,
+    });
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    const trunks = areas.filter((a) => isTrunkOiName(a.area_material.name));
+    const crowns = areas.filter((a) => isVegetationOiName(a.area_material.name) && "bottom_height" in a.area_material);
+    assert.equal(trunks.length, 1);
+    assert.equal(crowns.length, 1);
+    const trunkRing = oiRing(trunks[0]);
+    const crownRing = oiRing(crowns[0]);
+    const span = (ring) => {
+      const xs = ring.map((p) => p[0]);
+      const ys = ring.map((p) => p[1]);
+      return [
+        (Math.max(...xs) - Math.min(...xs)) * coarse.mpuX,
+        (Math.max(...ys) - Math.min(...ys)) * coarse.mpuY,
+      ];
+    };
+    const [tw, th] = span(trunkRing);
+    const [cw, ch] = span(crownRing);
+    const trunkM = Math.max(tw, th);
+    const crownM = Math.min(cw, ch);
+    assert.ok(trunkM <= 1.05, "stem m " + trunkM);
+    assert.ok(trunkM < crownM * 0.35, "stem " + trunkM + " crown " + crownM);
+    const n = trunkRing.length > 1 && trunkRing[0][0] === trunkRing[trunkRing.length - 1][0] ? trunkRing.length - 1 : trunkRing.length;
+    assert.ok(n >= 12, "stem corners " + n);
   });
 
   it("does not invent a tree from a point or put a stem under a canopy mass", () => {
