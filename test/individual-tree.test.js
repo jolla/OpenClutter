@@ -126,14 +126,18 @@ describe("an individual tree has a stem and a raised crown", () => {
     }
     const trunkCenter = [sx / n, sy / n];
     const treeBands = crowns.filter((a) => pointInRing(trunkCenter, oiRing(a)));
-    assert.ok(treeBands.length >= 2 && treeBands.length <= 4, "crown layers " + treeBands.length);
+    assert.ok(treeBands.length >= 3 && treeBands.length <= 4, "crown layers " + treeBands.length);
     const tip = treeBands.find((a) => a.area_material.top_height === treeH);
     assert.ok(tip, "crown top stays the measured height");
     const lowest = Math.min(...treeBands.map((a) => a.area_material.bottom_height));
     assert.ok(lowest >= 2.5);
     assert.equal(trunk.area_material.top_height, lowest);
     const fullest = treeBands.reduce((a, b) => (ringArea(oiRing(a)) >= ringArea(oiRing(b)) ? a : b));
-    assert.ok(ringArea(oiRing(tip)) < ringArea(oiRing(fullest)), "the top band steps inward");
+    const topRatio = ringArea(oiRing(tip)) / ringArea(oiRing(fullest));
+    assert.ok(topRatio >= 0.22 && topRatio <= 0.45, "top area ratio " + topRatio);
+    const under = treeBands.filter((a) => a.area_material.bottom_height < fullest.area_material.bottom_height);
+    assert.ok(under.length >= 1, "a band sits under the widest");
+    assert.ok(under.some((a) => ringArea(oiRing(a)) < ringArea(oiRing(fullest)) * 0.9), "the bottom band is narrower");
     for (const band of treeBands) {
       assert.equal(band.area_material.transparencyEnabled, true);
       assert.equal(band.area_material.rf_properties.attenuation_per_m, 1.5);
@@ -164,9 +168,11 @@ describe("an individual tree has a stem and a raised crown", () => {
     assert.ok(trunkM >= 0.7, "stem width m " + trunkM);
     assert.ok(trunkM < Math.min(crownW, crownH) * 0.5, "stem " + trunkM + " crown " + crownW + "x" + crownH);
     const woods = crowns.filter((a) => treeBands.indexOf(a) < 0);
-    assert.ok(woods.length >= 2, "a canopy mass is two layers");
+    assert.ok(woods.length >= 2, "a canopy mass is stacked");
     const woodsFull = woods.reduce((a, b) => (ringArea(oiRing(a)) >= ringArea(oiRing(b)) ? a : b));
     const woodsTop = woods.reduce((a, b) => (a.area_material.top_height >= b.area_material.top_height ? a : b));
+    const woodsRatio = ringArea(oiRing(woodsTop)) / ringArea(oiRing(woodsFull));
+    assert.ok(woodsRatio <= 0.7, "woods top rolls in " + woodsRatio);
     assert.equal("bottom_height" in woodsFull.area_material, false);
     assert.equal(woodsTop.area_material.top_height, 12);
     assert.ok(ringArea(oiRing(woodsTop)) < ringArea(oiRing(woodsFull)));
@@ -266,5 +272,67 @@ describe("an individual tree has a stem and a raised crown", () => {
     const masses = veg.filter((a) => !("bottom_height" in a.area_material));
     assert.ok(masses.length >= 1);
     assert.ok(veg.some((a) => a.area_material.top_height === 12));
+  });
+
+  it("insets a notched woods so the upper layers are narrower than the traced outline", () => {
+    const w = 48;
+    const h = 48;
+    const cell = 2.2;
+    const values = new Uint8Array(w * h);
+    const set = (x, y) => {
+      if (x >= 0 && y >= 0 && x < w && y < h) values[y * w + x] = 18;
+    };
+    for (let y = 8; y <= 28; y++) {
+      for (let x = 6; x <= 12; x++) set(x, y);
+    }
+    for (let y = 8; y <= 14; y++) {
+      for (let x = 6; x <= 28; x++) set(x, y);
+    }
+    for (let y = 22; y <= 28; y++) {
+      for (let x = 6; x <= 28; x++) set(x, y);
+    }
+    const midLat = 42.9;
+    const mLon = 111320 * Math.cos((midLat * Math.PI) / 180);
+    const west = -87.93;
+    const south = 42.89;
+    const grid = {
+      west,
+      south,
+      east: west + (w * cell) / mLon,
+      north: south + (h * cell) / 110540,
+      width: w,
+      height: h,
+      values,
+    };
+    const frame = geoFrame({ west, south, east: grid.east, north: grid.north, name: "Notched woods" });
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [] },
+      treePoints: [],
+      name: "Notched woods",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      chmGrid: grid,
+      includeFoliage: true,
+    });
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    const veg = areas.filter((a) => isVegetationOiName(a.area_material.name));
+    const trunks = areas.filter((a) => isTrunkOiName(a.area_material.name));
+    assert.equal(trunks.length, 0, "a notched woods is not a discrete tree");
+    assert.ok(veg.length >= 3, "upper layers " + veg.length);
+    const ground = veg.filter((a) => !("bottom_height" in a.area_material));
+    assert.equal(ground.length, 1);
+    const top = veg.reduce((a, b) => (a.area_material.top_height >= b.area_material.top_height ? a : b));
+    assert.equal(top.area_material.top_height, 18);
+    const ratio = ringArea(oiRing(top)) / ringArea(oiRing(ground[0]));
+    assert.ok(ratio >= 0.18 && ratio <= 0.55, "notched top area ratio " + ratio);
+    const spanOf = (ring) => {
+      const xs = ring.map((p) => p[0]);
+      const ys = ring.map((p) => p[1]);
+      return Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+    };
+    const spanRatio = spanOf(oiRing(top)) / spanOf(oiRing(ground[0]));
+    assert.ok(spanRatio <= 0.85, "notched top span ratio " + spanRatio);
+    assert.equal(top.area_material.transparencyEnabled, true);
+    assert.equal(top.area_material.rf_properties.attenuation_per_m, 1.5);
   });
 });
