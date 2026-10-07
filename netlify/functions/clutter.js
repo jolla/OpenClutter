@@ -124,6 +124,7 @@ const ZIP_SHRINK_STEPS = [640, 400, 240];
 const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, padFootprintBbox, imageryExportPlan, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
+const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
 const { fetchMsGlobalFootprints, globalSkipWarning } = require("../lib/ms-global");
 const { fetchUsaStructures } = require("../lib/usa-structures");
@@ -812,6 +813,13 @@ function terrainStyleFromRequest(event, body) {
   return normalizeTerrainStyle(raw);
 }
 
+/** Outdoor clutter is off unless the body or query explicitly turns that type on. */
+function wantOutdoorFlag(event, body, key) {
+  const q = (event && event.queryStringParameters) || {};
+  const raw = body && body[key] != null ? body[key] : q[key];
+  return raw === true || raw === 1 || raw === "1" || raw === "true";
+}
+
 /** Include foliage is off unless the body or query explicitly turns it on. */
 function wantFoliage(event, body) {
   const q = (event && event.queryStringParameters) || {};
@@ -983,6 +991,11 @@ async function handleClutter(event) {
   const terrainStyle = terrainStyleFromRequest(event, body);
   const imgMetaUrl = esriImageryMetaUrl(frame);
   const includeFoliage = wantFoliage(event, body);
+  const includeWater = wantOutdoorFlag(event, body, "includeWater");
+  const includeParking = wantOutdoorFlag(event, body, "includeParking");
+  const includeWalls = wantOutdoorFlag(event, body, "includeWalls");
+  const includePoles = wantOutdoorFlag(event, body, "includePoles");
+  const outdoorOn = includeWater || includeParking || includeWalls || includePoles;
   const includeTerrain = wantTerrain(event, body);
   // The dev page sets this and reads elevation on its own request. The zip
   // then does not start a DEM, so the map cannot omit it.
@@ -1021,6 +1034,7 @@ async function handleClutter(event) {
   let overtureJob = null;
   let terrainJob = null;
   let chmJob = null;
+  let outdoorJob = null;
   let overtureFrame = null;
   try {
     // JPEG and Overture together. Meta may confirm the footprint query, but it
@@ -1036,6 +1050,16 @@ async function handleClutter(event) {
       east: frame.east,
       north: frame.north,
     };
+    if (outdoorOn) {
+      outdoorJob = beginOptional((signal) =>
+        fetchOutdoorClutter(requestBbox, {
+          water: includeWater,
+          parking: includeParking,
+          walls: includeWalls,
+          poles: includePoles,
+        }, { signal, ua: UA, timeoutMs: 4500 })
+      );
+    }
     if (needImage) {
       frame = applyImageryMeta(frame, null, { width: frame.imgW, height: frame.imgH }, { requestBbox });
     }
@@ -1209,6 +1233,7 @@ async function handleClutter(event) {
     if (overtureJob) overtureJob.ctrl.abort();
     if (terrainJob) terrainJob.ctrl.abort();
     if (chmJob) chmJob.ctrl.abort();
+    if (outdoorJob) outdoorJob.ctrl.abort();
     return json(502, cors, { error: describeCoreFailure(e) });
   }
 
@@ -1474,6 +1499,13 @@ async function handleClutter(event) {
       terrainResolution,
       terrainStyle,
       nlsHeights: devHost,
+      outdoorFeatures,
+      outdoorNotes,
+      includeWater,
+      includeParking,
+      includeWalls,
+      includePoles,
+      outdoorMiss,
     });
   }
 
@@ -1484,6 +1516,20 @@ async function handleClutter(event) {
     warnings.push(
       "Kept the " + n + " largest roofs so the zip can download. Draw a smaller area for the rest of this campus."
     );
+  }
+
+  let outdoorFeatures = [];
+  let outdoorNotes = [];
+  let outdoorMiss = false;
+  if (outdoorJob) {
+    const pack = await outdoorJob.work;
+    if (!pack || pack === TIMED_OUT || pack.ok === false) {
+      outdoorMiss = true;
+      warnings.push(OUTDOOR_MISS);
+    } else {
+      outdoorFeatures = pack.features || [];
+      outdoorNotes = pack.notes || [];
+    }
   }
 
   let exportFeatures = features;
