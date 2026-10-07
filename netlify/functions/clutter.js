@@ -1057,7 +1057,7 @@ async function handleClutter(event) {
           parking: includeParking,
           walls: includeWalls,
           poles: includePoles,
-        }, { signal, ua: UA, timeoutMs: 3200 })
+        }, { signal, ua: UA, timeoutMs: 4500 })
       );
     }
     if (needImage) {

@@ -16,6 +16,7 @@ const {
 const {
   overpassQuery,
   parseOverpass,
+  featuresFromMapXml,
   limitFeatures,
   fitOutdoorBudget,
   POLE_CAP,
@@ -282,6 +283,58 @@ describe("outdoor clutter fetch", () => {
     assert.deepEqual(fit.kinds, ["parking"]);
     assert.match(fit.notes.join(" "), /Light poles left out to stay inside the area budget/);
     assert.equal(/did not finish|timed out/i.test(OUTDOOR_MISS), false);
+  });
+
+  it("reads a map extract and closes a lake shore on the water side", () => {
+    const bbox = { west: -73.8285, south: 45.4272, east: -73.8239, north: 45.4305 };
+    const xml = [
+      "<osm>",
+      '<node id="1" lat="45.428266" lon="-73.840000"/>',
+      '<node id="2" lat="45.428266" lon="-73.8284748"/>',
+      '<node id="3" lat="45.42780" lon="-73.82740"/>',
+      '<node id="4" lat="45.4274302" lon="-73.8261874"/>',
+      '<node id="5" lat="45.420000" lon="-73.820000"/>',
+      '<node id="6" lat="45.4290" lon="-73.8260"><tag k="highway" v="street_lamp"/></node>',
+      '<node id="7" lat="45.4292" lon="-73.8262"/>',
+      '<node id="8" lat="45.4292" lon="-73.8256"/>',
+      '<node id="9" lat="45.4288" lon="-73.8256"/>',
+      '<node id="10" lat="45.4288" lon="-73.8262"/>',
+      '<way id="20"><nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="4"/><nd ref="5"/>',
+      '<tag k="natural" v="coastline"/></way>',
+      '<way id="21"><nd ref="7"/><nd ref="8"/><nd ref="9"/><nd ref="10"/><nd ref="7"/>',
+      '<tag k="building" v="parking"/><tag k="height" v="9"/></way>',
+      '<way id="22"><nd ref="2"/><nd ref="3"/>',
+      '<tag k="barrier" v="fence"/><tag k="height" v="1.8"/></way>',
+      '<relation id="30"><member type="way" ref="20" role="outer"/>',
+      '<tag k="type" v="multipolygon"/><tag k="natural" v="water"/><tag k="name" v="Lac"/></relation>',
+      "</osm>",
+    ].join("");
+    const parsed = featuresFromMapXml(xml, { water: true, parking: true, walls: true, poles: true }, bbox);
+    const water = parsed.features.filter((f) => f.kind === "water");
+    const parking = parsed.features.filter((f) => f.kind === "parking");
+    const fence = parsed.features.filter((f) => f.kind === "fence");
+    const poles = parsed.features.filter((f) => f.kind === "pole");
+    assert.equal(water.length, 1);
+    assert.equal(parking.length, 1);
+    assert.equal(parking[0].heightM, 9);
+    assert.equal(fence.length, 1);
+    assert.equal(fence[0].heightM, 2.1);
+    assert.equal(poles.length, 1);
+    const ring = water[0].coords;
+    function inside(pt, poly) {
+      let inn = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const yi = poly[i][1];
+        const yj = poly[j][1];
+        const xi = poly[i][0];
+        const xj = poly[j][0];
+        const hit = yi > pt[1] !== yj > pt[1] && pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi || 1e-20) + xi;
+        if (hit) inn = !inn;
+      }
+      return inn;
+    }
+    assert.equal(inside([-73.8282, 45.4274], ring), true);
+    assert.equal(inside([-73.8242, 45.4302], ring), false);
   });
 
   it("keeps the page toggles on and the counts off the headline", () => {

@@ -374,6 +374,359 @@ function limitFeatures(features, bbox) {
   };
 }
 
+const OSM_MAP_URL = "https://www.openstreetmap.org/api/0.6/map";
+
+function osmMapUrl(bbox) {
+  return (
+    OSM_MAP_URL +
+    "?bbox=" +
+    [bbox.west, bbox.south, bbox.east, bbox.north].map((n) => +n).join(",")
+  );
+}
+
+function decodeXml(s) {
+  return String(s || "")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function tagAttrs(fragment) {
+  const tags = {};
+  const re = /<tag k="([^"]*)" v="([^"]*)"\s*\/>/g;
+  let m;
+  while ((m = re.exec(fragment))) tags[decodeXml(m[1])] = decodeXml(m[2]);
+  return tags;
+}
+
+function startTag(xml, i) {
+  const end = xml.indexOf(">", i);
+  if (end < 0) return null;
+  return xml.slice(i, end + 1);
+}
+
+function attr(tag, name) {
+  const m = new RegExp("\\s" + name + '="([^"]*)"').exec(tag);
+  return m ? m[1] : "";
+}
+
+/** OSM map XML to Overpass-shaped elements, with lake shores closed inside the box. */
+function elementsFromMapXml(xml, bbox) {
+  const text = String(xml || "");
+  const nodes = new Map();
+  const ways = new Map();
+  const relations = [];
+  let i = 0;
+  while (i < text.length) {
+    const lt = text.indexOf("<", i);
+    if (lt < 0) break;
+    if (text.startsWith("<node ", lt)) {
+      const open = startTag(text, lt);
+      if (!open) break;
+      const id = attr(open, "id");
+      const lat = +attr(open, "lat");
+      const lon = +attr(open, "lon");
+      if (open.endsWith("/>")) {
+        if (id) nodes.set(id, { lon, lat, tags: {} });
+        i = lt + open.length;
+        continue;
+      }
+      const close = text.indexOf("</node>", lt);
+      const body = close > lt ? text.slice(lt, close) : "";
+      if (id && Number.isFinite(lat) && Number.isFinite(lon)) nodes.set(id, { lon, lat, tags: tagAttrs(body) });
+      i = close > lt ? close + 7 : lt + open.length;
+      continue;
+    }
+    if (text.startsWith("<way ", lt)) {
+      const close = text.indexOf("</way>", lt);
+      if (close < 0) break;
+      const body = text.slice(lt, close);
+      const id = attr(startTag(text, lt) || "", "id");
+      const refs = [];
+      const nd = /<nd ref="(\d+)"\s*\/>/g;
+      let m;
+      while ((m = nd.exec(body))) refs.push(m[1]);
+      if (id) ways.set(id, { refs, tags: tagAttrs(body) });
+      i = close + 6;
+      continue;
+    }
+    if (text.startsWith("<relation ", lt)) {
+      const close = text.indexOf("</relation>", lt);
+      if (close < 0) break;
+      const body = text.slice(lt, close);
+      const members = [];
+      const mem = /<member type="([^"]+)" ref="(\d+)" role="([^"]*)"\s*\/>/g;
+      let m;
+      while ((m = mem.exec(body))) members.push({ type: m[1], ref: m[2], role: m[3] });
+      relations.push({ members, tags: tagAttrs(body) });
+      i = close + 11;
+      continue;
+    }
+    i = lt + 1;
+  }
+  const elements = [];
+  function wayPoints(way) {
+    const pts = [];
+    for (let n = 0; n < way.refs.length; n++) {
+      const node = nodes.get(way.refs[n]);
+      if (!node || !Number.isFinite(node.lon) || !Number.isFinite(node.lat)) continue;
+      const prev = pts[pts.length - 1];
+      if (prev && prev[0] === node.lon && prev[1] === node.lat) continue;
+      pts.push([node.lon, node.lat]);
+    }
+    return pts;
+  }
+  function pushWay(tags, pts) {
+    if (!pts || pts.length < 2) return;
+    const geometry = [];
+    for (let p = 0; p < pts.length; p++) geometry.push({ lon: pts[p][0], lat: pts[p][1] });
+    elements.push({ type: "way", tags, geometry });
+  }
+  const waterWayIds = new Set();
+  for (const [id, way] of ways) {
+    const tags = way.tags || {};
+    if (isWaterWay(tags) || isParkingWay(tags)) waterWayIds.add(id);
+    const pts = wayPoints(way);
+    if (isWaterWay(tags) || isParkingWay(tags)) {
+      const closed = isClosed(pts);
+      const rings = closed ? clipClosedRing(pts, bbox) : closeOpenWater(pts, bbox);
+      for (let r = 0; r < rings.length; r++) pushWay(tags, rings[r]);
+      continue;
+    }
+    if (barrierKind(tags)) pushWay(tags, pts);
+  }
+  for (const node of nodes.values()) {
+    if (isPoleNode(node.tags)) elements.push({ type: "node", lon: node.lon, lat: node.lat, tags: node.tags });
+  }
+  for (let r = 0; r < relations.length; r++) {
+    const rel = relations[r];
+    const tags = rel.tags || {};
+    const water = isWaterWay(tags);
+    const parking = isParkingWay(tags);
+    if (!water && !parking) continue;
+    if (tags.type && tags.type !== "multipolygon") continue;
+    const parts = [];
+    let tagged = 0;
+    for (let m = 0; m < rel.members.length; m++) {
+      const member = rel.members[m];
+      if (member.type !== "way" || (member.role && member.role !== "outer")) continue;
+      const way = ways.get(member.ref);
+      if (!way) continue;
+      if (waterWayIds.has(member.ref) || (parking && isParkingWay(way.tags))) tagged++;
+      const pts = wayPoints(way);
+      if (pts.length >= 2) parts.push(pts);
+    }
+    if (!parts.length || tagged === parts.length) continue;
+    const chains = stitchChains(parts);
+    for (let c = 0; c < chains.length; c++) {
+      const closed = isClosed(chains[c]);
+      const rings = closed ? clipClosedRing(chains[c], bbox) : closeOpenWater(chains[c], bbox);
+      for (let k = 0; k < rings.length; k++) pushWay(tags, rings[k]);
+    }
+  }
+  return elements;
+}
+
+function stitchChains(parts) {
+  const unused = parts.map((p) => p.slice());
+  const chains = [];
+  while (unused.length) {
+    let chain = unused.pop();
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (let i = 0; i < unused.length; i++) {
+        const w = unused[i];
+        const a = chain[0];
+        const b = chain[chain.length - 1];
+        const c = w[0];
+        const d = w[w.length - 1];
+        if (nearPt(b, c)) chain = chain.concat(w.slice(1));
+        else if (nearPt(b, d)) chain = chain.concat(w.slice(0, -1).reverse());
+        else if (nearPt(a, d)) chain = w.slice(0, -1).concat(chain);
+        else if (nearPt(a, c)) chain = w.slice().reverse().slice(0, -1).concat(chain);
+        else continue;
+        unused.splice(i, 1);
+        grew = true;
+        break;
+      }
+    }
+    chains.push(chain);
+  }
+  return chains;
+}
+
+function nearPt(a, b) {
+  return Math.abs(a[0] - b[0]) < 1e-7 && Math.abs(a[1] - b[1]) < 1e-7;
+}
+
+function clipSegment(a, b, box) {
+  let t0 = 0;
+  let t1 = 1;
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const p = [-dx, dx, -dy, dy];
+  const q = [a[0] - box.west, box.east - a[0], a[1] - box.south, box.north - a[1]];
+  for (let i = 0; i < 4; i++) {
+    if (Math.abs(p[i]) < 1e-15) {
+      if (q[i] < 0) return null;
+    } else {
+      const r = q[i] / p[i];
+      if (p[i] < 0) {
+        if (r > t1) return null;
+        if (r > t0) t0 = r;
+      } else {
+        if (r < t0) return null;
+        if (r < t1) t1 = r;
+      }
+    }
+  }
+  if (t0 > t1) return null;
+  return [
+    [a[0] + t0 * dx, a[1] + t0 * dy],
+    [a[0] + t1 * dx, a[1] + t1 * dy],
+  ];
+}
+
+function clipLineRuns(pts, box) {
+  const runs = [];
+  let cur = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const seg = clipSegment(pts[i], pts[i + 1], box);
+    if (!seg) {
+      if (cur.length >= 2) runs.push(cur);
+      cur = [];
+      continue;
+    }
+    if (!cur.length) cur.push(seg[0]);
+    else if (!nearPt(cur[cur.length - 1], seg[0])) {
+      if (cur.length >= 2) runs.push(cur);
+      cur = [seg[0]];
+    }
+    if (!nearPt(cur[cur.length - 1], seg[1])) cur.push(seg[1]);
+  }
+  if (cur.length >= 2) runs.push(cur);
+  return runs;
+}
+
+function edgeT(pt, box) {
+  const w = box.east - box.west;
+  const h = box.north - box.south;
+  if (!(w > 0) || !(h > 0)) return null;
+  const dN = Math.abs(pt[1] - box.north);
+  const dE = Math.abs(pt[0] - box.east);
+  const dS = Math.abs(pt[1] - box.south);
+  const dW = Math.abs(pt[0] - box.west);
+  const m = Math.min(dN, dE, dS, dW);
+  const eps = Math.max(w, h) * 0.04 + 1e-8;
+  if (m > eps) return null;
+  if (dN <= m + 1e-12 && pt[1] >= box.north - eps) return (pt[0] - box.west) / w;
+  if (dE <= m + 1e-12 && pt[0] <= box.east + eps) return 1 + (box.north - pt[1]) / h;
+  if (dS <= m + 1e-12 && pt[1] <= box.south + eps) return 2 + (box.east - pt[0]) / w;
+  if (dW <= m + 1e-12) return 3 + (pt[1] - box.south) / h;
+  return null;
+}
+
+function cornerAt(t, box) {
+  const k = ((t % 4) + 4) % 4;
+  if (k === 0) return [box.west, box.north];
+  if (k === 1) return [box.east, box.north];
+  if (k === 2) return [box.east, box.south];
+  return [box.west, box.south];
+}
+
+/** Water sits to the right of the shore. Close along the box, clockwise. */
+function closeWaterRing(line, box) {
+  if (!line || line.length < 2) return null;
+  const t0 = edgeT(line[0], box);
+  const t1 = edgeT(line[line.length - 1], box);
+  if (t0 == null || t1 == null) return null;
+  let dest = t0;
+  if (dest <= t1) dest += 4;
+  const extra = [];
+  for (let c = 1; c <= 4; c++) {
+    let cc = c === 4 ? 4 : c;
+    if (cc <= t1) cc += 4;
+    if (cc > t1 + 1e-6 && cc < dest - 1e-6) extra.push(cornerAt(c === 4 ? 0 : c, box));
+  }
+  const ring = line.concat(extra);
+  if (ring.length < 3) return null;
+  ring.push(ring[0]);
+  return subsample(ring, 36);
+}
+
+function closeOpenWater(pts, box) {
+  const runs = clipLineRuns(pts, box);
+  const rings = [];
+  for (let i = 0; i < runs.length; i++) {
+    const simple = subsample(runs[i], 28);
+    const ring = closeWaterRing(simple, box);
+    if (ring && ring.length >= 4) rings.push(ring);
+  }
+  return rings;
+}
+
+function clipClosedRing(pts, box) {
+  let ring = pts.slice();
+  if (ring.length >= 2 && nearPt(ring[0], ring[ring.length - 1])) ring = ring.slice(0, -1);
+  if (ring.length < 3) return [];
+  const edges = [
+    [(p) => p[0] >= box.west - 1e-12, (a, b) => hitX(a, b, box.west)],
+    [(p) => p[0] <= box.east + 1e-12, (a, b) => hitX(a, b, box.east)],
+    [(p) => p[1] >= box.south - 1e-12, (a, b) => hitY(a, b, box.south)],
+    [(p) => p[1] <= box.north + 1e-12, (a, b) => hitY(a, b, box.north)],
+  ];
+  for (let e = 0; e < edges.length; e++) {
+    const inside = edges[e][0];
+    const cross = edges[e][1];
+    const next = [];
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i];
+      const b = ring[(i + 1) % ring.length];
+      const ain = inside(a);
+      const bin = inside(b);
+      if (ain && bin) next.push(b);
+      else if (ain && !bin) next.push(cross(a, b));
+      else if (!ain && bin) {
+        next.push(cross(a, b));
+        next.push(b);
+      }
+    }
+    ring = next.filter((p) => p && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+    if (ring.length < 3) return [];
+  }
+  ring.push(ring[0]);
+  return [subsample(ring, 36)];
+}
+
+function hitX(a, b, x) {
+  const dx = b[0] - a[0] || 1e-12;
+  const t = (x - a[0]) / dx;
+  return [x, a[1] + t * (b[1] - a[1])];
+}
+
+function hitY(a, b, y) {
+  const dy = b[1] - a[1] || 1e-12;
+  const t = (y - a[1]) / dy;
+  return [a[0] + t * (b[0] - a[0]), y];
+}
+
+function featuresFromMapXml(xml, want, bbox) {
+  const elements = elementsFromMapXml(xml, bbox);
+  return parseOverpass({ elements }, want, bbox);
+}
+
+async function fetchText(url, signal, ua) {
+  const r = await fetch(url, {
+    headers: { "user-agent": ua, accept: "application/xml,text/xml,*/*" },
+    signal,
+  });
+  if (!r.ok) return null;
+  return r.text();
+}
+
 async function fetchOutdoorClutter(bbox, want, opts) {
   if (!wantAny(want)) return { ok: true, features: [], notes: [] };
   const timeoutMs = (opts && opts.timeoutMs) || FETCH_MS;
@@ -385,14 +738,20 @@ async function fetchOutdoorClutter(bbox, want, opts) {
     if (parent.aborted) ctrl.abort();
     else parent.addEventListener("abort", onAbort, { once: true });
   }
+  const ua = (opts && opts.ua) || "openclutter";
   try {
+    const xml = await fetchText(osmMapUrl(bbox), ctrl.signal, ua);
+    if (xml) {
+      const parsed = featuresFromMapXml(xml, want, bbox);
+      const limited = limitFeatures(parsed.features, bbox);
+      if (parsed.openWater) limited.notes.push("Open water lines were left out.");
+      return { ok: true, features: limited.features, notes: limited.notes };
+    }
+    if (ctrl.signal.aborted) return { ok: false, features: [], notes: [] };
     const q = overpassQuery(bbox, want);
     const r = await fetch(OVERPASS_URL, {
       method: "POST",
-      headers: {
-        "user-agent": (opts && opts.ua) || "openclutter",
-        "content-type": "application/x-www-form-urlencoded",
-      },
+      headers: { "user-agent": ua, "content-type": "application/x-www-form-urlencoded" },
       body: "data=" + encodeURIComponent(q),
       signal: ctrl.signal,
     });
@@ -749,6 +1108,7 @@ module.exports = {
   OUTDOOR_MISS,
   overpassQuery,
   parseOverpass,
+  featuresFromMapXml,
   limitFeatures,
   fetchOutdoorClutter,
   isParkingClass,
