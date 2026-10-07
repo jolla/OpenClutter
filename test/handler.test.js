@@ -1746,7 +1746,7 @@ describe("dev-host Esri long side", () => {
     assert.equal(/Map image stepped down/.test(notes), false);
   });
 
-  it("asks Sharp for 2048 px and does not open building parquet until that plate is back", async () => {
+  it("asks a smaller Sharp draw for 2048 px and starts buildings with that plate", async () => {
     const order = [];
     global.fetch = async (url) => {
       const u = String(url);
@@ -1786,12 +1786,146 @@ describe("dev-host Esri long side", () => {
     const imageAt = order.indexOf("image-end");
     const overtureAt = order.indexOf("overture");
     assert.ok(imageAt >= 0, order.join(","));
-    assert.ok(overtureAt > imageAt, order.join(","));
+    assert.ok(overtureAt >= 0 && overtureAt < imageAt, order.join(","));
     assert.ok(order[0].includes("size=2048,"), order.join("\n"));
     assert.equal(order.filter((e) => String(e).includes("size=1040,") || String(e).includes("size=400,")).length, 0);
     const notes = (JSON.parse(res.body).warnings || []).join("\n");
     assert.match(notes, /Map image \d+ px/);
     assert.equal(/Map image stepped down/.test(notes), false);
+    assert.equal(/does not fit this draw/.test(notes), false);
+  });
+
+  it("keeps downtown buildings and canopy when a Sharp 2048 plate does not fit", async () => {
+    const MTL = {
+      west: -73.5745,
+      south: 45.4975,
+      east: -73.5625,
+      north: 45.5052,
+      name: "Downtown Montreal",
+    };
+    const order = [];
+    function montrealCrown() {
+      const w = 48;
+      const h = 48;
+      const cell = 2.2;
+      const values = new Uint8Array(w * h);
+      let nz = 0;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (Math.hypot(x - 24, y - 24) <= 3.4) {
+            values[y * w + x] = 16;
+            nz++;
+          }
+        }
+      }
+      const midLat = 45.503;
+      const mLon = 111320 * Math.cos((midLat * Math.PI) / 180);
+      const west = -73.566;
+      const south = 45.5025;
+      return {
+        west,
+        south,
+        east: west + (w * cell) / mLon,
+        north: south + (h * cell) / 110540,
+        width: w,
+        height: h,
+        values,
+        nonzero: nz,
+      };
+    }
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("World_Imagery") && u.includes("f=image") && u.includes("size=1040,")) {
+        order.push(u);
+        order.push("image-start");
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        order.push("image-end");
+        return { ok: true, arrayBuffer: async () => jpeg };
+      }
+      if (u.includes("World_Imagery") && u.includes("f=image")) {
+        order.push(u);
+        return { ok: true, arrayBuffer: async () => jpeg };
+      }
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: MTL.west, ymin: MTL.south, xmax: MTL.east, ymax: MTL.north },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ features: [] }) };
+    };
+    setFetchOvertureForTests(async () => {
+      order.push("overture-start");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      order.push("overture-end");
+      return {
+        features: [
+          {
+            type: "Feature",
+            properties: { height: 40, heightSource: "overture" },
+            geometry: {
+              type: "Polygon",
+              coordinates: [[
+                [-73.57, 45.5],
+                [-73.568, 45.5],
+                [-73.568, 45.502],
+                [-73.57, 45.502],
+                [-73.57, 45.5],
+              ]],
+            },
+          },
+        ],
+      };
+    });
+    setFetchChmGridForTests(async () => {
+      order.push("chm-start");
+      return montrealCrown();
+    });
+    try {
+      const t0 = Date.now();
+      const res = await handler({
+        httpMethod: "POST",
+        headers: { host: "dev--openclutter.netlify.app" },
+        body: JSON.stringify({
+          ...MTL,
+          format: "bundle",
+          imageryQuality: "sharp",
+          includeFoliage: true,
+          includeTerrain: true,
+          deferTerrain: true,
+        }),
+      });
+      const elapsed = Date.now() - t0;
+      assert.equal(res.statusCode, 200, String(res.body).slice(0, 500));
+      assert.ok(elapsed < 8000, "elapsed " + elapsed);
+      const imageAt = order.indexOf("image-end");
+      assert.ok(imageAt > order.indexOf("overture-end"), order.join(","));
+      assert.ok(imageAt > order.indexOf("chm-start"), order.join(","));
+      assert.ok(order[0].includes("size=1040,"), order.join("\n"));
+      assert.equal(order.some((e) => String(e).includes("size=2048,")), false);
+      const body = JSON.parse(res.body);
+      assert.ok(body.stats.buildings >= 1, body.stats.summary);
+      assert.ok(body.stats.fetched >= 1, body.stats.summary);
+      assert.equal(/0 fetched/.test(body.stats.summary), false, body.stats.summary);
+      assert.ok(body.stats.openIntentTreeAreas >= 1 || body.stats.trees >= 1, body.stats.summary);
+      assert.equal(/Trees 0 kept/.test(body.stats.summary), false, body.stats.summary);
+      const notes = (body.warnings || []).join("\n");
+      assert.match(notes, /Map image \d+ px/);
+      assert.match(notes, /A 2048 px plate does not fit this draw/);
+      assert.equal(/Map image stepped down/.test(notes), false);
+      assert.equal(body.terrainClipboard, null);
+      const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+      assert.equal(files["terrain-clipboard.json"], undefined);
+      assert.ok(Object.keys(files).some((name) => name.startsWith("openIntent_")));
+      assert.ok(Object.keys(files).some((name) => name.startsWith("images/")));
+    } finally {
+      setFetchOvertureForTests(null);
+      setFetchChmGridForTests(null);
+    }
   });
 
   it("reads terrain during a High plate instead of omitting it when the plate uses the clock", async () => {
