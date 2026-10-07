@@ -648,7 +648,7 @@ function insetStaysIn(inner, outer) {
   }
   const area = ringPxArea(inner);
   if (!(area > 1)) return false;
-  return intersectionAreaPx(inner, outer) >= area * 0.95;
+  return intersectionAreaPx(inner, outer) >= area * 0.9;
 }
 
 /** A thickness near the stock 6 m picker is nudged so the band stays custom. */
@@ -838,7 +838,34 @@ function insetRingPx(ring, insetM, frame) {
   return px;
 }
 
-/** Inset from the traced edge. A round crown falls back to a center scale. */
+/** Pull vertices that left the traced crown back to its boundary. */
+function pullRingInside(ring, outer) {
+  const open = openCrownRing(ring);
+  const c = ringCentroidPx(outer);
+  if (!open || !c || !pointInRing(c, outer)) return null;
+  const out = [];
+  for (let i = 0; i < open.length; i++) {
+    const p = open[i];
+    if (pointInRing(p, outer)) {
+      out.push(p);
+      continue;
+    }
+    let lo = 0;
+    let hi = 1;
+    for (let k = 0; k < 14; k++) {
+      const mid = (lo + hi) / 2;
+      const q = [c[0] + (p[0] - c[0]) * mid, c[1] + (p[1] - c[1]) * mid];
+      if (pointInRing(q, outer)) lo = mid;
+      else hi = mid;
+    }
+    out.push([c[0] + (p[0] - c[0]) * lo * 0.98, c[1] + (p[1] - c[1]) * lo * 0.98]);
+  }
+  if (out.length < 3) return null;
+  out.push([out[0][0], out[0][1]]);
+  return out;
+}
+
+/** Inset from the traced edge. A concave woods is scaled, then pulled back inside. */
 function ringForFraction(ring, frame, fraction) {
   if (!(fraction > 0)) return null;
   if (fraction >= 0.98) return ring;
@@ -846,13 +873,12 @@ function ringForFraction(ring, frame, fraction) {
   const mpuY = (frame && (frame.mpuY || mpuX)) || 1;
   const areaM = ringPxArea(ring) * mpuX * mpuY;
   const short = crownShortM(ring, frame);
-  const floorPx = crownSpanFloorPx(frame);
-  const floorM = Math.max(3.2, floorPx * Math.min(mpuX, mpuY));
+  const floor = crownSpanFloorPx(frame);
+  const floorM = Math.max(3.2, floor * Math.min(mpuX, mpuY));
   const limit = (short - floorM) / 2;
   const radius = Math.sqrt(Math.max(areaM, 1) / Math.PI);
   let inset = radius * (1 - Math.sqrt(Math.max(fraction, 0.22))) * 0.86;
   if (limit > 0.35 && inset > limit) inset = limit * 0.96;
-  const floor = floorPx;
   if (inset > 0.35) {
     const next = insetRingPx(ring, inset, frame);
     if (
@@ -864,8 +890,16 @@ function ringForFraction(ring, frame, fraction) {
       return next;
     }
   }
-  const scaled = scaleRingAbout(ring, Math.sqrt(Math.max(fraction, 0.25)));
-  if (scaled && ringClearsSpan(scaled, floor) && insetStaysIn(scaled, ring)) return scaled;
+  const scaled = scaleRingAbout(ring, Math.sqrt(Math.max(fraction, 0.22)));
+  const pulled = scaled && (insetStaysIn(scaled, ring) ? scaled : pullRingInside(scaled, ring));
+  if (
+    pulled &&
+    ringClearsSpan(pulled, floor) &&
+    insetStaysIn(pulled, ring) &&
+    ringPxArea(pulled) < ringPxArea(ring) * 0.96
+  ) {
+    return pulled;
+  }
   return null;
 }
 
