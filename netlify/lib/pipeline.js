@@ -23,6 +23,7 @@ const {
   OI_BUILDING_NAMES,
   COMPATIBILITY_MODE,
 } = require("./materials");
+const { isParkingClass, planOutdoor, fitOutdoorBudget } = require("./outdoor-clutter");
 const { treePairsFromPoints } = require("./vegetation");
 const { dedupeStackedFootprints } = require("./conflate");
 const { piecesForFeature } = require("./roof-form");
@@ -254,11 +255,19 @@ function coverageSummary(stats) {
   if (c.droppedAreasCap) drops.push("areas-cap " + c.droppedAreasCap);
   const dropTxt = drops.length ? `; dropped ${drops.join(", ")}` : "";
   const foliage = c.foliageOmitted ? "omitted (canopy height timed out)" : c.includeFoliage ? "on" : "off";
-  return (
+  let line =
     `Buildings ${c.buildingsKept} kept (${c.fetched} fetched${dropTxt}). ` +
     `Foliage ${foliage}. Trees ${c.treesKept} kept (${c.treesSource}). ` +
-    `attenuation_areas ${c.attenuationAreasEmitted}.`
-  );
+    `attenuation_areas ${c.attenuationAreasEmitted}.`;
+  if (stats && stats.includeOutdoor) {
+    const bits = [];
+    if (stats.includeWater) bits.push("Water " + (stats.waterAreas || 0));
+    if (stats.includeParking) bits.push("Parking " + (stats.parkingAreas || 0));
+    if (stats.includeWalls) bits.push("Walls " + (stats.wallAreas || 0));
+    if (stats.includePoles) bits.push("Poles " + (stats.poleAreas || 0));
+    if (bits.length) line += " " + bits.join(". ") + ".";
+  }
+  return line;
 }
 
 const TERRAIN_README =
@@ -1574,6 +1583,7 @@ function footprintsToClutter(features, frame, affine, slopeTop) {
   const clipZones = [];
   const aabbs = [];
   const overlayRings = [];
+  const parkingRings = [];
   const stats = {
     fetched: (features || []).length,
     droppedStacked: separated.dropped,
@@ -1617,6 +1627,12 @@ function footprintsToClutter(features, frame, affine, slopeTop) {
       const shapePart = props.shapePart === true;
       const rings = featureExteriorRings(g);
       if (!rings.length) continue;
+      if (isParkingClass(props) || isParkingClass(f && f.properties)) {
+        const tagged = Number(props.height || props.Height || props.HEIGHT || 0);
+        for (let ri = 0; ri < rings.length; ri++) {
+          parkingRings.push({ ring: rings[ri], heightM: tagged > 2 ? tagged : 0 });
+        }
+      }
       for (const ring of rings) {
         const parts = slopeTop && typeof slopeTop.split === "function" ? slopeTop.split(ring) : [ring];
         for (let p = 0; p < parts.length; p++) {
@@ -1659,6 +1675,7 @@ function footprintsToClutter(features, frame, affine, slopeTop) {
     clipZones,
     aabbs,
     overlayRings,
+    parkingRings,
     overlayHeights: buckets.overlayHeights,
     clipTypes: buckets.clipTypes,
     materials: buckets.materials,
@@ -1691,6 +1708,31 @@ function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
     kinds.push(t.kind === "trunk" ? "trunk" : t.kind === "layer" ? "layer" : "canopy");
   }
   return { areas, kinds, droppedInvalid };
+}
+
+function outdoorToOi(items, imgW, imgH, mpuX) {
+  const areas = [];
+  const kinds = [];
+  const droppedByKind = {};
+  for (const t of items || []) {
+    const opts = { keepShape: true };
+    if (t.thin) {
+      // Hold the drawn width. The 3 m / 4 px floor would turn a fence into a road.
+      const b = ringBBox(t.ringPx);
+      const drawn = Math.min(b.w, b.h);
+      opts.minSpanPx = Math.max(drawn * 0.98, 0.05);
+      opts.spanFloorPx = Math.min(MIN_OI_SPAN_PX, Math.max(drawn * 0.5, 0.02));
+    }
+    const coords = ringToOi(t.ringPx, imgW, imgH, mpuX, opts);
+    const area = emitIfValid(makeOiArea(coords, t.material), imgW, imgH, opts.spanFloorPx);
+    if (!area) {
+      droppedByKind[t.kind] = (droppedByKind[t.kind] || 0) + 1;
+      continue;
+    }
+    areas.push(area);
+    kinds.push(t.kind);
+  }
+  return { areas, kinds, droppedByKind };
 }
 
 /** Hamina outdoor OpenIntent floorplan height (gold export + after-paste re-export). */
@@ -1762,6 +1804,13 @@ function buildClutter({
   omitFoliage,
   chmRequired,
   maxFoliagePolygons,
+  outdoorFeatures,
+  outdoorNotes,
+  includeWater,
+  includeParking,
+  includeWalls,
+  includePoles,
+  outdoorMiss,
 }) {
   const featureList = footprintsGeojson?.features || [];
   if (nlsHeights) {
@@ -1811,7 +1860,63 @@ function buildClutter({
   // is omitted, so it cannot empty the buildings.
   const treeOi = treesToOi(veg.oiAreas, frame.imgW, frame.imgH, frame.mpuX);
   const capped = capBuildingsAndTrees(fp.oiAreas, treeOi.areas, treeOi.kinds, MAX_ATTENUATION_AREAS);
-  const areas = capped.areas;
+  const buildingEmitted = Math.min(fp.oiAreas.length, capped.areas.length);
+  const treeEmitted = capped.areas.length - buildingEmitted;
+  let areas = capped.areas;
+  let waterAreas = 0;
+  let parkingAreas = 0;
+  let wallAreas = 0;
+  let poleAreas = 0;
+  const outdoorOn =
+    includeWater === true || includeParking === true || includeWalls === true || includePoles === true;
+  if (outdoorOn && outdoorMiss !== true) {
+    const buildings = [];
+    if (includeParking === true) {
+      for (let i = 0; i < fp.oiAreas.length; i++) {
+        buildings.push({
+          index: i,
+          ringPx: fp.overlayRings[i],
+          material: fp.oiAreas[i] && fp.oiAreas[i].area_material,
+        });
+      }
+    }
+    const planned = planOutdoor({
+      features: outdoorFeatures || [],
+      frame,
+      slopeTop,
+      buildings,
+      parkingRings: includeParking === true ? fp.parkingRings : [],
+    });
+    for (let i = 0; i < planned.updates.length; i++) {
+      const u = planned.updates[i];
+      if (u.index < buildingEmitted && areas[u.index]) areas[u.index].area_material = u.material;
+    }
+    const converted = outdoorToOi(planned.items, frame.imgW, frame.imgH, frame.mpuX);
+    const room = Math.max(0, MAX_ATTENUATION_AREAS - areas.length);
+    const fit = fitOutdoorBudget(converted.areas, converted.kinds, room);
+    areas = areas.concat(fit.items);
+    for (let i = 0; i < fit.kinds.length; i++) {
+      const k = fit.kinds[i];
+      if (k === "water") waterAreas++;
+      else if (k === "parking") parkingAreas++;
+      else if (k === "pole") poleAreas++;
+      else wallAreas++;
+    }
+    parkingAreas += planned.reclass || 0;
+    const drop = converted.droppedByKind || {};
+    const wallDrop =
+      (drop.wall || 0) + (drop.fence || 0) + (drop.retaining || 0) + (drop.hedge || 0);
+    const notes = (outdoorNotes || []).concat(planned.notes || [], fit.notes || []);
+    if (wallDrop) notes.push("Walls left out: " + wallDrop + ".");
+    if (drop.pole) notes.push("Light poles left out: " + drop.pole + ".");
+    if (drop.water) notes.push("Water left out: " + drop.water + ".");
+    if (drop.parking) notes.push("Parking left out: " + drop.parking + ".");
+    if (Array.isArray(warnings)) {
+      for (let i = 0; i < notes.length; i++) {
+        if (notes[i] && warnings.indexOf(notes[i]) < 0) warnings.push(notes[i]);
+      }
+    }
+  }
   const clip = emptyClipboard();
   const seenTypes = new Set(clip.attenuatingZoneTypes.map((t) => t.id));
   for (const t of (fp.clipTypes || []).concat(veg.clipTypes || [])) {
@@ -1839,8 +1944,6 @@ function buildClutter({
     if (t.id && String(t.id).indexOf("foliage-m-") === 0) exactFoliageHeights++;
   }
   const oi = buildOpenIntent(frame, name, imgName, areas, materials);
-  const buildingEmitted = Math.min(fp.oiAreas.length, areas.length);
-  const treeEmitted = areas.length - buildingEmitted;
   const stats = {
     ...fp.stats,
     trees: veg.count,
@@ -1858,6 +1961,16 @@ function buildClutter({
     attenuationAreasEmitted: areas.length,
     openIntentBuildingAreas: buildingEmitted,
     openIntentTreeAreas: treeEmitted,
+    includeOutdoor: outdoorOn && outdoorMiss !== true,
+    includeWater: includeWater === true,
+    includeParking: includeParking === true,
+    includeWalls: includeWalls === true,
+    includePoles: includePoles === true,
+    outdoorMiss: outdoorMiss === true,
+    waterAreas,
+    parkingAreas,
+    wallAreas,
+    poleAreas,
     openintentVersion: OPENINTENT_VERSION,
     openclutterVersion: OPENCLUTTER_VERSION,
     coordinateUnit: "pixels",

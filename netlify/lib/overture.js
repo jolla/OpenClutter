@@ -186,6 +186,9 @@ function featureFromRow(row, bbox) {
   }
   const roofH = Number(row.roof_height);
   if (roofH > 0 && roofH < 400) properties.roofHeight = roofH;
+  // class and subtype stay off this column list. A missing parquet field
+  // fails the Vegas group. A footprint that already has class or subtype
+  // "parking" is recolored as a parking structure instead.
   return { type: "Feature", properties, geometry };
 }
 

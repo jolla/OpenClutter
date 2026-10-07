@@ -34,6 +34,17 @@
  * That is not "Building N.N m". Stock One/Two/Five/Ten names stay exact
  * catalog objects; a stock name with a different top_height is rejected.
  * compatibilityMode is stock-foliage.
+ *
+ * Outdoor clutter, same 5 GHz per-meter figures Hamina scales on paste:
+ *   Parking structure  2 dB/m  open deck, cool gray, not a solid building (5)
+ *   Wall               8 dB/m  masonry, default 2.5 m, about 0.4 m thick
+ *   Retaining wall     6 dB/m  default 3 m, about 0.5 m thick
+ *   Fence              1 dB/m  chain-link. Field height is about 1.8 m.
+ *                              A custom at or under 2 m does not import, so 2.1 m.
+ *   Hedge              1 dB/m  light foliage, default 2.1 m, see-through
+ *   Light pole        10 dB/m  metal post, default 9 m, about 0.3 m across
+ *   Water              0.1 dB/m shallow ground volume at 2.1 m. OpenIntent has
+ *                              no reflection field. This is not an RF mirror.
  */
 
 const { ZONE_TYPES, TYPE_BY_ID, oiMaterialFromType, pickBuildingTypeId } = require("./hamina-clipboard");
@@ -748,10 +759,131 @@ function canonicalLiftedMeasuredBuilding(material) {
   return cloneMaterial(canon);
 }
 
+/**
+ * Outdoor names. "Parking 9.0" is not "Building N.N m".
+ * Longer labels are their own alternatives so "Wall" does not eat "Retaining wall".
+ */
+const OUTDOOR_SPECS = {
+  parking: { label: "Parking", db: 2, color: "#B0B8C0", transparent: false },
+  wall: { label: "Wall", db: 8, color: "#8E8680", transparent: false },
+  fence: { label: "Fence", db: 1, color: "#9AA3AD", transparent: false },
+  retaining: { label: "Retaining wall", db: 6, color: "#7A736C", transparent: false },
+  hedge: { label: "Hedge", db: 1, color: FOLIAGE_LIGHT_COLOR, transparent: true },
+  pole: { label: "Light pole", db: 10, color: "#6E7378", transparent: false },
+  water: { label: "Water", db: 0.1, color: "#3D7EA6", transparent: false },
+};
+
+const OUTDOOR_NAME = /^(Parking|Retaining wall|Light pole|Wall|Fence|Hedge|Water) (\d+\.\d)$/;
+const LIFTED_OUTDOOR_NAME = /^(Parking|Retaining wall|Light pole|Wall|Fence|Hedge|Water) (\d+\.\d) @ (\d+\.\d)$/;
+
+function outdoorKindFromLabel(label) {
+  if (label === "Parking") return "parking";
+  if (label === "Wall") return "wall";
+  if (label === "Fence") return "fence";
+  if (label === "Retaining wall") return "retaining";
+  if (label === "Hedge") return "hedge";
+  if (label === "Light pole") return "pole";
+  if (label === "Water") return "water";
+  return "";
+}
+
+function isOutdoorOiName(name) {
+  return OUTDOOR_NAME.test(name || "");
+}
+
+function isLiftedOutdoorName(name) {
+  return LIFTED_OUTDOOR_NAME.test(name || "");
+}
+
+/**
+ * Custom outdoor object. Water is always the 2.1 m sheet. A pole keeps a
+ * tagged height only inside 8–12 m; otherwise it is 9 m. A fence tagged
+ * 1.8 m falls back to 2.1 m because roundHeightM rejects a custom at or
+ * under 2 m.
+ */
+function outdoorHeight(kind, heightM) {
+  if (kind === "water") return 2.1;
+  const round = kind === "parking" ? roundBuildingHeightM : roundHeightM;
+  const h = round(heightM);
+  if (kind === "pole") {
+    if (h >= 8 && h <= 12) return h;
+    return 9;
+  }
+  if (h) return h;
+  if (kind === "parking") return 9;
+  if (kind === "wall") return 2.5;
+  if (kind === "fence" || kind === "hedge") return 2.1;
+  if (kind === "retaining") return 3;
+  return 0;
+}
+
+function outdoorMaterial(kind, heightM) {
+  const spec = OUTDOOR_SPECS[kind];
+  if (!spec) return null;
+  const h = outdoorHeight(kind, heightM);
+  if (!(h > 2)) return null;
+  const name = spec.label + " " + h.toFixed(1);
+  if (isPoisonedOiName(name) || !isOutdoorOiName(name)) return null;
+  if (spec.transparent) return foliageOiMaterial(name, spec.color, h, spec.db);
+  return oiMaterial(name, spec.color, h, spec.db);
+}
+
+function liftedOutdoorMaterial(base, bottomM) {
+  if (!base || !isOutdoorOiName(base.name)) return null;
+  const bottom = roundTenths(bottomM);
+  if (!(bottom >= LIFT_LOCAL_M)) return null;
+  const thickness = Number(base.top_height);
+  if (!(thickness > 2)) return null;
+  const top = roundTenths(bottom + thickness);
+  const mat = {
+    name: base.name + " @ " + bottom.toFixed(1),
+    rf_properties: { attenuation_per_m: base.rf_properties.attenuation_per_m },
+    top_height: top,
+    bottom_height: bottom,
+    display_color: base.display_color,
+  };
+  if (base.transparencyEnabled === true) mat.transparencyEnabled = true;
+  if (!isLiftedOutdoorName(mat.name)) return null;
+  return mat;
+}
+
+function canonicalOutdoor(material) {
+  if (!material || typeof material !== "object" || Array.isArray(material)) return null;
+  if ("itu_material_type" in material || "bottom_height" in material) return null;
+  const parsed = OUTDOOR_NAME.exec(material.name || "");
+  if (!parsed) return null;
+  const kind = outdoorKindFromLabel(parsed[1]);
+  const spec = OUTDOOR_SPECS[kind];
+  if (!spec) return null;
+  const h = Number(parsed[2]);
+  const name = spec.label + " " + h.toFixed(1);
+  const canon = spec.transparent ? foliageOiMaterial(name, spec.color, h, spec.db) : oiMaterial(name, spec.color, h, spec.db);
+  if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
+  return cloneMaterial(canon);
+}
+
+function canonicalLiftedOutdoor(material) {
+  if (!material || typeof material !== "object" || Array.isArray(material)) return null;
+  if ("itu_material_type" in material || !("bottom_height" in material)) return null;
+  const parsed = LIFTED_OUTDOOR_NAME.exec(material.name || "");
+  if (!parsed) return null;
+  const kind = outdoorKindFromLabel(parsed[1]);
+  const spec = OUTDOOR_SPECS[kind];
+  if (!spec) return null;
+  const base = spec.transparent
+    ? foliageOiMaterial(spec.label + " " + Number(parsed[2]).toFixed(1), spec.color, Number(parsed[2]), spec.db)
+    : oiMaterial(spec.label + " " + Number(parsed[2]).toFixed(1), spec.color, Number(parsed[2]), spec.db);
+  const canon = liftedOutdoorMaterial(base, Number(parsed[3]));
+  if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
+  return cloneMaterial(canon);
+}
+
 function canonicalAreaMaterial(material) {
   if (!material || typeof material !== "object" || Array.isArray(material)) return null;
   if ("itu_material_type" in material) return null;
   if (isTrunkOiName(material.name)) return canonicalTrunk(material);
+  if (isLiftedOutdoorName(material.name)) return canonicalLiftedOutdoor(material);
+  if (isOutdoorOiName(material.name)) return canonicalOutdoor(material);
   if ("bottom_height" in material) {
     if (isLiftedFoliageName(material.name)) return canonicalLiftedFoliage(material);
     if (isLiftedMeasuredBuildingName(material.name)) return canonicalLiftedMeasuredBuilding(material);
@@ -812,9 +944,18 @@ function documentMaterials(areas) {
   const lifted = new Map();
   const measured = new Map();
   const trunks = new Map();
+  const outdoor = new Map();
   for (const a of areas || []) {
     const mat = a && a.area_material;
     if (!mat || typeof mat !== "object") continue;
+    if (isLiftedOutdoorName(mat.name) || isOutdoorOiName(mat.name)) {
+      const canon = isLiftedOutdoorName(mat.name) ? canonicalLiftedOutdoor(mat) : canonicalOutdoor(mat);
+      if (!canon) continue;
+      if ("bottom_height" in canon) {
+        if (!lifted.has(canon.name)) lifted.set(canon.name, canon);
+      } else if (!outdoor.has(canon.name)) outdoor.set(canon.name, canon);
+      continue;
+    }
     if (isTrunkOiName(mat.name)) {
       const canon = canonicalTrunk(mat);
       if (!canon) continue;
@@ -858,7 +999,8 @@ function documentMaterials(areas) {
     return ka < kb ? -1 : ka > kb ? 1 : 0;
   });
   const trunkList = Array.from(trunks.values()).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  return buildingCatalog().concat(measuredList, slope, extra, trunkList);
+  const outdoorList = Array.from(outdoor.values()).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return buildingCatalog().concat(measuredList, slope, extra, trunkList, outdoorList);
 }
 
 module.exports = {
@@ -896,6 +1038,12 @@ module.exports = {
   isVegetationOiName,
   isStockFoliageName,
   isPoisonedOiName,
+  outdoorMaterial,
+  liftedOutdoorMaterial,
+  outdoorHeight,
+  isOutdoorOiName,
+  isLiftedOutdoorName,
+  OUTDOOR_SPECS,
   pickOiBuildingTypeId,
   stockMaterials,
   catalogMaterials,
