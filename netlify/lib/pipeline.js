@@ -1137,8 +1137,9 @@ function capAttenuationAreas(areas, buildingCount, max, opts) {
 }
 
 /**
- * Buildings fill the cap first. A trunk is kept only with the canopy it
- * follows, so the cap never leaves a stem without its crown.
+ * Buildings fill the cap first. A crown group is the first band, every
+ * inset layer after it, and the stem. A stem or an inset without that
+ * first band is dropped, so the cap never leaves a piece of a tree.
  */
 function capBuildingsAndTrees(buildings, trees, kinds, max) {
   const limit = max == null ? MAX_ATTENUATION_AREAS : max;
@@ -1153,12 +1154,18 @@ function capBuildingsAndTrees(buildings, trees, kinds, max) {
       i++;
       continue;
     }
-    const pair = kindList[i + 1] === "trunk";
-    const need = pair ? 2 : 1;
+    if (kindList[i] === "layer") {
+      i++;
+      continue;
+    }
+    // A crown is the full band plus the inset layers above it, then the stem.
+    let j = i + 1;
+    while (j < treeList.length && kindList[j] === "layer") j++;
+    if (j < treeList.length && kindList[j] === "trunk") j++;
+    const need = j - i;
     if (keptB.length + kept.length + need > limit) break;
-    kept.push(treeList[i]);
-    if (pair) kept.push(treeList[i + 1]);
-    i += need;
+    for (let t = i; t < j; t++) kept.push(treeList[t]);
+    i = j;
   }
   return {
     areas: keptB.concat(kept),
@@ -1681,7 +1688,7 @@ function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
       continue;
     }
     areas.push(area);
-    kinds.push(t.kind === "trunk" ? "trunk" : "canopy");
+    kinds.push(t.kind === "trunk" ? "trunk" : t.kind === "layer" ? "layer" : "canopy");
   }
   return { areas, kinds, droppedInvalid };
 }

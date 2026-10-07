@@ -11,8 +11,8 @@ const { UA } = require("../netlify/functions/clutter");
 const root = path.join(__dirname, "..");
 
 describe("app version", () => {
-  it("is 1.1.74 in package.json", () => {
-    assert.equal(pkg.version, "1.1.74");
+  it("is 1.1.75 in package.json", () => {
+    assert.equal(pkg.version, "1.1.75");
   });
 
   it("uses that version as the API user-agent", () => {
