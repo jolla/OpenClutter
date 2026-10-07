@@ -19,6 +19,7 @@ const {
   liftPickedBuilding,
   canonicalAreaMaterial,
   documentMaterials,
+  isTrunkOiName,
   OI_BUILDING_NAMES,
   COMPATIBILITY_MODE,
 } = require("./materials");
@@ -35,7 +36,13 @@ const MAX_AREA_M2 = 40000;
 const MAX_BUILDINGS = 2000;
 /** OpenIntent 2.0.1 coordinate_xyz.x/y minimum is 0; Hamina historically dropped *all* areas if one ring was invalid. */
 const MIN_OI_SPAN_PX = 4;
-/** Outdoor trunks are ~1 m across; at ~1 m/px that is sub-pixel and Hamina may reject the ring. */
+/** A stem under this is a collapsed point. It is not the 4 px building floor. */
+const TRUNK_OI_SPAN_PX = 0.02;
+/**
+ * Buildings and canopy masses stay at least ~3 m on a coarse plate.
+ * Discrete trunks do not use this floor: stretching a 1 m stem up to 3 m,
+ * or up to 4 px, made the stem as wide as the crown.
+ */
 const MIN_OI_SPAN_M = 3;
 /**
  * Last Hamina import that showed clutter was 982 areas (PR #12, stock names).
@@ -835,7 +842,7 @@ function signedAreaOi(coords) {
  * Hamina-native rings use pixels+meters+feet triples per vertex. Validate the
  * pixel vertices (closed, in-bounds) and the triple interleave when present.
  */
-function validateOiCoords(coords, imgW, imgH) {
+function validateOiCoords(coords, imgW, imgH, spanFloorPx) {
   const pixels = oiPixelCoords(coords);
   if (!pixels || pixels.length < 4) return { ok: false, reason: "too-few" };
   if (coords.length !== pixels.length) {
@@ -859,7 +866,8 @@ function validateOiCoords(coords, imgW, imgH) {
     if (p.x > maxX) maxX = p.x;
     if (p.y > maxY) maxY = p.y;
   }
-  const spanFloor = MIN_OI_SPAN_PX - OI_SPAN_SLACK_PX;
+  const requested = Number(spanFloorPx);
+  const spanFloor = (requested > 0 ? requested : MIN_OI_SPAN_PX) - OI_SPAN_SLACK_PX;
   if (maxX - minX < spanFloor || maxY - minY < spanFloor) return { ok: false, reason: "span" };
   const first = pixels[0].coordinate_xyz;
   const last = pixels[pixels.length - 1].coordinate_xyz;
@@ -887,7 +895,7 @@ function catalogMaterial(material) {
   return canonicalAreaMaterial(material);
 }
 
-function validateOiArea(area, imgW, imgH) {
+function validateOiArea(area, imgW, imgH, spanFloorPx) {
   if (!area || !area.area || area.area_material == null) return { ok: false, reason: "shape" };
   const mat = area.area_material;
   // OpenIntent 2.0.1 attenuation_area.area_material is a material object.
@@ -902,7 +910,9 @@ function validateOiArea(area, imgW, imgH) {
   // and a raised top_height (top height from floor).
   const cat = catalogMaterial(mat);
   if (!cat || JSON.stringify(mat) !== JSON.stringify(cat)) return { ok: false, reason: "material" };
-  return validateOiCoords(area.area.coordinates, imgW, imgH);
+  let floor = Number(spanFloorPx);
+  if (!(floor > 0) && isTrunkOiName(mat.name)) floor = TRUNK_OI_SPAN_PX;
+  return validateOiCoords(area.area.coordinates, imgW, imgH, floor > 0 ? floor : undefined);
 }
 
 /** Round + drop consecutive duplicates *after* toFixed so Hamina never sees collapsed verts. */
@@ -1075,7 +1085,8 @@ function ringToOi(pts, imgW, imgH, mpuX, opts) {
   if (!pts || pts.length < 3) return null;
   let clipped = clipRingToRect(pts, imgW, imgH);
   if (clipped.length < 3) return null;
-  const span = minOiSpanPx(mpuX);
+  const custom = opts && Number(opts.minSpanPx);
+  const span = custom > 0 ? custom : minOiSpanPx(mpuX);
   if (thinSliverDrop(clipped, span)) return null;
   clipped = ensureMinSpan(clipped, imgW, imgH, span, !!(opts && opts.keepShape));
   if (!clipped || clipped.length < 3) return null;
@@ -1085,11 +1096,12 @@ function ringToOi(pts, imgW, imgH, mpuX, opts) {
   if (ringAreaPx(clipped) < 1e-6) return null;
   const pixels = finalizeOiCoords(clipped, imgW, imgH);
   if (!pixels) return null;
-  const check = validateOiCoords(pixels, imgW, imgH);
+  const floor = opts && Number(opts.spanFloorPx) > 0 ? Number(opts.spanFloorPx) : undefined;
+  const check = validateOiCoords(pixels, imgW, imgH, floor);
   if (!check.ok) return null;
   const triples = expandOiCoordTriples(pixels, mpuX);
   if (!triples) return null;
-  return validateOiCoords(triples, imgW, imgH).ok ? triples : null;
+  return validateOiCoords(triples, imgW, imgH, floor).ok ? triples : null;
 }
 
 function makeOiArea(coords, material) {
@@ -1098,14 +1110,14 @@ function makeOiArea(coords, material) {
   return { area: { coordinates: coords }, area_material: mat };
 }
 
-function emitIfValid(area, imgW, imgH) {
+function emitIfValid(area, imgW, imgH, spanFloorPx) {
   if (!area) return null;
-  const check = validateOiArea(area, imgW, imgH);
+  const check = validateOiArea(area, imgW, imgH, spanFloorPx);
   if (!check.ok) return null;
   // JSON.stringify turns NaN/Infinity into null — re-check the on-disk shape.
   try {
     const parsed = JSON.parse(JSON.stringify(area));
-    if (!validateOiArea(parsed, imgW, imgH).ok) return null;
+    if (!validateOiArea(parsed, imgW, imgH, spanFloorPx).ok) return null;
     return parsed;
   } catch {
     return null;
@@ -1652,8 +1664,18 @@ function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
   const kinds = [];
   let droppedInvalid = 0;
   for (const t of oiTreeAreas || []) {
-    const coords = ringToOi(t.ringPx, imgW, imgH, mpuX, { keepShape: true });
-    const area = emitIfValid(makeOiArea(coords, t.material), imgW, imgH);
+    const opts = { keepShape: true };
+    if (t.kind === "trunk") {
+      // Hold the drawn ~1 m circle. The shared 3 m / 4 px floor used to
+      // stretch it, and a collapsed blob was replaced with a square.
+      const b = ringBBox(t.ringPx);
+      const drawn = Math.min(b.w, b.h);
+      const hold = Math.max(drawn * 0.98, 0.05);
+      opts.minSpanPx = hold;
+      opts.spanFloorPx = Math.min(MIN_OI_SPAN_PX, Math.max(drawn * 0.5, 0.02));
+    }
+    const coords = ringToOi(t.ringPx, imgW, imgH, mpuX, opts);
+    const area = emitIfValid(makeOiArea(coords, t.material), imgW, imgH, opts.spanFloorPx);
     if (!area) {
       droppedInvalid++;
       continue;

@@ -387,9 +387,10 @@ function clipboardForCanopy(material) {
  * axis-aligned squares. Multi-cell NLCD patches are only the geometry when
  * the caller did not ask for a canopy-height grid. Tree points,
  * median dots, and crown circles are not emitted and do not become trees.
- * A compact measured crown is one tree: a stem under that crown, the crown
- * bottom above the ground, and the crown top at the measured height. A wide
- * or long canopy stays one mass on the ground, with no invented stem.
+ * A compact measured crown is one tree: a round stem under that crown, the
+ * crown bottom above the ground, and the crown top at the measured height.
+ * The stem is about 1 m across and stays well inside the crown. A wide or
+ * long canopy stays one mass on the ground, with no invented stem.
  * `treePoints` is accepted so callers can keep passing placed points; they
  * do not become attenuation areas.
  */
@@ -400,7 +401,11 @@ const TREE_MIN_SIDE_M = 6;
 const TREE_MAX_AREA_M2 = 320;
 const TREE_MIN_AREA_M2 = 20;
 const TREE_MAX_ASPECT = 1.8;
-const TRUNK_WIDTH_M = 3.2;
+/** Hard max. A real stem is about 0.3–1 m; wider than this rivals the crown. */
+const TRUNK_MAX_M = 1;
+/** Also scale with the crown, so a small traced crown cannot grow a 1 m stem. */
+const TRUNK_OF_CROWN = 0.18;
+const TRUNK_SIDES = 16;
 
 function ringPxArea(ring) {
   if (!ring || ring.length < 3) return 0;
@@ -464,24 +469,67 @@ function looksLikeIndividualTree(ringPx, frame, heightM) {
   return true;
 }
 
-function trunkRingPx(ringPx, frame) {
-  const c = ringCentroidPx(ringPx);
-  if (!c || !frame) return null;
+function crownShortM(ringPx, frame) {
   const mpuX = frame.mpuX || frame.mpu || 1;
   const mpuY = frame.mpuY || mpuX;
-  const hx = TRUNK_WIDTH_M / 2 / mpuX;
-  const hy = TRUNK_WIDTH_M / 2 / mpuY;
-  const ring = [
-    [c[0] - hx, c[1] - hy],
-    [c[0] + hx, c[1] - hy],
-    [c[0] + hx, c[1] + hy],
-    [c[0] - hx, c[1] + hy],
-    [c[0] - hx, c[1] - hy],
-  ];
-  for (let i = 0; i < 4; i++) {
-    if (!pointInRing(ring[i], ringPx)) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ringPx.length; i++) {
+    const x = ringPx[i][0];
+    const y = ringPx[i][1];
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
   }
+  return Math.min((maxX - minX) * mpuX, (maxY - minY) * mpuY);
+}
+
+/** Closed regular polygon. Ground diameter is `diameterM` on both axes. */
+function circleRingPx(c, diameterM, mpuX, mpuY, sides) {
+  const rx = diameterM / 2 / mpuX;
+  const ry = diameterM / 2 / mpuY;
+  const ring = [];
+  for (let i = 0; i < sides; i++) {
+    const a = (2 * Math.PI * i) / sides - Math.PI / sides;
+    ring.push([c[0] + rx * Math.cos(a), c[1] + ry * Math.sin(a)]);
+  }
+  ring.push(ring[0]);
   return ring;
+}
+
+function circleFits(ring, crown) {
+  const n = ring.length - 1;
+  for (let i = 0; i < n; i++) {
+    if (!pointInRing(ring[i], crown)) return false;
+  }
+  return true;
+}
+
+/**
+ * Stem under one discrete crown. About 1 m across, and never more than a
+ * fraction of the crown, so the stem stays clearly thinner. The footprint is
+ * a 16-gon, not a square. Vertices stay inside the crown; a tight crown
+ * shrinks the stem instead of dropping it or poking out.
+ */
+function trunkRingPx(ringPx, frame) {
+  const c = ringCentroidPx(ringPx);
+  if (!c || !frame || !ringPx) return null;
+  const mpuX = frame.mpuX || frame.mpu || 1;
+  const mpuY = frame.mpuY || mpuX;
+  if (!(mpuX > 0) || !(mpuY > 0)) return null;
+  const shortM = crownShortM(ringPx, frame);
+  if (!(shortM > 0)) return null;
+  let diameterM = Math.min(TRUNK_MAX_M, shortM * TRUNK_OF_CROWN);
+  for (let attempt = 0; attempt < 8; attempt++) {
+    if (!(diameterM >= 0.25)) return null;
+    const ring = circleRingPx(c, diameterM, mpuX, mpuY, TRUNK_SIDES);
+    if (circleFits(ring, ringPx)) return ring;
+    diameterM = Math.round(diameterM * 0.75 * 100) / 100;
+  }
+  return null;
 }
 function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
   void treePoints;

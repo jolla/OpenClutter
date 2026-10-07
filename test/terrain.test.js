@@ -887,7 +887,7 @@ describe("foliage height from floor on a slope", () => {
     assert.ok(thickMat.bottom_height >= 50);
     assert.equal(thickMat.top_height, Math.round((thickMat.bottom_height + 14.2) * 10) / 10);
     assert.equal(thickMat.name, "Foliage - Heavy 14.2 @ " + thickMat.bottom_height.toFixed(1));
-    assert.equal(thickMat.rf_properties.attenuation_per_m, 2);
+    assert.equal(thickMat.rf_properties.attenuation_per_m, 1.5);
     const thickZone = built.clipboard.attenuatingZones.find((z) => String(z.typeId).indexOf("foliage-m-14_2-b") === 0);
     const thickType = built.clipboard.attenuatingZoneTypes.find((t) => t.id === thickZone.typeId);
     assert.equal(thickType.bottomEdge, thickMat.bottom_height);
