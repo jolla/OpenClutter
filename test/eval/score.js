@@ -15,6 +15,8 @@ const {
   isLiftedMeasuredBuildingName,
   isMeasuredBuildingOiName,
   isTrunkOiName,
+  isOutdoorOiName,
+  isLiftedOutdoorName,
   buildingCatalog,
   isPoisonedOiName,
   COMPATIBILITY_MODE,
@@ -638,7 +640,9 @@ function scoreMaterialCompatibility(openintent) {
     isTrunkOiName(name) ||
     isLiftedBuildingName(name) ||
     isLiftedMeasuredBuildingName(name) ||
-    isMeasuredBuildingOiName(name);
+    isMeasuredBuildingOiName(name) ||
+    isOutdoorOiName(name) ||
+    isLiftedOutdoorName(name);
   const customsOk = extras.every((m) => m && allowedExtra(m.name));
   const poisoned = names.some((n) => isPoisonedOiName(n));
   const byName = new Map(mats.map((m) => [m.name, m]));
