@@ -4,7 +4,10 @@ const { describe, it, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const jobs = require("../netlify/lib/export-jobs");
 const { setEnvironmentContext } = require("@netlify/blobs");
+const { unzipStore } = require("../netlify/lib/zip-store");
+const { EXPORT_PAYLOAD_BUDGET, estimateBundlePayload } = require("../netlify/lib/terrain");
 const { handleClutter, backgroundImagerySteps, runBackgroundExport, setFetchTerrainDemForTests } = require("../netlify/functions/clutter");
+const { handler: backgroundHandler } = require("../netlify/functions/clutter-export-background");
 
 function memoryStore() {
   const map = new Map();
@@ -175,6 +178,97 @@ describe("export jobs", { concurrency: 1 }, () => {
       assert.equal(sync.statusCode, 200, String(sync.body).slice(0, 400));
       assert.equal(seen.some((s) => s.backgroundDem), false);
       assert.equal(seen.some((s) => s.fitAnswerClock), true);
+    } finally {
+      global.fetch = prev;
+      setFetchTerrainDemForTests(null);
+    }
+  });
+
+  it("keeps the sloped paste on a background job when the zip would crowd a sync response", async () => {
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    const jpeg = Buffer.concat([
+      Buffer.from([0xff, 0xd8]),
+      Buffer.alloc(4350000, 7),
+      Buffer.from([0xff, 0xd9]),
+    ]);
+    const prev = global.fetch;
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("World_Imagery") && u.includes("f=image")) {
+        return { ok: true, arrayBuffer: async () => jpeg };
+      }
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: -112.16, ymin: 40.51, xmax: -112.14, ymax: 40.53 },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ features: [], objectIds: [] }), arrayBuffer: async () => new ArrayBuffer(0) };
+    };
+    const samples = [];
+    for (let r = 0; r <= 8; r++) {
+      for (let c = 0; c <= 8; c++) {
+        samples.push({ lon: -112.16 + c * 0.0025, lat: 40.51 + r * 0.0025, z: 1400 + r * 12 + c * 3 });
+      }
+    }
+    setFetchTerrainDemForTests(async () => ({
+      samples,
+      kind: "bare-earth",
+      attribution: "USGS 3DEP",
+      notes: [],
+    }));
+    const id = "33333333-3333-4333-8333-333333333333";
+    const box = {
+      west: -112.16,
+      south: 40.51,
+      east: -112.14,
+      north: 40.53,
+      name: "Bingham",
+      format: "bundle",
+      includeFoliage: false,
+      includeTerrain: true,
+      terrainStyle: "sloped",
+      imageryQuality: "low",
+    };
+    try {
+      await jobs.createJob(id);
+      const res = await backgroundHandler({
+        httpMethod: "POST",
+        headers: { host: "dev--openclutter.netlify.app" },
+        body: JSON.stringify({
+          jobId: id,
+          event: {
+            httpMethod: "POST",
+            headers: { host: "dev--openclutter.netlify.app" },
+            body: JSON.stringify(box),
+          },
+        }),
+      });
+      assert.equal(res.statusCode, 202);
+      const job = await jobs.readJob(id);
+      assert.equal(job.state, "done", job && job.error);
+      const clip = job.terrainClipboard;
+      assert.ok(clip, job.terrainStatus);
+      assert.ok(clip.slopedFloors.length >= 1, "sloped " + (clip.slopedFloors && clip.slopedFloors.length));
+      assert.equal(clip.tiePoints.length, 2);
+      assert.equal(clip.tiePoints[1].x, 0);
+      assert.equal(clip.tiePoints[1].y, 0);
+      assert.match(job.terrainStatus, /Use Copy terrain/);
+      const zip = await jobs.takeZip(id);
+      const files = unzipStore(Buffer.from(zip));
+      assert.equal(files["terrain-clipboard.json"], undefined);
+      assert.ok(Object.keys(files).some((name) => name.endsWith(".json")));
+      assert.ok(Object.keys(files).some((name) => name.startsWith("images/")));
+      const zipBytes = Buffer.from(zip).length;
+      assert.ok(
+        estimateBundlePayload(zipBytes, JSON.stringify(clip)) > EXPORT_PAYLOAD_BUDGET,
+        "zip " + zipBytes + " did not crowd the sync budget"
+      );
     } finally {
       global.fetch = prev;
       setFetchTerrainDemForTests(null);
