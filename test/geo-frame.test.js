@@ -170,12 +170,18 @@ describe("shared geo frame", () => {
         [400, 2],
       ]
     );
-    assert.equal(imageryQualityPlan("4k"), null);
+    assert.deepEqual(
+      imageryQualityPlan("4k").map((step) => [step.maxSide, step.metersPerPx]),
+      [
+        [4096, 0.15],
+        [2048, 0.25],
+      ]
+    );
     assert.deepEqual(
       imageryExportPlan(true, wico, "4k").map((step) => [step.maxSide, step.metersPerPx]),
       [
-        [400, 2],
-        [256, 2],
+        [4096, 0.15],
+        [2048, 0.25],
       ]
     );
     assert.deepEqual(imageryExportPlan(false, wico, "sharp"), [{ maxSide: 1040, metersPerPx: 1 }]);

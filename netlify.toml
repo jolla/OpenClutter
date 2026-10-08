@@ -11,6 +11,10 @@
 [functions."clutter"]
   included_files = ["netlify/lib/nls-hamina-ndsm.gz"]
 
+# Same laser grid. esbuild does not copy the gzip into the background bundle.
+[functions."clutter-export-background"]
+  included_files = ["netlify/lib/nls-hamina-ndsm.gz"]
+
 # Production API (main deploy only — keep ahead of /dev rules).
 [[redirects]]
   from = "/api/*"

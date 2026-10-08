@@ -302,8 +302,11 @@ const TERRAIN_README =
   "height is meters above the lowest DEM sample. slabOnly is false, so Planner Plus\n" +
   "draws a solid floor rather than a thin slab. attenuationDbPerMeter is 0\n" +
   "so the solid floor is not a second clutter wall.\n" +
-  "slopedFloors are open xyz quads (z = meters above that same low point).\n" +
-  "The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
+  "slopedFloors are open xyz quads. Planner Plus draws that z upside down, so\n" +
+  "z = (highest ground − meters above the lowest sample). The pit floor is the\n" +
+  "largest z and renders as the bottom of the hole. The first edge is the\n" +
+  "smaller z, which Planner Plus draws as the high side. A corner shared with\n" +
+  "the next quad has the same z. The ring is not closed.\n" +
   "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
   "Building attenuating objects stay in this OpenIntent zip. When this mesh is pasted,\n" +
   "bottom_height is bottom height from floor (the downhill ground under that piece,\n" +
@@ -360,8 +363,11 @@ const TERRAIN_README_SURFACE =
   "height is meters above the lowest DEM sample. slabOnly is false, so Planner Plus\n" +
   "draws a solid floor rather than a thin slab. attenuationDbPerMeter is 0\n" +
   "so the solid floor is not a second clutter wall.\n" +
-  "slopedFloors are open xyz quads (z = meters above that same low point).\n" +
-  "The first edge is the low side; the opposite edge is the high side. The ring is not closed.\n" +
+  "slopedFloors are open xyz quads. Planner Plus draws that z upside down, so\n" +
+  "z = (highest ground − meters above the lowest sample). The pit floor is the\n" +
+  "largest z and renders as the bottom of the hole. The first edge is the\n" +
+  "smaller z, which Planner Plus draws as the high side. A corner shared with\n" +
+  "the next quad has the same z. The ring is not closed.\n" +
   "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
   "Building attenuating objects stay in this OpenIntent zip. They are cut into this DEM:\n" +
   "bottom_height is the downhill ground under that piece, and top_height is that\n" +

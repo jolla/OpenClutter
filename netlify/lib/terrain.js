@@ -19,8 +19,11 @@
  * does not download it as a second file.
  *
  * Clipboard meters match hamina-clipboard.js: NE is (0, 0), SW is
- * (−widthM, −lengthM). z on sloped floors, and raised-floor height, are meters
- * above the lowest sample.
+ * (−widthM, −lengthM). Raised-floor height is meters above the lowest sample.
+ * Sloped-floor z is the complement of that height: Hamina draws a sloped floor
+ * upside down, so the lowest ground is stored as the largest z and comes out
+ * as the bottom of the hole. Each corner keeps its own height, and a corner
+ * shared with the next quad stores the same number, so the quads meet.
  *
  * The page default (terrainStyle "sloped") is the ramp mesh. When Terrain is
  * on, the page also offers terrainStyle "raised": raisedFloorZones only. Each cell takes the high
@@ -47,10 +50,11 @@
  * when the budget is short.
  *
  * Hamina clipboard rings are open: the first vertex is not repeated.
- * raisedFloorZones are xy quads. slopedFloors are xyz quads whose first edge
- * is the low side and whose opposite edge is the high side (one z per edge).
- * A closed triangle has no opposite edges and repeats a vertex, which Planner
- * Plus rejects as "Sloped floor coordinates are not valid!".
+ * raisedFloorZones are xy quads. slopedFloors are xyz quads. The first edge
+ * is the smaller stored z and the opposite edge is the larger stored z.
+ * Hamina draws the smaller stored z as the high side of the ramp. A closed
+ * triangle has no opposite edges and repeats a vertex, which Planner Plus
+ * rejects as "Sloped floor coordinates are not valid!".
  */
 
 const { llToClipboard, clipboardToLl, needsGroundMeterImage } = require("./geo-frame");
@@ -285,18 +289,24 @@ function frameHas3dep(frame) {
   return true;
 }
 
+// A campus getSamples near 576 points took about 6s. The short sync path
+// leaves about 5.6s, so that read stays at the lattice that has returned in
+// about 4s. A background export has minutes. Plan against up to a minute,
+// which is the full-lattice tier and still well inside the 4 minute answer
+// and the 15 minute platform limit.
+const SYNC_DEM_PLAN_MS = 4500;
+const BACKGROUND_DEM_PLAN_MS = 60000;
+
 function demSampleCount(opts, frame) {
   if (opts && Number.isFinite(+opts.sampleCount) && +opts.sampleCount > 0) {
     return Math.max(4, Math.min(ABSOLUTE_MAX_SAMPLES, opts.sampleCount | 0));
   }
   const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
   const requested = sampleCountForResolution(preset.id, frame);
-  // A campus getSamples near 576 points took about 6s. The dev answer clock
-  // leaves about 5.6s. Cap that read at the lattice that still fills a 20×20
-  // paste and has returned in about 4s.
   if (opts && opts.fitAnswerClock) {
     const remaining = demRemainingMs(opts);
-    const budget = remaining == null ? 4500 : Math.min(Math.max(0, remaining), 4500);
+    const capMs = opts.backgroundDem ? BACKGROUND_DEM_PLAN_MS : SYNC_DEM_PLAN_MS;
+    const budget = remaining == null ? capMs : Math.min(Math.max(0, remaining), capMs);
     return glo30SamplePlan(requested, budget).sampleCount;
   }
   if (!preset.experimental) return requested;
@@ -850,8 +860,18 @@ function lattice(samples, frame, cols, rows, elevationAt) {
     if (n.z < minZ) minZ = n.z;
     if (n.z > maxZ) maxZ = n.z;
   }
-  for (const n of nodes) n.zRel = round1(n.z - minZ);
-  return { nodes, cols, rows, minZ, maxZ, relief: maxZ - minZ };
+  let maxRel = 0;
+  for (const n of nodes) {
+    n.zRel = round1(n.z - minZ);
+    if (n.zRel > maxRel) maxRel = n.zRel;
+  }
+  // Hamina draws sloped-floor z upside down from meters above the low point.
+  // The pit node (zRel 0) is stored as maxRel so it renders as the bottom.
+  for (const n of nodes) {
+    n.zHamina = round1(maxRel - n.zRel);
+    n.zHaminaDatum = maxRel;
+  }
+  return { nodes, cols, rows, minZ, maxZ, relief: maxZ - minZ, maxRel };
 }
 
 function at(grid, c, r) {
@@ -894,44 +914,67 @@ function riseOverRun(rise, run) {
 }
 
 /**
- * One ramp per cell, along the steeper axis. Hamina stores a sloped floor as
- * a low edge (two vertices, one z) and the opposite high edge — not a triangle
- * and not an independent z on every corner.
+ * Stored z for one lattice node. The mesh sets zHamina from the global
+ * datum (highest ground → 0). A lone cell, as in a unit test, uses its own
+ * highest corner so the rise is still stored upside down.
+ */
+function haminaZ(n, datum) {
+  if (Number.isFinite(n.zHamina)) return n.zHamina;
+  return round1(datum - n.zRel);
+}
+
+/**
+ * One ramp per cell, along the steeper axis. Each corner keeps that node's
+ * stored z, so the quad that shares the corner stores the same number and
+ * the two surfaces meet. Averaging an edge and then picking a different
+ * axis on the next cell left a vertical wall — the white slivers in 3D.
  *
- * The axis is rise/run, not raw |Δz|:
+ * Hamina draws the smaller stored z as the high side. The first edge is that
+ * smaller z (the visual high side) and the opposite edge is the larger z
+ * (the visual low side). A north-up grade therefore starts on the north edge.
+ *
+ * The axis is rise/run of the stored z, which matches the visual grade:
  *   nsSlope = |zN − zS| / northSouthEdgeLengthM
  *   ewSlope = |zE − zW| / eastWestEdgeLengthM
  * A wide cell can rise more east-west and still be gentler than the short
- * north-south face. Equal slopes keep the north-south ramp (the same tie the
- * old |Δz| compare used on a square cell).
+ * north-south face. Equal slopes keep the north-south ramp.
  *
- * Clipboard y increases north, so the low edge is walked with the cell
- * interior on the left. That is the one counterclockwise low-first order for
- * each grade. The other low-first order is clockwise, and pasteableQuad
- * rejects it (the cell would paste as a flat pad):
- *   south low, north high: sw, se, ne, nw
- *   north low, south high: ne, nw, sw, se
- *   west low, east high:   nw, sw, se, ne
- *   east low, west high:   se, ne, nw, sw
+ * Clipboard y increases north. The low stored edge is walked with the cell
+ * interior on the left (counterclockwise). The clockwise walk pastes as a
+ * flat pad:
+ *   stored south low (visual north high): sw, se, ne, nw
+ *   stored north low (visual south high): ne, nw, sw, se
+ *   stored west low (visual east high):   nw, sw, se, ne
+ *   stored east low (visual west high):   se, ne, nw, sw
  */
 function slopedRing(sw, se, ne, nw) {
-  const zS = round1((sw.zRel + se.zRel) / 2);
-  const zN = round1((nw.zRel + ne.zRel) / 2);
-  const zW = round1((sw.zRel + nw.zRel) / 2);
-  const zE = round1((se.zRel + ne.zRel) / 2);
+  let datum = NaN;
+  for (const n of [sw, se, ne, nw]) {
+    if (Number.isFinite(n.zHaminaDatum)) datum = n.zHaminaDatum;
+  }
+  if (!Number.isFinite(datum)) {
+    datum = sw.zRel;
+    for (const n of [se, ne, nw]) if (n.zRel > datum) datum = n.zRel;
+  }
+  const hz = (n) => haminaZ(n, datum);
+  const zS = round1((hz(sw) + hz(se)) / 2);
+  const zN = round1((hz(nw) + hz(ne)) / 2);
+  const zW = round1((hz(sw) + hz(nw)) / 2);
+  const zE = round1((hz(se) + hz(ne)) / 2);
   const northSouthEdgeLengthM = (edgeRunM(sw, nw) + edgeRunM(se, ne)) / 2;
   const eastWestEdgeLengthM = (edgeRunM(sw, se) + edgeRunM(nw, ne)) / 2;
   const nsSlope = riseOverRun(Math.abs(zN - zS), northSouthEdgeLengthM);
   const ewSlope = riseOverRun(Math.abs(zE - zW), eastWestEdgeLengthM);
+  const at = (n) => xyzAt(n, hz(n));
   if (nsSlope >= ewSlope && zN !== zS) {
     return zS <= zN
-      ? [xyzAt(sw, zS), xyzAt(se, zS), xyzAt(ne, zN), xyzAt(nw, zN)]
-      : [xyzAt(ne, zN), xyzAt(nw, zN), xyzAt(sw, zS), xyzAt(se, zS)];
+      ? [at(sw), at(se), at(ne), at(nw)]
+      : [at(ne), at(nw), at(sw), at(se)];
   }
   if (zE !== zW) {
     return zW <= zE
-      ? [xyzAt(nw, zW), xyzAt(sw, zW), xyzAt(se, zE), xyzAt(ne, zE)]
-      : [xyzAt(se, zE), xyzAt(ne, zE), xyzAt(nw, zW), xyzAt(sw, zW)];
+      ? [at(nw), at(sw), at(se), at(ne)]
+      : [at(se), at(ne), at(nw), at(sw)];
   }
   return null;
 }
@@ -939,8 +982,9 @@ function slopedRing(sw, se, ne, nw) {
 function slopedZone(ring) {
   if (!pasteableQuad(ring)) return null;
   if (ring.some((p) => p.length !== 3)) return null;
-  if (ring[0][2] !== ring[1][2] || ring[2][2] !== ring[3][2]) return null;
-  if (!(ring[2][2] > ring[0][2])) return null;
+  const zLow = (ring[0][2] + ring[1][2]) / 2;
+  const zHigh = (ring[2][2] + ring[3][2]) / 2;
+  if (!(zHigh > zLow)) return null;
   return {
     area: zoneArea(ring),
     attenuationDbPerMeter: 0,
@@ -1308,8 +1352,10 @@ function terrainFromSamples(samples, frame, opts) {
     raised: mesh.raised,
     sloped: mesh.sloped,
     frame,
-    // z = 0 on sloped floors is the lowest lattice node, not the raw sample min.
+    // datumZ is the lowest DEM sample. Raised floors and building bottoms are
+    // meters above it. Sloped-floor z is haminaSlopeDatumM minus that height.
     datumZ: mesh.grid.minZ,
+    haminaSlopeDatumM: mesh.grid.maxRel,
   };
 }
 
@@ -1459,30 +1505,55 @@ function boundsOverlap(a, b) {
   return aL <= bR + FLOOR_TOUCH_M && aR + FLOOR_TOUCH_M >= bL && aB <= bT + FLOOR_TOUCH_M && aT + FLOOR_TOUCH_M >= bB;
 }
 
+function clamp01(t) {
+  if (t < 0) return 0;
+  if (t > 1) return 1;
+  return t;
+}
+
 /**
- * Pasted floor height at one clipboard point. A ramp stores one z on the low
- * edge and one z on the opposite edge, so the plane can sit above a corner DEM.
+ * Stored ramp z at one clipboard point. Edge 0–1 is the smaller stored z
+ * and edge 2–3 is the larger. Corners on one edge can differ; the height is
+ * bilinear between those four values. Opposite of vertex 0 is vertex 3.
  */
-function pastedFloorZ(zone, x, y) {
+function storedRampZ(ring, x, y) {
+  const horizontal = Math.abs(ring[0][1] - ring[1][1]) <= 0.002;
+  let s;
+  let t;
+  if (horizontal) {
+    const x0 = ring[0][0];
+    const x1 = ring[1][0];
+    s = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
+    const y0 = ring[0][1];
+    const y1 = ring[3][1];
+    t = y1 === y0 ? 0 : (y - y0) / (y1 - y0);
+  } else {
+    const y0 = ring[0][1];
+    const y1 = ring[1][1];
+    s = y1 === y0 ? 0 : (y - y0) / (y1 - y0);
+    const x0 = ring[0][0];
+    const x1 = ring[3][0];
+    t = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
+  }
+  s = clamp01(s);
+  t = clamp01(t);
+  const z0 = ring[0][2] * (1 - s) + ring[1][2] * s;
+  const z1 = ring[3][2] * (1 - s) + ring[2][2] * s;
+  return z0 * (1 - t) + z1 * t;
+}
+
+/**
+ * Visible floor height at one clipboard point, meters above the lowest
+ * sample. A raised pad stores that height. A ramp stores the complement,
+ * because Hamina draws sloped z upside down; datum brings it back.
+ */
+function pastedFloorZ(zone, x, y, datum) {
   const ring = zone.area && zone.area.coordinates && zone.area.coordinates[0];
   if (!ring || ring.length < 4) return 0;
   if (ring[0].length < 3) return Number(zone.height) || 0;
-  const z0 = ring[0][2];
-  const z1 = ring[2][2];
-  const horizontal = Math.abs(ring[0][1] - ring[1][1]) <= 0.002;
-  let t = 0;
-  if (horizontal) {
-    const y0 = ring[0][1];
-    const y1 = ring[2][1];
-    t = y1 === y0 ? 0 : (y - y0) / (y1 - y0);
-  } else {
-    const x0 = ring[0][0];
-    const x1 = ring[2][0];
-    t = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
-  }
-  if (t < 0) t = 0;
-  else if (t > 1) t = 1;
-  return z0 + t * (z1 - z0);
+  const stored = storedRampZ(ring, x, y);
+  if (!(datum > 0)) return stored;
+  return round1(datum - stored);
 }
 
 function ringToClipboard(ring, frame) {
@@ -1557,8 +1628,9 @@ function dist2ToRing(ring, x, y) {
  * under it. A ramp is one z. A point a few centimeters off a quad still uses
  * the height on that edge.
  */
-function visiblePastedFloorZ(zones, x, y) {
+function visiblePastedFloorZ(terrain, zones, x, y) {
   const edge2 = FLOOR_EDGE_M * FLOOR_EDGE_M;
+  const datum = terrain && terrain.haminaSlopeDatumM;
   let best = null;
   for (let i = 0; i < zones.length; i++) {
     const zone = zones[i];
@@ -1568,7 +1640,7 @@ function visiblePastedFloorZ(zones, x, y) {
     const cx = Math.min(box.R, Math.max(box.L, x));
     const cy = Math.min(box.T, Math.max(box.B, y));
     if ((x - cx) * (x - cx) + (y - cy) * (y - cy) > edge2) continue;
-    const z = pastedFloorZ(zone, cx, cy);
+    const z = pastedFloorZ(zone, cx, cy, datum);
     if (!Number.isFinite(z)) continue;
     if (best == null || z > best) best = z;
   }
@@ -1577,11 +1649,11 @@ function visiblePastedFloorZ(zones, x, y) {
 
 /**
  * Highest and lowest visible pasted floor on the footprint.
- * Hamina draws a sloped cell as a ramp (one z on the low edge, one z on the
- * opposite edge), solid up to that plane. The low sample is where a building
- * meets the hill. The high sample is the uphill end of the same ramp. A
- * shared boundary uses the height at that edge, not the far corner of the
- * next cell.
+ * Hamina draws a sloped cell as a ramp. The stored z is upside down, and
+ * the height here is meters above the lowest sample after that complement
+ * is undone. The low sample is where a building meets the hill. The high
+ * sample is the uphill end of the same ramp. A shared boundary uses the
+ * height at that edge, not the far corner of the next cell.
  */
 function pastedFloorExtent(terrain, xy) {
   const zones = floorZones(terrain);
@@ -1597,15 +1669,19 @@ function pastedFloorExtent(terrain, xy) {
     for (let k = 0; k < over.length; k++) pts.push(over[k]);
     const nq = Math.min(ringPointCount(quad), 4);
     for (let k = 0; k < nq; k++) {
-      if (dist2ToRing(xy, quad[k][0], quad[k][1]) > edge2) continue;
-      pts.push([quad[k][0], quad[k][1]]);
+      const x = quad[k][0];
+      const y = quad[k][1];
+      // A corner in the middle of the footprint is the high or low point of
+      // that quad. The edge test misses it, and the seat then floats or digs.
+      if (dist2ToRing(xy, x, y) > edge2 && !pointInOrOnRing(x, y, xy)) continue;
+      pts.push([x, y]);
     }
   }
   let max = 0;
   let min = Infinity;
   let n = 0;
   for (let k = 0; k < pts.length; k++) {
-    const z = visiblePastedFloorZ(zones, pts[k][0], pts[k][1]);
+    const z = visiblePastedFloorZ(terrain, zones, pts[k][0], pts[k][1]);
     if (z == null) continue;
     if (z > max) max = z;
     if (z < min) min = z;
@@ -1659,10 +1735,10 @@ function roundUpTenth(n) {
 
 /**
  * Uphill surface under a lon/lat ring, in terrain-clipboard meters.
- * Hamina draws a pasted sloped floor as a ramp: one z on the low edge, one z
- * on the opposite edge, solid up to that plane (slabOnly false). This is the
- * high end of that ramp under the ring, rounded up to 0.1 m. A cell the ring
- * only shares a boundary with counts as the height at that boundary.
+ * High end of the ramp under the ring, in meters above the lowest sample,
+ * rounded up to 0.1 m. Hamina draws the stored sloped z upside down; this
+ * height is the ground Planner Plus shows. A cell the ring only shares a
+ * boundary with counts as the height at that boundary.
  */
 function slopeTopUnderRing(terrain, ring) {
   return roundUpTenth(floorExtentUnderRing(terrain, ring).max);
@@ -1775,7 +1851,7 @@ function terrainFloorCells(terrain) {
         const samples = [center, corners[0].xy, corners[1].xy, corners[2].xy, corners[3].xy];
         for (let k = 0; k < samples.length; k++) {
           if (k > 0 && !pointInClipQuad(quad, samples[k][0], samples[k][1])) continue;
-          const fz = pastedFloorZ(own[i], samples[k][0], samples[k][1]);
+          const fz = pastedFloorZ(own[i], samples[k][0], samples[k][1], terrain.haminaSlopeDatumM);
           if (fz > z) z = fz;
         }
       }
@@ -1810,17 +1886,27 @@ function rampStrips(terrain, band) {
   for (let i = 0; i < floors.length; i++) {
     const quad = floors[i].area && floors[i].area.coordinates && floors[i].area.coordinates[0];
     if (!quad || quad.length < 4 || !quad[0] || quad[0].length < 3) continue;
-    const z0 = +quad[0][2];
-    const z1 = +quad[2][2];
-    const rise = z1 - z0;
+    const zs = [quad[0][2], quad[1][2], quad[2][2], quad[3][2]];
+    let zLo = zs[0];
+    let zHi = zs[0];
+    for (let k = 1; k < 4; k++) {
+      if (zs[k] < zLo) zLo = zs[k];
+      if (zs[k] > zHi) zHi = zs[k];
+    }
+    const rise = zHi - zLo;
     if (!(rise > 0)) continue;
     const n = Math.max(1, Math.ceil(rise / step - 1e-9));
+    const datum = terrain && terrain.haminaSlopeDatumM;
     for (let s = 0; s < n; s++) {
       const t0 = s / n;
       const t1 = (s + 1) / n;
       const clip = rampStrip(quad, t0, t1);
       if (!clip) continue;
-      strips.push({ clip, z: z0 + t1 * rise });
+      // t = 0 is the smaller stored edge, which Hamina draws as the high side.
+      const zA = quad[0][2] * (1 - t1) + quad[3][2] * t1;
+      const zB = quad[1][2] * (1 - t1) + quad[2][2] * t1;
+      const stored = (zA + zB) / 2;
+      strips.push({ clip, z: datum > 0 ? round1(datum - stored) : stored });
     }
   }
   return strips;
@@ -1997,6 +2083,8 @@ function terrainBundleFields(terrain, warnings) {
       mesh = ", " + preset.label + " (relief under 20 m keeps the coarse mesh)";
     }
     const reduced = terrain.pasteReduced ? " " + pasteReducedNote(terrain) : "";
+    const nSamples = terrain.samples && terrain.samples.length;
+    const sampleNote = nSamples >= 4 ? ", " + nSamples + " DEM samples" : "";
     const slopedStyle = terrain.terrainStyle === "sloped";
     const mode = slopedStyle ? "Terrain sloped " + cols + "×" + rows : "Terrain raised layers " + cols + "×" + rows;
     const floors = slopedStyle
@@ -2014,6 +2102,7 @@ function terrainBundleFields(terrain, warnings) {
         ", " +
         floors +
         mesh +
+        sampleNote +
         ")." +
         reduced +
         " Use Copy terrain and paste it in Planner Plus. Do not import it as OpenIntent.",
