@@ -19,9 +19,16 @@ const {
   featuresFromMapXml,
   limitFeatures,
   fitOutdoorBudget,
+  planOutdoor,
   POLE_CAP,
   OUTDOOR_MISS,
+  MONORAIL_WIDTH_M,
+  RAIL_WIDTH_M,
+  MONORAIL_DECK_M,
+  GUIDEWAY_THICK_M,
 } = require("../netlify/lib/outdoor-clutter");
+const { detailFromMapXml } = require("../netlify/lib/building-shape");
+const { MAX_OI_RING_VERTS } = require("../netlify/lib/pipeline");
 
 const BOX = { west: -73.57, south: 45.5, east: -73.565, north: 45.5035 };
 
@@ -78,6 +85,7 @@ describe("outdoor clutter materials", () => {
       ["hedge", 2.1, "Hedge 2.1", 1, "#6FA84A", true],
       ["pole", 9, "Light pole 9.0", 10, "#6E7378", false],
       ["water", 0, "Water 2.1", 0.1, "#3D7EA6", false],
+      ["guideway", 4.5, "Guideway 4.5", 9, "#6A6560", false],
     ];
     for (let i = 0; i < samples.length; i++) {
       const [kind, height, name, db, color, transparent] = samples[i];
@@ -344,6 +352,54 @@ describe("outdoor clutter fetch", () => {
     assert.equal(inside([-73.8242, 45.4302], ring), false);
   });
 
+  it("keeps an elevated guideway and leaves ground rail out", () => {
+    const f = frame();
+    const midLat = (f.south + f.north) / 2;
+    const x0 = f.west + (f.east - f.west) * 0.15;
+    const x1 = f.west + (f.east - f.west) * 0.8;
+    const yRail = f.south + (f.north - f.south) * 0.25;
+    function line(tags, lat) {
+      return {
+        type: "way",
+        tags,
+        geometry: [
+          { lon: x0, lat },
+          { lon: x1, lat },
+        ],
+      };
+    }
+    const parsed = parseOverpass(
+      {
+        elements: [
+          line({ railway: "monorail", bridge: "viaduct", layer: "2", name: "Las Vegas Monorail" }, midLat),
+          line({ railway: "rail" }, yRail),
+          line({ railway: "light_rail" }, yRail + (f.north - f.south) * 0.05),
+          line({ railway: "light_rail", bridge: "yes", tracks: "2" }, yRail + (f.north - f.south) * 0.12),
+          line({ railway: "tram", layer: "1" }, yRail + (f.north - f.south) * 0.18),
+          line({ railway: "monorail", tunnel: "yes" }, yRail + (f.north - f.south) * 0.24),
+          line({ railway: "subway", layer: "-1" }, yRail + (f.north - f.south) * 0.3),
+          line({ railway: "rail", bridge: "viaduct", min_height: "9", height: "14" }, yRail + (f.north - f.south) * 0.36),
+        ],
+      },
+      { water: false, parking: false, walls: false, poles: false },
+      f
+    );
+    const guides = parsed.features.filter((feat) => feat.kind === "guideway");
+    assert.equal(guides.length, 4);
+    const mono = guides.find((feat) => feat.deckM === MONORAIL_DECK_M && feat.widthM === MONORAIL_WIDTH_M);
+    assert.ok(mono);
+    assert.equal(mono.thicknessM, GUIDEWAY_THICK_M);
+    assert.equal(mono.closed, false);
+    const light = guides.find((feat) => feat.widthM === RAIL_WIDTH_M && feat.deckM === 6);
+    assert.ok(light);
+    const tram = guides.find((feat) => feat.widthM === RAIL_WIDTH_M && feat.deckM === 6 && feat !== light);
+    assert.ok(tram);
+    const tagged = guides.find((feat) => feat.deckM === 9);
+    assert.ok(tagged);
+    assert.equal(tagged.thicknessM, 5);
+    assert.equal(parsed.features.some((feat) => feat.kind !== "guideway"), false);
+  });
+
   it("keeps the page toggles on and the counts off the headline", () => {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     const app = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
@@ -356,7 +412,346 @@ describe("outdoor clutter fetch", () => {
     assert.match(html, />\s*Poles\s*</);
     assert.match(app, /includeWater: document\.getElementById\("include-water"\)\.checked/);
     assert.match(app, /includePoles: document\.getElementById\("include-poles"\)\.checked/);
+    const headline = app.slice(app.indexOf("function exportHeadline"), app.indexOf("function setCopyNote"));
+    assert.equal(/guideway/i.test(headline), false);
     assert.equal(app.includes("Export did not finish. Try again."), false);
     assert.equal(app.includes("Export failed. Retry."), false);
+  });
+});
+
+function pixelVerts(area) {
+  return area.area.coordinates.filter((c) => c.coordinate_xyz.unit === "pixels").length;
+}
+
+describe("elevated rail guideways", () => {
+  it("draws a raised monorail strip and a wider light-rail beam", () => {
+    const f = frame();
+    const midLat = (f.south + f.north) / 2;
+    const x0 = f.west + (f.east - f.west) * 0.2;
+    const x1 = f.west + (f.east - f.west) * 0.75;
+    const monoLat = f.south + (f.north - f.south) * 0.35;
+    const railLat = f.south + (f.north - f.south) * 0.62;
+    const warnings = [];
+    const built = buildClutter({
+      frame: f,
+      footprintsGeojson: { features: [] },
+      name: "Monorail",
+      warnings,
+      includeGuideways: true,
+      guidewayFeatures: [
+        {
+          kind: "guideway",
+          coords: [
+            [x0, monoLat],
+            [x1, monoLat],
+          ],
+          closed: false,
+          heightM: GUIDEWAY_THICK_M,
+          thicknessM: GUIDEWAY_THICK_M,
+          deckM: MONORAIL_DECK_M,
+          widthM: MONORAIL_WIDTH_M,
+          explicitHeight: true,
+        },
+        {
+          kind: "guideway",
+          coords: [
+            [x0, railLat],
+            [x1, railLat],
+          ],
+          closed: false,
+          heightM: GUIDEWAY_THICK_M,
+          thicknessM: GUIDEWAY_THICK_M,
+          deckM: 6,
+          widthM: RAIL_WIDTH_M,
+          explicitHeight: true,
+        },
+      ],
+    });
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    const strips = areas.filter((a) => String(a.area_material.name).indexOf("Guideway") === 0);
+    assert.equal(strips.length, 2);
+    assert.equal(built.stats.guidewayAreas, 2);
+    assert.match(built.stats.summary, /Guideways 2\./);
+    for (let i = 0; i < strips.length; i++) {
+      assert.ok(pixelVerts(strips[i]) - 1 <= MAX_OI_RING_VERTS);
+      assert.equal(strips[i].area_material.rf_properties.attenuation_per_m, 9);
+      const canon = canonicalAreaMaterial(strips[i].area_material);
+      assert.deepEqual(canon, strips[i].area_material);
+    }
+    const mono = strips.find((a) => a.area_material.bottom_height === MONORAIL_DECK_M);
+    const rail = strips.find((a) => a.area_material.bottom_height === 6);
+    assert.equal(mono.area_material.name, "Guideway 4.5 @ 6.5");
+    assert.equal(mono.area_material.top_height, 11);
+    assert.ok(meterSpan(mono).short > 2.2 && meterSpan(mono).short < 4.2, "monorail width " + meterSpan(mono).short);
+    assert.equal(rail.area_material.name, "Guideway 4.5 @ 6.0");
+    assert.equal(rail.area_material.top_height, 10.5);
+    assert.ok(meterSpan(rail).short > 7 && meterSpan(rail).short < 10.5, "rail width " + meterSpan(rail).short);
+    assert.equal(/Guideway/.test(built.stats.summary.split("Foliage")[0]), false);
+  });
+
+  it("seats the beam on the downhill ground and prefers a bridge outline", () => {
+    const f = frame();
+    const midLat = (f.south + f.north) / 2;
+    const x0 = f.west + (f.east - f.west) * 0.25;
+    const x1 = f.west + (f.east - f.west) * 0.7;
+    const half = (12 / 2) / 110540;
+    const poly = [
+      [x0, midLat - half],
+      [x1, midLat - half],
+      [x1, midLat + half],
+      [x0, midLat + half],
+      [x0, midLat - half],
+    ];
+    const line = [
+      [x0, midLat],
+      [(x0 + x1) / 2, midLat],
+      [x1, midLat],
+    ];
+    const parsed = parseOverpass(
+      {
+        elements: [
+          {
+            type: "way",
+            tags: { railway: "monorail", bridge: "viaduct", layer: "2" },
+            geometry: line.map((p) => ({ lon: p[0], lat: p[1] })),
+          },
+          {
+            type: "way",
+            tags: { man_made: "bridge", bridge: "viaduct", layer: "2" },
+            geometry: poly.map((p) => ({ lon: p[0], lat: p[1] })),
+          },
+          {
+            type: "way",
+            tags: { man_made: "bridge", bridge: "yes", "building:min_level": "1", covered: "yes" },
+            geometry: [
+              [x0, f.south + (f.north - f.south) * 0.05],
+              [x1, f.south + (f.north - f.south) * 0.05],
+              [x1, f.south + (f.north - f.south) * 0.12],
+              [x0, f.south + (f.north - f.south) * 0.12],
+              [x0, f.south + (f.north - f.south) * 0.05],
+            ].map((p) => ({ lon: p[0], lat: p[1] })),
+          },
+        ],
+      },
+      {},
+      f
+    );
+    const guides = parsed.features.filter((feat) => feat.kind === "guideway");
+    assert.equal(guides.length, 1);
+    assert.equal(guides[0].closed, true);
+    const seated = planOutdoor({
+      features: guides,
+      frame: f,
+      slopeTop: { seat: () => 4.2 },
+    });
+    assert.equal(seated.items.length, 1);
+    assert.equal(seated.items[0].material.name, "Guideway 4.5 @ 10.7");
+    assert.equal(seated.items[0].material.bottom_height, 10.7);
+    assert.equal(seated.items[0].material.top_height, 15.2);
+    assert.equal(seated.items[0].material.rf_properties.attenuation_per_m, 9);
+    const built = buildClutter({
+      frame: f,
+      footprintsGeojson: { features: [] },
+      name: "Deck",
+      guidewayFeatures: guides,
+    });
+    const area = findArea(built.openintent.floorplans[0].attenuation_areas, "Guideway");
+    assert.ok(area);
+    const span = meterSpan(area);
+    assert.ok(span.short > 10 && span.short < 14, "deck width " + span.short);
+    assert.equal(built.stats.guidewayAreas, 1);
+  });
+
+  it("splits a long beam into segments that stay inside the vertex cap", () => {
+    const f = frame();
+    const coords = [];
+    for (let i = 0; i < 25; i++) {
+      const t = i / 24;
+      coords.push([
+        f.west + (f.east - f.west) * (0.08 + 0.84 * t),
+        f.south + (f.north - f.south) * (0.4 + 0.08 * Math.sin(t * Math.PI * 2)),
+      ]);
+    }
+    const built = buildClutter({
+      frame: f,
+      footprintsGeojson: { features: [] },
+      name: "Long beam",
+      includeGuideways: true,
+      guidewayFeatures: [
+        {
+          kind: "guideway",
+          coords,
+          closed: false,
+          heightM: 4.5,
+          thicknessM: 4.5,
+          deckM: 6.5,
+          widthM: 3,
+          explicitHeight: true,
+        },
+      ],
+    });
+    assert.ok(built.stats.guidewayAreas >= 2, "segments " + built.stats.guidewayAreas);
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    assert.equal(areas.length, built.stats.guidewayAreas);
+    for (let i = 0; i < areas.length; i++) {
+      assert.ok(pixelVerts(areas[i]) - 1 <= MAX_OI_RING_VERTS);
+      assert.equal(areas[i].area_material.bottom_height, 6.5);
+      assert.equal(areas[i].area_material.top_height, 11);
+    }
+    assert.match(built.stats.summary, new RegExp("Guideways " + built.stats.guidewayAreas + "\\."));
+  });
+
+  it("keeps guideways ahead of poles and behind buildings", () => {
+    const f = frame();
+    const x0 = f.west + (f.east - f.west) * 0.3;
+    const x1 = f.west + (f.east - f.west) * 0.5;
+    const y0 = f.south + (f.north - f.south) * 0.3;
+    const y1 = f.south + (f.north - f.south) * 0.5;
+    const guide = {
+      kind: "guideway",
+      coords: [
+        [f.west + (f.east - f.west) * 0.15, (f.south + f.north) / 2],
+        [f.west + (f.east - f.west) * 0.85, (f.south + f.north) / 2],
+      ],
+      closed: false,
+      heightM: 4.5,
+      thicknessM: 4.5,
+      deckM: 6.5,
+      widthM: 3,
+      explicitHeight: true,
+    };
+    const pole = {
+      kind: "pole",
+      coords: [[(f.west + f.east) / 2, f.south + (f.north - f.south) * 0.8]],
+      heightM: 9,
+      explicitHeight: false,
+      rank: 0,
+    };
+    const fit = fitOutdoorBudget([{ id: "g" }, { id: "p" }], ["guideway", "pole"], 1);
+    assert.deepEqual(fit.kinds, ["guideway"]);
+    assert.match(fit.notes.join(" "), /Light poles left out/);
+    const warnings = [];
+    const tight = buildClutter({
+      frame: f,
+      footprintsGeojson: { features: [square(x0, y0, x1, y1, { height: 12 })] },
+      name: "Budget",
+      warnings,
+      includePoles: true,
+      includeGuideways: true,
+      maxAttenuationAreas: 2,
+      outdoorFeatures: [pole],
+      guidewayFeatures: [guide],
+    });
+    assert.equal(tight.stats.openIntentBuildingAreas, 1);
+    assert.equal(tight.stats.guidewayAreas, 1);
+    assert.equal(tight.stats.poleAreas, 0);
+    assert.match(warnings.join(" "), /Light poles left out/);
+    const fullNotes = [];
+    const full = buildClutter({
+      frame: f,
+      footprintsGeojson: { features: [square(x0, y0, x1, y1, { height: 12 })] },
+      name: "Full",
+      warnings: fullNotes,
+      includePoles: true,
+      maxAttenuationAreas: 1,
+      outdoorFeatures: [pole],
+      guidewayFeatures: [guide],
+    });
+    assert.equal(full.stats.openIntentBuildingAreas, 1);
+    assert.equal(full.stats.guidewayAreas, 0);
+    assert.equal(full.stats.poleAreas, 0);
+    assert.match(fullNotes.join(" "), /Guideways left out/);
+  });
+
+  it("drops the guideway before it takes a tree slot", () => {
+    const w = 48;
+    const h = 48;
+    const cell = 2.2;
+    const values = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (Math.hypot(x - 30, y - 30) <= 3.4) values[y * w + x] = 16;
+      }
+    }
+    const midLat = 42.9;
+    const mLon = 111320 * Math.cos((midLat * Math.PI) / 180);
+    const west = -87.93;
+    const south = 42.89;
+    const grid = {
+      west,
+      south,
+      east: west + (w * cell) / mLon,
+      north: south + (h * cell) / 110540,
+      width: w,
+      height: h,
+      values,
+    };
+    const f = geoFrame({ west, south, east: grid.east, north: grid.north, name: "Tree first" });
+    const guide = {
+      kind: "guideway",
+      coords: [
+        [f.west + (f.east - f.west) * 0.15, f.south + (f.north - f.south) * 0.7],
+        [f.west + (f.east - f.west) * 0.85, f.south + (f.north - f.south) * 0.7],
+      ],
+      closed: false,
+      heightM: 4.5,
+      thicknessM: 4.5,
+      deckM: 6.5,
+      widthM: 3,
+      explicitHeight: true,
+    };
+    const base = {
+      frame: f,
+      footprintsGeojson: { features: [] },
+      name: "Tree first",
+      includeFoliage: true,
+      chmGrid: grid,
+      treesSource: "chm",
+      guidewayFeatures: [guide],
+    };
+    const wide = buildClutter(Object.assign({}, base, { maxAttenuationAreas: 982 }));
+    assert.ok(wide.stats.openIntentTreeAreas >= 1);
+    assert.ok(wide.stats.guidewayAreas >= 1);
+    const notes = [];
+    const tight = buildClutter(
+      Object.assign({}, base, {
+        maxAttenuationAreas: wide.stats.openIntentBuildingAreas + wide.stats.openIntentTreeAreas,
+        warnings: notes,
+      })
+    );
+    assert.equal(tight.stats.openIntentTreeAreas, wide.stats.openIntentTreeAreas);
+    assert.equal(tight.stats.guidewayAreas, 0);
+    assert.match(notes.join(" "), /Guideways left out/);
+  });
+
+  it("reads the monorail from the same map extract as building parts", () => {
+    const bbox = { west: -115.17, south: 36.119, east: -115.16, north: 36.124 };
+    const xml = [
+      "<osm>",
+      '<node id="1" lat="36.1210" lon="-115.1680"/>',
+      '<node id="2" lat="36.1212" lon="-115.1640"/>',
+      '<node id="3" lat="36.1214" lon="-115.1610"/>',
+      '<node id="4" lat="36.1200" lon="-115.1660"/>',
+      '<node id="5" lat="36.1202" lon="-115.1630"/>',
+      '<way id="43875943">',
+      '<nd ref="1"/><nd ref="2"/><nd ref="3"/>',
+      '<tag k="railway" v="monorail"/>',
+      '<tag k="bridge" v="viaduct"/>',
+      '<tag k="layer" v="2"/>',
+      '<tag k="name" v="Las Vegas Monorail"/>',
+      "</way>",
+      '<way id="99">',
+      '<nd ref="4"/><nd ref="5"/>',
+      '<tag k="railway" v="rail"/>',
+      "</way>",
+      "</osm>",
+    ].join("");
+    const detail = detailFromMapXml(xml, bbox);
+    assert.equal(detail.guideways.length, 1);
+    assert.equal(detail.guideways[0].widthM, 3);
+    assert.equal(detail.guideways[0].deckM, 6.5);
+    assert.equal(detail.guideways[0].thicknessM, 4.5);
+    const outdoor = featuresFromMapXml(xml, { water: true, parking: true, walls: true, poles: true }, bbox);
+    assert.equal(outdoor.features.filter((feat) => feat.kind === "guideway").length, 1);
   });
 });
