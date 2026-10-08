@@ -151,6 +151,7 @@ const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffi
 const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
+const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
 const exportJobs = require("../lib/export-jobs");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
 const { fetchMsGlobalFootprints, globalSkipWarning } = require("../lib/ms-global");
@@ -1191,6 +1192,7 @@ async function handleClutter(event) {
   let terrainJob = null;
   let chmJob = null;
   let outdoorJob = null;
+  let detailJob = null;
   let overtureFrame = null;
   try {
     reportProgress({ stage: "Fetching aerial" });
@@ -1217,6 +1219,9 @@ async function handleClutter(event) {
         }, { signal, ua: UA, timeoutMs: background ? 20000 : 4500 })
       );
     }
+    detailJob = beginOptional((signal) =>
+      fetchBuildingDetail(requestBbox, { signal, ua: UA, timeoutMs: background ? 20000 : 4500 })
+    );
     if (needImage) {
       frame = applyImageryMeta(frame, null, { width: frame.imgW, height: frame.imgH }, { requestBbox });
     }
@@ -1392,6 +1397,7 @@ async function handleClutter(event) {
     if (terrainJob) terrainJob.ctrl.abort();
     if (chmJob) chmJob.ctrl.abort();
     if (outdoorJob) outdoorJob.ctrl.abort();
+    if (detailJob) detailJob.ctrl.abort();
     return json(502, cors, { error: describeCoreFailure(e) });
   }
 
@@ -1550,6 +1556,16 @@ async function handleClutter(event) {
       footprintMeta.droppedPavement = pav.dropped;
     } catch {
       // Imagery roof fill is optional. Vector footprints still export.
+    }
+  }
+  if (detailJob) {
+    const pack = await detailJob.work;
+    if (pack && pack !== TIMED_OUT && pack.ok !== false) {
+      const shaped = shapeBuildings(features, pack);
+      features = shaped.features;
+      footprintMeta.osmParts = shaped.stats.parts;
+      footprintMeta.poolOpenings = shaped.stats.openings;
+      footprintMeta.parentsDropped = shaped.stats.parentsDropped;
     }
   }
   gj = { type: "FeatureCollection", features };

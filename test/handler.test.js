@@ -157,7 +157,8 @@ describe("clutter handler (mocked Esri)", () => {
       ),
       false
     );
-    assert.ok(!urls.some((u) => u.includes("overpass")));
+    const detailCalls = urls.filter((u) => /overpass|kumi\.systems|openstreetmap\.org\/api\/0\.6\/map/.test(String(u)));
+    assert.ok(detailCalls.length >= 1, "building parts and pools are read from OSM");
     assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("bboxSR=4326") && u.includes("imageSR=4326")));
     assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("f=json")));
     assert.ok(urls.some((u) => u.includes("MSBFP2")));
