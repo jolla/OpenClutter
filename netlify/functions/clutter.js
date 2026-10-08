@@ -147,7 +147,7 @@ async function runBackgroundExport(event, onProgress) {
   if (ctx.tail) await ctx.tail;
   return result;
 }
-const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, padFootprintBbox, imageryExportPlan, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
+const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
@@ -1561,11 +1561,15 @@ async function handleClutter(event) {
   if (detailJob) {
     const pack = await detailJob.work;
     if (pack && pack !== TIMED_OUT && pack.ok !== false) {
-      const shaped = shapeBuildings(features, pack);
-      features = shaped.features;
-      footprintMeta.osmParts = shaped.stats.parts;
-      footprintMeta.poolOpenings = shaped.stats.openings;
-      footprintMeta.parentsDropped = shaped.stats.parentsDropped;
+      try {
+        const shaped = shapeBuildings(features, pack);
+        features = shaped.features;
+        footprintMeta.osmParts = shaped.stats.parts;
+        footprintMeta.poolOpenings = shaped.stats.openings;
+        footprintMeta.parentsDropped = shaped.stats.parentsDropped;
+      } catch {
+        warnings.push("Building outlines kept the source footprint. A pool cut did not finish.");
+      }
     }
   }
   gj = { type: "FeatureCollection", features };
@@ -1723,6 +1727,15 @@ async function handleClutter(event) {
   if (!background && includeFoliage && !chmTimedOut && built.zip && built.zip.length > ZIP_FIT_BYTES) {
     for (let i = 1; i < FOLIAGE_CAPS.length && built.zip && built.zip.length > ZIP_FIT_BYTES; i++) {
       foliageCap = FOLIAGE_CAPS[i];
+      built = emitClutter(exportFeatures);
+    }
+  }
+  if (background && built.zip && !exportJobs.zipDownloadFits(built.zip.length) && imgBuf) {
+    const room = exportJobs.ZIP_DOWNLOAD_MAX - (built.zip.length - imgBuf.length);
+    const smaller = compressJpegToMax(imgBuf, Math.max(180000, room));
+    if (smaller && smaller.length < imgBuf.length) {
+      imgBuf = smaller;
+      warnings.push("Map image was compressed so the zip can download.");
       built = emitClutter(exportFeatures);
     }
   }

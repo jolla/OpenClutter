@@ -622,6 +622,37 @@ function encodeJpegRgba(rgba, imgW, imgH, quality) {
 }
 
 /**
+ * Same pixel size, smaller file. A 4K plate can be larger than the function
+ * response that delivers the zip. Dimensions stay put so roof pixels still match.
+ */
+function compressJpegToMax(imgBuf, maxBytes) {
+  if (!imgBuf || imgBuf.length < 100) return imgBuf;
+  if (!(maxBytes > 0) || imgBuf.length <= maxBytes) return imgBuf;
+  let decoded;
+  try {
+    const jpeg = require("jpeg-js");
+    decoded = jpeg.decode(imgBuf, { useTArray: true, maxResolutionInMP: 24, formatAsRGBA: true });
+  } catch {
+    return imgBuf;
+  }
+  if (!decoded || !decoded.data || !(decoded.width > 1) || !(decoded.height > 1)) return imgBuf;
+  const qualities = [70, 50, 35, 22];
+  let best = imgBuf;
+  for (let i = 0; i < qualities.length; i++) {
+    let next;
+    try {
+      next = encodeJpegRgba(decoded.data, decoded.width, decoded.height, qualities[i]);
+    } catch {
+      break;
+    }
+    if (!next || next.length >= best.length) continue;
+    best = next;
+    if (best.length <= maxBytes) break;
+  }
+  return best;
+}
+
+/**
  * Pixel size whose aspect is geodesic width/length. Long side is `cap`.
  * Callers cap `cap` at the source long side so a Finland resample does not
  * invent resolution the 4326 JPEG never had.
@@ -941,6 +972,7 @@ module.exports = {
   geodesicPixelMismatchPx,
   unifyFrameMpu,
   lockIsotropicImagery,
+  compressJpegToMax,
   FP_PAGE_SIZE,
   FP_CAP,
   padFootprintBbox,

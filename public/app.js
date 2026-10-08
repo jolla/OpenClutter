@@ -841,16 +841,33 @@ async function pollExport(jobId) {
   throw new Error("Export timed out after 5 minutes. Draw a smaller area and try again.");
 }
 
+function downloadFailure(status, data) {
+  const msg = data && (data.error || data.errorMessage);
+  if (msg) return String(msg);
+  if (status === 413) return "The zip is too large to download. Export again.";
+  if (status) return "The zip download failed (" + status + "). Export again.";
+  return "The zip download failed. Export again.";
+}
+
 async function downloadJobZip(jobId, filename) {
-  const r = await fetch("/api/export-file?job=" + encodeURIComponent(jobId), { cache: "no-store" });
-  if (!r.ok) {
-    const data = await r.json().catch(() => ({}));
-    throw new Error((data && data.error) || "The zip was not ready.");
+  let lastStatus = 0;
+  let lastData = {};
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const r = await fetch("/api/export-file?job=" + encodeURIComponent(jobId), { cache: "no-store" });
+    if (r.ok) {
+      const blob = await r.blob();
+      const disp = r.headers.get("content-disposition") || "";
+      const named = disp.match(/filename="([^"]+)"/);
+      downloadBlob(blob, (named && named[1]) || filename || "openclutter.zip");
+      return;
+    }
+    lastStatus = r.status;
+    lastData = await r.json().catch(() => ({}));
+    const wait = r.status === 409 || r.status === 503;
+    if (!wait || attempt === 3) break;
+    await sleep(500);
   }
-  const blob = await r.blob();
-  const disp = r.headers.get("content-disposition") || "";
-  const named = disp.match(/filename="([^"]+)"/);
-  downloadBlob(blob, (named && named[1]) || filename || "openclutter.zip");
+  throw new Error(downloadFailure(lastStatus, lastData));
 }
 
 async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain, terrainPaste) {
