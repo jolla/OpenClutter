@@ -133,8 +133,9 @@ function bboxLongSideM(bbox) {
 
 /**
  * Dev map-quality choices. Auto is null and keeps the size-aware plan.
- * Low / Standard / High / Sharp are explicit plates. Each larger plate keeps a
- * smaller step so a slow Esri answer can still return a zip.
+ * Low / Standard / High / Sharp / 4K are explicit plates. Each larger plate keeps a
+ * smaller step so a slow Esri answer can still return a zip. The short export
+ * path still asks for Sharp instead of 4K. The background export waits for 4K.
  */
 function imageryQualityPlan(quality) {
   const q = String(quality || "")
@@ -156,13 +157,18 @@ function imageryQualityPlan(quality) {
       { maxSide: 400, metersPerPx: 2 },
     ];
   }
-  // 2048 is the largest plate that returned for the ~850 m Wi-Co box.
-  // 2560 and 3840 were still out after 9s, so they are not a choice.
+  // 2048 is the largest plate the short path waits for.
   if (q === "sharp" || q === "2048" || q === "2k") {
     return [
       { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.4 },
       { maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX_DEV },
       { maxSide: 400, metersPerPx: 2 },
+    ];
+  }
+  if (q === "4k" || q === "4096" || q === "ultra") {
+    return [
+      { maxSide: 4096, metersPerPx: 0.15 },
+      { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.25 },
     ];
   }
   return null;
@@ -173,8 +179,9 @@ function imageryQualityPlan(quality) {
  * Production stays at 1040 px / 1 m and ignores a quality choice.
  * Auto on a short dev draw starts at 0.5 m, capped at 1040 px, then 1 m.
  * Auto on a long dev draw stays at 400 px / 2 m, then 256 px.
- * Low, Standard, High, and Sharp replace that plan on the dev host only.
- * Sharp is the 2048 px plate. A 4K plate is not an export request.
+ * Low, Standard, High, Sharp, and 4K replace that plan on the dev host only.
+ * Sharp is the 2048 px plate. 4K is 4096 px. The short path does not wait
+ * for that plate; the background export does.
  */
 function imageryExportPlan(devHost, bbox, quality) {
   if (!devHost) {

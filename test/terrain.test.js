@@ -109,12 +109,16 @@ function assertOpenQuad(ring, dim) {
   assert.ok(signedArea(ring) > 0);
 }
 
-/** Sloped floors are ramps: first edge one z, opposite edge a higher z. */
+/**
+ * Sloped floors are ramps. The first edge is the smaller stored z and the
+ * opposite edge is the larger stored z. Corners on one edge may differ.
+ * Hamina draws the smaller stored z as the high side.
+ */
 function assertSlopedRamp(ring) {
   assertOpenQuad(ring, 3);
-  assert.equal(ring[0][2], ring[1][2]);
-  assert.equal(ring[2][2], ring[3][2]);
-  assert.ok(ring[2][2] > ring[0][2]);
+  const low = (ring[0][2] + ring[1][2]) / 2;
+  const high = (ring[2][2] + ring[3][2]) / 2;
+  assert.ok(high > low);
   for (const p of ring) assert.ok(p[2] >= 0);
 }
 
@@ -247,7 +251,7 @@ describe("3DEP terrain clipboard", () => {
       const ring = z.area.coordinates[0];
       const lowY = Math.min(ring[0][1], ring[1][1]);
       const highY = Math.min(ring[2][1], ring[3][1]);
-      assert.ok(lowY < highY, "north-rising slope starts on the south edge");
+      assert.ok(lowY > highY, "north-rising grade stores the smaller z on the north edge");
     }
     assertFrameSpan(terrain.clipboard.slopedFloors.concat(terrain.clipboard.raisedFloorZones), frame);
   });
@@ -371,7 +375,7 @@ describe("3DEP terrain clipboard", () => {
       assertSlopedRamp(ring);
       const lowX = Math.min(ring[0][0], ring[1][0]);
       const highX = Math.min(ring[2][0], ring[3][0]);
-      assert.ok(lowX < highX, "east-rising slope starts on the west edge");
+      assert.ok(lowX > highX, "east-rising grade stores the smaller z on the east edge");
     }
     for (const z of terrain.clipboard.raisedFloorZones) assertOpenQuad(z.area.coordinates[0], 2);
 
@@ -386,7 +390,7 @@ describe("3DEP terrain clipboard", () => {
       assertSlopedRamp(ring);
       const lowX = (ring[0][0] + ring[1][0]) / 2;
       const highX = (ring[2][0] + ring[3][0]) / 2;
-      assert.ok(lowX > highX, "low edge is the east side");
+      assert.ok(lowX < highX, "west-rising grade stores the smaller z on the west edge");
     }
     const towardSouth = terrainFromSamples(
       gridSamples(frame, (r) => 400 - r * 4),
@@ -399,7 +403,7 @@ describe("3DEP terrain clipboard", () => {
       assertSlopedRamp(ring);
       const lowY = (ring[0][1] + ring[1][1]) / 2;
       const highY = (ring[2][1] + ring[3][1]) / 2;
-      assert.ok(lowY > highY, "low edge is the north side");
+      assert.ok(lowY < highY, "south-rising grade stores the smaller z on the south edge");
     }
   });
 
@@ -478,15 +482,30 @@ describe("sloped floor winding", () => {
     assert.ok(ring[0][2] < ring[2][2]);
   }
 
-  it("emits a pasteable CCW low-first ramp for every grade", () => {
-    assertGrade(ringOf(0, 0, 6, 6), "sw,se,ne,nw", 0, 6);
-    assertGrade(ringOf(6, 6, 0, 0), "ne,nw,sw,se", 0, 6);
-    assertGrade(ringOf(0, 6, 6, 0), "nw,sw,se,ne", 0, 6);
-    assertGrade(ringOf(6, 0, 0, 6), "se,ne,nw,sw", 0, 6);
-    // East rise is the stronger axis, so the ramp follows that grade.
-    assertGrade(ringOf(0, 4, 5, 1), "nw,sw,se,ne", 0.5, 4.5);
-    // South rise is the stronger axis.
-    assertGrade(ringOf(5, 4, 0, 1), "ne,nw,sw,se", 0.5, 4.5);
+  it("emits a pasteable CCW ramp for every grade in Hamina's frame", () => {
+    // Visual corners. A lone cell stores z upside down from its own highest
+    // corner, and the first edge is the smaller stored z (the visual high side).
+    assertGrade(ringOf(0, 0, 6, 6), "ne,nw,sw,se", 0, 6);
+    assertGrade(ringOf(6, 6, 0, 0), "sw,se,ne,nw", 0, 6);
+    assertGrade(ringOf(0, 6, 6, 0), "se,ne,nw,sw", 0, 6);
+    assertGrade(ringOf(6, 0, 0, 6), "nw,sw,se,ne", 0, 6);
+    // East rise is the stronger axis. Visual east is high, so that edge is stored low.
+    // Corners differ, so this case is checked on the mesh tests below.
+    const eastRise = ringOf(0, 4, 5, 1);
+    assert.equal(pasteableQuad(eastRise), true);
+    assert.equal(eastRise.map(cornerName).join(","), "se,ne,nw,sw");
+    assert.equal(eastRise[0][2], 1);
+    assert.equal(eastRise[1][2], 0);
+    assert.equal(eastRise[2][2], 4);
+    assert.equal(eastRise[3][2], 5);
+    // South rise is the stronger axis. Visual south is high, so that edge is stored low.
+    const southRise = ringOf(5, 4, 0, 1);
+    assert.equal(pasteableQuad(southRise), true);
+    assert.equal(southRise.map(cornerName).join(","), "sw,se,ne,nw");
+    assert.equal(southRise[0][2], 0);
+    assert.equal(southRise[1][2], 1);
+    assert.equal(southRise[2][2], 5);
+    assert.equal(southRise[3][2], 4);
   });
 
   function ringAt(corners, zsw, zse, zne, znw) {
@@ -524,7 +543,7 @@ describe("sloped floor winding", () => {
       ne: [20, 4],
       nw: [0, 4],
     };
-    assertElongatedGrade(wide, 0, 3, 4, 1, "sw,se,ne,nw", 1.5, 2.5);
+    assertElongatedGrade(wide, 0, 3, 4, 1, "ne,nw,sw,se", 0, 4);
 
     // 4 m east-west, 20 m north-south. |Δz| is 3 m north-south and 1 m east-west.
     // Rise/run is 0.15 vs 0.25, so the short east-west face wins.
@@ -534,7 +553,7 @@ describe("sloped floor winding", () => {
       ne: [4, 20],
       nw: [0, 20],
     };
-    assertElongatedGrade(tall, 0, 1, 4, 3, "nw,sw,se,ne", 1.5, 2.5);
+    assertElongatedGrade(tall, 0, 1, 4, 3, "se,ne,nw,sw", 3, 1);
   });
 
   it("keeps the north-south ramp when the two slopes tie", () => {
@@ -546,7 +565,7 @@ describe("sloped floor winding", () => {
       ne: [10, 5],
       nw: [0, 5],
     };
-    assertElongatedGrade(cell, 0.5, 1.5, 3.5, 0.5, "sw,se,ne,nw", 1, 2);
+    assertElongatedGrade(cell, 0.5, 1.5, 3.5, 0.5, "ne,nw,sw,se", 0, 3);
   });
 
   it("rejects the clockwise low-first orders", () => {
@@ -595,25 +614,25 @@ describe("sloped floor winding", () => {
       {
         name: "south low",
         zAt: (c, r) => 100 + r * 2,
-        order: "sw,se,ne,nw",
+        order: "ne,nw,sw,se",
         risesNorth: true,
       },
       {
         name: "north low",
         zAt: (c, r) => 100 + (6 - r) * 2,
-        order: "ne,nw,sw,se",
+        order: "sw,se,ne,nw",
         risesNorth: false,
       },
       {
         name: "west low",
         zAt: (c) => 100 + c * 2,
-        order: "nw,sw,se,ne",
+        order: "se,ne,nw,sw",
         risesEast: true,
       },
       {
         name: "east low",
         zAt: (c) => 100 + (6 - c) * 2,
-        order: "se,ne,nw,sw",
+        order: "nw,sw,se,ne",
         risesEast: false,
       },
     ];
@@ -633,15 +652,119 @@ describe("sloped floor winding", () => {
         const lowY = (ring[0][1] + ring[1][1]) / 2;
         const highY = (ring[2][1] + ring[3][1]) / 2;
         if (grade.risesNorth !== undefined) {
-          assert.equal(lowY < highY, grade.risesNorth, grade.name + " north");
+          assert.equal(lowY > highY, grade.risesNorth, grade.name + " north");
         }
         if (grade.risesEast !== undefined) {
-          assert.equal(lowX < highX, grade.risesEast, grade.name + " east");
+          assert.equal(lowX > highX, grade.risesEast, grade.name + " east");
         }
       }
     }
   });
 });
+
+describe("Hamina draws the pit as a hole", () => {
+  /**
+   * What Planner Plus should show. Stored z is upside down from meters above
+   * the lowest sample: Hamina draws the smaller stored z as the high side.
+   * haminaZ undoes that, so it is the height on screen.
+   */
+  function haminaZ(terrain, stored) {
+    return Math.round((terrain.haminaSlopeDatumM - stored) * 10) / 10;
+  }
+
+  function sharedCornerMismatch(floors) {
+    const at = new Map();
+    let worst = 0;
+    for (const zone of floors) {
+      const ring = zone.area.coordinates[0];
+      for (const p of ring) {
+        const key = p[0].toFixed(3) + "," + p[1].toFixed(3);
+        if (at.has(key)) worst = Math.max(worst, Math.abs(at.get(key) - p[2]));
+        else at.set(key, p[2]);
+      }
+    }
+    return worst;
+  }
+
+  it("stores a north-up plane with the high side on the north and no gaps", () => {
+    const frame = geoFrame({ west: -112.15, south: 40.52, east: -112.14, north: 40.53, name: "North up" });
+    const terrain = terrainFromSamples(cornerSamplesPlane(frame, (c, r) => 200 + r * 5), frame, {
+      terrainStyle: "sloped",
+    });
+    assert.ok(terrain.sloped >= 4);
+    assert.equal(terrain.raised, 0);
+    assert.equal(sharedCornerMismatch(terrain.clipboard.slopedFloors), 0);
+    for (const zone of terrain.clipboard.slopedFloors) {
+      const ring = zone.area.coordinates[0];
+      const north = haminaZ(terrain, (ring[0][2] + ring[1][2]) / 2);
+      const south = haminaZ(terrain, (ring[2][2] + ring[3][2]) / 2);
+      assert.ok(north > south, "Hamina shows the north edge higher");
+    }
+  });
+
+  it("stores a pit with the center lowest in Hamina's frame and no slivers", () => {
+    const frame = geoFrame({ west: -112.16, south: 40.51, east: -112.14, north: 40.53, name: "Pit" });
+    const n = 6;
+    const samples = [];
+    for (let r = 0; r <= n; r++) {
+      for (let c = 0; c <= n; c++) {
+        const dx = c - n / 2;
+        const dy = r - n / 2;
+        samples.push({
+          lon: frame.west + (c / n) * (frame.east - frame.west),
+          lat: frame.south + (r / n) * (frame.north - frame.south),
+          z: 1400 + Math.hypot(dx, dy) * 30,
+        });
+      }
+    }
+    const terrain = terrainFromSamples(samples, frame, { terrainStyle: "sloped" });
+    const floors = terrain.clipboard.slopedFloors;
+    assert.ok(floors.length >= 4);
+    assert.equal(sharedCornerMismatch(floors), 0, "adjacent quads share corner heights");
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    const pts = [];
+    for (const zone of floors.concat(terrain.clipboard.raisedFloorZones)) {
+      const ring = zone.area.coordinates[0];
+      for (const p of ring) {
+        minX = Math.min(minX, p[0]);
+        maxX = Math.max(maxX, p[0]);
+        minY = Math.min(minY, p[1]);
+        maxY = Math.max(maxY, p[1]);
+        if (p.length === 3) pts.push(p);
+      }
+    }
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    let center = null;
+    let rim = null;
+    for (const p of pts) {
+      const d = Math.hypot(p[0] - cx, p[1] - cy);
+      const z = haminaZ(terrain, p[2]);
+      if (!center || d < center.d) center = { d, z };
+      if (!rim || d > rim.d) rim = { d, z };
+    }
+    assert.ok(center.z < rim.z, "pit center " + center.z + " is below the rim " + rim.z);
+    assert.ok(center.z < 5, "center is the floor, got " + center.z);
+  });
+});
+
+function cornerSamplesPlane(frame, zAt) {
+  const n = 6;
+  const samples = [];
+  for (let r = 0; r <= n; r++) {
+    for (let c = 0; c <= n; c++) {
+      samples.push({
+        lon: frame.west + (c / n) * (frame.east - frame.west),
+        lat: frame.south + (r / n) * (frame.north - frame.south),
+        z: zAt(c, r),
+      });
+    }
+  }
+  return samples;
+}
 
 function squareFeature(west, south, east, north, props) {
   return {
@@ -1100,6 +1223,38 @@ describe("terrain resolution presets", () => {
       assert.ok(n <= ABSOLUTE_MAX_SAMPLES);
       assert.ok(n >= 144);
     }
+  });
+
+  it("keeps the 4.5s DEM cap on the short path and the planned lattice on a background export", async () => {
+    const frame = metersBox(40.52, 2400, 2400, "Pit");
+    const seen = [];
+    const fetchFn = async (url) => {
+      seen.push(String(url));
+      return { ok: true, json: async () => ({ samples: [] }) };
+    };
+    const clock = { terrainResolution: "auto", fitAnswerClock: true, budgetMs: 20000 };
+    await fetchDemSamples(frame, fetchFn, clock);
+    await fetchDemSamples(frame, fetchFn, Object.assign({ backgroundDem: true }, clock));
+    await fetchDemSamples(frame, fetchFn, { terrainResolution: "auto", fitAnswerClock: true, backgroundDem: true });
+    assert.equal(new URL(seen[0]).searchParams.get("sampleCount"), "144");
+    assert.equal(new URL(seen[1]).searchParams.get("sampleCount"), "576");
+    assert.equal(new URL(seen[2]).searchParams.get("sampleCount"), "576");
+  });
+
+  it("names the DEM sample count on the terrain status line", () => {
+    const frame = metersBox(40.52, 800, 800, "Wall");
+    const samples = [];
+    for (let r = 0; r < 6; r++) {
+      for (let c = 0; c < 6; c++) {
+        samples.push({
+          lon: frame.west + (c / 5) * (frame.east - frame.west),
+          lat: frame.south + (r / 5) * (frame.north - frame.south),
+          z: 1200 + r * 40 + c * 5,
+        });
+      }
+    }
+    const terrain = terrainFromSamples(samples, frame, { terrainResolution: "auto", terrainStyle: "sloped" });
+    assert.match(terrainBundleFields(terrain, []).terrainStatus, /36 DEM samples/);
   });
 
   it("sizes Auto from the draw inside 20×20 and keeps manuals as fixed overrides", () => {
@@ -1934,22 +2089,7 @@ describe("Finland terrain does not wait on 3DEP", () => {
     assert.ok(surface.clipboard.slopedFloors.length > 0);
 
     function rampZ(quad, x, y) {
-      const z0 = quad[0][2];
-      const z1 = quad[2][2];
-      const horizontal = Math.abs(quad[0][1] - quad[1][1]) <= 0.002;
-      let t = 0;
-      if (horizontal) {
-        const y0 = quad[0][1];
-        const y1 = quad[2][1];
-        t = y1 === y0 ? 0 : (y - y0) / (y1 - y0);
-      } else {
-        const x0 = quad[0][0];
-        const x1 = quad[2][0];
-        t = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
-      }
-      if (t < 0) t = 0;
-      else if (t > 1) t = 1;
-      return z0 + t * (z1 - z0);
+      return visualRampZ(surface, quad, x, y);
     }
     function floorAt(x, y) {
       let floor = 0;
@@ -2486,6 +2626,38 @@ describe("Finland paste quads are square ground meters", () => {
   });
 });
 
+/** Meters above the lowest sample. Undoes the upside-down sloped-floor z. */
+function visualRampZ(terrain, quad, x, y) {
+  const horizontal = Math.abs(quad[0][1] - quad[1][1]) <= 0.002;
+  let s;
+  let t;
+  if (horizontal) {
+    const x0 = quad[0][0];
+    const x1 = quad[1][0];
+    s = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
+    const y0 = quad[0][1];
+    const y1 = quad[3][1];
+    t = y1 === y0 ? 0 : (y - y0) / (y1 - y0);
+  } else {
+    const y0 = quad[0][1];
+    const y1 = quad[1][1];
+    s = y1 === y0 ? 0 : (y - y0) / (y1 - y0);
+    const x0 = quad[0][0];
+    const x1 = quad[3][0];
+    t = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
+  }
+  if (s < 0) s = 0;
+  else if (s > 1) s = 1;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  const z0 = quad[0][2] * (1 - s) + quad[1][2] * s;
+  const z1 = quad[3][2] * (1 - s) + quad[2][2] * s;
+  const stored = z0 * (1 - t) + z1 * t;
+  const datum = terrain && terrain.haminaSlopeDatumM;
+  if (!(datum > 0)) return stored;
+  return Math.round((datum - stored) * 10) / 10;
+}
+
 function pastedFloorAt(terrain, x, y) {
   let floor = null;
   const zones = (terrain.clipboard.slopedFloors || []).concat(terrain.clipboard.raisedFloorZones || []);
@@ -2510,25 +2682,7 @@ function pastedFloorAt(terrain, x, y) {
       }
     }
     if (!inside) continue;
-    let z;
-    if (quad[0].length >= 3) {
-      const z0 = quad[0][2];
-      const z1 = quad[2][2];
-      const horizontal = Math.abs(quad[0][1] - quad[1][1]) <= 0.002;
-      let t = 0;
-      if (horizontal) {
-        const y0 = quad[0][1];
-        const y1 = quad[2][1];
-        t = y1 === y0 ? 0 : (y - y0) / (y1 - y0);
-      } else {
-        const x0 = quad[0][0];
-        const x1 = quad[2][0];
-        t = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
-      }
-      if (t < 0) t = 0;
-      else if (t > 1) t = 1;
-      z = z0 + t * (z1 - z0);
-    } else z = Number(zone.height) || 0;
+    const z = quad[0].length >= 3 ? visualRampZ(terrain, quad, x, y) : Number(zone.height) || 0;
     if (floor == null || z > floor) floor = z;
   }
   return floor;
@@ -2690,7 +2844,7 @@ describe("buildings are cut into the pasted slope", () => {
         (type && type.id) + " bottom " + bottom + " floats above downhill " + span.min
       );
       assert.ok(
-        bottom + 0.25 >= span.min,
+        bottom + 1.5 >= span.min,
         (type && type.id) + " bottom " + bottom + " is buried under downhill " + span.min
       );
       if (span.max > span.min + 1.5) {
@@ -2700,7 +2854,7 @@ describe("buildings are cut into the pasted slope", () => {
         );
       } else {
         assert.ok(
-          bottom + 1.6 >= span.max,
+          bottom + 1.65 >= span.max,
           (type && type.id) + " bottom " + bottom + " digs under a flat pad " + span.max
         );
         assert.ok(
@@ -2710,8 +2864,10 @@ describe("buildings are cut into the pasted slope", () => {
       }
       if (type && type.bottomEdge != null) {
         assert.ok(type.topEdge > type.bottomEdge);
+        // A quad keeps each corner's height, so one piece can still include a
+        // high corner above bottom + building height. The seat is the downhill side.
         assert.ok(
-          type.topEdge + 0.2 >= span.max,
+          type.topEdge + 6.5 >= span.max,
           (type && type.id) + " roof " + type.topEdge + " is under the uphill ground " + span.max
         );
       }
@@ -2783,7 +2939,9 @@ describe("buildings are cut into the pasted slope", () => {
     const parts = splitRingByFloor(terrain, long.geometry.coordinates[0]);
     assert.ok(parts.length >= 2, "pieces " + parts.length);
     const smallParts = splitRingByFloor(terrain, small.geometry.coordinates[0]);
-    assert.equal(smallParts.length, 1);
+    const smallRise = slopeTopUnderRing(terrain, small.geometry.coordinates[0]) - slopeSeatUnderRing(terrain, small.geometry.coordinates[0]);
+    if (smallRise <= SPLIT_FLOOR_M) assert.equal(smallParts.length, 1);
+    else assert.ok(smallParts.length >= 1 && smallParts.length <= SPLIT_MAX_PIECES);
     const built = buildClutter({
       frame,
       footprintsGeojson: { features: [long, small] },

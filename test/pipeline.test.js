@@ -1153,8 +1153,9 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /Copy GPS points/);
     assert.match(app, /southwest and northeast corners of the imported map/);
     const afterDownloadFn = app.split("function downloadBlob")[1] || "";
-    assert.equal((afterDownloadFn.match(/downloadBlob\(/g) || []).length, 1);
+    assert.equal((afterDownloadFn.match(/downloadBlob\(/g) || []).length, 2);
     assert.match(app, /downloadBlob\(b64ToBlob\(data\.zipBase64/);
+    assert.match(app, /downloadBlob\(blob,/);
     assert.equal(/terrain-clipboard\.json/.test(app), false);
     assert.equal(/terrainFilename/.test(app), false);
     assert.equal(/downloaded terrain/i.test(app), false);
@@ -1168,9 +1169,10 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(html, /value="standard">Standard · 640 px</);
     assert.match(html, /value="high">High · 1040 px</);
     assert.match(html, /value="sharp">Sharp · 2048 px</);
+    assert.match(html, /value="4k">4K · 4096 px</);
     assert.match(html, /id="terrain-hint"[^>]*hidden/);
     assert.match(html, /Copy and paste in Planner Plus\. Do not import as OpenIntent\./);
-    assert.match(html, /id="map-quality-hint"[^>]*hidden>Auto is fast\. High and Sharp wait for a bigger plate\./);
+    assert.match(html, /id="map-quality-hint"[^>]*hidden>Auto is fast\. High, Sharp, and 4K wait for a bigger plate\./);
     assert.equal(/4K does not return/.test(html), false);
     assert.equal(/type="range"/i.test(html), false);
     assert.equal(/DEM source|3DEP source/i.test(html + app), false);
