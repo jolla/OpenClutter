@@ -1319,6 +1319,34 @@ describe("attenuation cap keeps discrete trees", () => {
     assert.equal(capped.treeGroups, 1);
     assert.equal(5 - capped.areas.length, 1);
   });
+
+  it("keeps a taller roof ahead of a larger short roof when the area budget is full", () => {
+    const frame = geoFrame(WYNN);
+    const lon = frame.west + (frame.east - frame.west) * 0.2;
+    const lat = frame.south + (frame.north - frame.south) * 0.2;
+    const shortWide = squareFeature(lon, lat, lon + 0.0032, lat + 0.0032, {
+      height: 6,
+      heightSource: "ms-global",
+    });
+    const tall = squareFeature(lon + 0.005, lat, lon + 0.0066, lat + 0.0016, {
+      height: 80,
+      heightSource: "ms-global",
+    });
+    const notes = [];
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [shortWide, tall] },
+      name: "Priority",
+      warnings: notes,
+      maxAttenuationAreas: 1,
+    });
+    assert.equal(built.stats.buildingsKept, 1);
+    const mat = built.openintent.floorplans[0].attenuation_areas[0].area_material;
+    assert.ok(mat.top_height > 40, mat.name + " top " + mat.top_height);
+    const text = notes.join(" ");
+    assert.match(text, /largest, tallest roofs/);
+    assert.match(text, /did not fit in the 1 area budget/);
+  });
 });
 
 function pixelRoof(pts, bottom, top) {

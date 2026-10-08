@@ -699,7 +699,9 @@ function pastePlanQuadBudget(jsonMax) {
 
 function reportedCellM(preset, reliefM, highLat, widthM, lengthM, cols, rows) {
   const effective =
-    highLat || ((preset.id === "auto" || preset.experimental) && reliefM >= LIFT_RELIEF_M);
+    highLat ||
+    preset.id === "auto" ||
+    (preset.experimental && reliefM >= LIFT_RELIEF_M);
   if (effective && cols > 0 && rows > 0 && widthM > 0 && lengthM > 0) {
     return (widthM / cols + lengthM / rows) / 2;
   }

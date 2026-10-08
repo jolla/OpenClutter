@@ -20,6 +20,8 @@ const AZURE_PREFIX =
   "/theme=buildings/type=building/";
 const GROUP_STRIDE = 26;
 const MAX_GROUPS = 4;
+const MAX_GROUPS_LARGE = 12;
+const LARGE_GROUP_SIDE_M = 2500;
 const QUERY_PAD_DEG = 0.002;
 
 let cached = null;
@@ -81,7 +83,7 @@ function orderGroups(groups, bbox) {
   });
 }
 
-function groupsForBbox(west, south, east, north) {
+function groupsForBbox(west, south, east, north, maxGroups) {
   const idx = parsedIndex();
   const w = +west - QUERY_PAD_DEG;
   const s = +south - QUERY_PAD_DEG;
@@ -107,8 +109,9 @@ function groupsForBbox(west, south, east, north) {
     });
   }
   const bbox = { west: +west, south: +south, east: +east, north: +north };
+  const cap = maxGroups > 0 ? maxGroups | 0 : MAX_GROUPS;
   const ordered = orderGroups(hits, bbox);
-  if (ordered.length <= MAX_GROUPS) return ordered;
+  if (ordered.length <= cap) return ordered;
   const lon = (bbox.west + bbox.east) / 2;
   const lat = (bbox.south + bbox.north) / 2;
   const center = [];
@@ -118,7 +121,15 @@ function groupsForBbox(west, south, east, north) {
     else rest.push(g);
   }
   rest.sort((a, b) => groupArea(a) - groupArea(b));
-  return orderGroups(center.concat(rest).slice(0, MAX_GROUPS), bbox);
+  return orderGroups(center.concat(rest).slice(0, cap), bbox);
+}
+
+function spanSideM(bbox) {
+  const lat = (+bbox.south + +bbox.north) / 2;
+  const mLon = 111320 * Math.cos((lat * Math.PI) / 180);
+  const widthM = Math.abs(+bbox.east - +bbox.west) * mLon;
+  const lengthM = Math.abs(+bbox.north - +bbox.south) * 110540;
+  return Math.max(widthM, lengthM);
 }
 
 /** Struct bbox overlap. Page stats skip GeoParquet pages that miss the site. */
@@ -242,7 +253,8 @@ async function fetchOvertureFootprints(frame, opts) {
     north: +frame.north,
   };
   const filterBox = opts && opts.filter ? opts.filter : bbox;
-  const groups = groupsForBbox(bbox.west, bbox.south, bbox.east, bbox.north);
+  const groupCap = spanSideM(bbox) > LARGE_GROUP_SIDE_M ? MAX_GROUPS_LARGE : MAX_GROUPS;
+  const groups = groupsForBbox(bbox.west, bbox.south, bbox.east, bbox.north, groupCap);
   if (!groups.length) return { features: [], rowGroups: 0, groupsRead: 0, release: RELEASE };
   const reader = (opts && opts.reader) || loadReader();
   const byFile = new Map();
@@ -305,6 +317,7 @@ module.exports = {
   AZURE_PREFIX,
   GROUP_STRIDE,
   MAX_GROUPS,
+  MAX_GROUPS_LARGE,
   groupsForBbox,
   orderGroups,
   bboxRowFilter,

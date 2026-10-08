@@ -202,6 +202,16 @@ function imageryExportPlan(devHost, bbox, quality) {
   ];
 }
 
+function spanLimitLabel(maxSpan) {
+  const n = +maxSpan;
+  if (n >= 1000) {
+    const km = n / 1000;
+    const text = Math.abs(km - Math.round(km)) < 1e-6 ? String(Math.round(km)) : km.toFixed(1);
+    return text + " km";
+  }
+  return Math.round(n) + " m";
+}
+
 function geoFrame(bbox, opts = {}) {
   const west = +bbox.west;
   const south = +bbox.south;
@@ -215,10 +225,10 @@ function geoFrame(bbox, opts = {}) {
   const mpd = metersPerDeg((south + north) / 2);
   const widthM = (east - west) * mpd.lon;
   const lengthM = (north - south) * mpd.lat;
-  const maxSpan = opts.maxSpanM ?? 2500;
+  const maxSpan = opts.maxSpanM ?? 10000;
   const minSpan = opts.minSpanM ?? 40;
-  if (widthM > maxSpan || lengthM > maxSpan) {
-    throw new Error("bbox too large (max 2.5 km)");
+  if (widthM > maxSpan + 1 || lengthM > maxSpan + 1) {
+    throw new Error("bbox too large (max " + spanLimitLabel(maxSpan) + ")");
   }
   if (widthM < minSpan || lengthM < minSpan) {
     throw new Error("bbox too small");

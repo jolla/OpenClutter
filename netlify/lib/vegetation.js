@@ -355,6 +355,7 @@ function chmCrownPolygons(grid, frame, buildingAabbs, hits, opts) {
     });
   }
   polygons.coarsened = !!coarsened;
+  polygons.dropped = packed.dropped | 0;
   return polygons;
 }
 
@@ -1138,11 +1139,13 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
   let foliageGeometry = "none";
   let polygons = [];
   let coarsened = false;
+  let foliageDropped = 0;
   if (opts && opts.omitFoliage) {
     foliageGeometry = "omitted";
   } else if (opts && opts.chmGrid) {
     polygons = chmCrownPolygons(opts.chmGrid, frame, buildingAabbs, opts && opts.canopyHits, opts);
     coarsened = !!polygons.coarsened;
+    foliageDropped = polygons.dropped | 0;
     if (polygons.length) foliageGeometry = "chm-contour";
   }
   if (
@@ -1266,6 +1269,7 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     foliageLifted,
     foliageGeometry,
     foliageCoarsened: coarsened,
+    foliageDropped,
     polygons: polygons.length,
     overlayPoints: [],
     overlayRings,

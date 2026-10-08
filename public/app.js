@@ -284,7 +284,7 @@ function committedExportBlocked() {
   if (!bbox) return true;
   const w = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.south, bbox.east));
   const h = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.north, bbox.west));
-  return w > 2500 || h > 2500 || w < 40 || h < 40;
+  return w > 10000 || h > 10000 || w < 40 || h < 40;
 }
 
 function syncExportReady() {
@@ -320,7 +320,7 @@ function applyExtent(bounds, label) {
   bbox = chipBbox(bounds);
   showAreaChip(bounds, committedLabel);
   syncExportReady();
-  if (exportBtn.disabled) setStatus("Area must be between 40 m and 2.5 km on a side.", true);
+  if (exportBtn.disabled) setStatus("Area must be between 40 m and 10 km on a side.", true);
   else setStatus("Ready to export.");
 }
 
@@ -436,7 +436,7 @@ function handleDraw(result) {
     restoreCommitted();
     resumeDrawMode();
     if (!bbox) setStatus("Click the map to draw the site.");
-    else if (exportBtn.disabled) setStatus("Area must be between 40 m and 2.5 km on a side.", true);
+    else if (exportBtn.disabled) setStatus("Area must be between 40 m and 10 km on a side.", true);
     else setStatus("Ready to export.");
   }
 }

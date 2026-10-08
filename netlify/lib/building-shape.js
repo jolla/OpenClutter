@@ -16,6 +16,7 @@
 
 const polygonClipping = require("polygon-clipping");
 const { guidewaysFromElements, guidewaysFromParsedWays } = require("./outdoor-clutter");
+const { fetchOsmMaps, ringKey, bboxSpanM, TILE_SPAN_M } = require("./osm-tiles");
 
 const OVERPASS_URLS = [
   "https://overpass.kumi.systems/api/interpreter",
@@ -237,8 +238,6 @@ function ringHitsBox(ring, bbox) {
   return false;
 }
 
-const OSM_MAP_URL = "https://www.openstreetmap.org/api/0.6/map";
-
 function xmlAttr(tag, name) {
   const m = new RegExp("\\s" + name + '="([^"]*)"').exec(tag);
   return m ? m[1] : "";
@@ -311,9 +310,10 @@ function closedFromPts(pts) {
 }
 
 /**
- * The map extract is one request for the drawn box. Overpass is the fallback
- * when that extract is missing. Only parts, pools, water, and courtyard
- * inners are kept. A plain building outer is not a new footprint.
+ * The map extract is one request for a draw up to about 2.2 km. A larger
+ * draw is tiled, and Overpass is only the fallback for a small extract.
+ * Only parts, pools, water, and courtyard inners are kept. A plain building
+ * outer is not a new footprint.
  */
 function detailFromMapXml(xml, bbox) {
   const text = String(xml || "");
@@ -428,6 +428,42 @@ function detailFromMapXml(xml, bbox) {
   return parsed;
 }
 
+function mergeBuildingDetail(packs) {
+  const parts = [];
+  const openings = [];
+  const guideways = [];
+  const seenP = new Set();
+  const seenO = new Set();
+  const seenG = new Set();
+  for (let p = 0; p < packs.length; p++) {
+    const pack = packs[p] || {};
+    const partList = pack.parts || [];
+    for (let i = 0; i < partList.length; i++) {
+      const feature = partList[i];
+      const ring = feature && feature.geometry && feature.geometry.coordinates && feature.geometry.coordinates[0];
+      const key = ringKey(ring);
+      if (key && seenP.has(key)) continue;
+      if (key) seenP.add(key);
+      parts.push(feature);
+    }
+    const opens = pack.openings || [];
+    for (let i = 0; i < opens.length; i++) {
+      const key = ringKey(opens[i]);
+      if (key && seenO.has(key)) continue;
+      if (key) seenO.add(key);
+      openings.push(opens[i]);
+    }
+    const guides = pack.guideways || [];
+    for (let i = 0; i < guides.length; i++) {
+      const key = ringKey(guides[i] && guides[i].coords);
+      if (key && seenG.has(key)) continue;
+      if (key) seenG.add(key);
+      guideways.push(guides[i]);
+    }
+  }
+  return { parts, openings, guideways };
+}
+
 async function fetchBuildingDetail(bbox, opts) {
   const empty = { ok: false, parts: [], openings: [], guideways: [] };
   if (!bbox) return empty;
@@ -442,32 +478,37 @@ async function fetchBuildingDetail(bbox, opts) {
   }
   const ua = (opts && opts.ua) || "openclutter";
   const q = buildingDetailQuery(bbox);
+  const tile = !!(opts && opts.tile);
   try {
     if (!ctrl.signal.aborted) {
       try {
-        const mapUrl =
-          OSM_MAP_URL +
-          "?bbox=" +
-          [bbox.west, bbox.south, bbox.east, bbox.north].map((n) => +n).join(",");
-        const r = await fetch(mapUrl, {
-          headers: { "user-agent": ua, accept: "application/xml,text/xml,*/*" },
+        const maps = await fetchOsmMaps(bbox, {
           signal: ctrl.signal,
+          ua,
+          tile,
+          fetchImpl: opts && opts.fetchImpl,
         });
-        if (r.ok) {
-          const xml = await r.text();
-          if (xml && xml.indexOf("<osm") >= 0) {
-            const parsed = detailFromMapXml(xml, bbox);
-            return {
-              ok: true,
-              parts: parsed.parts,
-              openings: parsed.openings,
-              guideways: parsed.guideways || [],
-            };
-          }
+        if (maps.xmls.length) {
+          const packs = [];
+          for (let i = 0; i < maps.xmls.length; i++) packs.push(detailFromMapXml(maps.xmls[i], bbox));
+          const merged = mergeBuildingDetail(packs);
+          return {
+            ok: true,
+            parts: merged.parts,
+            openings: merged.openings,
+            guideways: merged.guideways,
+            notes: maps.notes,
+          };
+        }
+        if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
+          return { ok: true, parts: [], openings: [], guideways: [], notes: maps.notes };
         }
       } catch (e) {
         if (ctrl.signal.aborted) return empty;
       }
+    }
+    if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
+      return { ok: true, parts: [], openings: [], guideways: [], notes: [] };
     }
     for (let u = 0; u < OVERPASS_URLS.length; u++) {
       if (ctrl.signal.aborted) return empty;
