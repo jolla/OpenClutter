@@ -11,6 +11,7 @@ const {
   failureError,
   idleStatus,
   runExportAttempts,
+  chooseTerrainPaste,
 } = require("../public/export-client");
 
 describe("export gateway timeout", () => {
@@ -168,5 +169,50 @@ describe("export gateway timeout", () => {
         return true;
       }
     );
+  });
+});
+
+describe("Copy terrain after a background result", () => {
+  const gps = {
+    header: { type: "HaminaClipboard" },
+    tiePoints: [
+      { lat: 40.5, lon: -112.16, x: -100, y: -100 },
+      { lat: 40.51, lon: -112.15, x: 0, y: 0 },
+    ],
+    slopedFloors: [],
+    raisedFloorZones: [],
+  };
+
+  it("keeps the sloped mesh and stamps the two GPS points onto it", () => {
+    const mesh = {
+      header: { type: "HaminaClipboard" },
+      slopedFloors: [{ area: { coordinates: [[[0, 0, 1], [1, 0, 1], [1, 1, 2], [0, 1, 2]]] } }],
+      raisedFloorZones: [],
+      tiePoints: [],
+    };
+    const choice = chooseTerrainPaste(
+      { terrainClipboard: mesh, gpsClipboard: gps, terrainStatus: "Terrain sloped 20×20." },
+      true
+    );
+    assert.equal(choice.gpsOnly, false);
+    const parsed = JSON.parse(choice.json);
+    assert.equal(parsed.slopedFloors.length, 1);
+    assert.equal(parsed.tiePoints.length, 2);
+    assert.equal(parsed.tiePoints[1].x, 0);
+    assert.match(choice.status, /Terrain sloped/);
+  });
+
+  it("does not replace a missing mesh with the GPS copy when Terrain is on", () => {
+    const choice = chooseTerrainPaste({ terrainClipboard: null, gpsClipboard: gps, terrainStatus: "" }, true);
+    assert.equal(choice.json, "");
+    assert.equal(choice.gpsOnly, false);
+    assert.equal(choice.status, "Terrain did not return. Export again.");
+  });
+
+  it("still copies GPS points when Terrain is off", () => {
+    const choice = chooseTerrainPaste({ terrainClipboard: null, gpsClipboard: gps }, false);
+    assert.equal(choice.gpsOnly, true);
+    assert.equal(JSON.parse(choice.json).tiePoints.length, 2);
+    assert.equal(JSON.parse(choice.json).slopedFloors.length, 0);
   });
 });

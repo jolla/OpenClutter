@@ -662,22 +662,11 @@ function b64ToBlob(b64, type) {
   return new Blob([bytes], { type });
 }
 
-function pasteFloors(clip) {
-  const raised = clip && clip.raisedFloorZones ? clip.raisedFloorZones.length : 0;
-  const sloped = clip && clip.slopedFloors ? clip.slopedFloors.length : 0;
-  return raised + sloped;
-}
-
-function rememberTerrain(data) {
-  const gps = data && data.gpsClipboard;
-  const points = gps && Array.isArray(gps.tiePoints) ? gps.tiePoints : [];
-  let clip = data && data.terrainClipboard;
-  if (clip && points.length >= 2) clip.tiePoints = points;
-  else if (pasteFloors(clip) === 0 && points.length >= 2) clip = gps;
-  const floors = pasteFloors(clip);
-  const ties = clip && Array.isArray(clip.tiePoints) ? clip.tiePoints.length : 0;
-  terrainPasteJson = floors || ties >= 2 ? JSON.stringify(clip) : "";
-  terrainPasteGpsOnly = !!(terrainPasteJson && floors === 0);
+function rememberTerrain(data, includeTerrain) {
+  const choice = OpenClutterExport.chooseTerrainPaste(data, includeTerrain);
+  terrainPasteJson = choice.json;
+  terrainPasteGpsOnly = choice.gpsOnly;
+  if (data && includeTerrain !== false && !choice.json) data.terrainStatus = choice.status;
   if (copyTerrainBtn) {
     copyTerrainBtn.hidden = !terrainPasteJson;
     copyTerrainBtn.textContent = terrainPasteGpsOnly ? "Copy GPS points" : "Copy terrain";
@@ -747,7 +736,7 @@ async function fetchTerrainPaste() {
 
 function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
   const terrainOff = includeTerrain === false;
-  rememberTerrain(data);
+  rememberTerrain(data, includeTerrain);
   const summary = (data.stats && data.stats.summary) || "";
   const terrainNote = terrainOff ? "Terrain off" : data.terrainStatus || "";
   const gpsNote = terrainPasteJson
