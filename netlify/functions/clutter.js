@@ -1670,12 +1670,13 @@ async function handleClutter(event) {
     });
   }
 
-  function noteShrink(n) {
+  function noteShrink(before, after) {
+    if (!(before > after)) return;
     for (let i = warnings.length - 1; i >= 0; i--) {
       if (/^Kept the \d+ largest roofs/.test(warnings[i])) warnings.splice(i, 1);
     }
     warnings.push(
-      "Kept the " + n + " largest roofs so the zip can download. Draw a smaller area for the rest of this campus."
+      "Kept the " + after + " largest roofs so the zip can download. Draw a smaller area for the rest of this campus."
     );
   }
 
@@ -1694,21 +1695,26 @@ async function handleClutter(event) {
   }
 
   let exportFeatures = features;
-  if (exportFeatures.length > ZIP_SHRINK_STEPS[0]) {
+  // 640 / 4.2 MB are the synchronous download. A background job stores the
+  // zip in Blobs, so those trims must not drop roofs or the small crowns.
+  // Hamina's 982-area import cap still applies inside the pipeline.
+  if (!background && exportFeatures.length > ZIP_SHRINK_STEPS[0]) {
+    const before = exportFeatures.length;
     exportFeatures = largestFeatures(exportFeatures, ZIP_SHRINK_STEPS[0], frame.mpd);
-    noteShrink(exportFeatures.length);
+    noteShrink(before, exportFeatures.length);
   }
   let built = emitClutter(exportFeatures);
-  if (includeFoliage && !chmTimedOut && built.zip && built.zip.length > ZIP_FIT_BYTES) {
+  if (!background && includeFoliage && !chmTimedOut && built.zip && built.zip.length > ZIP_FIT_BYTES) {
     for (let i = 1; i < FOLIAGE_CAPS.length && built.zip && built.zip.length > ZIP_FIT_BYTES; i++) {
       foliageCap = FOLIAGE_CAPS[i];
       built = emitClutter(exportFeatures);
     }
   }
-  if (built.zip && built.zip.length > ZIP_FIT_BYTES) {
+  if (!background && built.zip && built.zip.length > ZIP_FIT_BYTES) {
     for (let i = 1; i < ZIP_SHRINK_STEPS.length; i++) {
+      const before = features.length;
       exportFeatures = largestFeatures(features, ZIP_SHRINK_STEPS[i], frame.mpd);
-      noteShrink(exportFeatures.length);
+      noteShrink(before, exportFeatures.length);
       built = emitClutter(exportFeatures);
       if (built.zip && built.zip.length <= ZIP_FIT_BYTES) break;
     }
@@ -1805,7 +1811,7 @@ async function handleClutter(event) {
   }
 
   if (!built.zip) return json(500, cors, { error: "zip missing" });
-  if (built.zip.length > 4500000) {
+  if (!background && built.zip.length > 4500000) {
     return json(413, cors, {
       error: "This area is too large to export in one zip. Draw a smaller area and try again.",
     });

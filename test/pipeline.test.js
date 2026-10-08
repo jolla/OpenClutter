@@ -11,7 +11,7 @@ const {
   CLIPBOARD_COLLECTION_KEYS,
   pickBuildingTypeId,
 } = require("../netlify/lib/hamina-clipboard");
-const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS } = require("../netlify/lib/pipeline");
+const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS, capBuildingsAndTrees } = require("../netlify/lib/pipeline");
 const { OI_BUILDING_NAMES, isVegetationOiName, isPoisonedOiName } = require("../netlify/lib/materials");
 const { zipStore, unzipStore } = require("../netlify/lib/zip-store");
 const { version: APP_VERSION } = require("../netlify/lib/version");
@@ -1270,5 +1270,22 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.equal(/\/api\/clutter-polygon/.test(app), false);
     assert.match(app, /OpenClutterDraw/);
     assert.equal(/L\.Draw/.test(app), false);
+  });
+});
+
+describe("attenuation cap keeps discrete trees", () => {
+  it("keeps a stemmed tree ahead of a canopy that was listed first", () => {
+    const canopy = { id: "canopy" };
+    const tree = { id: "crown" };
+    const layer = { id: "layer" };
+    const trunk = { id: "trunk" };
+    const capped = capBuildingsAndTrees(
+      [{ id: "building" }],
+      [canopy, tree, layer, trunk],
+      ["canopy", "canopy", "layer", "trunk"],
+      4
+    );
+    assert.deepEqual(capped.areas.map((a) => a.id), ["building", "crown", "layer", "trunk"]);
+    assert.equal(capped.dropped, 1);
   });
 });

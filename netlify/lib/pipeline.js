@@ -1162,25 +1162,31 @@ function capBuildingsAndTrees(buildings, trees, kinds, max) {
   const keptB = srcB.slice(0, Math.min(srcB.length, limit));
   const treeList = trees || [];
   const kindList = kinds || [];
-  const kept = [];
+  const groups = [];
   let i = 0;
   while (i < treeList.length) {
-    if (kindList[i] === "trunk") {
-      i++;
-      continue;
-    }
-    if (kindList[i] === "layer") {
+    if (kindList[i] === "trunk" || kindList[i] === "layer") {
       i++;
       continue;
     }
     // A crown is the full band plus the inset layers above it, then the stem.
     let j = i + 1;
     while (j < treeList.length && kindList[j] === "layer") j++;
-    if (j < treeList.length && kindList[j] === "trunk") j++;
-    const need = j - i;
-    if (keptB.length + kept.length + need > limit) break;
-    for (let t = i; t < j; t++) kept.push(treeList[t]);
+    const discrete = j < treeList.length && kindList[j] === "trunk";
+    if (discrete) j++;
+    groups.push({ start: i, end: j, discrete });
     i = j;
+  }
+  // Discrete trees take the slots that are left after buildings. A big
+  // canopy outline does not spend those slots first. Poles and walls are
+  // added later, so they drop before a tree does.
+  groups.sort((a, b) => (a.discrete === b.discrete ? 0 : a.discrete ? -1 : 1));
+  const kept = [];
+  for (let g = 0; g < groups.length; g++) {
+    const group = groups[g];
+    const need = group.end - group.start;
+    if (keptB.length + kept.length + need > limit) continue;
+    for (let t = group.start; t < group.end; t++) kept.push(treeList[t]);
   }
   return {
     areas: keptB.concat(kept),
@@ -1819,6 +1825,17 @@ function buildClutter({
   outdoorMiss,
 }) {
   const featureList = footprintsGeojson?.features || [];
+  if (Array.isArray(warnings)) {
+    for (let i = warnings.length - 1; i >= 0; i--) {
+      if (
+        /left out to stay inside the area budget|not a valid shape|Kept the largest canopy outlines|Kept the \d+ largest roofs/.test(
+          String(warnings[i])
+        )
+      ) {
+        warnings.splice(i, 1);
+      }
+    }
+  }
   if (nlsHeights) {
     const nls = applyNlsBuildingHeights(featureList);
     if (nls && nls.omitted && Array.isArray(warnings)) {
@@ -1859,7 +1876,11 @@ function buildClutter({
         overlayRings: [],
       };
   if (foliageOn && veg.foliageCoarsened && Array.isArray(warnings)) {
-    const line = "Kept the largest canopy outlines so this zip can download.";
+    const cap = maxFoliagePolygons > 0 ? maxFoliagePolygons | 0 : 720;
+    const line =
+      cap >= 720
+        ? "Kept the largest canopy outlines, then measured crowns, up to " + cap + "."
+        : "Kept the largest canopy outlines so this zip can download.";
     if (warnings.indexOf(line) < 0) warnings.push(line);
   }
   // A poisoned or drifted vegetation material fails makeOiArea and that ring
@@ -1913,10 +1934,12 @@ function buildClutter({
     const wallDrop =
       (drop.wall || 0) + (drop.fence || 0) + (drop.retaining || 0) + (drop.hedge || 0);
     const notes = (outdoorNotes || []).concat(planned.notes || [], fit.notes || []);
-    if (wallDrop) notes.push("Walls left out: " + wallDrop + ".");
-    if (drop.pole) notes.push("Light poles left out: " + drop.pole + ".");
-    if (drop.water) notes.push("Water left out: " + drop.water + ".");
-    if (drop.parking) notes.push("Parking left out: " + drop.parking + ".");
+    const shapeNote = (n, label) =>
+      n + " " + label + (n === 1 ? " was" : "s were") + " not a valid shape.";
+    if (wallDrop) notes.push(shapeNote(wallDrop, "wall"));
+    if (drop.pole) notes.push(shapeNote(drop.pole, "light pole"));
+    if (drop.water) notes.push(shapeNote(drop.water, "water area"));
+    if (drop.parking) notes.push(shapeNote(drop.parking, "parking area"));
     if (Array.isArray(warnings)) {
       for (let i = 0; i < notes.length; i++) {
         if (notes[i] && warnings.indexOf(notes[i]) < 0) warnings.push(notes[i]);
@@ -1953,7 +1976,15 @@ function buildClutter({
   const stats = {
     ...fp.stats,
     trees: veg.count,
-    treesSource: omitFoliage ? "none" : foliageOn ? treesSource || (veg.count ? "nlcd-canopy" : "none") : "none",
+    treesSource: omitFoliage
+      ? "none"
+      : foliageOn
+        ? treesSource && treesSource !== "none"
+          ? treesSource
+          : veg.count
+            ? "canopy"
+            : "none"
+        : "none",
     includeFoliage: foliageOn,
     foliageLifted: veg.foliageLifted || 0,
     foliageGeometry: omitFoliage ? "omitted" : foliageOn ? veg.foliageGeometry || "none" : "none",
@@ -2081,6 +2112,7 @@ module.exports = {
   expandOiCoordTriples,
   emitIfValid,
   capAttenuationAreas,
+  capBuildingsAndTrees,
   ensureMinSpan,
   minOiSpanPx,
   capOiRingPx,

@@ -6,7 +6,7 @@ const jobs = require("../netlify/lib/export-jobs");
 const { setEnvironmentContext } = require("@netlify/blobs");
 const { unzipStore } = require("../netlify/lib/zip-store");
 const { EXPORT_PAYLOAD_BUDGET, estimateBundlePayload } = require("../netlify/lib/terrain");
-const { handleClutter, backgroundImagerySteps, runBackgroundExport, setFetchTerrainDemForTests } = require("../netlify/functions/clutter");
+const { handleClutter, backgroundImagerySteps, runBackgroundExport, setFetchTerrainDemForTests, setFetchOvertureForTests } = require("../netlify/functions/clutter");
 const { handler: backgroundHandler } = require("../netlify/functions/clutter-export-background");
 
 function memoryStore() {
@@ -279,6 +279,90 @@ describe("export jobs", { concurrency: 1 }, () => {
     } finally {
       global.fetch = prev;
       setFetchTerrainDemForTests(null);
+    }
+  });
+
+  it("keeps every roof on a background job when the zip would have been shortened", async () => {
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    const jpeg = Buffer.concat([
+      Buffer.from([0xff, 0xd8]),
+      Buffer.alloc(4300000, 9),
+      Buffer.from([0xff, 0xd9]),
+    ]);
+    const prev = global.fetch;
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("World_Imagery") && u.includes("f=image")) {
+        return { ok: true, arrayBuffer: async () => jpeg };
+      }
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return {
+          ok: true,
+          json: async () => ({
+            width: 64,
+            height: 64,
+            extent: { xmin: -115.172, ymin: 36.12, xmax: -115.16, ymax: 36.128 },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ features: [], objectIds: [] }), arrayBuffer: async () => new ArrayBuffer(0) };
+    };
+    const features = [];
+    for (let i = 0; i < 12; i++) {
+      const lon = -115.171 + (i % 4) * 0.0022;
+      const lat = 36.121 + Math.floor(i / 4) * 0.002;
+      features.push({
+        type: "Feature",
+        properties: { height: 18, heightSource: "overture", geomSource: "overture" },
+        geometry: {
+          type: "Polygon",
+          coordinates: [[
+            [lon, lat],
+            [lon + 0.0007, lat],
+            [lon + 0.0007, lat + 0.0006],
+            [lon, lat + 0.0006],
+            [lon, lat],
+          ]],
+        },
+      });
+    }
+    setFetchOvertureForTests(async () => ({ features, rowGroups: 1, groupsRead: 1, release: "test" }));
+    const id = "44444444-4444-4444-8444-444444444444";
+    try {
+      await jobs.createJob(id);
+      const res = await backgroundHandler({
+        httpMethod: "POST",
+        headers: { host: "dev--openclutter.netlify.app" },
+        body: JSON.stringify({
+          jobId: id,
+          event: {
+            httpMethod: "POST",
+            headers: { host: "dev--openclutter.netlify.app" },
+            body: JSON.stringify({
+              west: -115.172,
+              south: 36.12,
+              east: -115.16,
+              north: 36.128,
+              name: "Wynn",
+              format: "bundle",
+              includeFoliage: false,
+              includeTerrain: false,
+              imageryQuality: "low",
+            }),
+          },
+        }),
+      });
+      assert.equal(res.statusCode, 202);
+      const job = await jobs.readJob(id);
+      assert.equal(job.state, "done", job && job.error);
+      const notes = (job.warnings || []).join("\n");
+      assert.doesNotMatch(notes, /largest roofs/);
+      assert.equal(job.stats.fetched, 12);
+      assert.equal(job.stats.buildings, 12);
+    } finally {
+      global.fetch = prev;
+      setFetchOvertureForTests(null);
     }
   });
 
