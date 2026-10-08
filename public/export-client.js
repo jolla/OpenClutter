@@ -87,6 +87,39 @@
     throw lastErr;
   }
 
+  function pasteFloors(clip) {
+    const raised = clip && clip.raisedFloorZones ? clip.raisedFloorZones.length : 0;
+    const sloped = clip && clip.slopedFloors ? clip.slopedFloors.length : 0;
+    return raised + sloped;
+  }
+
+  /**
+   * Terrain on copies the sloped or raised mesh. GPS tie points are written
+   * onto that mesh. A missing mesh does not become a GPS-only copy; the
+   * status says why. Terrain off still copies the two GPS corners.
+   */
+  function chooseTerrainPaste(data, includeTerrain) {
+    const terrainOn = includeTerrain !== false;
+    const gps = data && data.gpsClipboard;
+    const points = gps && Array.isArray(gps.tiePoints) ? gps.tiePoints : [];
+    const clip = data && data.terrainClipboard;
+    const floors = pasteFloors(clip);
+    if (floors > 0) {
+      if (points.length >= 2) clip.tiePoints = points.slice();
+      return {
+        json: JSON.stringify(clip),
+        gpsOnly: false,
+        status: (data && data.terrainStatus) || "",
+      };
+    }
+    if (!terrainOn && points.length >= 2) {
+      return { json: JSON.stringify(gps), gpsOnly: true, status: "Terrain off" };
+    }
+    const status =
+      (data && data.terrainStatus) || (terrainOn ? "Terrain did not return. Export again." : "");
+    return { json: "", gpsOnly: false, status: status };
+  }
+
   return {
     WORKING_STATUS: WORKING_STATUS,
     EMPTY_502_STATUS: EMPTY_502_STATUS,
@@ -94,5 +127,7 @@
     failureError: failureError,
     idleStatus: idleStatus,
     runExportAttempts: runExportAttempts,
+    pasteFloors: pasteFloors,
+    chooseTerrainPaste: chooseTerrainPaste,
   };
 });

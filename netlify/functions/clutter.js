@@ -1777,9 +1777,12 @@ async function handleClutter(event) {
     built = emitClutter(exportFeatures);
   }
 
-  // Copy terrain is the bundle JSON, not a second copy inside the zip. Fit
-  // that paste to the leftover budget, then drop it and keep the zip.
-  if (built.zip && demSamples && demSamples.length) {
+  // Copy terrain is the bundle JSON, not a second copy inside the zip. The
+  // short path fits that paste beside the zip, then drops it and keeps the
+  // zip. A background job stores the zip and the paste as separate blobs, so
+  // a Sharp plate must not discard the mesh. Dropping it left Copy terrain
+  // as the two GPS points.
+  if (!background && built.zip && demSamples && demSamples.length) {
     let guard = 0;
     while (guard < 6 && terrain && terrain.clipboard && built.zip) {
       const clipJson = terrainClipJson(terrain);
@@ -1848,7 +1851,7 @@ async function handleClutter(event) {
   }
 
   let result = bundleResult();
-  if (lambdaPayloadBytes(result) > EXPORT_PAYLOAD_BUDGET && terrain && terrain.clipboard) {
+  if (!background && lambdaPayloadBytes(result) > EXPORT_PAYLOAD_BUDGET && terrain && terrain.clipboard) {
     const clipJson = terrainClipJson(terrain);
     const scale = EXPORT_PAYLOAD_BUDGET / Math.max(1, lambdaPayloadBytes(result));
     const nextMax = Math.floor(clipJson.length * scale * 0.85);
@@ -1858,7 +1861,7 @@ async function handleClutter(event) {
       result = bundleResult();
     }
   }
-  if (lambdaPayloadBytes(result) > LAMBDA_SYNC_PAYLOAD_MAX) {
+  if (!background && lambdaPayloadBytes(result) > LAMBDA_SYNC_PAYLOAD_MAX) {
     return json(413, cors, {
       error: "This area is too large to export in one zip. Draw a smaller area and try again.",
     });
