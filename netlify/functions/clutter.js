@@ -1033,8 +1033,29 @@ function backgroundInvokeUrl() {
  * built here. If Blobs or the invoke is unavailable, the page runs the
  * short sync export instead.
  */
+function blobsDebug(event) {
+  const headers = (event && event.headers) || {};
+  const names = Object.keys(headers).map((key) => String(key).toLowerCase());
+  return {
+    hasBlobs: !!(event && event.blobs),
+    blobsType: event && event.blobs != null ? typeof event.blobs : "none",
+    hasSiteHeader: names.indexOf("x-nf-site-id") !== -1,
+    hasContextEnv: !!process.env.NETLIFY_BLOBS_CONTEXT,
+  };
+}
+
+function fallbackExport(cors, reason, event) {
+  return json(200, cors, {
+    ok: false,
+    fallback: true,
+    reason: reason,
+    blobs: blobsDebug(event),
+    note: "Background export is unavailable. This export uses the short path.",
+  });
+}
+
 async function enqueueBackgroundExport(event, body, cors) {
-  exportJobs.bindBlobs(event);
+  const bound = exportJobs.bindBlobs(event);
   let frame;
   try {
     const steps = imagerySteps(false, body);
@@ -1054,21 +1075,14 @@ async function enqueueBackgroundExport(event, body, cors) {
   };
   try {
     await exportJobs.createJob(id);
-  } catch {
-    return json(200, cors, {
-      ok: false,
-      fallback: true,
-      note: "Background export is unavailable. This export uses the short path.",
-    });
+  } catch (err) {
+    const name = err && err.name ? err.name : "blobs-write";
+    return fallbackExport(cors, bound ? name : "event-has-no-blobs", event);
   }
   const url = backgroundInvokeUrl();
   if (!/^https?:\/\//.test(url)) {
     await exportJobs.deleteJob(id).catch(() => {});
-    return json(200, cors, {
-      ok: false,
-      fallback: true,
-      note: "Background export is unavailable. This export uses the short path.",
-    });
+    return fallbackExport(cors, "no-deploy-url", event);
   }
   try {
     const res = await fetch(url, {
@@ -1079,19 +1093,11 @@ async function enqueueBackgroundExport(event, body, cors) {
     });
     if (res.status !== 202 && res.status !== 200) {
       await exportJobs.deleteJob(id).catch(() => {});
-      return json(200, cors, {
-        ok: false,
-        fallback: true,
-        note: "Background export is unavailable. This export uses the short path.",
-      });
+      return fallbackExport(cors, "invoke-" + res.status, event);
     }
   } catch {
     await exportJobs.deleteJob(id).catch(() => {});
-    return json(200, cors, {
-      ok: false,
-      fallback: true,
-      note: "Background export is unavailable. This export uses the short path.",
-    });
+    return fallbackExport(cors, "invoke-failed", event);
   }
   return json(200, cors, { ok: true, async: true, jobId: id });
 }
