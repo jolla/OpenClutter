@@ -1102,6 +1102,38 @@ describe("terrain resolution presets", () => {
     }
   });
 
+  it("keeps the 4.5s DEM cap on the short path and the planned lattice on a background export", async () => {
+    const frame = metersBox(40.52, 2400, 2400, "Pit");
+    const seen = [];
+    const fetchFn = async (url) => {
+      seen.push(String(url));
+      return { ok: true, json: async () => ({ samples: [] }) };
+    };
+    const clock = { terrainResolution: "auto", fitAnswerClock: true, budgetMs: 20000 };
+    await fetchDemSamples(frame, fetchFn, clock);
+    await fetchDemSamples(frame, fetchFn, Object.assign({ backgroundDem: true }, clock));
+    await fetchDemSamples(frame, fetchFn, { terrainResolution: "auto", fitAnswerClock: true, backgroundDem: true });
+    assert.equal(new URL(seen[0]).searchParams.get("sampleCount"), "144");
+    assert.equal(new URL(seen[1]).searchParams.get("sampleCount"), "576");
+    assert.equal(new URL(seen[2]).searchParams.get("sampleCount"), "576");
+  });
+
+  it("names the DEM sample count on the terrain status line", () => {
+    const frame = metersBox(40.52, 800, 800, "Wall");
+    const samples = [];
+    for (let r = 0; r < 6; r++) {
+      for (let c = 0; c < 6; c++) {
+        samples.push({
+          lon: frame.west + (c / 5) * (frame.east - frame.west),
+          lat: frame.south + (r / 5) * (frame.north - frame.south),
+          z: 1200 + r * 40 + c * 5,
+        });
+      }
+    }
+    const terrain = terrainFromSamples(samples, frame, { terrainResolution: "auto", terrainStyle: "sloped" });
+    assert.match(terrainBundleFields(terrain, []).terrainStatus, /36 DEM samples/);
+  });
+
   it("sizes Auto from the draw inside 20×20 and keeps manuals as fixed overrides", () => {
     const box20 = metersBox(44.91, 20, 20, "Tiny hill", { minSpanM: 1 });
     const [c20, r20] = chooseGrid(200, box20, "auto");

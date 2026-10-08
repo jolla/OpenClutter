@@ -1236,6 +1236,7 @@ async function handleClutter(event) {
           allowSurfaceFallback: true,
           deadlineMs: started + answerMs - 250,
           fitAnswerClock: true,
+          backgroundDem: background,
           skip3depProbe: !frameHas3dep(frame),
         })
       );
@@ -1413,6 +1414,7 @@ async function handleClutter(event) {
           allowSurfaceFallback: true,
           deadlineMs: started + answerMs,
           fitAnswerClock: true,
+          backgroundDem: background,
           skip3depProbe: !frameHas3dep(frame),
         })
       );

@@ -285,18 +285,24 @@ function frameHas3dep(frame) {
   return true;
 }
 
+// A campus getSamples near 576 points took about 6s. The short sync path
+// leaves about 5.6s, so that read stays at the lattice that has returned in
+// about 4s. A background export has minutes. Plan against up to a minute,
+// which is the full-lattice tier and still well inside the 4 minute answer
+// and the 15 minute platform limit.
+const SYNC_DEM_PLAN_MS = 4500;
+const BACKGROUND_DEM_PLAN_MS = 60000;
+
 function demSampleCount(opts, frame) {
   if (opts && Number.isFinite(+opts.sampleCount) && +opts.sampleCount > 0) {
     return Math.max(4, Math.min(ABSOLUTE_MAX_SAMPLES, opts.sampleCount | 0));
   }
   const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
   const requested = sampleCountForResolution(preset.id, frame);
-  // A campus getSamples near 576 points took about 6s. The dev answer clock
-  // leaves about 5.6s. Cap that read at the lattice that still fills a 20×20
-  // paste and has returned in about 4s.
   if (opts && opts.fitAnswerClock) {
     const remaining = demRemainingMs(opts);
-    const budget = remaining == null ? 4500 : Math.min(Math.max(0, remaining), 4500);
+    const capMs = opts.backgroundDem ? BACKGROUND_DEM_PLAN_MS : SYNC_DEM_PLAN_MS;
+    const budget = remaining == null ? capMs : Math.min(Math.max(0, remaining), capMs);
     return glo30SamplePlan(requested, budget).sampleCount;
   }
   if (!preset.experimental) return requested;
@@ -1997,6 +2003,8 @@ function terrainBundleFields(terrain, warnings) {
       mesh = ", " + preset.label + " (relief under 20 m keeps the coarse mesh)";
     }
     const reduced = terrain.pasteReduced ? " " + pasteReducedNote(terrain) : "";
+    const nSamples = terrain.samples && terrain.samples.length;
+    const sampleNote = nSamples >= 4 ? ", " + nSamples + " DEM samples" : "";
     const slopedStyle = terrain.terrainStyle === "sloped";
     const mode = slopedStyle ? "Terrain sloped " + cols + "×" + rows : "Terrain raised layers " + cols + "×" + rows;
     const floors = slopedStyle
@@ -2014,6 +2022,7 @@ function terrainBundleFields(terrain, warnings) {
         ", " +
         floors +
         mesh +
+        sampleNote +
         ")." +
         reduced +
         " Use Copy terrain and paste it in Planner Plus. Do not import it as OpenIntent.",

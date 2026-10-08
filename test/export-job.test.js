@@ -4,7 +4,7 @@ const { describe, it, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const jobs = require("../netlify/lib/export-jobs");
 const { setEnvironmentContext } = require("@netlify/blobs");
-const { handleClutter, backgroundImagerySteps, runBackgroundExport } = require("../netlify/functions/clutter");
+const { handleClutter, backgroundImagerySteps, runBackgroundExport, setFetchTerrainDemForTests } = require("../netlify/functions/clutter");
 
 function memoryStore() {
   const map = new Map();
@@ -119,6 +119,66 @@ describe("export jobs", { concurrency: 1 }, () => {
     assert.equal(auto[0].maxSide, 2048);
     assert.equal(auto[0].metersPerPx, 0.5);
     assert.equal(auto.some((step) => step.maxSide === 400), false);
+  });
+
+  it("plans the full DEM lattice on the background path and keeps the short-path cap", async () => {
+    const seen = [];
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.alloc(120, 1), Buffer.from([0xff, 0xd9])]);
+    const prev = global.fetch;
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("World_Imagery") && u.includes("f=image")) {
+        return { ok: true, arrayBuffer: async () => jpeg };
+      }
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return { ok: true, json: async () => ({ width: 64, height: 64, extent: { xmin: -115.18, ymin: 36.11, xmax: -115.17, ymax: 36.12 } }) };
+      }
+      return { ok: true, json: async () => ({ features: [], objectIds: [] }), arrayBuffer: async () => new ArrayBuffer(0) };
+    };
+    setFetchTerrainDemForTests(async (_frame, _fetchFn, opts) => {
+      seen.push({
+        backgroundDem: !!(opts && opts.backgroundDem),
+        fitAnswerClock: !!(opts && opts.fitAnswerClock),
+      });
+      return {
+        samples: [
+          { lon: -115.176, lat: 36.112, z: 640 },
+          { lon: -115.172, lat: 36.112, z: 642 },
+          { lon: -115.176, lat: 36.116, z: 650 },
+          { lon: -115.172, lat: 36.116, z: 655 },
+        ],
+        kind: "bare-earth",
+        attribution: "USGS 3DEP",
+        notes: [],
+      };
+    });
+    const box = { west: -115.178, south: 36.11, east: -115.17, north: 36.118, name: "Strip" };
+    try {
+      const background = await runBackgroundExport(
+        {
+          httpMethod: "POST",
+          headers: { host: "deploy-preview-115--openclutter.netlify.app" },
+          body: JSON.stringify(Object.assign({ format: "bundle", includeFoliage: false, imageryQuality: "low" }, box)),
+        },
+        () => {}
+      );
+      assert.equal(background.statusCode, 200, String(background.body).slice(0, 400));
+      const bg = JSON.parse(background.body);
+      assert.equal(seen.some((s) => s.backgroundDem && s.fitAnswerClock), true);
+      assert.match(bg.terrainStatus, /4 DEM samples/);
+      seen.length = 0;
+      const sync = await handleClutter({
+        httpMethod: "POST",
+        headers: { host: "deploy-preview-115--openclutter.netlify.app" },
+        body: JSON.stringify(Object.assign({ format: "bundle", includeFoliage: false, imageryQuality: "low" }, box)),
+      });
+      assert.equal(sync.statusCode, 200, String(sync.body).slice(0, 400));
+      assert.equal(seen.some((s) => s.backgroundDem), false);
+      assert.equal(seen.some((s) => s.fitAnswerClock), true);
+    } finally {
+      global.fetch = prev;
+      setFetchTerrainDemForTests(null);
+    }
   });
 
   it("returns the handler result from the background runner", async () => {
