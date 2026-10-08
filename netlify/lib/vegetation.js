@@ -570,6 +570,9 @@ function wantedCrownLayers(discrete, thickness, treeCount) {
   const fit = Math.floor((Number(thickness) + 1e-6) / MIN_CROWN_BAND_M);
   if (fit < 2) return 1;
   if (!discrete) return fit >= 3 ? 3 : 2;
+  // A crowd of palms is many stems. Two bands each, not three or four,
+  // so the area cap keeps the trees instead of the extra layers.
+  if (treeCount > 80) return 2;
   if (fit >= 4 && treeCount <= 60) return 4;
   if (fit >= 3) return 3;
   return 2;

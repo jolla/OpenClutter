@@ -282,6 +282,13 @@ describe("outdoor clutter fetch", () => {
     const fit = fitOutdoorBudget([{ id: "pole" }, { id: "park" }], ["pole", "parking"], 1);
     assert.deepEqual(fit.kinds, ["parking"]);
     assert.match(fit.notes.join(" "), /Light poles left out to stay inside the area budget/);
+    const partial = fitOutdoorBudget(
+      [{ id: "w1" }, { id: "w2" }, { id: "w3" }],
+      ["water", "water", "water"],
+      2
+    );
+    assert.equal(partial.items.length, 2);
+    assert.match(partial.notes.join(" "), /1 water area did not fit in the area budget \(2 kept\)/);
     assert.equal(/did not finish|timed out/i.test(OUTDOOR_MISS), false);
   });
 

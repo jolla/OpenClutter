@@ -650,6 +650,53 @@ function cutAgainst(item, targets, proj) {
   return pieces;
 }
 
+function childMostlyInside(child, parent) {
+  if (!(child.area >= 80) || !(child.area < parent.area * 0.92)) return false;
+  if (!meterHit(parent.bb, child.bb)) return false;
+  let inter = 0;
+  try {
+    inter = multiArea(polygonClipping.intersection([[child.m]], [[parent.m]]));
+  } catch {
+    return false;
+  }
+  return inter / child.area >= 0.75;
+}
+
+/**
+ * Overture often emits the whole roof and the parts that already tile it.
+ * Drawing both stacks a second volume on the podium and the towers. Two or
+ * more parts that cover most of that outline replace it. A tower that only
+ * covers a corner of its podium does not.
+ */
+function coveredParentIndexes(items) {
+  const drop = new Set();
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].mega) continue;
+    const parent = items[i];
+    const children = [];
+    for (let j = 0; j < items.length; j++) {
+      if (i === j || drop.has(j)) continue;
+      if (childMostlyInside(items[j], parent)) children.push(items[j]);
+    }
+    if (children.length < 2) continue;
+    let mask;
+    try {
+      mask = [[children[0].m]];
+      for (let c = 1; c < children.length; c++) mask = polygonClipping.union(mask, [[children[c].m]]);
+    } catch {
+      continue;
+    }
+    let cover = 0;
+    try {
+      cover = multiArea(polygonClipping.intersection([[parent.m]], mask));
+    } catch {
+      continue;
+    }
+    if (parent.area > 0 && cover / parent.area >= 0.6) drop.add(i);
+  }
+  return drop;
+}
+
 function unionInto(partner, item, proj) {
   let geom;
   try {
@@ -704,12 +751,18 @@ function dedupeStackedFootprints(features) {
     }
   }
   items.sort((a, b) => keepScore(b) - keepScore(a));
+  const skipParent = coveredParentIndexes(items);
   const kept = [];
   const megas = [];
   let dropped = 0;
   let cut = 0;
   let merged = 0;
-  for (const item of items) {
+  for (let n = 0; n < items.length; n++) {
+    const item = items[n];
+    if (skipParent.has(n)) {
+      dropped++;
+      continue;
+    }
     if (item.mega) {
       megas.push(item);
       continue;

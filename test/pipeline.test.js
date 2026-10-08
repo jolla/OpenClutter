@@ -11,7 +11,7 @@ const {
   CLIPBOARD_COLLECTION_KEYS,
   pickBuildingTypeId,
 } = require("../netlify/lib/hamina-clipboard");
-const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS } = require("../netlify/lib/pipeline");
+const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS, capBuildingsAndTrees, dropNestedDuplicateRoofs } = require("../netlify/lib/pipeline");
 const { OI_BUILDING_NAMES, isVegetationOiName, isPoisonedOiName } = require("../netlify/lib/materials");
 const { zipStore, unzipStore } = require("../netlify/lib/zip-store");
 const { version: APP_VERSION } = require("../netlify/lib/version");
@@ -1270,5 +1270,211 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.equal(/\/api\/clutter-polygon/.test(app), false);
     assert.match(app, /OpenClutterDraw/);
     assert.equal(/L\.Draw/.test(app), false);
+  });
+});
+
+describe("attenuation cap keeps discrete trees", () => {
+  it("keeps a stemmed tree ahead of a canopy that was listed first", () => {
+    const canopy = { id: "canopy" };
+    const tree = { id: "crown" };
+    const layer = { id: "layer" };
+    const trunk = { id: "trunk" };
+    const capped = capBuildingsAndTrees(
+      [{ id: "building" }],
+      [canopy, tree, layer, trunk],
+      ["canopy", "canopy", "layer", "trunk"],
+      4
+    );
+    assert.deepEqual(capped.areas.map((a) => a.id), ["building", "crown", "layer", "trunk"]);
+    assert.equal(capped.dropped, 1);
+    assert.equal(capped.discreteTrees, 1);
+    assert.equal(capped.droppedTrees, 1);
+  });
+
+  it("holds water and parking slots before a canopy spends them", () => {
+    const canopy = { id: "canopy" };
+    const tree = { id: "crown" };
+    const layer = { id: "layer" };
+    const trunk = { id: "trunk" };
+    const capped = capBuildingsAndTrees(
+      [{ id: "building" }],
+      [canopy, tree, layer, trunk],
+      ["canopy", "canopy", "layer", "trunk"],
+      5,
+      1
+    );
+    assert.deepEqual(capped.areas.map((a) => a.id), ["building", "crown", "layer", "trunk"]);
+    assert.equal(capped.droppedBuildings, 0);
+    assert.equal(capped.treeGroups, 1);
+    assert.equal(5 - capped.areas.length, 1);
+  });
+});
+
+function pixelRoof(pts, bottom, top) {
+  return {
+    area: {
+      coordinates: pts.map(([x, y]) => ({ coordinate_xyz: { x, y, unit: "pixels" } })),
+    },
+    area_material: { name: "Building - " + top.toFixed(1) + " @ " + bottom.toFixed(1), bottom_height: bottom, top_height: top },
+  };
+}
+
+describe("same-seat roofs", () => {
+  it("drops an outline that sits inside a larger roof and seats a taller tower on it", () => {
+    const outer = pixelRoof(
+      [
+        [0, 0],
+        [100, 0],
+        [100, 80],
+        [0, 80],
+        [0, 0],
+      ],
+      10,
+      22
+    );
+    const duplicate = pixelRoof(
+      [
+        [10, 10],
+        [40, 10],
+        [40, 40],
+        [10, 40],
+        [10, 10],
+      ],
+      11,
+      20
+    );
+    const tower = pixelRoof(
+      [
+        [60, 10],
+        [80, 10],
+        [80, 40],
+        [60, 40],
+        [60, 10],
+      ],
+      10.5,
+      90
+    );
+    const band = pixelRoof(
+      [
+        [20, 50],
+        [40, 50],
+        [40, 70],
+        [20, 70],
+        [20, 50],
+      ],
+      22,
+      40
+    );
+    const areas = [duplicate, tower, outer, band];
+    assert.equal(dropNestedDuplicateRoofs(areas), 1);
+    assert.equal(areas.length, 3);
+    const seated = areas.find((a) => a.area_material.top_height === 90);
+    assert.equal(seated.area_material.bottom_height, 22);
+    assert.equal(seated.area_material.name, "Building - 68.0 @ 22.0");
+    assert.ok(areas.some((a) => a.area_material.top_height === 40));
+    assert.ok(areas.some((a) => a.area_material.top_height === 22));
+  });
+});
+
+describe("water stays when crowns would fill the area cap", () => {
+  it("keeps the pond and drops the wall and the pole before the extra crown", () => {
+    const w = 48;
+    const h = 48;
+    const cell = 2.2;
+    const values = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (Math.hypot(x - 30, y - 30) <= 3.4) values[y * w + x] = 16;
+        if (y >= 2 && y <= 6 && x >= 2 && x <= 8) values[y * w + x] = 3;
+      }
+    }
+    const midLat = 42.9;
+    const mLon = 111320 * Math.cos((midLat * Math.PI) / 180);
+    const west = -87.93;
+    const south = 42.89;
+    const grid = {
+      west,
+      south,
+      east: west + (w * cell) / mLon,
+      north: south + (h * cell) / 110540,
+      width: w,
+      height: h,
+      values,
+    };
+    const frame = geoFrame({ west, south, east: grid.east, north: grid.north, name: "Pond" });
+    const dLon = (frame.east - frame.west) * 0.08;
+    const dLat = (frame.north - frame.south) * 0.08;
+    const lon0 = frame.west + (frame.east - frame.west) * 0.55;
+    const lat0 = frame.south + (frame.north - frame.south) * 0.02;
+    const warnings = [];
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: {
+        features: [
+          {
+            type: "Feature",
+            properties: { height: 8 },
+            geometry: {
+              type: "Polygon",
+              coordinates: [[
+                [lon0, lat0],
+                [lon0 + dLon, lat0],
+                [lon0 + dLon, lat0 + dLat],
+                [lon0, lat0 + dLat],
+                [lon0, lat0],
+              ]],
+            },
+          },
+        ],
+      },
+      name: "Pond",
+      warnings,
+      includeFoliage: true,
+      chmGrid: grid,
+      treesSource: "chm",
+      includeWater: true,
+      includeWalls: true,
+      includePoles: true,
+      maxAttenuationAreas: 7,
+      outdoorFeatures: [
+        {
+          kind: "water",
+          coords: [
+            [frame.west + (frame.east - frame.west) * 0.55, frame.south + (frame.north - frame.south) * 0.55],
+            [frame.west + (frame.east - frame.west) * 0.85, frame.south + (frame.north - frame.south) * 0.55],
+            [frame.west + (frame.east - frame.west) * 0.85, frame.south + (frame.north - frame.south) * 0.85],
+            [frame.west + (frame.east - frame.west) * 0.55, frame.south + (frame.north - frame.south) * 0.85],
+            [frame.west + (frame.east - frame.west) * 0.55, frame.south + (frame.north - frame.south) * 0.55],
+          ],
+          heightM: 2.1,
+          explicitHeight: false,
+        },
+        {
+          kind: "wall",
+          coords: [
+            [frame.west + (frame.east - frame.west) * 0.45, frame.south + (frame.north - frame.south) * 0.15],
+            [frame.west + (frame.east - frame.west) * 0.45, frame.south + (frame.north - frame.south) * 0.4],
+          ],
+          heightM: 2.5,
+          explicitHeight: true,
+        },
+        {
+          kind: "pole",
+          coords: [[(frame.west + frame.east) / 2, frame.south + (frame.north - frame.south) * 0.48]],
+          heightM: 9,
+          explicitHeight: false,
+          rank: 0,
+        },
+      ],
+    });
+    assert.equal(built.stats.waterAreas, 1, built.stats.summary);
+    assert.equal(built.stats.wallAreas, 0);
+    assert.equal(built.stats.poleAreas, 0);
+    assert.match(built.stats.summary, /Water 1/);
+    assert.match(built.stats.summary, /Trees 1 kept of 2 \(1 stems, chm\)/);
+    assert.equal(/Water left out/.test(warnings.join("\n")), false);
+    assert.match(warnings.join("\n"), /Walls left out/);
+    assert.match(warnings.join("\n"), /Light poles left out/);
+    assert.equal(built.stats.attenuationAreasEmitted, 7);
   });
 });

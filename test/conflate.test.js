@@ -336,4 +336,30 @@ describe("footprint conflation", () => {
     assert.equal(paired.filter((t) => t && t.topEdge === 8 && t.bottomEdge == null).length, 1);
     assert.equal(built.clipboard.attenuatingZones.length, 3);
   });
+
+  it("drops a parent outline when the parts already cover that roof", () => {
+    const lat = 36.126;
+    const lon = -115.16;
+    const mx = 111320 * Math.cos((lat * Math.PI) / 180);
+    const parent = metersBox(lon, lat, 100, 80, {
+      height: 40,
+      heightSource: "overture",
+      geomSource: "overture",
+    });
+    const westWing = metersBox(lon - 25 / mx, lat, 48, 76, {
+      height: 14,
+      heightSource: "overture",
+      geomSource: "overture",
+    });
+    const eastWing = metersBox(lon + 25 / mx, lat, 48, 76, {
+      height: 55,
+      heightSource: "overture",
+      geomSource: "overture",
+    });
+    const out = dedupeStackedFootprints([parent, westWing, eastWing]);
+    assert.equal(out.features.length, 2);
+    assert.equal(out.dropped, 1);
+    const heights = out.features.map((f) => f.properties.height).sort((a, b) => a - b);
+    assert.deepEqual(heights, [14, 55]);
+  });
 });

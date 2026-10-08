@@ -1053,11 +1053,17 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings }) {
 
 const BUDGET_ORDER = ["parking", "water", "wall", "retaining", "hedge", "fence", "pole"];
 
-function budgetNote(kind) {
-  if (kind === "pole") return "Light poles left out to stay inside the area budget.";
-  if (kind === "water") return "Water left out to stay inside the area budget.";
-  if (kind === "parking") return "Parking left out to stay inside the area budget.";
-  return "Walls left out to stay inside the area budget.";
+function budgetNote(kind, keptCount, skipped) {
+  const label =
+    kind === "pole" ? "light pole" : kind === "water" ? "water area" : kind === "parking" ? "parking area" : "wall";
+  if (!(keptCount > 0)) {
+    if (kind === "pole") return "Light poles left out to stay inside the area budget.";
+    if (kind === "water") return "Water left out to stay inside the area budget.";
+    if (kind === "parking") return "Parking left out to stay inside the area budget.";
+    return "Walls left out to stay inside the area budget.";
+  }
+  const noun = skipped === 1 ? label : label + "s";
+  return skipped + " " + noun + " did not fit in the area budget (" + keptCount + " kept).";
 }
 
 /** Parking and water stay ahead of poles when the attenuation cap is tight. */
@@ -1084,7 +1090,7 @@ function fitOutdoorBudget(items, kinds, room) {
     }
     left -= take.length;
     if (list.length > take.length) {
-      const note = budgetNote(kind);
+      const note = budgetNote(kind, take.length, list.length - take.length);
       if (!noted.has(note)) {
         noted.add(note);
         notes.push(note);
