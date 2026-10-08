@@ -311,9 +311,9 @@ function closedFromPts(pts) {
 
 /**
  * The map extract is one request for a draw up to about 2.2 km. A larger
- * draw is tiled, and Overpass is only the fallback for a small extract.
- * Only parts, pools, water, and courtyard inners are kept. A plain building
- * outer is not a new footprint.
+ * background draw is tiled Overpass elements. Overpass for the whole box
+ * is only the fallback for a small extract. Only parts, pools, water, and
+ * courtyard inners are kept. A plain building outer is not a new footprint.
  */
 function detailFromMapXml(xml, bbox) {
   const text = String(xml || "");
@@ -488,6 +488,16 @@ async function fetchBuildingDetail(bbox, opts) {
           tile,
           fetchImpl: opts && opts.fetchImpl,
         });
+        if (maps.elements && maps.elements.length) {
+          const parsed = parseBuildingDetail({ elements: maps.elements }, bbox);
+          return {
+            ok: true,
+            parts: parsed.parts,
+            openings: parsed.openings,
+            guideways: guidewaysFromElements(maps.elements, bbox),
+            notes: maps.notes,
+          };
+        }
         if (maps.xmls.length) {
           const packs = [];
           for (let i = 0; i < maps.xmls.length; i++) packs.push(detailFromMapXml(maps.xmls[i], bbox));
