@@ -1558,9 +1558,11 @@ async function handleClutter(event) {
       // Imagery roof fill is optional. Vector footprints still export.
     }
   }
+  let guidewayFeatures = [];
   if (detailJob) {
     const pack = await detailJob.work;
     if (pack && pack !== TIMED_OUT && pack.ok !== false) {
+      guidewayFeatures = pack.guideways || [];
       try {
         const shaped = shapeBuildings(features, pack);
         features = shaped.features;
@@ -1687,6 +1689,8 @@ async function handleClutter(event) {
       includeWalls,
       includePoles,
       outdoorMiss,
+      guidewayFeatures,
+      includeGuideways: true,
     });
   }
 
@@ -1711,6 +1715,15 @@ async function handleClutter(event) {
     } else {
       outdoorFeatures = pack.features || [];
       outdoorNotes = pack.notes || [];
+      const rest = [];
+      const fromOutdoor = [];
+      for (let i = 0; i < outdoorFeatures.length; i++) {
+        const feat = outdoorFeatures[i];
+        if (feat && feat.kind === "guideway") fromOutdoor.push(feat);
+        else rest.push(feat);
+      }
+      outdoorFeatures = rest;
+      if (!guidewayFeatures.length && fromOutdoor.length) guidewayFeatures = fromOutdoor;
     }
   }
 

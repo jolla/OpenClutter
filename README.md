@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.87** on `dev` — An elevated rail guideway is a raised strip. The Las Vegas Monorail is included, and so is other rail on a bridge or an upper layer. A beam on the ground is not. The deck sits on the terrain. A monorail with no height tag is about 6.5 m at the beam and about 4.5 m taller for the train. Details counts the guideways. The badge stays (`dev · v1.1.87`).
+
 **v1.1.86** on `dev` — The Wynn employee garage sits on the ground. A second height for the same roof no longer lifts the whole footprint, and a part floats only when the source says it is a small bridge, skywalk, roof, or canopy. A parent stays when its parts do not reach the ground. A tower on a podium that is still in the draw stays on that podium. The badge stays (`dev · v1.1.86`).
 
 **v1.1.84** on `dev` — Copy terrain and Copy GPS points leave the export summary and Details as they were. The copy result is its own line under the button. A new export replaces that summary and clears the copy line. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.84`).
@@ -143,7 +145,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.86`). **Foliage** is on by default. **Terrain** is on by default and pastes the sloped mesh. Copy that paste into Planner Plus. Do not import it as OpenIntent. A Map menu picks Auto, Low · 256 px, Standard · 640 px, High · 1040 px, Sharp · 2048 px, or 4K · 4096 px. Auto is fast. High, Sharp, and 4K wait for a bigger plate. Space pans the map and does not toggle the last checkbox. The draw label shows area in m² and ft². After export, the panel shows one line; Details holds the rest. The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. Terrain and the map menu stay hidden off this host.
+- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.87`). **Foliage** is on by default. **Terrain** is on by default and pastes the sloped mesh. Copy that paste into Planner Plus. Do not import it as OpenIntent. A Map menu picks Auto, Low · 256 px, Standard · 640 px, High · 1040 px, Sharp · 2048 px, or 4K · 4096 px. Auto is fast. High, Sharp, and 4K wait for a bigger plate. Space pans the map and does not toggle the last checkbox. The draw label shows area in m² and ft². After export, the panel shows one line; Details holds the rest. The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control. Terrain and the map menu stay hidden off this host.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 

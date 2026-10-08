@@ -15,6 +15,7 @@
  */
 
 const polygonClipping = require("polygon-clipping");
+const { guidewaysFromElements, guidewaysFromParsedWays } = require("./outdoor-clutter");
 
 const OVERPASS_URLS = [
   "https://overpass.kumi.systems/api/interpreter",
@@ -39,6 +40,9 @@ function buildingDetailQuery(bbox) {
     'way["landuse"="reservoir"](' + box + ");" +
     'relation["building:part"](' + box + ");" +
     'relation["type"="multipolygon"]["building"](' + box + ");" +
+    'way["railway"~"^(monorail|light_rail|subway|rail|tram)$"](' + box + ");" +
+    'way["man_made"="bridge"](' + box + ");" +
+    'way["bridge"="viaduct"](' + box + ");" +
     ");out geom;"
   );
 }
@@ -419,11 +423,13 @@ function detailFromMapXml(xml, bbox) {
     }
     if (members.length) elements.push({ type: "relation", tags, members });
   }
-  return parseBuildingDetail({ elements }, bbox);
+  const parsed = parseBuildingDetail({ elements }, bbox);
+  parsed.guideways = guidewaysFromParsedWays(ways, nodes, bbox);
+  return parsed;
 }
 
 async function fetchBuildingDetail(bbox, opts) {
-  const empty = { ok: false, parts: [], openings: [] };
+  const empty = { ok: false, parts: [], openings: [], guideways: [] };
   if (!bbox) return empty;
   const timeoutMs = (opts && opts.timeoutMs) || 4500;
   const ctrl = new AbortController();
@@ -451,7 +457,12 @@ async function fetchBuildingDetail(bbox, opts) {
           const xml = await r.text();
           if (xml && xml.indexOf("<osm") >= 0) {
             const parsed = detailFromMapXml(xml, bbox);
-            return { ok: true, parts: parsed.parts, openings: parsed.openings };
+            return {
+              ok: true,
+              parts: parsed.parts,
+              openings: parsed.openings,
+              guideways: parsed.guideways || [],
+            };
           }
         }
       } catch (e) {
@@ -470,7 +481,12 @@ async function fetchBuildingDetail(bbox, opts) {
         if (!r.ok) continue;
         const json = await r.json();
         const parsed = parseBuildingDetail(json, bbox);
-        return { ok: true, parts: parsed.parts, openings: parsed.openings };
+        return {
+          ok: true,
+          parts: parsed.parts,
+          openings: parsed.openings,
+          guideways: guidewaysFromElements(json.elements, bbox),
+        };
       } catch (e) {
         if (ctrl.signal.aborted) return empty;
       }
@@ -1089,6 +1105,7 @@ module.exports = {
   CORRIDOR_M,
   buildingDetailQuery,
   parseBuildingDetail,
+  detailFromMapXml,
   fetchBuildingDetail,
   footprintRings,
   shapeBuildings,
