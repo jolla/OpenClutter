@@ -8,6 +8,9 @@ const { unzipStore } = require("../netlify/lib/zip-store");
 const { EXPORT_PAYLOAD_BUDGET, estimateBundlePayload } = require("../netlify/lib/terrain");
 const { handleClutter, backgroundImagerySteps, runBackgroundExport, setFetchTerrainDemForTests, setFetchOvertureForTests } = require("../netlify/functions/clutter");
 const { handler: backgroundHandler } = require("../netlify/functions/clutter-export-background");
+const { handler: fileHandler } = require("../netlify/functions/export-file");
+const jpeg = require("jpeg-js");
+const { compressJpegToMax, jpegSize } = require("../netlify/lib/geo-frame");
 
 function memoryStore() {
   const map = new Map();
@@ -364,6 +367,93 @@ describe("export jobs", { concurrency: 1 }, () => {
       global.fetch = prev;
       setFetchOvertureForTests(null);
     }
+  });
+
+  it("compresses a heavy plate without changing its pixel size", () => {
+    const width = 160;
+    const height = 120;
+    const rgba = new Uint8Array(width * height * 4);
+    for (let i = 0; i < rgba.length; i += 4) {
+      rgba[i] = (i * 17) % 251;
+      rgba[i + 1] = (i * 9) % 251;
+      rgba[i + 2] = (i * 3) % 251;
+      rgba[i + 3] = 255;
+    }
+    const big = Buffer.from(jpeg.encode({ data: rgba, width, height }, 100).data);
+    const small = compressJpegToMax(big, Math.floor(big.length / 2));
+    assert.ok(small.length < big.length);
+    assert.ok(small.length <= Math.floor(big.length / 2));
+    const size = jpegSize(small);
+    assert.equal(size.width, width);
+    assert.equal(size.height, height);
+    assert.equal(compressJpegToMax(Buffer.from([0xff, 0xd8, 0, 0xff, 0xd9]), 10).length, 5);
+  });
+
+  it("leaves an oversized zip stored and names the download limit", async () => {
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    const id = "55555555-5555-4555-8555-555555555555";
+    await jobs.createJob(id);
+    await jobs.updateJob(id, { state: "done", stage: "Zip ready" });
+    await jobs.saveZip(id, Buffer.alloc(5000000, 1));
+    const res = await fileHandler({
+      httpMethod: "GET",
+      queryStringParameters: { job: id },
+      headers: {},
+    });
+    assert.equal(res.statusCode, 413);
+    const body = JSON.parse(res.body);
+    assert.match(body.error, /too large to download/);
+    assert.equal(/not ready/i.test(body.error), false);
+    assert.equal((await jobs.readZip(id)).length, 5000000);
+  });
+
+  it("downloads a small zip once, then says it was already downloaded", async () => {
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    const id = "66666666-6666-4666-8666-666666666666";
+    await jobs.createJob(id);
+    await jobs.updateJob(id, { state: "done", stage: "Zip ready", zipFilename: "site-openintent.zip" });
+    await jobs.saveZip(id, Buffer.from("PK tiny"));
+    const res = await fileHandler({
+      httpMethod: "GET",
+      queryStringParameters: { job: id },
+      headers: {},
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.isBase64Encoded, true);
+    assert.equal(Buffer.from(res.body, "base64").toString(), "PK tiny");
+    const again = await fileHandler({
+      httpMethod: "GET",
+      queryStringParameters: { job: id },
+      headers: {},
+    });
+    assert.equal(again.statusCode, 410);
+    assert.match(JSON.parse(again.body).error, /already downloaded/);
+  });
+
+  it("records a plain error when the export does not return a zip", async () => {
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    const id = "77777777-7777-4777-8777-777777777777";
+    await jobs.createJob(id);
+    const res = await backgroundHandler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({
+        jobId: id,
+        event: {
+          httpMethod: "POST",
+          headers: { host: "dev--openclutter.netlify.app" },
+          body: "{",
+        },
+      }),
+    });
+    assert.equal(res.statusCode, 202);
+    const job = await jobs.readJob(id);
+    assert.equal(job.state, "error");
+    assert.match(job.error, /invalid json/);
+    assert.equal(/not ready/i.test(job.error), false);
   });
 
   it("returns the handler result from the background runner", async () => {
