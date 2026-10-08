@@ -17,6 +17,7 @@ function json(status, body) {
 }
 
 exports.handler = async (event) => {
+  jobs.bindBlobs(event);
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: cors, body: "" };
   if (event.httpMethod !== "GET") return json(405, { error: "GET only" });
   const q = event.queryStringParameters || {};

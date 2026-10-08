@@ -16,6 +16,7 @@ function publicError(err) {
  * already answered 202 to the sync function that invoked this.
  */
 exports.handler = async (event) => {
+  jobs.bindBlobs(event);
   let payload = {};
   try {
     payload = JSON.parse(event.body || "{}");

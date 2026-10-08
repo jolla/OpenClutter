@@ -3,6 +3,7 @@
 const { describe, it, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const jobs = require("../netlify/lib/export-jobs");
+const { setEnvironmentContext } = require("@netlify/blobs");
 const { handleClutter, backgroundImagerySteps, runBackgroundExport } = require("../netlify/functions/clutter");
 
 function memoryStore() {
@@ -41,9 +42,10 @@ const BOX = {
   format: "bundle",
 };
 
-describe("export jobs", () => {
+describe("export jobs", { concurrency: 1 }, () => {
   afterEach(() => {
     jobs.setExportStoreForTests(null);
+    setEnvironmentContext({ siteID: "", token: "" });
   });
 
   it("keeps stages and drops a job after an hour", async () => {
@@ -74,7 +76,24 @@ describe("export jobs", () => {
     assert.equal(await jobs.takeZip(id), null);
   });
 
+  it("ignores a function event that has no Blobs credentials", () => {
+    assert.equal(jobs.bindBlobs(null), false);
+    assert.equal(jobs.bindBlobs({ headers: {} }), false);
+  });
+
+  it("connects Blobs from the Lambda-style event", () => {
+    const blobs = Buffer.from(JSON.stringify({ url: "https://example.test/blobs", token: "tok" })).toString("base64");
+    assert.equal(
+      jobs.bindBlobs({
+        blobs,
+        headers: { "X-Nf-Site-Id": "site-1", "X-Nf-Deploy-Id": "dep-1" },
+      }),
+      true
+    );
+  });
+
   it("falls back when Blobs are not configured", async () => {
+    setEnvironmentContext({ siteID: "", token: "" });
     const res = await handleClutter({
       httpMethod: "POST",
       headers: { host: "dev--openclutter.netlify.app" },

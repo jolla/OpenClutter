@@ -1034,6 +1034,7 @@ function backgroundInvokeUrl() {
  * short sync export instead.
  */
 async function enqueueBackgroundExport(event, body, cors) {
+  exportJobs.bindBlobs(event);
   let frame;
   try {
     const steps = imagerySteps(false, body);

@@ -16,6 +16,25 @@ function setExportStoreForTests(store) {
   storeOverride = store;
 }
 
+/**
+ * These functions use the Lambda-style handler. Netlify only fills
+ * NETLIFY_BLOBS_CONTEXT for the newer function format. The v1 event carries
+ * the same credentials on event.blobs, and connectLambda copies them across.
+ */
+function bindBlobs(event) {
+  if (!event || !event.blobs) return false;
+  const src = event.headers || {};
+  const headers = {};
+  for (const key of Object.keys(src)) headers[String(key).toLowerCase()] = src[key];
+  try {
+    const { connectLambda } = require("@netlify/blobs");
+    connectLambda({ blobs: event.blobs, headers });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function jobKey(id) {
   return "job/" + id;
 }
@@ -31,7 +50,8 @@ function validJobId(id) {
 async function openStore() {
   if (storeOverride) return storeOverride;
   const { getStore } = require("@netlify/blobs");
-  return getStore({ name: STORE_NAME, consistency: "strong" });
+  // v1 function events do not include the uncached edge URL strong reads need.
+  return getStore({ name: STORE_NAME });
 }
 
 function freshJob(id) {
@@ -65,7 +85,7 @@ async function createJob(id) {
 async function readJob(id) {
   if (!validJobId(id)) return null;
   const store = await openStore();
-  const job = await store.get(jobKey(id), { type: "json", consistency: "strong" });
+  const job = await store.get(jobKey(id), { type: "json" });
   if (!job) return null;
   if (job.expiresAt && Date.now() > job.expiresAt) {
     await store.delete(jobKey(id)).catch(() => {});
@@ -77,7 +97,7 @@ async function readJob(id) {
 
 async function updateJob(id, patch) {
   const store = await openStore();
-  const cur = (await store.get(jobKey(id), { type: "json", consistency: "strong" })) || freshJob(id);
+  const cur = (await store.get(jobKey(id), { type: "json" })) || freshJob(id);
   const stages = Array.isArray(cur.stages) ? cur.stages.slice() : [];
   if (patch && patch.stage && stages[stages.length - 1] !== patch.stage) stages.push(patch.stage);
   const next = Object.assign({}, cur, patch || {}, { stages, updatedAt: Date.now() });
@@ -94,7 +114,7 @@ async function saveZip(id, buf) {
 
 async function takeZip(id) {
   const store = await openStore();
-  const raw = await store.get(zipKey(id), { type: "arrayBuffer", consistency: "strong" });
+  const raw = await store.get(zipKey(id), { type: "arrayBuffer" });
   if (!raw) return null;
   const buf = Buffer.from(raw);
   await store.delete(zipKey(id)).catch(() => {});
@@ -111,6 +131,7 @@ module.exports = {
   TTL_MS,
   validJobId,
   setExportStoreForTests,
+  bindBlobs,
   createJob,
   readJob,
   updateJob,
