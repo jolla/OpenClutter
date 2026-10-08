@@ -142,6 +142,12 @@ const LEVEL_MIN_INNER_M2 = 180;
 const LEVEL_MIN_RATIO = 0.04;
 const LEVEL_MAX_RATIO = 0.8;
 /**
+ * Two outlines this close in area are one roof with two height readings
+ * (Wynn Employee Parking: Microsoft 16.9 m inside Overture/OSM 25 m).
+ * A tower on a podium is a much smaller fraction of the lower plan.
+ */
+const SAME_ROOF_RATIO = 0.55;
+/**
  * A skyscraper on a casino podium is a few percent of that podium. The 4%
  * floor still drops a modest step (a penthouse, a duplicate stub). A mass
  * at least 40 m taller than the lower plan, or 40 m with no lower height,
@@ -229,7 +235,7 @@ function upperInset(inner, outer, innerArea, outerArea) {
   const pa = outerArea > 0 ? outerArea : featureAreaM2(outer);
   if (!(ta >= LEVEL_MIN_INNER_M2) || !(pa > ta)) return null;
   const ratio = ta / pa;
-  if (ratio > LEVEL_MAX_RATIO) return null;
+  if (ratio > LEVEL_MAX_RATIO || ratio >= SAME_ROOF_RATIO) return null;
   const innerRing = singleExterior(inner);
   const outerRing = singleExterior(outer);
   if (!innerRing || !outerRing) return null;
@@ -839,7 +845,49 @@ function dedupeStackedFootprints(features) {
     const base = bestLevelBase(kept[i].feature, kept[i].area, kept);
     if (base > 0) stampLevelBase(kept[i].feature, base);
   }
+  // A stamped base is the lower plan's roof. It may lift this footprint only
+  // while that plan is still here and covers it. A dropped duplicate leaves
+  // a gap, so the mass extends to the ground. A source bridge keeps its base.
+  groundUncoveredFloats(kept);
   return { features: kept.map((k) => k.feature), dropped, cut, merged };
+}
+
+function lowerCoversFloat(item, other) {
+  if (!item || !other || other === item) return false;
+  if (coarseMega(other.area, other.verts)) return false;
+  const props = item.feature && item.feature.properties;
+  const base = Number(props && props.levelBaseM) || 0;
+  if (!(base > 0)) return false;
+  const otherProps = other.feature && other.feature.properties;
+  const otherBase = Number(otherProps && otherProps.levelBaseM) || 0;
+  if (otherBase > 1) return false;
+  const oh = featureHeight(other.feature);
+  if (!(oh + 1.5 >= base)) return false;
+  let inter = 0;
+  try {
+    inter = multiArea(polygonClipping.intersection([[item.m]], [[other.m]]));
+  } catch {
+    return false;
+  }
+  return item.area > 0 && inter / item.area >= 0.6;
+}
+
+function groundUncoveredFloats(kept) {
+  for (let i = 0; i < kept.length; i++) {
+    const item = kept[i];
+    const props = item.feature && item.feature.properties;
+    if (!props) continue;
+    const base = Number(props.levelBaseM) || 0;
+    if (!(base > 0) || props.floatSpan) continue;
+    let covered = false;
+    for (let j = 0; j < kept.length; j++) {
+      if (lowerCoversFloat(item, kept[j])) {
+        covered = true;
+        break;
+      }
+    }
+    if (!covered) delete props.levelBaseM;
+  }
 }
 
 /**

@@ -144,9 +144,90 @@ describe("building outlines", () => {
     });
     assert.equal(parsed.parts.length, 1);
     assert.equal(parsed.parts[0].properties.height, 112);
-    assert.equal(parsed.parts[0].properties.levelBaseM, 18);
+    assert.equal(parsed.parts[0].properties.levelBaseM, undefined);
     assert.equal(parsed.parts[0].properties.buildingPart, true);
     assert.equal(parsed.openings.length, 1);
+  });
+
+  it("floats a small sky bridge and keeps a large min_height part on the ground", () => {
+    const lat = 36.1188;
+    const lon = -115.1682;
+    const mx = 111320 * Math.cos((lat * Math.PI) / 180);
+    const dLon = 36 / mx;
+    const dLat = 8 / 110540;
+    const bridge = [
+      { lon: lon - dLon / 2, lat: lat - dLat / 2 },
+      { lon: lon + dLon / 2, lat: lat - dLat / 2 },
+      { lon: lon + dLon / 2, lat: lat + dLat / 2 },
+      { lon: lon - dLon / 2, lat: lat + dLat / 2 },
+      { lon: lon - dLon / 2, lat: lat - dLat / 2 },
+    ];
+    const garage = [
+      { lon: -115.164, lat: 36.1204 },
+      { lon: -115.1628, lat: 36.1204 },
+      { lon: -115.1628, lat: 36.1214 },
+      { lon: -115.164, lat: 36.1214 },
+      { lon: -115.164, lat: 36.1204 },
+    ];
+    const parsed = parseBuildingDetail({
+      elements: [
+        {
+          type: "way",
+          tags: {
+            man_made: "bridge",
+            bridge: "yes",
+            covered: "yes",
+            "building:levels": "1",
+            "building:min_level": "1",
+            name: "Sky Bridge",
+          },
+          geometry: bridge,
+        },
+        {
+          type: "way",
+          tags: {
+            "building:part": "yes",
+            height: "25",
+            min_height: "18",
+            amenity: "parking",
+            parking: "multi-storey",
+            name: "Wynn Employee Parking",
+          },
+          geometry: garage,
+        },
+      ],
+    });
+    const sky = parsed.parts.find((p) => p.properties && p.properties.floatSpan);
+    const deck = parsed.parts.find((p) => p.properties && p.properties.partName === "Wynn Employee Parking");
+    assert.ok(sky);
+    assert.equal(sky.properties.levelBaseM, 3);
+    assert.equal(sky.properties.height, 6);
+    assert.ok(deck);
+    assert.equal(deck.properties.height, 25);
+    assert.equal(deck.properties.levelBaseM, undefined);
+  });
+
+  it("keeps the parent when the only part does not reach the ground", () => {
+    const parent = metersBox(lon, lat, 80, 60, {
+      height: 12,
+      heightSource: "overture",
+      geomSource: "overture",
+    });
+    const pool = metersBox(lon + 0.0002, lat, 16, 12);
+    const deck = metersBox(lon - 0.00005, lat, 28, 18, {
+      height: 12,
+      heightSource: "osm",
+      geomSource: "osm-part",
+      buildingPart: true,
+      levelBaseM: 6,
+      floatSpan: true,
+    });
+    const shaped = shapeBuildings([parent], { parts: [deck], openings: [ringOf(pool)] });
+    const ground = shaped.features.filter((f) => !(f.properties && f.properties.buildingPart));
+    assert.ok(ground.length >= 1, "parent dropped even though the part starts at 6 m");
+    const span = shaped.features.find((f) => f.properties && f.properties.floatSpan);
+    assert.ok(span);
+    assert.equal(span.properties.levelBaseM, 6);
   });
 
   it("does not let the vertex cap fill a courtyard", () => {

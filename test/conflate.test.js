@@ -362,4 +362,69 @@ describe("footprint conflation", () => {
     const heights = out.features.map((f) => f.properties.height).sort((a, b) => a - b);
     assert.deepEqual(heights, [14, 55]);
   });
+
+  it("keeps the Wynn garage on the ground when the shorter copy of the same roof is dropped", () => {
+    const lat = 36.12084;
+    const lon = -115.1634;
+    // Microsoft 16.9 m and Overture/OSM 25 m are the same employee garage.
+    const ms = metersBox(lon, lat, 150, 112, {
+      height: 16.9,
+      heightSource: "ms-global",
+      geomSource: "ms-global",
+    });
+    const osm = metersBox(lon, lat, 128, 99, {
+      height: 25,
+      heightSource: "overture",
+      geomSource: "overture",
+    });
+    const assembled = assembleFootprints({ global: [ms], overture: [osm], arcgis: [], usa: [] });
+    assert.equal(assembled.features.length, 1);
+    assert.equal(assembled.features[0].properties.height, 25);
+    assert.equal(assembled.features[0].properties.levelBaseM, undefined);
+    const frame = geoFrame({
+      west: lon - 0.002,
+      south: lat - 0.0015,
+      east: lon + 0.002,
+      north: lat + 0.0015,
+      name: "Garage",
+    });
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: assembled.features },
+      treePoints: [],
+      name: "Garage",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    assert.equal(areas.length, 1);
+    assert.ok(areas[0].area_material.top_height >= 24);
+    assert.equal(areas[0].area_material.bottom_height, undefined);
+  });
+
+  it("extends an upper mass to the ground when nothing below it remains", () => {
+    const upper = metersBox(-115.1634, 36.1208, 40, 28, {
+      height: 40,
+      heightSource: "overture",
+      geomSource: "overture",
+      levelBaseM: 18,
+    });
+    const out = dedupeStackedFootprints([upper]);
+    assert.equal(out.features.length, 1);
+    assert.equal(out.features[0].properties.height, 40);
+    assert.equal(out.features[0].properties.levelBaseM, undefined);
+  });
+
+  it("leaves a small bridge raised when the source says the deck is elevated", () => {
+    const bridge = metersBox(-115.1682, 36.1188, 36, 8, {
+      height: 6,
+      heightSource: "osm",
+      geomSource: "osm-part",
+      levelBaseM: 3,
+      floatSpan: true,
+    });
+    const out = dedupeStackedFootprints([bridge]);
+    assert.equal(out.features.length, 1);
+    assert.equal(out.features[0].properties.levelBaseM, 3);
+    assert.equal(out.features[0].properties.height, 6);
+  });
 });

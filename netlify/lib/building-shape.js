@@ -6,8 +6,9 @@
  * Overture and OSM `building=*` ways are often one complex: the ring runs
  * around towers, the podium, and the open pool deck. OpenIntent has no hole
  * ring, so a courtyard has to be a gap in the outline. A `building:part`
- * keeps its own height and min_height. A parent that still covers a pool
- * after that cut is dropped when a part already describes the building.
+ * keeps its own height. min_height lifts that part only when the source
+ * says it is a small bridge, skywalk, roof, or canopy. A parent stays
+ * when its parts do not reach the ground.
  *
  * Simplification stays near a metre. A convex hull that fills the courtyard
  * is not a candidate.
@@ -23,6 +24,9 @@ const OVERPASS_URLS = [
 const MIN_PIECE_M2 = 25;
 const CORRIDOR_M = 8;
 const PART_COVER = 0.75;
+/** A skywalk can be long and narrow. A parking garage is larger than this. */
+const FLOAT_MAX_M2 = 8000;
+const LEVEL_HEIGHT_M = 3;
 
 function buildingDetailQuery(bbox) {
   const box = [+bbox.south, +bbox.west, +bbox.north, +bbox.east].join(",");
@@ -94,12 +98,35 @@ function memberRings(el, role) {
   return rings;
 }
 
+function bridgeLike(tags) {
+  if (!tags) return false;
+  const building = String(tags.building || "").toLowerCase();
+  const part = String(tags["building:part"] || "").toLowerCase();
+  const made = String(tags.man_made || "").toLowerCase();
+  const bridge = String(tags.bridge || "").toLowerCase();
+  if (building === "bridge" || building === "roof" || building === "canopy") return true;
+  if (part === "bridge" || part === "roof" || part === "canopy" || part === "skywalk") return true;
+  if (made === "bridge" || made === "canopy" || made === "skywalk") return true;
+  if (bridge === "yes" || bridge === "covered" || bridge === "viaduct") return true;
+  if (tags.skywalk || tags["building:skywalk"]) return true;
+  return false;
+}
+
 function heightTags(tags) {
   const top = parseMeters(tags.height || tags["building:height"]);
   let minH = parseMeters(tags.min_height || tags["building:min_height"]);
   const levels = Number(tags["building:levels"] || tags.levels);
+  const minLevel = Number(tags["building:min_level"]);
+  const levelBottom = minLevel >= 1 && minLevel <= 40 ? minLevel * LEVEL_HEIGHT_M : 0;
+  if (!(minH > 0) && levelBottom > 0) minH = levelBottom;
   let height = top;
-  if (!(height > 2) && levels >= 1 && levels <= 80) height = levels * 3;
+  if (!(height > 2) && levels >= 1 && levels <= 80) height = levels * LEVEL_HEIGHT_M;
+  if (!(height > 2) && levelBottom > 0) height = levelBottom + LEVEL_HEIGHT_M;
+  // building:levels is the deck itself when the bottom is building:min_level.
+  if (height > 2 && minH >= height && levelBottom > 0 && !(top > 2)) {
+    const deck = levels >= 1 && levels <= 80 ? levels * LEVEL_HEIGHT_M : LEVEL_HEIGHT_M;
+    height = minH + deck;
+  }
   if (!(height > 2 && height < 400)) height = 0;
   if (!(minH > 0 && minH < 400)) minH = 0;
   if (height && minH >= height) minH = 0;
@@ -129,7 +156,13 @@ function partFeature(rings, tags) {
     properties.height = Math.round(h.height * 10) / 10;
     properties.heightSource = "osm";
   }
-  if (h.minH > 0) properties.levelBaseM = Math.round(h.minH * 10) / 10;
+  // A large part with min_height is the whole mass down to the ground.
+  // Only a small bridge, skywalk, roof, or canopy keeps the air underneath.
+  const area = meterArea(exterior);
+  if (h.minH > 0 && bridgeLike(tags) && area > 0 && area <= FLOAT_MAX_M2 && (!h.height || h.minH < h.height)) {
+    properties.levelBaseM = Math.round(h.minH * 10) / 10;
+    properties.floatSpan = true;
+  }
   const name = tags && (tags.name || tags["building:part"]);
   if (name && name !== "yes") properties.partName = String(name).slice(0, 80);
   return {
@@ -155,9 +188,12 @@ function parseBuildingDetail(payload, bbox) {
       const ring = wayCoords(el);
       if (!ring) continue;
       if (bbox && !ringHitsBox(ring, bbox)) continue;
-      if (tags["building:part"]) {
+      if (tags["building:part"] || bridgeLike(tags)) {
         const feature = partFeature([ring], tags);
-        if (feature) parts.push(feature);
+        // A bridge with no height is a road deck, not a second building.
+        if (feature && (tags["building:part"] || feature.properties.height || feature.properties.levelBaseM)) {
+          parts.push(feature);
+        }
         continue;
       }
       if (isOpeningTags(tags)) openings.push(ring);
@@ -930,6 +966,8 @@ function subtractSameHeightParts(features) {
       const part = features[j];
       if (!(part.properties && part.properties.buildingPart)) continue;
       if (isTallPart(part, parent)) continue;
+      // A raised part does not replace the floors under it.
+      if (Number(part.properties.levelBaseM) > 0 || part.properties.floatSpan) continue;
       const partRings = ringsOf[j];
       const parentRings = ringsOf[i];
       let inside = false;
@@ -986,6 +1024,7 @@ function dropParentsOverOpenings(features, openings) {
       if (i === j) continue;
       const other = features[j];
       if (!(other.properties && other.properties.buildingPart)) continue;
+      if (Number(other.properties.levelBaseM) > 0 || other.properties.floatSpan) continue;
       const partRings = exteriorsOf(other);
       for (let a = 0; a < partRings.length && parts < 1; a++) {
         for (let b = 0; b < rings.length; b++) {
