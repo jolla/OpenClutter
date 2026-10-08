@@ -254,11 +254,18 @@ describe("export jobs", { concurrency: 1 }, () => {
       assert.equal(job.state, "done", job && job.error);
       const clip = job.terrainClipboard;
       assert.ok(clip, job.terrainStatus);
-      assert.ok(clip.slopedFloors.length >= 1, "sloped " + (clip.slopedFloors && clip.slopedFloors.length));
+      // Jerry's v1.1.79 4K status was "Terrain paste omitted: 20×20 quads will
+      // not fit in the export response." That guard is the sync bundle. The
+      // background job stores the paste in Blobs and must keep the full mesh.
+      assert.equal(clip.slopedFloors.length, 400, job.terrainStatus);
+      assert.equal((clip.raisedFloorZones || []).length, 0);
       assert.equal(clip.tiePoints.length, 2);
       assert.equal(clip.tiePoints[1].x, 0);
       assert.equal(clip.tiePoints[1].y, 0);
+      assert.match(job.terrainStatus, /20×20/);
       assert.match(job.terrainStatus, /Use Copy terrain/);
+      assert.doesNotMatch(job.terrainStatus, /will not fit in the export response/);
+      assert.doesNotMatch((job.warnings || []).join("\n"), /will not fit in the export response/);
       const zip = await jobs.takeZip(id);
       const files = unzipStore(Buffer.from(zip));
       assert.equal(files["terrain-clipboard.json"], undefined);

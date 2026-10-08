@@ -4,7 +4,7 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
-**v1.1.80** on `dev` — Copy terrain stays on the button after a background export. A Sharp plate used to drop the mesh so the response could hold the zip, and the button then copied only the two GPS points. The job stores the zip and the paste separately, so Terrain on copies the sloped floors and those two points. If the elevation read fails, the status says so. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.80`).
+**v1.1.80** on `dev` — Copy terrain stays on the button after a background export. A 4K plate used to drop a finished 20×20 mesh with “will not fit in the export response,” and the button then copied only the two GPS points. The job stores the zip and the paste separately, so that response-size guard does not run there. Terrain on copies the sloped floors and those two points. If the elevation read fails, the status says so. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.80`).
 
 **v1.1.79** on `dev` — Copy terrain draws a pit as a hole. Hamina shows a sloped floor upside down from meters above the lowest sample, so the pit floor is stored as the largest z and the rim as the smaller z. Each corner keeps that node's height, and a corner shared with the next quad is the same number, so the white walls between slopes are gone. A grade that rises north is high on the north side in Planner Plus. Building bottoms stay meters above the lowest sample, which is the ground Hamina shows. The badge stays (`dev · v1.1.79`).
 
