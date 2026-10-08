@@ -26,6 +26,7 @@ const {
 const { isParkingClass, planOutdoor, fitOutdoorBudget } = require("./outdoor-clutter");
 const { treePairsFromPoints } = require("./vegetation");
 const { dedupeStackedFootprints } = require("./conflate");
+const polygonClipping = require("polygon-clipping");
 const { piecesForFeature } = require("./roof-form");
 const { zipStore } = require("./zip-store");
 const { demUnderFootprint, normalizeTerrainResolution, GLO30_CREDIT, LIFT_LOCAL_M } = require("./terrain");
@@ -198,6 +199,10 @@ function coverageStats(stats) {
     droppedVerts: s.droppedVerts || 0,
     droppedPavement: s.droppedPavement || 0,
     droppedAreasCap: s.droppedAreasCap || 0,
+    droppedNested: s.droppedNested || 0,
+    droppedTreeAreas: s.droppedTreeAreas || 0,
+    treesMeasured: s.treesMeasured || 0,
+    discreteTrees: s.discreteTrees || 0,
     attenuationAreasEmitted: s.attenuationAreasEmitted != null ? s.attenuationAreasEmitted : s.areas || 0,
     globalFootprints: s.globalFootprints || 0,
     arcgisFootprints: s.arcgisFootprints || 0,
@@ -253,11 +258,15 @@ function coverageSummary(stats) {
   if (c.droppedVerts) drops.push("verts " + c.droppedVerts);
   if (c.droppedPavement) drops.push("pavement " + c.droppedPavement);
   if (c.droppedAreasCap) drops.push("areas-cap " + c.droppedAreasCap);
+  if (c.droppedNested) drops.push("nested " + c.droppedNested);
   const dropTxt = drops.length ? `; dropped ${drops.join(", ")}` : "";
   const foliage = c.foliageOmitted ? "omitted (canopy height timed out)" : c.includeFoliage ? "on" : "off";
+  const measured = c.treesMeasured > c.treesKept ? c.treesMeasured : 0;
+  const ofBit = measured ? " of " + measured : "";
+  const stemBit = c.discreteTrees > 0 ? c.discreteTrees + " stems, " : "";
   let line =
     `Buildings ${c.buildingsKept} kept (${c.fetched} fetched${dropTxt}). ` +
-    `Foliage ${foliage}. Trees ${c.treesKept} kept (${c.treesSource}). ` +
+    `Foliage ${foliage}. Trees ${c.treesKept} kept${ofBit} (${stemBit}${c.treesSource}). ` +
     `attenuation_areas ${c.attenuationAreasEmitted}.`;
   if (stats && stats.includeOutdoor) {
     const bits = [];
@@ -1155,37 +1164,152 @@ function capAttenuationAreas(areas, buildingCount, max, opts) {
  * Buildings fill the cap first. A crown group is the first band, every
  * inset layer after it, and the stem. A stem or an inset without that
  * first band is dropped, so the cap never leaves a piece of a tree.
+ * `reserve` holds slots for water and parking so a crowd of crowns cannot
+ * spend them. Poles and walls are not reserved.
  */
-function capBuildingsAndTrees(buildings, trees, kinds, max) {
-  const limit = max == null ? MAX_ATTENUATION_AREAS : max;
+function capBuildingsAndTrees(buildings, trees, kinds, max, reserve) {
+  const hard = max == null ? MAX_ATTENUATION_AREAS : max;
+  const hold = reserve > 0 ? Math.min(reserve | 0, hard) : 0;
+  const limit = Math.max(0, hard - hold);
   const srcB = buildings || [];
   const keptB = srcB.slice(0, Math.min(srcB.length, limit));
   const treeList = trees || [];
   const kindList = kinds || [];
-  const kept = [];
+  const groups = [];
   let i = 0;
   while (i < treeList.length) {
-    if (kindList[i] === "trunk") {
-      i++;
-      continue;
-    }
-    if (kindList[i] === "layer") {
+    if (kindList[i] === "trunk" || kindList[i] === "layer") {
       i++;
       continue;
     }
     // A crown is the full band plus the inset layers above it, then the stem.
     let j = i + 1;
     while (j < treeList.length && kindList[j] === "layer") j++;
-    if (j < treeList.length && kindList[j] === "trunk") j++;
-    const need = j - i;
-    if (keptB.length + kept.length + need > limit) break;
-    for (let t = i; t < j; t++) kept.push(treeList[t]);
+    const discrete = j < treeList.length && kindList[j] === "trunk";
+    if (discrete) j++;
+    groups.push({ start: i, end: j, discrete });
     i = j;
+  }
+  // Discrete trees take the slots that are left after buildings. A big
+  // canopy outline does not spend those slots first. Poles and walls are
+  // added later, so they drop before a tree does.
+  groups.sort((a, b) => (a.discrete === b.discrete ? 0 : a.discrete ? -1 : 1));
+  const kept = [];
+  let treeGroups = 0;
+  let discreteTrees = 0;
+  for (let g = 0; g < groups.length; g++) {
+    const group = groups[g];
+    const need = group.end - group.start;
+    if (keptB.length + kept.length + need > limit) continue;
+    for (let t = group.start; t < group.end; t++) kept.push(treeList[t]);
+    treeGroups++;
+    if (group.discrete) discreteTrees++;
   }
   return {
     areas: keptB.concat(kept),
     dropped: srcB.length + treeList.length - keptB.length - kept.length,
+    droppedBuildings: srcB.length - keptB.length,
+    droppedTrees: treeList.length - kept.length,
+    treeGroups,
+    discreteTrees,
   };
+}
+
+function closePixelRing(ring) {
+  if (!ring || ring.length < 3) return null;
+  const out = ring.slice();
+  const a = out[0];
+  const b = out[out.length - 1];
+  if (a[0] !== b[0] || a[1] !== b[1]) out.push([a[0], a[1]]);
+  return out.length >= 4 ? out : null;
+}
+
+function clipMultiArea(geom) {
+  if (!geom) return 0;
+  let area = 0;
+  for (let i = 0; i < geom.length; i++) {
+    const poly = geom[i];
+    if (poly && poly[0]) area += ringAreaPx(poly[0]);
+  }
+  return area;
+}
+
+/**
+ * A second outline on the same ground as a larger roof is one volume drawn
+ * twice. Drop that inner outline. A taller mass on the same ground is a tower:
+ * its bottom moves up to the outer roof. A band that already starts at the
+ * outer top (a dome step, a tower seated on its podium) stays.
+ */
+function dropNestedDuplicateRoofs(areas) {
+  const items = [];
+  for (let i = 0; i < (areas || []).length; i++) {
+    const area = areas[i];
+    const pixels = oiPixelCoords(area && area.area && area.area.coordinates);
+    const ring = closePixelRing(pixels.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]));
+    if (!ring) continue;
+    const px = ringAreaPx(ring);
+    if (!(px > 1)) continue;
+    const mat = area.area_material || {};
+    items.push({
+      index: i,
+      ring,
+      area: px,
+      bottom: Number(mat.bottom_height) > 0 ? Number(mat.bottom_height) : 0,
+      top: Number(mat.top_height) > 0 ? Number(mat.top_height) : 0,
+    });
+  }
+  items.sort((a, b) => b.area - a.area);
+  const drop = new Set();
+  const kept = [];
+  for (let n = 0; n < items.length; n++) {
+    const item = items[n];
+    let host = null;
+    let hostCover = 0;
+    for (let k = 0; k < kept.length; k++) {
+      const outer = kept[k];
+      if (item.bottom >= outer.top - 1.5) continue;
+      if (Math.abs(item.bottom - outer.bottom) > 4) continue;
+      let inter = 0;
+      try {
+        inter = clipMultiArea(polygonClipping.intersection([[item.ring]], [[outer.ring]]));
+      } catch {
+        continue;
+      }
+      const cover = item.area > 0 ? inter / item.area : 0;
+      if (cover < 0.7) continue;
+      if (!host || outer.top > host.top) {
+        host = outer;
+        hostCover = cover;
+      }
+    }
+    if (!host || !(hostCover >= 0.7)) {
+      kept.push(item);
+      continue;
+    }
+    if (item.top >= host.top + 6 && item.bottom < host.top - 0.5) {
+      const bottom = Math.round(host.top * 10) / 10;
+      const mat = areas[item.index].area_material;
+      if (mat && bottom < item.top - 1) {
+        mat.bottom_height = bottom;
+        const thick = Math.round((item.top - bottom) * 10) / 10;
+        if (typeof mat.name === "string" && mat.name.indexOf(" @ ") > 0) {
+          mat.name = "Building - " + thick.toFixed(1) + " @ " + bottom.toFixed(1);
+        }
+        item.bottom = bottom;
+      }
+      kept.push(item);
+      continue;
+    }
+    drop.add(item.index);
+  }
+  if (!drop.size) return 0;
+  const next = [];
+  for (let i = 0; i < areas.length; i++) {
+    if (!drop.has(i)) next.push(areas[i]);
+  }
+  areas.length = 0;
+  for (let i = 0; i < next.length; i++) areas.push(next[i]);
+  return drop.size;
 }
 
 function siteName(raw) {
@@ -1674,6 +1798,8 @@ function footprintsToClutter(features, frame, affine, slopeTop) {
       }
     }
   }
+  stats.droppedNested = dropNestedDuplicateRoofs(oiAreas);
+  stats.buildings = oiAreas.length;
   stats.measuredBuildings = buckets.measured;
   stats.buildingsLifted = buckets.lifted;
   return {
@@ -1817,8 +1943,20 @@ function buildClutter({
   includeWalls,
   includePoles,
   outdoorMiss,
+  maxAttenuationAreas,
 }) {
   const featureList = footprintsGeojson?.features || [];
+  if (Array.isArray(warnings)) {
+    for (let i = warnings.length - 1; i >= 0; i--) {
+      if (
+        /left out to stay inside the area budget|not a valid shape|Kept the largest canopy outlines|Kept the \d+ largest roofs/.test(
+          String(warnings[i])
+        )
+      ) {
+        warnings.splice(i, 1);
+      }
+    }
+  }
   if (nlsHeights) {
     const nls = applyNlsBuildingHeights(featureList);
     if (nls && nls.omitted && Array.isArray(warnings)) {
@@ -1859,22 +1997,25 @@ function buildClutter({
         overlayRings: [],
       };
   if (foliageOn && veg.foliageCoarsened && Array.isArray(warnings)) {
-    const line = "Kept the largest canopy outlines so this zip can download.";
+    const cap = maxFoliagePolygons > 0 ? maxFoliagePolygons | 0 : 720;
+    const line =
+      cap >= 720
+        ? "Kept the largest canopy outlines, then measured crowns, up to " + cap + "."
+        : "Kept the largest canopy outlines so this zip can download.";
     if (warnings.indexOf(line) < 0) warnings.push(line);
   }
   // A poisoned or drifted vegetation material fails makeOiArea and that ring
   // is omitted, so it cannot empty the buildings.
   const treeOi = treesToOi(veg.oiAreas, frame.imgW, frame.imgH, frame.mpuX);
-  const capped = capBuildingsAndTrees(fp.oiAreas, treeOi.areas, treeOi.kinds, MAX_ATTENUATION_AREAS);
-  const buildingEmitted = Math.min(fp.oiAreas.length, capped.areas.length);
-  const treeEmitted = capped.areas.length - buildingEmitted;
-  let areas = capped.areas;
+  const areaCap = maxAttenuationAreas > 0 ? maxAttenuationAreas | 0 : MAX_ATTENUATION_AREAS;
   let waterAreas = 0;
   let parkingAreas = 0;
   let wallAreas = 0;
   let poleAreas = 0;
   const outdoorOn =
     includeWater === true || includeParking === true || includeWalls === true || includePoles === true;
+  let planned = null;
+  let converted = null;
   if (outdoorOn && outdoorMiss !== true) {
     const buildings = [];
     if (includeParking === true) {
@@ -1886,19 +2027,35 @@ function buildClutter({
         });
       }
     }
-    const planned = planOutdoor({
+    planned = planOutdoor({
       features: outdoorFeatures || [],
       frame,
       slopeTop,
       buildings,
       parkingRings: includeParking === true ? fp.parkingRings : [],
     });
+    converted = outdoorToOi(planned.items, frame.imgW, frame.imgH, frame.mpuX);
+  }
+  // Water and parking are a handful of areas (the pond, the lots). Hold
+  // those slots before crowns fill the 982 import cap. Poles and walls are
+  // not held, so they drop before a tree does.
+  let waterParking = 0;
+  const outdoorKinds = converted ? converted.kinds : [];
+  for (let i = 0; i < outdoorKinds.length; i++) {
+    if (outdoorKinds[i] === "water" || outdoorKinds[i] === "parking") waterParking++;
+  }
+  const buildingSlots = Math.min(fp.oiAreas.length, areaCap);
+  const reserveFit = Math.min(waterParking, Math.max(0, areaCap - buildingSlots));
+  const capped = capBuildingsAndTrees(fp.oiAreas, treeOi.areas, treeOi.kinds, areaCap, reserveFit);
+  const buildingEmitted = Math.min(fp.oiAreas.length, capped.areas.length);
+  const treeEmitted = capped.areas.length - buildingEmitted;
+  let areas = capped.areas;
+  if (planned && converted) {
     for (let i = 0; i < planned.updates.length; i++) {
       const u = planned.updates[i];
       if (u.index < buildingEmitted && areas[u.index]) areas[u.index].area_material = u.material;
     }
-    const converted = outdoorToOi(planned.items, frame.imgW, frame.imgH, frame.mpuX);
-    const room = Math.max(0, MAX_ATTENUATION_AREAS - areas.length);
+    const room = Math.max(0, areaCap - areas.length);
     const fit = fitOutdoorBudget(converted.areas, converted.kinds, room);
     areas = areas.concat(fit.items);
     for (let i = 0; i < fit.kinds.length; i++) {
@@ -1913,10 +2070,12 @@ function buildClutter({
     const wallDrop =
       (drop.wall || 0) + (drop.fence || 0) + (drop.retaining || 0) + (drop.hedge || 0);
     const notes = (outdoorNotes || []).concat(planned.notes || [], fit.notes || []);
-    if (wallDrop) notes.push("Walls left out: " + wallDrop + ".");
-    if (drop.pole) notes.push("Light poles left out: " + drop.pole + ".");
-    if (drop.water) notes.push("Water left out: " + drop.water + ".");
-    if (drop.parking) notes.push("Parking left out: " + drop.parking + ".");
+    const shapeNote = (n, label) =>
+      n + " " + label + (n === 1 ? " was" : "s were") + " not a valid shape.";
+    if (wallDrop) notes.push(shapeNote(wallDrop, "wall"));
+    if (drop.pole) notes.push(shapeNote(drop.pole, "light pole"));
+    if (drop.water) notes.push(shapeNote(drop.water, "water area"));
+    if (drop.parking) notes.push(shapeNote(drop.parking, "parking area"));
     if (Array.isArray(warnings)) {
       for (let i = 0; i < notes.length; i++) {
         if (notes[i] && warnings.indexOf(notes[i]) < 0) warnings.push(notes[i]);
@@ -1952,8 +2111,18 @@ function buildClutter({
   const oi = buildOpenIntent(frame, name, imgName, areas, materials);
   const stats = {
     ...fp.stats,
-    trees: veg.count,
-    treesSource: omitFoliage ? "none" : foliageOn ? treesSource || (veg.count ? "nlcd-canopy" : "none") : "none",
+    trees: capped.treeGroups,
+    treesMeasured: veg.count,
+    discreteTrees: capped.discreteTrees,
+    treesSource: omitFoliage
+      ? "none"
+      : foliageOn
+        ? treesSource && treesSource !== "none"
+          ? treesSource
+          : veg.count
+            ? "canopy"
+            : "none"
+        : "none",
     includeFoliage: foliageOn,
     foliageLifted: veg.foliageLifted || 0,
     foliageGeometry: omitFoliage ? "omitted" : foliageOn ? veg.foliageGeometry || "none" : "none",
@@ -1963,7 +2132,8 @@ function buildClutter({
     areas: areas.length,
     droppedInvalid: fp.stats.droppedInvalid || 0,
     droppedTreeRings: treeOi.droppedInvalid,
-    droppedAreasCap: capped.dropped,
+    droppedAreasCap: capped.droppedBuildings,
+    droppedTreeAreas: capped.droppedTrees,
     attenuationAreasEmitted: areas.length,
     openIntentBuildingAreas: buildingEmitted,
     openIntentTreeAreas: treeEmitted,
@@ -2081,6 +2251,8 @@ module.exports = {
   expandOiCoordTriples,
   emitIfValid,
   capAttenuationAreas,
+  capBuildingsAndTrees,
+  dropNestedDuplicateRoofs,
   ensureMinSpan,
   minOiSpanPx,
   capOiRingPx,
