@@ -1023,7 +1023,16 @@ function normalizeCanopyHits(raw) {
   return out;
 }
 
-function backgroundInvokeUrl() {
+function backgroundInvokeUrl(event) {
+  const headers = (event && event.headers) || {};
+  const forwarded = String(headers["x-forwarded-host"] || headers["X-Forwarded-Host"] || "")
+    .split(",")[0]
+    .trim();
+  const host = forwarded || headers.host || headers.Host || "";
+  const proto = headers["x-forwarded-proto"] || headers["X-Forwarded-Proto"] || "https";
+  if (host && host.indexOf(".") !== -1) {
+    return proto + "://" + host + "/.netlify/functions/clutter-export-background";
+  }
   const base = process.env.DEPLOY_URL || process.env.DEPLOY_PRIME_URL || process.env.URL || "";
   return String(base).replace(/\/$/, "") + "/.netlify/functions/clutter-export-background";
 }
@@ -1033,23 +1042,11 @@ function backgroundInvokeUrl() {
  * built here. If Blobs or the invoke is unavailable, the page runs the
  * short sync export instead.
  */
-function blobsDebug(event) {
-  const headers = (event && event.headers) || {};
-  const names = Object.keys(headers).map((key) => String(key).toLowerCase());
-  return {
-    hasBlobs: !!(event && event.blobs),
-    blobsType: event && event.blobs != null ? typeof event.blobs : "none",
-    hasSiteHeader: names.indexOf("x-nf-site-id") !== -1,
-    hasContextEnv: !!process.env.NETLIFY_BLOBS_CONTEXT,
-  };
-}
-
-function fallbackExport(cors, reason, event) {
+function fallbackExport(cors, reason) {
   return json(200, cors, {
     ok: false,
     fallback: true,
     reason: reason,
-    blobs: blobsDebug(event),
     note: "Background export is unavailable. This export uses the short path.",
   });
 }
@@ -1077,12 +1074,12 @@ async function enqueueBackgroundExport(event, body, cors) {
     await exportJobs.createJob(id);
   } catch (err) {
     const name = err && err.name ? err.name : "blobs-write";
-    return fallbackExport(cors, bound ? name : "event-has-no-blobs", event);
+    return fallbackExport(cors, bound ? name : "event-has-no-blobs");
   }
-  const url = backgroundInvokeUrl();
+  const url = backgroundInvokeUrl(event);
   if (!/^https?:\/\//.test(url)) {
     await exportJobs.deleteJob(id).catch(() => {});
-    return fallbackExport(cors, "no-deploy-url", event);
+    return fallbackExport(cors, "no-deploy-url");
   }
   try {
     const res = await fetch(url, {
@@ -1093,11 +1090,11 @@ async function enqueueBackgroundExport(event, body, cors) {
     });
     if (res.status !== 202 && res.status !== 200) {
       await exportJobs.deleteJob(id).catch(() => {});
-      return fallbackExport(cors, "invoke-" + res.status, event);
+      return fallbackExport(cors, "invoke-" + res.status);
     }
   } catch {
     await exportJobs.deleteJob(id).catch(() => {});
-    return fallbackExport(cors, "invoke-failed", event);
+    return fallbackExport(cors, "invoke-failed");
   }
   return json(200, cors, { ok: true, async: true, jobId: id });
 }
