@@ -929,12 +929,18 @@ function crownsForExport(grid, opts) {
   if (!prepared || !(prepared.nonzero > 0)) return { crowns: [], coarsened: false, stride: 1 };
   const max = opts && opts.maxPolygons > 0 ? opts.maxPolygons | 0 : BULK_POLYGONS;
   let crowns = crownsFromChm(prepared);
+  const before = crowns.length;
   let trimmed = false;
   if (crowns.length > max) {
     trimmed = true;
     crowns = selectCrownsForExport(crowns, max);
   }
-  return { crowns, coarsened: trimmed, stride: 1 };
+  return {
+    crowns,
+    coarsened: trimmed,
+    stride: 1,
+    dropped: before > crowns.length ? before - crowns.length : 0,
+  };
 }
 
 module.exports = {

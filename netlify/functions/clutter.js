@@ -121,6 +121,14 @@ const DENSE_FEATURES = 1500;
 // response is returned.
 const ZIP_FIT_BYTES = 4200000;
 const ZIP_SHRINK_STEPS = [640, 400, 240];
+// A draw over 2.5 km still exports on the short path, with fewer roofs and a
+// smaller plate. The background job covers the full draw.
+const SYNC_LARGE_DRAW_M = 2500;
+const SYNC_LARGE_ROOFS = 240;
+// A background zip that still exceeds the download limit keeps the tallest
+// roofs, then steps the plate's companion JSON down.
+const BACKGROUND_ROOF_STEPS = [800, 500, 320, 200];
+const LARGE_PLATE_M = 4000;
 // Background exports are not on the ~10s gateway. Four minutes leaves room
 // to write an error before the platform's 15 minute kill.
 const BACKGROUND_ANSWER_MS = 4 * 60 * 1000;
@@ -147,7 +155,7 @@ async function runBackgroundExport(event, onProgress) {
   if (ctx.tail) await ctx.tail;
   return result;
 }
-const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
+const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
@@ -303,10 +311,18 @@ function backgroundImagerySteps(devHost, bbox) {
       { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.25 },
     ];
   } else {
-    plan = [
-      { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.5 },
-      { maxSide: IMAGERY_MAX_SIDE, metersPerPx: 0.5 },
-    ];
+    const long = bboxLongSideM(bbox);
+    if (long > LARGE_PLATE_M) {
+      plan = [
+        { maxSide: IMAGERY_MAX_SIDE, metersPerPx: 1 },
+        { maxSide: 640, metersPerPx: 2 },
+      ];
+    } else {
+      plan = [
+        { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.5 },
+        { maxSide: IMAGERY_MAX_SIDE, metersPerPx: 0.5 },
+      ];
+    }
   }
   return plan.map((step, i) =>
     Object.assign({ attemptMs: i === 0 ? BACKGROUND_PLATE_MS : BACKGROUND_PLATE_FALLBACK_MS }, step)
@@ -315,6 +331,14 @@ function backgroundImagerySteps(devHost, bbox) {
 
 function imagerySteps(devHost, bbox) {
   if (isBackgroundExport()) return backgroundImagerySteps(devHost, bbox);
+  if (bboxLongSideM(bbox) > SYNC_LARGE_DRAW_M) {
+    const first = devHost ? IMAGERY_ATTEMPT_MS_DEV : IMAGERY_ATTEMPT_MS;
+    const next = devHost ? IMAGERY_STEPDOWN_MS_DEV : IMAGERY_ATTEMPT_MS;
+    return [
+      { maxSide: 640, metersPerPx: 2, attemptMs: first },
+      { maxSide: 400, metersPerPx: 2, attemptMs: next },
+    ];
+  }
   let quality = devHost && bbox ? bbox.imageryQuality : undefined;
   if (devHost && fourKQuality(quality)) quality = "sharp";
   const plan = imageryExportPlan(devHost, bbox, quality);
@@ -782,12 +806,19 @@ function featureAreaM2(feature, mpd) {
   return area;
 }
 
-/** Largest roofs first. A shortened campus export should keep the big halls. */
+/** Largest and tallest roofs first. A shortened export should keep the towers. */
 function largestFeatures(features, n, mpd) {
   const list = Array.isArray(features) ? features : [];
   const scored = [];
-  for (let i = 0; i < list.length; i++) scored.push({ feature: list[i], area: featureAreaM2(list[i], mpd) });
-  scored.sort((a, b) => b.area - a.area);
+  for (let i = 0; i < list.length; i++) {
+    const feature = list[i];
+    const area = featureAreaM2(feature, mpd);
+    const props = (feature && feature.properties) || {};
+    const h = Number(props.height || props.Height || props.HEIGHT || 0);
+    const height = h > 2 && h < 400 ? h : 0;
+    scored.push({ feature, area, height, score: area * Math.max(1, height / 10) });
+  }
+  scored.sort((a, b) => b.score - a.score || b.height - a.height || b.area - a.area);
   const keep = Math.max(0, n | 0);
   const out = [];
   for (let i = 0; i < scored.length && out.length < keep; i++) out.push(scored[i].feature);
@@ -1216,11 +1247,11 @@ async function handleClutter(event) {
           parking: includeParking,
           walls: includeWalls,
           poles: includePoles,
-        }, { signal, ua: UA, timeoutMs: background ? 20000 : 4500 })
+        }, { signal, ua: UA, timeoutMs: background ? 60000 : 4500, tile: background })
       );
     }
     detailJob = beginOptional((signal) =>
-      fetchBuildingDetail(requestBbox, { signal, ua: UA, timeoutMs: background ? 20000 : 4500 })
+      fetchBuildingDetail(requestBbox, { signal, ua: UA, timeoutMs: background ? 60000 : 4500, tile: background })
     );
     if (needImage) {
       frame = applyImageryMeta(frame, null, { width: frame.imgW, height: frame.imgH }, { requestBbox });
@@ -1561,6 +1592,11 @@ async function handleClutter(event) {
   let guidewayFeatures = [];
   if (detailJob) {
     const pack = await detailJob.work;
+    if (pack && pack !== TIMED_OUT && Array.isArray(pack.notes)) {
+      for (let i = 0; i < pack.notes.length; i++) {
+        if (pack.notes[i] && warnings.indexOf(pack.notes[i]) < 0) warnings.push(pack.notes[i]);
+      }
+    }
     if (pack && pack !== TIMED_OUT && pack.ok !== false) {
       guidewayFeatures = pack.guideways || [];
       try {
@@ -1694,14 +1730,10 @@ async function handleClutter(event) {
     });
   }
 
+  let shrinkNote = "";
   function noteShrink(before, after) {
     if (!(before > after)) return;
-    for (let i = warnings.length - 1; i >= 0; i--) {
-      if (/^Kept the \d+ largest roofs/.test(warnings[i])) warnings.splice(i, 1);
-    }
-    warnings.push(
-      "Kept the " + after + " largest roofs so the zip can download. Draw a smaller area for the rest of this campus."
-    );
+    shrinkNote = "Kept the " + after + " largest, tallest roofs so the zip can download.";
   }
 
   let outdoorFeatures = [];
@@ -1728,10 +1760,20 @@ async function handleClutter(event) {
   }
 
   let exportFeatures = features;
-  // 640 / 4.2 MB are the synchronous download. A background job stores the
-  // zip in Blobs, so those trims must not drop roofs or the small crowns.
-  // Hamina's 982-area import cap still applies inside the pipeline.
-  if (!background && exportFeatures.length > ZIP_SHRINK_STEPS[0]) {
+  const shortLarge = !background && Math.max(frame.widthM, frame.lengthM) > SYNC_LARGE_DRAW_M;
+  if (shortLarge) {
+    warnings.push(
+      "This draw is over 2.5 km. The short export keeps the largest roofs and a smaller map. The background export covers the full draw."
+    );
+    if (exportFeatures.length > SYNC_LARGE_ROOFS) {
+      const before = exportFeatures.length;
+      exportFeatures = largestFeatures(exportFeatures, SYNC_LARGE_ROOFS, frame.mpd);
+      noteShrink(before, exportFeatures.length);
+    }
+  } else if (!background && exportFeatures.length > ZIP_SHRINK_STEPS[0]) {
+    // 640 / 4.2 MB are the synchronous download. Hamina's 982-area import
+    // cap still applies inside the pipeline. A background zip is trimmed
+    // only when the download itself would be rejected.
     const before = exportFeatures.length;
     exportFeatures = largestFeatures(exportFeatures, ZIP_SHRINK_STEPS[0], frame.mpd);
     noteShrink(before, exportFeatures.length);
@@ -1752,6 +1794,28 @@ async function handleClutter(event) {
       built = emitClutter(exportFeatures);
     }
   }
+  if (background && built.zip && !exportJobs.zipDownloadFits(built.zip.length)) {
+    for (let i = 0; i < BACKGROUND_ROOF_STEPS.length; i++) {
+      if (exportJobs.zipDownloadFits(built.zip.length)) break;
+      const before = exportFeatures.length;
+      if (!(before > BACKGROUND_ROOF_STEPS[i])) continue;
+      exportFeatures = largestFeatures(features, BACKGROUND_ROOF_STEPS[i], frame.mpd);
+      noteShrink(before, exportFeatures.length);
+      built = emitClutter(exportFeatures);
+    }
+  }
+  if (
+    background &&
+    includeFoliage &&
+    !chmTimedOut &&
+    built.zip &&
+    !exportJobs.zipDownloadFits(built.zip.length)
+  ) {
+    for (let i = 1; i < FOLIAGE_CAPS.length && built.zip && !exportJobs.zipDownloadFits(built.zip.length); i++) {
+      foliageCap = FOLIAGE_CAPS[i];
+      built = emitClutter(exportFeatures);
+    }
+  }
   if (!background && built.zip && built.zip.length > ZIP_FIT_BYTES) {
     for (let i = 1; i < ZIP_SHRINK_STEPS.length; i++) {
       const before = features.length;
@@ -1761,6 +1825,7 @@ async function handleClutter(event) {
       if (built.zip && built.zip.length <= ZIP_FIT_BYTES) break;
     }
   }
+  if (shrinkNote && warnings.indexOf(shrinkNote) < 0) warnings.push(shrinkNote);
   if (includeFoliage && built.stats) reportProgress({ stage: "Trees " + (built.stats.treesKept || 0) });
   reportProgress({ stage: "Packing zip" });
 

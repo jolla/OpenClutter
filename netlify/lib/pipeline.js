@@ -1771,9 +1771,36 @@ function borrowNearbyHeights(features, frame) {
   return n;
 }
 
+/** Larger and taller roofs fill the 2000 and 982 caps first. */
+function prioritizeRoofs(features, frame) {
+  const list = features || [];
+  const mpd = frame && frame.mpd;
+  const scored = [];
+  for (let i = 0; i < list.length; i++) {
+    const feature = list[i];
+    const rings = featureExteriorRings(feature && feature.geometry);
+    let area = 0;
+    if (mpd) {
+      for (let r = 0; r < rings.length; r++) area += ringAreaM2(rings[r], mpd);
+    }
+    const height = sourceHeight(feature);
+    scored.push({
+      feature,
+      i,
+      area,
+      height,
+      score: area * Math.max(1, height / 10),
+    });
+  }
+  scored.sort((a, b) => b.score - a.score || b.height - a.height || b.area - a.area || a.i - b.i);
+  const out = [];
+  for (let i = 0; i < scored.length; i++) out.push(scored[i].feature);
+  return out;
+}
+
 function footprintsToClutter(features, frame, affine, slopeTop) {
   const separated = dedupeStackedFootprints(features || []);
-  const list = separated.features;
+  const list = prioritizeRoofs(separated.features, frame);
   borrowNearbyHeights(list, frame);
   const oiAreas = [];
   const clipZones = [];
@@ -2019,7 +2046,7 @@ function buildClutter({
   if (Array.isArray(warnings)) {
     for (let i = warnings.length - 1; i >= 0; i--) {
       if (
-        /left out to stay inside the area budget|not a valid shape|Kept the largest canopy outlines|Kept the \d+ largest roofs/.test(
+        /left out to stay inside the area budget|not a valid shape|Kept the largest canopy outlines|Kept the \d+ largest/.test(
           String(warnings[i])
         )
       ) {
@@ -2068,10 +2095,12 @@ function buildClutter({
       };
   if (foliageOn && veg.foliageCoarsened && Array.isArray(warnings)) {
     const cap = maxFoliagePolygons > 0 ? maxFoliagePolygons | 0 : 720;
-    const line =
+    const dropped = veg.foliageDropped | 0;
+    let line =
       cap >= 720
         ? "Kept the largest canopy outlines, then measured crowns, up to " + cap + "."
         : "Kept the largest canopy outlines so this zip can download.";
+    if (dropped > 0) line += " " + dropped + " more canopy outlines did not fit.";
     if (warnings.indexOf(line) < 0) warnings.push(line);
   }
   // A poisoned or drifted vegetation material fails makeOiArea and that ring
@@ -2131,6 +2160,18 @@ function buildClutter({
   const buildingSlots = Math.min(fp.oiAreas.length, areaCap);
   const reserveFit = Math.min(waterParking, Math.max(0, areaCap - buildingSlots));
   const capped = capBuildingsAndTrees(fp.oiAreas, treeOi.areas, treeOi.kinds, areaCap, reserveFit);
+  if (capped.droppedBuildings > 0 && Array.isArray(warnings)) {
+    const keptRoofs = Math.min(fp.oiAreas.length, capped.areas.length);
+    warnings.push(
+      "Kept the " +
+        keptRoofs +
+        " largest, tallest roofs. " +
+        capped.droppedBuildings +
+        " more did not fit in the " +
+        areaCap +
+        " area budget."
+    );
+  }
   const buildingEmitted = Math.min(fp.oiAreas.length, capped.areas.length);
   const treeEmitted = capped.areas.length - buildingEmitted;
   let areas = capped.areas;
@@ -2271,6 +2312,7 @@ function buildClutter({
     pavementMaskRings: (maskPolygons || []).length,
     warnings: (warnings || []).filter(Boolean).map(String),
   };
+  stats.buildings = buildingEmitted;
   stats.summary = coverageSummary(stats);
   Object.assign(stats, coverageStats(stats));
   let zip = null;

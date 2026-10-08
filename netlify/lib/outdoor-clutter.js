@@ -17,6 +17,7 @@
  */
 
 const { llToPx } = require("./geo-frame");
+const { fetchOsmMaps, ringKey, bboxSpanM, TILE_SPAN_M } = require("./osm-tiles");
 const { intersectionAreaPx } = require("./poly-clip");
 const { LIFT_LOCAL_M } = require("./terrain");
 const { outdoorMaterial, liftedOutdoorMaterial } = require("./materials");
@@ -666,16 +667,6 @@ function limitFeatures(features, bbox) {
   };
 }
 
-const OSM_MAP_URL = "https://www.openstreetmap.org/api/0.6/map";
-
-function osmMapUrl(bbox) {
-  return (
-    OSM_MAP_URL +
-    "?bbox=" +
-    [bbox.west, bbox.south, bbox.east, bbox.north].map((n) => +n).join(",")
-  );
-}
-
 function decodeXml(s) {
   return String(s || "")
     .replace(/&quot;/g, '"')
@@ -1014,13 +1005,17 @@ function featuresFromMapXml(xml, want, bbox) {
   return parseOverpass({ elements }, want, bbox);
 }
 
-async function fetchText(url, signal, ua) {
-  const r = await fetch(url, {
-    headers: { "user-agent": ua, accept: "application/xml,text/xml,*/*" },
-    signal,
-  });
-  if (!r.ok) return null;
-  return r.text();
+function dedupeOutdoor(features) {
+  const seen = new Set();
+  const out = [];
+  for (let i = 0; i < features.length; i++) {
+    const feat = features[i];
+    const key = (feat && feat.kind) + "|" + ringKey(feat && feat.coords);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(feat);
+  }
+  return out;
 }
 
 async function fetchOutdoorClutter(bbox, want, opts) {
@@ -1035,13 +1030,29 @@ async function fetchOutdoorClutter(bbox, want, opts) {
     else parent.addEventListener("abort", onAbort, { once: true });
   }
   const ua = (opts && opts.ua) || "openclutter";
+  const tile = !!(opts && opts.tile);
   try {
-    const xml = await fetchText(osmMapUrl(bbox), ctrl.signal, ua);
-    if (xml) {
-      const parsed = featuresFromMapXml(xml, want, bbox);
-      const limited = limitFeatures(parsed.features, bbox);
-      if (parsed.openWater) limited.notes.push("Open water lines were left out.");
+    const maps = await fetchOsmMaps(bbox, {
+      signal: ctrl.signal,
+      ua,
+      tile,
+      fetchImpl: opts && opts.fetchImpl,
+    });
+    if (maps.xmls.length) {
+      let features = [];
+      let openWater = false;
+      for (let i = 0; i < maps.xmls.length; i++) {
+        const parsed = featuresFromMapXml(maps.xmls[i], want, bbox);
+        features = features.concat(parsed.features || []);
+        if (parsed.openWater) openWater = true;
+      }
+      const limited = limitFeatures(dedupeOutdoor(features), bbox);
+      if (openWater) limited.notes.push("Open water lines were left out.");
+      for (let i = 0; i < maps.notes.length; i++) limited.notes.push(maps.notes[i]);
       return { ok: true, features: limited.features, notes: limited.notes };
+    }
+    if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
+      return { ok: true, features: [], notes: maps.notes };
     }
     if (ctrl.signal.aborted) return { ok: false, features: [], notes: [] };
     const q = overpassQuery(bbox, want);
