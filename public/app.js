@@ -29,7 +29,7 @@ function syncMapQuality() {
 function selectedImageryQuality() {
   const sel = document.getElementById("map-quality");
   const value = sel ? String(sel.value || "") : "";
-  if (value === "low" || value === "standard" || value === "high" || value === "sharp") return value;
+  if (value === "low" || value === "standard" || value === "high" || value === "sharp" || value === "4k") return value;
   return "auto";
 }
 
@@ -745,6 +745,111 @@ async function fetchTerrainPaste() {
   return last;
 }
 
+function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
+  const terrainOff = includeTerrain === false;
+  rememberTerrain(data);
+  const summary = (data.stats && data.stats.summary) || "";
+  const terrainNote = terrainOff ? "Terrain off" : data.terrainStatus || "";
+  const gpsNote = terrainPasteJson
+    ? "Two GPS points, the southwest and northeast corners of the imported map, are on the paste."
+    : "";
+  const warnLines = (Array.isArray(data.warnings) ? data.warnings.filter(Boolean) : []).filter(
+    (line) => !terrainOff || !/terrain/i.test(line)
+  );
+  const lines = [exportHeadline(data.stats, warnLines, includeFoliage)];
+  lines.push("Import this zip in Hamina (Projects → Import → OpenIntent).");
+  if (fallbackNote) lines.push(fallbackNote);
+  if (terrainNote) lines.push(terrainNote);
+  if (gpsNote) lines.push(gpsNote);
+  if (summary) lines.push(summary);
+  for (let i = 0; i < warnLines.length; i++) lines.push(warnLines[i]);
+  setStatus(lines.join("\n"));
+}
+
+function jobStatusText(job) {
+  const stages = job && Array.isArray(job.stages) ? job.stages.filter(Boolean) : [];
+  const line = (job && job.stage) || stages[stages.length - 1] || "Export is still working.";
+  const older = [];
+  for (let i = 0; i < stages.length; i++) {
+    if (stages[i] !== line) older.push(stages[i]);
+  }
+  return [line].concat(older).join("\n");
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, includeTerrain) {
+  const foliage = includeFoliage === true;
+  const terrain = includeTerrain !== false;
+  const r = await fetch("/api/clutter", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      ...bbox,
+      name: document.getElementById("q").value || "Site",
+      includeFoliage: foliage,
+      includeWater: document.getElementById("include-water").checked,
+      includeParking: document.getElementById("include-parking").checked,
+      includeWalls: document.getElementById("include-walls").checked,
+      includePoles: document.getElementById("include-poles").checked,
+      includeTerrain: terrain,
+      deferTerrain: false,
+      terrainResolution: terrain ? "auto" : undefined,
+      terrainStyle: terrain ? "sloped" : undefined,
+      imageryQuality: devPage() ? selectedImageryQuality() : undefined,
+      trees: foliage ? trees : [],
+      treesSource: foliage ? treesSource : "none",
+      canopyHits: foliage && canopyHits && canopyHits.length ? canopyHits : undefined,
+      format: "bundle",
+      async: true,
+    }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw exportError(r.status, data);
+  return data;
+}
+
+async function pollExport(jobId) {
+  const started = Date.now();
+  const ceiling = 5 * 60 * 1000;
+  let misses = 0;
+  while (Date.now() - started < ceiling) {
+    let data = null;
+    try {
+      const r = await fetch("/api/export-status?job=" + encodeURIComponent(jobId), { cache: "no-store" });
+      data = await r.json().catch(() => ({}));
+      if (r.status === 404) throw new Error(data.error || "This export expired. Export again.");
+      if (!r.ok) throw new Error(data.error || "Could not read export status.");
+      misses = 0;
+    } catch (err) {
+      if (err && /expired|Export id/i.test(err.message || "")) throw err;
+      misses += 1;
+      if (misses >= 4) throw new Error("Could not read export status. Export again.");
+      await sleep(1500);
+      continue;
+    }
+    if (data.state === "error") throw new Error(data.error || "Export failed.");
+    setStatus(jobStatusText(data));
+    if (data.state === "done") return data;
+    await sleep(1500);
+  }
+  throw new Error("Export timed out after 5 minutes. Draw a smaller area and try again.");
+}
+
+async function downloadJobZip(jobId, filename) {
+  const r = await fetch("/api/export-file?job=" + encodeURIComponent(jobId), { cache: "no-store" });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error((data && data.error) || "The zip was not ready.");
+  }
+  const blob = await r.blob();
+  const disp = r.headers.get("content-disposition") || "";
+  const named = disp.match(/filename="([^"]+)"/);
+  downloadBlob(blob, (named && named[1]) || filename || "openclutter.zip");
+}
+
 async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain, terrainPaste) {
   const foliage = includeFoliage === true;
   const terrain = includeTerrain !== false;
@@ -809,8 +914,6 @@ document.getElementById("export").onclick = async () => {
   exportBtn.disabled = true;
   const includeFoliage = document.getElementById("include-foliage").checked;
   const includeTerrain = terrainExportEnabled();
-  const terrainPromise = includeTerrain && devPage() ? fetchTerrainPaste() : null;
-  if (terrainPromise) terrainPromise.catch(() => {});
   setStatus("Export is still working.");
   try {
     let trees = [];
@@ -835,8 +938,29 @@ document.getElementById("export").onclick = async () => {
           ? canopy.parsed.hits
           : null;
     }
-    // The elevation read overlaps canopy detection. The zip then uses those
-    // samples so building bottoms match the mesh that Copy terrain pastes.
+    let queued = null;
+    try {
+      queued = await enqueueExport(trees, treesSource, canopyHits, includeFoliage, includeTerrain);
+    } catch (err) {
+      if (err && err.noRetry) throw err;
+      queued = {
+        fallback: true,
+        note: "Background export is unavailable. This export uses the short path.",
+      };
+    }
+    if (queued && queued.jobId) {
+      const data = await pollExport(queued.jobId);
+      await downloadJobZip(queued.jobId, data.zipFilename);
+      showExportResult(data, includeFoliage, includeTerrain, "");
+      return;
+    }
+    const fallbackNote =
+      queued && queued.fallback
+        ? queued.note || "Background export is unavailable. This export uses the short path."
+        : "";
+    if (fallbackNote) setStatus(fallbackNote);
+    const terrainPromise = includeTerrain && devPage() ? fetchTerrainPaste() : null;
+    if (terrainPromise) terrainPromise.catch(() => {});
     const paste = terrainPromise ? await terrainPromise : null;
     const data = await OpenClutterExport.runExportAttempts((attempt) => {
       if (attempt > 1) {
@@ -854,22 +978,7 @@ document.getElementById("export").onclick = async () => {
     } else if (paste && !data.terrainClipboard) {
       data.terrainStatus = paste.terrainStatus || "Terrain did not return. Export again.";
     }
-    const terrainOff = includeTerrain === false;
-    rememberTerrain(data);
-    const summary = (data.stats && data.stats.summary) || "";
-    const terrainNote = terrainOff ? "Terrain off" : (data.terrainStatus || "");
-    const gpsNote = terrainPasteJson
-      ? "Two GPS points, the southwest and northeast corners of the imported map, are on the paste."
-      : "";
-    const warnLines = (Array.isArray(data.warnings) ? data.warnings.filter(Boolean) : [])
-      .filter((line) => !terrainOff || !/terrain/i.test(line));
-    const lines = [exportHeadline(data.stats, warnLines, includeFoliage)];
-    lines.push("Import this zip in Hamina (Projects → Import → OpenIntent).");
-    if (terrainNote) lines.push(terrainNote);
-    if (gpsNote) lines.push(gpsNote);
-    if (summary) lines.push(summary);
-    for (let i = 0; i < warnLines.length; i++) lines.push(warnLines[i]);
-    setStatus(lines.join("\n"));
+    showExportResult(data, includeFoliage, includeTerrain, fallbackNote);
   } catch (err) {
     setStatus(OpenClutterExport.idleStatus(err), true);
   } finally {

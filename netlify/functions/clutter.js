@@ -121,10 +121,37 @@ const DENSE_FEATURES = 1500;
 // response is returned.
 const ZIP_FIT_BYTES = 4200000;
 const ZIP_SHRINK_STEPS = [640, 400, 240];
+// Background exports are not on the ~10s gateway. Four minutes leaves room
+// to write an error before the platform's 15 minute kill.
+const BACKGROUND_ANSWER_MS = 4 * 60 * 1000;
+const BACKGROUND_PLATE_MS = 90000;
+const BACKGROUND_PLATE_FALLBACK_MS = 45000;
+const { AsyncLocalStorage } = require("node:async_hooks");
+const exportAls = new AsyncLocalStorage();
+
+function isBackgroundExport() {
+  const ctx = exportAls.getStore();
+  return !!(ctx && ctx.background);
+}
+
+function reportProgress(patch) {
+  const ctx = exportAls.getStore();
+  if (!ctx || typeof ctx.onProgress !== "function") return;
+  const run = () => Promise.resolve(ctx.onProgress(patch)).catch(() => {});
+  ctx.tail = (ctx.tail || Promise.resolve()).then(run, run);
+}
+
+async function runBackgroundExport(event, onProgress) {
+  const ctx = { background: true, onProgress, tail: Promise.resolve() };
+  const result = await exportAls.run(ctx, () => handleClutter(event));
+  if (ctx.tail) await ctx.tail;
+  return result;
+}
 const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, padFootprintBbox, imageryExportPlan, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
+const exportJobs = require("../lib/export-jobs");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
 const { fetchMsGlobalFootprints, globalSkipWarning } = require("../lib/ms-global");
 const { fetchUsaStructures } = require("../lib/usa-structures");
@@ -225,7 +252,7 @@ function imageryRoomKind(quality) {
   const q = String(quality || "")
     .trim()
     .toLowerCase();
-  if (q === "sharp" || q === "2048" || q === "2k") return "sharp";
+  if (q === "sharp" || q === "2048" || q === "2k" || fourKQuality(q)) return "sharp";
   if (q === "high" || q === "higher" || q === "1040") return "high";
   return "";
 }
@@ -239,8 +266,56 @@ function sharpFrameHeavy(bbox) {
   }
 }
 
+function fourKQuality(quality) {
+  const q = String(quality || "")
+    .trim()
+    .toLowerCase();
+  return q === "4k" || q === "4096" || q === "ultra";
+}
+
+/**
+ * The background clock can wait for the plate that was asked for.
+ * Auto no longer starts at 400 px. Sharp and 4K are real long sides.
+ * One smaller plate remains only when the first request fails.
+ */
+function backgroundImagerySteps(devHost, bbox) {
+  const quality = String((bbox && bbox.imageryQuality) || "")
+    .trim()
+    .toLowerCase();
+  let plan;
+  if (!devHost) {
+    plan = [{ maxSide: IMAGERY_MAX_SIDE, metersPerPx: 1 }];
+  } else if (quality === "low" || quality === "lower" || quality === "256") {
+    plan = [{ maxSide: 256, metersPerPx: 2 }];
+  } else if (quality === "standard" || quality === "640") {
+    plan = [{ maxSide: 640, metersPerPx: 1 }];
+  } else if (quality === "high" || quality === "higher" || quality === "1040") {
+    plan = [{ maxSide: IMAGERY_MAX_SIDE, metersPerPx: 0.5 }];
+  } else if (quality === "sharp" || quality === "2048" || quality === "2k") {
+    plan = [
+      { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.25 },
+      { maxSide: IMAGERY_MAX_SIDE, metersPerPx: 0.5 },
+    ];
+  } else if (fourKQuality(quality)) {
+    plan = [
+      { maxSide: 4096, metersPerPx: 0.15 },
+      { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.25 },
+    ];
+  } else {
+    plan = [
+      { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.5 },
+      { maxSide: IMAGERY_MAX_SIDE, metersPerPx: 0.5 },
+    ];
+  }
+  return plan.map((step, i) =>
+    Object.assign({ attemptMs: i === 0 ? BACKGROUND_PLATE_MS : BACKGROUND_PLATE_FALLBACK_MS }, step)
+  );
+}
+
 function imagerySteps(devHost, bbox) {
-  const quality = devHost && bbox ? bbox.imageryQuality : undefined;
+  if (isBackgroundExport()) return backgroundImagerySteps(devHost, bbox);
+  let quality = devHost && bbox ? bbox.imageryQuality : undefined;
+  if (devHost && fourKQuality(quality)) quality = "sharp";
   const plan = imageryExportPlan(devHost, bbox, quality);
   const kind = devHost ? imageryRoomKind(quality) : "";
   if (!devHost) {
@@ -269,6 +344,7 @@ function imagerySteps(devHost, bbox) {
  * function can still answer. 0 means do not start another image.
  */
 function imageryStepBudget(elapsed, attemptMs) {
+  if (isBackgroundExport()) return attemptMs > 0 ? attemptMs : BACKGROUND_PLATE_FALLBACK_MS;
   const elapsedMs = Math.max(0, +elapsed || 0);
   const attempt = attemptMs > 0 ? attemptMs : IMAGERY_ATTEMPT_MS;
   if (elapsedMs < IMAGERY_STEPDOWN_QUICK_MS) return attempt;
@@ -287,7 +363,7 @@ async function fetchImageryStepped(bbox, steps) {
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     const elapsed = Date.now() - started;
-    if (i > 0 && elapsed >= IMAGERY_STEPDOWN_QUICK_MS && step.maxSide > 1040) continue;
+    if (!isBackgroundExport() && i > 0 && elapsed >= IMAGERY_STEPDOWN_QUICK_MS && step.maxSide > 1040) continue;
     let attemptMs = step.attemptMs;
     if (i > 0) {
       attemptMs = imageryStepBudget(elapsed, step.attemptMs);
@@ -947,6 +1023,78 @@ function normalizeCanopyHits(raw) {
   return out;
 }
 
+function backgroundInvokeUrl() {
+  const base = process.env.DEPLOY_URL || process.env.DEPLOY_PRIME_URL || process.env.URL || "";
+  return String(base).replace(/\/$/, "") + "/.netlify/functions/clutter-export-background";
+}
+
+/**
+ * Validate, store a job, and invoke the background function. The zip is not
+ * built here. If Blobs or the invoke is unavailable, the page runs the
+ * short sync export instead.
+ */
+async function enqueueBackgroundExport(event, body, cors) {
+  let frame;
+  try {
+    const steps = imagerySteps(false, body);
+    frame = geoFrame(body, { maxSide: steps[0].maxSide, metersPerPx: steps[0].metersPerPx });
+  } catch (e) {
+    return json(400, cors, { error: String(e.message || e) });
+  }
+  void frame;
+  const id = require("node:crypto").randomUUID();
+  const innerBody = Object.assign({}, body, { async: false, deferTerrain: false });
+  const inner = {
+    httpMethod: "POST",
+    headers: event.headers || {},
+    path: event.path || "",
+    rawPath: event.rawPath || "",
+    body: JSON.stringify(innerBody),
+  };
+  try {
+    await exportJobs.createJob(id);
+  } catch {
+    return json(200, cors, {
+      ok: false,
+      fallback: true,
+      note: "Background export is unavailable. This export uses the short path.",
+    });
+  }
+  const url = backgroundInvokeUrl();
+  if (!/^https?:\/\//.test(url)) {
+    await exportJobs.deleteJob(id).catch(() => {});
+    return json(200, cors, {
+      ok: false,
+      fallback: true,
+      note: "Background export is unavailable. This export uses the short path.",
+    });
+  }
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jobId: id, event: inner }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.status !== 202 && res.status !== 200) {
+      await exportJobs.deleteJob(id).catch(() => {});
+      return json(200, cors, {
+        ok: false,
+        fallback: true,
+        note: "Background export is unavailable. This export uses the short path.",
+      });
+    }
+  } catch {
+    await exportJobs.deleteJob(id).catch(() => {});
+    return json(200, cors, {
+      ok: false,
+      fallback: true,
+      note: "Background export is unavailable. This export uses the short path.",
+    });
+  }
+  return json(200, cors, { ok: true, async: true, jobId: id });
+}
+
 async function handleClutter(event) {
   const cors = {
     "access-control-allow-origin": "*",
@@ -964,6 +1112,10 @@ async function handleClutter(event) {
   }
 
   const devHost = isDevDemHost(event);
+  if (body.async === true || body.async === "true") {
+    return enqueueBackgroundExport(event, body, cors);
+  }
+  const background = isBackgroundExport();
   const steps = imagerySteps(devHost, body);
   const maxSide = steps[0].maxSide;
   let frame;
@@ -1030,13 +1182,14 @@ async function handleClutter(event) {
   const warnings = [];
   const started = Date.now();
   const sharpRoom = devHost && imageryRoomKind(body.imageryQuality) !== "";
-  const answerMs = sharpRoom ? DEV_SHARP_ANSWER_MS : DEV_ANSWER_MS;
+  const answerMs = background ? BACKGROUND_ANSWER_MS : sharpRoom ? DEV_SHARP_ANSWER_MS : DEV_ANSWER_MS;
   let overtureJob = null;
   let terrainJob = null;
   let chmJob = null;
   let outdoorJob = null;
   let overtureFrame = null;
   try {
+    reportProgress({ stage: "Fetching aerial" });
     // JPEG and Overture together. Meta may confirm the footprint query, but it
     // must not gate the image or the Overture read — the Las Vegas row group
     // loses if it starts only after metadata, behind the Global ML gzip.
@@ -1057,7 +1210,7 @@ async function handleClutter(event) {
           parking: includeParking,
           walls: includeWalls,
           poles: includePoles,
-        }, { signal, ua: UA, timeoutMs: 4500 })
+        }, { signal, ua: UA, timeoutMs: background ? 20000 : 4500 })
       );
     }
     if (needImage) {
@@ -1095,7 +1248,7 @@ async function handleClutter(event) {
       east: frame.east,
       north: frame.north,
     };
-    const coreBudget = devHost ? DEV_CORE_MS : CORE_FETCH_MS;
+    const coreBudget = background ? 45000 : devHost ? DEV_CORE_MS : CORE_FETCH_MS;
     // Every quality starts Overture with the JPEG, including a long US draw
     // and a Sharp downtown box. The Vegas group is a few seconds. Waiting
     // until the aerial was back and then allowing 400 ms dropped those roofs.
@@ -1178,7 +1331,7 @@ async function handleClutter(event) {
       const wall = new Promise((_, reject) => {
         wallTimer = setTimeout(
           () => reject(fail("export", "The operation was aborted due to timeout")),
-          sharpRoom
+          background || sharpRoom
             ? Math.max(1000, answerMs - (Date.now() - started) - 400)
             : Math.max(1000, DEV_ANSWER_MS - 800)
         );
@@ -1280,7 +1433,7 @@ async function handleClutter(event) {
         started,
         "Overture buildings",
         overtureJob,
-        devHost ? devChmWait(started, sharpRoom ? answerMs : undefined) : overtureWait(frame)
+        devHost ? devChmWait(started, background || sharpRoom ? answerMs : undefined) : overtureWait(frame)
       )
     : Promise.resolve(null);
   // The height read overlaps the aerial. On dev it stops with the answer
@@ -1293,7 +1446,7 @@ async function handleClutter(event) {
         "Canopy height",
         chmJob,
         devHost
-          ? devChmWait(started, sharpRoom ? answerMs : undefined)
+          ? devChmWait(started, background || sharpRoom ? answerMs : undefined)
           : {
               graceMs: 8000,
               hardMs: EXPORT_ANSWER_MS,
@@ -1315,6 +1468,7 @@ async function handleClutter(event) {
           devHost ? devTerrainWait(started, answerMs) : terrainFollow.join
         )
       : Promise.resolve(null);
+  if (readTerrain) reportProgress({ stage: "Reading terrain" });
   const optional = await Promise.all([overturePromise, demPromise, chmPromise]);
   overturePack = optional[0] || { features: [] };
   const demPack = optional[1];
@@ -1357,6 +1511,7 @@ async function handleClutter(event) {
     usa: capSource(usaFeatures),
   });
   let features = assembled.features;
+  reportProgress({ stage: "Buildings " + features.length });
   const sources = assembled.heightSources || {};
   const footprintMeta = {
     globalFootprints: globalFeatures.length,
@@ -1552,6 +1707,8 @@ async function handleClutter(event) {
       if (built.zip && built.zip.length <= ZIP_FIT_BYTES) break;
     }
   }
+  if (includeFoliage && built.stats) reportProgress({ stage: "Trees " + (built.stats.treesKept || 0) });
+  reportProgress({ stage: "Packing zip" });
 
   const frameHeaders = {
     "x-hamina-width-m": String(frame.widthM),
@@ -1702,6 +1859,12 @@ async function handleClutter(event) {
   }
   return result;
 }
+
+exports.handleClutter = handleClutter;
+exports.runBackgroundExport = runBackgroundExport;
+exports.backgroundImagerySteps = backgroundImagerySteps;
+exports.isBackgroundExport = isBackgroundExport;
+exports.BACKGROUND_ANSWER_MS = BACKGROUND_ANSWER_MS;
 
 exports.handler = async (event, context) => {
   // An image or footprint socket that is still open must not hold the zip.
