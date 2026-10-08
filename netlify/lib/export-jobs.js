@@ -9,6 +9,16 @@
 
 const STORE_NAME = "openclutter-exports";
 const TTL_MS = 60 * 60 * 1000;
+// Netlify rejects a function response above 6,291,556 bytes. The zip is
+// base64 in that response, so the stored file has to stay under this.
+const FUNCTION_RESPONSE_MAX = 6291556;
+const ZIP_DOWNLOAD_MAX = 4400000;
+
+function zipDownloadFits(byteLength) {
+  const n = byteLength | 0;
+  if (!(n > 0) || n > ZIP_DOWNLOAD_MAX) return false;
+  return Math.ceil(n / 3) * 4 + 8192 < FUNCTION_RESPONSE_MAX;
+}
 
 let storeOverride = null;
 
@@ -112,12 +122,23 @@ async function saveZip(id, buf) {
   return body.length;
 }
 
-async function takeZip(id) {
+async function readZip(id) {
   const store = await openStore();
   const raw = await store.get(zipKey(id), { type: "arrayBuffer" });
   if (!raw) return null;
   const buf = Buffer.from(raw);
+  return buf.length ? buf : null;
+}
+
+async function deleteZip(id) {
+  const store = await openStore();
   await store.delete(zipKey(id)).catch(() => {});
+}
+
+async function takeZip(id) {
+  const buf = await readZip(id);
+  if (!buf) return null;
+  await deleteZip(id);
   return buf;
 }
 
@@ -129,6 +150,9 @@ async function deleteJob(id) {
 
 module.exports = {
   TTL_MS,
+  ZIP_DOWNLOAD_MAX,
+  FUNCTION_RESPONSE_MAX,
+  zipDownloadFits,
   validJobId,
   setExportStoreForTests,
   bindBlobs,
@@ -136,6 +160,8 @@ module.exports = {
   readJob,
   updateJob,
   saveZip,
+  readZip,
+  deleteZip,
   takeZip,
   deleteJob,
   freshJob,

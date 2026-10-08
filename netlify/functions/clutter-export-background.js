@@ -41,10 +41,13 @@ exports.handler = async (event) => {
       data = {};
     }
     if (status !== 200 || !data.zipBase64) {
+      const why =
+        data.error ||
+        (status && status !== 200 ? "Export failed (" + status + ")." : "Export finished without a zip.");
       await jobs.updateJob(jobId, {
         state: "error",
         stage: "Export failed",
-        error: data.error || "Export failed. The zip was not ready.",
+        error: why,
       });
       return { statusCode: 202, body: "" };
     }

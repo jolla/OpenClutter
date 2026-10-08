@@ -1151,6 +1151,9 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /chooseTerrainPaste/);
     assert.match(pasteClient, /terrainClipboard/);
     assert.match(app, /Copied terrain\. Paste it in Planner Plus/);
+    assert.match(app, /function downloadFailure/);
+    assert.match(app, /data\.error \|\| data\.errorMessage/);
+    assert.equal(/The zip was not ready/.test(app), false);
     assert.match(app, /function setCopyNote/);
     assert.match(app, /function clearCopyNote/);
     assert.match(app, /function setStatus\(msg, err\) \{\n  clearCopyNote\(\);/);
