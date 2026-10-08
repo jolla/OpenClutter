@@ -1151,6 +1151,14 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /chooseTerrainPaste/);
     assert.match(pasteClient, /terrainClipboard/);
     assert.match(app, /Copied terrain\. Paste it in Planner Plus/);
+    assert.match(app, /function setCopyNote/);
+    assert.match(app, /function clearCopyNote/);
+    assert.match(app, /function setStatus\(msg, err\) \{\n  clearCopyNote\(\);/);
+    assert.match(html, /id="copy-note"[^>]*hidden/);
+    const copyHandler = app.split("copyTerrainBtn.onclick")[1].split("function exportError")[0];
+    assert.match(copyHandler, /setCopyNote\(/);
+    assert.equal(/setStatus\(/.test(copyHandler), false);
+    assert.equal(/\u2014/.test(copyHandler), false);
     assert.match(pasteClient, /gpsClipboard/);
     assert.match(app, /Copy GPS points/);
     assert.match(app, /southwest and northeast corners of the imported map/);
