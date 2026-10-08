@@ -1386,6 +1386,13 @@ describe("terrain resolution presets", () => {
     assert.ok(largeAuto.cellM > 70);
     assert.equal(largeAuto.pasteReduced, undefined);
     assert.match(terrainBundleFields(largeAuto, []).terrainStatus, /Auto ~/);
+    const ten = metersBox(36.12, 10000, 8000, "Las Vegas Strip");
+    assert.deepEqual(chooseGrid(12, ten, "auto"), [20, 20]);
+    const tenTerrain = terrainFromSamples(gridSamples(ten, () => 620), ten);
+    assert.ok(tenTerrain.cellM > 400 && tenTerrain.cellM < 550, "10 km cell " + tenTerrain.cellM);
+    const tenth = Math.round(tenTerrain.cellM * 10) / 10;
+    const shown = Math.abs(tenth - Math.round(tenth)) < 1e-6 ? String(Math.round(tenth)) : tenth.toFixed(1);
+    assert.match(terrainBundleFields(tenTerrain, []).terrainStatus, new RegExp("Auto ~" + shown + " m"));
     assert.equal(/reduced from/.test(terrainBundleFields(largeAuto, []).terrainStatus), false);
     assert.equal(/past 20×20/.test(terrainBundleFields(largeAuto, []).terrainStatus), false);
     assert.ok(largeAuto.clipboard.slopedFloors.concat(largeAuto.clipboard.raisedFloorZones).every((z) => z.slabOnly === false));
