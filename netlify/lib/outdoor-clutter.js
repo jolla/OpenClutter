@@ -2,7 +2,7 @@
 
 /**
  * Outdoor clutter for Wi-Fi and AFC links: water, parking structures,
- * walls and fences, and light poles.
+ * walls and fences, light poles, and elevated rail guideways.
  *
  * One Overpass query, clipped to the drawn box the same way buildings are.
  * Overture building class/subtype is not a parquet column. Adding it can
@@ -27,9 +27,22 @@ const POLE_CAP = 48;
 const WALL_CAP = 80;
 const WATER_CAP = 12;
 const PARKING_CAP = 20;
+const GUIDEWAY_CAP = 40;
 const POLE_SIDES = 10;
 const POLE_DIAMETER_M = 0.3;
 const POLE_HEIGHT_M = 9;
+/** Monorail beam plus the train. Double-track light rail is wider. */
+const MONORAIL_WIDTH_M = 3;
+const RAIL_WIDTH_M = 8.5;
+const SINGLE_TRACK_WIDTH_M = 4.5;
+const MONORAIL_DECK_M = 6.5;
+const RAIL_DECK_M = 6;
+const GUIDEWAY_THICK_M = 4.5;
+/** Centerline points per strip. The buffer stays under the 40 vertex cap. */
+const GUIDEWAY_CHUNK = 8;
+const GUIDEWAY_SEGMENT_CAP = 48;
+
+const RAIL_TYPES = { monorail: true, light_rail: true, subway: true, rail: true, tram: true };
 
 const THICK_M = { wall: 0.4, fence: 0.15, retaining: 0.5, hedge: 0.6 };
 const LINE_KINDS = { wall: true, fence: true, retaining: true, hedge: true };
@@ -64,6 +77,9 @@ function overpassQuery(bbox, want) {
     parts.push('node["highway"="street_lamp"](' + box + ");");
     parts.push('node["man_made"~"^(mast|pole|lighting)$"](' + box + ");");
   }
+  parts.push('way["railway"~"^(monorail|light_rail|subway|rail|tram)$"](' + box + ");");
+  parts.push('way["man_made"="bridge"](' + box + ");");
+  parts.push('way["bridge"="viaduct"](' + box + ");");
   return "[out:json][timeout:6];(" + parts.join("") + ");out geom;";
 }
 
@@ -187,6 +203,274 @@ function isPoleNode(tags) {
   return false;
 }
 
+function railType(tags) {
+  const kind = tags && tags.railway;
+  return RAIL_TYPES[kind] ? kind : "";
+}
+
+function layerOf(tags) {
+  const n = Number(tags && tags.layer);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function isBuried(tags) {
+  if (!tags) return false;
+  const tunnel = tags.tunnel;
+  if (tunnel && tunnel !== "no") return true;
+  if (tags.location === "underground") return true;
+  if (layerOf(tags) < 0) return true;
+  return false;
+}
+
+function isElevatedTag(tags) {
+  const bridge = String((tags && tags.bridge) || "");
+  if (bridge === "yes" || bridge === "viaduct" || bridge === "covered") return true;
+  return layerOf(tags) >= 1;
+}
+
+/** Monorail is a beam. Other rail counts only on a bridge or an upper layer. */
+function isGuidewayRail(tags) {
+  const kind = railType(tags);
+  if (!kind || isBuried(tags)) return false;
+  if (kind === "monorail") return true;
+  return isElevatedTag(tags);
+}
+
+/** A building or skywalk with levels stays a building. It is not a rail deck. */
+function isStructureNotDeck(tags) {
+  if (!tags) return false;
+  if (tags.building || tags["building:part"]) return true;
+  if (tags["building:levels"] || tags["building:min_level"]) return true;
+  return false;
+}
+
+function isBridgeOutlineTags(tags) {
+  if (!tags || isBuried(tags) || isStructureNotDeck(tags)) return false;
+  if (tags.man_made === "bridge") return true;
+  if (tags.bridge === "viaduct") return true;
+  return false;
+}
+
+function levelMeters(raw) {
+  const n = Number(raw);
+  if (!(n >= 1 && n <= 40)) return 0;
+  return n * 3;
+}
+
+function explicitDeck(tags) {
+  const t = tags || {};
+  if (parseMeters(t.min_height || t["building:min_height"]) > 1) return true;
+  if (levelMeters(t["building:min_level"] != null ? t["building:min_level"] : t.min_level) > 0) return true;
+  if (levelMeters(t.level) > 0) return true;
+  if (parseMeters(t.height || t["building:height"]) > 2) return true;
+  return false;
+}
+
+function guidewayDeckM(tags) {
+  const t = tags || {};
+  const minH = parseMeters(t.min_height || t["building:min_height"]);
+  const minLevel = levelMeters(t["building:min_level"] != null ? t["building:min_level"] : t.min_level);
+  const level = levelMeters(t.level);
+  const explicit = minH > 1 ? minH : minLevel > 0 ? minLevel : level > 0 ? level : 0;
+  if (explicit > 0) return Math.round(explicit * 10) / 10;
+  const height = parseMeters(t.height || t["building:height"]);
+  if (height > 2 && height < 40) return Math.round(height * 10) / 10;
+  return railType(t) === "monorail" ? MONORAIL_DECK_M : RAIL_DECK_M;
+}
+
+function guidewayThicknessM(tags) {
+  const t = tags || {};
+  const height = parseMeters(t.height || t["building:height"]);
+  const minH = parseMeters(t.min_height || t["building:min_height"]);
+  if (height > 2 && minH > 0 && height > minH + 2) {
+    const span = Math.round((height - minH) * 10) / 10;
+    if (span > 2 && span < 20) return span;
+  }
+  return GUIDEWAY_THICK_M;
+}
+
+function guidewayWidthM(tags) {
+  if (railType(tags) === "monorail") return MONORAIL_WIDTH_M;
+  const tracks = Number(String((tags && tags.tracks) || "").split(/[;,]/)[0]);
+  if (tracks === 1) return SINGLE_TRACK_WIDTH_M;
+  return RAIL_WIDTH_M;
+}
+
+function pointInRing(pt, ring) {
+  if (!pt || !ring || ring.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const yi = ring[i][1];
+    const yj = ring[j][1];
+    const xi = ring[i][0];
+    const xj = ring[j][0];
+    const hit = yi > pt[1] !== yj > pt[1] && pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi || 1e-20) + xi;
+    if (hit) inside = !inside;
+  }
+  return inside;
+}
+
+function lineMostlyInside(line, ring) {
+  if (!line || line.length < 2 || !ring || ring.length < 4) return false;
+  let hit = 0;
+  let n = 0;
+  for (let i = 0; i < line.length; i++) {
+    if (i === line.length - 1 && nearPt(line[i], line[0])) continue;
+    n++;
+    if (pointInRing(line[i], ring)) hit++;
+  }
+  return n > 0 && hit / n >= 0.6;
+}
+
+function lineTouchesRing(line, ring) {
+  if (!line || !ring) return false;
+  for (let i = 0; i < line.length; i++) {
+    if (pointInRing(line[i], ring)) return true;
+  }
+  return false;
+}
+
+function makeGuidewayFeature(tags, coords, closed) {
+  const deck = guidewayDeckM(tags);
+  const thick = guidewayThicknessM(tags);
+  let ring = coords;
+  if (closed) {
+    const open = isClosed(coords) ? coords.slice(0, -1) : coords.slice();
+    const thin = open.length > 32 ? subsample(open, 32) : open;
+    if (thin.length >= 3) {
+      ring = thin.slice();
+      ring.push(ring[0]);
+    }
+  }
+  return {
+    kind: "guideway",
+    coords: ring,
+    closed: !!closed,
+    heightM: thick,
+    thicknessM: thick,
+    deckM: deck,
+    widthM: closed ? 0 : guidewayWidthM(tags),
+    explicitHeight: true,
+    rank: 0,
+  };
+}
+
+/**
+ * Elevated rail only. A monorail beam is included. Other rail needs a bridge
+ * or layer at or above 1. A bridge polygon replaces the buffered centerline
+ * when the beam runs through that outline. A pedestrian skywalk stays a building.
+ */
+function guidewayFeatures(records, bbox) {
+  const lines = [];
+  const polygons = [];
+  const list = records || [];
+  for (let i = 0; i < list.length; i++) {
+    const rec = list[i];
+    if (!rec || !rec.coords || rec.coords.length < 2) continue;
+    const tags = rec.tags || {};
+    if (bbox && !anyInBox(rec.coords, bbox)) continue;
+    const closed = isClosed(rec.coords);
+    if (closed && isGuidewayRail(tags)) {
+      polygons.push({ tags, coords: rec.coords, rail: true });
+      continue;
+    }
+    if (closed && isBridgeOutlineTags(tags)) {
+      polygons.push({ tags, coords: rec.coords, rail: false });
+      continue;
+    }
+    if (!closed && isGuidewayRail(tags)) lines.push({ tags, coords: rec.coords });
+  }
+  const keptPolys = [];
+  for (let i = 0; i < polygons.length; i++) {
+    const poly = polygons[i];
+    if (poly.rail) {
+      keptPolys.push(poly);
+      continue;
+    }
+    for (let k = 0; k < lines.length; k++) {
+      if (lineTouchesRing(lines[k].coords, poly.coords)) {
+        keptPolys.push(poly);
+        break;
+      }
+    }
+  }
+  const features = [];
+  for (let i = 0; i < keptPolys.length; i++) {
+    let coords = keptPolys[i].coords;
+    if (bbox && !fullyInside(coords, bbox)) {
+      const clipped = clipClosedRing(coords, bbox);
+      if (!clipped.length) continue;
+      coords = clipped[0];
+    }
+    let tags = keptPolys[i].tags;
+    if (!explicitDeck(tags) && railType(tags) !== "monorail") {
+      for (let k = 0; k < lines.length; k++) {
+        if (railType(lines[k].tags) === "monorail" && lineTouchesRing(lines[k].coords, keptPolys[i].coords)) {
+          tags = Object.assign({}, tags, { railway: "monorail" });
+          break;
+        }
+      }
+    }
+    features.push(makeGuidewayFeature(tags, coords, true));
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    let covered = false;
+    for (let p = 0; p < keptPolys.length; p++) {
+      if (lineMostlyInside(line.coords, keptPolys[p].coords)) {
+        covered = true;
+        break;
+      }
+    }
+    if (covered) continue;
+    const runs = bbox ? clipLineRuns(line.coords, bbox) : [line.coords];
+    for (let r = 0; r < runs.length; r++) {
+      if (runs[r].length < 2) continue;
+      features.push(makeGuidewayFeature(line.tags, runs[r], false));
+    }
+  }
+  if (features.length <= GUIDEWAY_CAP) return features;
+  const sorted = features.slice().sort((a, b) => lineLength(b.coords) - lineLength(a.coords));
+  return sorted.slice(0, GUIDEWAY_CAP);
+}
+
+function fullyInside(coords, bbox) {
+  for (let i = 0; i < coords.length; i++) {
+    if (!inBox(coords[i][0], coords[i][1], bbox)) return false;
+  }
+  return true;
+}
+
+function guidewaysFromElements(elements, bbox) {
+  const records = [];
+  const list = elements || [];
+  for (let i = 0; i < list.length; i++) {
+    const el = list[i];
+    if (!el || el.type !== "way") continue;
+    const coords = wayCoords(el);
+    if (coords.length < 2) continue;
+    records.push({ tags: el.tags || {}, coords });
+  }
+  return guidewayFeatures(records, bbox);
+}
+
+function guidewaysFromParsedWays(ways, nodes, bbox) {
+  const records = [];
+  for (const way of ways.values()) {
+    const coords = [];
+    const refs = way.refs || [];
+    for (let i = 0; i < refs.length; i++) {
+      const node = nodes.get(refs[i]);
+      if (!node || !Number.isFinite(node.lon) || !Number.isFinite(node.lat)) continue;
+      const prev = coords[coords.length - 1];
+      if (prev && prev[0] === node.lon && prev[1] === node.lat) continue;
+      coords.push([node.lon, node.lat]);
+    }
+    if (coords.length >= 2) records.push({ tags: way.tags || {}, coords });
+  }
+  return guidewayFeatures(records, bbox);
+}
+
 function isParkingClass(props) {
   if (!props) return false;
   const raw = String(props.class || props.subtype || props.buildingClass || "").toLowerCase();
@@ -201,6 +485,7 @@ function parseOverpass(payload, want, bbox) {
   const on = want || { water: true, parking: true, walls: true, poles: true };
   const elements = (payload && payload.elements) || [];
   const features = [];
+  const railRecords = [];
   let openWater = 0;
   for (let i = 0; i < elements.length; i++) {
     const el = elements[i];
@@ -225,6 +510,7 @@ function parseOverpass(payload, want, bbox) {
     const coords = wayCoords(el);
     if (coords.length < 2) continue;
     if (bbox && !anyInBox(coords, bbox)) continue;
+    railRecords.push({ tags, coords });
     if (on.parking && isParkingWay(tags)) {
       if (!isClosed(coords)) continue;
       const h = heightFor("parking", tags);
@@ -269,7 +555,8 @@ function parseOverpass(payload, want, bbox) {
       });
     }
   }
-  return { features, openWater };
+  const guides = guidewayFeatures(railRecords, bbox);
+  return { features: features.concat(guides), openWater };
 }
 
 function ringAreaAbs(coords) {
@@ -350,12 +637,14 @@ function limitFeatures(features, bbox) {
   const parking = [];
   const walls = [];
   const poles = [];
+  const guideways = [];
   for (let i = 0; i < (features || []).length; i++) {
     const f = features[i];
     if (!f) continue;
     if (f.kind === "water") water.push(f);
     else if (f.kind === "parking") parking.push(f);
     else if (f.kind === "pole") poles.push(f);
+    else if (f.kind === "guideway") guideways.push(f);
     else if (LINE_KINDS[f.kind]) walls.push(f);
   }
   const w = keepLargest(water, WATER_CAP);
@@ -363,13 +652,16 @@ function limitFeatures(features, bbox) {
   const wallSorted = walls.slice().sort((a, b) => lineLength(b.coords) - lineLength(a.coords));
   const wallKept = wallSorted.slice(0, WALL_CAP);
   const pole = spreadPoles(poles, bbox || { west: -180, south: -90, east: 180, north: 90 }, POLE_CAP);
+  const guideSorted = guideways.slice().sort((a, b) => lineLength(b.coords) - lineLength(a.coords));
+  const guideKept = guideSorted.slice(0, GUIDEWAY_CAP);
   const notes = [];
   if (w.capped) notes.push("Water capped at " + WATER_CAP + ".");
   if (p.capped) notes.push("Parking capped at " + PARKING_CAP + ".");
   if (wallSorted.length > wallKept.length) notes.push("Walls capped at " + WALL_CAP + ".");
   if (pole.capped) notes.push("Light poles capped at " + POLE_CAP + ".");
+  if (guideSorted.length > guideKept.length) notes.push("Guideways capped at " + GUIDEWAY_CAP + ".");
   return {
-    features: w.kept.concat(p.kept, wallKept, pole.kept),
+    features: w.kept.concat(p.kept, wallKept, pole.kept, guideKept),
     notes,
   };
 }
@@ -493,6 +785,10 @@ function elementsFromMapXml(xml, bbox) {
       const closed = isClosed(pts);
       const rings = closed ? clipClosedRing(pts, bbox) : closeOpenWater(pts, bbox);
       for (let r = 0; r < rings.length; r++) pushWay(tags, rings[r]);
+      continue;
+    }
+    if (railType(tags) || isBridgeOutlineTags(tags) || (tags.man_made === "bridge" && !isBuried(tags))) {
+      pushWay(tags, pts);
       continue;
     }
     if (barrierKind(tags)) pushWay(tags, pts);
@@ -922,6 +1218,45 @@ function segmentQuad(a, b, half) {
   ];
 }
 
+function splitPolyline(pts, chunk) {
+  const n = pts.length;
+  if (n <= chunk) return [pts.slice()];
+  const out = [];
+  const step = Math.max(1, chunk - 1);
+  for (let i = 0; i < n - 1; i += step) {
+    const slice = pts.slice(i, Math.min(n, i + chunk));
+    if (slice.length >= 2) out.push(slice);
+    if (i + chunk >= n) break;
+  }
+  return out;
+}
+
+function guidewayLineRings(coords, frame, halfM) {
+  const chunks = splitPolyline(coords, GUIDEWAY_CHUNK);
+  const rings = [];
+  for (let c = 0; c < chunks.length && rings.length < GUIDEWAY_SEGMENT_CAP; c++) {
+    const px = [];
+    for (let i = 0; i < chunks[c].length; i++) px.push(llToPx(chunks[c][i][0], chunks[c][i][1], frame));
+    const meters = px.map((p) => toMeters(p, frame));
+    const buffered = bufferLineMeters(meters, halfM);
+    if (buffered && !selfCross(buffered)) {
+      rings.push(buffered.map((p) => fromMeters(p, frame)));
+      continue;
+    }
+    for (let i = 0; i < meters.length - 1 && rings.length < GUIDEWAY_SEGMENT_CAP; i++) {
+      const q = segmentQuad(meters[i], meters[i + 1], halfM);
+      if (q) rings.push(q.map((p) => fromMeters(p, frame)));
+    }
+  }
+  return rings;
+}
+
+function guidewaySeat(slopeTop, coords) {
+  if (!slopeTop || typeof slopeTop.seat !== "function" || !coords || coords.length < 2) return 0;
+  const z = Number(slopeTop.seat(coords));
+  return Number.isFinite(z) && z >= LIFT_LOCAL_M ? z : 0;
+}
+
 function lineRingsPx(coords, frame, halfM) {
   const px = [];
   for (let i = 0; i < coords.length; i++) px.push(llToPx(coords[i][0], coords[i][1], frame));
@@ -1012,10 +1347,28 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings }) {
   }
   const items = [];
   let shortWalls = 0;
+  let guidewaySegs = 0;
   for (let i = 0; i < list.length; i++) {
     const f = list[i];
     if (!f) continue;
     if (f.kind === "parking" && consumed.has(f)) continue;
+    if (f.kind === "guideway") {
+      if (!f.closed && lineLength(f.coords) * 111000 < 8) continue;
+      if (guidewaySegs >= GUIDEWAY_SEGMENT_CAP) continue;
+      const half = (f.widthM > 0 ? f.widthM : MONORAIL_WIDTH_M) / 2;
+      const rings = f.closed ? [lonLatRingToPx(f.coords, frame)] : guidewayLineRings(f.coords, frame, half);
+      const deck = f.deckM > 0 ? f.deckM : MONORAIL_DECK_M;
+      const thick = f.thicknessM > 2 ? f.thicknessM : GUIDEWAY_THICK_M;
+      const material = materialForKind("guideway", thick, f.coords, null, guidewaySeat(slopeTop, f.coords) + deck);
+      if (!material) continue;
+      for (let r = 0; r < rings.length; r++) {
+        if (guidewaySegs >= GUIDEWAY_SEGMENT_CAP) break;
+        if (!rings[r] || rings[r].length < 4) continue;
+        items.push({ ringPx: rings[r], material, kind: "guideway", thin: true });
+        guidewaySegs++;
+      }
+      continue;
+    }
     if (f.kind === "pole") {
       const lon = f.coords[0][0];
       const lat = f.coords[0][1];
@@ -1051,15 +1404,24 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings }) {
   return { items, updates, notes, reclass };
 }
 
-const BUDGET_ORDER = ["parking", "water", "wall", "retaining", "hedge", "fence", "pole"];
+const BUDGET_ORDER = ["parking", "water", "wall", "retaining", "hedge", "fence", "guideway", "pole"];
 
 function budgetNote(kind, keptCount, skipped) {
   const label =
-    kind === "pole" ? "light pole" : kind === "water" ? "water area" : kind === "parking" ? "parking area" : "wall";
+    kind === "pole"
+      ? "light pole"
+      : kind === "water"
+        ? "water area"
+        : kind === "parking"
+          ? "parking area"
+          : kind === "guideway"
+            ? "guideway"
+            : "wall";
   if (!(keptCount > 0)) {
     if (kind === "pole") return "Light poles left out to stay inside the area budget.";
     if (kind === "water") return "Water left out to stay inside the area budget.";
     if (kind === "parking") return "Parking left out to stay inside the area budget.";
+    if (kind === "guideway") return "Guideways left out to stay inside the area budget.";
     return "Walls left out to stay inside the area budget.";
   }
   const noun = skipped === 1 ? label : label + "s";
@@ -1111,10 +1473,19 @@ module.exports = {
   POLE_DIAMETER_M,
   POLE_HEIGHT_M,
   THICK_M,
+  MONORAIL_WIDTH_M,
+  RAIL_WIDTH_M,
+  MONORAIL_DECK_M,
+  RAIL_DECK_M,
+  GUIDEWAY_THICK_M,
+  GUIDEWAY_CAP,
   OUTDOOR_MISS,
   overpassQuery,
   parseOverpass,
   featuresFromMapXml,
+  guidewayFeatures,
+  guidewaysFromElements,
+  guidewaysFromParsedWays,
   limitFeatures,
   fetchOutdoorClutter,
   isParkingClass,
