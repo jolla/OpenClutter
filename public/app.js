@@ -160,7 +160,21 @@ function exportHeadline(stats, warnings, foliageOn) {
   return "Zip ready. " + bits.join(", ") + ".";
 }
 
+function setCopyNote(msg, err) {
+  const note = document.getElementById("copy-note");
+  if (!note) return;
+  const text = String(msg || "");
+  note.textContent = text;
+  note.hidden = !text;
+  note.classList.toggle("err", !!err);
+}
+
+function clearCopyNote() {
+  setCopyNote("");
+}
+
 function setStatus(msg, err) {
+  clearCopyNote();
   const text = String(msg || "");
   const parts = text.split("\n").map((line) => line.trim()).filter(Boolean);
   const lineEl = document.getElementById("status-line");
@@ -679,13 +693,13 @@ if (copyTerrainBtn) {
     if (!terrainPasteJson) return;
     try {
       await navigator.clipboard.writeText(terrainPasteJson);
-      setStatus(
+      setCopyNote(
         terrainPasteGpsOnly
           ? "Copied two GPS points. Paste them in Planner Plus. Do not import them as OpenIntent."
           : "Copied terrain. Paste it in Planner Plus. Do not import it as OpenIntent."
       );
     } catch (e) {
-      setStatus(
+      setCopyNote(
         terrainPasteGpsOnly
           ? "Could not copy the GPS points. Allow clipboard access and try Copy GPS points again."
           : "Could not copy terrain. Allow clipboard access and try Copy terrain again.",

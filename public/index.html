@@ -52,6 +52,7 @@
     .row { display: flex; gap: 8px; margin-top: 10px; }
     .row button { flex: 1; }
     .hint { margin: 8px 0 0; font-size: 11px; line-height: 1.35; color: #6e7681; }
+    #copy-note.err { color: #f85149; }
     #status { margin-top: 10px; font-size: 12px; color: #8b949e; min-height: 16px; }
     #status-line { margin: 0; line-height: 1.4; }
     #status.err #status-line { color: #f85149; }
@@ -95,7 +96,7 @@
 <body>
   <div id="map"></div>
   <div class="panel">
-    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.83</span></p>
+    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.84</span></p>
     <h1>OpenClutter</h1>
     <div class="sub">Export a zip. Import it in Hamina for the aerial map and buildings.</div>
     <form id="search">
@@ -147,6 +148,7 @@
     </label>
     <p id="map-quality-hint" class="hint" hidden>Auto is fast. High, Sharp, and 4K wait for a bigger plate.</p>
     <button type="button" id="copy-terrain" class="secondary" hidden>Copy terrain</button>
+    <p id="copy-note" class="hint" hidden></p>
     <div id="status">
       <p id="status-line">Click the map to draw the site.</p>
       <details id="status-more" hidden>
