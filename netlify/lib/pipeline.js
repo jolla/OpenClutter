@@ -26,6 +26,7 @@ const {
 const { isParkingClass, planOutdoor, fitOutdoorBudget } = require("./outdoor-clutter");
 const { treePairsFromPoints } = require("./vegetation");
 const { dedupeStackedFootprints } = require("./conflate");
+const { footprintRings } = require("./building-shape");
 const polygonClipping = require("polygon-clipping");
 const { piecesForFeature } = require("./roof-form");
 const { zipStore } = require("./zip-store");
@@ -1058,51 +1059,98 @@ function ringSelfIntersectsPx(pts) {
 }
 
 /**
+ * Metres of Douglas–Peucker error allowed on a building ring. A large roof
+ * stays near half a metre so a pool notch is not pulled shut. A shed may
+ * use a metre. The old cap walked epsilon up by 1.65 fourteen times, about
+ * a hundred metres, and then a convex hull could cover the courtyard.
+ */
+function capTolerancePx(ring, mpuX) {
+  const mpu = Number(mpuX) > 0 ? Number(mpuX) : 0.5;
+  const areaM2 = ringAreaPx(ring) * mpu * mpu;
+  const meters = areaM2 > 8000 ? 0.5 : 1;
+  return Math.max(0.35, meters / mpu);
+}
+
+function ringCoversPoint(ring, pt) {
+  if (!pt || pt.length < 2) return false;
+  const closed =
+    ring.length &&
+    (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])
+      ? ring.concat([ring[0]])
+      : ring;
+  return pointInRing(pt, closed);
+}
+
+/**
  * OpenIntent vertex ceiling. Rings already under the budget are returned
  * unchanged (a bowtie stays a bowtie so validation can reject it). Longer
- * rings are Douglas–Peucker'd, then subsampled, then replaced with the
- * convex hull if a candidate would self-intersect.
+ * rings are Douglas–Peucker'd, then subsampled.
  *
- * The first valid candidate is not always the one that stays on the roof.
- * A coarse subsample of a 70-vert commercial ring moved the centroid ~15 px
- * west and ~6 px north of the content-grid clip (Hamina then draws that
- * shift; alignment-overlay.svg still showed the pre-cap ring). Among valid
- * candidates, keep the one whose centroid stays on the content-grid ring.
- * Area is the tie-break so a hull that recenters by swallowing the parking
- * lot does not beat a simpler outline of the same roof.
+ * A candidate that grows the roof by more than 8% is dropped. That is the
+ * convex hull of a courtyard, and the coarse subsample that closes a pool
+ * notch. Among the rings that stay on the roof, keep the one whose centroid
+ * stays on the original. Area is the tie-break.
+ *
+ * `keepOutPx` are pool and courtyard points that must stay outside. Foliage
+ * (`keepShape`) may still fall back to a hull when nothing else is valid,
+ * because a crown is not a courtyard.
  */
-function capOiRingPx(ring, maxPts) {
+function capOiRingPx(ring, maxPts, opts) {
   const limit = Math.max(3, maxPts | 0);
   const open = uniqueOpenRing(ring);
   if (open.length < 3) return [];
   if (open.length <= limit) return open.concat([open[0]]);
+  const keepShape = !!(opts && opts.keepShape);
+  const maxEps = opts && Number(opts.maxEpsPx) > 0 ? Number(opts.maxEpsPx) : keepShape ? 80 : 2;
+  const maxGrow = opts && Number(opts.maxGrow) > 0 ? Number(opts.maxGrow) : 1.08;
+  const keepOut = (opts && opts.keepOutPx) || [];
   const candidates = [];
-  let eps = 0.35;
-  for (let i = 0; i < 14; i++) {
+  let eps = Math.min(0.35, maxEps);
+  for (let i = 0; i < 10; i++) {
     const simplified = simplifyRing(open.concat([open[0]]), limit, eps);
     const next = uniqueOpenRing(simplified);
     if (next.length >= 3 && next.length <= limit && next.length < open.length) candidates.push(next);
-    eps *= 1.65;
+    if (eps >= maxEps - 1e-9) break;
+    const grown = eps * 1.45;
+    eps = grown > maxEps ? maxEps : grown;
   }
   candidates.push(subsampleOpen(open, limit));
+  if (open.length > limit) {
+    const step = Math.ceil(open.length / limit);
+    const shifted = [];
+    for (let i = Math.floor(step / 2); i < open.length && shifted.length < limit; i += step) shifted.push(open[i]);
+    if (shifted.length >= 3) candidates.push(shifted);
+  }
   const hull = convexHullOpen(open);
   if (hull.length >= 3) candidates.push(hull.length > limit ? subsampleOpen(hull, limit) : hull);
   const origin = ringCentroidPx(open);
   const area0 = ringAreaPx(open);
   let best = null;
+  let fallback = null;
   for (const c of candidates) {
     if (c.length < 3 || c.length > limit || ringAreaPx(c) <= 1e-4 || ringSelfIntersectsPx(c)) continue;
+    let covered = false;
+    for (let k = 0; k < keepOut.length; k++) {
+      if (ringCoversPoint(c, keepOut[k])) {
+        covered = true;
+        break;
+      }
+    }
+    if (covered) continue;
     const cc = ringCentroidPx(c);
-    const drift =
-      origin && cc ? Math.hypot(cc[0] - origin[0], cc[1] - origin[1]) : 0;
+    const drift = origin && cc ? Math.hypot(cc[0] - origin[0], cc[1] - origin[1]) : 0;
     const area = ringAreaPx(c);
     const areaErr = area0 > 1e-6 ? Math.abs(area - area0) / area0 : 0;
     const score = drift + areaErr * 6;
-    if (!best || score < best.score - 1e-6 || (Math.abs(score - best.score) <= 1e-6 && c.length > best.c.length)) {
-      best = { c, score };
+    const grows = area0 > 1e-6 && area > area0 * maxGrow;
+    const pick = { c, score };
+    if (!grows && (!best || score < best.score - 1e-6 || (Math.abs(score - best.score) <= 1e-6 && c.length > best.c.length))) {
+      best = pick;
     }
+    if (keepShape && (!fallback || score < fallback.score - 1e-6)) fallback = pick;
   }
-  return best ? best.c.concat([best.c[0]]) : [];
+  const chosen = best || (keepShape ? fallback : null);
+  return chosen ? chosen.c.concat([chosen.c[0]]) : [];
 }
 
 function ringToOi(pts, imgW, imgH, mpuX, opts) {
@@ -1115,7 +1163,12 @@ function ringToOi(pts, imgW, imgH, mpuX, opts) {
   clipped = ensureMinSpan(clipped, imgW, imgH, span, !!(opts && opts.keepShape));
   if (!clipped || clipped.length < 3) return null;
   if (ringSpanClass(clipped, span) !== "ok") return null;
-  clipped = capOiRingPx(clipped, MAX_OI_RING_VERTS);
+  const capOpts = {
+    keepShape: !!(opts && opts.keepShape),
+    maxEpsPx: opts && opts.keepShape ? 0 : capTolerancePx(clipped, mpuX),
+    keepOutPx: (opts && opts.keepOutPx) || [],
+  };
+  clipped = capOiRingPx(clipped, MAX_OI_RING_VERTS, capOpts);
   if (!clipped || ringVertexCount(clipped) < 3 || ringVertexCount(clipped) > MAX_OI_RING_VERTS) return null;
   if (ringAreaPx(clipped) < 1e-6) return null;
   const pixels = finalizeOiCoords(clipped, imgW, imgH);
@@ -1459,7 +1512,7 @@ function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase
   return picked;
 }
 
-function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase, shapePart) {
+function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase, shapePart, keepOut) {
   const amRaw = ringAreaM2(ring, frame.mpd);
   // Large detailed roofs (Wynn casino) self-intersect if Douglas–Peucker is too
   // aggressive; try a tighter pass before giving up as clip. These budgets
@@ -1497,7 +1550,8 @@ function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSou
       slopeTop,
       heightSource,
       levelBase,
-      shapePart
+      shapePart,
+      keepOut
     );
     if (result === "keep") return "keep";
     // Tiny clipped area will not grow with more verts. A one-axis sliver
@@ -1545,7 +1599,7 @@ function stashBuilding(buckets, frame, affine, clipRing, overlayPts, clipPx, pic
   );
 }
 
-function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase, shapePart) {
+function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase, shapePart, keepOut) {
   const simple = simplifyRing(ring, maxPts, eps);
   if (!simple || simple.length < 4) return "skip";
   const detailVerts = ringVertexCount(simple);
@@ -1582,7 +1636,16 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     stashBuilding(buckets, frame, affine, clipRing, clippedPts, clippedPts, pickedThin);
     return "span";
   }
-  const oiCoords = ringToOi(clippedPts, frame.imgW, frame.imgH, frame.mpuX);
+  const keepOutPx = [];
+  if (keepOut && keepOut.length && frame) {
+    for (let k = 0; k < keepOut.length; k++) {
+      const p = keepOut[k];
+      if (!p) continue;
+      const xy = llToPx(+p[0], +p[1], frame);
+      if (Number.isFinite(xy[0]) && Number.isFinite(xy[1])) keepOutPx.push(xy);
+    }
+  }
+  const oiCoords = ringToOi(clippedPts, frame.imgW, frame.imgH, frame.mpuX, { keepOutPx });
   if (!oiCoords) {
     if (ringVertexCount(clippedPts) > MAX_OI_RING_VERTS) return "verts";
     return "clip";
@@ -1755,7 +1818,7 @@ function footprintsToClutter(features, frame, affine, slopeTop) {
       const heightSource = props.heightSource || "";
       const levelBase = Number(props.levelBaseM) > 0 ? Number(props.levelBaseM) : 0;
       const shapePart = props.shapePart === true;
-      const rings = featureExteriorRings(g);
+      const rings = footprintRings(g);
       if (!rings.length) continue;
       if (isParkingClass(props) || isParkingClass(f && f.properties)) {
         const tagged = Number(props.height || props.Height || props.HEIGHT || 0);
@@ -1763,6 +1826,7 @@ function footprintsToClutter(features, frame, affine, slopeTop) {
           parkingRings.push({ ring: rings[ri], heightM: tagged > 2 ? tagged : 0 });
         }
       }
+      const keepOut = Array.isArray(props.keepOut) ? props.keepOut : [];
       for (const ring of rings) {
         const parts = slopeTop && typeof slopeTop.split === "function" ? slopeTop.split(ring) : [ring];
         for (let p = 0; p < parts.length; p++) {
@@ -1779,7 +1843,8 @@ function footprintsToClutter(features, frame, affine, slopeTop) {
             slopeTop,
             heightSource,
             levelBase,
-            shapePart
+            shapePart,
+            keepOut
           );
           if (result === "keep") {
             stats.buildings++;
