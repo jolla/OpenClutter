@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.89** on `dev` — A draw up to 10 km asks the street map one tile at a time, for roofs, water, and rail, instead of downloading the whole map. A canopy tile that fails is read once more. The badge stays (`dev · v1.1.89`).
+
 **v1.1.88** on `dev` — A draw can be up to 10 km on a side. The background export tiles the street map, keeps the largest and tallest roofs and the densest canopy inside the 982 area cap, and says what was left out. The aerial stays under the download limit, and the status names the map size. Auto terrain covers that draw inside the paste budget and names the cell size. The short path, when background export is unavailable, keeps a smaller set instead of failing. The badge stays (`dev · v1.1.88`).
 
 **v1.1.87** on `dev` — An elevated rail guideway is a raised strip. The Las Vegas Monorail is included, and so is other rail on a bridge or an upper layer. A beam on the ground is not. The deck sits on the terrain. A monorail with no height tag is about 6.5 m at the beam and about 4.5 m taller for the train. Details counts the guideways. The badge stays (`dev · v1.1.87`).
