@@ -2,7 +2,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { geoFrame, pxToLl } = require("../netlify/lib/geo-frame");
+const { geoFrame, pxToLl, clipboardToLl } = require("../netlify/lib/geo-frame");
 const { footprintsToClutter, capOiRingPx, ringAreaPx } = require("../netlify/lib/pipeline");
 const {
   parseBuildingDetail,
@@ -314,5 +314,127 @@ describe("building outlines", () => {
     assert.equal(shaped.stats.wedgesDropped, 0);
     assert.equal(shaped.stats.wedgesReplaced, 0);
     assert.equal(shaped.features.length, 1);
+  });
+
+  function areaM(ring) {
+    const open = ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? ring.slice(0, -1) : ring;
+    const lat0 = open.reduce((s, p) => s + p[1], 0) / open.length;
+    const mx = 111320 * Math.cos((lat0 * Math.PI) / 180);
+    const my = 110540;
+    let a = 0;
+    for (let i = 0, j = open.length - 1; i < open.length; j = i++) {
+      a += open[j][0] * mx * open[i][1] * my - open[i][0] * mx * open[j][1] * my;
+    }
+    return Math.abs(a) / 2;
+  }
+
+  function triOf(ring) {
+    const open = ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? ring.slice(0, -1) : ring.slice();
+    let cx = 0;
+    let cy = 0;
+    for (const p of open) {
+      cx += p[0];
+      cy += p[1];
+    }
+    cx /= open.length;
+    cy /= open.length;
+    const ranked = open.slice().sort((a, b) => (b[0] - cx) ** 2 + (b[1] - cy) ** 2 - ((a[0] - cx) ** 2 + (a[1] - cy) ** 2));
+    let best = 0;
+    const n = Math.min(12, ranked.length);
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        for (let k = j + 1; k < n; k++) {
+          const a = ranked[i];
+          const b = ranked[j];
+          const c = ranked[k];
+          const t = Math.abs(a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1])) / 2;
+          if (t > best) best = t;
+        }
+      }
+    }
+    let poly = 0;
+    for (let i = 0, j = open.length - 1; i < open.length; j = i++) poly += open[j][0] * open[i][1] - open[i][0] * open[j][1];
+    poly = Math.abs(poly) / 2;
+    return poly > 0 ? best / poly : 0;
+  }
+
+  it("drops a triangular blanket that covers a road", () => {
+    const wedge = metersPoly(lon, lat, [
+      [0, 0],
+      [220, 0],
+      [40, 100],
+    ]);
+    const mx = 111320 * Math.cos((lat * Math.PI) / 180);
+    const road = [];
+    for (let east = 30; east <= 140; east += 10) {
+      road.push([lon + east / mx, lat + 35 / 110540]);
+    }
+    const shaped = shapeBuildings([wedge], { buildings: [], roads: [road] });
+    assert.equal(shaped.stats.wedgesDropped, 1);
+    assert.equal(shaped.features.length, 0);
+  });
+
+  it("drops a triangular blanket that covers a pool", () => {
+    const wedge = metersPoly(lon, lat, [
+      [0, 0],
+      [220, 0],
+      [40, 100],
+    ]);
+    const pool = metersBox(lon + 80 / (111320 * Math.cos((lat * Math.PI) / 180)), lat + 30 / 110540, 30, 18);
+    const shaped = shapeBuildings([wedge], { buildings: [], openings: [ringOf(pool)] });
+    assert.equal(shaped.stats.wedgesDropped, 1);
+    assert.equal(shaped.features.length, 0);
+  });
+
+  it("keeps a plain rectangular roof as one area", () => {
+    const box = metersBox(lon, lat, 40, 24, { height: 12, heightSource: "overture" });
+    const frame = geoFrame(
+      { west: lon - 0.002, south: lat - 0.0015, east: lon + 0.002, north: lat + 0.0015 },
+      { maxSide: 1024, metersPerPx: 0.5 }
+    );
+    const built = footprintsToClutter([box], frame);
+    assert.equal(built.clipZones.length, 1);
+  });
+
+  it("splits a concave roof instead of collapsing it to a wedge", () => {
+    const offsets = [];
+    for (let x = 0; x <= 240; x += 4) offsets.push([x, 0]);
+    for (let y = 4; y <= 28; y += 4) offsets.push([240, y]);
+    let x = 240;
+    for (let t = 0; t < 12; t++) {
+      x -= 8;
+      offsets.push([x, 28]);
+      offsets.push([x, 44]);
+      x -= 12;
+      offsets.push([x, 44]);
+      offsets.push([x, 28]);
+    }
+    offsets.push([0, 0]);
+    const mx = 111320 * Math.cos((lat * Math.PI) / 180);
+    const ring = offsets.map(([east, north]) => [lon + east / mx, lat + north / 110540]);
+    ring.push(ring[0].slice());
+    const feature = {
+      type: "Feature",
+      properties: { height: 18, heightSource: "overture", geomSource: "overture" },
+      geometry: { type: "Polygon", coordinates: [ring] },
+    };
+    const frame = geoFrame(
+      { west: lon - 0.001, south: lat - 0.001, east: lon + 0.004, north: lat + 0.0015 },
+      { maxSide: 2048, metersPerPx: 0.4 }
+    );
+    const built = footprintsToClutter([feature], frame);
+    assert.ok(built.clipZones.length >= 2, "roof collapsed to " + built.clipZones.length + " area");
+    let sum = 0;
+    for (let i = 0; i < built.clipZones.length; i++) {
+      const coords = built.clipZones[i].area.coordinates[0].map(([xM, yM]) => clipboardToLl(xM, yM, frame));
+      const verts = coords.length > 1 ? coords.length - 1 : coords.length;
+      assert.ok(verts <= 40, "piece has " + verts + " vertices");
+      const area = areaM(coords);
+      const tri = triOf(coords);
+      sum += area;
+      assert.ok(!(area > 5000 && tri >= 0.9), "piece is a wedge area " + Math.round(area) + " tri " + tri.toFixed(2));
+    }
+    const source = areaM(ring);
+    assert.ok(sum > source * 0.75 && sum < source * 1.2, "pieces " + Math.round(sum) + " vs source " + Math.round(source));
   });
 });

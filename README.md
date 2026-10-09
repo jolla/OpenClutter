@@ -4,7 +4,7 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
-**v1.1.96** on `dev` — A triangular copy of a concave building takes that building's street-map outline. A triangle that only blankets other roofs is left out. Building simplification no longer falls back to a convex hull. The badge stays (`dev · v1.1.96`).
+**v1.1.96** on `dev` — A triangular copy of a concave building takes that building's street-map outline. A roof that still has more corners than the import cap within about 2 m is split into pieces instead of collapsed to a triangle. A triangle that blankets other roofs, pools, or roads is left out. Building simplification no longer falls back to a convex hull. The badge stays (`dev · v1.1.96`).
 
 **v1.1.95** on `dev` — OpenIntent rings use one in-bounds pixel vertex, rounded to 2 decimals, so the JSON stays under Hamina's request limit. The export fills areas until that JSON reaches 3.8 MB or the area cap, whichever comes first. Details names the JSON size and which limit stopped it. A dev page can raise the byte budget with ?jsonBudget= up to 5000000. ?areaCap= stays the upper count. The badge stays (`dev · v1.1.95`).
 

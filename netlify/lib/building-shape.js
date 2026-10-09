@@ -437,7 +437,20 @@ function detailFromMapXml(xml, bbox, deckCap) {
   const parsed = parseBuildingDetail({ elements }, bbox);
   parsed.guideways = guidewaysFromParsedWays(ways, nodes, bbox, deckCap);
   parsed.bridges = bridgesFromParsedWays(ways, nodes, bbox, deckCap);
+  parsed.roads = roadsFromWays(ways, nodes);
   return parsed;
+}
+
+/** A mapped road, not an indoor corridor drawn through a lobby. */
+function roadsFromWays(ways, nodes) {
+  const roads = [];
+  for (const way of ways.values()) {
+    const kind = way && way.tags && way.tags.highway;
+    if (!kind || kind === "corridor" || kind === "proposed" || kind === "construction" || kind === "elevator") continue;
+    const pts = refsToPts(way.refs, nodes);
+    if (pts.length >= 2) roads.push(pts);
+  }
+  return roads;
 }
 
 function mergeBuildingDetail(packs) {
@@ -446,6 +459,7 @@ function mergeBuildingDetail(packs) {
   const buildings = [];
   const guideways = [];
   const bridges = [];
+  const roads = [];
   const seenP = new Set();
   const seenO = new Set();
   const seenBuildings = new Set();
@@ -490,12 +504,19 @@ function mergeBuildingDetail(packs) {
       if (key) seenB.add(key);
       bridges.push(decks[i]);
     }
+    const lines = pack.roads || [];
+    for (let i = 0; i < lines.length; i++) {
+      const key = ringKey(lines[i]);
+      if (key && seenB.has("road:" + key)) continue;
+      if (key) seenB.add("road:" + key);
+      roads.push(lines[i]);
+    }
   }
-  return { parts, openings, buildings, guideways, bridges };
+  return { parts, openings, buildings, guideways, bridges, roads };
 }
 
 async function fetchBuildingDetail(bbox, opts) {
-  const empty = { ok: false, parts: [], openings: [], buildings: [], guideways: [], bridges: [] };
+  const empty = { ok: false, parts: [], openings: [], buildings: [], roads: [], guideways: [], bridges: [] };
   if (!bbox) return empty;
   const timeoutMs = (opts && opts.timeoutMs) || 4500;
   const ctrl = new AbortController();
@@ -526,6 +547,7 @@ async function fetchBuildingDetail(bbox, opts) {
             parts: parsed.parts,
             openings: parsed.openings,
             buildings: parsed.buildings || [],
+            roads: [],
             guideways: guidewaysFromElements(maps.elements, bbox, deckCap),
             bridges: bridgesFromElements(maps.elements, bbox, deckCap),
             notes: maps.notes,
@@ -540,20 +562,21 @@ async function fetchBuildingDetail(bbox, opts) {
             parts: merged.parts,
             openings: merged.openings,
             buildings: merged.buildings || [],
+            roads: merged.roads || [],
             guideways: merged.guideways,
             bridges: merged.bridges,
             notes: maps.notes,
           };
         }
         if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
-          return { ok: true, parts: [], openings: [], buildings: [], guideways: [], bridges: [], notes: maps.notes };
+          return { ok: true, parts: [], openings: [], buildings: [], roads: [], guideways: [], bridges: [], notes: maps.notes };
         }
       } catch (e) {
         if (ctrl.signal.aborted) return empty;
       }
     }
     if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
-      return { ok: true, parts: [], openings: [], buildings: [], guideways: [], bridges: [], notes: [] };
+      return { ok: true, parts: [], openings: [], buildings: [], roads: [], guideways: [], bridges: [], notes: [] };
     }
     for (let u = 0; u < OVERPASS_URLS.length; u++) {
       if (ctrl.signal.aborted) return empty;
@@ -572,6 +595,7 @@ async function fetchBuildingDetail(bbox, opts) {
           parts: parsed.parts,
           openings: parsed.openings,
           buildings: parsed.buildings || [],
+          roads: [],
           guideways: guidewaysFromElements(json.elements, bbox, deckCap),
           bridges: bridgesFromElements(json.elements, bbox, deckCap),
         };
@@ -1214,12 +1238,53 @@ function bestOsmReplacement(wedge, osmRings) {
   return best;
 }
 
+/** Metres of a road polyline whose midpoints sit inside the ring. */
+function roadLengthInside(line, ring) {
+  if (!line || line.length < 2 || !ring) return 0;
+  const proj = projectionFor([ring, line]);
+  let total = 0;
+  for (let i = 1; i < line.length; i++) {
+    const a = line[i - 1];
+    const b = line[i];
+    const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    if (!pointInRingLL(mid, ring)) continue;
+    const ax = (a[0] - proj.lon0) * proj.mx;
+    const ay = (a[1] - proj.lat0) * proj.my;
+    const bx = (b[0] - proj.lon0) * proj.mx;
+    const by = (b[1] - proj.lat0) * proj.my;
+    total += Math.hypot(bx - ax, by - ay);
+  }
+  return total;
+}
+
+/**
+ * A huge triangle that blankets a pool, a pond, or a mapped road is not a
+ * roof. Indoor corridors are not roads.
+ */
+function wedgeCoversGround(ring, ground) {
+  const openings = (ground && ground.openings) || [];
+  for (let i = 0; i < openings.length; i++) {
+    const opening = openings[i];
+    const oa = meterArea(opening);
+    if (!(oa >= 400)) continue;
+    const inter = intersectionArea(opening, ring);
+    if (oa > 0 && inter / oa >= 0.5) return true;
+  }
+  const roads = (ground && ground.roads) || [];
+  let length = 0;
+  for (let i = 0; i < roads.length; i++) {
+    length += roadLengthInside(roads[i], ring);
+    if (length >= 80) return true;
+  }
+  return false;
+}
+
 /**
  * A coarse triangular copy is replaced by the OSM outline of that same
- * building. A wedge that only blankets other roofs is left out. A triangular
- * building with nothing else under it stays.
+ * building. A wedge that blankets other roofs, pools, water, or roads is
+ * left out. A triangular building with nothing else under it stays.
  */
-function repairCoarseWedges(features, osmRings) {
+function repairCoarseWedges(features, osmRings, ground) {
   const drop = new Set();
   const replace = new Map();
   let replaced = 0;
@@ -1247,7 +1312,7 @@ function repairCoarseWedges(features, osmRings) {
         if (oa > 0 && inter / oa >= 0.5) others++;
       }
     }
-    if (others >= 1) {
+    if (others >= 1 || wedgeCoversGround(rings[0], ground)) {
       drop.add(i);
       dropped++;
     }
@@ -1285,7 +1350,10 @@ function shapeBuildings(features, detail) {
   for (let i = 0; i < src.length; i++) {
     if (src[i] && src[i].geometry) list.push(cloneFeature(src[i]));
   }
-  const repaired = repairCoarseWedges(list, (detail && detail.buildings) || []);
+  const repaired = repairCoarseWedges(list, (detail && detail.buildings) || [], {
+    openings,
+    roads: (detail && detail.roads) || [],
+  });
   const withParts = repaired.features.concat(partFeatures);
   let notched = 0;
   const opened = [];
