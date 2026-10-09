@@ -732,7 +732,7 @@ function layerCounts(pending) {
     const discrete = !!row.trunk;
     const thickness = crownThicknessM(row.area && row.area.material);
     return {
-      n: wantedCrownLayers(discrete, thickness, treeCount),
+      n: row.slopePiece ? 1 : wantedCrownLayers(discrete, thickness, treeCount),
       discrete,
       area: ringPxArea(row.area && row.area.ringPx),
     };
@@ -1183,56 +1183,125 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
       if (material) materials.push(material);
     }
   };
+  const woodRings = opts && opts.omitFoliage ? [] : (opts && opts.woodRings) || [];
+  for (let w = 0; w < woodRings.length; w++) {
+    const wood = woodRings[w];
+    const ll = wood && (wood.ringLonLat || wood.ring || wood);
+    if (!ll || ll.length < 4) continue;
+    const ringPx = [];
+    for (let i = 0; i < ll.length; i++) {
+      const p = llToPx(ll[i][0], ll[i][1], frame);
+      if (!Number.isFinite(p[0]) || !Number.isFinite(p[1])) continue;
+      ringPx.push(p);
+    }
+    if (ringPx.length >= 3) {
+      const a = ringPx[0];
+      const b = ringPx[ringPx.length - 1];
+      if (a[0] !== b[0] || a[1] !== b[1]) ringPx.push([a[0], a[1]]);
+    }
+    const heightM = wood && Number(wood.heightM) > 2 ? Number(wood.heightM) : 12;
+    const material = materialForVegetation(heightM, "heavy");
+    if (material && ringPx.length >= 4) polygons.push({ ringPx, material, kind: "canopy", shape: "polygon" });
+  }
   for (const poly of polygons) pushCanopy(poly.ringPx, poly.material, "polygon");
-  // Clip against roofs and water, then dissolve so two patches do not paint
-  // green on green. Clipboard follows the dissolved rings, not tree points.
+  // Clip against roofs, water, and ski runs, then dissolve so two patches do
+  // not paint green on green. Clipboard follows the dissolved rings.
   const dissolved = dissolveFoliageRings(oiAreas, clipSet);
   oiAreas.length = 0;
   overlayRings.length = 0;
   const slopeTop = opts && typeof opts.slopeTop === "function" ? opts.slopeTop : null;
+  const heightSample = opts && typeof opts.heightSample === "function" ? opts.heightSample : null;
   let foliageLifted = 0;
   const pending = [];
+  const seatsFor = (area) => {
+    const one = (ringPx, ground, slopePiece) => [{ ringPx, ground, slopePiece: !!slopePiece }];
+    if (!slopeTop || !area.ringPx || area.ringPx.length < 4) return one(area.ringPx, 0, false);
+    const ll = area.ringPx.map((p) => pxToLl(p[0], p[1], frame));
+    const split = typeof slopeTop.splitCanopy === "function" ? slopeTop.splitCanopy(ll) : null;
+    if (!split || split.length < 2) return one(area.ringPx, Number(slopeTop(ll)) || 0, false);
+    const seats = [];
+    for (let i = 0; i < split.length; i++) {
+      const px = [];
+      for (let k = 0; k < split[i].length; k++) {
+        const p = llToPx(split[i][k][0], split[i][k][1], frame);
+        if (!Number.isFinite(p[0]) || !Number.isFinite(p[1])) continue;
+        const prev = px[px.length - 1];
+        if (prev && prev[0] === p[0] && prev[1] === p[1]) continue;
+        px.push(p);
+      }
+      if (px.length >= 3) {
+        const a = px[0];
+        const b = px[px.length - 1];
+        if (a[0] !== b[0] || a[1] !== b[1]) px.push([a[0], a[1]]);
+      }
+      if (px.length < 4) continue;
+      const ground = typeof slopeTop.seat === "function" ? Number(slopeTop.seat(split[i])) || 0 : Number(slopeTop(split[i])) || 0;
+      seats.push({ ringPx: px, ground, slopePiece: true, ll: split[i] });
+    }
+    return seats.length >= 2 ? seats : one(area.ringPx, Number(slopeTop(ll)) || 0, false);
+  };
   for (const area of dissolved) {
-    let clip = null;
-    let trunk = null;
-    let ground = 0;
-    if (slopeTop && area.ringPx && area.ringPx.length >= 3) {
-      const ll = area.ringPx.map((p) => pxToLl(p[0], p[1], frame));
-      ground = Number(slopeTop(ll)) || 0;
-    }
-    const height = area.material && Number(area.material.top_height);
-    if (looksLikeIndividualTree(area.ringPx, frame, height)) {
-      const parts = individualTreeParts(area.material, ground);
-      const stem = parts && trunkRingPx(area.ringPx, frame);
-      if (parts && stem) {
-        area.material = parts.crownMat;
-        clip = parts.crownClip;
-        trunk = {
-          ringPx: stem,
-          material: parts.trunkMat,
-          kind: "trunk",
-          shape: "polygon",
-          clip: parts.trunkClip,
-        };
-        if (ground >= 1) foliageLifted++;
+    const seats = seatsFor(area);
+    for (let s = 0; s < seats.length; s++) {
+      const seat = seats[s];
+      const rowArea = {
+        ringPx: seat.ringPx,
+        material: area.material,
+        kind: area.kind || "canopy",
+        shape: seats.length > 1 ? "polygon" : area.shape || "polygon",
+      };
+      if (seat.slopePiece && heightSample && seat.ll && seat.ll.length >= 3) {
+        let lon = 0;
+        let lat = 0;
+        const n = seat.ll.length > 1 && seat.ll[0][0] === seat.ll[seat.ll.length - 1][0] ? seat.ll.length - 1 : seat.ll.length;
+        for (let i = 0; i < n; i++) {
+          lon += seat.ll[i][0];
+          lat += seat.ll[i][1];
+        }
+        const localH = Number(heightSample(lon / n, lat / n));
+        if (localH >= 3 && localH < 80 && rowArea.material) {
+          const tier = String(rowArea.material.name || "").indexOf("Light") >= 0 ? "light" : "heavy";
+          const localMat = materialForVegetation(localH, tier);
+          if (localMat) rowArea.material = localMat;
+        }
       }
-    }
-    if (!clip && ground >= 1 && area.material) {
-      const lifted = liftFoliagePair(area.material, ground);
-      if (lifted) {
-        area.material = lifted.material;
-        clip = { typeId: lifted.typeId, clipType: lifted.clipType };
-        foliageLifted++;
+      let clip = null;
+      let trunk = null;
+      const ground = seat.ground;
+      const height = rowArea.material && Number(rowArea.material.top_height);
+      if (!seat.slopePiece && looksLikeIndividualTree(rowArea.ringPx, frame, height)) {
+        const parts = individualTreeParts(rowArea.material, ground);
+        const stem = parts && trunkRingPx(rowArea.ringPx, frame);
+        if (parts && stem) {
+          rowArea.material = parts.crownMat;
+          clip = parts.crownClip;
+          trunk = {
+            ringPx: stem,
+            material: parts.trunkMat,
+            kind: "trunk",
+            shape: "polygon",
+            clip: parts.trunkClip,
+          };
+          if (ground >= 1) foliageLifted++;
+        }
       }
+      if (!clip && ground >= 1 && rowArea.material) {
+        const lifted = liftFoliagePair(rowArea.material, ground);
+        if (lifted) {
+          rowArea.material = lifted.material;
+          clip = { typeId: lifted.typeId, clipType: lifted.clipType };
+          foliageLifted++;
+        }
+      }
+      pending.push({ area: rowArea, clip, trunk, slopePiece: seat.slopePiece });
     }
-    pending.push({ area, clip, trunk });
   }
   let canopyCount = 0;
   const counts = layerCounts(pending);
   for (let r = 0; r < pending.length; r++) {
     const row = pending[r];
     const area = row.area;
-    const stack = crownStack(row, frame, counts[r]);
+    const stack = row.slopePiece ? null : crownStack(row, frame, counts[r]);
     const parts = stack || [
       {
         ringPx: area.ringPx,
@@ -1246,7 +1315,7 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
       oiAreas.push({
         ringPx: part.ringPx,
         material: part.material,
-        kind: i === 0 ? "canopy" : "layer",
+        kind: row.slopePiece && i === 0 ? "slope" : i === 0 ? "canopy" : "layer",
         shape: area.shape || "polygon",
       });
       if (part.ringPx && !(part.scale < 0.999)) overlayRings.push(part.ringPx);

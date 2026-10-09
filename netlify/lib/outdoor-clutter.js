@@ -1921,20 +1921,29 @@ function guidewayLineRings(coords, frame, halfM, maxRings) {
   const chunks = splitPolyline(coords, GUIDEWAY_CHUNK);
   const rings = [];
   for (let c = 0; c < chunks.length && rings.length < segCap; c++) {
+    const chunk = chunks[c];
     const px = [];
-    for (let i = 0; i < chunks[c].length; i++) px.push(llToPx(chunks[c][i][0], chunks[c][i][1], frame));
+    for (let i = 0; i < chunk.length; i++) px.push(llToPx(chunk[i][0], chunk[i][1], frame));
     const meters = px.map((p) => toMeters(p, frame));
     const buffered = bufferLineMeters(meters, halfM);
     if (buffered && !selfCross(buffered)) {
-      rings.push(buffered.map((p) => fromMeters(p, frame)));
+      rings.push({ ringPx: buffered.map((p) => fromMeters(p, frame)), coords: chunk });
       continue;
     }
     for (let i = 0; i < meters.length - 1 && rings.length < segCap; i++) {
       const q = segmentQuad(meters[i], meters[i + 1], halfM);
-      if (q) rings.push(q.map((p) => fromMeters(p, frame)));
+      if (q) rings.push({ ringPx: q.map((p) => fromMeters(p, frame)), coords: [chunk[i], chunk[Math.min(chunk.length - 1, i + 1)]] });
     }
   }
   return rings;
+}
+
+/** Closed areas that climb a hill become one piece per downhill seat. */
+function slopeAreaParts(slopeTop, coords) {
+  if (!coords || coords.length < 4) return [];
+  const parts = slopeTop && typeof slopeTop.split === "function" ? slopeTop.split(coords) : null;
+  if (parts && parts.length >= 2) return parts;
+  return [coords];
 }
 
 function guidewaySeat(slopeTop, coords) {
@@ -2047,15 +2056,24 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       if (!f.closed && lineLength(f.coords) * 111000 < 8) continue;
       if (guidewaySegs >= guideCap) continue;
       const half = (f.widthM > 0 ? f.widthM : MONORAIL_WIDTH_M) / 2;
-      const rings = f.closed ? [lonLatRingToPx(f.coords, frame)] : guidewayLineRings(f.coords, frame, half, guideCap);
+      const rings = f.closed
+        ? [{ ringPx: lonLatRingToPx(f.coords, frame), coords: f.coords }]
+        : guidewayLineRings(f.coords, frame, half, guideCap);
       const deck = f.deckM > 0 ? f.deckM : MONORAIL_DECK_M;
       const thick = f.thicknessM > 2 ? f.thicknessM : GUIDEWAY_THICK_M;
-      const material = materialForKind("guideway", thick, f.coords, null, guidewaySeat(slopeTop, f.coords) + deck);
-      if (!material) continue;
       for (let r = 0; r < rings.length; r++) {
         if (guidewaySegs >= guideCap) break;
-        if (!rings[r] || rings[r].length < 4) continue;
-        items.push({ ringPx: rings[r], material, kind: "guideway", thin: true });
+        const seg = rings[r];
+        if (!seg || !seg.ringPx || seg.ringPx.length < 4) continue;
+        const material = materialForKind(
+          "guideway",
+          thick,
+          seg.coords || f.coords,
+          null,
+          guidewaySeat(slopeTop, seg.coords || f.coords) + deck
+        );
+        if (!material) continue;
+        items.push({ ringPx: seg.ringPx, material, kind: "guideway", thin: true });
         guidewaySegs++;
       }
       continue;
@@ -2067,15 +2085,22 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       } else if (bridgeSegs >= bridgeCap) continue;
       const half = (f.widthM > 0 ? f.widthM : 8) / 2;
       const rings = f.closed
-        ? [lonLatRingToPx(f.coords, frame)]
+        ? [{ ringPx: lonLatRingToPx(f.coords, frame), coords: f.coords }]
         : guidewayLineRings(f.coords, frame, half, foot ? footCap : bridgeCap);
       const deck = f.deckM > 0 ? f.deckM : BRIDGE_DECK_M;
-      const material = materialForKind("bridge", BRIDGE_THICK_M, f.coords, null, guidewaySeat(slopeTop, f.coords) + deck);
-      if (!material) continue;
       for (let r = 0; r < rings.length; r++) {
         if (foot ? footSegs >= footCap : bridgeSegs >= bridgeCap) break;
-        if (!rings[r] || rings[r].length < 4) continue;
-        items.push({ ringPx: rings[r], material, kind: foot ? "footbridge" : "bridge", thin: true });
+        const seg = rings[r];
+        if (!seg || !seg.ringPx || seg.ringPx.length < 4) continue;
+        const material = materialForKind(
+          "bridge",
+          BRIDGE_THICK_M,
+          seg.coords || f.coords,
+          null,
+          guidewaySeat(slopeTop, seg.coords || f.coords) + deck
+        );
+        if (!material) continue;
+        items.push({ ringPx: seg.ringPx, material, kind: foot ? "footbridge" : "bridge", thin: true });
         if (foot) footSegs++;
         else bridgeSegs++;
       }
@@ -2096,11 +2121,23 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
         shortWalls++;
         continue;
       }
-      const rings = lineRingsPx(f.coords, frame, THICK_M[f.kind] / 2);
-      const material = materialForKind(f.kind, f.heightM, f.coords, slopeTop, 0);
-      if (!material) continue;
-      for (let r = 0; r < rings.length; r++) {
-        items.push({ ringPx: rings[r], material, kind: f.kind, thin: true });
+      const chunks = splitPolyline(f.coords, 4);
+      const seats = chunks.map((c) => guidewaySeat(slopeTop, c));
+      let lo = seats[0] || 0;
+      let hi = lo;
+      for (let i = 1; i < seats.length; i++) {
+        if (seats[i] < lo) lo = seats[i];
+        if (seats[i] > hi) hi = seats[i];
+      }
+      const vary = chunks.length >= 2 && hi - lo > 2.5;
+      const parts = vary ? chunks : [f.coords];
+      for (let c = 0; c < parts.length; c++) {
+        const rings = lineRingsPx(parts[c], frame, THICK_M[f.kind] / 2);
+        const material = materialForKind(f.kind, f.heightM, parts[c], slopeTop, 0);
+        if (!material) continue;
+        for (let r = 0; r < rings.length; r++) {
+          items.push({ ringPx: rings[r], material, kind: f.kind, thin: true });
+        }
       }
       continue;
     }
@@ -2112,10 +2149,13 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       continue;
     }
     if (f.kind === "water" || f.kind === "parking") {
-      const ringPx = lonLatRingToPx(f.coords, frame);
-      const material = materialForKind(f.kind, f.heightM, f.coords, slopeTop, 0);
-      if (!material || ringPx.length < 4) continue;
-      items.push({ ringPx, material, kind: f.kind, thin: false });
+      const parts = slopeAreaParts(slopeTop, f.coords);
+      for (let p = 0; p < parts.length; p++) {
+        const ringPx = lonLatRingToPx(parts[p], frame);
+        const material = materialForKind(f.kind, f.heightM, parts[p], slopeTop, 0);
+        if (!material || ringPx.length < 4) continue;
+        items.push({ ringPx, material, kind: f.kind, thin: false });
+      }
     }
   }
   const notes = [];
