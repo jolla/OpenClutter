@@ -12,6 +12,7 @@ const {
   idleStatus,
   runExportAttempts,
   chooseTerrainPaste,
+  terrainPasteLine,
 } = require("../public/export-client");
 
 describe("export gateway timeout", () => {
@@ -207,6 +208,18 @@ describe("Copy terrain after a background result", () => {
     assert.equal(choice.json, "");
     assert.equal(choice.gpsOnly, false);
     assert.equal(choice.status, "Terrain did not return. Export again.");
+  });
+
+  it("names the paste size for Details", () => {
+    const line = terrainPasteLine({
+      slopedFloors: [{}, {}],
+      raisedFloorZones: [{}],
+    });
+    assert.match(line, /^Terrain paste: 3 floors, \d+ KB$/);
+    assert.equal(/\u2014/.test(line), false);
+    assert.equal(terrainPasteLine({ slopedFloors: [], raisedFloorZones: [] }), "");
+    const client = fs.readFileSync(path.join(__dirname, "../public/export-client.js"), "utf8");
+    assert.match(client, /Terrain paste: " \+ floors \+ " floors, " \+ kb \+ " KB"/);
   });
 
   it("still copies GPS points when Terrain is off", () => {
