@@ -17,6 +17,9 @@ const {
   materialForBuilding,
   measuredExceedsStock,
   liftPickedBuilding,
+  asPodium,
+  isPodiumName,
+  isLiftedPodiumName,
   canonicalAreaMaterial,
   documentMaterials,
   isTrunkOiName,
@@ -237,6 +240,7 @@ function coverageStats(stats) {
     terrainStyle: s.terrainStyle === "sloped" ? "sloped" : s.terrainStyle === "raised" ? "raised" : "",
     demKind: s.demKind === "surface" ? "surface" : s.demKind === "bare-earth" ? "bare-earth" : "",
     buildingsLifted: s.buildingsLifted || 0,
+    podiumAreas: s.podiumAreas || 0,
     foliageLifted: s.foliageLifted || 0,
     areaMaterials: s.areaMaterials != null ? s.areaMaterials : STOCK_MATERIAL_NAMES.length,
     openIntentBuildingAreas: s.openIntentBuildingAreas || 0,
@@ -280,6 +284,7 @@ function coverageSummary(stats) {
   const stemBit = c.discreteTrees > 0 ? c.discreteTrees + " stems, " : "";
   let line =
     `Buildings ${c.buildingsKept} kept (${c.fetched} fetched${dropTxt}). ` +
+    (c.podiumAreas > 0 ? `Podiums ${c.podiumAreas}. ` : "") +
     `Foliage ${foliage}. Trees ${c.treesKept} kept${ofBit} (${stemBit}${c.treesSource}). ` +
     `attenuation_areas ${c.attenuationAreasEmitted}.`;
   if (stats && stats.includeOutdoor) {
@@ -1758,7 +1763,7 @@ function llFromOiPixels(pixelVerts, frame) {
   return ll;
 }
 
-function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase, shapePart, drawnRing) {
+function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase, shapePart, drawnRing, podium) {
   const base = levelBase > 0 ? levelBase : 0;
   // A stepped plan uses the band above the lower footprint, not the full height.
   const band = base > 0 ? Math.round((heightM - base) * 10) / 10 : heightM;
@@ -1791,8 +1796,8 @@ function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase
     if (Number.isFinite(drawn) && drawn > bottom + 0.15) bottom = drawn;
   }
   bottom += base;
-  if (bottom >= LIFT_LOCAL_M) return liftPickedBuilding(picked, bottom);
-  return picked;
+  const seated = bottom >= LIFT_LOCAL_M ? liftPickedBuilding(picked, bottom) : picked;
+  return podium ? asPodium(seated) : seated;
 }
 
 function dpDegRing(ring, eps) {
@@ -1938,7 +1943,7 @@ function ringsUnderVertexCap(ring, maxPts, eps, mpd, depth, root) {
   return out;
 }
 
-function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone, keepThin) {
+function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone, keepThin, podium) {
   const px = [];
   for (let i = 0; i < ring.length; i++) {
     const xy = llToPx(ring[i][0], ring[i][1], frame);
@@ -1988,7 +1993,8 @@ function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSou
       shapePart,
       keepOut,
       keepSpanZone,
-      keepThin
+      keepThin,
+      podium
     );
     if (result === "keep") sawKeep = true;
     else if (result === "span") sawSpan = true;
@@ -2032,7 +2038,8 @@ function stashBuilding(buckets, frame, affine, clipRing, overlayPts, clipPx, pic
   );
 }
 
-function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone, keepThin) {  const simple = simplifyRing(ring, maxPts, eps);
+function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone, keepThin, podium) {
+  const simple = simplifyRing(ring, maxPts, eps);
   if (!simple || simple.length < 4) return "skip";
   const detailVerts = ringVertexCount(simple);
   const pts = [];
@@ -2067,7 +2074,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     // clipboard zone would no longer match the area list. A static caravan
     // is the building, so it stays in the area list instead of this path.
     if (keepSpanZone === false) return "tiny";
-    const pickedThin = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart);
+    const pickedThin = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart, null, podium);
     if (pickedThin.lifted) buckets.lifted++;
     stashBuilding(buckets, frame, affine, clipRing, clippedPts, clippedPts, pickedThin);
     return "span";
@@ -2095,7 +2102,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     return "clip";
   }
   const drawnRing = llFromOiPixels(oiPixelCoords(oiCoords), frame);
-  let picked = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart, drawnRing);
+  let picked = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart, drawnRing, podium);
   const area = emitIfValid(
     makeOiArea(oiCoords, picked.material),
     frame.imgW,
@@ -2252,11 +2259,197 @@ function prioritizeRoofs(features, frame) {
   return out;
 }
 
+const PODIUM_MAX_M = 30;
+const PODIUM_TOWER_RATIO = 2.5;
+const PODIUM_HEIGHT_FRACTION = 0.4;
+const PODIUM_TOUCH_M = 2.5;
+/** A roof cut off the base can miss the tower. A shed that only touches the base does not. */
+const PODIUM_HOP_M2 = 800;
+
+/** Same area bins as an unmeasured stock floor. A missing height is not a tower. */
+function areaHeightM(areaM2) {
+  if (areaM2 >= 6000) return 40;
+  if (areaM2 >= 1200) return 16;
+  if (areaM2 >= 400) return 8;
+  return 4.5;
+}
+
+function boxGapM(a, b) {
+  const dx = a.maxX < b.minX ? b.minX - a.maxX : b.maxX < a.minX ? a.minX - b.maxX : 0;
+  const dy = a.maxY < b.minY ? b.minY - a.maxY : b.maxY < a.minY ? a.minY - b.maxY : 0;
+  return Math.hypot(dx, dy);
+}
+
+function pointInMeterRings(pt, rings) {
+  if (!pt) return false;
+  for (let i = 0; i < rings.length; i++) {
+    if (pointInRing(pt, rings[i])) return true;
+  }
+  return false;
+}
+
+function segmentDistance(p, a, b) {
+  const vx = b[0] - a[0];
+  const vy = b[1] - a[1];
+  const len2 = vx * vx + vy * vy;
+  if (!(len2 > 1e-8)) return Math.hypot(p[0] - a[0], p[1] - a[1]);
+  let t = ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / len2;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  return Math.hypot(p[0] - (a[0] + t * vx), p[1] - (a[1] + t * vy));
+}
+
+function vertexGapM(from, into) {
+  let best = Infinity;
+  for (let i = 0; i < from.rings.length; i++) {
+    const verts = from.rings[i];
+    const step = verts.length > 80 ? Math.ceil(verts.length / 80) : 1;
+    for (let v = 0; v < verts.length; v += step) {
+      const p = verts[v];
+      for (let j = 0; j < into.rings.length; j++) {
+        const edge = into.rings[j];
+        for (let e = 1; e < edge.length; e++) {
+          const d = segmentDistance(p, edge[e - 1], edge[e]);
+          if (d < best) best = d;
+          if (best <= PODIUM_TOUCH_M) return best;
+        }
+      }
+    }
+  }
+  return best;
+}
+
+function footprintContains(inner, outer) {
+  if (inner.centroid && pointInMeterRings(inner.centroid, outer.rings)) return true;
+  const samples = [];
+  for (let i = 0; i < inner.rings.length; i++) {
+    const verts = inner.rings[i];
+    const step = verts.length > 16 ? Math.ceil(verts.length / 16) : 1;
+    for (let v = 0; v < verts.length; v += step) samples.push(verts[v]);
+  }
+  if (!samples.length) return false;
+  let inside = 0;
+  for (let i = 0; i < samples.length; i++) {
+    if (pointInMeterRings(samples[i], outer.rings)) inside++;
+  }
+  return inside >= Math.max(1, Math.ceil(samples.length * 0.5));
+}
+
+function footprintsMeet(a, b) {
+  if (boxGapM(a.box, b.box) > PODIUM_TOUCH_M) return false;
+  if (footprintContains(a, b) || footprintContains(b, a)) return true;
+  return Math.min(vertexGapM(a, b), vertexGapM(b, a)) <= PODIUM_TOUCH_M;
+}
+
+function lowRiseUnderTower(heightM, towerM) {
+  if (!(heightM > 2) || !(towerM > 0)) return false;
+  if (!(towerM >= heightM * PODIUM_TOWER_RATIO - 1e-6)) return false;
+  return heightM <= PODIUM_MAX_M || heightM < PODIUM_HEIGHT_FRACTION * towerM;
+}
+
+/**
+ * A podium is a low roof that touches or contains a measured tower at least
+ * 2.5 times as tall. The roof is low when it is about 30 m or less, or under
+ * 40 percent of that tower. A second low piece of at least 800 m2 that only
+ * touches that base (a roof cut out of the same complex) is included once.
+ * A floating upper part is not a base. An unmeasured neighbor is not a tower.
+ */
+function markPodiumBases(features, frame) {
+  const mpd = frame && frame.mpd;
+  if (!mpd || !(mpd.lon > 0) || !(mpd.lat > 0)) return 0;
+  const items = [];
+  for (let i = 0; i < (features || []).length; i++) {
+    const feature = features[i];
+    if (!feature || !feature.geometry) continue;
+    const props = feature.properties || {};
+    if (props.shapePart === true) continue;
+    const rings = featureExteriorRings(feature.geometry);
+    if (!rings.length) continue;
+    let area = 0;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    const meterRings = [];
+    for (let r = 0; r < rings.length; r++) {
+      const ring = rings[r];
+      area += ringAreaM2(ring, mpd);
+      const meters = [];
+      for (let k = 0; k < ring.length; k++) {
+        const x = ring[k][0] * mpd.lon;
+        const y = ring[k][1] * mpd.lat;
+        meters.push([x, y]);
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+      meterRings.push(meters);
+    }
+    const c = ringCentroidLL(rings[0]);
+    const measured = sourceHeight(feature);
+    items.push({
+      feature,
+      rings: meterRings,
+      area,
+      measured,
+      eff: measured > 2 ? measured : areaHeightM(area),
+      levelBase: Number(props.levelBaseM) > 0 ? Number(props.levelBaseM) : 0,
+      box: { minX, minY, maxX, maxY },
+      centroid: c ? [c[0] * mpd.lon, c[1] * mpd.lat] : null,
+      towerH: 0,
+    });
+  }
+  function tag(item, towerH) {
+    if (!item.feature.properties) item.feature.properties = {};
+    item.feature.properties.podium = true;
+    item.towerH = towerH;
+  }
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.levelBase > 2) continue;
+    let towerH = 0;
+    for (let j = 0; j < items.length; j++) {
+      if (i === j) continue;
+      const other = items[j];
+      if (!(other.measured >= item.eff * PODIUM_TOWER_RATIO - 1e-6)) continue;
+      if (!footprintsMeet(item, other)) continue;
+      if (other.measured > towerH) towerH = other.measured;
+    }
+    if (!lowRiseUnderTower(item.eff, towerH)) continue;
+    tag(item, towerH);
+  }
+  const direct = [];
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].towerH > 0) direct.push(items[i]);
+  }
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.towerH > 0) continue;
+    if (item.levelBase > 2) continue;
+    if (!(item.area >= PODIUM_HOP_M2)) continue;
+    let towerH = 0;
+    for (let j = 0; j < direct.length; j++) {
+      const other = direct[j];
+      if (!footprintsMeet(item, other)) continue;
+      if (other.towerH > towerH) towerH = other.towerH;
+    }
+    if (!lowRiseUnderTower(item.eff, towerH)) continue;
+    tag(item, towerH);
+  }
+  let n = 0;
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].feature.properties && items[i].feature.properties.podium) n++;
+  }
+  return n;
+}
+
 function footprintsToClutter(features, frame, affine, slopeTop, opts) {
   const buildingCeiling = opts && opts.buildingCeiling > 0 ? opts.buildingCeiling | 0 : MAX_BUILDINGS;
   const separated = dedupeStackedFootprints(features || []);
   const list = prioritizeRoofs(separated.features, frame);
   borrowNearbyHeights(list, frame);
+  markPodiumBases(list, frame);
   const oiAreas = [];
   const clipZones = [];
   const aabbs = [];
@@ -2276,6 +2469,7 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
     droppedSpan: 0,
     droppedVerts: 0,
     largeDropNotes: [],
+    podiumAreas: 0,
     nlsHeights: 0,
     nlsHeightMin: 0,
     nlsHeightMax: 0,
@@ -2314,6 +2508,7 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
       }
       const keepOut = Array.isArray(props.keepOut) ? props.keepOut : [];
       const keepThin = props.staticCaravan === true;
+      const podium = props.podium === true;
       for (const ring of rings) {
         const parts = slopeTop && typeof slopeTop.split === "function" ? slopeTop.split(ring) : [ring];
         for (let p = 0; p < parts.length; p++) {
@@ -2333,7 +2528,8 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
             shapePart,
             keepOut,
             parts.length === 1,
-            keepThin
+            keepThin,
+            podium
           );
           if (result === "keep") {
             stats.buildings++;
@@ -2376,6 +2572,11 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
   }
   stats.droppedNested = dropNestedDuplicateRoofs(oiAreas, clipZones);
   stats.buildings = oiAreas.length;
+  stats.podiumAreas = 0;
+  for (let i = 0; i < oiAreas.length; i++) {
+    const name = oiAreas[i] && oiAreas[i].area_material && oiAreas[i].area_material.name;
+    if (isPodiumName(name) || isLiftedPodiumName(name)) stats.podiumAreas++;
+  }
   stats.measuredBuildings = buckets.measured;
   stats.buildingsLifted = buckets.lifted;
   return {
