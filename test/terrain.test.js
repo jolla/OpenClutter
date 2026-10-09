@@ -3281,3 +3281,75 @@ describe("a sloped building is cut into the hill", () => {
     assert.ok(mat.bottom_height + 0.2 >= uphill, "dug under the pad");
   });
 });
+
+describe("terrain tips meet the neighbor edge", () => {
+  function samples(frame, n, zAt) {
+    const out = [];
+    for (let r = 0; r <= n; r++) {
+      for (let c = 0; c <= n; c++) {
+        out.push({
+          lon: frame.west + (c / n) * (frame.east - frame.west),
+          lat: frame.south + (r / n) * (frame.north - frame.south),
+          z: zAt(c / n, r / n),
+        });
+      }
+    }
+    return out;
+  }
+
+  it("keeps a rolling hill's ramp corners on the neighbor edge", () => {
+    const frame = geoFrame({ west: -118.36, south: 34.13, east: -118.345, north: 34.145, name: "Hollywood hill" });
+    const terrain = terrainFromSamples(
+      samples(frame, 24, (u, v) => {
+        const dx = (u - 0.4) * 6;
+        const dy = (v - 0.5) * 5;
+        return 200 + 35 * Math.exp(-(dx * dx + dy * dy)) + 12 * Math.sin(u * 8) * Math.cos(v * 6);
+      }),
+      frame,
+      { terrainStyle: "sloped" }
+    );
+    assert.equal(slopeCornerGap(terrain.clipboard.slopedFloors), 0);
+    const rings = terrain.clipboard.slopedFloors.map((z) => z.area.coordinates[0]);
+    for (const ring of rings) assert.equal(planarSlopedRamp(ring), true);
+    const cell = 8;
+    const buckets = new Map();
+    for (let i = 0; i < rings.length; i++) {
+      for (let e = 0; e < rings[i].length; e++) {
+        const a = rings[i][e];
+        const b = rings[i][(e + 1) % rings[i].length];
+        const minX = Math.min(a[0], b[0]);
+        const maxX = Math.max(a[0], b[0]);
+        const minY = Math.min(a[1], b[1]);
+        const maxY = Math.max(a[1], b[1]);
+        for (let x = Math.floor((minX - 0.05) / cell); x <= Math.floor((maxX + 0.05) / cell); x++) {
+          for (let y = Math.floor((minY - 0.05) / cell); y <= Math.floor((maxY + 0.05) / cell); y++) {
+            const key = x + "," + y;
+            if (!buckets.has(key)) buckets.set(key, []);
+            buckets.get(key).push({ a, b, i });
+          }
+        }
+      }
+    }
+    let worst = 0;
+    for (let i = 0; i < rings.length; i++) {
+      for (let k = 0; k < rings[i].length; k++) {
+        const p = rings[i][k];
+        const cand = buckets.get(Math.floor(p[0] / cell) + "," + Math.floor(p[1] / cell)) || [];
+        for (let e = 0; e < cand.length; e++) {
+          const edge = cand[e];
+          if (edge.i === i) continue;
+          const dx = edge.b[0] - edge.a[0];
+          const dy = edge.b[1] - edge.a[1];
+          const len2 = dx * dx + dy * dy;
+          if (len2 < 1e-4) continue;
+          const t = ((p[0] - edge.a[0]) * dx + (p[1] - edge.a[1]) * dy) / len2;
+          if (t <= 0.02 || t >= 0.98) continue;
+          const d = Math.hypot(p[0] - (edge.a[0] + dx * t), p[1] - (edge.a[1] + dy * t));
+          if (d > 0.02) continue;
+          worst = Math.max(worst, Math.abs(p[2] - (edge.a[2] + (edge.b[2] - edge.a[2]) * t)));
+        }
+      }
+    }
+    assert.ok(worst <= 0.15, "edge height disagrees by " + worst);
+  });
+});

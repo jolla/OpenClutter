@@ -1541,10 +1541,19 @@ function stitchContourPoly(pts) {
   return stitchContourStrip(lows[0].pts, highs[0].pts) || stitchContourStrip(lows[0].pts, highs[0].pts.slice().reverse());
 }
 
+function lerpContour(p, q, t) {
+  return {
+    x: round3(p.x + (q.x - p.x) * t),
+    y: round3(p.y + (q.y - p.y) * t),
+    z: round1(p.z + (q.z - p.z) * t),
+  };
+}
+
 /**
- * A one-corner band is a triangle. The ramp's low edge sits just inside that
- * triangle, parallel to the far contour, so the quad covers the band without
- * crossing into the neighbor. The tiny tip is a raised floor at the corner height.
+ * A one-corner band is a triangle. The base ramp uses the real edge heights,
+ * so a neighbor that shares the edge meets it. Two small ramps cover the
+ * apex. Their extra corners sit just inside the triangle, so the tip is not
+ * left as an open speck and the quads do not spill into the next cell.
  */
 function capContourTriangle(pts) {
   let iA = -1;
@@ -1563,20 +1572,34 @@ function capContourTriangle(pts) {
   const altitude =
     Math.abs((B.x - A.x) * (C.y - A.y) - (B.y - A.y) * (C.x - A.x)) / (Math.hypot(C.x - B.x, C.y - B.y) || 1);
   const t = Math.max(0.08, Math.min(0.4, altitude > 0 ? 0.45 / altitude : 0.2));
-  const S1 = { x: round3(A.x + (B.x - A.x) * t), y: round3(A.y + (B.y - A.y) * t), z: A.z };
-  const S2 = { x: round3(A.x + (C.x - A.x) * t), y: round3(A.y + (C.y - A.y) * t), z: A.z };
+  const S1 = lerpContour(A, B, t);
+  const S2 = lerpContour(A, C, t);
   const ramp = tryRampPoints([S1, S2, B, C]);
   if (!ramp) return null;
-  const mx = (S1.x + S2.x) / 2;
-  const my = (S1.y + S2.y) / 2;
-  const bump = [round3(mx + (A.x - mx) * 0.35), round3(my + (A.y - my) * 0.35)];
-  const tip = [
-    [round3(A.x), round3(A.y)],
-    [S1.x, S1.y],
-    bump,
-    [S2.x, S2.y],
-  ];
-  return { ramp: ramp, raised: pasteableQuad(tip) ? { ring: tip, h: A.z } : null };
+  const M = { x: round3((S1.x + S2.x) / 2), y: round3((S1.y + S2.y) / 2), z: S1.z };
+  const ix = M.x - A.x;
+  const iy = M.y - A.y;
+  const il = Math.hypot(ix, iy) || 1;
+  const ux = ix / il;
+  const uy = iy / il;
+  const px = -uy;
+  const py = ux;
+  const apex = { x: A.x, y: A.y, z: A.z };
+  const offsets = [0.04, 0.08, 0.15, 0.3, 0.6];
+  let left = null;
+  let right = null;
+  for (let i = 0; i < offsets.length && (!left || !right); i++) {
+    const along = offsets[i];
+    const side = offsets[i];
+    const P = { x: round3(A.x + ux * along + px * side), y: round3(A.y + uy * along + py * side), z: A.z };
+    const Q = { x: round3(A.x + ux * along - px * side), y: round3(A.y + uy * along - py * side), z: A.z };
+    left = tryRampPoints([S1, M, P, apex]);
+    right = tryRampPoints([S2, M, Q, apex]);
+  }
+  const ramps = [ramp];
+  if (left) ramps.push(left);
+  if (right) ramps.push(right);
+  return { ramps: ramps };
 }
 
 function raisedFromRing(ring, height) {
@@ -1592,11 +1615,42 @@ function raisedFromRing(ring, height) {
 }
 
 /**
- * A flat triangle has no fourth corner Hamina would accept as a raised pad.
- * The ramp keeps every boundary vertex at that height and lifts a short interior
- * shelf by 0.1 m, so the shared edge still matches the neighbor.
+ * A flat triangle has no fourth corner Hamina would accept as one raised pad.
+ * Three quads from the edge midpoints to the centroid cover it with no hole.
+ * The shelf ramp is only the fallback when a quad would not be strictly convex.
  */
-function coverFlatTriangle(pts, ramps) {
+function coverFlatTriangle(pts, ramps, raised) {
+  const z = round1(pts[0].z);
+  const mids = [];
+  for (let i = 0; i < 3; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % 3];
+    mids.push({ x: round3((a.x + b.x) / 2), y: round3((a.y + b.y) / 2) });
+  }
+  const g = {
+    x: round3((pts[0].x + pts[1].x + pts[2].x) / 3),
+    y: round3((pts[0].y + pts[1].y + pts[2].y) / 3),
+  };
+  const pads = [];
+  for (let i = 0; i < 3; i++) {
+    const a = pts[i];
+    const mOut = mids[i];
+    const mIn = mids[(i + 2) % 3];
+    const pad = raisedFromRing(
+      [
+        [round3(a.x), round3(a.y)],
+        [mOut.x, mOut.y],
+        [g.x, g.y],
+        [mIn.x, mIn.y],
+      ],
+      z
+    );
+    if (pad) pads.push(pad);
+  }
+  if (pads.length === 3 && raised) {
+    for (let i = 0; i < pads.length; i++) raised.push(pads[i]);
+    return;
+  }
   let longest = 0;
   let iB = 0;
   for (let i = 0; i < 3; i++) {
@@ -1854,8 +1908,11 @@ function mergeRaisedPads(raised) {
 }
 
 function pushCap(ramps, raised, cap) {
-  const zone = slopedZone(cap.ramp);
-  if (zone) ramps.push(zone);
+  const list = cap.ramps || (cap.ramp ? [cap.ramp] : []);
+  for (let i = 0; i < list.length; i++) {
+    const zone = slopedZone(list[i]);
+    if (zone) ramps.push(zone);
+  }
   if (cap.raised) {
     const pad = raisedFromRing(cap.raised.ring, cap.raised.h);
     if (pad) raised.push(pad);
@@ -2042,7 +2099,7 @@ function contourPiecesAtStep(grid, step, leafCap) {
           p.h != null ? p.h : p.pts[0].z
         );
         if (pad) raised.push(pad);
-      } else if (p.pts.length === 3) coverFlatTriangle(p.pts, ramps);
+      } else if (p.pts.length === 3) coverFlatTriangle(p.pts, ramps, raised);
       continue;
     }
     const ramp = tryRampPoints(p.pts);
