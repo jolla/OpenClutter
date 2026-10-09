@@ -156,16 +156,17 @@ const TERRAIN_PASTE_JSON_MAX = maxPasteJsonForCompanion(200 * 1024);
  */
 const PASTE_BUILD_MAX_QUADS = 12000;
 /**
- * Hamina pastes the mesh in one synchronous pass. A 20×20 grid (about 400
- * floors and well under 300 KB) imported. The adaptive mesh at one-meter
- * bands did not: thousands of floors and a multi-megabyte clipboard locked
- * the browser, then the mutation timed out.
+ * Hamina pastes the mesh in one synchronous pass. A 20×20 grid imported, and
+ * Jerry confirmed a Hollywood paste of 1408 floors and 351 KB also imported.
+ * The default cap is that size: 1500 floors and about 400 KB. One-meter
+ * bands still are not the default: they filled thousands of floors and a
+ * multi-megabyte clipboard, and Hamina locked.
  */
-const TERRAIN_PASTE_MAX_FLOORS = 400;
-const TERRAIN_PASTE_MAX_BYTES = 300 * 1024;
+const TERRAIN_PASTE_MAX_FLOORS = 1500;
+const TERRAIN_PASTE_MAX_BYTES = 400 * 1024;
 /** Dev-only ?terrainFloors= probe. Outside this range the default cap stays. */
 const TERRAIN_FLOORS_MIN = 100;
-const TERRAIN_FLOORS_MAX = 3000;
+const TERRAIN_FLOORS_MAX = 6000;
 /** Floor budget for the mesh currently being built. terrainFromSamples sets it. */
 let activePasteFloors = TERRAIN_PASTE_MAX_FLOORS;
 
@@ -181,8 +182,8 @@ function terrainPasteFloorCap(opts) {
 
 /**
  * Dev-only floor cap from the page query or the export body.
- * An integer from 100 through 3000 is kept. Anything else is ignored
- * so the paste stays at 400 floors. 50 and 4000 are not clamped.
+ * An integer from 100 through 6000 is kept. Anything else is ignored
+ * so the paste stays at 1500 floors. 99 and 6001 are not clamped.
  */
 function parseTerrainFloorOverride(value) {
   if (value == null || value === "" || typeof value === "boolean") return 0;
@@ -193,7 +194,7 @@ function parseTerrainFloorOverride(value) {
   return n;
 }
 
-/** Byte ceiling. A floor probe above 400 may exceed 300 KB so the ceiling can be found. */
+/** Byte ceiling. A floor probe above 1500 may exceed 400 KB so the ceiling can be found. */
 function pasteByteCap() {
   if (activePasteFloors > TERRAIN_PASTE_MAX_FLOORS) {
     return Math.max(TERRAIN_PASTE_MAX_BYTES, activePasteFloors * 480);
@@ -733,7 +734,7 @@ function meterAxes(frame, preset, squareCells) {
 }
 
 /**
- * Floors the paste may contain. The hard cap is 400 floors and about 300 KB.
+ * Floors the paste may contain. The hard cap is 1500 floors and about 400 KB.
  * A tight export JSON ceiling can force fewer. A dev floor probe can raise
  * the floor count (and the byte ceiling that goes with it).
  */
@@ -2273,8 +2274,10 @@ function contourStepLoad(grid, step) {
  * Contour bands, the way the native pit paste is built: each ramp's low edge
  * and high edge are one height, and the next ramp picks up that same edge.
  * The finest band is 3 m on a mild hill and 5 m when a cell already spans
- * tens of meters. One-meter bands filled thousands of floors. Coarser steps,
- * including one band for the whole cell, are the fallback inside the floor cap.
+ * tens of meters. Steps of 6 to 8 m sit between 5 and 10 so a budget between
+ * those bands can still be spent. One-meter bands filled thousands of floors.
+ * Coarser steps, including one band for the whole cell, are the fallback
+ * inside the floor cap.
  */
 function contourStepsForGrid(grid) {
   let maxCell = 0;
@@ -2284,7 +2287,7 @@ function contourStepsForGrid(grid) {
       if (span > maxCell) maxCell = span;
     }
   }
-  const ladder = maxCell > 40 ? [5, 10, 20, 40, 80, 160, 320] : [3, 5, 10, 20, 40, 80, 160];
+  const ladder = maxCell > 40 ? [5, 6, 7, 8, 10, 20, 40, 80, 160, 320] : [3, 5, 6, 7, 8, 10, 20, 40, 80, 160];
   const cover = Math.max(ladder[0], Math.ceil(maxCell));
   const steps = [];
   for (let i = 0; i < ladder.length; i++) {
@@ -3550,8 +3553,33 @@ function splitRingByFloor(terrain, ring) {
   if (!bldg) return [ring];
   const useRamps =
     terrain.clipboard && terrain.clipboard.slopedFloors && terrain.clipboard.slopedFloors.length > 0;
+  function ringsFromGroups(groups) {
+    const pieces = [];
+    for (const group of groups.values()) {
+      let mask = null;
+      for (let i = 0; i < group.length; i++) {
+        try {
+          mask = mask ? polygonClipping.union(mask, [[group[i].clip]]) : [[group[i].clip]];
+        } catch {
+          mask = null;
+          break;
+        }
+      }
+      if (!mask) continue;
+      let hit;
+      try {
+        hit = polygonClipping.intersection([[bldg]], mask);
+      } catch {
+        continue;
+      }
+      const rings = ringsFromClipGeom(hit, frame);
+      for (let i = 0; i < rings.length; i++) pieces.push(rings[i]);
+    }
+    return pieces;
+  }
   let band = SPLIT_FLOOR_M;
   let groups = null;
+  let pieces = null;
   while (band < 80) {
     const cells = (useRamps ? rampStrips(terrain, band).concat(raisedStrips(terrain)) : terrainFloorCells(terrain)).filter(
       (cell) => boundsOverlap(xy, cell.clip)
@@ -3566,32 +3594,21 @@ function splitRingByFloor(terrain, ring) {
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(cells[i]);
     }
-    if (groups.size <= SPLIT_MAX_PIECES) break;
-    band *= 2;
-  }
-  if (!groups || groups.size < 2) return [ring];
-  const pieces = [];
-  for (const group of groups.values()) {
-    let mask = null;
-    for (let i = 0; i < group.length; i++) {
-      try {
-        mask = mask ? polygonClipping.union(mask, [[group[i].clip]]) : [[group[i].clip]];
-      } catch {
-        mask = null;
-        break;
-      }
-    }
-    if (!mask) continue;
-    let hit;
-    try {
-      hit = polygonClipping.intersection([[bldg]], mask);
-    } catch {
+    // One height group can clip into several rings. Widen until the rings
+    // that actually ship stay inside the piece cap.
+    if (groups.size > SPLIT_MAX_PIECES) {
+      band *= 2;
       continue;
     }
-    const rings = ringsFromClipGeom(hit, frame);
-    for (let i = 0; i < rings.length; i++) pieces.push(rings[i]);
+    pieces = ringsFromGroups(groups);
+    if (pieces.length <= SPLIT_MAX_PIECES) break;
+    pieces = null;
+    band *= 2;
   }
-  if (pieces.length < 2) return [ring];
+  if ((!pieces || pieces.length < 2) && groups && groups.size >= 2 && groups.size <= SPLIT_MAX_PIECES) {
+    pieces = ringsFromGroups(groups);
+  }
+  if (!pieces || pieces.length < 2 || pieces.length > SPLIT_MAX_PIECES) return [ring];
   const cleaned = [];
   for (let i = 0; i < pieces.length; i++) {
     const clip = closeClipRing(ringToClipboard(pieces[i], frame));
@@ -3605,9 +3622,8 @@ function splitRingByFloor(terrain, ring) {
     const rings = geom ? ringsFromClipGeom(geom, frame) : [pieces[i]];
     for (let k = 0; k < rings.length; k++) cleaned.push(rings[k]);
   }
-  if (cleaned.length >= 2) {
-    pieces.length = 0;
-    for (let i = 0; i < cleaned.length; i++) pieces.push(cleaned[i]);
+  if (cleaned.length >= 2 && cleaned.length <= SPLIT_MAX_PIECES) {
+    pieces = cleaned;
   }
   let area = 0;
   for (let i = 0; i < pieces.length; i++) {

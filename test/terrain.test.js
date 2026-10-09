@@ -1639,11 +1639,12 @@ describe("terrain resolution presets", () => {
       { terrainResolution: "1" }
     );
     assert.equal(fineHill.pasteOmitted, undefined);
-    assert.equal(fineHill.pasteReduced, true);
+    assert.equal(fineHill.pasteReduced, undefined);
     assert.deepEqual([fineHill.requestedGridCols, fineHill.requestedGridRows], [30, 30]);
+    assert.deepEqual([fineHill.gridCols, fineHill.gridRows], [30, 30]);
     assert.ok(fineHill.gridCols * fineHill.gridRows <= TERRAIN_PASTE_MAX_FLOORS);
-    assert.ok(fineHill.cellM > 1);
-    assert.match(terrainResolutionNotes(fineHill, hill).join("\n"), /reduced from 30×30/);
+    assert.ok(fineHill.cellM <= 1.2);
+    assert.equal(/reduced from 30×30/.test(terrainResolutionNotes(fineHill, hill).join("\n")), false);
     assert.equal(fineHill.terrainStyle, "sloped");
     assert.equal(fineHill.clipboard.slopedFloors.length + fineHill.clipboard.raisedFloorZones.length, fineHill.gridCols * fineHill.gridRows);
 
@@ -2738,8 +2739,8 @@ describe("Finland paste quads are square ground meters", () => {
   it("locks the paste quad budget to the export's first-pass paste cap", () => {
     const budget = pastePlanQuadBudget();
     assert.equal(budget, TERRAIN_PASTE_MAX_FLOORS);
-    assert.equal(TERRAIN_PASTE_MAX_FLOORS, 400);
-    assert.equal(TERRAIN_PASTE_MAX_BYTES, 300 * 1024);
+    assert.equal(TERRAIN_PASTE_MAX_FLOORS, 1500);
+    assert.equal(TERRAIN_PASTE_MAX_BYTES, 400 * 1024);
     assert.ok(budget <= Math.min(PASTE_BUILD_MAX_QUADS, Math.floor(TERRAIN_PASTE_JSON_MAX / 240)));
     const [cols, rows] = squareMeterAxes(frame.widthM, frame.lengthM, 1, 500);
     assert.ok(Math.max(cols, rows) <= 500);
@@ -3386,7 +3387,7 @@ describe("terrain paste stays the size Hamina accepted", () => {
     return Math.abs(n * 100 - Math.round(n * 100)) < 1e-6;
   }
 
-  it("keeps a hill inside 400 floors and 300 KB, with centimeter coordinates", () => {
+  it("keeps a hill inside 1500 floors and 400 KB, with centimeter coordinates", () => {
     const frame = geoFrame({ west: -118.36, south: 34.13, east: -118.345, north: 34.145, name: "Cap hill" });
     const terrain = terrainFromSamples(hillSamples(frame, 18), frame, { terrainStyle: "sloped" });
     const sloped = terrain.clipboard.slopedFloors;
@@ -3414,13 +3415,15 @@ describe("terrain paste stays the size Hamina accepted", () => {
     }
   });
 
-  it("honors a dev floor probe and ignores values outside 100 to 3000", () => {
+  it("honors a dev floor probe and ignores values outside 100 to 6000", () => {
     assert.equal(parseTerrainFloorOverride(1500), 1500);
     assert.equal(parseTerrainFloorOverride("800"), 800);
     assert.equal(parseTerrainFloorOverride(100), 100);
     assert.equal(parseTerrainFloorOverride(3000), 3000);
+    assert.equal(parseTerrainFloorOverride(4000), 4000);
+    assert.equal(parseTerrainFloorOverride(6000), 6000);
     assert.equal(parseTerrainFloorOverride(99), 0);
-    assert.equal(parseTerrainFloorOverride(3001), 0);
+    assert.equal(parseTerrainFloorOverride(6001), 0);
     assert.equal(parseTerrainFloorOverride("40"), 0);
     assert.equal(parseTerrainFloorOverride(null), 0);
     const frame = geoFrame({ west: -118.36, south: 34.13, east: -118.345, north: 34.145, name: "Probe hill" });
