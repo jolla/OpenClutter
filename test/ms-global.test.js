@@ -71,6 +71,28 @@ describe("Microsoft global building footprints", () => {
     assert.ok(lons.some((x) => x < -87.916));
   });
 
+  it("keeps the larger roof when a tile has more buildings than the export can hold", () => {
+    const small = poly([
+      [-87.9182, 42.8992],
+      [-87.9181, 42.8992],
+      [-87.9181, 42.8993],
+      [-87.9182, 42.8993],
+      [-87.9182, 42.8992],
+    ]);
+    const large = poly([
+      [-87.919, 42.898],
+      [-87.916, 42.898],
+      [-87.916, 42.901],
+      [-87.919, 42.901],
+      [-87.919, 42.898],
+    ]);
+    const gz = zlib.gzipSync(Buffer.from([small, large].map((f) => JSON.stringify(f)).join("\n")));
+    const feats = featuresFromGzip(gz, OAK, { keep: 1 });
+    assert.equal(feats.length, 1);
+    const xs = feats[0].geometry.coordinates[0].map((p) => p[0]);
+    assert.ok(Math.min(...xs) < -87.9185);
+  });
+
   it("adds an ArcGIS footprint only when its centroid is outside the global set", () => {
     const globalF = poly([
       [-87.918, 42.899],

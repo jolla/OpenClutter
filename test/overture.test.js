@@ -68,6 +68,30 @@ describe("Overture buildings", () => {
     assert.equal(featureFromRow(underground, OAK), null);
   });
 
+  it("keeps the larger roof when a row group has more buildings than the export can hold", () => {
+    const small = {
+      height: 8,
+      num_floors: 2,
+      bbox: { xmin: -87.9182, xmax: -87.9181, ymin: 42.8992, ymax: 42.8993 },
+      geometry: {
+        type: "Polygon",
+        coordinates: [[[-87.9182, 42.8992], [-87.9181, 42.8992], [-87.9181, 42.8993], [-87.9182, 42.8993], [-87.9182, 42.8992]]],
+      },
+    };
+    const large = {
+      height: 12,
+      num_floors: 3,
+      bbox: { xmin: -87.92, xmax: -87.916, ymin: 42.897, ymax: 42.901 },
+      geometry: {
+        type: "Polygon",
+        coordinates: [[[-87.92, 42.897], [-87.916, 42.897], [-87.916, 42.901], [-87.92, 42.901], [-87.92, 42.897]]],
+      },
+    };
+    const features = featuresFromRows([small, large], OAK, 1);
+    assert.equal(features.length, 1);
+    assert.equal(features[0].properties.height, 12);
+  });
+
   it("keeps a dome roof and a shed rise, and does not treat min_height as a low eave", () => {
     const dome = featureFromRow(
       {

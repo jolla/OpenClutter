@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.91** on `dev` — A 10 km draw keeps the largest roofs from the Microsoft tile and from Overture, instead of holding every roof in memory. The export can finish and write the zip. The badge stays (`dev · v1.1.91`).
+
 **v1.1.90** on `dev` — A draw up to 10 km asks the street map one tile at a time, for roofs, water, rail, and road bridges, instead of downloading the whole map. A canopy tile that fails is read once more. The badge stays (`dev · v1.1.90`).
 
 **v1.1.89** on `dev` — The Las Vegas Monorail stays in the zip when trees would otherwise use every remaining area slot. A road overpass is a raised deck: a highway with bridge=yes or viaduct, about 6.5 m of clearance per layer, about 2.1 m thick, concrete at 9 dB/m. Details counts Bridges. A culvert and a span under 10 m stay out. A footbridge is thin. The badge stays (`dev · v1.1.89`).
