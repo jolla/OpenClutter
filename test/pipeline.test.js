@@ -1335,6 +1335,27 @@ describe("attenuation cap keeps discrete trees", () => {
     assert.equal(capped.droppedTrees, 1);
   });
 
+  it("keeps slope canopy when stemmed trees would otherwise fill the cap", () => {
+    const buildings = [];
+    for (let i = 0; i < 6; i++) buildings.push({ id: "b" + i });
+    const trees = [];
+    const kinds = [];
+    for (let i = 0; i < 4; i++) {
+      trees.push({ id: "slope" + i });
+      kinds.push("slope");
+    }
+    for (let i = 0; i < 4; i++) {
+      trees.push({ id: "crown" + i });
+      kinds.push("canopy");
+      trees.push({ id: "trunk" + i });
+      kinds.push("trunk");
+    }
+    const capped = capBuildingsAndTrees(buildings, trees, kinds, 10);
+    const ids = capped.areas.map((a) => a.id);
+    assert.ok(ids.filter((id) => String(id).indexOf("slope") === 0).length >= 2, ids.join(","));
+    assert.ok(ids.some((id) => String(id).indexOf("crown") === 0), ids.join(","));
+  });
+
   it("holds water and parking slots before a canopy spends them", () => {
     const canopy = { id: "canopy" };
     const tree = { id: "crown" };

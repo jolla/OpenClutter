@@ -3517,12 +3517,13 @@ function rampStrips(terrain, band) {
   return strips;
 }
 
-function ringsFromClipGeom(geom, frame) {
+function ringsFromClipGeom(geom, frame, minArea) {
+  const floor = minArea > 0 ? minArea : 30;
   const out = [];
   for (const poly of geom || []) {
     const ring = poly && poly[0];
     if (!ring || ring.length < 4) continue;
-    if (meterAreaAbs(ring) < 30) continue;
+    if (meterAreaAbs(ring) < floor) continue;
     const ll = [];
     for (let i = 0; i < ring.length; i++) {
       const p = clipboardToLl(ring[i][0], ring[i][1], frame);
@@ -3536,14 +3537,47 @@ function ringsFromClipGeom(geom, frame) {
   return out;
 }
 
+function pieceClipboardArea(ring, frame) {
+  return meterAreaAbs(ringToClipboard(ring, frame));
+}
+
+/** Largest pieces first, so a cap keeps the woods instead of a sliver. */
+function largestPieces(pieces, maxPieces, frame) {
+  const ranked = [];
+  for (let i = 0; i < pieces.length; i++) {
+    const a = pieceClipboardArea(pieces[i], frame);
+    if (a > 0) ranked.push({ ring: pieces[i], a });
+  }
+  ranked.sort((p, q) => q.a - p.a);
+  const out = [];
+  const n = Math.min(ranked.length, maxPieces);
+  for (let i = 0; i < n; i++) out.push(ranked[i].ring);
+  return out;
+}
+
+/**
+ * One piece per terrain cell is enough for a hill. More than that spends the
+ * area cap on one woods. A small mesh still gets several bands.
+ */
+function canopyPieceCap(terrain) {
+  const cells = Math.max(0, (terrain && terrain.gridCols) | 0) * Math.max(0, (terrain && terrain.gridRows) | 0);
+  if (!(cells >= 4)) return 160;
+  return Math.min(280, Math.max(48, cells));
+}
+
 /**
  * One bottom height is the downhill ground under that piece. A footprint
  * that climbs more than SPLIT_FLOOR_M is cut along the pasted ramps so each
  * piece meets its own downhill ground and the roof stays near the measured
  * height above that ground. A mild rise stays one ring. The original ring is
  * returned when a cut would drop most of the footprint.
+ * opts.maxPieces raises the cap for a hill-sized canopy. opts.keepPartial
+ * keeps those pieces when a woods would otherwise collapse back to one ring
+ * seated on the summit.
  */
-function splitRingByFloor(terrain, ring) {
+function splitRingByFloor(terrain, ring, opts) {
+  const maxPieces = opts && opts.maxPieces > 1 ? opts.maxPieces | 0 : SPLIT_MAX_PIECES;
+  const keepPartial = !!(opts && opts.keepPartial);
   if (!terrain || !ring || ring.length < 4) return [ring];
   const extent = floorExtentUnderRing(terrain, ring);
   if (!(extent.max - extent.min > SPLIT_FLOOR_M)) return [ring];
@@ -3551,6 +3585,7 @@ function splitRingByFloor(terrain, ring) {
   const xy = frame ? ringToClipboard(ring, frame) : [];
   const bldg = closeClipRing(xy);
   if (!bldg) return [ring];
+  const hostArea = meterAreaAbs(bldg);
   const useRamps =
     terrain.clipboard && terrain.clipboard.slopedFloors && terrain.clipboard.slopedFloors.length > 0;
   function ringsFromGroups(groups) {
@@ -3572,7 +3607,7 @@ function splitRingByFloor(terrain, ring) {
       } catch {
         continue;
       }
-      const rings = ringsFromClipGeom(hit, frame);
+      const rings = ringsFromClipGeom(hit, frame, keepPartial ? 12 : 30);
       for (let i = 0; i < rings.length; i++) pieces.push(rings[i]);
     }
     return pieces;
@@ -3596,19 +3631,29 @@ function splitRingByFloor(terrain, ring) {
     }
     // One height group can clip into several rings. Widen until the rings
     // that actually ship stay inside the piece cap.
-    if (groups.size > SPLIT_MAX_PIECES) {
+    if (groups.size > maxPieces) {
       band *= 2;
       continue;
     }
     pieces = ringsFromGroups(groups);
-    if (pieces.length <= SPLIT_MAX_PIECES) break;
+    if (pieces.length <= maxPieces) break;
     pieces = null;
     band *= 2;
   }
-  if ((!pieces || pieces.length < 2) && groups && groups.size >= 2 && groups.size <= SPLIT_MAX_PIECES) {
+  if ((!pieces || pieces.length < 2) && groups && groups.size >= 2 && (groups.size <= maxPieces || keepPartial)) {
     pieces = ringsFromGroups(groups);
   }
-  if (!pieces || pieces.length < 2 || pieces.length > SPLIT_MAX_PIECES) return [ring];
+  if (!pieces || pieces.length < 2) return [ring];
+  if (pieces.length > maxPieces) {
+    const trimmed = largestPieces(pieces, maxPieces, frame);
+    if (trimmed.length < 2) return [ring];
+    if (!keepPartial) {
+      let covered = 0;
+      for (let i = 0; i < trimmed.length; i++) covered += pieceClipboardArea(trimmed[i], frame);
+      if (!(covered >= hostArea * 0.7)) return [ring];
+    }
+    pieces = trimmed;
+  }
   const cleaned = [];
   for (let i = 0; i < pieces.length; i++) {
     const clip = closeClipRing(ringToClipboard(pieces[i], frame));
@@ -3619,18 +3664,18 @@ function splitRingByFloor(terrain, ring) {
     } catch {
       geom = null;
     }
-    const rings = geom ? ringsFromClipGeom(geom, frame) : [pieces[i]];
+    const rings = geom ? ringsFromClipGeom(geom, frame, keepPartial ? 12 : 30) : [pieces[i]];
     for (let k = 0; k < rings.length; k++) cleaned.push(rings[k]);
   }
-  if (cleaned.length >= 2 && cleaned.length <= SPLIT_MAX_PIECES) {
+  if (cleaned.length >= 2 && cleaned.length <= maxPieces) {
     pieces = cleaned;
+  } else if (keepPartial && cleaned.length > maxPieces) {
+    pieces = largestPieces(cleaned, maxPieces, frame);
   }
   let area = 0;
-  for (let i = 0; i < pieces.length; i++) {
-    const clip = ringToClipboard(pieces[i], frame);
-    area += meterAreaAbs(clip);
-  }
-  if (area < meterAreaAbs(bldg) * 0.7) return [ring];
+  for (let i = 0; i < pieces.length; i++) area += pieceClipboardArea(pieces[i], frame);
+  const minCover = keepPartial ? 0.35 : 0.7;
+  if (area < hostArea * minCover) return [ring];
   return pieces;
 }
 
@@ -3638,6 +3683,8 @@ function slopeSampler(terrain) {
   const fn = (ring) => slopeTopUnderRing(terrain, ring);
   fn.seat = (ring) => slopeSeatUnderRing(terrain, ring);
   fn.split = (ring) => splitRingByFloor(terrain, ring);
+  fn.splitCanopy = (ring) =>
+    splitRingByFloor(terrain, ring, { maxPieces: canopyPieceCap(terrain), keepPartial: true });
   return fn;
 }
 
@@ -3650,7 +3697,8 @@ function slopeSampler(terrain) {
  * ring. fn.seat is the downhill surface, where a building meets the hill.
  * fn() remains the uphill surface. Ground under LIFT_LOCAL_M still omits
  * bottom_height inside the lifters. fn.split cuts a footprint that climbs
- * more than SPLIT_FLOOR_M.
+ * more than SPLIT_FLOOR_M. fn.splitCanopy does the same for a woods, with
+ * one piece per terrain cell, each seated on fn.seat (the local downhill).
  */
 function demUnderFootprint(terrain) {
   if (!terrain) return null;

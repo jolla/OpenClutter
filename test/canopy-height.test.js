@@ -469,9 +469,12 @@ describe("canopy height grid", () => {
     );
     assert.ok(foliage.length >= 2);
     const base = Math.min(...foliage.map((a) => a.area_material.bottom_height || 0));
-    const tip = Math.max(...foliage.map((a) => a.area_material.top_height));
     assert.ok(base >= 20);
-    assert.equal(tip, Math.round((base + 14) * 10) / 10);
+    for (const area of foliage) {
+      const mat = area.area_material;
+      const bottom = mat.bottom_height || 0;
+      assert.equal(mat.top_height, Math.round((bottom + 14) * 10) / 10);
+    }
     assert.equal(built.stats.openIntentTreeAreas >= 1, true);
     assert.equal(
       built.clipboard.attenuatingZones.some((z) => String(z.typeId).indexOf("trunk") === 0),
