@@ -1101,7 +1101,15 @@ function notchFeature(feature, openings) {
     }
     changed = true;
     const split = subtractHolesLL(exterior, holes);
-    if (!split.length) continue;
+    const roof = meterArea(exterior);
+    if (!split.length) {
+      // A failed cut must not erase a large roof. The pool stays in the
+      // outline only when subtraction itself returns nothing.
+      if (roof >= 1000) {
+        pieces.push(featureWithRing(feature, exterior, feature.properties && feature.properties.keepOut));
+      }
+      continue;
+    }
     const use = split;
     for (let s = 0; s < use.length; s++) {
       const prev = (feature.properties && feature.properties.keepOut) || [];
@@ -1111,7 +1119,7 @@ function notchFeature(feature, openings) {
   return pieces.length ? pieces : [feature];
 }
 
-function subtractSameHeightParts(features) {
+function subtractSameHeightParts(features, notes) {
   const ringsOf = features.map((f) => exteriorsOf(f));
   const replace = new Map();
   const drop = new Set();
@@ -1144,6 +1152,9 @@ function subtractSameHeightParts(features) {
       for (let p = 0; p < pieces.length; p++) next.push(pieces[p]);
     }
     if (!next.length) {
+      let parentArea = 0;
+      for (let b = 0; b < ringsOf[i].length; b++) parentArea += meterArea(ringsOf[i][b]);
+      noteLargeDrop(notes, parentArea, "same-height parts replaced the parent");
       drop.add(i);
       continue;
     }
@@ -1165,7 +1176,7 @@ function subtractSameHeightParts(features) {
   return out;
 }
 
-function dropParentsOverOpenings(features, openings) {
+function dropParentsOverOpenings(features, openings, notes) {
   if (!openings || !openings.length) return { features, dropped: 0 };
   const drop = new Set();
   for (let i = 0; i < features.length; i++) {
@@ -1190,7 +1201,26 @@ function dropParentsOverOpenings(features, openings) {
         }
       }
     }
-    if (parts >= 1) drop.add(i);
+    if (parts < 1) continue;
+    let parentArea = 0;
+    for (let r = 0; r < rings.length; r++) parentArea += meterArea(rings[r]);
+    let covered = 0;
+    for (let j = 0; j < features.length; j++) {
+      if (i === j) continue;
+      const other = features[j];
+      if (!(other.properties && other.properties.buildingPart)) continue;
+      if (Number(other.properties.levelBaseM) > 0 || other.properties.floatSpan) continue;
+      const partRings = exteriorsOf(other);
+      for (let a = 0; a < partRings.length; a++) {
+        for (let b = 0; b < rings.length; b++) {
+          if (!mostlyInside(partRings[a], rings[b])) continue;
+          covered += meterArea(partRings[a]);
+        }
+      }
+    }
+    if (parentArea - covered >= 1000) continue;
+    drop.add(i);
+    noteLargeDrop(notes, parentArea, "a pool cut removed the parent because parts replaced it");
   }
   if (!drop.size) return { features, dropped: 0 };
   return { features: features.filter((_, i) => !drop.has(i)), dropped: drop.size };
@@ -1314,7 +1344,7 @@ function wedgeCoversGround(ring, ground) {
  * building. A wedge that blankets other roofs, pools, water, or roads is
  * left out. A triangular building with nothing else under it stays.
  */
-function repairCoarseWedges(features, osmRings, ground) {
+function repairCoarseWedges(features, osmRings, ground, notes) {
   const drop = new Set();
   const replace = new Map();
   let replaced = 0;
@@ -1325,6 +1355,14 @@ function repairCoarseWedges(features, osmRings, ground) {
     const osm = bestOsmReplacement(rings[0], osmRings);
     if (osm) {
       replace.set(i, osm);
+      replaced++;
+      continue;
+    }
+    const bodies = realBuildingBody(rings[0], osmRings).filter(function (ring) {
+      return ring && !coarseWedge(ring) && !sameRing(ring, rings[0]);
+    });
+    if (bodies.length) {
+      replace.set(i, bodies);
       replaced++;
       continue;
     }
@@ -1357,8 +1395,15 @@ function repairCoarseWedges(features, osmRings, ground) {
         replaced++;
         continue;
       }
+      const cleaned = cleanedSourceBody(rings[0]);
+      if (cleaned.length) {
+        replace.set(i, cleaned);
+        replaced++;
+        continue;
+      }
       drop.add(i);
       dropped++;
+      noteLargeDrop(notes, host, "triangular outline covered open ground");
     }
   }
   const out = [];
@@ -1566,8 +1611,9 @@ function rectRing(rect, grid) {
 /**
  * Two rectangular roofs inside one sprawling low-rise outline: a dark
  * block and a warm block, separate in the aerial. A tower, a round roof,
- * and a single-tone building stay as they are. The outline is replaced
- * by those two blocks. Anything the outline covered past them is left open.
+ * and a single-tone building stay as they are. The two blocks are the
+ * cores. The rest of the real outline stays. Only open ground that the
+ * coarse triangle added is left out.
  */
 function twinRoofCores(ring, imagery, parentArea) {
   const closed = closeRing(ring);
@@ -1668,7 +1714,92 @@ function twinRoofCores(ring, imagery, parentArea) {
   return [darkRing, warmRing];
 }
 
-function carveTwinRoofs(features, imagery, ground) {
+function noteLargeDrop(notes, area, reason) {
+  if (!(area >= 1000) || !notes) return;
+  notes.push("Dropped building " + Math.round(area) + " m2: " + reason + ".");
+}
+
+/**
+ * The OSM outline of this footprint, or the source when that source is
+ * already a real ring. A coarse triangle is not the body. A convex hull
+ * is never the body.
+ */
+function realBuildingBody(source, osmRings) {
+  const host = meterArea(source);
+  let best = null;
+  let bestArea = 0;
+  for (let i = 0; i < (osmRings || []).length; i++) {
+    const closed = closeRing(osmRings[i]);
+    if (!closed || coarseWedge(closed)) continue;
+    const oa = meterArea(closed);
+    if (oa < 1000) continue;
+    const ratio = oa / Math.max(host, 1);
+    // A fragment of this campus must not pull the whole outline back in.
+    if (ratio < 0.55 || ratio > 1.6) continue;
+    const inter = intersectionArea(closed, source);
+    if (!(inter >= 1000)) continue;
+    if (inter / oa < 0.45 || inter / host < 0.45) continue;
+    if (oa > bestArea) {
+      best = closed;
+      bestArea = oa;
+    }
+  }
+  if (best) return [best];
+  const closed = closeRing(source);
+  if (!closed || coarseWedge(closed)) return [];
+  return [closed];
+}
+
+/**
+ * A cleaned copy of a coarse triangle: the thick body after a taper cut.
+ * Never a convex hull, and never the triangle itself.
+ */
+function cleanedSourceBody(source) {
+  const closed = closeRing(source);
+  if (!closed) return [];
+  const trimmed = trimTaperedRing(closed, true);
+  const kept = [];
+  for (let i = 0; i < trimmed.length; i++) {
+    if (!trimmed[i] || coarseWedge(trimmed[i])) continue;
+    if (sameRing(trimmed[i], closed)) continue;
+    if (meterArea(trimmed[i]) < 1000) continue;
+    kept.push(trimmed[i]);
+  }
+  return kept;
+}
+
+function seatLowRise(feature, ring, keepOut) {
+  const next = featureWithRing(feature, ring, keepOut);
+  next.properties.buildingBody = true;
+  if (!(heightOf(next) >= 15)) {
+    next.properties.height = 18;
+    if (!next.properties.heightSource) next.properties.heightSource = "overture";
+  }
+  return next;
+}
+
+function bodyFeatures(feature, source, osmRings, coreRings, keepOut) {
+  const bodies = realBuildingBody(source, osmRings);
+  const out = [];
+  for (let i = 0; i < bodies.length; i++) {
+    const body = bodies[i];
+    if (!body || coarseWedge(body)) continue;
+    let remain = [body];
+    if (coreRings && coreRings.length) {
+      const cut = subtractHolesLL(body, coreRings).filter(function (ring) {
+        return meterArea(ring) >= 1000;
+      });
+      if (cut.length) remain = cut;
+    }
+    for (let r = 0; r < remain.length; r++) {
+      if (meterArea(remain[r]) < 1000) continue;
+      out.push(seatLowRise(feature, remain[r], keepOut));
+    }
+  }
+  return out;
+}
+
+function carveTwinRoofs(features, imagery, ground, osmRings, notes) {
   if (!imagery || !imagery.data || !(imagery.width > 16) || !(imagery.height > 16)) {
     return { features, carved: 0 };
   }
@@ -1724,11 +1855,24 @@ function carveTwinRoofs(features, imagery, ground) {
       }
       pieces.push(next);
     }
+    const keepOut = feature.properties && feature.properties.keepOut;
     if (pieces.length < 2) {
+      if (coarseWedge(closed) || wedgeCoversGround(closed, ground)) {
+        const bodies = bodyFeatures(feature, closed, osmRings, [], keepOut);
+        if (bodies.length) {
+          for (let b = 0; b < bodies.length; b++) out.push(bodies[b]);
+          continue;
+        }
+      }
       out.push(feature);
       continue;
     }
+    const coreRings = [];
+    for (let c = 0; c < pieces.length; c++) coreRings.push(pieces[c].geometry.coordinates[0]);
+    const bodies = bodyFeatures(feature, closed, osmRings, coreRings, keepOut);
+    if (!bodies.length) noteLargeDrop(notes, area, "roof cores replaced the outline");
     carved++;
+    for (let b = 0; b < bodies.length; b++) out.push(bodies[b]);
     for (let c = 0; c < pieces.length; c++) out.push(pieces[c]);
   }
   return { features: out, carved };
@@ -1763,8 +1907,10 @@ function shapeBuildings(features, detail) {
     openings,
     roads: (detail && detail.roads) || [],
   };
-  const carved = carveTwinRoofs(list, detail && detail.imagery, ground);
-  const repaired = repairCoarseWedges(carved.features, (detail && detail.buildings) || [], ground);
+  const largeDrops = [];
+  const osmRings = (detail && detail.buildings) || [];
+  const carved = carveTwinRoofs(list, detail && detail.imagery, ground, osmRings, largeDrops);
+  const repaired = repairCoarseWedges(carved.features, osmRings, ground, largeDrops);
   const coreRings = [];
   for (let i = 0; i < repaired.features.length; i++) {
     if (!(repaired.features[i].properties && repaired.features[i].properties.roofCore)) continue;
@@ -1800,8 +1946,8 @@ function shapeBuildings(features, detail) {
     }
     for (let p = 0; p < pieces.length; p++) opened.push(pieces[p]);
   }
-  const cut = subtractSameHeightParts(opened);
-  const dropped = dropParentsOverOpenings(cut, openings);
+  const cut = subtractSameHeightParts(opened, largeDrops);
+  const dropped = dropParentsOverOpenings(cut, openings, largeDrops);
   const trimmed = trimTaperedFootprints(dropped.features);
   return {
     features: trimmed.features,
@@ -1815,6 +1961,7 @@ function shapeBuildings(features, detail) {
       coresCarved: carved.carved,
       tapersCut: trimmed.cut,
       pieces: trimmed.features.length,
+      largeDrops: largeDrops,
     },
   };
 }
@@ -2005,12 +2152,13 @@ function clipMetersSlab(meters, proj, origin, ux, uy, keep0, keep1) {
   return out.length ? out : null;
 }
 
-function trimTaperedRing(ring) {
+function trimTaperedRing(ring, allowLarge) {
   const closed = closeRing(ring);
   const area = closed ? meterArea(closed) : 0;
-  // Large campuses are handled by the two-roof cut. This only takes a point
-  // off a smaller low-rise outline, so a full block like Encore stays whole.
-  if (!closed || area < 15000 || area >= 25000) return closed ? [closed] : [];
+  // A full block like Encore stays whole. A coarse wedge may be trimmed
+  // at any size, and that trim is never a convex hull.
+  if (!closed || area < 15000) return closed ? [closed] : [];
+  if (!allowLarge && area >= 25000) return [closed];
   const proj = projectionFor([closed]);
   const meters = toMeters(closed, proj);
   if (!meters) return [closed];
