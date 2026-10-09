@@ -1247,11 +1247,11 @@ async function handleClutter(event) {
           parking: includeParking,
           walls: includeWalls,
           poles: includePoles,
-        }, { signal, ua: UA, timeoutMs: background ? 60000 : 4500, tile: background })
+        }, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background })
       );
     }
     detailJob = beginOptional((signal) =>
-      fetchBuildingDetail(requestBbox, { signal, ua: UA, timeoutMs: background ? 60000 : 4500, tile: background })
+      fetchBuildingDetail(requestBbox, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background })
     );
     if (needImage) {
       frame = applyImageryMeta(frame, null, { width: frame.imgW, height: frame.imgH }, { requestBbox });

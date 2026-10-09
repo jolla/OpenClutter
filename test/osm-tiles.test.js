@@ -2,8 +2,9 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { planTiles, bboxSpanM, TILE_SPAN_M, MAX_TILES, fetchOsmMaps } = require("../netlify/lib/osm-tiles");
+const { planTiles, bboxSpanM, TILE_SPAN_M, MAX_TILES, MAP_XML_CAP, fetchOsmMaps } = require("../netlify/lib/osm-tiles");
 const { fetchBuildingDetail } = require("../netlify/lib/building-shape");
+const { fetchOutdoorClutter } = require("../netlify/lib/outdoor-clutter");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 
 function vegasBox(km) {
@@ -19,24 +20,31 @@ function vegasBox(km) {
   };
 }
 
-function squareXml(west, south, east, north, id) {
+function squareElement(west, south, east, north, id) {
   const lon0 = (west + east) / 2;
   const lat0 = (south + north) / 2;
   const dLon = Math.min(0.0004, (east - west) * 0.2);
   const dLat = Math.min(0.0004, (north - south) * 0.2);
-  return [
-    "<osm>",
-    `<node id="${id}" lat="${lat0}" lon="${lon0}"/>`,
-    `<node id="${id + 1}" lat="${lat0}" lon="${lon0 + dLon}"/>`,
-    `<node id="${id + 2}" lat="${lat0 + dLat}" lon="${lon0 + dLon}"/>`,
-    `<node id="${id + 3}" lat="${lat0 + dLat}" lon="${lon0}"/>`,
-    `<way id="${id}">`,
-    `<nd ref="${id}"/><nd ref="${id + 1}"/><nd ref="${id + 2}"/><nd ref="${id + 3}"/><nd ref="${id}"/>`,
-    '<tag k="building:part" v="yes"/>',
-    '<tag k="height" v="40"/>',
-    "</way>",
-    "</osm>",
-  ].join("");
+  return {
+    type: "way",
+    id,
+    tags: { "building:part": "yes", height: "40" },
+    geometry: [
+      { lon: lon0, lat: lat0 },
+      { lon: lon0 + dLon, lat: lat0 },
+      { lon: lon0 + dLon, lat: lat0 + dLat },
+      { lon: lon0, lat: lat0 + dLat },
+      { lon: lon0, lat: lat0 },
+    ],
+  };
+}
+
+function queryBox(body) {
+  const decoded = decodeURIComponent(String(body || "").replace(/^data=/, ""));
+  const m = decoded.match(/\(([-0-9.]+,[-0-9.]+,[-0-9.]+,[-0-9.]+)\)/);
+  if (!m) return null;
+  const parts = m[1].split(",").map(Number);
+  return { south: parts[0], west: parts[1], north: parts[2], east: parts[3] };
 }
 
 describe("OSM tiles for a large draw", () => {
@@ -54,28 +62,117 @@ describe("OSM tiles for a large draw", () => {
     assert.ok(frame.lengthM > 9000 && frame.lengthM < 11000);
   });
 
-  it("splits a tile that has too many nodes and does not query the whole box again", async () => {
+  it("asks Overpass per tile and does not download the map extract", async () => {
     const big = vegasBox(10);
     const calls = [];
-    const fetchImpl = async (url) => {
-      calls.push(String(url));
-      const parts = new URL(url).searchParams.get("bbox").split(",").map(Number);
-      const span = bboxSpanM({ west: parts[0], south: parts[1], east: parts[2], north: parts[3] });
-      if (span.sideM > 1800) {
-        return { ok: false, status: 400, text: async () => "You requested too many nodes (limit is 50000)" };
-      }
+    const bodies = [];
+    const fetchImpl = async (url, init) => {
+      calls.push(String(url) + " " + ((init && init.method) || "GET"));
+      bodies.push(String((init && init.body) || ""));
+      assert.equal(String(url).includes("openstreetmap.org"), false);
+      const box = queryBox(init && init.body);
+      assert.ok(box, "overpass bbox");
       const id = 100000 + calls.length * 10;
-      return { ok: true, status: 200, text: async () => squareXml(parts[0], parts[1], parts[2], parts[3], id) };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ elements: [squareElement(box.west, box.south, box.east, box.north, id)] }),
+      };
     };
     const maps = await fetchOsmMaps(big, { tile: true, fetchImpl, ua: "test" });
-    assert.ok(maps.xmls.length >= 4, "xmls " + maps.xmls.length);
-    assert.equal(calls.some((u) => u.includes("overpass")), false);
-    assert.match(maps.notes.join(" "), /street map was left out/);
+    assert.equal(maps.xmls.length, 0);
+    assert.ok(maps.elements.length >= 4, "elements " + maps.elements.length);
+    assert.equal(maps.elements.length, planTiles(big).length);
+    assert.equal(calls.length, planTiles(big).length);
+    assert.ok(calls.every((u) => u.includes("overpass") && u.includes("POST")));
+    const firstBody = decodeURIComponent(bodies[0]);
+    assert.match(firstBody, /way\["highway"\]\["bridge"/);
+    assert.match(firstBody, /way\["highway"\]\["layer"/);
+    const before = calls.length;
     const detail = await fetchBuildingDetail(big, { tile: true, fetchImpl, ua: "test", timeoutMs: 20000 });
     assert.equal(detail.ok, true);
     assert.ok(detail.parts.length >= 1);
-    const overpass = calls.filter((u) => u.includes("overpass"));
-    assert.equal(overpass.length, 0);
+    assert.equal(calls.length, before, "building detail reuses the tiled read");
+    const outdoor = await fetchOutdoorClutter(
+      big,
+      { water: true, parking: true, walls: true, poles: true },
+      { tile: true, fetchImpl, ua: "test", timeoutMs: 20000 }
+    );
+    assert.equal(outdoor.ok, true);
+    assert.equal(calls.length, before, "outdoor clutter reuses the tiled read");
+  });
+
+  it("keeps a road bridge from a tiled street-map read", async () => {
+    const big = vegasBox(6);
+    big.west += 0.2;
+    big.east += 0.2;
+    const fetchImpl = async (url, init) => {
+      const box = queryBox(init && init.body);
+      const midLat = (box.south + box.north) / 2;
+      const span = (box.east - box.west) * 0.4;
+      const lon0 = (box.west + box.east) / 2 - span / 2;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          elements: [
+            squareElement(box.west, box.south, box.east, box.north, 7),
+            {
+              type: "way",
+              id: 88001,
+              tags: { highway: "primary", bridge: "viaduct", lanes: "3", layer: "1" },
+              geometry: [
+                { lon: lon0, lat: midLat },
+                { lon: lon0 + span, lat: midLat },
+              ],
+            },
+          ],
+        }),
+      };
+    };
+    const detail = await fetchBuildingDetail(big, { tile: true, fetchImpl, ua: "test", timeoutMs: 20000 });
+    assert.equal(detail.ok, true);
+    assert.ok(detail.bridges.length >= 1);
+    assert.equal(detail.bridges[0].kind, "bridge");
+    assert.ok(detail.bridges[0].widthM > 11 && detail.bridges[0].widthM < 14);
+    assert.equal(detail.bridges[0].deckM, 6.5);
+  });
+
+  it("says when a street-map tile does not return", async () => {
+    const big = vegasBox(10);
+    const tiles = planTiles(big);
+    const doomed = tiles[0];
+    const fetchImpl = async (url, init) => {
+      const box = queryBox(init && init.body);
+      const miss =
+        box &&
+        Math.abs(box.west - doomed.west) < 1e-4 &&
+        Math.abs(box.south - doomed.south) < 1e-4 &&
+        Math.abs(box.east - doomed.east) < 1e-4 &&
+        Math.abs(box.north - doomed.north) < 1e-4;
+      if (miss) return { ok: false, status: 504, text: async () => "down" };
+      const id = Math.round(Math.abs(box.west) * 1e5) * 1000 + Math.round(Math.abs(box.south) * 1e5);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ elements: [squareElement(box.west, box.south, box.east, box.north, id)] }),
+      };
+    };
+    const maps = await fetchOsmMaps(big, { tile: true, fetchImpl, ua: "test" });
+    assert.match(maps.notes.join(" "), /street map was left out/);
+    assert.equal(maps.elements.length, tiles.length - 1);
+  });
+
+  it("does not parse a map extract that is too large to scan", async () => {
+    const small = vegasBox(1);
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => "<osm>" + "x".repeat(MAP_XML_CAP + 1) + "</osm>",
+    });
+    const maps = await fetchOsmMaps(small, { tile: false, fetchImpl, ua: "test" });
+    assert.equal(maps.xmls.length, 0);
+    assert.equal(maps.elements.length, 0);
   });
 
   it("leaves a large short-path draw alone instead of one huge Overpass query", async () => {
