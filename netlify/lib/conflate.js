@@ -298,6 +298,17 @@ function similarFootprint(owner, candidate) {
   return ratio >= 0.4 && ratio <= 2.5;
 }
 
+function keepCaravanFlag(owner, candidate) {
+  const props = candidate && candidate.properties;
+  if (!props || props.staticCaravan !== true || !owner) return;
+  if (!owner.properties) owner.properties = {};
+  owner.properties.staticCaravan = true;
+  if (!(Number(owner.properties.height) > 2)) {
+    owner.properties.height = Number(props.height) > 2 ? Number(props.height) : 3.5;
+    owner.properties.heightSource = props.heightSource || "static-caravan";
+  }
+}
+
 function applyHeight(owner, candidate, rankHeight) {
   const h = featureHeight(candidate);
   if (!h) return "";
@@ -719,6 +730,8 @@ function unionInto(partner, item, proj) {
   if (!best || best.area < partner.area * 0.9) return null;
   applyHeight(best.feature, item.feature, true);
   applyHeight(best.feature, partner.feature, true);
+  keepCaravanFlag(best.feature, item.feature);
+  keepCaravanFlag(best.feature, partner.feature);
   return best;
 }
 
@@ -802,7 +815,10 @@ function dedupeStackedFootprints(features) {
           continue;
         }
       }
-      if (hit.best) applyHeight(hit.best.feature, item.feature, true);
+      if (hit.best) {
+        applyHeight(hit.best.feature, item.feature, true);
+        keepCaravanFlag(hit.best.feature, item.feature);
+      }
       const rescue = cutAgainst(item, hit.targets, proj);
       const wing = rescue ? rescue.filter((p) => pieceWorthKeeping(p.area, item.area)) : null;
       if (wing && wing.length) {
@@ -822,7 +838,10 @@ function dedupeStackedFootprints(features) {
         continue;
       }
       if (!good.length) {
-        if (cover >= 0.35 && hit.best) applyHeight(hit.best.feature, item.feature, true);
+        if (cover >= 0.35 && hit.best) {
+          applyHeight(hit.best.feature, item.feature, true);
+          keepCaravanFlag(hit.best.feature, item.feature);
+        }
         if (cover >= 0.35) dropped++;
         else {
           const copy = cloneKept(item, null, proj);

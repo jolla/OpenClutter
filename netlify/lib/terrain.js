@@ -1270,8 +1270,7 @@ function raisedLayersForStep(grid, heights, step) {
  * the stack would pass RAISED_FLOOR_MAX. The caller coarsens the lattice if
  * even one band is still over that cap.
  */
-function buildRaisedLayerClipboard(samples, frame, cols, rows, elevationAt) {
-  const grid = lattice(samples, frame, cols, rows, elevationAt);
+function raisedMeshFromGrid(grid, frame) {
   const highs = cellHighCorners(grid);
   const steps = raisedBandSteps(highs.maxH);
   let best = null;
@@ -1542,10 +1541,19 @@ function stitchContourPoly(pts) {
   return stitchContourStrip(lows[0].pts, highs[0].pts) || stitchContourStrip(lows[0].pts, highs[0].pts.slice().reverse());
 }
 
+function lerpContour(p, q, t) {
+  return {
+    x: round3(p.x + (q.x - p.x) * t),
+    y: round3(p.y + (q.y - p.y) * t),
+    z: round1(p.z + (q.z - p.z) * t),
+  };
+}
+
 /**
- * A one-corner band is a triangle. The ramp's low edge sits just inside that
- * triangle, parallel to the far contour, so the quad covers the band without
- * crossing into the neighbor. The tiny tip is a raised floor at the corner height.
+ * A one-corner band is a triangle. The base ramp uses the real edge heights,
+ * so a neighbor that shares the edge meets it. Two small ramps cover the
+ * apex. Their extra corners sit just inside the triangle, so the tip is not
+ * left as an open speck and the quads do not spill into the next cell.
  */
 function capContourTriangle(pts) {
   let iA = -1;
@@ -1564,20 +1572,34 @@ function capContourTriangle(pts) {
   const altitude =
     Math.abs((B.x - A.x) * (C.y - A.y) - (B.y - A.y) * (C.x - A.x)) / (Math.hypot(C.x - B.x, C.y - B.y) || 1);
   const t = Math.max(0.08, Math.min(0.4, altitude > 0 ? 0.45 / altitude : 0.2));
-  const S1 = { x: round3(A.x + (B.x - A.x) * t), y: round3(A.y + (B.y - A.y) * t), z: A.z };
-  const S2 = { x: round3(A.x + (C.x - A.x) * t), y: round3(A.y + (C.y - A.y) * t), z: A.z };
+  const S1 = lerpContour(A, B, t);
+  const S2 = lerpContour(A, C, t);
   const ramp = tryRampPoints([S1, S2, B, C]);
   if (!ramp) return null;
-  const mx = (S1.x + S2.x) / 2;
-  const my = (S1.y + S2.y) / 2;
-  const bump = [round3(mx + (A.x - mx) * 0.35), round3(my + (A.y - my) * 0.35)];
-  const tip = [
-    [round3(A.x), round3(A.y)],
-    [S1.x, S1.y],
-    bump,
-    [S2.x, S2.y],
-  ];
-  return { ramp: ramp, raised: pasteableQuad(tip) ? { ring: tip, h: A.z } : null };
+  const M = { x: round3((S1.x + S2.x) / 2), y: round3((S1.y + S2.y) / 2), z: S1.z };
+  const ix = M.x - A.x;
+  const iy = M.y - A.y;
+  const il = Math.hypot(ix, iy) || 1;
+  const ux = ix / il;
+  const uy = iy / il;
+  const px = -uy;
+  const py = ux;
+  const apex = { x: A.x, y: A.y, z: A.z };
+  const offsets = [0.04, 0.08, 0.15, 0.3, 0.6];
+  let left = null;
+  let right = null;
+  for (let i = 0; i < offsets.length && (!left || !right); i++) {
+    const along = offsets[i];
+    const side = offsets[i];
+    const P = { x: round3(A.x + ux * along + px * side), y: round3(A.y + uy * along + py * side), z: A.z };
+    const Q = { x: round3(A.x + ux * along - px * side), y: round3(A.y + uy * along - py * side), z: A.z };
+    left = tryRampPoints([S1, M, P, apex]);
+    right = tryRampPoints([S2, M, Q, apex]);
+  }
+  const ramps = [ramp];
+  if (left) ramps.push(left);
+  if (right) ramps.push(right);
+  return { ramps: ramps };
 }
 
 function raisedFromRing(ring, height) {
@@ -1593,11 +1615,42 @@ function raisedFromRing(ring, height) {
 }
 
 /**
- * A flat triangle has no fourth corner Hamina would accept as a raised pad.
- * The ramp keeps every boundary vertex at that height and lifts a short interior
- * shelf by 0.1 m, so the shared edge still matches the neighbor.
+ * A flat triangle has no fourth corner Hamina would accept as one raised pad.
+ * Three quads from the edge midpoints to the centroid cover it with no hole.
+ * The shelf ramp is only the fallback when a quad would not be strictly convex.
  */
-function coverFlatTriangle(pts, ramps) {
+function coverFlatTriangle(pts, ramps, raised) {
+  const z = round1(pts[0].z);
+  const mids = [];
+  for (let i = 0; i < 3; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % 3];
+    mids.push({ x: round3((a.x + b.x) / 2), y: round3((a.y + b.y) / 2) });
+  }
+  const g = {
+    x: round3((pts[0].x + pts[1].x + pts[2].x) / 3),
+    y: round3((pts[0].y + pts[1].y + pts[2].y) / 3),
+  };
+  const pads = [];
+  for (let i = 0; i < 3; i++) {
+    const a = pts[i];
+    const mOut = mids[i];
+    const mIn = mids[(i + 2) % 3];
+    const pad = raisedFromRing(
+      [
+        [round3(a.x), round3(a.y)],
+        [mOut.x, mOut.y],
+        [g.x, g.y],
+        [mIn.x, mIn.y],
+      ],
+      z
+    );
+    if (pad) pads.push(pad);
+  }
+  if (pads.length === 3 && raised) {
+    for (let i = 0; i < pads.length; i++) raised.push(pads[i]);
+    return;
+  }
   let longest = 0;
   let iB = 0;
   for (let i = 0; i < 3; i++) {
@@ -1855,8 +1908,11 @@ function mergeRaisedPads(raised) {
 }
 
 function pushCap(ramps, raised, cap) {
-  const zone = slopedZone(cap.ramp);
-  if (zone) ramps.push(zone);
+  const list = cap.ramps || (cap.ramp ? [cap.ramp] : []);
+  for (let i = 0; i < list.length; i++) {
+    const zone = slopedZone(list[i]);
+    if (zone) ramps.push(zone);
+  }
   if (cap.raised) {
     const pad = raisedFromRing(cap.raised.ring, cap.raised.h);
     if (pad) raised.push(pad);
@@ -2043,7 +2099,7 @@ function contourPiecesAtStep(grid, step, leafCap) {
           p.h != null ? p.h : p.pts[0].z
         );
         if (pad) raised.push(pad);
-      } else if (p.pts.length === 3) coverFlatTriangle(p.pts, ramps);
+      } else if (p.pts.length === 3) coverFlatTriangle(p.pts, ramps, raised);
       continue;
     }
     const ramp = tryRampPoints(p.pts);
@@ -2251,8 +2307,7 @@ function contourError(grid, ramps, raised) {
   };
 }
 
-function cellRampMesh(grid, frame) {
-  const cols = grid.cols;
+function cellRampMesh(grid, frame) {  const cols = grid.cols;
   const rows = grid.rows;
   const raised = [];
   const pending = [];
@@ -2306,6 +2361,135 @@ function cellRampMesh(grid, frame) {
     sloped: sloped.length,
     slopeGapM: slopeCornerGap(sloped),
   };
+}
+
+function buildRaisedLayerClipboard(samples, frame, cols, rows, elevationAt) {
+  return raisedMeshFromGrid(lattice(samples, frame, cols, rows, elevationAt), frame);
+}
+
+function slopedMeshFromGrid(grid, frame) {
+  if (grid && !axisAlignedGrid(grid)) {
+    const contoured = contourMeshFromGrid(grid, frame);
+    if (contoured && contoured.sloped + contoured.raised > 0) return contoured;
+  }
+  return cellRampMesh(grid, frame);
+}
+
+/**
+ * Lower lattice nodes strictly inside a pond to that pond's shoreline.
+ * A pond counts only when it covers a whole terrain cell and has a bank
+ * outside that cell, so a puddle smaller than the mesh is left alone.
+ * Nodes are only lowered. The mesh is rebuilt with the same planar ramps.
+ * A ramp that would no longer be planar leaves the paste unchanged.
+ * @param {object} terrain
+ * @param {number[][][]} rings lon/lat rings
+ * @returns {number} nodes lowered
+ */
+function depressWaterBasins(terrain, rings) {
+  if (!terrain || terrain.pasteOmitted || !terrain.clipboard || !terrain.frame) return 0;
+  if (!terrain.elevationAt || !terrain.samples) return 0;
+  const cols = terrain.gridCols | 0;
+  const rows = terrain.gridRows | 0;
+  if (cols < 2 || rows < 2) return 0;
+  const list = [];
+  for (let i = 0; i < (rings || []).length; i++) {
+    const ring = rings[i];
+    if (ring && ring.length >= 4) list.push(ring);
+  }
+  if (!list.length) return 0;
+  const frame = terrain.frame;
+  const grid = lattice(terrain.samples, frame, cols, rows, terrain.elevationAt);
+  const inside = new Uint8Array(grid.nodes.length);
+  // Clipboard point-in-ring uses a meter epsilon. These nodes are degrees.
+  function lonLatInside(lon, lat, ring) {
+    let n = ring.length;
+    const a = ring[0];
+    const b = ring[n - 1];
+    if (a && b && a[0] === b[0] && a[1] === b[1]) n -= 1;
+    if (n < 3) return false;
+    let hit = false;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const yi = ring[i][1];
+      const yj = ring[j][1];
+      if (yi > lat !== yj > lat) {
+        const xi = ring[i][0];
+        const xj = ring[j][0];
+        const x = ((xj - xi) * (lat - yi)) / (yj - yi || 1e-20) + xi;
+        if (lon < x) hit = !hit;
+      }
+    }
+    return hit;
+  }
+  let lowered = 0;
+  for (let i = 0; i < list.length; i++) {
+    const ring = list[i];
+    inside.fill(0);
+    for (let r = 0; r <= rows; r++) {
+      for (let c = 0; c <= cols; c++) {
+        const lon = frame.west + (c / cols) * (frame.east - frame.west);
+        const lat = frame.south + (r / rows) * (frame.north - frame.south);
+        if (lonLatInside(lon, lat, ring)) inside[r * (cols + 1) + c] = 1;
+      }
+    }
+    let full = false;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const ids = [
+          r * (cols + 1) + c,
+          r * (cols + 1) + (c + 1),
+          (r + 1) * (cols + 1) + (c + 1),
+          (r + 1) * (cols + 1) + c,
+        ];
+        let nIn = 0;
+        for (let k = 0; k < 4; k++) if (inside[ids[k]]) nIn++;
+        if (nIn === 4) full = true;
+      }
+    }
+    if (!full) continue;
+    const stride = cols + 1;
+    const shore = new Uint8Array(inside.length);
+    let bank = Infinity;
+    for (let r = 0; r <= rows; r++) {
+      for (let c = 0; c <= cols; c++) {
+        const id = r * stride + c;
+        if (!inside[id]) continue;
+        const edge =
+          (c > 0 && !inside[id - 1]) ||
+          (c < cols && !inside[id + 1]) ||
+          (r > 0 && !inside[id - stride]) ||
+          (r < rows && !inside[id + stride]);
+        if (!edge) continue;
+        shore[id] = 1;
+        const z = grid.nodes[id].zRel;
+        if (z < bank) bank = z;
+      }
+    }
+    if (!(bank < Infinity)) continue;
+    for (let n = 0; n < inside.length; n++) {
+      if (!inside[n] || shore[n]) continue;
+      const node = grid.nodes[n];
+      if (node.zRel > bank + 1e-6) {
+        node.zRel = bank;
+        node.z = grid.minZ + bank;
+        lowered++;
+      }
+    }
+  }
+  if (!lowered) return 0;
+  const raisedStyle = terrain.terrainStyle === "raised";
+  const mesh = raisedStyle ? raisedMeshFromGrid(grid, frame) : slopedMeshFromGrid(grid, frame);
+  if (!mesh || !mesh.clip) return 0;
+  const floors = mesh.clip.slopedFloors || [];
+  for (let i = 0; i < floors.length; i++) {
+    const ring = floors[i].area && floors[i].area.coordinates && floors[i].area.coordinates[0];
+    if (ring && !planarSlopedRamp(ring)) return 0;
+  }
+  terrain.clipboard = mesh.clip;
+  terrain.raised = mesh.raised;
+  terrain.sloped = mesh.sloped;
+  terrain.slopeGapM = mesh.slopeGapM || 0;
+  if (mesh.bandM != null) terrain.bandM = mesh.bandM;
+  return lowered;
 }
 
 /**
@@ -3609,6 +3793,7 @@ module.exports = {
   RAISED_KEYS,
   SLOPED_KEYS,
   terrainFromSamples,
+  depressWaterBasins,
   pasteableQuad,
   planarSlopedRamp,
   slopeCornerGap,
