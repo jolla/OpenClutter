@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.94** on `dev` — Details counts only the roofs that shipped when a dev page raises the area cap. Tree slots are not counted as buildings. The badge stays (`dev · v1.1.94`).
+
 **v1.1.93** on `dev` — A dev page can raise the area cap with ?areaCap= from 982 up to 5000. Details names the cap. Extra slots go to buildings, trees, bridges, and guideways. The zip stays under the download limit. The badge stays (`dev · v1.1.93`).
 
 **v1.1.92** on `dev` — A large draw reads a few Overture row groups at once, and a street-map tile that does not answer is dropped after 10 seconds. The badge stays (`dev · v1.1.92`).

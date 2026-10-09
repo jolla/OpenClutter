@@ -925,6 +925,14 @@ describe("elevated rail guideways", () => {
     assert.ok(wide.stats.attenuationAreasEmitted <= 1500);
     assert.match(wide.stats.summary, /Area cap 1500 \(test override\)\./);
     assert.match(tight.stats.summary, /Area cap 982\./);
+    assert.match(wide.stats.summary, new RegExp("Buildings " + wide.stats.openIntentBuildingAreas + " kept"));
+    assert.equal(
+      wide.stats.openIntentBuildingAreas +
+        wide.stats.openIntentTreeAreas +
+        wide.stats.guidewayAreas +
+        wide.stats.bridgeAreas,
+      wide.stats.attenuationAreasEmitted
+    );
     assert.equal(/test override/.test(tight.stats.summary), false);
   });
 });
