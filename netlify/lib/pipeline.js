@@ -29,7 +29,7 @@ const { dedupeStackedFootprints } = require("./conflate");
 const { footprintRings } = require("./building-shape");
 const polygonClipping = require("polygon-clipping");
 const { piecesForFeature } = require("./roof-form");
-const { zipStore } = require("./zip-store");
+const { zipUnderLimit } = require("./zip-store");
 const { demUnderFootprint, normalizeTerrainResolution, GLO30_CREDIT, LIFT_LOCAL_M } = require("./terrain");
 const { version: OPENCLUTTER_VERSION } = require("./version");
 const { applyNlsBuildingHeights, NLS_CREDIT, HEIGHT_SOURCE } = require("./nls-building-height");
@@ -53,6 +53,9 @@ const MIN_OI_SPAN_M = 3;
  * or a measured-height custom of that shape, and take whatever slots remain.
  */
 const MAX_ATTENUATION_AREAS = 982;
+/** Same byte ceiling as export-jobs ZIP_DOWNLOAD_MAX. A stored zip past this is deflated. */
+const ZIP_DOWNLOAD_MAX = 4400000;
+const AREA_CAP_MAX = 5000;
 const OPENINTENT_VERSION = "2.0.1";
 const STOCK_MATERIAL_NAMES = OI_BUILDING_NAMES.slice();
 
@@ -283,7 +286,83 @@ function coverageSummary(stats) {
   if (stats && stats.includeBridges) {
     line += " Bridges " + (stats.bridgeAreas || 0) + ".";
   }
+  const cap = stats && stats.areaCap > 0 ? stats.areaCap | 0 : MAX_ATTENUATION_AREAS;
+  line +=
+    stats && stats.areaCapOverride
+      ? " Area cap " + cap + " (test override)."
+      : " Area cap " + cap + ".";
   return line;
+}
+
+/**
+ * Dev-only area cap from the page query or the export body.
+ * An integer from 982 through 5000 is kept. Anything else is ignored
+ * so the export stays at 982. 6000 is not clamped down to 5000.
+ */
+function parseAreaCapOverride(value) {
+  if (value == null || value === "" || typeof value === "boolean") return 0;
+  const text = typeof value === "number" ? String(value) : String(value).trim();
+  if (!/^\d+$/.test(text)) return 0;
+  const n = Number(text);
+  if (n < MAX_ATTENUATION_AREAS || n > AREA_CAP_MAX) return 0;
+  return n;
+}
+
+/**
+ * Ways and segments to keep when the test cap is above 982.
+ * The default 40-way / 80-segment caps would starve a larger deck hold.
+ * 0 means those defaults stay in place.
+ */
+function raisedDeckCap(areaCap) {
+  if (!(areaCap > MAX_ATTENUATION_AREAS)) return 0;
+  const extra = areaCap - MAX_ATTENUATION_AREAS;
+  return Math.min(800, Math.max(160, Math.floor(extra * 0.2)));
+}
+
+/**
+ * Slots above 982 are split before buildings take them.
+ * About 15 percent of the extra (at least 96 when decks exist) is held
+ * for guideways and bridges. About 35 percent is held for trees.
+ * Water and parking take a small prefix of the extra. Buildings keep
+ * the original 982 plus whatever extra is left. Unfilled holds go back
+ * to trees, then decks, then buildings, so a higher cap still fills.
+ */
+function raisedAreaHolds(areaCap, counts) {
+  const base = MAX_ATTENUATION_AREAS;
+  const extra = Math.max(0, (areaCap | 0) - base);
+  const buildings = counts && counts.buildings > 0 ? counts.buildings | 0 : 0;
+  const treeAreas = counts && counts.treeAreas > 0 ? counts.treeAreas | 0 : 0;
+  const deckCount = counts && counts.deckCount > 0 ? counts.deckCount | 0 : 0;
+  const waterParking = counts && counts.waterParking > 0 ? counts.waterParking | 0 : 0;
+  let waterHold = Math.min(waterParking, extra);
+  let rest = extra - waterHold;
+  const deckWant = Math.max(96, Math.floor(extra * 0.15));
+  let deckHold = Math.min(deckCount, rest, deckWant);
+  rest -= deckHold;
+  const treeWant = Math.floor(extra * 0.35);
+  let treeHold = Math.min(treeAreas, rest, treeWant);
+  rest -= treeHold;
+  let buildingLimit = Math.min(buildings, base + rest);
+  let spare = (areaCap | 0) - (buildingLimit + treeHold + deckHold + waterHold);
+  if (spare > 0) {
+    const addTrees = Math.min(spare, Math.max(0, treeAreas - treeHold));
+    treeHold += addTrees;
+    spare -= addTrees;
+  }
+  if (spare > 0) {
+    const addDecks = Math.min(spare, Math.max(0, deckCount - deckHold));
+    deckHold += addDecks;
+    spare -= addDecks;
+  }
+  if (spare > 0) {
+    const addWater = Math.min(spare, Math.max(0, waterParking - waterHold));
+    waterHold += addWater;
+    spare -= addWater;
+  }
+  if (spare > 0) {
+    buildingLimit += Math.min(spare, Math.max(0, buildings - buildingLimit));
+  }
+  return { buildingLimit, treeHold, deckHold, waterHold };
 }
 
 const TERRAIN_README =
@@ -1801,7 +1880,8 @@ function prioritizeRoofs(features, frame) {
   return out;
 }
 
-function footprintsToClutter(features, frame, affine, slopeTop) {
+function footprintsToClutter(features, frame, affine, slopeTop, opts) {
+  const buildingCeiling = opts && opts.buildingCeiling > 0 ? opts.buildingCeiling | 0 : MAX_BUILDINGS;
   const separated = dedupeStackedFootprints(features || []);
   const list = prioritizeRoofs(separated.features, frame);
   borrowNearbyHeights(list, frame);
@@ -1863,7 +1943,7 @@ function footprintsToClutter(features, frame, affine, slopeTop) {
       for (const ring of rings) {
         const parts = slopeTop && typeof slopeTop.split === "function" ? slopeTop.split(ring) : [ring];
         for (let p = 0; p < parts.length; p++) {
-          if (oiAreas.length >= MAX_BUILDINGS) {
+          if (oiAreas.length >= buildingCeiling) {
             stats.droppedCap++;
             continue;
           }
@@ -2046,6 +2126,7 @@ function buildClutter({
   bridgeFeatures,
   includeBridges,
   maxAttenuationAreas,
+  areaCapOverride,
 }) {
   const featureList = footprintsGeojson?.features || [];
   if (Array.isArray(warnings)) {
@@ -2070,7 +2151,11 @@ function buildClutter({
   const { name, slug } = siteName(rawName);
   const imgName = `${slug}.jpg`;
   const slopeTop = demUnderFootprint(terrain);
-  const fp = footprintsToClutter(featureList, frame, affine, slopeTop);
+  const areaCap = maxAttenuationAreas > 0 ? maxAttenuationAreas | 0 : MAX_ATTENUATION_AREAS;
+  const capIsOverride = areaCapOverride === true;
+  const buildingCeiling =
+    areaCap > MAX_ATTENUATION_AREAS ? Math.max(MAX_BUILDINGS, areaCap) : MAX_BUILDINGS;
+  const fp = footprintsToClutter(featureList, frame, affine, slopeTop, { buildingCeiling });
   const foliageOn = includeFoliage === true;
   const veg = foliageOn
     ? treePairsFromPoints(treePoints || [], frame, fp.aabbs, affine, {
@@ -2111,7 +2196,7 @@ function buildClutter({
   // A poisoned or drifted vegetation material fails makeOiArea and that ring
   // is omitted, so it cannot empty the buildings.
   const treeOi = treesToOi(veg.oiAreas, frame.imgW, frame.imgH, frame.mpuX);
-  const areaCap = maxAttenuationAreas > 0 ? maxAttenuationAreas | 0 : MAX_ATTENUATION_AREAS;
+  const deckCap = raisedDeckCap(areaCap);
   let waterAreas = 0;
   let parkingAreas = 0;
   let wallAreas = 0;
@@ -2153,6 +2238,10 @@ function buildClutter({
       slopeTop,
       buildings,
       parkingRings: includeParking === true && outdoorOn && outdoorMiss !== true ? fp.parkingRings : [],
+      segmentCaps:
+        deckCap > 0
+          ? { guideway: deckCap, bridge: deckCap, footbridge: Math.max(12, Math.floor(deckCap / 5)) }
+          : undefined,
     });
     converted = outdoorToOi(planned.items, frame.imgW, frame.imgH, frame.mpuX);
   }
@@ -2167,15 +2256,38 @@ function buildClutter({
     if (kind === "water" || kind === "parking") waterParking++;
     else if (kind === "guideway" || kind === "bridge") deckCount++;
   }
-  const buildingSlots = Math.min(fp.oiAreas.length, areaCap);
-  const leftover = Math.max(0, areaCap - buildingSlots);
   // Trees used to take every slot the buildings left. A dense campus then
   // reported Guideways 0. Hold the rail and the road decks first, then water.
+  // Above 982, that leftover is zero because buildings fill the cap, so the
+  // extra slots are reserved before the buildings take them.
   const DECK_HOLD_MAX = 96;
-  const deckHold = Math.min(deckCount, DECK_HOLD_MAX, leftover);
-  const waterHold = Math.min(waterParking, Math.max(0, leftover - deckHold));
-  const reserveFit = deckHold + waterHold;
-  const capped = capBuildingsAndTrees(fp.oiAreas, treeOi.areas, treeOi.kinds, areaCap, reserveFit);
+  let reserveFit = 0;
+  let outdoorFront = null;
+  let capped;
+  if (areaCap > MAX_ATTENUATION_AREAS) {
+    const holds = raisedAreaHolds(areaCap, {
+      buildings: fp.oiAreas.length,
+      treeAreas: treeOi.areas.length,
+      deckCount,
+      waterParking,
+    });
+    const buildings = fp.oiAreas.slice(0, holds.buildingLimit);
+    capped = capBuildingsAndTrees(
+      buildings,
+      treeOi.areas,
+      treeOi.kinds,
+      holds.buildingLimit + holds.treeHold,
+      0
+    );
+    outdoorFront = holds.waterHold;
+  } else {
+    const buildingSlots = Math.min(fp.oiAreas.length, areaCap);
+    const leftover = Math.max(0, areaCap - buildingSlots);
+    const deckHold = Math.min(deckCount, DECK_HOLD_MAX, leftover);
+    const waterHold = Math.min(waterParking, Math.max(0, leftover - deckHold));
+    reserveFit = deckHold + waterHold;
+    capped = capBuildingsAndTrees(fp.oiAreas, treeOi.areas, treeOi.kinds, areaCap, reserveFit);
+  }
   if (capped.droppedBuildings > 0 && Array.isArray(warnings)) {
     const keptRoofs = Math.min(fp.oiAreas.length, capped.areas.length);
     warnings.push(
@@ -2197,7 +2309,12 @@ function buildClutter({
       if (u.index < buildingEmitted && areas[u.index]) areas[u.index].area_material = u.material;
     }
     const room = Math.max(0, areaCap - areas.length);
-    const fit = fitOutdoorBudget(converted.areas, converted.kinds, room);
+    const fit = fitOutdoorBudget(
+      converted.areas,
+      converted.kinds,
+      room,
+      outdoorFront == null ? undefined : { front: outdoorFront }
+    );
     areas = areas.concat(fit.items);
     for (let i = 0; i < fit.kinds.length; i++) {
       const k = fit.kinds[i];
@@ -2297,6 +2414,8 @@ function buildClutter({
     poleAreas,
     guidewayAreas,
     bridgeAreas,
+    areaCap,
+    areaCapOverride: capIsOverride,
     openintentVersion: OPENINTENT_VERSION,
     openclutterVersion: OPENCLUTTER_VERSION,
     coordinateUnit: "pixels",
@@ -2340,10 +2459,13 @@ function buildClutter({
   if (imgBuf) {
     // Hamina OpenIntent import reads the JSON and the aerial. Clipboard JSON,
     // the terrain paste, and the debug notes stay out of this zip.
-    zip = zipStore([
-      { name: `openIntent_${slug}.json`, data: Buffer.from(JSON.stringify(oi)) },
-      { name: "images/" + imgName, data: imgBuf },
-    ]);
+    zip = zipUnderLimit(
+      [
+        { name: `openIntent_${slug}.json`, data: Buffer.from(JSON.stringify(oi)) },
+        { name: "images/" + imgName, data: imgBuf },
+      ],
+      ZIP_DOWNLOAD_MAX
+    );
   }
   return {
     name,
@@ -2367,6 +2489,11 @@ module.exports = {
   MAX_AREA_M2,
   MAX_BUILDINGS,
   MAX_ATTENUATION_AREAS,
+  AREA_CAP_MAX,
+  ZIP_DOWNLOAD_MAX,
+  parseAreaCapOverride,
+  raisedDeckCap,
+  raisedAreaHolds,
   MIN_OI_SPAN_PX,
   MIN_OI_SPAN_M,
   OPENINTENT_VERSION,
