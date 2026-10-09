@@ -1358,6 +1358,7 @@ async function handleClutter(event) {
       includeFoliage && !clientHitsEarly.length && !devHost
         ? fetchCanopyTrees(frame, (url) => fetchOk(url, "canopy"), { maxTrees: maxTreesForBbox(frame) }).catch(() => null)
         : null;
+    reportProgress({ stage: "Fetching footprints" });
     const core = Promise.all([
       fetchMsFootprints(frame, (url) => fetchOk(url, "footprints", coreBudget), { pad: false, budgetMs: coreBudget }),
       globalJob,

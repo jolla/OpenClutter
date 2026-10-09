@@ -22,6 +22,10 @@ const GROUP_STRIDE = 26;
 const MAX_GROUPS = 4;
 const MAX_GROUPS_LARGE = 12;
 const LARGE_GROUP_SIDE_M = 2500;
+// Same bound as the Microsoft tile. A 10 km box can match tens of thousands
+// of Overture roofs, and keeping all of them alongside that tile exhausts
+// the background function before a zip is written.
+const FOOTPRINT_KEEP = 4000;
 const QUERY_PAD_DEG = 0.002;
 
 let cached = null;
@@ -203,14 +207,56 @@ function featureFromRow(row, bbox) {
   return { type: "Feature", properties, geometry };
 }
 
-function featuresFromRows(rows, bbox) {
+function ringAreaAbs(ring) {
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    a += +ring[j][0] * +ring[i][1] - +ring[i][0] * +ring[j][1];
+  }
+  return Math.abs(a);
+}
+
+function footprintScore(feature) {
+  const geom = feature && feature.geometry;
+  let area = 0;
+  if (geom && geom.type === "Polygon" && geom.coordinates && geom.coordinates[0]) {
+    area = ringAreaAbs(geom.coordinates[0]);
+  } else if (geom && geom.type === "MultiPolygon") {
+    const polys = geom.coordinates || [];
+    for (let i = 0; i < polys.length; i++) {
+      if (polys[i] && polys[i][0]) area += ringAreaAbs(polys[i][0]);
+    }
+  }
+  const h = Number(feature && feature.properties && feature.properties.height);
+  const height = h > 2 && h < 400 ? h : 0;
+  return area * Math.max(1, height / 10);
+}
+
+function keepLargestFootprints(features, keep) {
+  const n = keep | 0;
+  if (!(n > 0) || features.length <= n) return features;
+  const scored = new Array(features.length);
+  for (let i = 0; i < features.length; i++) scored[i] = { f: features[i], s: footprintScore(features[i]) };
+  scored.sort((a, b) => b.s - a.s);
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) out[i] = scored[i].f;
+  return out;
+}
+
+function featuresFromRows(rows, bbox, keep) {
+  const cap = keep > 0 ? keep | 0 : 0;
   const features = [];
   const list = rows || [];
   for (let i = 0; i < list.length; i++) {
     const f = featureFromRow(list[i], bbox);
-    if (f) features.push(f);
+    if (!f) continue;
+    features.push(f);
+    if (cap && features.length >= cap * 2) {
+      const kept = keepLargestFootprints(features, cap);
+      features.length = 0;
+      for (let k = 0; k < kept.length; k++) features.push(kept[k]);
+    }
   }
-  return features;
+  return cap ? keepLargestFootprints(features, cap) : features;
 }
 
 function failAborted() {
@@ -281,23 +327,40 @@ async function fetchOvertureFootprints(frame, opts) {
       // Same-file row groups in parallel. A south-heavy Vegas box reads the
       // southern neighbor first; waiting for it to finish before the Sphere
       // group is how a late abort drops the dome. A group that aborts does
-      // not cancel a sibling that already parsed.
-      const results = await Promise.all(
-        gs.map(async (g) => {
-          if (signal.aborted) return "abort";
-          try {
-            const rows = await readGroupRows(reader, source, g, rowFilter, signal);
-            const chunk = featuresFromRows(rows, filterBox);
-            for (const f of chunk) features.push(f);
-            groupsRead++;
-            return "ok";
-          } catch (e) {
-            if (signal.aborted || isAbortError(e)) return "abort";
-            throw e;
+      // not cancel a sibling that already parsed. A large draw reads one
+      // group at a time and keeps the largest roofs, so the list cannot grow
+      // to every building in the box.
+      const large = spanSideM(bbox) > LARGE_GROUP_SIDE_M;
+      const consume = async (g) => {
+        if (signal.aborted) return "abort";
+        try {
+          const rows = await readGroupRows(reader, source, g, rowFilter, signal);
+          const chunk = featuresFromRows(rows, filterBox, large ? FOOTPRINT_KEEP : 0);
+          for (const f of chunk) features.push(f);
+          if (large && features.length > FOOTPRINT_KEEP) {
+            const kept = keepLargestFootprints(features, FOOTPRINT_KEEP);
+            features.length = 0;
+            for (let i = 0; i < kept.length; i++) features.push(kept[i]);
           }
-        })
-      );
-      if (results.some((r) => r === "abort")) partial = true;
+          groupsRead++;
+          return "ok";
+        } catch (e) {
+          if (signal.aborted || isAbortError(e)) return "abort";
+          throw e;
+        }
+      };
+      if (large) {
+        for (let g = 0; g < gs.length; g++) {
+          const status = await consume(gs[g]);
+          if (status === "abort") {
+            partial = true;
+            break;
+          }
+        }
+      } else {
+        const results = await Promise.all(gs.map(consume));
+        if (results.some((r) => r === "abort")) partial = true;
+      }
     }
   } catch (e) {
     if (features.length && (signal.aborted || isAbortError(e))) {
