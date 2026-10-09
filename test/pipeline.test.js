@@ -1239,14 +1239,18 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /function syncMapQuality/);
     assert.match(app, /imageryQuality: devPage\(\) \? selectedImageryQuality\(\) : undefined/);
     assert.match(app, /function areaCapOverride\(\)/);
+    assert.match(app, /function terrainFloorsOverride\(\)/);
     assert.match(app, /function jsonBudgetOverride\(\)/);
     assert.match(app, /if \(!devPage\(\)\) return undefined/);
     assert.match(app, /areaCap: areaCapOverride\(\)/);
     assert.match(app, /jsonBudget: jsonBudgetOverride\(\)/);
+    assert.match(app, /terrainFloors: terrainFloorsOverride\(\)/);
+    assert.match(app, /OpenClutterExport\.terrainPasteLine/);
     assert.equal(/\u2014/.test(app.slice(app.indexOf("function areaCapOverride"), app.indexOf("function selectedImageryQuality"))), false);
     const clutterSrc = fs.readFileSync(path.join(__dirname, "../netlify/functions/clutter.js"), "utf8");
     assert.match(clutterSrc, /const areaCapOverride = devHost \? parseAreaCapOverride\(body\.areaCap\) : 0/);
     assert.match(clutterSrc, /const jsonBudgetOverride = devHost \? parseJsonBudgetOverride\(body\.jsonBudget\) : 0/);
+    assert.match(clutterSrc, /const terrainFloors = devHost \? parseTerrainFloorOverride\(body\.terrainFloors\) : 0/);
     assert.match(app, /const ESRI_TILE_MAX_ZOOM = 23/);
     assert.match(app, /const mapZoom = devPage\(\) \? ESRI_TILE_MAX_ZOOM : 18/);
     assert.match(app, /L\.map\("map", \{ maxZoom: mapZoom \}\)/);

@@ -40,6 +40,20 @@ function areaCapOverride() {
   return n;
 }
 
+function terrainFloorsOverride() {
+  if (!devPage()) return undefined;
+  let raw = "";
+  try {
+    raw = new URLSearchParams(location.search || "").get("terrainFloors");
+  } catch (err) {
+    return undefined;
+  }
+  if (raw == null || !/^\d+$/.test(raw)) return undefined;
+  const n = Number(raw);
+  if (n < 100 || n > 3000) return undefined;
+  return n;
+}
+
 function jsonBudgetOverride() {
   if (!devPage()) return undefined;
   let raw = "";
@@ -750,6 +764,7 @@ async function fetchTerrainPaste() {
     includeTerrain: true,
     terrainResolution: "auto",
     terrainStyle: "sloped",
+    terrainFloors: terrainFloorsOverride(),
     format: "terrain",
   });
   let last = { terrainClipboard: null, terrainStatus: "Terrain did not return. Export again." };
@@ -781,6 +796,7 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
   rememberTerrain(data, includeTerrain);
   const summary = (data.stats && data.stats.summary) || "";
   const terrainNote = terrainOff ? "Terrain off" : data.terrainStatus || "";
+  const pasteLine = terrainOff ? "" : OpenClutterExport.terrainPasteLine(data && data.terrainClipboard);
   const gpsNote = terrainPasteJson
     ? "Two GPS points, the southwest and northeast corners of the imported map, are on the paste."
     : "";
@@ -791,6 +807,7 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
   lines.push("Import this zip in Hamina (Projects → Import → OpenIntent).");
   if (fallbackNote) lines.push(fallbackNote);
   if (terrainNote) lines.push(terrainNote);
+  if (pasteLine) lines.push(pasteLine);
   if (gpsNote) lines.push(gpsNote);
   if (summary) lines.push(summary);
   for (let i = 0; i < warnLines.length; i++) lines.push(warnLines[i]);
@@ -833,6 +850,7 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
       imageryQuality: devPage() ? selectedImageryQuality() : undefined,
       areaCap: areaCapOverride(),
       jsonBudget: jsonBudgetOverride(),
+      terrainFloors: terrainFloorsOverride(),
       trees: foliage ? trees : [],
       treesSource: foliage ? treesSource : "none",
       canopyHits: foliage && canopyHits && canopyHits.length ? canopyHits : undefined,
@@ -930,6 +948,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       imageryQuality: devPage() ? selectedImageryQuality() : undefined,
       areaCap: areaCapOverride(),
       jsonBudget: jsonBudgetOverride(),
+      terrainFloors: terrainFloorsOverride(),
       trees: foliage ? trees : [],
       treesSource: foliage ? treesSource : "none",
       canopyHits: foliage && canopyHits && canopyHits.length ? canopyHits : undefined,

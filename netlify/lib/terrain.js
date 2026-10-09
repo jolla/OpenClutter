@@ -155,6 +155,51 @@ const TERRAIN_PASTE_JSON_MAX = maxPasteJsonForCompanion(200 * 1024);
  * response budget; this only stops a 200×200 request from being built first.
  */
 const PASTE_BUILD_MAX_QUADS = 12000;
+/**
+ * Hamina pastes the mesh in one synchronous pass. A 20×20 grid (about 400
+ * floors and well under 300 KB) imported. The adaptive mesh at one-meter
+ * bands did not: thousands of floors and a multi-megabyte clipboard locked
+ * the browser, then the mutation timed out.
+ */
+const TERRAIN_PASTE_MAX_FLOORS = 400;
+const TERRAIN_PASTE_MAX_BYTES = 300 * 1024;
+/** Dev-only ?terrainFloors= probe. Outside this range the default cap stays. */
+const TERRAIN_FLOORS_MIN = 100;
+const TERRAIN_FLOORS_MAX = 3000;
+/** Floor budget for the mesh currently being built. terrainFromSamples sets it. */
+let activePasteFloors = TERRAIN_PASTE_MAX_FLOORS;
+
+function terrainPasteFloorCap(opts) {
+  const raw = opts && opts.terrainFloors;
+  if (raw == null || raw === "" || typeof raw === "boolean") return TERRAIN_PASTE_MAX_FLOORS;
+  const text = typeof raw === "number" ? String(raw) : String(raw).trim();
+  if (!/^\d+$/.test(text)) return TERRAIN_PASTE_MAX_FLOORS;
+  const n = Number(text);
+  if (n < TERRAIN_FLOORS_MIN || n > TERRAIN_FLOORS_MAX) return TERRAIN_PASTE_MAX_FLOORS;
+  return n;
+}
+
+/**
+ * Dev-only floor cap from the page query or the export body.
+ * An integer from 100 through 3000 is kept. Anything else is ignored
+ * so the paste stays at 400 floors. 50 and 4000 are not clamped.
+ */
+function parseTerrainFloorOverride(value) {
+  if (value == null || value === "" || typeof value === "boolean") return 0;
+  const text = typeof value === "number" ? String(value) : String(value).trim();
+  if (!/^\d+$/.test(text)) return 0;
+  const n = Number(text);
+  if (n < TERRAIN_FLOORS_MIN || n > TERRAIN_FLOORS_MAX) return 0;
+  return n;
+}
+
+/** Byte ceiling. A floor probe above 400 may exceed 300 KB so the ceiling can be found. */
+function pasteByteCap() {
+  if (activePasteFloors > TERRAIN_PASTE_MAX_FLOORS) {
+    return Math.max(TERRAIN_PASTE_MAX_BYTES, activePasteFloors * 480);
+  }
+  return TERRAIN_PASTE_MAX_BYTES;
+}
 
 function pasteJsonCeiling(opts) {
   if (opts && opts.pasteJsonMax != null && opts.pasteJsonMax !== "" && Number.isFinite(+opts.pasteJsonMax)) {
@@ -532,8 +577,9 @@ function round1(n) {
   return Math.round(n * 10) / 10;
 }
 
+/** Clipboard meters, rounded to 1 cm. Shared corners use the same quantize. */
 function round3(n) {
-  return Math.round(n * 1000) / 1000;
+  return Math.round(n * 100) / 100;
 }
 
 function sameXy(a, b) {
@@ -687,14 +733,16 @@ function meterAxes(frame, preset, squareCells) {
 }
 
 /**
- * Quads that fit the first-pass paste budget: the build cap, and a rough
- * bytes-per-quad reading of the JSON ceiling. The byte loop still confirms.
+ * Floors the paste may contain. The hard cap is 400 floors and about 300 KB.
+ * A tight export JSON ceiling can force fewer. A dev floor probe can raise
+ * the floor count (and the byte ceiling that goes with it).
  */
 function pastePlanQuadBudget(jsonMax) {
   const max =
     jsonMax != null && jsonMax !== "" && Number.isFinite(+jsonMax) ? Math.max(0, +jsonMax) : TERRAIN_PASTE_JSON_MAX;
   const rough = Math.max(1, Math.floor(max / 240));
-  return Math.min(PASTE_BUILD_MAX_QUADS, rough);
+  const fromBytes = Math.max(1, Math.floor(pasteByteCap() / 240));
+  return Math.max(1, Math.min(PASTE_BUILD_MAX_QUADS, rough, activePasteFloors, fromBytes));
 }
 
 function reportedCellM(preset, reliefM, highLat, widthM, lengthM, cols, rows) {
@@ -1807,7 +1855,11 @@ function refineContourQuads(grid, step, leafCapOverride) {
   const leafCap =
     leafCapOverride > 0
       ? Math.max(baseLeaves, leafCapOverride | 0)
-      : Math.min(6000, Math.max(baseLeaves, Math.floor(budget / 2)));
+      : Math.max(baseLeaves, Math.min(budget, baseLeaves));
+  // Error splits stop short of the leaf cap so a T-junction can still be
+  // closed. balanceContourJunctions spends that remainder.
+  const extra = Math.max(0, leafCap - baseLeaves);
+  const errCap = baseLeaves + Math.floor(extra * 0.7);
   const leaves = [];
   for (let r = 0; r < grid.rows; r++) {
     for (let c = 0; c < grid.cols; c++) {
@@ -1820,7 +1872,7 @@ function refineContourQuads(grid, step, leafCapOverride) {
     }
   }
   let guard = 0;
-  while (leaves.length + 3 <= leafCap && guard++ < 8000) {
+  while (leaves.length + 3 <= errCap && guard++ < 8000) {
     let worst = -1;
     let worstErr = errTarget;
     for (let i = 0; i < leaves.length; i++) {
@@ -1842,6 +1894,9 @@ function refineContourQuads(grid, step, leafCapOverride) {
       });
     }
   }
+  // Close every T-junction even when that uses more leaves than the error
+  // split asked for. The caller drops the mesh if the floor count then
+  // passes the paste budget.
   balanceContourJunctions(leaves, leafCap);
   return leaves.map(function (leaf) {
     return leaf.corners;
@@ -2131,24 +2186,117 @@ function contourVertexGap(floors) {
 }
 
 /**
+ * Largest |dz| where a ramp corner sits on another ramp's edge but is not
+ * that edge's endpoint. A regular lattice is 0. A split that balance did
+ * not meet shows up here.
+ */
+function contourJunctionGap(floors) {
+  const rings = [];
+  for (let i = 0; i < (floors || []).length; i++) {
+    const ring = floors[i].area && floors[i].area.coordinates && floors[i].area.coordinates[0];
+    if (ring && ring.length >= 4 && ring[0].length >= 3) rings.push(ring);
+  }
+  if (rings.length < 2) return 0;
+  const cell = 8;
+  const buckets = new Map();
+  for (let i = 0; i < rings.length; i++) {
+    for (let e = 0; e < 4; e++) {
+      const a = rings[i][e];
+      const b = rings[i][(e + 1) % 4];
+      const minX = Math.min(a[0], b[0]);
+      const maxX = Math.max(a[0], b[0]);
+      const minY = Math.min(a[1], b[1]);
+      const maxY = Math.max(a[1], b[1]);
+      for (let x = Math.floor((minX - 0.05) / cell); x <= Math.floor((maxX + 0.05) / cell); x++) {
+        for (let y = Math.floor((minY - 0.05) / cell); y <= Math.floor((maxY + 0.05) / cell); y++) {
+          const key = x + "," + y;
+          let list = buckets.get(key);
+          if (!list) {
+            list = [];
+            buckets.set(key, list);
+          }
+          list.push(i, e);
+        }
+      }
+    }
+  }
+  let worst = 0;
+  for (let i = 0; i < rings.length; i++) {
+    for (let k = 0; k < 4; k++) {
+      const p = rings[i][k];
+      const cand = buckets.get(Math.floor(p[0] / cell) + "," + Math.floor(p[1] / cell));
+      if (!cand) continue;
+      for (let e = 0; e < cand.length; e += 2) {
+        const ri = cand[e];
+        if (ri === i) continue;
+        const edge = cand[e + 1];
+        const a = rings[ri][edge];
+        const b = rings[ri][(edge + 1) % 4];
+        const dx = b[0] - a[0];
+        const dy = b[1] - a[1];
+        const len2 = dx * dx + dy * dy;
+        if (len2 < 1e-4) continue;
+        const t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2;
+        if (t <= 0.02 || t >= 0.98) continue;
+        const d = Math.hypot(p[0] - (a[0] + dx * t), p[1] - (a[1] + dy * t));
+        if (d > 0.02) continue;
+        const dz = Math.abs(p[2] - (a[2] + (b[2] - a[2]) * t));
+        if (dz > worst) worst = dz;
+      }
+    }
+  }
+  return worst;
+}
+
+function contourCellSpan(grid, c, r) {
+  const zs = [at(grid, c, r).zRel, at(grid, c + 1, r).zRel, at(grid, c + 1, r + 1).zRel, at(grid, c, r + 1).zRel];
+  return Math.max(...zs) - Math.min(...zs);
+}
+
+/**
+ * Lower bound on pieces at this band: one piece per band per cell. A step
+ * whose lower bound already exceeds the floor cap is not built.
+ */
+function contourStepLoad(grid, step) {
+  let n = 0;
+  const band = step > 0 ? step : 1;
+  for (let r = 0; r < grid.rows; r++) {
+    for (let c = 0; c < grid.cols; c++) {
+      const span = contourCellSpan(grid, c, r);
+      n += span < SLOPED_FLAT_M ? 1 : Math.max(1, Math.ceil(span / band));
+    }
+  }
+  return n;
+}
+
+/**
  * Contour bands, the way the native pit paste is built: each ramp's low edge
  * and high edge are one height, and the next ramp picks up that same edge.
- * Cells that are not a plane are split first. The finest step that still fits
- * the paste budget is the one that ships.
+ * The finest band is 3 m on a mild hill and 5 m when a cell already spans
+ * tens of meters. One-meter bands filled thousands of floors. Coarser steps,
+ * including one band for the whole cell, are the fallback inside the floor cap.
  */
 function contourStepsForGrid(grid) {
   let maxCell = 0;
   for (let r = 0; r < grid.rows; r++) {
     for (let c = 0; c < grid.cols; c++) {
-      const zs = [at(grid, c, r).zRel, at(grid, c + 1, r).zRel, at(grid, c + 1, r + 1).zRel, at(grid, c, r + 1).zRel];
-      const span = Math.max(...zs) - Math.min(...zs);
+      const span = contourCellSpan(grid, c, r);
       if (span > maxCell) maxCell = span;
     }
   }
-  // Half a meter on a mild hill, one meter on a steep cell. Coarser steps are
-  // only the fallback when that many ramps would exceed the paste budget.
-  if (maxCell > 40) return [1, 2, 4, 8];
-  return [0.5, 1, 2, 4];
+  const ladder = maxCell > 40 ? [5, 10, 20, 40, 80, 160, 320] : [3, 5, 10, 20, 40, 80, 160];
+  const cover = Math.max(ladder[0], Math.ceil(maxCell));
+  const steps = [];
+  for (let i = 0; i < ladder.length; i++) {
+    if (ladder[i] < cover) steps.push(ladder[i]);
+  }
+  steps.push(cover);
+  return steps;
+}
+
+function contourPieceCount(pieces) {
+  if (!pieces) return 0;
+  return (pieces.ramps ? pieces.ramps.length : 0) + (pieces.raised ? pieces.raised.length : 0);
 }
 
 function contourMeshFromGrid(grid, frame) {
@@ -2157,21 +2305,37 @@ function contourMeshFromGrid(grid, frame) {
   const base = Math.max(1, grid.cols * grid.rows);
   let chosen = null;
   for (let i = 0; i < steps.length; i++) {
-    let cap = Math.min(6000, Math.max(base, Math.floor(budget / 2)));
-    for (let attempt = 0; attempt < 6; attempt++) {
-      const pieces = contourPiecesAtStep(grid, steps[i], cap);
-      const n = pieces.ramps.length + pieces.raised.length;
-      if (!n) break;
-      if (n <= budget) {
-        chosen = { pieces: pieces, step: steps[i] };
+    // One piece per band is a lower bound. Merges can land under the cap, so
+    // a step is still built when that bound is only somewhat past the budget.
+    if (contourStepLoad(grid, steps[i]) > budget * 2) continue;
+    let cap = base;
+    let pieces = contourPiecesAtStep(grid, steps[i], cap);
+    let n = contourPieceCount(pieces);
+    if (!n || n > budget) continue;
+    // The finest band that fits at the lattice spends leftover floors on the
+    // worst saddles. Binary search the leaf cap so one big split does not
+    // jump past the budget and leave the spare unused.
+    let lo = cap;
+    let hi = cap + Math.max(8, (budget - n) * 4);
+    let guard = 0;
+    while (n < budget && hi > lo + 3 && guard++ < 8) {
+      const mid = Math.max(lo + 4, Math.floor((lo + hi) / 2));
+      if (mid <= lo) break;
+      const trial = contourPiecesAtStep(grid, steps[i], mid);
+      const tn = contourPieceCount(trial);
+      if (tn > n && tn <= budget && contourJunctionGap(trial.ramps) <= 0.15) {
+        pieces = trial;
+        n = tn;
+        lo = mid;
+        cap = mid;
+      } else if (!(tn > n)) {
         break;
+      } else {
+        hi = mid;
       }
-      if (cap <= base) break;
-      const next = Math.max(base, Math.floor(cap / 2));
-      if (next === cap) break;
-      cap = next;
     }
-    if (chosen) break;
+    chosen = { pieces: pieces, step: steps[i] };
+    break;
   }
   if (!chosen) return null;
   const clip = emptyClipboard();
@@ -2498,16 +2662,23 @@ function depressWaterBasins(terrain, rings) {
  * the paste budget there instead of on the coarse lattice.
  */
 function denserContourLattice(samples, frame, cols, rows, elevationAt) {
+  const budget = Math.max(1, pastePlanQuadBudget());
   const n = samples && samples.length ? samples.length : 0;
   const side = Math.max(2, Math.round(Math.sqrt(Math.max(4, n))));
   const long = Math.max(cols, rows, 1);
-  if (side <= long + 1) return lattice(samples, frame, cols, rows, elevationAt);
+  if (side <= long + 1 || cols * rows >= budget) return lattice(samples, frame, cols, rows, elevationAt);
   const cap = 40;
   const aspect = cols / Math.max(1, rows);
   let c = Math.min(cap, Math.max(cols, Math.round(Math.sqrt(side * side * aspect))));
   let r = Math.min(cap, Math.max(rows, Math.round(side * side / Math.max(1, c))));
   c = Math.max(1, Math.min(cap, c));
   r = Math.max(1, Math.min(cap, r));
+  while (c * r > budget && (c > cols || r > rows)) {
+    if (c >= r && c > cols) c -= 1;
+    else if (r > rows) r -= 1;
+    else if (c > cols) c -= 1;
+    else break;
+  }
   return lattice(samples, frame, c, r, elevationAt);
 }
 
@@ -2538,8 +2709,21 @@ function buildTerrainClipboard(samples, frame, cols, rows, elevationAt, legacy) 
       if (step < bestStep - 1e-6 || (step === bestStep && err < bestErr)) best = contoured;
     }
     if (best) return best;
-    const fallback = contourMeshFromGrid(grid, frame);
-    if (fallback && fallback.sloped + fallback.raised > 0) return fallback;
+    // A 20×20 of steep cells can still exceed the floor cap at the coarsest
+    // band. Halve the lattice until a watertight contour fits.
+    let c = grid.cols;
+    let r = grid.rows;
+    let guard = 0;
+    while (guard++ < 6) {
+      const fitted = fitPasteAxes(c, r, Math.max(1, Math.floor((c * r) / 2)));
+      if (fitted[0] === c && fitted[1] === r) break;
+      c = fitted[0];
+      r = fitted[1];
+      const coarse = lattice(samples, frame, c, r, elevationAt);
+      if (axisAlignedGrid(coarse)) break;
+      const mesh = contourMeshFromGrid(coarse, frame);
+      if (contourFits(mesh, budget)) return mesh;
+    }
   }
   return cellRampMesh(grid, frame);
 }
@@ -2550,6 +2734,16 @@ function buildTerrainClipboard(samples, frame, cols, rows, elevationAt, legacy) 
  * @param {{terrainResolution?: string, kind?: string, attribution?: string}} [opts]
  */
 function terrainFromSamples(samples, frame, opts) {
+  const prevPasteFloors = activePasteFloors;
+  activePasteFloors = terrainPasteFloorCap(opts);
+  try {
+    return terrainFromSamplesCapped(samples, frame, opts);
+  } finally {
+    activePasteFloors = prevPasteFloors;
+  }
+}
+
+function terrainFromSamplesCapped(samples, frame, opts) {
   const pts = (samples || []).filter(
     (s) => s && Number.isFinite(+s.lon) && Number.isFinite(+s.lat) && Number.isFinite(+s.z)
   );
@@ -2601,13 +2795,11 @@ function terrainFromSamples(samples, frame, opts) {
   // Plan under the allocation cap and under a rough bytes-per-quad reading of
   // the JSON ceiling so a 200×200 request is never built. A tight ceiling may
   // land coarser than 20×20. The byte loop below still confirms the clipboard.
-  if (skiExperimental && jsonMax > 0) {
+  if (jsonMax > 0 && cols * rows > pastePlanQuadBudget(jsonMax)) {
     const cap = pastePlanQuadBudget(jsonMax);
-    if (cols * rows > cap) {
-      const fitted = fitPasteAxes(cols, rows, cap);
-      cols = fitted[0];
-      rows = fitted[1];
-    }
+    const fitted = fitPasteAxes(cols, rows, cap);
+    cols = fitted[0];
+    rows = fitted[1];
   }
   function settleRaised(c, r) {
     let mesh = buildRaisedLayerClipboard(clean, frame, c, r, elevationAt);
@@ -2678,6 +2870,24 @@ function terrainFromSamples(samples, frame, opts) {
       jsonLen = JSON.stringify(mesh.clip).length;
       guard += 1;
     }
+  }
+  const byteMax = pasteByteCap();
+  let byteGuard = 0;
+  let pasteBytes = JSON.stringify(mesh.clip).length;
+  while (pasteBytes > byteMax && byteGuard < 6) {
+    const floors = (mesh.sloped || 0) + (mesh.raised || 0);
+    const nextFloors = Math.max(TERRAIN_FLOORS_MIN, Math.floor((floors * byteMax) / pasteBytes * 0.92));
+    if (!(nextFloors < floors)) break;
+    activePasteFloors = Math.min(activePasteFloors, nextFloors);
+    const fitted = fitPasteAxes(cols, rows, Math.max(1, nextFloors));
+    if (fitted[0] === cols && fitted[1] === rows) break;
+    builtMesh = rebuild(fitted[0], fitted[1]);
+    mesh = builtMesh.mesh;
+    cols = builtMesh.cols;
+    rows = builtMesh.rows;
+    if (!mesh || !mesh.clip) return null;
+    pasteBytes = JSON.stringify(mesh.clip).length;
+    byteGuard += 1;
   }
   const cellM = reportedCellM(preset, reliefM, highLat, widthM, lengthM, cols, rows);
   const pasteReduced = skiExperimental && (cols !== requestedCols || rows !== requestedRows);
@@ -2828,7 +3038,7 @@ function overlapVertices(a, b) {
 
 /**
  * A footprint that only shares a cell edge still has to clear that cell.
- * Lattice nodes are rounded to 0.001 m, so a strict box test drops the shared
+ * Lattice nodes are rounded to 1 cm, so a strict box test drops the shared
  * edge and the higher ramp wins in Hamina while the object stays low.
  */
 const FLOOR_TOUCH_M = 0.25;
@@ -3780,7 +3990,12 @@ module.exports = {
   ABSOLUTE_MAX_GRID,
   ABSOLUTE_MAX_SAMPLES,
   TERRAIN_PASTE_JSON_MAX,
+  TERRAIN_PASTE_MAX_FLOORS,
+  TERRAIN_PASTE_MAX_BYTES,
+  TERRAIN_FLOORS_MIN,
+  TERRAIN_FLOORS_MAX,
   PASTE_BUILD_MAX_QUADS,
+  parseTerrainFloorOverride,
   LAMBDA_SYNC_PAYLOAD_MAX,
   EXPORT_PAYLOAD_BUDGET,
   BUNDLE_ENVELOPE_BYTES,
