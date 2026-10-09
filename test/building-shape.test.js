@@ -143,6 +143,7 @@ describe("building outlines", () => {
       ],
     });
     assert.equal(parsed.parts.length, 1);
+    assert.equal(parsed.buildings.length, 1);
     assert.equal(parsed.parts[0].properties.height, 112);
     assert.equal(parsed.parts[0].properties.levelBaseM, undefined);
     assert.equal(parsed.parts[0].properties.buildingPart, true);
@@ -247,5 +248,71 @@ describe("building outlines", () => {
     const after = ringAreaPx(capped);
     assert.ok(after <= before * 1.08, `area ${after} grew from ${before}`);
     assert.equal(pointInRingLL([100, 20], capped), false);
+  });
+
+  function metersPoly(originLon, originLat, offsets, props) {
+    const mx = 111320 * Math.cos((originLat * Math.PI) / 180);
+    const ring = offsets.map(([east, north]) => [originLon + east / mx, originLat + north / 110540]);
+    ring.push(ring[0].slice());
+    return {
+      type: "Feature",
+      properties: Object.assign({ height: 12, heightSource: "overture", geomSource: "overture" }, props),
+      geometry: { type: "Polygon", coordinates: [ring] },
+    };
+  }
+
+  it("replaces a triangular copy with the OSM outline of that building", () => {
+    const wedge = metersPoly(lon, lat, [
+      [0, 0],
+      [200, 0],
+      [40, 90],
+    ]);
+    const retail = [
+      [0, 0],
+      [80, 0],
+      [80, -20],
+      [140, -20],
+      [140, 0],
+      [200, 0],
+      [40, 90],
+    ];
+    const shaped = shapeBuildings([wedge], {
+      buildings: [metersPoly(lon, lat, retail).geometry.coordinates[0]],
+    });
+    assert.equal(shaped.stats.wedgesReplaced, 1);
+    assert.equal(shaped.features.length, 1);
+    const ring = shaped.features[0].geometry.coordinates[0];
+    assert.ok(ring.length > 5, "retail outline kept its bay");
+    const bay = metersPoly(lon, lat, [[100, -10]]).geometry.coordinates[0][0];
+    assert.equal(pointInRingLL(bay, ring), true);
+  });
+
+  it("drops a triangular blanket that covers another roof", () => {
+    const wedge = metersPoly(lon, lat, [
+      [0, 0],
+      [200, 0],
+      [40, 90],
+    ]);
+    const tower = metersBox(lon + 0.00015, lat + 0.0002, 24, 18, {
+      height: 180,
+      heightSource: "overture",
+      geomSource: "overture",
+    });
+    const shaped = shapeBuildings([wedge, tower], { buildings: [] });
+    assert.equal(shaped.stats.wedgesDropped, 1);
+    assert.equal(shaped.features.length, 1);
+    assert.equal(shaped.features[0].properties.height, 180);
+  });
+
+  it("keeps a triangular building that does not cover another roof", () => {
+    const wedge = metersPoly(lon, lat, [
+      [0, 0],
+      [200, 0],
+      [40, 90],
+    ]);
+    const shaped = shapeBuildings([wedge], { buildings: [] });
+    assert.equal(shaped.stats.wedgesDropped, 0);
+    assert.equal(shaped.stats.wedgesReplaced, 0);
+    assert.equal(shaped.features.length, 1);
   });
 });

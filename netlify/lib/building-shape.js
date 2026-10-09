@@ -35,6 +35,7 @@ function buildingDetailQuery(bbox) {
   return (
     "[out:json][timeout:12];(" +
     'way["building:part"](' + box + ");" +
+    'way["building"](' + box + ");" +
     'way["leisure"="swimming_pool"](' + box + ");" +
     'way["natural"="water"](' + box + ");" +
     'way["water"](' + box + ");" +
@@ -188,6 +189,7 @@ function parseBuildingDetail(payload, bbox) {
   const elements = (payload && payload.elements) || [];
   const parts = [];
   const openings = [];
+  const buildings = [];
   for (let i = 0; i < elements.length; i++) {
     const el = elements[i];
     const tags = (el && el.tags) || {};
@@ -203,7 +205,11 @@ function parseBuildingDetail(payload, bbox) {
         }
         continue;
       }
-      if (isOpeningTags(tags)) openings.push(ring);
+      if (isOpeningTags(tags)) {
+        openings.push(ring);
+        continue;
+      }
+      if (tags.building) buildings.push(ring);
       continue;
     }
     if (el.type !== "relation") continue;
@@ -222,13 +228,16 @@ function parseBuildingDetail(payload, bbox) {
       }
       continue;
     }
-    if (tags.building) {
+    if (tags.building && !tags["building:part"]) {
+      for (let o = 0; o < outers.length; o++) {
+        if (!bbox || ringHitsBox(outers[o], bbox)) buildings.push(outers[o]);
+      }
       for (let n = 0; n < inners.length; n++) {
         if (!bbox || ringHitsBox(inners[n], bbox)) openings.push(inners[n]);
       }
     }
   }
-  return { parts, openings };
+  return { parts, openings, buildings };
 }
 
 function ringHitsBox(ring, bbox) {
@@ -434,10 +443,12 @@ function detailFromMapXml(xml, bbox, deckCap) {
 function mergeBuildingDetail(packs) {
   const parts = [];
   const openings = [];
+  const buildings = [];
   const guideways = [];
   const bridges = [];
   const seenP = new Set();
   const seenO = new Set();
+  const seenBuildings = new Set();
   const seenG = new Set();
   const seenB = new Set();
   for (let p = 0; p < packs.length; p++) {
@@ -458,6 +469,13 @@ function mergeBuildingDetail(packs) {
       if (key) seenO.add(key);
       openings.push(opens[i]);
     }
+    const outlines = pack.buildings || [];
+    for (let i = 0; i < outlines.length; i++) {
+      const key = ringKey(outlines[i]);
+      if (key && seenBuildings.has(key)) continue;
+      if (key) seenBuildings.add(key);
+      buildings.push(outlines[i]);
+    }
     const guides = pack.guideways || [];
     for (let i = 0; i < guides.length; i++) {
       const key = ringKey(guides[i] && guides[i].coords);
@@ -473,11 +491,11 @@ function mergeBuildingDetail(packs) {
       bridges.push(decks[i]);
     }
   }
-  return { parts, openings, guideways, bridges };
+  return { parts, openings, buildings, guideways, bridges };
 }
 
 async function fetchBuildingDetail(bbox, opts) {
-  const empty = { ok: false, parts: [], openings: [], guideways: [], bridges: [] };
+  const empty = { ok: false, parts: [], openings: [], buildings: [], guideways: [], bridges: [] };
   if (!bbox) return empty;
   const timeoutMs = (opts && opts.timeoutMs) || 4500;
   const ctrl = new AbortController();
@@ -507,6 +525,7 @@ async function fetchBuildingDetail(bbox, opts) {
             ok: true,
             parts: parsed.parts,
             openings: parsed.openings,
+            buildings: parsed.buildings || [],
             guideways: guidewaysFromElements(maps.elements, bbox, deckCap),
             bridges: bridgesFromElements(maps.elements, bbox, deckCap),
             notes: maps.notes,
@@ -520,20 +539,21 @@ async function fetchBuildingDetail(bbox, opts) {
             ok: true,
             parts: merged.parts,
             openings: merged.openings,
+            buildings: merged.buildings || [],
             guideways: merged.guideways,
             bridges: merged.bridges,
             notes: maps.notes,
           };
         }
         if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
-          return { ok: true, parts: [], openings: [], guideways: [], bridges: [], notes: maps.notes };
+          return { ok: true, parts: [], openings: [], buildings: [], guideways: [], bridges: [], notes: maps.notes };
         }
       } catch (e) {
         if (ctrl.signal.aborted) return empty;
       }
     }
     if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
-      return { ok: true, parts: [], openings: [], guideways: [], bridges: [], notes: [] };
+      return { ok: true, parts: [], openings: [], buildings: [], guideways: [], bridges: [], notes: [] };
     }
     for (let u = 0; u < OVERPASS_URLS.length; u++) {
       if (ctrl.signal.aborted) return empty;
@@ -551,6 +571,7 @@ async function fetchBuildingDetail(bbox, opts) {
           ok: true,
           parts: parsed.parts,
           openings: parsed.openings,
+          buildings: parsed.buildings || [],
           guideways: guidewaysFromElements(json.elements, bbox, deckCap),
           bridges: bridgesFromElements(json.elements, bbox, deckCap),
         };
@@ -1121,9 +1142,130 @@ function dropParentsOverOpenings(features, openings) {
   return { features: features.filter((_, i) => !drop.has(i)), dropped: drop.size };
 }
 
+function ringAreaDeg(ring) {
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    a += ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+  }
+  return Math.abs(a) / 2;
+}
+
+/**
+ * A huge outline whose three extreme corners already cover the polygon.
+ * That is the Overture copy of a concave podium: the real retail ring is
+ * not a triangle, and the copied ring is.
+ */
+function coarseWedge(ring) {
+  const area = meterArea(ring);
+  if (!(area >= 5000)) return false;
+  const closed = closeRing(ring);
+  if (!closed) return false;
+  const open = closed.slice(0, -1);
+  if (open.length < 3) return false;
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < open.length; i++) {
+    cx += open[i][0];
+    cy += open[i][1];
+  }
+  cx /= open.length;
+  cy /= open.length;
+  const ranked = open.slice().sort((a, b) => {
+    const da = (a[0] - cx) * (a[0] - cx) + (a[1] - cy) * (a[1] - cy);
+    const db = (b[0] - cx) * (b[0] - cx) + (b[1] - cy) * (b[1] - cy);
+    return db - da;
+  });
+  let best = 0;
+  const n = Math.min(12, ranked.length);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      for (let k = j + 1; k < n; k++) {
+        const a = ranked[i];
+        const b = ranked[j];
+        const c = ranked[k];
+        const t = Math.abs(a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1])) / 2;
+        if (t > best) best = t;
+      }
+    }
+  }
+  const poly = ringAreaDeg(open);
+  return poly > 0 && best / poly >= 0.9;
+}
+
+function bestOsmReplacement(wedge, osmRings) {
+  const host = meterArea(wedge);
+  if (!(host > 0)) return null;
+  let best = null;
+  let bestInter = 0;
+  for (let i = 0; i < (osmRings || []).length; i++) {
+    const closed = closeRing(osmRings[i]);
+    if (!closed || coarseWedge(closed)) continue;
+    const oa = meterArea(closed);
+    if (!(oa > 0)) continue;
+    const ratio = oa / host;
+    if (ratio < 0.7 || ratio > 1.45) continue;
+    const inter = intersectionArea(closed, wedge);
+    if (!(inter / host >= 0.75)) continue;
+    if (inter > bestInter) {
+      bestInter = inter;
+      best = closed;
+    }
+  }
+  return best;
+}
+
+/**
+ * A coarse triangular copy is replaced by the OSM outline of that same
+ * building. A wedge that only blankets other roofs is left out. A triangular
+ * building with nothing else under it stays.
+ */
+function repairCoarseWedges(features, osmRings) {
+  const drop = new Set();
+  const replace = new Map();
+  let replaced = 0;
+  let dropped = 0;
+  for (let i = 0; i < features.length; i++) {
+    const rings = exteriorsOf(features[i]);
+    if (rings.length !== 1 || !coarseWedge(rings[0])) continue;
+    const osm = bestOsmReplacement(rings[0], osmRings);
+    if (osm) {
+      replace.set(i, osm);
+      replaced++;
+      continue;
+    }
+    const host = meterArea(rings[0]);
+    let others = 0;
+    for (let j = 0; j < features.length; j++) {
+      if (j === i) continue;
+      const outs = exteriorsOf(features[j]);
+      for (let k = 0; k < outs.length; k++) {
+        const other = outs[k];
+        if (coarseWedge(other)) continue;
+        const oa = meterArea(other);
+        if (oa < 400 || oa > host * 0.85) continue;
+        const inter = intersectionArea(other, rings[0]);
+        if (oa > 0 && inter / oa >= 0.5) others++;
+      }
+    }
+    if (others >= 1) {
+      drop.add(i);
+      dropped++;
+    }
+  }
+  const out = [];
+  for (let i = 0; i < features.length; i++) {
+    if (drop.has(i)) continue;
+    if (replace.has(i)) {
+      out.push(featureWithRing(features[i], replace.get(i), features[i].properties && features[i].properties.keepOut));
+    } else out.push(features[i]);
+  }
+  return { features: out, replaced, dropped };
+}
+
 /**
  * Add OSM parts, open pools and courtyards, and keep a part that is the
  * detailed footprint of a same-height wing. A tower stays on its podium.
+ * A triangular copy of a concave building takes that building's outline.
  */
 function shapeBuildings(features, detail) {
   const openings = (detail && detail.openings) || [];
@@ -1143,7 +1285,8 @@ function shapeBuildings(features, detail) {
   for (let i = 0; i < src.length; i++) {
     if (src[i] && src[i].geometry) list.push(cloneFeature(src[i]));
   }
-  const withParts = list.concat(partFeatures);
+  const repaired = repairCoarseWedges(list, (detail && detail.buildings) || []);
+  const withParts = repaired.features.concat(partFeatures);
   let notched = 0;
   const opened = [];
   for (let i = 0; i < withParts.length; i++) {
@@ -1163,6 +1306,8 @@ function shapeBuildings(features, detail) {
       openings: openings.length,
       notched,
       parentsDropped: dropped.dropped,
+      wedgesReplaced: repaired.replaced,
+      wedgesDropped: repaired.dropped,
       pieces: dropped.features.length,
     },
   };

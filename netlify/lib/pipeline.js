@@ -1255,8 +1255,12 @@ function capOiRingPx(ring, maxPts, opts) {
     for (let i = Math.floor(step / 2); i < open.length && shifted.length < limit; i += step) shifted.push(open[i]);
     if (shifted.length >= 3) candidates.push(shifted);
   }
-  const hull = convexHullOpen(open);
-  if (hull.length >= 3) candidates.push(hull.length > limit ? subsampleOpen(hull, limit) : hull);
+  // A building must not fall back to the convex hull. That hull is the
+  // courtyard-filling wedge. Foliage may still use it: a crown is one mass.
+  if (keepShape) {
+    const hull = convexHullOpen(open);
+    if (hull.length >= 3) candidates.push(hull.length > limit ? subsampleOpen(hull, limit) : hull);
+  }
   const origin = ringCentroidPx(open);
   const area0 = ringAreaPx(open);
   let best = null;
