@@ -180,6 +180,7 @@ const {
   normalizeTerrainResolution,
   normalizeTerrainStyle,
   isDevDemHost,
+  parseTerrainFloorOverride,
   frameHas3dep,
   ABSOLUTE_MAX_SAMPLES,
   EXPORT_PAYLOAD_BUDGET,
@@ -1001,6 +1002,7 @@ async function respondTerrainAside(frame, body, event, cors) {
         terrainStyle,
         kind,
         attribution,
+        terrainFloors: isDevDemHost(event) ? parseTerrainFloorOverride(body && body.terrainFloors) : 0,
       });
     } catch {
       terrain = null;
@@ -1163,6 +1165,7 @@ async function handleClutter(event) {
   const devHost = isDevDemHost(event);
   const areaCapOverride = devHost ? parseAreaCapOverride(body.areaCap) : 0;
   const jsonBudgetOverride = devHost ? parseJsonBudgetOverride(body.jsonBudget) : 0;
+  const terrainFloors = devHost ? parseTerrainFloorOverride(body.terrainFloors) : 0;
   const deckCap = raisedDeckCap(areaCapOverride);
   if (body.async === true || body.async === "true") {
     return enqueueBackgroundExport(event, body, cors);
@@ -1674,6 +1677,7 @@ async function handleClutter(event) {
         terrainResolution,
         terrainStyle,
         kind: clientLiftKind,
+        terrainFloors,
       });
     } catch {
       terrain = null;
@@ -1685,6 +1689,7 @@ async function handleClutter(event) {
         terrainStyle,
         kind: demKind,
         attribution: demAttribution,
+        terrainFloors,
       });
       if (terrain) {
         const notes = terrainResolutionNotes(terrain, frame);
@@ -1907,6 +1912,7 @@ async function handleClutter(event) {
         kind: demKind,
         attribution: demAttribution,
         pasteJsonMax,
+        terrainFloors,
       });
     } catch {
       next = null;

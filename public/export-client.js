@@ -93,6 +93,19 @@
     return raised + sloped;
   }
 
+  function terrainPasteLine(clip) {
+    const floors = pasteFloors(clip);
+    if (!(floors > 0)) return "";
+    let bytes = 0;
+    try {
+      bytes = JSON.stringify(clip).length;
+    } catch (err) {
+      return "";
+    }
+    const kb = Math.max(0, Math.round(bytes / 1024));
+    return "Terrain paste: " + floors + " floors, " + kb + " KB";
+  }
+
   /**
    * Terrain on copies the sloped or raised mesh. GPS tie points are written
    * onto that mesh. A missing mesh does not become a GPS-only copy; the
@@ -128,6 +141,7 @@
     idleStatus: idleStatus,
     runExportAttempts: runExportAttempts,
     pasteFloors: pasteFloors,
+    terrainPasteLine: terrainPasteLine,
     chooseTerrainPaste: chooseTerrainPaste,
   };
 });
