@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const jobs = require("../netlify/lib/export-jobs");
 const { setEnvironmentContext } = require("@netlify/blobs");
 const { unzipStore } = require("../netlify/lib/zip-store");
-const { EXPORT_PAYLOAD_BUDGET, estimateBundlePayload } = require("../netlify/lib/terrain");
+const { EXPORT_PAYLOAD_BUDGET, TERRAIN_PASTE_MAX_BYTES, TERRAIN_PASTE_MAX_FLOORS, estimateBundlePayload } = require("../netlify/lib/terrain");
 const { handleClutter, backgroundImagerySteps, runBackgroundExport, setFetchTerrainDemForTests, setFetchOvertureForTests } = require("../netlify/functions/clutter");
 const { handler: backgroundHandler } = require("../netlify/functions/clutter-export-background");
 const { handler: fileHandler } = require("../netlify/functions/export-file");
@@ -269,7 +269,8 @@ describe("export jobs", { concurrency: 1 }, () => {
       // not fit in the export response." That guard is the sync bundle. The
       // background job stores the paste in Blobs and must keep the full mesh.
       const floors = clip.slopedFloors.length + (clip.raisedFloorZones || []).length;
-      assert.ok(floors > 0 && floors <= 400, job.terrainStatus + " floors " + floors);
+      assert.ok(floors > 0 && floors <= TERRAIN_PASTE_MAX_FLOORS, job.terrainStatus + " floors " + floors);
+      assert.ok(JSON.stringify(clip).length <= TERRAIN_PASTE_MAX_BYTES, job.terrainStatus);
       assert.ok(clip.slopedFloors.length > 0, job.terrainStatus);
       assert.equal(clip.tiePoints.length, 2);
       assert.equal(clip.tiePoints[1].x, 0);

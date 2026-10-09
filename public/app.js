@@ -50,7 +50,7 @@ function terrainFloorsOverride() {
   }
   if (raw == null || !/^\d+$/.test(raw)) return undefined;
   const n = Number(raw);
-  if (n < 100 || n > 3000) return undefined;
+  if (n < 100 || n > 6000) return undefined;
   return n;
 }
 
