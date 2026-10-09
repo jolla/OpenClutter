@@ -799,6 +799,19 @@ function decodeImagery(imgBuf) {
   }
 }
 
+/** Roof cores on a 4K plate. Roof fill stays at 6 MP; this decode is separate. */
+function decodeRoofImagery(imgBuf) {
+  if (!imgBuf || imgBuf.length < 100 || imgBuf.length > 12000000) return null;
+  try {
+    const jpeg = require("jpeg-js");
+    const raw = jpeg.decode(imgBuf, { useTArray: true, maxResolutionInMP: 20, formatAsRGBA: true });
+    if (!raw || !raw.data || !(raw.width > 16) || !(raw.height > 16)) return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
 function featureAreaM2(feature, mpd) {
   const rings = featureExteriorRings(feature && feature.geometry);
   let area = 0;
@@ -1606,7 +1619,12 @@ async function handleClutter(event) {
       guidewayFeatures = pack.guideways || [];
       bridgeFeatures = pack.bridges || [];
       try {
-        const shaped = shapeBuildings(features, pack);
+        const roofRaw = decoded || decodeRoofImagery(imgBuf);
+        const shaped = shapeBuildings(features, Object.assign({}, pack, {
+          imagery: roofRaw
+            ? { data: roofRaw.data, width: roofRaw.width, height: roofRaw.height, frame }
+            : null,
+        }));
         features = shaped.features;
         footprintMeta.osmParts = shaped.stats.parts;
         footprintMeta.poolOpenings = shaped.stats.openings;

@@ -123,6 +123,7 @@ function tileQuery(bbox) {
   return (
     "[out:json][timeout:15];(" +
     'way["building:part"](' + box + ");" +
+    'way["building"](' + box + ");" +
     'way["leisure"="swimming_pool"](' + box + ");" +
     'way["natural"="water"](' + box + ");" +
     'way["water"](' + box + ");" +

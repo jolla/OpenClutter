@@ -35,6 +35,7 @@ function buildingDetailQuery(bbox) {
   return (
     "[out:json][timeout:12];(" +
     'way["building:part"](' + box + ");" +
+    'way["building"](' + box + ");" +
     'way["leisure"="swimming_pool"](' + box + ");" +
     'way["natural"="water"](' + box + ");" +
     'way["water"](' + box + ");" +
@@ -188,6 +189,7 @@ function parseBuildingDetail(payload, bbox) {
   const elements = (payload && payload.elements) || [];
   const parts = [];
   const openings = [];
+  const buildings = [];
   for (let i = 0; i < elements.length; i++) {
     const el = elements[i];
     const tags = (el && el.tags) || {};
@@ -203,7 +205,11 @@ function parseBuildingDetail(payload, bbox) {
         }
         continue;
       }
-      if (isOpeningTags(tags)) openings.push(ring);
+      if (isOpeningTags(tags)) {
+        openings.push(ring);
+        continue;
+      }
+      if (tags.building) buildings.push(ring);
       continue;
     }
     if (el.type !== "relation") continue;
@@ -222,13 +228,16 @@ function parseBuildingDetail(payload, bbox) {
       }
       continue;
     }
-    if (tags.building) {
+    if (tags.building && !tags["building:part"]) {
+      for (let o = 0; o < outers.length; o++) {
+        if (!bbox || ringHitsBox(outers[o], bbox)) buildings.push(outers[o]);
+      }
       for (let n = 0; n < inners.length; n++) {
         if (!bbox || ringHitsBox(inners[n], bbox)) openings.push(inners[n]);
       }
     }
   }
-  return { parts, openings };
+  return { parts, openings, buildings };
 }
 
 function ringHitsBox(ring, bbox) {
@@ -428,16 +437,32 @@ function detailFromMapXml(xml, bbox, deckCap) {
   const parsed = parseBuildingDetail({ elements }, bbox);
   parsed.guideways = guidewaysFromParsedWays(ways, nodes, bbox, deckCap);
   parsed.bridges = bridgesFromParsedWays(ways, nodes, bbox, deckCap);
+  parsed.roads = roadsFromWays(ways, nodes);
   return parsed;
+}
+
+/** A mapped road, not an indoor corridor drawn through a lobby. */
+function roadsFromWays(ways, nodes) {
+  const roads = [];
+  for (const way of ways.values()) {
+    const kind = way && way.tags && way.tags.highway;
+    if (!kind || kind === "corridor" || kind === "proposed" || kind === "construction" || kind === "elevator") continue;
+    const pts = refsToPts(way.refs, nodes);
+    if (pts.length >= 2) roads.push(pts);
+  }
+  return roads;
 }
 
 function mergeBuildingDetail(packs) {
   const parts = [];
   const openings = [];
+  const buildings = [];
   const guideways = [];
   const bridges = [];
+  const roads = [];
   const seenP = new Set();
   const seenO = new Set();
+  const seenBuildings = new Set();
   const seenG = new Set();
   const seenB = new Set();
   for (let p = 0; p < packs.length; p++) {
@@ -458,6 +483,13 @@ function mergeBuildingDetail(packs) {
       if (key) seenO.add(key);
       openings.push(opens[i]);
     }
+    const outlines = pack.buildings || [];
+    for (let i = 0; i < outlines.length; i++) {
+      const key = ringKey(outlines[i]);
+      if (key && seenBuildings.has(key)) continue;
+      if (key) seenBuildings.add(key);
+      buildings.push(outlines[i]);
+    }
     const guides = pack.guideways || [];
     for (let i = 0; i < guides.length; i++) {
       const key = ringKey(guides[i] && guides[i].coords);
@@ -472,12 +504,19 @@ function mergeBuildingDetail(packs) {
       if (key) seenB.add(key);
       bridges.push(decks[i]);
     }
+    const lines = pack.roads || [];
+    for (let i = 0; i < lines.length; i++) {
+      const key = ringKey(lines[i]);
+      if (key && seenB.has("road:" + key)) continue;
+      if (key) seenB.add("road:" + key);
+      roads.push(lines[i]);
+    }
   }
-  return { parts, openings, guideways, bridges };
+  return { parts, openings, buildings, guideways, bridges, roads };
 }
 
 async function fetchBuildingDetail(bbox, opts) {
-  const empty = { ok: false, parts: [], openings: [], guideways: [], bridges: [] };
+  const empty = { ok: false, parts: [], openings: [], buildings: [], roads: [], guideways: [], bridges: [] };
   if (!bbox) return empty;
   const timeoutMs = (opts && opts.timeoutMs) || 4500;
   const ctrl = new AbortController();
@@ -507,6 +546,8 @@ async function fetchBuildingDetail(bbox, opts) {
             ok: true,
             parts: parsed.parts,
             openings: parsed.openings,
+            buildings: parsed.buildings || [],
+            roads: [],
             guideways: guidewaysFromElements(maps.elements, bbox, deckCap),
             bridges: bridgesFromElements(maps.elements, bbox, deckCap),
             notes: maps.notes,
@@ -520,20 +561,22 @@ async function fetchBuildingDetail(bbox, opts) {
             ok: true,
             parts: merged.parts,
             openings: merged.openings,
+            buildings: merged.buildings || [],
+            roads: merged.roads || [],
             guideways: merged.guideways,
             bridges: merged.bridges,
             notes: maps.notes,
           };
         }
         if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
-          return { ok: true, parts: [], openings: [], guideways: [], bridges: [], notes: maps.notes };
+          return { ok: true, parts: [], openings: [], buildings: [], roads: [], guideways: [], bridges: [], notes: maps.notes };
         }
       } catch (e) {
         if (ctrl.signal.aborted) return empty;
       }
     }
     if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
-      return { ok: true, parts: [], openings: [], guideways: [], bridges: [], notes: [] };
+      return { ok: true, parts: [], openings: [], buildings: [], roads: [], guideways: [], bridges: [], notes: [] };
     }
     for (let u = 0; u < OVERPASS_URLS.length; u++) {
       if (ctrl.signal.aborted) return empty;
@@ -551,6 +594,8 @@ async function fetchBuildingDetail(bbox, opts) {
           ok: true,
           parts: parsed.parts,
           openings: parsed.openings,
+          buildings: parsed.buildings || [],
+          roads: [],
           guideways: guidewaysFromElements(json.elements, bbox, deckCap),
           bridges: bridgesFromElements(json.elements, bbox, deckCap),
         };
@@ -1042,7 +1087,7 @@ function subtractSameHeightParts(features) {
   const drop = new Set();
   for (let i = 0; i < features.length; i++) {
     const parent = features[i];
-    if (parent.properties && parent.properties.buildingPart) continue;
+    if (parent.properties && (parent.properties.buildingPart || parent.properties.roofCore)) continue;
     const cuts = [];
     for (let j = 0; j < features.length; j++) {
       if (i === j) continue;
@@ -1121,9 +1166,550 @@ function dropParentsOverOpenings(features, openings) {
   return { features: features.filter((_, i) => !drop.has(i)), dropped: drop.size };
 }
 
+function ringAreaDeg(ring) {
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    a += ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+  }
+  return Math.abs(a) / 2;
+}
+
+/**
+ * A huge outline whose three extreme corners already cover the polygon.
+ * That is the Overture copy of a concave podium: the real retail ring is
+ * not a triangle, and the copied ring is.
+ */
+function coarseWedge(ring) {
+  const area = meterArea(ring);
+  if (!(area >= 5000)) return false;
+  const closed = closeRing(ring);
+  if (!closed) return false;
+  const open = closed.slice(0, -1);
+  if (open.length < 3) return false;
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < open.length; i++) {
+    cx += open[i][0];
+    cy += open[i][1];
+  }
+  cx /= open.length;
+  cy /= open.length;
+  const ranked = open.slice().sort((a, b) => {
+    const da = (a[0] - cx) * (a[0] - cx) + (a[1] - cy) * (a[1] - cy);
+    const db = (b[0] - cx) * (b[0] - cx) + (b[1] - cy) * (b[1] - cy);
+    return db - da;
+  });
+  let best = 0;
+  const n = Math.min(12, ranked.length);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      for (let k = j + 1; k < n; k++) {
+        const a = ranked[i];
+        const b = ranked[j];
+        const c = ranked[k];
+        const t = Math.abs(a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1])) / 2;
+        if (t > best) best = t;
+      }
+    }
+  }
+  const poly = ringAreaDeg(open);
+  return poly > 0 && best / poly >= 0.9;
+}
+
+function bestOsmReplacement(wedge, osmRings) {
+  const host = meterArea(wedge);
+  if (!(host > 0)) return null;
+  let best = null;
+  let bestInter = 0;
+  for (let i = 0; i < (osmRings || []).length; i++) {
+    const closed = closeRing(osmRings[i]);
+    if (!closed || coarseWedge(closed)) continue;
+    const oa = meterArea(closed);
+    if (!(oa > 0)) continue;
+    const ratio = oa / host;
+    if (ratio < 0.7 || ratio > 1.45) continue;
+    const inter = intersectionArea(closed, wedge);
+    if (!(inter / host >= 0.75)) continue;
+    if (inter > bestInter) {
+      bestInter = inter;
+      best = closed;
+    }
+  }
+  return best;
+}
+
+/** Metres of a road polyline whose midpoints sit inside the ring. */
+function roadLengthInside(line, ring) {
+  if (!line || line.length < 2 || !ring) return 0;
+  const proj = projectionFor([ring, line]);
+  let total = 0;
+  for (let i = 1; i < line.length; i++) {
+    const a = line[i - 1];
+    const b = line[i];
+    const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    if (!pointInRingLL(mid, ring)) continue;
+    const ax = (a[0] - proj.lon0) * proj.mx;
+    const ay = (a[1] - proj.lat0) * proj.my;
+    const bx = (b[0] - proj.lon0) * proj.mx;
+    const by = (b[1] - proj.lat0) * proj.my;
+    total += Math.hypot(bx - ax, by - ay);
+  }
+  return total;
+}
+
+/**
+ * A huge triangle that blankets a pool, a pond, or a mapped road is not a
+ * roof. Indoor corridors are not roads.
+ */
+function wedgeCoversGround(ring, ground) {
+  const openings = (ground && ground.openings) || [];
+  for (let i = 0; i < openings.length; i++) {
+    const opening = openings[i];
+    const oa = meterArea(opening);
+    if (!(oa >= 400)) continue;
+    const inter = intersectionArea(opening, ring);
+    if (oa > 0 && inter / oa >= 0.5) return true;
+  }
+  const roads = (ground && ground.roads) || [];
+  let length = 0;
+  for (let i = 0; i < roads.length; i++) {
+    length += roadLengthInside(roads[i], ring);
+    if (length >= 80) return true;
+  }
+  return false;
+}
+
+/**
+ * A coarse triangular copy is replaced by the OSM outline of that same
+ * building. A wedge that blankets other roofs, pools, water, or roads is
+ * left out. A triangular building with nothing else under it stays.
+ */
+function repairCoarseWedges(features, osmRings, ground) {
+  const drop = new Set();
+  const replace = new Map();
+  let replaced = 0;
+  let dropped = 0;
+  for (let i = 0; i < features.length; i++) {
+    const rings = exteriorsOf(features[i]);
+    if (rings.length !== 1 || !coarseWedge(rings[0])) continue;
+    const osm = bestOsmReplacement(rings[0], osmRings);
+    if (osm) {
+      replace.set(i, osm);
+      replaced++;
+      continue;
+    }
+    const host = meterArea(rings[0]);
+    let others = 0;
+    for (let j = 0; j < features.length; j++) {
+      if (j === i) continue;
+      const outs = exteriorsOf(features[j]);
+      for (let k = 0; k < outs.length; k++) {
+        const other = outs[k];
+        if (coarseWedge(other)) continue;
+        const oa = meterArea(other);
+        if (oa < 400 || oa > host * 0.85) continue;
+        const inter = intersectionArea(other, rings[0]);
+        if (oa > 0 && inter / oa >= 0.5) others++;
+      }
+    }
+    if (others >= 1 || wedgeCoversGround(rings[0], ground)) {
+      const trimmed = trimTaperedRing(rings[0]);
+      const kept = [];
+      for (let t = 0; t < trimmed.length; t++) {
+        if (sameRing(trimmed[t], rings[0])) continue;
+        if (coarseWedge(trimmed[t])) continue;
+        if (wedgeCoversGround(trimmed[t], ground)) continue;
+        if (meterArea(trimmed[t]) < 4000) continue;
+        kept.push(trimmed[t]);
+      }
+      if (kept.length) {
+        replace.set(i, kept);
+        replaced++;
+        continue;
+      }
+      drop.add(i);
+      dropped++;
+    }
+  }
+  const out = [];
+  for (let i = 0; i < features.length; i++) {
+    if (drop.has(i)) continue;
+    if (replace.has(i)) {
+      const next = replace.get(i);
+      const many = Array.isArray(next[0]) && Array.isArray(next[0][0]);
+      const rings = many ? next : [next];
+      for (let r = 0; r < rings.length; r++) {
+        const feature = featureWithRing(features[i], rings[r], features[i].properties && features[i].properties.keepOut);
+        // A trimmed low-rise body of a dropped wedge sits with the other blocks.
+        if (many && !(heightOf(feature) >= 15)) {
+          feature.properties.height = 18;
+          if (!feature.properties.heightSource) feature.properties.heightSource = "overture";
+        }
+        out.push(feature);
+      }
+    } else out.push(features[i]);
+  }
+  return { features: out, replaced, dropped };
+}
+
+/**
+ * Wall-aligned fill. A rectangle scores near 1. A campus that wanders
+ * across open ground scores well under that.
+ */
+function wallAlignedFill(open) {
+  const axis = dominantWallAxis(open);
+  if (!axis) return 1;
+  const axes = [axis, [-axis[1], axis[0]]];
+  let best = 0;
+  let shoelace = 0;
+  for (let i = 0, j = open.length - 1; i < open.length; j = i++) {
+    shoelace += open[j][0] * open[i][1] - open[i][0] * open[j][1];
+  }
+  const area = Math.abs(shoelace) / 2;
+  if (!(area > 0)) return 1;
+  for (let a = 0; a < axes.length; a++) {
+    const ux = axes[a][0];
+    const uy = axes[a][1];
+    const px = -uy;
+    const py = ux;
+    let minA = Infinity;
+    let maxA = -Infinity;
+    let minP = Infinity;
+    let maxP = -Infinity;
+    for (let i = 0; i < open.length; i++) {
+      const along = open[i][0] * ux + open[i][1] * uy;
+      const perp = open[i][0] * px + open[i][1] * py;
+      if (along < minA) minA = along;
+      if (along > maxA) maxA = along;
+      if (perp < minP) minP = perp;
+      if (perp > maxP) maxP = perp;
+    }
+    const box = (maxA - minA) * (maxP - minP);
+    if (box > 0 && area / box > best) best = area / box;
+  }
+  return best;
+}
+
+function closeBinary(mask, cols, rows) {
+  const n = cols * rows;
+  const dil = new Uint8Array(n);
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      let on = 0;
+      for (let dy = -1; dy <= 1 && !on; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const yy = y + dy;
+          const xx = x + dx;
+          if (yy < 0 || xx < 0 || yy >= rows || xx >= cols) continue;
+          if (mask[yy * cols + xx]) on = 1;
+        }
+      }
+      dil[y * cols + x] = on;
+    }
+  }
+  const out = new Uint8Array(n);
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      let on = 1;
+      for (let dy = -1; dy <= 1 && on; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const yy = y + dy;
+          const xx = x + dx;
+          if (yy < 0 || xx < 0 || yy >= rows || xx >= cols || !dil[yy * cols + xx]) on = 0;
+        }
+      }
+      out[y * cols + x] = on;
+    }
+  }
+  return out;
+}
+
+function sampleImagery(imagery, lon, lat) {
+  const frame = imagery.frame;
+  const spanX = frame.east - frame.west;
+  const spanY = frame.north - frame.south;
+  if (!(spanX > 0) || !(spanY > 0)) return null;
+  const x = ((lon - frame.west) / spanX) * imagery.width;
+  const y = ((frame.north - lat) / spanY) * imagery.height;
+  const xi = Math.round(x);
+  const yi = Math.round(y);
+  if (xi < 1 || yi < 1 || xi >= imagery.width - 1 || yi >= imagery.height - 1) return null;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let n = 0;
+  const data = imagery.data;
+  const w = imagery.width;
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const i = ((yi + dy) * w + (xi + dx)) * 4;
+      r += data[i];
+      g += data[i + 1];
+      b += data[i + 2];
+      n++;
+    }
+  }
+  return [r / n, g / n, b / n];
+}
+
+function prefixGrid(src, cols, rows) {
+  const stride = cols + 1;
+  const acc = new Float64Array((rows + 1) * stride);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const v = src[r * cols + c] || 0;
+      acc[(r + 1) * stride + (c + 1)] =
+        v + acc[r * stride + (c + 1)] + acc[(r + 1) * stride + c] - acc[r * stride + c];
+    }
+  }
+  return acc;
+}
+
+function prefixBox(acc, cols, r0, r1, c0, c1) {
+  const stride = cols + 1;
+  return acc[r1 * stride + c1] - acc[r0 * stride + c1] - acc[r1 * stride + c0] + acc[r0 * stride + c0];
+}
+
+/**
+ * Largest wall-aligned block of one roof tone. A dark block has to be
+ * solid. A warm block may have a few panel gaps, still mostly that tone,
+ * and still inside the parent outline.
+ */
+function largestToneRect(mask, raw, cols, rows, step, parentArea, minSolid) {
+  const minCells = Math.ceil(48 / step);
+  const maxCells = Math.floor(200 / step);
+  const maskSum = prefixGrid(mask, cols, rows);
+  const toneSum = prefixGrid(raw.tone, cols, rows);
+  const greenSum = prefixGrid(raw.green, cols, rows);
+  const inSum = prefixGrid(raw.inside, cols, rows);
+  const ySum = prefixGrid(raw.y, cols, rows);
+  let best = null;
+  for (let r0 = 0; r0 < rows; r0++) {
+    const r1Max = Math.min(rows, r0 + maxCells);
+    for (let r1 = r0 + minCells; r1 <= r1Max; r1++) {
+      const height = (r1 - r0) * step;
+      for (let c0 = 0; c0 < cols; c0++) {
+        const c1Max = Math.min(cols, c0 + maxCells);
+        for (let c1 = c0 + minCells; c1 <= c1Max; c1++) {
+          const width = (c1 - c0) * step;
+          const aspect = Math.max(width, height) / Math.min(width, height);
+          if (aspect > 2.2) continue;
+          const area = width * height;
+          if (area < 5000 || area > 14000 || area >= parentArea * 0.28) continue;
+          if (best && area <= best.area) continue;
+          const n = (r1 - r0) * (c1 - c0);
+          if (prefixBox(maskSum, cols, r0, r1, c0, c1) / n < minSolid) continue;
+          if (prefixBox(inSum, cols, r0, r1, c0, c1) / n < 0.9) continue;
+          if (prefixBox(greenSum, cols, r0, r1, c0, c1) / n > 0.1) continue;
+          if (prefixBox(toneSum, cols, r0, r1, c0, c1) / n < 0.72) continue;
+          const meanY = prefixBox(ySum, cols, r0, r1, c0, c1) / n;
+          const toneOk = raw.kind === "dark" ? meanY < 80 : meanY > 168;
+          if (!toneOk) continue;
+          best = { r0, r1, c0, c1, width, height, area, meanY };
+        }
+      }
+    }
+  }
+  return best;
+}
+
+function rectRing(rect, grid) {
+  const step = grid.step;
+  const corners = [
+    [rect.r0, rect.c0],
+    [rect.r1, rect.c0],
+    [rect.r1, rect.c1],
+    [rect.r0, rect.c1],
+  ];
+  const ring = [];
+  for (let i = 0; i < corners.length; i++) {
+    const along = grid.amin + corners[i][0] * step;
+    const perp = grid.pmin + corners[i][1] * step;
+    const x = along * grid.ux + perp * grid.px;
+    const y = along * grid.uy + perp * grid.py;
+    ring.push([x / grid.mx + grid.lon0, y / grid.my + grid.lat0]);
+  }
+  ring.push(ring[0].slice());
+  return ring;
+}
+
+/**
+ * Two rectangular roofs inside one sprawling low-rise outline: a dark
+ * block and a warm block, separate in the aerial. A tower, a round roof,
+ * and a single-tone building stay as they are. The outline is replaced
+ * by those two blocks. Anything the outline covered past them is left open.
+ */
+function twinRoofCores(ring, imagery, parentArea) {
+  const closed = closeRing(ring);
+  if (!closed || !imagery || !imagery.data || !imagery.frame) return null;
+  const proj = projectionFor([closed]);
+  const meters = toMeters(closed, proj);
+  if (!meters) return null;
+  const open = meters.slice(0, -1);
+  const axis = dominantWallAxis(open);
+  if (!axis) return null;
+  const ux = axis[0];
+  const uy = axis[1];
+  const px = -uy;
+  const py = ux;
+  let amin = Infinity;
+  let amax = -Infinity;
+  let pmin = Infinity;
+  let pmax = -Infinity;
+  for (let i = 0; i < open.length; i++) {
+    const along = open[i][0] * ux + open[i][1] * uy;
+    const perp = open[i][0] * px + open[i][1] * py;
+    if (along < amin) amin = along;
+    if (along > amax) amax = along;
+    if (perp < pmin) pmin = perp;
+    if (perp > pmax) pmax = perp;
+  }
+  const step = 8;
+  amin -= step;
+  pmin -= step;
+  amax += step;
+  pmax += step;
+  const rows = Math.floor((amax - amin) / step);
+  const cols = Math.floor((pmax - pmin) / step);
+  if (rows < 8 || cols < 8 || rows > 80 || cols > 80) return null;
+  const n = rows * cols;
+  const dark = new Uint8Array(n);
+  const warm = new Uint8Array(n);
+  const yv = new Uint8Array(n);
+  const green = new Uint8Array(n);
+  const inside = new Uint8Array(n);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const along = amin + (r + 0.5) * step;
+      const perp = pmin + (c + 0.5) * step;
+      const x = along * ux + perp * px;
+      const y = along * uy + perp * py;
+      const lon = x / proj.mx + proj.lon0;
+      const lat = y / proj.my + proj.lat0;
+      const k = r * cols + c;
+      if (!pointInRingLL([lon, lat], closed)) continue;
+      inside[k] = 1;
+      const rgb = sampleImagery(imagery, lon, lat);
+      if (!rgb) continue;
+      const yy = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
+      yv[k] = Math.max(0, Math.min(255, Math.round(yy)));
+      const isGreen = rgb[1] > rgb[0] + 12 && rgb[1] > rgb[2] + 8 && rgb[1] > 80;
+      if (isGreen) {
+        green[k] = 1;
+        continue;
+      }
+      if (yy < 82) dark[k] = 1;
+      if (rgb[0] - rgb[2] > 12 && yy > 150) warm[k] = 1;
+    }
+  }
+  const grid = {
+    step,
+    amin,
+    pmin,
+    ux,
+    uy,
+    px,
+    py,
+    mx: proj.mx,
+    my: proj.my,
+    lon0: proj.lon0,
+    lat0: proj.lat0,
+  };
+  const darkRect = largestToneRect(closeBinary(dark, cols, rows), {
+    kind: "dark",
+    tone: dark,
+    y: yv,
+    green,
+    inside,
+  }, cols, rows, step, parentArea, 1);
+  const warmRect = largestToneRect(closeBinary(warm, cols, rows), {
+    kind: "warm",
+    tone: warm,
+    y: yv,
+    green,
+    inside,
+  }, cols, rows, step, parentArea, 0.88);
+  if (!darkRect || !warmRect) return null;
+  const darkRing = rectRing(darkRect, grid);
+  const warmRing = rectRing(warmRect, grid);
+  const overlap = intersectionArea(darkRing, warmRing);
+  const smaller = Math.min(darkRect.area, warmRect.area);
+  if (!(smaller > 0) || overlap / smaller > 0.2) return null;
+  return [darkRing, warmRing];
+}
+
+function carveTwinRoofs(features, imagery, ground) {
+  if (!imagery || !imagery.data || !(imagery.width > 16) || !(imagery.height > 16)) {
+    return { features, carved: 0 };
+  }
+  const out = [];
+  let carved = 0;
+  for (let i = 0; i < features.length; i++) {
+    const feature = features[i];
+    if (feature.properties && feature.properties.buildingPart) {
+      out.push(feature);
+      continue;
+    }
+    if (heightOf(feature) >= 30) {
+      out.push(feature);
+      continue;
+    }
+    const rings = exteriorsOf(feature);
+    if (rings.length !== 1) {
+      out.push(feature);
+      continue;
+    }
+    const area = meterArea(rings[0]);
+    if (!(area >= 30000)) {
+      out.push(feature);
+      continue;
+    }
+    const closed = closeRing(rings[0]);
+    const proj = closed ? projectionFor([closed]) : null;
+    const meters = closed && proj ? toMeters(closed, proj) : null;
+    const open = meters ? meters.slice(0, -1) : null;
+    const fill = open ? wallAlignedFill(open) : 1;
+    const sprawling =
+      open &&
+      fill < 0.62 &&
+      (open.length > 80 || coarseWedge(closed) || wedgeCoversGround(closed, ground));
+    if (!sprawling) {
+      out.push(feature);
+      continue;
+    }
+    const cores = twinRoofCores(closed, imagery, area);
+    if (!cores) {
+      out.push(feature);
+      continue;
+    }
+    const pieces = [];
+    for (let c = 0; c < cores.length; c++) {
+      if (wedgeCoversGround(cores[c], ground)) continue;
+      if (meterArea(cores[c]) < 4000) continue;
+      const next = featureWithRing(feature, cores[c], feature.properties && feature.properties.keepOut);
+      next.properties.roofCore = true;
+      if (!(heightOf(next) >= 15)) {
+        next.properties.height = 18;
+        if (!next.properties.heightSource) next.properties.heightSource = "overture";
+      }
+      pieces.push(next);
+    }
+    if (pieces.length < 2) {
+      out.push(feature);
+      continue;
+    }
+    carved++;
+    for (let c = 0; c < pieces.length; c++) out.push(pieces[c]);
+  }
+  return { features: out, carved };
+}
+
 /**
  * Add OSM parts, open pools and courtyards, and keep a part that is the
  * detailed footprint of a same-height wing. A tower stays on its podium.
+ * A triangular copy of a concave building takes that building's outline.
+ * A sprawling low-rise outline with two separate roof tones becomes those
+ * two blocks.
  */
 function shapeBuildings(features, detail) {
   const openings = (detail && detail.openings) || [];
@@ -1143,12 +1729,42 @@ function shapeBuildings(features, detail) {
   for (let i = 0; i < src.length; i++) {
     if (src[i] && src[i].geometry) list.push(cloneFeature(src[i]));
   }
-  const withParts = list.concat(partFeatures);
+  const ground = {
+    openings,
+    roads: (detail && detail.roads) || [],
+  };
+  const carved = carveTwinRoofs(list, detail && detail.imagery, ground);
+  const repaired = repairCoarseWedges(carved.features, (detail && detail.buildings) || [], ground);
+  const coreRings = [];
+  for (let i = 0; i < repaired.features.length; i++) {
+    if (!(repaired.features[i].properties && repaired.features[i].properties.roofCore)) continue;
+    const rings = exteriorsOf(repaired.features[i]);
+    for (let r = 0; r < rings.length; r++) coreRings.push(rings[r]);
+  }
+  const keptParts = [];
+  for (let i = 0; i < partFeatures.length; i++) {
+    const part = partFeatures[i];
+    if (heightOf(part) >= 24) {
+      keptParts.push(part);
+      continue;
+    }
+    const rings = exteriorsOf(part);
+    let covered = false;
+    for (let a = 0; a < rings.length && !covered; a++) {
+      for (let b = 0; b < coreRings.length && !covered; b++) {
+        if (mostlyInside(rings[a], coreRings[b])) covered = true;
+      }
+    }
+    if (!covered) keptParts.push(part);
+  }
+  const withParts = repaired.features.concat(keptParts);
   let notched = 0;
   const opened = [];
   for (let i = 0; i < withParts.length; i++) {
     const before = exteriorsOf(withParts[i]).length;
-    const pieces = notchFeature(withParts[i], openings);
+    const pieces = withParts[i].properties && withParts[i].properties.roofCore
+      ? [withParts[i]]
+      : notchFeature(withParts[i], openings);
     if (pieces.length !== before || (pieces[0] && pieces[0] !== withParts[i] && pieces[0].properties && pieces[0].properties.keepOut)) {
       notched++;
     }
@@ -1156,16 +1772,241 @@ function shapeBuildings(features, detail) {
   }
   const cut = subtractSameHeightParts(opened);
   const dropped = dropParentsOverOpenings(cut, openings);
+  const trimmed = trimTaperedFootprints(dropped.features);
   return {
-    features: dropped.features,
+    features: trimmed.features,
     stats: {
-      parts: partFeatures.length,
+      parts: keptParts.length,
       openings: openings.length,
       notched,
       parentsDropped: dropped.dropped,
-      pieces: dropped.features.length,
+      wedgesReplaced: repaired.replaced,
+      wedgesDropped: repaired.dropped,
+      coresCarved: carved.carved,
+      tapersCut: trimmed.cut,
+      pieces: trimmed.features.length,
     },
   };
+}
+
+/**
+ * A campus outline that runs out to a point is not a roof over that point.
+ * Cut a narrow end off a large low-rise footprint and keep the thick body.
+ * A tower is left alone. A trimmed low-rise with no measured height above
+ * 15 m is seated at 18 m, in the range of these blocks.
+ */
+function trimTaperedFootprints(features) {
+  const out = [];
+  let cut = 0;
+  for (let i = 0; i < features.length; i++) {
+    const feature = features[i];
+    const h = heightOf(feature);
+    if (h >= 30 || (feature.properties && feature.properties.roofCore)) {
+      out.push(feature);
+      continue;
+    }
+    const rings = exteriorsOf(feature);
+    if (rings.length !== 1) {
+      out.push(feature);
+      continue;
+    }
+    const pieces = trimTaperedRing(rings[0]);
+    if (pieces.length === 1 && sameRing(pieces[0], rings[0])) {
+      out.push(feature);
+      continue;
+    }
+    cut++;
+    for (let p = 0; p < pieces.length; p++) {
+      const next = featureWithRing(feature, pieces[p], feature.properties && feature.properties.keepOut);
+      const ph = heightOf(next);
+      if (!(ph >= 15)) {
+        next.properties.height = 18;
+        if (!next.properties.heightSource) next.properties.heightSource = "overture";
+      }
+      out.push(next);
+    }
+  }
+  return { features: out, cut };
+}
+
+function sameRing(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  const n = Math.min(6, a.length);
+  for (let i = 0; i < n; i++) {
+    if (a[i][0] !== b[i][0] || a[i][1] !== b[i][1]) return false;
+  }
+  return true;
+}
+
+/** Wall direction with the most edge length, as a unit vector in meters. */
+function dominantWallAxis(open) {
+  const bins = 36;
+  const hist = new Array(bins).fill(0);
+  for (let i = 0; i < open.length; i++) {
+    const a = open[i];
+    const b = open[(i + 1) % open.length];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len = Math.hypot(dx, dy);
+    if (len < 6) continue;
+    let deg = (Math.atan2(dy, dx) * 180) / Math.PI;
+    if (deg < 0) deg += 180;
+    if (deg >= 180) deg -= 180;
+    hist[Math.min(bins - 1, Math.floor(deg / 5))] += len;
+  }
+  let best = 0;
+  let at = 0;
+  for (let i = 0; i < bins; i++) {
+    if (hist[i] > best) {
+      best = hist[i];
+      at = i;
+    }
+  }
+  if (!(best >= 40)) return null;
+  const rad = ((at * 5 + 2.5) * Math.PI) / 180;
+  return [Math.cos(rad), Math.sin(rad)];
+}
+
+function widthAlong(open, ux, uy) {
+  let minA = Infinity;
+  let maxA = -Infinity;
+  for (let i = 0; i < open.length; i++) {
+    const a = open[i][0] * ux + open[i][1] * uy;
+    if (a < minA) minA = a;
+    if (a > maxA) maxA = a;
+  }
+  const len = maxA - minA;
+  if (!(len >= 80)) return null;
+  const px = -uy;
+  const py = ux;
+  const samples = 48;
+  const widths = [];
+  const poss = [];
+  for (let s = 1; s < samples - 1; s++) {
+    const t = minA + ((s + 0.5) / samples) * len;
+    const hits = [];
+    for (let i = 0; i < open.length; i++) {
+      const a = open[i];
+      const b = open[(i + 1) % open.length];
+      const aa = a[0] * ux + a[1] * uy;
+      const ba = b[0] * ux + b[1] * uy;
+      if ((aa <= t && ba > t) || (ba <= t && aa > t)) {
+        const u = (t - aa) / (ba - aa || 1e-9);
+        const ay = a[0] * px + a[1] * py;
+        const by = b[0] * px + b[1] * py;
+        hits.push(ay + u * (by - ay));
+      }
+    }
+    hits.sort((p, q) => p - q);
+    let w = 0;
+    for (let i = 0; i + 1 < hits.length; i += 2) w += hits[i + 1] - hits[i];
+    widths.push(w);
+    poss.push(t);
+  }
+  return { minA, len, widths, poss };
+}
+
+/**
+ * Cut a narrow end off when it runs at least 45 m before the outline
+ * reaches the thick body. The axis is the long walls, not the two
+ * corners farthest apart, so a spike beside a rectangle is removed.
+ */
+function taperCuts(profile) {
+  if (!profile || profile.widths.length < 8) return null;
+  const ranked = profile.widths.slice().sort((p, q) => p - q);
+  const plateau = ranked[Math.floor(ranked.length * 0.72)] || 0;
+  if (!(plateau >= 36)) return null;
+  const body = plateau * 0.72;
+  const widths = profile.widths;
+  const poss = profile.poss;
+  let lo = null;
+  for (let i = 0; i < widths.length - 2; i++) {
+    if (widths[i] >= body && widths[i + 1] >= body && widths[i + 2] >= body) {
+      lo = i;
+      break;
+    }
+  }
+  let hi = null;
+  for (let i = widths.length - 1; i >= 2; i--) {
+    if (widths[i] >= body && widths[i - 1] >= body && widths[i - 2] >= body) {
+      hi = i;
+      break;
+    }
+  }
+  const endLo = widths[0];
+  const endHi = widths[widths.length - 1];
+  const runLo = lo == null ? 0 : poss[lo] - profile.minA;
+  const runHi = hi == null ? 0 : profile.minA + profile.len - poss[hi];
+  // A wing that is still tens of metres wide is a building. Only a point is cut.
+  const cutLo = lo != null && runLo >= 45 && endLo < body * 0.45 && endLo < 28;
+  const cutHi = hi != null && runHi >= 45 && endHi < body * 0.45 && endHi < 28;
+  if (!cutLo && !cutHi) return null;
+  return {
+    keep0: cutLo ? poss[lo] : profile.minA,
+    keep1: cutHi ? poss[hi] : profile.minA + profile.len,
+    removed: (cutLo ? runLo : 0) + (cutHi ? runHi : 0),
+  };
+}
+
+function clipMetersSlab(meters, proj, origin, ux, uy, keep0, keep1) {
+  const px = -uy;
+  const py = ux;
+  const pad = Math.max(400, Math.abs(keep1 - keep0) * 3);
+  const at = (along, perp) => [origin[0] + along * ux + perp * px, origin[1] + along * uy + perp * py];
+  const slab = orient(
+    [at(keep0, -pad), at(keep1, -pad), at(keep1, pad), at(keep0, pad), at(keep0, -pad)],
+    true
+  );
+  const subject = orient(meters, true);
+  if (!slab || !subject) return null;
+  let multi;
+  try {
+    multi = polygonClipping.intersection([[subject]], [[slab]]);
+  } catch {
+    return null;
+  }
+  const out = [];
+  for (let i = 0; i < (multi || []).length; i++) {
+    const outer = multi[i] && multi[i][0];
+    if (!outer || Math.abs(signedArea(outer)) < 800) continue;
+    const ll = toLonLat(outer, proj);
+    if (ll && meterArea(ll) >= 800) out.push(ll);
+  }
+  return out.length ? out : null;
+}
+
+function trimTaperedRing(ring) {
+  const closed = closeRing(ring);
+  const area = closed ? meterArea(closed) : 0;
+  // Large campuses are handled by the two-roof cut. This only takes a point
+  // off a smaller low-rise outline, so a full block like Encore stays whole.
+  if (!closed || area < 15000 || area >= 25000) return closed ? [closed] : [];
+  const proj = projectionFor([closed]);
+  const meters = toMeters(closed, proj);
+  if (!meters) return [closed];
+  const open = meters.slice(0, -1);
+  // A near-rectangular roof is not a spike over open ground.
+  if (wallAlignedFill(open) >= 0.62) return [closed];
+  const axis = dominantWallAxis(open);
+  if (!axis) return [closed];
+  const axes = [
+    axis,
+    [-axis[1], axis[0]],
+  ];
+  let best = null;
+  for (let a = 0; a < axes.length; a++) {
+    const profile = widthAlong(open, axes[a][0], axes[a][1]);
+    const cut = taperCuts(profile);
+    if (!cut) continue;
+    if (!best || cut.removed > best.cut.removed) best = { axis: axes[a], cut };
+  }
+  if (!best || !(best.cut.keep1 - best.cut.keep0 >= 40)) return [closed];
+  const pieces = clipMetersSlab(meters, proj, [0, 0], best.axis[0], best.axis[1], best.cut.keep0, best.cut.keep1);
+  if (!pieces) return [closed];
+  let kept = 0;
+  for (let i = 0; i < pieces.length; i++) kept += meterArea(pieces[i]);
+  if (!(kept > 0) || kept > meterArea(closed) * 0.97) return [closed];
+  return pieces;
 }
 
 module.exports = {

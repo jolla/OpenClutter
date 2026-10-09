@@ -2,7 +2,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { geoFrame, pxToLl } = require("../netlify/lib/geo-frame");
+const { geoFrame, pxToLl, clipboardToLl } = require("../netlify/lib/geo-frame");
 const { footprintsToClutter, capOiRingPx, ringAreaPx } = require("../netlify/lib/pipeline");
 const {
   parseBuildingDetail,
@@ -143,6 +143,7 @@ describe("building outlines", () => {
       ],
     });
     assert.equal(parsed.parts.length, 1);
+    assert.equal(parsed.buildings.length, 1);
     assert.equal(parsed.parts[0].properties.height, 112);
     assert.equal(parsed.parts[0].properties.levelBaseM, undefined);
     assert.equal(parsed.parts[0].properties.buildingPart, true);
@@ -247,5 +248,300 @@ describe("building outlines", () => {
     const after = ringAreaPx(capped);
     assert.ok(after <= before * 1.08, `area ${after} grew from ${before}`);
     assert.equal(pointInRingLL([100, 20], capped), false);
+  });
+
+  function metersPoly(originLon, originLat, offsets, props) {
+    const mx = 111320 * Math.cos((originLat * Math.PI) / 180);
+    const ring = offsets.map(([east, north]) => [originLon + east / mx, originLat + north / 110540]);
+    ring.push(ring[0].slice());
+    return {
+      type: "Feature",
+      properties: Object.assign({ height: 12, heightSource: "overture", geomSource: "overture" }, props),
+      geometry: { type: "Polygon", coordinates: [ring] },
+    };
+  }
+
+  it("replaces a triangular copy with the OSM outline of that building", () => {
+    const wedge = metersPoly(lon, lat, [
+      [0, 0],
+      [200, 0],
+      [40, 90],
+    ]);
+    const retail = [
+      [0, 0],
+      [80, 0],
+      [80, -20],
+      [140, -20],
+      [140, 0],
+      [200, 0],
+      [40, 90],
+    ];
+    const shaped = shapeBuildings([wedge], {
+      buildings: [metersPoly(lon, lat, retail).geometry.coordinates[0]],
+    });
+    assert.equal(shaped.stats.wedgesReplaced, 1);
+    assert.equal(shaped.features.length, 1);
+    const ring = shaped.features[0].geometry.coordinates[0];
+    assert.ok(ring.length > 5, "retail outline kept its bay");
+    const bay = metersPoly(lon, lat, [[100, -10]]).geometry.coordinates[0][0];
+    assert.equal(pointInRingLL(bay, ring), true);
+  });
+
+  it("drops a triangular blanket that covers another roof", () => {
+    const wedge = metersPoly(lon, lat, [
+      [0, 0],
+      [200, 0],
+      [40, 90],
+    ]);
+    const tower = metersBox(lon + 0.00015, lat + 0.0002, 24, 18, {
+      height: 180,
+      heightSource: "overture",
+      geomSource: "overture",
+    });
+    const shaped = shapeBuildings([wedge, tower], { buildings: [] });
+    assert.equal(shaped.stats.wedgesDropped, 1);
+    assert.equal(shaped.features.length, 1);
+    assert.equal(shaped.features[0].properties.height, 180);
+  });
+
+  it("keeps a triangular building that does not cover another roof", () => {
+    const wedge = metersPoly(lon, lat, [
+      [0, 0],
+      [200, 0],
+      [40, 90],
+    ]);
+    const shaped = shapeBuildings([wedge], { buildings: [] });
+    assert.equal(shaped.stats.wedgesDropped, 0);
+    assert.equal(shaped.stats.wedgesReplaced, 0);
+    assert.equal(shaped.features.length, 1);
+  });
+
+  function areaM(ring) {
+    const open = ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? ring.slice(0, -1) : ring;
+    const lat0 = open.reduce((s, p) => s + p[1], 0) / open.length;
+    const mx = 111320 * Math.cos((lat0 * Math.PI) / 180);
+    const my = 110540;
+    let a = 0;
+    for (let i = 0, j = open.length - 1; i < open.length; j = i++) {
+      a += open[j][0] * mx * open[i][1] * my - open[i][0] * mx * open[j][1] * my;
+    }
+    return Math.abs(a) / 2;
+  }
+
+  function triOf(ring) {
+    const open = ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? ring.slice(0, -1) : ring.slice();
+    let cx = 0;
+    let cy = 0;
+    for (const p of open) {
+      cx += p[0];
+      cy += p[1];
+    }
+    cx /= open.length;
+    cy /= open.length;
+    const ranked = open.slice().sort((a, b) => (b[0] - cx) ** 2 + (b[1] - cy) ** 2 - ((a[0] - cx) ** 2 + (a[1] - cy) ** 2));
+    let best = 0;
+    const n = Math.min(12, ranked.length);
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        for (let k = j + 1; k < n; k++) {
+          const a = ranked[i];
+          const b = ranked[j];
+          const c = ranked[k];
+          const t = Math.abs(a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1])) / 2;
+          if (t > best) best = t;
+        }
+      }
+    }
+    let poly = 0;
+    for (let i = 0, j = open.length - 1; i < open.length; j = i++) poly += open[j][0] * open[i][1] - open[i][0] * open[j][1];
+    poly = Math.abs(poly) / 2;
+    return poly > 0 ? best / poly : 0;
+  }
+
+  it("drops a triangular blanket that covers a road", () => {
+    const wedge = metersPoly(lon, lat, [
+      [0, 0],
+      [220, 0],
+      [40, 100],
+    ]);
+    const mx = 111320 * Math.cos((lat * Math.PI) / 180);
+    const road = [];
+    for (let east = 30; east <= 140; east += 10) {
+      road.push([lon + east / mx, lat + 35 / 110540]);
+    }
+    const shaped = shapeBuildings([wedge], { buildings: [], roads: [road] });
+    assert.equal(shaped.stats.wedgesDropped, 1);
+    assert.equal(shaped.features.length, 0);
+  });
+
+  it("drops a triangular blanket that covers a pool", () => {
+    const wedge = metersPoly(lon, lat, [
+      [0, 0],
+      [220, 0],
+      [40, 100],
+    ]);
+    const pool = metersBox(lon + 80 / (111320 * Math.cos((lat * Math.PI) / 180)), lat + 30 / 110540, 30, 18);
+    const shaped = shapeBuildings([wedge], { buildings: [], openings: [ringOf(pool)] });
+    assert.equal(shaped.stats.wedgesDropped, 1);
+    assert.equal(shaped.features.length, 0);
+  });
+
+  function paintRect(data, width, height, frame, lon0, lat0, lon1, lat1, rgb) {
+    const mx = 111320 * Math.cos((lat * Math.PI) / 180);
+    for (let y = 0; y < height; y++) {
+      const latP = frame.north - ((y + 0.5) / height) * (frame.north - frame.south);
+      for (let x = 0; x < width; x++) {
+        const lonP = frame.west + ((x + 0.5) / width) * (frame.east - frame.west);
+        const east = (lonP - lon) * mx;
+        const north = (latP - lat) * 110540;
+        const e0 = (lon0 - lon) * mx;
+        const n0 = (lat0 - lat) * 110540;
+        const e1 = (lon1 - lon) * mx;
+        const n1 = (lat1 - lat) * 110540;
+        if (east < Math.min(e0, e1) || east > Math.max(e0, e1) || north < Math.min(n0, n1) || north > Math.max(n0, n1)) continue;
+        const i = (y * width + x) * 4;
+        data[i] = rgb[0];
+        data[i + 1] = rgb[1];
+        data[i + 2] = rgb[2];
+        data[i + 3] = 255;
+      }
+    }
+  }
+
+  function campusImagery(paint) {
+    const width = 220;
+    const height = 180;
+    const frame = {
+      west: lon - 0.0015,
+      south: lat - 0.001,
+      east: lon + 0.006,
+      north: lat + 0.004,
+    };
+    const data = new Uint8Array(width * height * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 150;
+      data[i + 1] = 148;
+      data[i + 2] = 140;
+      data[i + 3] = 255;
+    }
+    paint(data, width, height, frame);
+    return { data, width, height, frame };
+  }
+
+  it("cuts a sprawling outline into a dark roof and a warm roof at 18 m", () => {
+    const campus = metersPoly(lon, lat, [
+      [0, 0],
+      [420, 0],
+      [200, 340],
+    ], { height: 12, heightSource: "overture" });
+    const imagery = campusImagery((data, width, height, frame) => {
+      paintRect(data, width, height, frame, lon + 110 / (111320 * Math.cos((lat * Math.PI) / 180)), lat + 30 / 110540, lon + 210 / (111320 * Math.cos((lat * Math.PI) / 180)), lat + 130 / 110540, [28, 36, 40]);
+      paintRect(data, width, height, frame, lon + 230 / (111320 * Math.cos((lat * Math.PI) / 180)), lat + 80 / 110540, lon + 320 / (111320 * Math.cos((lat * Math.PI) / 180)), lat + 180 / 110540, [214, 168, 132]);
+    });
+    const shaped = shapeBuildings([campus], { buildings: [], openings: [], roads: [], imagery });
+    assert.equal(shaped.stats.coresCarved, 1);
+    assert.equal(shaped.features.length, 2);
+    for (let i = 0; i < shaped.features.length; i++) {
+      assert.equal(shaped.features[i].properties.height, 18);
+      const ring = shaped.features[i].geometry.coordinates[0];
+      assert.ok(ring.length <= 6, "core stayed a rectangle");
+    }
+    const tip = [lon + 200 / (111320 * Math.cos((lat * Math.PI) / 180)), lat + 330 / 110540];
+    let coversTip = false;
+    for (let i = 0; i < shaped.features.length; i++) {
+      if (pointInRingLL(tip, shaped.features[i].geometry.coordinates[0])) coversTip = true;
+    }
+    assert.equal(coversTip, false);
+  });
+
+  it("leaves a single-tone sprawling outline uncut", () => {
+    const campus = metersPoly(lon, lat, [
+      [0, 0],
+      [420, 0],
+      [200, 340],
+    ], { height: 12, heightSource: "overture" });
+    const imagery = campusImagery((data, width, height, frame) => {
+      paintRect(data, width, height, frame, lon + 110 / (111320 * Math.cos((lat * Math.PI) / 180)), lat + 30 / 110540, lon + 210 / (111320 * Math.cos((lat * Math.PI) / 180)), lat + 130 / 110540, [28, 36, 40]);
+    });
+    const shaped = shapeBuildings([campus], { buildings: [], openings: [], roads: [], imagery });
+    assert.equal(shaped.stats.coresCarved, 0);
+    assert.equal(shaped.features.length, 1);
+  });
+
+  it("cuts a tapered campus spike and seats the low-rise body at 18 m", () => {
+    const offsets = [
+      [100, 0],
+      [130, 90],
+      [220, 90],
+      [220, 160],
+      [0, 160],
+      [0, 90],
+      [90, 90],
+    ];
+    const campus = metersPoly(lon, lat, offsets, { height: 12, heightSource: "overture" });
+    const shaped = shapeBuildings([campus], { buildings: [], openings: [], roads: [] });
+    assert.equal(shaped.stats.tapersCut, 1);
+    assert.ok(shaped.features.length >= 1);
+    const mx = 111320 * Math.cos((lat * Math.PI) / 180);
+    const tip = [lon + 100 / mx, lat];
+    let coversTip = false;
+    for (let i = 0; i < shaped.features.length; i++) {
+      const ring = shaped.features[i].geometry.coordinates[0];
+      if (pointInRingLL(tip, ring)) coversTip = true;
+      assert.equal(shaped.features[i].properties.height, 18);
+    }
+    assert.equal(coversTip, false);
+  });
+
+  it("keeps a plain rectangular roof as one area", () => {
+    const box = metersBox(lon, lat, 40, 24, { height: 12, heightSource: "overture" });
+    const frame = geoFrame(
+      { west: lon - 0.002, south: lat - 0.0015, east: lon + 0.002, north: lat + 0.0015 },
+      { maxSide: 1024, metersPerPx: 0.5 }
+    );
+    const built = footprintsToClutter([box], frame);
+    assert.equal(built.clipZones.length, 1);
+  });
+
+  it("splits a concave roof instead of collapsing it to a wedge", () => {
+    const offsets = [];
+    for (let x = 0; x <= 240; x += 4) offsets.push([x, 0]);
+    for (let y = 4; y <= 28; y += 4) offsets.push([240, y]);
+    let x = 240;
+    for (let t = 0; t < 12; t++) {
+      x -= 8;
+      offsets.push([x, 28]);
+      offsets.push([x, 44]);
+      x -= 12;
+      offsets.push([x, 44]);
+      offsets.push([x, 28]);
+    }
+    offsets.push([0, 0]);
+    const mx = 111320 * Math.cos((lat * Math.PI) / 180);
+    const ring = offsets.map(([east, north]) => [lon + east / mx, lat + north / 110540]);
+    ring.push(ring[0].slice());
+    const feature = {
+      type: "Feature",
+      properties: { height: 18, heightSource: "overture", geomSource: "overture" },
+      geometry: { type: "Polygon", coordinates: [ring] },
+    };
+    const frame = geoFrame(
+      { west: lon - 0.001, south: lat - 0.001, east: lon + 0.004, north: lat + 0.0015 },
+      { maxSide: 2048, metersPerPx: 0.4 }
+    );
+    const built = footprintsToClutter([feature], frame);
+    assert.ok(built.clipZones.length >= 2, "roof collapsed to " + built.clipZones.length + " area");
+    let sum = 0;
+    for (let i = 0; i < built.clipZones.length; i++) {
+      const coords = built.clipZones[i].area.coordinates[0].map(([xM, yM]) => clipboardToLl(xM, yM, frame));
+      const verts = coords.length > 1 ? coords.length - 1 : coords.length;
+      assert.ok(verts <= 40, "piece has " + verts + " vertices");
+      const area = areaM(coords);
+      const tri = triOf(coords);
+      sum += area;
+      assert.ok(!(area > 5000 && tri >= 0.9), "piece is a wedge area " + Math.round(area) + " tri " + tri.toFixed(2));
+    }
+    const source = areaM(ring);
+    assert.ok(sum > source * 0.75 && sum < source * 1.2, "pieces " + Math.round(sum) + " vs source " + Math.round(source));
   });
 });
