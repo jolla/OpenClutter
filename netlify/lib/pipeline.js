@@ -56,6 +56,16 @@ const MAX_ATTENUATION_AREAS = 982;
 /** Same byte ceiling as export-jobs ZIP_DOWNLOAD_MAX. A stored zip past this is deflated. */
 const ZIP_DOWNLOAD_MAX = 4400000;
 const AREA_CAP_MAX = 5000;
+/**
+ * Hamina posts the OpenIntent JSON to /graphql. 982 areas at the old
+ * triple encoding was 3,858,995 bytes and imported. 1500 areas was
+ * 5,471,504 bytes and returned 413. Stay just under the known-good file.
+ * A dev page may raise this up to JSON_BUDGET_MAX to probe the ceiling.
+ */
+const OPENINTENT_JSON_BUDGET = 3800000;
+const JSON_BUDGET_MAX = 5000000;
+/** In-bounds pixel vertices. Two decimals is 0.01 px. Meters and feet are not repeated. */
+const OI_PIXEL_DECIMALS = 2;
 const OPENINTENT_VERSION = "2.0.1";
 const STOCK_MATERIAL_NAMES = OI_BUILDING_NAMES.slice();
 
@@ -77,7 +87,7 @@ const ZIP_README =
   "Buildings use Hamina's outdoor Building - One/Two/Five/Ten Floor materials.\n" +
   "Canopy cells on building footprints and on pavement or roads are cleared, and rings are cut around footprints (4 m buffer) and water, so foliage does not cover roofs, parking, or ponds.\n" +
   "hamina-clipboard.json matches the toggle: buildings only when foliage is off, or the same canopy polygons when it is on.\n" +
-  "Schema: OpenIntent 2.0.1, pixels+meters+feet per vertex, isotropic meter/pixel aspect.\n" +
+  "Schema: OpenIntent 2.0.1, one in-bounds pixel vertex, isotropic meter/pixel aspect.\n" +
   "(Optional) Unzip and open alignment-overlay.svg next to images/ to check rooftops and, when foliage is on, canopy.\n";
 
 const LIFT_BARE_EARTH =
@@ -120,7 +130,7 @@ const ZIP_TROUBLESHOOT =
   "Buildings omit that key. Turn on Transparency effects in Hamina settings to see through canopy.\n" +
   LIFT_BARE_EARTH +
   "The names Tree Trunk and Foliage N.N m stay off OpenIntent. A discrete tree uses Foliage - Trunk H.H.\n" +
-  "Each ring vertex is pixels+meters+feet. Materials omit itu_material_type.\n" +
+  "Each ring vertex is one in-bounds pixel coordinate. Materials omit itu_material_type.\n" +
   "Rings thinner than 4 px on one axis, or over the Hamina vertex cap, are omitted from OpenIntent\n" +
   "(VERIFY.txt warning) so one bad ring cannot drop the import. Those shapes stay on the clipboard.\n";
 
@@ -291,7 +301,34 @@ function coverageSummary(stats) {
     stats && stats.areaCapOverride
       ? " Area cap " + cap + " (test override)."
       : " Area cap " + cap + ".";
+  if (stats && stats.openIntentJsonBytes > 0) {
+    const bytes = stats.openIntentJsonBytes;
+    const size = bytes >= 100000 ? (bytes / 1e6).toFixed(2) + " MB" : Math.max(1, Math.round(bytes / 1000)) + " KB";
+    line += " OpenIntent JSON " + size + ".";
+    if (stats.stoppedBy === "bytes") {
+      const budget = stats.jsonBudget > 0 ? stats.jsonBudget : OPENINTENT_JSON_BUDGET;
+      line += " Stopped at the " + (budget / 1e6).toFixed(2) + " MB byte budget.";
+    } else if (stats.stoppedBy === "count") {
+      line += " Stopped at area cap " + cap + ".";
+    } else {
+      line += " Every area fit.";
+    }
+  }
   return line;
+}
+
+/**
+ * Dev-only JSON byte budget. An integer from 3,800,000 through 5,000,000
+ * is kept. Anything else stays at the 3.8 MB default. The count cap is
+ * still an upper bound on top of this budget.
+ */
+function parseJsonBudgetOverride(value) {
+  if (value == null || value === "" || typeof value === "boolean") return 0;
+  const text = typeof value === "number" ? String(value) : String(value).trim();
+  if (!/^\d+$/.test(text)) return 0;
+  const n = Number(text);
+  if (n < OPENINTENT_JSON_BUDGET || n > JSON_BUDGET_MAX) return 0;
+  return n;
 }
 
 /**
@@ -668,14 +705,28 @@ function simplifyRing(ring, maxPts = 32, eps = 2.5e-6) {
   return out;
 }
 
-function xyz(x, y, unit) {
+function xyz(x, y, unit, decimals) {
+  const d = decimals == null ? 6 : decimals;
   return {
     coordinate_xyz: {
-      x: +Math.max(0, x).toFixed(6),
-      y: +Math.max(0, y).toFixed(6),
+      x: +Math.max(0, x).toFixed(d),
+      y: +Math.max(0, y).toFixed(d),
       unit: unit || "pixels",
     },
   };
+}
+
+/** One pixel vertex. Hamina's schema allows a single unit. The in-bounds pixel frame is the one that lines up with the JPEG. */
+function emitPixelVertex(x, y, imgW, imgH) {
+  const c = xyz(x, y, "pixels", OI_PIXEL_DECIMALS);
+  const inset = 10 ** -OI_PIXEL_DECIMALS;
+  if (imgW > 0 && c.coordinate_xyz.x >= imgW) {
+    c.coordinate_xyz.x = +Math.max(0, imgW - inset).toFixed(OI_PIXEL_DECIMALS);
+  }
+  if (imgH > 0 && c.coordinate_xyz.y >= imgH) {
+    c.coordinate_xyz.y = +Math.max(0, imgH - inset).toFixed(OI_PIXEL_DECIMALS);
+  }
+  return c;
 }
 
 /**
@@ -949,8 +1000,8 @@ function signedAreaOi(coords) {
 }
 
 /**
- * Hamina-native rings use pixels+meters+feet triples per vertex. Validate the
- * pixel vertices (closed, in-bounds) and the triple interleave when present.
+ * Emitted rings are one in-bounds pixel vertex. A Hamina export may still
+ * interleave pixels, meters, and feet. Validate the pixel vertices either way.
  */
 function validateOiCoords(coords, imgW, imgH, spanFloorPx) {
   const pixels = oiPixelCoords(coords);
@@ -1030,11 +1081,9 @@ function finalizeOiCoords(rawPts, imgW, imgH) {
   const pts = [];
   for (const p of rawPts || []) {
     if (!p || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) continue;
-    const c = xyz(Math.min(imgW, Math.max(0, p[0])), Math.min(imgH, Math.max(0, p[1])), "pixels");
-    // toFixed can round imgW-epsilon back up to imgW. A point on the far edge
-    // is outside a strict < dimension check and one such ring drops the import.
-    if (imgW > 0 && c.coordinate_xyz.x >= imgW) c.coordinate_xyz.x = Math.round((imgW - 0.002) * 1e6) / 1e6;
-    if (imgH > 0 && c.coordinate_xyz.y >= imgH) c.coordinate_xyz.y = Math.round((imgH - 0.002) * 1e6) / 1e6;
+    const c = emitPixelVertex(Math.min(imgW, Math.max(0, p[0])), Math.min(imgH, Math.max(0, p[1])), imgW, imgH);
+    // Rounding can land on imgW. A point on the far edge is outside a strict
+    // < dimension check and one such ring drops the import.
     const xyzc = c.coordinate_xyz;
     if (!Number.isFinite(xyzc.x) || !Number.isFinite(xyzc.y)) continue;
     const last = pts[pts.length - 1];
@@ -1260,10 +1309,7 @@ function ringToOi(pts, imgW, imgH, mpuX, opts) {
   if (!pixels) return null;
   const floor = opts && Number(opts.spanFloorPx) > 0 ? Number(opts.spanFloorPx) : undefined;
   const check = validateOiCoords(pixels, imgW, imgH, floor);
-  if (!check.ok) return null;
-  const triples = expandOiCoordTriples(pixels, mpuX);
-  if (!triples) return null;
-  return validateOiCoords(triples, imgW, imgH, floor).ok ? triples : null;
+  return check.ok ? pixels : null;
 }
 
 function makeOiArea(coords, material) {
@@ -1333,13 +1379,19 @@ function capBuildingsAndTrees(buildings, trees, kinds, max, reserve) {
   // added later, so they drop before a tree does.
   groups.sort((a, b) => (a.discrete === b.discrete ? 0 : a.discrete ? -1 : 1));
   const kept = [];
+  const treeChunks = [];
   let treeGroups = 0;
   let discreteTrees = 0;
   for (let g = 0; g < groups.length; g++) {
     const group = groups[g];
     const need = group.end - group.start;
     if (keptB.length + kept.length + need > limit) continue;
-    for (let t = group.start; t < group.end; t++) kept.push(treeList[t]);
+    const slice = [];
+    for (let t = group.start; t < group.end; t++) {
+      kept.push(treeList[t]);
+      slice.push(treeList[t]);
+    }
+    treeChunks.push({ areas: slice, discrete: group.discrete });
     treeGroups++;
     if (group.discrete) discreteTrees++;
   }
@@ -1350,6 +1402,7 @@ function capBuildingsAndTrees(buildings, trees, kinds, max, reserve) {
     droppedTrees: treeList.length - kept.length,
     treeGroups,
     discreteTrees,
+    treeChunks,
   };
 }
 
@@ -1745,9 +1798,9 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
   // Clipboard meters follow the clipped OpenIntent ring, not the raw lon/lat
   // polygon. Footprints that cross the JPEG were landing at x=+8.4, y=+38,
   // y=-1999 against a south edge of -1919.
-  // OI rings are pixels+meters+feet triples — only the pixel vertices are an
-  // image grid. Treating meters/feet as pixels (PR #20) and clamping them
-  // inflated footprints and shoved them south/west of the aerial.
+  // Only the pixel vertices are an image grid. A Hamina triple export also
+  // carries meters and feet. Treating those as pixels (PR #20) inflated
+  // footprints and shoved them south/west of the aerial.
   const clipFromImage = [];
   if (!affine) {
     const pixelVerts = oiPixelCoords(oiCoords);
@@ -2092,6 +2145,45 @@ function buildOpenIntent(frame, name, imgName, areas, materials) {
   };
 }
 
+/**
+ * Keep a priority-ordered prefix of chunks inside the JSON byte budget.
+ * A chunk is one building, one tree (crown, layers, and stem), or one
+ * outdoor area. The next chunk is omitted whole when it would pass the budget.
+ */
+function fitChunksToJsonBudget(frame, name, imgName, chunks, budget) {
+  const limit = budget > 0 ? budget : OPENINTENT_JSON_BUDGET;
+  const src = [];
+  for (let i = 0; i < (chunks || []).length; i++) {
+    const chunk = chunks[i];
+    if (chunk && chunk.areas && chunk.areas.length) src.push(chunk);
+  }
+  const flat = [];
+  const ends = [];
+  for (let i = 0; i < src.length; i++) {
+    const areas = src[i].areas;
+    for (let j = 0; j < areas.length; j++) flat.push(areas[j]);
+    ends.push(flat.length);
+  }
+  const sizeAt = (n) => Buffer.byteLength(JSON.stringify(buildOpenIntent(frame, name, imgName, flat.slice(0, n))));
+  if (!ends.length) {
+    return { areas: [], chunks: [], bytes: sizeAt(0), trimmed: false };
+  }
+  let lo = 0;
+  let hi = ends.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (sizeAt(ends[mid - 1]) <= limit) lo = mid;
+    else hi = mid - 1;
+  }
+  const n = lo === 0 ? 0 : ends[lo - 1];
+  return {
+    areas: flat.slice(0, n),
+    chunks: src.slice(0, lo),
+    bytes: sizeAt(n),
+    trimmed: lo < src.length,
+  };
+}
+
 function buildClutter({
   frame,
   footprintsGeojson,
@@ -2127,6 +2219,7 @@ function buildClutter({
   includeBridges,
   maxAttenuationAreas,
   areaCapOverride,
+  jsonBudget,
 }) {
   const featureList = footprintsGeojson?.features || [];
   if (Array.isArray(warnings)) {
@@ -2152,6 +2245,7 @@ function buildClutter({
   const imgName = `${slug}.jpg`;
   const slopeTop = demUnderFootprint(terrain);
   const areaCap = maxAttenuationAreas > 0 ? maxAttenuationAreas | 0 : MAX_ATTENUATION_AREAS;
+  const jsonByteBudget = jsonBudget > 0 ? jsonBudget | 0 : OPENINTENT_JSON_BUDGET;
   const capIsOverride = areaCapOverride === true;
   const buildingCeiling =
     areaCap > MAX_ATTENUATION_AREAS ? Math.max(MAX_BUILDINGS, areaCap) : MAX_BUILDINGS;
@@ -2291,25 +2385,16 @@ function buildClutter({
     reserveFit = deckHold + waterHold;
     capped = capBuildingsAndTrees(fp.oiAreas, treeOi.areas, treeOi.kinds, areaCap, reserveFit);
   }
-  const buildingEmitted = buildingInput.length - capped.droppedBuildings;
-  const roofsLeftOut = slicedOff + capped.droppedBuildings;
-  if (roofsLeftOut > 0 && Array.isArray(warnings)) {
-    warnings.push(
-      "Kept the " +
-        buildingEmitted +
-        " largest, tallest roofs. " +
-        roofsLeftOut +
-        " more did not fit in the " +
-        areaCap +
-        " area budget."
-    );
-  }
-  const treeEmitted = capped.areas.length - buildingEmitted;
+  const buildingsBeforeBytes = buildingInput.length - capped.droppedBuildings;
+  const roofsLeftByCount = slicedOff + capped.droppedBuildings;
+  const treeEmittedBefore = capped.areas.length - buildingsBeforeBytes;
   let areas = capped.areas;
+  let outdoorKeptKinds = [];
+  let outdoorLeft = 0;
   if (planned && converted) {
     for (let i = 0; i < planned.updates.length; i++) {
       const u = planned.updates[i];
-      if (u.index < buildingEmitted && areas[u.index]) areas[u.index].area_material = u.material;
+      if (u.index < buildingsBeforeBytes && areas[u.index]) areas[u.index].area_material = u.material;
     }
     const room = Math.max(0, areaCap - areas.length);
     const fit = fitOutdoorBudget(
@@ -2318,17 +2403,9 @@ function buildClutter({
       room,
       outdoorFront == null ? undefined : { front: outdoorFront }
     );
+    outdoorKeptKinds = fit.kinds;
+    outdoorLeft = converted.areas.length - fit.items.length;
     areas = areas.concat(fit.items);
-    for (let i = 0; i < fit.kinds.length; i++) {
-      const k = fit.kinds[i];
-      if (k === "water") waterAreas++;
-      else if (k === "parking") parkingAreas++;
-      else if (k === "pole") poleAreas++;
-      else if (k === "guideway") guidewayAreas++;
-      else if (k === "bridge" || k === "footbridge") bridgeAreas++;
-      else wallAreas++;
-    }
-    parkingAreas += planned.reclass || 0;
     const drop = converted.droppedByKind || {};
     const wallDrop =
       (drop.wall || 0) + (drop.fence || 0) + (drop.retaining || 0) + (drop.hedge || 0);
@@ -2347,6 +2424,91 @@ function buildClutter({
         if (notes[i] && warnings.indexOf(notes[i]) < 0) warnings.push(notes[i]);
       }
     }
+  }
+  const chunks = [];
+  for (let i = 0; i < buildingsBeforeBytes; i++) chunks.push({ role: "building", areas: [areas[i]] });
+  let cursor = buildingsBeforeBytes;
+  const treePieces = [];
+  const treeChunkList = capped.treeChunks || [];
+  let treeChunkAreas = 0;
+  for (let g = 0; g < treeChunkList.length; g++) treeChunkAreas += treeChunkList[g].areas.length;
+  if (treeChunkAreas === treeEmittedBefore) {
+    for (let g = 0; g < treeChunkList.length; g++) {
+      const group = treeChunkList[g];
+      const n = group.areas.length;
+      treePieces.push({ role: "tree", discrete: group.discrete, areas: areas.slice(cursor, cursor + n) });
+      cursor += n;
+    }
+  } else {
+    while (cursor < buildingsBeforeBytes + treeEmittedBefore) {
+      treePieces.push({ role: "tree", discrete: false, areas: [areas[cursor]] });
+      cursor++;
+    }
+  }
+  const deckPieces = [];
+  const waterPieces = [];
+  const latePieces = [];
+  for (let i = 0; i < outdoorKeptKinds.length; i++) {
+    const kind = outdoorKeptKinds[i];
+    const piece = { role: "outdoor", kind, areas: [areas[cursor]] };
+    cursor++;
+    if (kind === "guideway" || kind === "bridge" || kind === "footbridge") deckPieces.push(piece);
+    else if (kind === "water" || kind === "parking") waterPieces.push(piece);
+    else latePieces.push(piece);
+  }
+  // Buildings, then water and parking, then the rail and road decks, then trees.
+  // Walls and poles are last. A byte trim drops that tail first.
+  for (let i = 0; i < waterPieces.length; i++) chunks.push(waterPieces[i]);
+  for (let i = 0; i < deckPieces.length; i++) chunks.push(deckPieces[i]);
+  for (let i = 0; i < treePieces.length; i++) chunks.push(treePieces[i]);
+  for (let i = 0; i < latePieces.length; i++) chunks.push(latePieces[i]);
+  const fitted = fitChunksToJsonBudget(frame, name, imgName, chunks, jsonByteBudget);
+  areas = fitted.areas;
+  let buildingEmitted = 0;
+  let treeEmitted = 0;
+  let treeGroupsKept = 0;
+  let discreteKept = 0;
+  waterAreas = 0;
+  parkingAreas = 0;
+  wallAreas = 0;
+  poleAreas = 0;
+  guidewayAreas = 0;
+  bridgeAreas = 0;
+  for (let i = 0; i < fitted.chunks.length; i++) {
+    const chunk = fitted.chunks[i];
+    if (chunk.role === "building") buildingEmitted++;
+    else if (chunk.role === "tree") {
+      treeEmitted += chunk.areas.length;
+      treeGroupsKept++;
+      if (chunk.discrete) discreteKept++;
+    } else if (chunk.kind === "water") waterAreas++;
+    else if (chunk.kind === "parking") parkingAreas++;
+    else if (chunk.kind === "pole") poleAreas++;
+    else if (chunk.kind === "guideway") guidewayAreas++;
+    else if (chunk.kind === "bridge" || chunk.kind === "footbridge") bridgeAreas++;
+    else wallAreas++;
+  }
+  if (planned) {
+    for (let i = 0; i < planned.updates.length; i++) {
+      if (planned.updates[i].index < buildingEmitted) parkingAreas++;
+    }
+  }
+  const roofsLeftOut = fp.oiAreas.length - buildingEmitted;
+  let stoppedBy = "areas";
+  if (fitted.trimmed) stoppedBy = "bytes";
+  else if (roofsLeftByCount > 0 || capped.droppedTrees > 0 || outdoorLeft > 0) stoppedBy = "count";
+  if (roofsLeftOut > 0 && Array.isArray(warnings)) {
+    const why =
+      buildingsBeforeBytes > buildingEmitted ? "OpenIntent byte budget" : areaCap + " area budget";
+    warnings.push(
+      "Kept the " +
+        buildingEmitted +
+        " largest, tallest roofs. " +
+        roofsLeftOut +
+        " more did not fit in the " +
+        why +
+        "."
+    );
   }
   const clip = emptyClipboard();
   const seenTypes = new Set(clip.attenuatingZoneTypes.map((t) => t.id));
@@ -2375,11 +2537,12 @@ function buildClutter({
     if (t.id && String(t.id).indexOf("foliage-m-") === 0) exactFoliageHeights++;
   }
   const oi = buildOpenIntent(frame, name, imgName, areas, materials);
+  const oiJson = JSON.stringify(oi);
   const stats = {
     ...fp.stats,
-    trees: capped.treeGroups,
+    trees: treeGroupsKept,
     treesMeasured: veg.count,
-    discreteTrees: capped.discreteTrees,
+    discreteTrees: discreteKept,
     treesSource: omitFoliage
       ? "none"
       : foliageOn
@@ -2399,7 +2562,7 @@ function buildClutter({
     droppedInvalid: fp.stats.droppedInvalid || 0,
     droppedTreeRings: treeOi.droppedInvalid,
     droppedAreasCap: roofsLeftOut,
-    droppedTreeAreas: capped.droppedTrees,
+    droppedTreeAreas: treeOi.areas.length - treeEmitted,
     attenuationAreasEmitted: areas.length,
     openIntentBuildingAreas: buildingEmitted,
     openIntentTreeAreas: treeEmitted,
@@ -2419,6 +2582,9 @@ function buildClutter({
     bridgeAreas,
     areaCap,
     areaCapOverride: capIsOverride,
+    openIntentJsonBytes: Buffer.byteLength(oiJson),
+    jsonBudget: jsonByteBudget,
+    stoppedBy,
     openintentVersion: OPENINTENT_VERSION,
     openclutterVersion: OPENCLUTTER_VERSION,
     coordinateUnit: "pixels",
@@ -2464,7 +2630,7 @@ function buildClutter({
     // the terrain paste, and the debug notes stay out of this zip.
     zip = zipUnderLimit(
       [
-        { name: `openIntent_${slug}.json`, data: Buffer.from(JSON.stringify(oi)) },
+        { name: `openIntent_${slug}.json`, data: Buffer.from(oiJson) },
         { name: "images/" + imgName, data: imgBuf },
       ],
       ZIP_DOWNLOAD_MAX
@@ -2493,8 +2659,12 @@ module.exports = {
   MAX_BUILDINGS,
   MAX_ATTENUATION_AREAS,
   AREA_CAP_MAX,
+  OPENINTENT_JSON_BUDGET,
+  JSON_BUDGET_MAX,
+  OI_PIXEL_DECIMALS,
   ZIP_DOWNLOAD_MAX,
   parseAreaCapOverride,
+  parseJsonBudgetOverride,
   raisedDeckCap,
   raisedAreaHolds,
   MIN_OI_SPAN_PX,
@@ -2530,6 +2700,8 @@ module.exports = {
   oiAreaMaterialName,
   oiPixelCoords,
   expandOiCoordTriples,
+  emitPixelVertex,
+  fitChunksToJsonBudget,
   emitIfValid,
   capAttenuationAreas,
   capBuildingsAndTrees,

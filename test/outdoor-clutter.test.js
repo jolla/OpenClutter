@@ -57,8 +57,9 @@ function square(lon0, lat0, lon1, lat1, props) {
   };
 }
 
-function meterSpan(area) {
-  const pts = area.area.coordinates.filter((c) => c.coordinate_xyz.unit === "meters");
+function meterSpan(area, mpu) {
+  const pts = area.area.coordinates.filter((c) => c.coordinate_xyz.unit === "pixels");
+  const scale = mpu > 0 ? mpu : 1;
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -70,7 +71,11 @@ function meterSpan(area) {
     if (p.x > maxX) maxX = p.x;
     if (p.y > maxY) maxY = p.y;
   }
-  return { w: maxX - minX, h: maxY - minY, short: Math.min(maxX - minX, maxY - minY) };
+  return {
+    w: (maxX - minX) * scale,
+    h: (maxY - minY) * scale,
+    short: Math.min(maxX - minX, maxY - minY) * scale,
+  };
 }
 
 function findArea(areas, name) {
@@ -194,13 +199,13 @@ describe("outdoor clutter geometry", () => {
     assert.equal(parking.area_material.rf_properties.attenuation_per_m, 2);
     assert.equal(fence.area_material.name, "Fence 2.1");
     assert.equal(fence.area_material.rf_properties.attenuation_per_m, 1);
-    assert.ok(meterSpan(fence).short < 1, "fence short side " + meterSpan(fence).short);
-    assert.ok(meterSpan(fence).short > 0.05);
+    assert.ok(meterSpan(fence, f.mpuX).short < 1, "fence short side " + meterSpan(fence, f.mpuX).short);
+    assert.ok(meterSpan(fence, f.mpuX).short > 0.05);
     assert.equal(wall.area_material.rf_properties.attenuation_per_m, 8);
-    assert.ok(meterSpan(wall).short < 1);
+    assert.ok(meterSpan(wall, f.mpuX).short < 1);
     assert.equal(pole.area_material.name, "Light pole 9.0");
     assert.equal(pole.area_material.rf_properties.attenuation_per_m, 10);
-    assert.ok(meterSpan(pole).short < 0.6);
+    assert.ok(meterSpan(pole, f.mpuX).short < 0.6);
     const polePx = pole.area.coordinates.filter((c) => c.coordinate_xyz.unit === "pixels");
     assert.equal(polePx.length, 11);
     assert.match(built.stats.summary, /Water 1\. Parking 1\. Walls 2\. Poles 1\./);
@@ -485,10 +490,10 @@ describe("elevated rail guideways", () => {
     const rail = strips.find((a) => a.area_material.bottom_height === 6);
     assert.equal(mono.area_material.name, "Guideway 4.5 @ 6.5");
     assert.equal(mono.area_material.top_height, 11);
-    assert.ok(meterSpan(mono).short > 2.2 && meterSpan(mono).short < 4.2, "monorail width " + meterSpan(mono).short);
+    assert.ok(meterSpan(mono, f.mpuX).short > 2.2 && meterSpan(mono, f.mpuX).short < 4.2, "monorail width " + meterSpan(mono, f.mpuX).short);
     assert.equal(rail.area_material.name, "Guideway 4.5 @ 6.0");
     assert.equal(rail.area_material.top_height, 10.5);
-    assert.ok(meterSpan(rail).short > 7 && meterSpan(rail).short < 10.5, "rail width " + meterSpan(rail).short);
+    assert.ok(meterSpan(rail, f.mpuX).short > 7 && meterSpan(rail, f.mpuX).short < 10.5, "rail width " + meterSpan(rail, f.mpuX).short);
     assert.equal(/Guideway/.test(built.stats.summary.split("Foliage")[0]), false);
   });
 
@@ -560,7 +565,7 @@ describe("elevated rail guideways", () => {
     });
     const area = findArea(built.openintent.floorplans[0].attenuation_areas, "Guideway");
     assert.ok(area);
-    const span = meterSpan(area);
+    const span = meterSpan(area, f.mpuX);
     assert.ok(span.short > 10 && span.short < 14, "deck width " + span.short);
     assert.equal(built.stats.guidewayAreas, 1);
   });
@@ -830,7 +835,7 @@ describe("elevated rail guideways", () => {
     assert.equal(area.area_material.top_height, 8.6);
     assert.equal(area.area_material.rf_properties.attenuation_per_m, 9);
     assert.equal(canonicalAreaMaterial(area.area_material).name, area.area_material.name);
-    const span = meterSpan(area);
+    const span = meterSpan(area, f.mpuX);
     assert.ok(span.short > 11 && span.short < 14.5, "deck width " + span.short);
     assert.equal(built.stats.bridgeAreas, 1);
     assert.match(built.stats.summary, /Bridges 1\./);

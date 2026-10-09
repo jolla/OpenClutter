@@ -395,12 +395,9 @@ describe("Hamina OpenIntent material compatibility", () => {
       );
       assert.equal("itu_material_type" in a.area_material, false);
       const coords = a.area.coordinates;
-      assert.ok(coords.length >= 12);
-      assert.equal(coords.length % 3, 0);
-      for (let i = 0; i < coords.length; i += 3) {
+      assert.ok(coords.length >= 4);
+      for (let i = 0; i < coords.length; i++) {
         assert.equal(coords[i].coordinate_xyz.unit, "pixels");
-        assert.equal(coords[i + 1].coordinate_xyz.unit, "meters");
-        assert.equal(coords[i + 2].coordinate_xyz.unit, "feet");
       }
     }
   });

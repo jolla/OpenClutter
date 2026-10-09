@@ -13,7 +13,7 @@ const {
   unifyFrameMpu,
   isAspectLocked,
 } = require("../netlify/lib/geo-frame");
-const { footprintsToClutter, buildClutter, oiPixelCoords } = require("../netlify/lib/pipeline");
+const { footprintsToClutter, buildClutter, oiPixelCoords, expandOiCoordTriples } = require("../netlify/lib/pipeline");
 const { conflateFootprints } = require("../netlify/lib/conflate");
 const { scoreClipboardOverlayAlignment, scoreOiContentGrid } = require("../netlify/lib/overlay");
 const { OI_BUILDING_NAMES } = require("../netlify/lib/materials");
@@ -112,12 +112,15 @@ describe("clipboard ↔ alignment-overlay scale", () => {
     );
     assert.equal(fp.oiAreas.length, 1);
     const oiCoords = fp.oiAreas[0].area.coordinates;
-    // Bug reproduction: treat every triple vertex as an image pixel, then clamp.
+    assert.equal(oiCoords.every((c) => c.coordinate_xyz.unit === "pixels"), true);
+    // Bug reproduction: expand the pixel ring the way the old triple export did,
+    // then treat every meter and foot vertex as an image pixel.
+    const triples = expandOiCoordTriples(oiCoords, frame.mpuX);
     const badZones = [
       {
         area: {
           coordinates: [
-            oiCoords.slice(0, -3).map((c) => {
+            triples.slice(0, -3).map((c) => {
               const p = c.coordinate_xyz;
               const m = pxToClipboard(p.x, p.y, frame);
               return [
@@ -143,7 +146,8 @@ describe("clipboard ↔ alignment-overlay scale", () => {
     assert.equal(good.ok, true, good.failures.join("; "));
     const pixels = oiPixelCoords(oiCoords);
     assert.ok(pixels.length >= 4);
-    assert.equal(pixels.length * 3, oiCoords.length);
+    assert.equal(pixels.length, oiCoords.length);
+    assert.equal(triples.length, oiCoords.length * 3);
   });
 
   it("Oak Creek fixture: isotropic lock + clipboard on overlay rooftops", () => {

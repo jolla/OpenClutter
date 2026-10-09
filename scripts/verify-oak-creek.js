@@ -143,7 +143,7 @@ function checkZip(zipBuf) {
     if (matKeys && matKeys.join(",") !== "name,rf_properties,top_height,display_color") {
       failures.push("material key order/shape " + matKeys.join(","));
     }
-    let badTriples = 0;
+    let badRings = 0;
     let aspectFail = false;
     const px = (fp.dimensions || []).find((d) => d.unit === "pixels");
     const meters = (fp.dimensions || []).find((d) => d.unit === "meters");
@@ -171,22 +171,25 @@ function checkZip(zipBuf) {
     }
     for (const a of areaList) {
       const coords = a.area && a.area.coordinates;
-      if (!coords || coords.length < 12 || coords.length % 3 !== 0) {
-        badTriples++;
+      if (!coords || coords.length < 4) {
+        badRings++;
         continue;
       }
-      for (let i = 0; i < Math.min(coords.length, 12); i += 3) {
-        if (
-          coords[i].coordinate_xyz.unit !== "pixels" ||
-          coords[i + 1].coordinate_xyz.unit !== "meters" ||
-          coords[i + 2].coordinate_xyz.unit !== "feet"
-        ) {
-          badTriples++;
+      const first = coords[0].coordinate_xyz;
+      const last = coords[coords.length - 1].coordinate_xyz;
+      if (!first || first.unit !== "pixels" || !last || first.x !== last.x || first.y !== last.y) {
+        badRings++;
+        continue;
+      }
+      for (let i = 0; i < coords.length; i++) {
+        const p = coords[i].coordinate_xyz;
+        if (!p || p.unit !== "pixels" || !(p.x >= 0) || !(p.y >= 0)) {
+          badRings++;
           break;
         }
       }
     }
-    if (badTriples) failures.push("attenuation rings missing pixels+meters+feet triples: " + badTriples);
+    if (badRings) failures.push("attenuation rings are not closed in-bounds pixels: " + badRings);
     void aspectFail;
   }
   if (jpegName) {

@@ -40,6 +40,20 @@ function areaCapOverride() {
   return n;
 }
 
+function jsonBudgetOverride() {
+  if (!devPage()) return undefined;
+  let raw = "";
+  try {
+    raw = new URLSearchParams(location.search || "").get("jsonBudget");
+  } catch (err) {
+    return undefined;
+  }
+  if (raw == null || !/^\d+$/.test(raw)) return undefined;
+  const n = Number(raw);
+  if (n < 3800000 || n > 5000000) return undefined;
+  return n;
+}
+
 function selectedImageryQuality() {
   const sel = document.getElementById("map-quality");
   const value = sel ? String(sel.value || "") : "";
@@ -817,6 +831,7 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
       terrainStyle: terrain ? "sloped" : undefined,
       imageryQuality: devPage() ? selectedImageryQuality() : undefined,
       areaCap: areaCapOverride(),
+      jsonBudget: jsonBudgetOverride(),
       trees: foliage ? trees : [],
       treesSource: foliage ? treesSource : "none",
       canopyHits: foliage && canopyHits && canopyHits.length ? canopyHits : undefined,
@@ -912,6 +927,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       liftKind: liftSamples && terrainPaste.liftKind ? terrainPaste.liftKind : undefined,
       imageryQuality: devPage() ? selectedImageryQuality() : undefined,
       areaCap: areaCapOverride(),
+      jsonBudget: jsonBudgetOverride(),
       trees: foliage ? trees : [],
       treesSource: foliage ? treesSource : "none",
       canopyHits: foliage && canopyHits && canopyHits.length ? canopyHits : undefined,

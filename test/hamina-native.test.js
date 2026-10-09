@@ -123,18 +123,17 @@ describe("Hamina-native OpenIntent gold shape", () => {
       assert.ok(GOLD_BUILDING_NAMES.includes(name) || isVegetationOiName(name), name);
       if (isVegetationOiName(name)) vegetationAreas++;
       const coords = a.area.coordinates;
-      assert.equal(coords.length % 3, 0);
-      assert.ok(coords.length >= 12);
-      for (let i = 0; i < coords.length; i += 3) {
+      assert.ok(coords.length >= 4);
+      for (let i = 0; i < coords.length; i++) {
         assert.equal(coords[i].coordinate_xyz.unit, "pixels");
-        assert.equal(coords[i + 1].coordinate_xyz.unit, "meters");
-        assert.equal(coords[i + 2].coordinate_xyz.unit, "feet");
+        assert.ok(coords[i].coordinate_xyz.x < frame.imgW);
+        assert.ok(coords[i].coordinate_xyz.y < frame.imgH);
       }
       assert.equal(validateOiCoords(coords, frame.imgW, frame.imgH).ok, true);
       const pixels = oiPixelCoords(coords);
-      assert.ok(pixels.length >= 4);
+      assert.equal(pixels.length, coords.length);
       const again = expandOiCoordTriples(pixels, frame.mpuX);
-      assert.equal(again.length, coords.length);
+      assert.equal(again.length, coords.length * 3);
     }
     assert.ok(vegetationAreas >= 1);
     const dumped = JSON.stringify(built.openintent);
