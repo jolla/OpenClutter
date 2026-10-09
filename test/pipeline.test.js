@@ -1407,6 +1407,11 @@ describe("dev area cap override", () => {
   it("names the active cap, and the override, in the details line", () => {
     const base = { buildingsKept: 1, fetched: 1, attenuationAreasEmitted: 1, includeFoliage: false, treesKept: 0, treesSource: "none" };
     assert.match(coverageSummary(base), /Area cap 982\.$/);
+    const named = coverageSummary(Object.assign({}, base, {
+      largeDropNotes: ["Dropped building 1200 m2: triangular outline covered open ground."],
+    }));
+    assert.match(named, /Dropped building 1200 m2: triangular outline covered open ground\./);
+    assert.equal(/\u2014/.test(named), false);
     assert.equal(/test override/.test(coverageSummary(base)), false);
     assert.match(coverageSummary(Object.assign({}, base, { areaCap: 3000, areaCapOverride: true })), /Area cap 3000 \(test override\)\.$/);
     assert.match(coverageSummary(Object.assign({}, base, { areaCap: 982, areaCapOverride: true })), /Area cap 982 \(test override\)\.$/);

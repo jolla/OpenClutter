@@ -1634,6 +1634,7 @@ async function handleClutter(event) {
         footprintMeta.osmParts = shaped.stats.parts;
         footprintMeta.poolOpenings = shaped.stats.openings;
         footprintMeta.parentsDropped = shaped.stats.parentsDropped;
+        footprintMeta.largeDropNotes = shaped.stats.largeDrops || [];
       } catch {
         warnings.push("Building outlines kept the source footprint. A pool cut did not finish.");
       }

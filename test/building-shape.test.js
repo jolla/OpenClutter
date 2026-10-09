@@ -2,6 +2,8 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { geoFrame, pxToLl, clipboardToLl } = require("../netlify/lib/geo-frame");
 const { footprintsToClutter, capOiRingPx, ringAreaPx } = require("../netlify/lib/pipeline");
 const {
@@ -372,6 +374,8 @@ describe("building outlines", () => {
     const shaped = shapeBuildings([wedge], { buildings: [], roads: [road] });
     assert.equal(shaped.stats.wedgesDropped, 1);
     assert.equal(shaped.features.length, 0);
+    assert.match(shaped.stats.largeDrops.join(" "), /Dropped building \d+ m2: triangular outline covered open ground\./);
+    assert.equal(shaped.stats.largeDrops.join(" ").includes("\u2014"), false);
   });
 
   it("drops a triangular blanket that covers a pool", () => {
@@ -452,6 +456,158 @@ describe("building outlines", () => {
       if (pointInRingLL(tip, shaped.features[i].geometry.coordinates[0])) coversTip = true;
     }
     assert.equal(coversTip, false);
+  });
+
+  it("keeps the Wynn retail podium when roof cores replace the coarse triangle", () => {
+    const fc = JSON.parse(
+      fs.readFileSync(path.join(__dirname, "fixtures/wynn-golf/retail-111322055.geojson"), "utf8")
+    );
+    const osm = fc.features[0].geometry.coordinates[0];
+    const tri = [
+      [-115.1683421, 36.1256826],
+      [-115.1641422, 36.12695],
+      [-115.1668834, 36.128554],
+      [-115.1683421, 36.1256826],
+    ];
+    const podium = [-115.1683, 36.12571];
+    const golf = [-115.16775, 36.1259];
+    const pool = [
+      [-115.16755, 36.12555],
+      [-115.16735, 36.12555],
+      [-115.16735, 36.12572],
+      [-115.16755, 36.12572],
+      [-115.16755, 36.12555],
+    ];
+    const dark = [
+      [-115.16547, 36.1269],
+      [-115.1664, 36.12714],
+      [-115.1668, 36.12611],
+      [-115.16587, 36.12587],
+      [-115.16547, 36.1269],
+    ];
+    const warm = [
+      [-115.16435, 36.1276],
+      [-115.16529, 36.12784],
+      [-115.16572, 36.12674],
+      [-115.16478, 36.1265],
+      [-115.16435, 36.1276],
+    ];
+    assert.equal(fc.features[0].properties.osmId, 111322055);
+    assert.equal(pointInRingLL(podium, osm), true);
+    assert.equal(pointInRingLL(golf, tri), true);
+    assert.equal(pointInRingLL(golf, osm), false);
+    const poolAt = centroidLL(pool);
+    assert.equal(pointInRingLL(poolAt, osm), true);
+    const feature = {
+      type: "Feature",
+      properties: { height: 12, heightSource: "overture", geomSource: "overture" },
+      geometry: { type: "Polygon", coordinates: [osm] },
+    };
+    const frameLL = { west: -115.1692, south: 36.1242, east: -115.1636, north: 36.1291 };
+    const width = 480;
+    const height = 420;
+    const data = new Uint8Array(width * height * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 150;
+      data[i + 1] = 148;
+      data[i + 2] = 140;
+      data[i + 3] = 255;
+    }
+    function paint(ring, rgb) {
+      let minLon = Infinity;
+      let maxLon = -Infinity;
+      let minLat = Infinity;
+      let maxLat = -Infinity;
+      for (const p of ring) {
+        if (p[0] < minLon) minLon = p[0];
+        if (p[0] > maxLon) maxLon = p[0];
+        if (p[1] < minLat) minLat = p[1];
+        if (p[1] > maxLat) maxLat = p[1];
+      }
+      const spanX = frameLL.east - frameLL.west;
+      const spanY = frameLL.north - frameLL.south;
+      const x0 = Math.max(0, Math.floor(((minLon - frameLL.west) / spanX) * width) - 1);
+      const x1 = Math.min(width - 1, Math.ceil(((maxLon - frameLL.west) / spanX) * width) + 1);
+      const y0 = Math.max(0, Math.floor(((frameLL.north - maxLat) / spanY) * height) - 1);
+      const y1 = Math.min(height - 1, Math.ceil(((frameLL.north - minLat) / spanY) * height) + 1);
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          const lon = frameLL.west + ((x + 0.5) / width) * spanX;
+          const lat = frameLL.north - ((y + 0.5) / height) * spanY;
+          if (!pointInRingLL([lon, lat], ring)) continue;
+          const i = (y * width + x) * 4;
+          data[i] = rgb[0];
+          data[i + 1] = rgb[1];
+          data[i + 2] = rgb[2];
+          data[i + 3] = 255;
+        }
+      }
+    }
+    paint(dark, [28, 36, 40]);
+    paint(warm, [214, 168, 132]);
+    const shaped = shapeBuildings([feature], {
+      buildings: [osm],
+      openings: [pool],
+      roads: [],
+      imagery: { data, width, height, frame: frameLL },
+    });
+    assert.equal(shaped.stats.coresCarved, 1);
+    assert.equal(shaped.stats.largeDrops.length, 0);
+    const cores = shaped.features.filter((f) => f.properties && f.properties.roofCore);
+    assert.equal(cores.length, 2);
+    let podiumHit = 0;
+    let golfHit = 0;
+    let poolHit = 0;
+    for (let i = 0; i < shaped.features.length; i++) {
+      const ring = shaped.features[i].geometry.coordinates[0];
+      if (pointInRingLL(podium, ring)) podiumHit++;
+      if (pointInRingLL(golf, ring)) golfHit++;
+      if (pointInRingLL(poolAt, ring)) poolHit++;
+      if (shaped.features[i].properties && shaped.features[i].properties.roofCore) {
+        assert.equal(shaped.features[i].properties.height, 18);
+      }
+    }
+    assert.ok(podiumHit >= 1, "retail wing was dropped");
+    assert.equal(golfHit, 0);
+    assert.equal(poolHit, 0);
+    const copy = {
+      type: "Feature",
+      properties: { height: 12, heightSource: "overture", geomSource: "overture" },
+      geometry: { type: "Polygon", coordinates: [tri] },
+    };
+    const restored = shapeBuildings([copy], { buildings: [osm], openings: [pool], roads: [] });
+    assert.equal(restored.stats.wedgesReplaced, 1);
+    assert.equal(restored.stats.wedgesDropped, 0);
+    let restoredPodium = false;
+    let restoredGolf = false;
+    let restoredPool = false;
+    for (let i = 0; i < restored.features.length; i++) {
+      const ring = restored.features[i].geometry.coordinates[0];
+      if (pointInRingLL(podium, ring)) restoredPodium = true;
+      if (pointInRingLL(golf, ring)) restoredGolf = true;
+      if (pointInRingLL(poolAt, ring)) restoredPool = true;
+    }
+    assert.equal(restoredPodium, true);
+    assert.equal(restoredGolf, false);
+    assert.equal(restoredPool, false);
+    const map = geoFrame(
+      { west: -115.1694, south: 36.1244, east: -115.1638, north: 36.1289, name: "Wynn podium" },
+      { maxSide: 1600, metersPerPx: 0.5 }
+    );
+    const built = footprintsToClutter(shaped.features, map);
+    let overlayPodium = 0;
+    let overlayPool = 0;
+    let overlayGolf = 0;
+    for (let i = 0; i < built.overlayRings.length; i++) {
+      const ring = built.overlayRings[i].map((p) => pxToLl(p[0], p[1], map));
+      if (pointInRingLL(podium, ring)) overlayPodium++;
+      if (pointInRingLL(poolAt, ring)) overlayPool++;
+      if (pointInRingLL(golf, ring)) overlayGolf++;
+    }
+    assert.ok(overlayPodium >= 1, "podium missing after the vertex cap");
+    assert.equal(overlayPool, 0);
+    assert.equal(overlayGolf, 0);
+    assert.equal(built.stats.largeDropNotes.join(" ").includes("\u2014"), false);
   });
 
   it("leaves a single-tone sprawling outline uncut", () => {
