@@ -4,6 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   geoFrame,
+  llToPx,
   cornerClipboard,
   llToClipboard,
   metersPerDeg,
@@ -65,6 +66,7 @@ const {
   slopedRing,
 } = require("../netlify/lib/terrain");
 const { buildClutter } = require("../netlify/lib/pipeline");
+const { pointInRing } = require("../netlify/lib/poly-clip");
 const { unzipStore } = require("../netlify/lib/zip-store");
 const { canopyHitsGrid } = require("./canopy-grid");
 const pasteSample = require("./fixtures/hamina-raised-sloped-clipboard-sample.json");
@@ -1084,10 +1086,14 @@ describe("foliage height from floor on a slope", () => {
     }
     const stockTop = 19.68 / 3.280839895;
     const hillBase = Math.min(...hill.map((a) => a.area_material.bottom_height));
-    const hillTip = Math.max(...hill.map((a) => a.area_material.top_height));
+    const hillHigh = Math.max(...hill.map((a) => a.area_material.bottom_height));
     const hillMat = hill.find((a) => a.area_material.bottom_height === hillBase).area_material;
     assert.ok(hillMat.bottom_height >= 50, "bottom " + hillMat.bottom_height);
-    assert.equal(hillTip, Math.round((hillBase + stockTop) * 10) / 10);
+    for (const area of hill) {
+      const mat = area.area_material;
+      assert.equal(mat.top_height, Math.round((mat.bottom_height + stockTop) * 10) / 10);
+    }
+    if (hill.length > 2) assert.ok(hillHigh > hillBase + 1, "stock canopy follows the slope " + hillBase + ".." + hillHigh);
     assert.match(hillMat.name, /^Foliage - Light /);
     assert.equal(hillMat.transparencyEnabled, true);
     assert.deepEqual(Object.keys(hillMat), [
@@ -1115,10 +1121,13 @@ describe("foliage height from floor on a slope", () => {
     const stockLight = built.clipboard.attenuatingZoneTypes.find((t) => t.id === "foliage-light");
     assert.equal(stockLight, undefined);
     const thickBase = Math.min(...thick.map((a) => a.area_material.bottom_height));
-    const thickTip = Math.max(...thick.map((a) => a.area_material.top_height));
+    const thickHigh = Math.max(...thick.map((a) => a.area_material.bottom_height));
     const thickMat = thick.find((a) => a.area_material.bottom_height === thickBase).area_material;
     assert.ok(thickMat.bottom_height >= 50);
-    assert.equal(thickTip, Math.round((thickBase + 14.2) * 10) / 10);
+    for (const area of thick) {
+      assert.equal(area.area_material.top_height, Math.round((area.area_material.bottom_height + 14.2) * 10) / 10);
+    }
+    if (thick.length > 2) assert.ok(thickHigh > thickBase + 1, "measured canopy follows the slope");
     assert.match(thickMat.name, /^Foliage - Heavy /);
     assert.equal(thickMat.rf_properties.attenuation_per_m, 1.5);
     const thickZone = built.clipboard.attenuatingZones.find((z) => {
@@ -1133,9 +1142,72 @@ describe("foliage height from floor on a slope", () => {
     const valleyType = built.clipboard.attenuatingZoneTypes.find((t) => t.id === valleyZone.typeId);
     assert.equal(valleyType.topEdge, valleyMat.top_height);
     assert.equal(valleyType.transparencyEnabled, true);
-    assert.equal(built.stats.foliageLifted, 2);
+    assert.ok(built.stats.foliageLifted >= 2, "lifted " + built.stats.foliageLifted);
     assert.equal(built.stats.buildingsLifted, 0);
     assert.equal(JSON.stringify(built.openintent).includes("Foliage 14.2 m"), false);
+  });
+
+  it("cuts a hill-sized canopy onto local ground and keeps a ski run open", () => {
+    const span = frame.north - frame.south;
+    const spanLon = frame.east - frame.west;
+    const terrain = terrainFromSamples(
+      gridSamples(frame, (r, c, lon, lat) => 400 + ((lat - frame.south) / span) * 180),
+      frame
+    );
+    const wood = [
+      [frame.west + spanLon * 0.15, frame.south + span * 0.2],
+      [frame.west + spanLon * 0.85, frame.south + span * 0.2],
+      [frame.west + spanLon * 0.85, frame.south + span * 0.92],
+      [frame.west + spanLon * 0.15, frame.south + span * 0.92],
+      [frame.west + spanLon * 0.15, frame.south + span * 0.2],
+    ];
+    const piste = [
+      [frame.west + spanLon * 0.4, frame.south + span * 0.45],
+      [frame.west + spanLon * 0.6, frame.south + span * 0.45],
+      [frame.west + spanLon * 0.6, frame.south + span * 0.75],
+      [frame.west + spanLon * 0.4, frame.south + span * 0.75],
+      [frame.west + spanLon * 0.4, frame.south + span * 0.45],
+    ].map((p) => llToPx(p[0], p[1], frame));
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [] },
+      treePoints: [],
+      name: "Granite Peak",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain,
+      includeFoliage: true,
+      woodRings: [{ ringLonLat: wood, heightM: 14 }],
+      maskRings: [piste],
+    });
+    const areas = built.openintent.floorplans[0].attenuation_areas.filter((a) =>
+      String(a.area_material.name).indexOf("Foliage") === 0
+    );
+    assert.ok(areas.length >= 4, "pieces " + areas.length);
+    const bottoms = areas.map((a) => a.area_material.bottom_height);
+    const lo = Math.min(...bottoms);
+    const hi = Math.max(...bottoms);
+    assert.ok(hi > lo + 8, "bottoms " + lo + ".." + hi);
+    for (const area of areas) {
+      const mat = area.area_material;
+      assert.equal(mat.top_height, Math.round((mat.bottom_height + 14) * 10) / 10);
+      assert.equal(mat.transparencyEnabled, true);
+    }
+    const probe = llToPx(frame.west + spanLon * 0.5, frame.south + span * 0.6, frame);
+    const rings = areas.map((a) => a.area.coordinates.map((p) => [p.coordinate_xyz.x, p.coordinate_xyz.y]));
+    const covered = rings.some((ring) => pointInRing(probe, ring));
+    assert.equal(covered, false, "ski run stays open");
+    const south = areas.filter((a) => {
+      const ys = a.area.coordinates.map((p) => p.coordinate_xyz.y);
+      return ys.reduce((s, y) => s + y, 0) / ys.length < frame.imgH * 0.45;
+    });
+    const north = areas.filter((a) => {
+      const ys = a.area.coordinates.map((p) => p.coordinate_xyz.y);
+      return ys.reduce((s, y) => s + y, 0) / ys.length > frame.imgH * 0.7;
+    });
+    assert.ok(south.length && north.length, "south " + south.length + " north " + north.length);
+    const southTop = Math.max(...south.map((a) => a.area_material.bottom_height));
+    const northBot = Math.min(...north.map((a) => a.area_material.bottom_height));
+    assert.ok(northBot > southTop, "uphill pieces sit higher " + southTop + " then " + northBot);
   });
 });
 

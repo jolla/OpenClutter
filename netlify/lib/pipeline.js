@@ -1460,19 +1460,46 @@ function capBuildingsAndTrees(buildings, trees, kinds, max, reserve) {
     while (j < treeList.length && kindList[j] === "layer") j++;
     const discrete = j < treeList.length && kindList[j] === "trunk";
     if (discrete) j++;
-    groups.push({ start: i, end: j, discrete });
+    groups.push({ start: i, end: j, discrete, slope: kindList[i] === "slope" });
     i = j;
   }
   // Discrete trees take the slots that are left after buildings. A big
   // canopy outline does not spend those slots first. Poles and walls are
-  // added later, so they drop before a tree does.
+  // added later, so they drop before a tree does. A woods cut onto the
+  // slope is not that one outline: it keeps about 60 percent of the
+  // leftover so the hill still has canopy when stemmed trees are present.
   groups.sort((a, b) => (a.discrete === b.discrete ? 0 : a.discrete ? -1 : 1));
+  const slopeGroups = [];
+  const otherGroups = [];
+  for (let g = 0; g < groups.length; g++) {
+    if (groups[g].slope) slopeGroups.push(groups[g]);
+    else otherGroups.push(groups[g]);
+  }
+  const room = Math.max(0, limit - keptB.length);
+  let slopeNeed = 0;
+  for (let g = 0; g < slopeGroups.length; g++) slopeNeed += slopeGroups[g].end - slopeGroups[g].start;
+  const shareSlope = otherGroups.some((g) => g.discrete);
+  const slopeCap = shareSlope ? Math.min(slopeNeed, Math.floor(room * 0.6)) : Math.min(slopeNeed, room);
+  const order = [];
+  const slopeLeft = [];
+  let slopeUsed = 0;
+  for (let g = 0; g < slopeGroups.length; g++) {
+    const need = slopeGroups[g].end - slopeGroups[g].start;
+    if (slopeUsed + need > slopeCap) {
+      slopeLeft.push(slopeGroups[g]);
+      continue;
+    }
+    order.push(slopeGroups[g]);
+    slopeUsed += need;
+  }
+  for (let g = 0; g < otherGroups.length; g++) order.push(otherGroups[g]);
+  for (let g = 0; g < slopeLeft.length; g++) order.push(slopeLeft[g]);
   const kept = [];
   const treeChunks = [];
   let treeGroups = 0;
   let discreteTrees = 0;
-  for (let g = 0; g < groups.length; g++) {
-    const group = groups[g];
+  for (let g = 0; g < order.length; g++) {
+    const group = order[g];
     const need = group.end - group.start;
     if (keptB.length + kept.length + need > limit) continue;
     const slice = [];
@@ -2386,7 +2413,9 @@ function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
       continue;
     }
     areas.push(area);
-    kinds.push(t.kind === "trunk" ? "trunk" : t.kind === "layer" ? "layer" : "canopy");
+    kinds.push(
+      t.kind === "trunk" ? "trunk" : t.kind === "layer" ? "layer" : t.kind === "slope" ? "slope" : "canopy"
+    );
   }
   return { areas, kinds, droppedInvalid };
 }
@@ -2524,6 +2553,7 @@ function buildClutter({
   omitFoliage,
   chmRequired,
   maxFoliagePolygons,
+  woodRings,
   outdoorFeatures,
   outdoorNotes,
   includeWater,
@@ -2590,6 +2620,7 @@ function buildClutter({
         omitFoliage: omitFoliage === true,
         chmRequired: chmRequired === true,
         maxPolygons: maxFoliagePolygons,
+        woodRings,
       })
     : {
         oiAreas: [],

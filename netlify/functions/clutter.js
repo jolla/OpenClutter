@@ -155,9 +155,10 @@ async function runBackgroundExport(event, onProgress) {
   if (ctx.tail) await ctx.tail;
   return result;
 }
-const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
+const { geoFrame, llToPx, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings, parseAreaCapOverride, parseJsonBudgetOverride, raisedDeckCap } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
+const { fetchSlopeForest } = require("../lib/slope-forest");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
 const exportJobs = require("../lib/export-jobs");
@@ -1243,6 +1244,7 @@ async function handleClutter(event) {
   let terrainJob = null;
   let chmJob = null;
   let outdoorJob = null;
+  let forestJob = null;
   let detailJob = null;
   let overtureFrame = null;
   try {
@@ -1269,6 +1271,11 @@ async function handleClutter(event) {
           poles: includePoles,
           rvs: includeRvs,
         }, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background, deckCap })
+      );
+    }
+    if (includeFoliage) {
+      forestJob = beginOptional((signal) =>
+        fetchSlopeForest(requestBbox, { signal, ua: UA, timeoutMs: background ? 25000 : 8000 })
       );
     }
     detailJob = beginOptional((signal) =>
@@ -1450,6 +1457,7 @@ async function handleClutter(event) {
     if (terrainJob) terrainJob.ctrl.abort();
     if (chmJob) chmJob.ctrl.abort();
     if (outdoorJob) outdoorJob.ctrl.abort();
+    if (forestJob) forestJob.ctrl.abort();
     if (detailJob) detailJob.ctrl.abort();
     return json(502, cors, { error: describeCoreFailure(e) });
   }
@@ -1721,6 +1729,34 @@ async function handleClutter(event) {
     }
   }
 
+  let woodRings = [];
+  if (includeFoliage && forestJob) {
+    const forest = await forestJob.work;
+    if (forest && forest !== TIMED_OUT && forest.ok !== false) {
+      woodRings = forest.wood || [];
+      const pisteRings = forest.pistes || [];
+      for (let i = 0; i < pisteRings.length; i++) {
+        const ll = pisteRings[i];
+        const px = [];
+        for (let k = 0; k < ll.length; k++) {
+          const p = llToPx(ll[k][0], ll[k][1], frame);
+          if (!Number.isFinite(p[0]) || !Number.isFinite(p[1])) continue;
+          px.push(p);
+        }
+        if (px.length >= 3) {
+          const a = px[0];
+          const b = px[px.length - 1];
+          if (a[0] !== b[0] || a[1] !== b[1]) px.push([a[0], a[1]]);
+        }
+        if (px.length >= 4) maskRings.push(px);
+      }
+      const forestNotes = forest.notes || [];
+      for (let i = 0; i < forestNotes.length; i++) {
+        if (warnings.indexOf(forestNotes[i]) < 0) warnings.push(forestNotes[i]);
+      }
+    }
+  }
+
   // 720 keeps today's 480 largest canopies and fills the rest with compact
   // crowns. A zip that does not fit steps back to 480 before it drops to 160.
   const FOLIAGE_CAPS = [720, 480, 160, 48, 12];
@@ -1743,6 +1779,7 @@ async function handleClutter(event) {
       chmGrid: chmTimedOut ? null : chmGrid,
       maskRings,
       maskPolygons,
+      woodRings,
       includeFoliage,
       omitFoliage: chmTimedOut,
       chmRequired: includeFoliage,
