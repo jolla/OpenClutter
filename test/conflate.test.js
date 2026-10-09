@@ -2,6 +2,8 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("fs");
+const path = require("path");
 const { conflateFootprints, assembleFootprints, dedupeStackedFootprints, heightRank, ringAreaM2 } = require("../netlify/lib/conflate");
 const { mergeFootprintFeatures } = require("../netlify/lib/ms-global");
 const { buildClutter } = require("../netlify/lib/pipeline");
@@ -194,6 +196,47 @@ describe("footprint conflation", () => {
     assert.equal(merged.geometriesReplaced, 1);
     const area = ringAreaM2(merged.features[0].geometry.coordinates[0]);
     assert.ok(area > 7000 && area < 10000, `full roof area ${area}`);
+  });
+
+  it("keeps the traced Wynn retail ring when Microsoft only has one fragment", () => {
+    const fc = JSON.parse(
+      fs.readFileSync(path.join(__dirname, "fixtures/wynn-golf/retail-111322055.geojson"), "utf8")
+    );
+    const ring = fc.features[0].geometry.coordinates[0];
+    const retail = {
+      type: "Feature",
+      properties: { geomSource: "overture", height: 18, heightSource: "overture" },
+      geometry: { type: "Polygon", coordinates: [ring] },
+    };
+    const lat = 36.12632;
+    const lon = -115.16672;
+    const mx = 111320 * Math.cos((lat * Math.PI) / 180);
+    const side = 84;
+    const dLon = side / mx;
+    const dLat = side / 110540;
+    const stub = box(lon - dLon / 2, lat - dLat / 2, lon + dLon / 2, lat + dLat / 2, {
+      geomSource: "ms-global",
+      heightSource: "ms-global",
+    });
+    const stubArea = ringAreaM2(stub.geometry.coordinates[0]);
+    const retailArea = ringAreaM2(ring);
+    assert.ok(retailArea / stubArea > 8 && retailArea / stubArea <= 16, retailArea + "/" + stubArea);
+    const merged = conflateFootprints([stub], [retail], { replaceGeometry: true, rankHeight: true });
+    assert.equal(merged.features.length, 1);
+    assert.equal(merged.geometriesReplaced, 1);
+    const kept = ringAreaM2(merged.features[0].geometry.coordinates[0]);
+    assert.ok(kept > 40000, "retail ring replaced the fragment, area " + kept);
+    const tower = box(lon - dLon / 2, lat - dLat / 2, lon + dLon / 2, lat + dLat / 2, {
+      geomSource: "ms-global",
+      height: 187,
+      heightSource: "ms-global",
+    });
+    const both = conflateFootprints([tower], [retail], { replaceGeometry: true, rankHeight: true });
+    assert.equal(both.geometriesReplaced, 0);
+    assert.equal(both.features.length, 2);
+    const areas = both.features.map((f) => ringAreaM2(f.geometry.coordinates[0])).sort((a, b) => a - b);
+    assert.ok(areas[0] < 10000, "tower kept");
+    assert.ok(areas[1] > 40000, "podium added");
   });
 
   it("does not let a coarse mega hull hide a detailed roof that emit would keep", () => {

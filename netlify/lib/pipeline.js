@@ -3104,6 +3104,23 @@ function buildClutter({
         why +
         "."
     );
+    // Name the large roofs the budget left out. Small rings stay in the count above.
+    const rings = fp.overlayRings || [];
+    let named = 0;
+    for (let i = buildingEmitted; i < fp.oiAreas.length; i++) {
+      const ring = rings[i];
+      if (!ring || ring.length < 3) continue;
+      const ll = [];
+      for (let k = 0; k < ring.length; k++) ll.push(pxToLl(ring[k][0], ring[k][1], frame));
+      const m2 = ringAreaM2(ll, frame.mpd);
+      if (!(m2 >= 1000)) continue;
+      named++;
+      if (named > 24) continue;
+      warnings.push("Dropped building " + Math.round(m2) + " m2: " + why + ".");
+    }
+    if (named > 24) {
+      warnings.push("Dropped " + (named - 24) + " more buildings over 1000 m2: " + why + ".");
+    }
   }
   const clip = emptyClipboard();
   const seenTypes = new Set(clip.attenuatingZoneTypes.map((t) => t.id));
