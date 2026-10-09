@@ -1706,7 +1706,21 @@ function slopeRingsForEmit(source, simple, pixelRing, frame) {
   return rings;
 }
 
-function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase, shapePart) {
+function llFromOiPixels(pixelVerts, frame) {
+  const ll = [];
+  for (let i = 0; i < pixelVerts.length; i++) {
+    const p = pixelVerts[i] && pixelVerts[i].coordinate_xyz;
+    if (!p || !Number.isFinite(+p.x) || !Number.isFinite(+p.y)) continue;
+    ll.push(pxToLl(+p.x, +p.y, frame));
+  }
+  if (ll.length < 3) return null;
+  const a = ll[0];
+  const b = ll[ll.length - 1];
+  if (a[0] !== b[0] || a[1] !== b[1]) ll.push([a[0], a[1]]);
+  return ll;
+}
+
+function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase, shapePart, drawnRing) {
   const base = levelBase > 0 ? levelBase : 0;
   // A stepped plan uses the band above the lower footprint, not the full height.
   const band = base > 0 ? Math.round((heightM - base) * 10) / 10 : heightM;
@@ -1730,7 +1744,13 @@ function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase
   });
   // Each piece meets the downhill ground under its own ring and keeps the
   // measured height above that ground. A flat pad under 1 m omits the bottom.
+  // The ring Hamina draws can drop a thin downhill nib that the source piece
+  // still includes. Seating on that nib buries the box under the drawn floor.
   let bottom = slopeSeat(slopeTop, rings);
+  if (drawnRing && slopeTop && typeof slopeTop.seat === "function") {
+    const drawn = Number(slopeTop.seat(drawnRing));
+    if (Number.isFinite(drawn) && drawn > bottom + 0.15) bottom = drawn;
+  }
   bottom += base;
   if (bottom >= LIFT_LOCAL_M) return liftPickedBuilding(picked, bottom);
   return picked;
@@ -2025,7 +2045,8 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     if (ringVertexCount(clippedPts) > MAX_OI_RING_VERTS) return "verts";
     return "clip";
   }
-  let picked = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart);
+  const drawnRing = llFromOiPixels(oiPixelCoords(oiCoords), frame);
+  let picked = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart, drawnRing);
   const area = emitIfValid(makeOiArea(oiCoords, picked.material), frame.imgW, frame.imgH);
   if (!area) return "invalid";
   buckets.oiAreas.push(area);

@@ -1653,18 +1653,205 @@ function contourPolysForQuad(corners, step) {
   return polys;
 }
 
-function refineContourQuads(grid, step) {
+function quadMid(a, b) {
+  return {
+    x: round3((a.x + b.x) / 2),
+    y: round3((a.y + b.y) / 2),
+    z: round1((a.z + b.z) / 2),
+  };
+}
+
+/** |twist| / 4 is how far the bilinear center sits off either triangle plane. */
+function quadPlaneError(corners) {
+  const z0 = corners[0].z;
+  const z1 = corners[1].z;
+  const z2 = corners[2].z;
+  const z3 = corners[3].z;
+  return Math.abs(z0 + z2 - z1 - z3) / 4;
+}
+
+function splitPlanarQuad(corners) {
+  const sw = corners[0];
+  const se = corners[1];
+  const ne = corners[2];
+  const nw = corners[3];
+  const south = quadMid(sw, se);
+  const east = quadMid(se, ne);
+  const north = quadMid(nw, ne);
+  const west = quadMid(sw, nw);
+  const center = {
+    x: round3((sw.x + se.x + ne.x + nw.x) / 4),
+    y: round3((sw.y + se.y + ne.y + nw.y) / 4),
+    z: round1((sw.z + se.z + ne.z + nw.z) / 4),
+  };
+  return [
+    [sw, south, center, west],
+    [south, se, east, center],
+    [center, east, ne, north],
+    [west, center, north, nw],
+  ];
+}
+
+function contourVertexKey(p) {
+  return p.x.toFixed(3) + "," + p.y.toFixed(3);
+}
+
+/**
+ * A coarse quad beside a split neighbor has the neighbor's midpoint on its
+ * edge and no vertex of its own there. Split that quad so the shared edge
+ * carries the same points. The new vertex is the bilinear midpoint, so the
+ * two halves stay on the coarse edge.
+ */
+function balanceContourJunctions(leaves, leafCap) {
+  let guard = 0;
+  while (leaves.length + 3 <= leafCap && guard++ < 4000) {
+    const verts = new Set();
+    for (let i = 0; i < leaves.length; i++) {
+      const corners = leaves[i].corners;
+      for (let k = 0; k < 4; k++) verts.add(contourVertexKey(corners[k]));
+    }
+    let hit = -1;
+    for (let i = 0; i < leaves.length && hit < 0; i++) {
+      if (leaves[i].depth >= 5) continue;
+      const corners = leaves[i].corners;
+      for (let k = 0; k < 4; k++) {
+        const a = corners[k];
+        const b = corners[(k + 1) % 4];
+        const mid = quadMid(a, b);
+        const key = contourVertexKey(mid);
+        if (key === contourVertexKey(a) || key === contourVertexKey(b)) continue;
+        if (verts.has(key)) {
+          hit = i;
+          break;
+        }
+      }
+    }
+    if (hit < 0) break;
+    const parent = leaves[hit];
+    const parts = splitPlanarQuad(parent.corners);
+    leaves.splice(hit, 1);
+    for (let i = 0; i < parts.length; i++) {
+      leaves.push({
+        corners: parts[i],
+        err: quadPlaneError(parts[i]),
+        depth: parent.depth + 1,
+      });
+    }
+  }
+}
+
+/**
+ * The paste starts from the regular lattice, then spends the remaining quad
+ * budget on the worst saddles. A planar fit within about half a meter stops
+ * the split. New vertices are the bilinear interpolant. A coarser neighbor
+ * is split too when its edge runs into those vertices, so the seam has no
+ * T-junction gap.
+ */
+function refineContourQuads(grid, step, leafCapOverride) {
+  const errTarget = 0.5;
+  const budget = Math.max(1, pastePlanQuadBudget());
+  const baseLeaves = grid.cols * grid.rows;
+  const leafCap =
+    leafCapOverride > 0
+      ? Math.max(baseLeaves, leafCapOverride | 0)
+      : Math.min(6000, Math.max(baseLeaves, Math.floor(budget / 2)));
   const leaves = [];
   for (let r = 0; r < grid.rows; r++) {
     for (let c = 0; c < grid.cols; c++) {
-      leaves.push(
-        [at(grid, c, r), at(grid, c + 1, r), at(grid, c + 1, r + 1), at(grid, c, r + 1)].map(function (n) {
+      const corners = [at(grid, c, r), at(grid, c + 1, r), at(grid, c + 1, r + 1), at(grid, c, r + 1)].map(
+        function (n) {
           return { x: n.x, y: n.y, z: quantizeStep(n.zRel, step) };
-        })
+        }
       );
+      leaves.push({ corners: corners, err: quadPlaneError(corners), depth: 0 });
     }
   }
-  return leaves;
+  let guard = 0;
+  while (leaves.length + 3 <= leafCap && guard++ < 8000) {
+    let worst = -1;
+    let worstErr = errTarget;
+    for (let i = 0; i < leaves.length; i++) {
+      if (leaves[i].depth >= 5) continue;
+      if (leaves[i].err > worstErr) {
+        worstErr = leaves[i].err;
+        worst = i;
+      }
+    }
+    if (worst < 0) break;
+    const parent = leaves[worst];
+    const parts = splitPlanarQuad(parent.corners);
+    leaves.splice(worst, 1);
+    for (let i = 0; i < parts.length; i++) {
+      leaves.push({
+        corners: parts[i],
+        err: quadPlaneError(parts[i]),
+        depth: parent.depth + 1,
+      });
+    }
+  }
+  balanceContourJunctions(leaves, leafCap);
+  return leaves.map(function (leaf) {
+    return leaf.corners;
+  });
+}
+
+function mergeRaisedPads(raised) {
+  let pads = raised.slice();
+  for (let pass = 0; pass < 8; pass++) {
+    const buckets = new Map();
+    for (let i = 0; i < pads.length; i++) {
+      const ring = pads[i].area.coordinates[0];
+      if (!ring || ring.length < 4) continue;
+      const n = ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? ring.length - 1 : ring.length;
+      if (n !== 4) continue;
+      for (let k = 0; k < 4; k++) {
+        const key =
+          pads[i].height.toFixed(1) +
+          "|" +
+          contourEdgeKey({ x: ring[k][0], y: ring[k][1] }, { x: ring[(k + 1) % 4][0], y: ring[(k + 1) % 4][1] });
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key).push(i);
+      }
+    }
+    const used = new Set();
+    const next = [];
+    let changed = false;
+    for (const ids of buckets.values()) {
+      if (ids.length !== 2 || used.has(ids[0]) || used.has(ids[1])) continue;
+      const a = pads[ids[0]];
+      const b = pads[ids[1]];
+      if (a.height !== b.height) continue;
+      const pa = a.area.coordinates[0].slice(0, 4).map(function (p) {
+        return { x: p[0], y: p[1], z: a.height };
+      });
+      const pb = b.area.coordinates[0].slice(0, 4).map(function (p) {
+        return { x: p[0], y: p[1], z: b.height };
+      });
+      const uni = mergeContourPolys(pa, pb);
+      if (!uni) continue;
+      const collapsed = collapseColinearContour(uni);
+      if (collapsed.length !== 4) continue;
+      const ring = collapsed.map(function (p) {
+        return [p.x, p.y];
+      });
+      if (!pasteableQuad(ring)) continue;
+      const area = contourArea(collapsed);
+      const sum = contourArea(pa) + contourArea(pb);
+      if (Math.abs(area - sum) > Math.max(1, 0.02 * sum)) continue;
+      const pad = raisedFromRing(ring, a.height);
+      if (!pad) continue;
+      used.add(ids[0]);
+      used.add(ids[1]);
+      next.push(pad);
+      changed = true;
+    }
+    for (let i = 0; i < pads.length; i++) {
+      if (!used.has(i)) next.push(pads[i]);
+    }
+    pads = next;
+    if (!changed) break;
+  }
+  return pads;
 }
 
 function pushCap(ramps, raised, cap) {
@@ -1775,9 +1962,9 @@ function coverContourPoly(pts, ramps, raised) {
   }
 }
 
-function contourPiecesAtStep(grid, step) {
+function contourPiecesAtStep(grid, step, leafCap) {
   const polys = [];
-  const quads = refineContourQuads(grid, step);
+  const quads = refineContourQuads(grid, step, leafCap);
   for (let i = 0; i < quads.length; i++) {
     const corners = quads[i];
       const zmin = Math.min(corners[0].z, corners[1].z, corners[2].z, corners[3].z);
@@ -1880,7 +2067,7 @@ function contourPiecesAtStep(grid, step) {
     }
     coverContourPoly(p.pts, ramps, raised);
   }
-  return { ramps: ramps, raised: raised };
+  return { ramps: ramps, raised: mergeRaisedPads(raised) };
 }
 
 function contourVertexGap(floors) {
@@ -1902,21 +2089,33 @@ function contourStepsForGrid(grid) {
       if (span > maxCell) maxCell = span;
     }
   }
-  // One-meter bands are the accuracy target. Coarser steps are only the
-  // fallback when that many ramps would exceed the paste budget.
-  if (maxCell > 40) return [2, 4, 8];
-  return [1, 2, 4, 8];
+  // Half a meter on a mild hill, one meter on a steep cell. Coarser steps are
+  // only the fallback when that many ramps would exceed the paste budget.
+  if (maxCell > 40) return [1, 2, 4, 8];
+  return [0.5, 1, 2, 4];
 }
 
 function contourMeshFromGrid(grid, frame) {
   const budget = Math.max(1, pastePlanQuadBudget());
   const steps = contourStepsForGrid(grid);
+  const base = Math.max(1, grid.cols * grid.rows);
   let chosen = null;
   for (let i = 0; i < steps.length; i++) {
-    const pieces = contourPiecesAtStep(grid, steps[i]);
-    if (!pieces.ramps.length && !pieces.raised.length) continue;
-    chosen = { pieces: pieces, step: steps[i] };
-    if (pieces.ramps.length + pieces.raised.length <= budget) break;
+    let cap = Math.min(6000, Math.max(base, Math.floor(budget / 2)));
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const pieces = contourPiecesAtStep(grid, steps[i], cap);
+      const n = pieces.ramps.length + pieces.raised.length;
+      if (!n) break;
+      if (n <= budget) {
+        chosen = { pieces: pieces, step: steps[i] };
+        break;
+      }
+      if (cap <= base) break;
+      const next = Math.max(base, Math.floor(cap / 2));
+      if (next === cap) break;
+      cap = next;
+    }
+    if (chosen) break;
   }
   if (!chosen) return null;
   const clip = emptyClipboard();
@@ -2005,37 +2204,44 @@ function contourError(grid, ramps, raised) {
   let max = 0;
   const cols = grid.cols;
   const rows = grid.rows;
+  const sub = 4;
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      const sw = at(grid, c, r);
-      const se = at(grid, c + 1, r);
-      const nw = at(grid, c, r + 1);
-      const x = (sw.x + se.x) / 2;
-      const y = (sw.y + nw.y) / 2;
-      const zTrue = bilinearZ(grid, x, y);
-      let zMesh = null;
-      for (let i = 0; i < ramps.length; i++) {
-        const ring = ramps[i].area.coordinates[0];
-        if (contourPointIn(ring, x, y)) {
-          zMesh = ruledRampZ(ring, x, y);
-          break;
-        }
-      }
-      if (zMesh == null) {
-        for (let i = 0; i < raised.length; i++) {
-          const ring = raised[i].area.coordinates[0];
-          if (contourPointIn(ring, x, y)) {
-            zMesh = raised[i].height;
-            break;
+      for (let sr = 0; sr < sub; sr++) {
+        for (let sc = 0; sc < sub; sc++) {
+          const sw = at(grid, c, r);
+          const se = at(grid, c + 1, r);
+          const nw = at(grid, c, r + 1);
+          const u = (sc + 0.5) / sub;
+          const v = (sr + 0.5) / sub;
+          const x = sw.x + (se.x - sw.x) * u;
+          const y = sw.y + (nw.y - sw.y) * v;
+          const zTrue = bilinearZ(grid, x, y);
+          let zMesh = null;
+          for (let i = 0; i < ramps.length; i++) {
+            const ring = ramps[i].area.coordinates[0];
+            if (contourPointIn(ring, x, y)) {
+              zMesh = ruledRampZ(ring, x, y);
+              break;
+            }
           }
+          if (zMesh == null) {
+            for (let i = 0; i < raised.length; i++) {
+              const ring = raised[i].area.coordinates[0];
+              if (contourPointIn(ring, x, y)) {
+                zMesh = raised[i].height;
+                break;
+              }
+            }
+          }
+          n++;
+          if (zMesh == null) continue;
+          inside++;
+          const e = Math.abs(zMesh - zTrue);
+          sum += e;
+          if (e > max) max = e;
         }
       }
-      n++;
-      if (zMesh == null) continue;
-      inside++;
-      const e = Math.abs(zMesh - zTrue);
-      sum += e;
-      if (e > max) max = e;
     }
   }
   return {
@@ -2102,11 +2308,54 @@ function cellRampMesh(grid, frame) {
   };
 }
 
+/**
+ * The planned paste is often 20×20. When the DEM posting is finer, the
+ * contour mesh starts on that posting (capped) and the adaptive split spends
+ * the paste budget there instead of on the coarse lattice.
+ */
+function denserContourLattice(samples, frame, cols, rows, elevationAt) {
+  const n = samples && samples.length ? samples.length : 0;
+  const side = Math.max(2, Math.round(Math.sqrt(Math.max(4, n))));
+  const long = Math.max(cols, rows, 1);
+  if (side <= long + 1) return lattice(samples, frame, cols, rows, elevationAt);
+  const cap = 40;
+  const aspect = cols / Math.max(1, rows);
+  let c = Math.min(cap, Math.max(cols, Math.round(Math.sqrt(side * side * aspect))));
+  let r = Math.min(cap, Math.max(rows, Math.round(side * side / Math.max(1, c))));
+  c = Math.max(1, Math.min(cap, c));
+  r = Math.max(1, Math.min(cap, r));
+  return lattice(samples, frame, c, r, elevationAt);
+}
+
+function contourFits(mesh, budget) {
+  if (!mesh) return false;
+  const n = (mesh.sloped || 0) + (mesh.raised || 0);
+  return n > 0 && n <= budget;
+}
+
 function buildTerrainClipboard(samples, frame, cols, rows, elevationAt, legacy) {
   const grid = lattice(samples, frame, cols, rows, elevationAt);
   if (!legacy && !axisAlignedGrid(grid)) {
-    const contoured = contourMeshFromGrid(grid, frame);
-    if (contoured && contoured.sloped + contoured.raised > 0) return contoured;
+    const budget = Math.max(1, pastePlanQuadBudget());
+    const dense = denserContourLattice(samples, frame, cols, rows, elevationAt);
+    const sources = dense.cols === grid.cols && dense.rows === grid.rows ? [grid] : [dense, grid];
+    let best = null;
+    for (let i = 0; i < sources.length; i++) {
+      const contoured = contourMeshFromGrid(sources[i], frame);
+      if (!contourFits(contoured, budget)) continue;
+      if (!best) {
+        best = contoured;
+        continue;
+      }
+      const step = contoured.contourStepM || 99;
+      const bestStep = best.contourStepM || 99;
+      const err = contoured.vertMaxM == null ? 99 : contoured.vertMaxM;
+      const bestErr = best.vertMaxM == null ? 99 : best.vertMaxM;
+      if (step < bestStep - 1e-6 || (step === bestStep && err < bestErr)) best = contoured;
+    }
+    if (best) return best;
+    const fallback = contourMeshFromGrid(grid, frame);
+    if (fallback && fallback.sloped + fallback.raised > 0) return fallback;
   }
   return cellRampMesh(grid, frame);
 }
