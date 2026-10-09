@@ -1240,6 +1240,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /imageryQuality: devPage\(\) \? selectedImageryQuality\(\) : undefined/);
     assert.match(app, /function areaCapOverride\(\)/);
     assert.match(app, /function terrainFloorsOverride\(\)/);
+    assert.match(app, /n < 100 \|\| n > 6000/);
     assert.match(app, /function jsonBudgetOverride\(\)/);
     assert.match(app, /if \(!devPage\(\)\) return undefined/);
     assert.match(app, /areaCap: areaCapOverride\(\)/);
