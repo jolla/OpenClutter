@@ -24,6 +24,10 @@ const QUADKEY_ZOOM = 9;
  * past the gateway clock. Skip that file and keep the other sources.
  */
 const MAX_GZIP_BYTES = 80 * 1024 * 1024;
+// A 10 km Las Vegas tile matches tens of thousands of roofs. Holding every
+// ring, plus the decompressed tile, runs the background function out of
+// memory before the export can finish. The zip only keeps the largest.
+const FOOTPRINT_KEEP = 4000;
 
 function lonLatToTile(lon, lat, zoom) {
   const n = 2 ** zoom;
@@ -158,11 +162,56 @@ function normalizeFeature(obj) {
   };
 }
 
+function ringAreaAbs(ring) {
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    a += +ring[j][0] * +ring[i][1] - +ring[i][0] * +ring[j][1];
+  }
+  return Math.abs(a);
+}
+
+function footprintScore(feature) {
+  const geom = feature && feature.geometry;
+  let area = 0;
+  if (geom && geom.type === "Polygon" && geom.coordinates && geom.coordinates[0]) {
+    area = ringAreaAbs(geom.coordinates[0]);
+  } else if (geom && geom.type === "MultiPolygon") {
+    const polys = geom.coordinates || [];
+    for (let i = 0; i < polys.length; i++) {
+      if (polys[i] && polys[i][0]) area += ringAreaAbs(polys[i][0]);
+    }
+  }
+  const h = Number(feature && feature.properties && feature.properties.height);
+  const height = h > 2 && h < 400 ? h : 0;
+  return area * Math.max(1, height / 10);
+}
+
+function keepLargestFootprints(features, keep) {
+  const n = keep | 0;
+  if (!(n > 0) || features.length <= n) return features;
+  const scored = new Array(features.length);
+  for (let i = 0; i < features.length; i++) scored[i] = { f: features[i], s: footprintScore(features[i]) };
+  scored.sort((a, b) => b.s - a.s);
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) out[i] = scored[i].f;
+  return out;
+}
+
+function trimFootprints(features, keep) {
+  if (features.length <= keep) return features;
+  const kept = keepLargestFootprints(features, keep);
+  features.length = 0;
+  for (let i = 0; i < kept.length; i++) features.push(kept[i]);
+  return features;
+}
+
 /**
  * @param {Buffer} gz gzip of newline-delimited GeoJSON
  * @param {{west:number,south:number,east:number,north:number}} bbox
+ * @param {{keep?:number}} [opts]
  */
-function featuresFromGzip(gz, bbox) {
+function featuresFromGzip(gz, bbox, opts) {
+  const keep = opts && opts.keep > 0 ? opts.keep | 0 : FOOTPRINT_KEEP;
   const text = zlib.gunzipSync(gz);
   const lonNeedles = spanNeedles(+bbox.west, +bbox.east, 0.03);
   const latNeedles = spanNeedles(+bbox.south, +bbox.north, 0.03);
@@ -182,9 +231,11 @@ function featuresFromGzip(gz, bbox) {
     }
     if (!geometryHitsBbox(obj.geometry, bbox)) continue;
     const feature = normalizeFeature(obj);
-    if (feature) features.push(feature);
+    if (!feature) continue;
+    features.push(feature);
+    if (features.length >= keep * 2) trimFootprints(features, keep);
   }
-  return features;
+  return trimFootprints(features, keep);
 }
 
 function centroid(ring) {
@@ -343,6 +394,7 @@ module.exports = {
   featuresFromGzip,
   mergeFootprintFeatures,
   MAX_GZIP_BYTES,
+  FOOTPRINT_KEEP,
   fetchMsGlobalFootprints,
   globalSkipWarning,
   exteriorRings,
