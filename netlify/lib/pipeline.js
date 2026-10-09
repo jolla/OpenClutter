@@ -302,6 +302,8 @@ function coverageSummary(stats) {
     stats && stats.areaCapOverride
       ? " Area cap " + cap + " (test override)."
       : " Area cap " + cap + ".";
+  const largeNotes = stats && Array.isArray(stats.largeDropNotes) ? stats.largeDropNotes : [];
+  if (largeNotes.length) line += " " + largeNotes.join(" ");
   if (stats && stats.openIntentJsonBytes > 0) {
     const bytes = stats.openIntentJsonBytes;
     const size = bytes >= 100000 ? (bytes / 1e6).toFixed(2) + " MB" : Math.max(1, Math.round(bytes / 1000)) + " KB";
@@ -2032,7 +2034,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
   if (am < (keepThin ? 8 : MIN_AREA_M2)) return "tiny";
   const slopeRings = slopeRingsForEmit(ring, simple, clippedPts, frame);
   const minSpan = minOiSpanPx(frame.mpuX);
-  if (!keepThin && thinSliverDrop(clippedPts, minSpan)) {
+  if (!keepThin && am < 1000 && thinSliverDrop(clippedPts, minSpan)) {
     // Clipboard keeps a building that is only a sliver. A fragment cut off a
     // larger roof is not that building: OpenIntent drops it, and a second
     // clipboard zone would no longer match the area list. A static caravan
@@ -2246,6 +2248,7 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
     droppedInvalid: 0,
     droppedSpan: 0,
     droppedVerts: 0,
+    largeDropNotes: [],
     nlsHeights: 0,
     nlsHeightMin: 0,
     nlsHeightMax: 0,
@@ -2318,6 +2321,28 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
           else if (result === "invalid") stats.droppedInvalid++;
           else if (result === "span") stats.droppedSpan++;
           else if (result === "verts") stats.droppedVerts++;
+          if (result !== "keep") {
+            const droppedArea = ringAreaM2(parts[p], frame.mpd);
+            if (droppedArea >= 1000) {
+              const why =
+                result === "mega"
+                  ? "outline was too large"
+                  : result === "tiny"
+                    ? "outline was too small"
+                    : result === "clip"
+                      ? "outline missed the map"
+                      : result === "invalid"
+                        ? "outline was not a valid area"
+                        : result === "span"
+                          ? "outline was a sliver"
+                          : result === "verts"
+                            ? "outline had too many corners"
+                            : "outline was not a closed area";
+              stats.largeDropNotes.push(
+                "Dropped building " + Math.round(droppedArea) + " m2: " + why + "."
+              );
+            }
+          }
         }
       }
     }
@@ -2961,6 +2986,10 @@ function buildClutter({
     pavementMaskRings: (maskPolygons || []).length,
     warnings: (warnings || []).filter(Boolean).map(String),
   };
+  const shapedNotes =
+    footprintMeta && Array.isArray(footprintMeta.largeDropNotes) ? footprintMeta.largeDropNotes : [];
+  const emitNotes = fp.stats && Array.isArray(fp.stats.largeDropNotes) ? fp.stats.largeDropNotes : [];
+  stats.largeDropNotes = shapedNotes.concat(emitNotes);
   stats.buildings = buildingEmitted;
   stats.summary = coverageSummary(stats);
   Object.assign(stats, coverageStats(stats));

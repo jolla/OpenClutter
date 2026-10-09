@@ -8,6 +8,8 @@
 
 **v1.1.97** on `dev` — Sloped terrain is an adaptive mesh, not a fixed 20×20 grid. The paste spends its budget on the worst saddles, keeps a planar fit near half a meter, and merges a flat bench into one raised floor. Neighboring ramps share an edge height, and a coarse piece is split where it meets a finer one so the seam has no gap. A pure north-south or east-west grade stays one ramp per cell. The badge stays (`dev · v1.1.97`).
 
+**v1.1.101** on `dev` — The retail podium between the towers and the golf course stays when two roof cores replace a coarse triangle. If that outline is only a triangle, the street-map ring is the fallback, then a cleaned copy of the source that is not a convex hull. A pool cut keeps the remaining pieces of a large building, and a piece over 1000 m2 is not dropped as a sliver. Details names every dropped building over 1000 m2 and the reason. The badge stays (`dev · v1.1.101`).
+
 **v1.1.100** on `dev` — Terrain paste default is 1500 floors and about 400 KB. Hamina accepted the Hollywood probe at 1408 floors and 351 KB. Raised and sloped floors share that cap. A shared edge stays one height. Steps of 6 to 8 m sit between the 5 m and 10 m bands so a higher probe can spend its budget. On the dev page, `?terrainFloors=` from 100 to 6000 sets the floor cap. The badge stays (`dev · v1.1.100`).
 
 **v1.1.99** on `dev` — Terrain paste stays the size Hamina already accepted: at most 400 floors and about 300 KB. Contour bands start at 3 to 5 m, and extra splits stop when that budget is spent. A shared edge stays one height. Coordinates are rounded to a centimeter. Details reports `Terrain paste: N floors, X KB`. On the dev page, `?terrainFloors=` from 100 to 3000 raises the floor cap. The badge stays (`dev · v1.1.99`).
