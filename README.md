@@ -4,6 +4,8 @@
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
+**v1.1.92** on `dev` — A large draw reads a few Overture row groups at once, and a street-map tile that does not answer is dropped after 10 seconds. The badge stays (`dev · v1.1.92`).
+
 **v1.1.91** on `dev` — A 10 km draw keeps the largest roofs from the Microsoft tile and from Overture, instead of holding every roof in memory. The export can finish and write the zip. The badge stays (`dev · v1.1.91`).
 
 **v1.1.90** on `dev` — A draw up to 10 km asks the street map one tile at a time, for roofs, water, rail, and road bridges, instead of downloading the whole map. A canopy tile that fails is read once more. The badge stays (`dev · v1.1.90`).
