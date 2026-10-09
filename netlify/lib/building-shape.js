@@ -15,7 +15,7 @@
  */
 
 const polygonClipping = require("polygon-clipping");
-const { guidewaysFromElements, guidewaysFromParsedWays } = require("./outdoor-clutter");
+const { guidewaysFromElements, guidewaysFromParsedWays, bridgesFromElements, bridgesFromParsedWays } = require("./outdoor-clutter");
 const { fetchOsmMaps, ringKey, bboxSpanM, TILE_SPAN_M } = require("./osm-tiles");
 
 const OVERPASS_URLS = [
@@ -42,6 +42,8 @@ function buildingDetailQuery(bbox) {
     'relation["building:part"](' + box + ");" +
     'relation["type"="multipolygon"]["building"](' + box + ");" +
     'way["railway"~"^(monorail|light_rail|subway|rail|tram)$"](' + box + ");" +
+    'way["highway"]["bridge"~"^(yes|viaduct|covered)$"](' + box + ");" +
+    'way["highway"]["layer"~"^[1-9]"](' + box + ");" +
     'way["man_made"="bridge"](' + box + ");" +
     'way["bridge"="viaduct"](' + box + ");" +
     ");out geom;"
@@ -425,6 +427,7 @@ function detailFromMapXml(xml, bbox) {
   }
   const parsed = parseBuildingDetail({ elements }, bbox);
   parsed.guideways = guidewaysFromParsedWays(ways, nodes, bbox);
+  parsed.bridges = bridgesFromParsedWays(ways, nodes, bbox);
   return parsed;
 }
 
@@ -432,9 +435,11 @@ function mergeBuildingDetail(packs) {
   const parts = [];
   const openings = [];
   const guideways = [];
+  const bridges = [];
   const seenP = new Set();
   const seenO = new Set();
   const seenG = new Set();
+  const seenB = new Set();
   for (let p = 0; p < packs.length; p++) {
     const pack = packs[p] || {};
     const partList = pack.parts || [];
@@ -460,12 +465,19 @@ function mergeBuildingDetail(packs) {
       if (key) seenG.add(key);
       guideways.push(guides[i]);
     }
+    const decks = pack.bridges || [];
+    for (let i = 0; i < decks.length; i++) {
+      const key = ringKey(decks[i] && decks[i].coords);
+      if (key && seenB.has(key)) continue;
+      if (key) seenB.add(key);
+      bridges.push(decks[i]);
+    }
   }
-  return { parts, openings, guideways };
+  return { parts, openings, guideways, bridges };
 }
 
 async function fetchBuildingDetail(bbox, opts) {
-  const empty = { ok: false, parts: [], openings: [], guideways: [] };
+  const empty = { ok: false, parts: [], openings: [], guideways: [], bridges: [] };
   if (!bbox) return empty;
   const timeoutMs = (opts && opts.timeoutMs) || 4500;
   const ctrl = new AbortController();
@@ -497,18 +509,19 @@ async function fetchBuildingDetail(bbox, opts) {
             parts: merged.parts,
             openings: merged.openings,
             guideways: merged.guideways,
+            bridges: merged.bridges,
             notes: maps.notes,
           };
         }
         if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
-          return { ok: true, parts: [], openings: [], guideways: [], notes: maps.notes };
+          return { ok: true, parts: [], openings: [], guideways: [], bridges: [], notes: maps.notes };
         }
       } catch (e) {
         if (ctrl.signal.aborted) return empty;
       }
     }
     if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
-      return { ok: true, parts: [], openings: [], guideways: [], notes: [] };
+      return { ok: true, parts: [], openings: [], guideways: [], bridges: [], notes: [] };
     }
     for (let u = 0; u < OVERPASS_URLS.length; u++) {
       if (ctrl.signal.aborted) return empty;
@@ -527,6 +540,7 @@ async function fetchBuildingDetail(bbox, opts) {
           parts: parsed.parts,
           openings: parsed.openings,
           guideways: guidewaysFromElements(json.elements, bbox),
+          bridges: bridgesFromElements(json.elements, bbox),
         };
       } catch (e) {
         if (ctrl.signal.aborted) return empty;

@@ -26,6 +26,8 @@ const {
   RAIL_WIDTH_M,
   MONORAIL_DECK_M,
   GUIDEWAY_THICK_M,
+  BRIDGE_DECK_M,
+  BRIDGE_THICK_M,
 } = require("../netlify/lib/outdoor-clutter");
 const { detailFromMapXml } = require("../netlify/lib/building-shape");
 const { MAX_OI_RING_VERTS } = require("../netlify/lib/pipeline");
@@ -86,6 +88,7 @@ describe("outdoor clutter materials", () => {
       ["pole", 9, "Light pole 9.0", 10, "#6E7378", false],
       ["water", 0, "Water 2.1", 0.1, "#3D7EA6", false],
       ["guideway", 4.5, "Guideway 4.5", 9, "#6A6560", false],
+      ["bridge", 2.1, "Bridge 2.1", 9, "#736E68", false],
     ];
     for (let i = 0; i < samples.length; i++) {
       const [kind, height, name, db, color, transparent] = samples[i];
@@ -663,7 +666,7 @@ describe("elevated rail guideways", () => {
     assert.match(fullNotes.join(" "), /Guideways left out/);
   });
 
-  it("drops the guideway before it takes a tree slot", () => {
+  it("keeps the guideway when trees would otherwise fill the area cap", () => {
     const w = 48;
     const h = 48;
     const cell = 2.2;
@@ -719,9 +722,11 @@ describe("elevated rail guideways", () => {
         warnings: notes,
       })
     );
-    assert.equal(tight.stats.openIntentTreeAreas, wide.stats.openIntentTreeAreas);
-    assert.equal(tight.stats.guidewayAreas, 0);
-    assert.match(notes.join(" "), /Guideways left out/);
+    assert.ok(tight.stats.guidewayAreas >= 1, "the beam keeps a slot the trees would have taken");
+    assert.ok(tight.stats.openIntentTreeAreas < wide.stats.openIntentTreeAreas);
+    if (tight.stats.guidewayAreas < wide.stats.guidewayAreas) {
+      assert.match(notes.join(" "), /did not fit in the area budget/);
+    }
   });
 
   it("reads the monorail from the same map extract as building parts", () => {
@@ -753,5 +758,81 @@ describe("elevated rail guideways", () => {
     assert.equal(detail.guideways[0].thicknessM, 4.5);
     const outdoor = featuresFromMapXml(xml, { water: true, parking: true, walls: true, poles: true }, bbox);
     assert.equal(outdoor.features.filter((feat) => feat.kind === "guideway").length, 1);
+  });
+
+  it("draws a raised road deck, skips a culvert and a short span, and keeps a thin footbridge", () => {
+    const f = frame();
+    const y = f.south + (f.north - f.south) * 0.4;
+    const x0 = f.west + (f.east - f.west) * 0.12;
+    const x1 = f.west + (f.east - f.west) * 0.82;
+    const mid = (x0 + x1) / 2;
+    const mLon = 111320 * Math.cos((y * Math.PI) / 180);
+    const shortX1 = x0 + 8 / mLon;
+    const yLink = f.south + (f.north - f.south) * 0.55;
+    const yFoot = f.south + (f.north - f.south) * 0.7;
+    const yCulvert = f.south + (f.north - f.south) * 0.25;
+    const geom = (pts) => pts.map((p) => ({ lon: p[0], lat: p[1] }));
+    const parsed = parseOverpass(
+      {
+        elements: [
+          {
+            type: "way",
+            tags: { highway: "primary", bridge: "viaduct", layer: "1", lanes: "3", name: "Wilbur Clark D.I. Road" },
+            geometry: geom([[x0, y], [mid, y], [x1, y]]),
+          },
+          {
+            type: "way",
+            tags: { highway: "motorway_link", bridge: "yes", layer: "2" },
+            geometry: geom([[x0, yLink], [x1, yLink]]),
+          },
+          {
+            type: "way",
+            tags: { highway: "service", bridge: "culvert", layer: "1" },
+            geometry: geom([[x0, yCulvert], [x1, yCulvert]]),
+          },
+          {
+            type: "way",
+            tags: { highway: "service", bridge: "yes", layer: "1" },
+            geometry: geom([[x0, y], [shortX1, y]]),
+          },
+          {
+            type: "way",
+            tags: { highway: "footway", bridge: "yes", layer: "1" },
+            geometry: geom([[x0, yFoot], [x1, yFoot]]),
+          },
+        ],
+      },
+      { water: true, parking: true, walls: true, poles: true },
+      f
+    );
+    const bridges = parsed.features.filter((feat) => feat.kind === "bridge");
+    const roads = bridges.filter((feat) => !feat.foot);
+    const feet = bridges.filter((feat) => feat.foot);
+    assert.equal(roads.length, 2, "roads " + roads.map((b) => b.widthM + "@" + b.deckM).join(","));
+    assert.equal(feet.length, 1);
+    const primary = roads.find((feat) => feat.deckM === BRIDGE_DECK_M);
+    const link = roads.find((feat) => feat.deckM === BRIDGE_DECK_M * 2);
+    assert.equal(primary.widthM, 12.5);
+    assert.equal(primary.thicknessM, BRIDGE_THICK_M);
+    assert.equal(link.widthM, 6);
+    assert.equal(feet[0].widthM, 2.5);
+    const built = buildClutter({
+      frame: f,
+      footprintsGeojson: { features: [] },
+      name: "Overpass",
+      includeBridges: true,
+      bridgeFeatures: [primary],
+    });
+    const area = findArea(built.openintent.floorplans[0].attenuation_areas, "Bridge");
+    assert.ok(area);
+    assert.equal(area.area_material.name, "Bridge 2.1 @ 6.5");
+    assert.equal(area.area_material.bottom_height, 6.5);
+    assert.equal(area.area_material.top_height, 8.6);
+    assert.equal(area.area_material.rf_properties.attenuation_per_m, 9);
+    assert.equal(canonicalAreaMaterial(area.area_material).name, area.area_material.name);
+    const span = meterSpan(area);
+    assert.ok(span.short > 11 && span.short < 14.5, "deck width " + span.short);
+    assert.equal(built.stats.bridgeAreas, 1);
+    assert.match(built.stats.summary, /Bridges 1\./);
   });
 });
