@@ -386,6 +386,113 @@ describe("building outlines", () => {
     assert.equal(shaped.features.length, 0);
   });
 
+  function paintRect(data, width, height, frame, lon0, lat0, lon1, lat1, rgb) {
+    const mx = 111320 * Math.cos((lat * Math.PI) / 180);
+    for (let y = 0; y < height; y++) {
+      const latP = frame.north - ((y + 0.5) / height) * (frame.north - frame.south);
+      for (let x = 0; x < width; x++) {
+        const lonP = frame.west + ((x + 0.5) / width) * (frame.east - frame.west);
+        const east = (lonP - lon) * mx;
+        const north = (latP - lat) * 110540;
+        const e0 = (lon0 - lon) * mx;
+        const n0 = (lat0 - lat) * 110540;
+        const e1 = (lon1 - lon) * mx;
+        const n1 = (lat1 - lat) * 110540;
+        if (east < Math.min(e0, e1) || east > Math.max(e0, e1) || north < Math.min(n0, n1) || north > Math.max(n0, n1)) continue;
+        const i = (y * width + x) * 4;
+        data[i] = rgb[0];
+        data[i + 1] = rgb[1];
+        data[i + 2] = rgb[2];
+        data[i + 3] = 255;
+      }
+    }
+  }
+
+  function campusImagery(paint) {
+    const width = 220;
+    const height = 180;
+    const frame = {
+      west: lon - 0.0015,
+      south: lat - 0.001,
+      east: lon + 0.006,
+      north: lat + 0.004,
+    };
+    const data = new Uint8Array(width * height * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 150;
+      data[i + 1] = 148;
+      data[i + 2] = 140;
+      data[i + 3] = 255;
+    }
+    paint(data, width, height, frame);
+    return { data, width, height, frame };
+  }
+
+  it("cuts a sprawling outline into a dark roof and a warm roof at 18 m", () => {
+    const campus = metersPoly(lon, lat, [
+      [0, 0],
+      [420, 0],
+      [200, 340],
+    ], { height: 12, heightSource: "overture" });
+    const imagery = campusImagery((data, width, height, frame) => {
+      paintRect(data, width, height, frame, lon + 110 / (111320 * Math.cos((lat * Math.PI) / 180)), lat + 30 / 110540, lon + 210 / (111320 * Math.cos((lat * Math.PI) / 180)), lat + 130 / 110540, [28, 36, 40]);
+      paintRect(data, width, height, frame, lon + 230 / (111320 * Math.cos((lat * Math.PI) / 180)), lat + 80 / 110540, lon + 320 / (111320 * Math.cos((lat * Math.PI) / 180)), lat + 180 / 110540, [214, 168, 132]);
+    });
+    const shaped = shapeBuildings([campus], { buildings: [], openings: [], roads: [], imagery });
+    assert.equal(shaped.stats.coresCarved, 1);
+    assert.equal(shaped.features.length, 2);
+    for (let i = 0; i < shaped.features.length; i++) {
+      assert.equal(shaped.features[i].properties.height, 18);
+      const ring = shaped.features[i].geometry.coordinates[0];
+      assert.ok(ring.length <= 6, "core stayed a rectangle");
+    }
+    const tip = [lon + 200 / (111320 * Math.cos((lat * Math.PI) / 180)), lat + 330 / 110540];
+    let coversTip = false;
+    for (let i = 0; i < shaped.features.length; i++) {
+      if (pointInRingLL(tip, shaped.features[i].geometry.coordinates[0])) coversTip = true;
+    }
+    assert.equal(coversTip, false);
+  });
+
+  it("leaves a single-tone sprawling outline uncut", () => {
+    const campus = metersPoly(lon, lat, [
+      [0, 0],
+      [420, 0],
+      [200, 340],
+    ], { height: 12, heightSource: "overture" });
+    const imagery = campusImagery((data, width, height, frame) => {
+      paintRect(data, width, height, frame, lon + 110 / (111320 * Math.cos((lat * Math.PI) / 180)), lat + 30 / 110540, lon + 210 / (111320 * Math.cos((lat * Math.PI) / 180)), lat + 130 / 110540, [28, 36, 40]);
+    });
+    const shaped = shapeBuildings([campus], { buildings: [], openings: [], roads: [], imagery });
+    assert.equal(shaped.stats.coresCarved, 0);
+    assert.equal(shaped.features.length, 1);
+  });
+
+  it("cuts a tapered campus spike and seats the low-rise body at 18 m", () => {
+    const offsets = [
+      [100, 0],
+      [130, 90],
+      [220, 90],
+      [220, 160],
+      [0, 160],
+      [0, 90],
+      [90, 90],
+    ];
+    const campus = metersPoly(lon, lat, offsets, { height: 12, heightSource: "overture" });
+    const shaped = shapeBuildings([campus], { buildings: [], openings: [], roads: [] });
+    assert.equal(shaped.stats.tapersCut, 1);
+    assert.ok(shaped.features.length >= 1);
+    const mx = 111320 * Math.cos((lat * Math.PI) / 180);
+    const tip = [lon + 100 / mx, lat];
+    let coversTip = false;
+    for (let i = 0; i < shaped.features.length; i++) {
+      const ring = shaped.features[i].geometry.coordinates[0];
+      if (pointInRingLL(tip, ring)) coversTip = true;
+      assert.equal(shaped.features[i].properties.height, 18);
+    }
+    assert.equal(coversTip, false);
+  });
+
   it("keeps a plain rectangular roof as one area", () => {
     const box = metersBox(lon, lat, 40, 24, { height: 12, heightSource: "overture" });
     const frame = geoFrame(

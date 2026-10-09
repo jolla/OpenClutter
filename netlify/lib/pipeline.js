@@ -1833,19 +1833,30 @@ function splitRingHalf(ring) {
  * A ring that still has more corners is cut into pieces. It is never
  * replaced by a subsample or a convex hull.
  */
-function ringsUnderVertexCap(ring, maxPts, eps, mpd, depth) {
+function wedgePieceOf(root, piece, mpd) {
+  if (!root || !piece) return false;
+  if (ringAreaM2(piece, mpd) < 5000) return false;
+  return extremeTriRatio(root) < 0.8 && extremeTriRatio(piece) >= 0.9;
+}
+
+function ringsUnderVertexCap(ring, maxPts, eps, mpd, depth, root) {
+  const rootRing = root || ring;
   const open = openDegRing(ring);
   if (open.length < 3) return [];
   const closed = closeDegRing(open);
   if (!closed) return [];
   if (ringAreaM2(closed, mpd) < MIN_AREA_M2) return [];
-  if (open.length <= maxPts) return [closed];
+  if (open.length <= maxPts) {
+    if (depth > 0 && wedgePieceOf(rootRing, closed, mpd)) return [];
+    return [closed];
+  }
   const simplified = dpDegRing(closed, eps);
   if (
     simplified &&
     ringVertexCount(simplified) >= 3 &&
     ringVertexCount(simplified) <= maxPts &&
-    !collapsedWedge(closed, simplified, mpd)
+    !collapsedWedge(closed, simplified, mpd) &&
+    !wedgePieceOf(rootRing, simplified, mpd)
   ) {
     return [simplified];
   }
@@ -1854,7 +1865,7 @@ function ringsUnderVertexCap(ring, maxPts, eps, mpd, depth) {
   if (parts.length < 2) return [];
   const out = [];
   for (let i = 0; i < parts.length; i++) {
-    const sub = ringsUnderVertexCap(parts[i], maxPts, eps, mpd, depth + 1);
+    const sub = ringsUnderVertexCap(parts[i], maxPts, eps, mpd, depth + 1, rootRing);
     for (let s = 0; s < sub.length; s++) out.push(sub[s]);
   }
   return out;
