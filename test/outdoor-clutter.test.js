@@ -834,5 +834,97 @@ describe("elevated rail guideways", () => {
     assert.ok(span.short > 11 && span.short < 14.5, "deck width " + span.short);
     assert.equal(built.stats.bridgeAreas, 1);
     assert.match(built.stats.summary, /Bridges 1\./);
+    assert.match(built.stats.summary, /Area cap 982\./);
+  });
+
+  it("fills extra slots above 982 with buildings, trees, bridges, and guideways", () => {
+    const f = frame();
+    const cols = 36;
+    const rows = 32;
+    const lonSpan = (f.east - f.west) / cols;
+    const latSpan = (f.north - f.south) / rows;
+    const features = [];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (r >= rows - 8 && c < 8) continue;
+        const lon = f.west + c * lonSpan + lonSpan * 0.12;
+        const lat = f.south + r * latSpan + latSpan * 0.12;
+        features.push(square(lon, lat, lon + lonSpan * 0.62, lat + latSpan * 0.62, { height: 10 + (c % 7) }));
+      }
+    }
+    const yGuide = f.south + (f.north - f.south) * 0.2;
+    const yBridge = f.south + (f.north - f.south) * 0.8;
+    const x0 = f.west + (f.east - f.west) * 0.08;
+    const x1 = f.west + (f.east - f.west) * 0.92;
+    const guide = {
+      kind: "guideway",
+      coords: [
+        [x0, yGuide],
+        [x1, yGuide],
+      ],
+      closed: false,
+      heightM: 4.5,
+      thicknessM: 4.5,
+      deckM: 6.5,
+      widthM: 3,
+      explicitHeight: true,
+    };
+    const bridge = {
+      kind: "bridge",
+      coords: [
+        [x0, yBridge],
+        [x1, yBridge],
+      ],
+      closed: false,
+      widthM: 12,
+      deckM: 6.5,
+      foot: false,
+    };
+    const w = 48;
+    const h = 48;
+    const values = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (Math.hypot(x - 3, y - 2) <= 2.2) values[y * w + x] = 16;
+      }
+    }
+    const grid = {
+      west: f.west,
+      south: f.south,
+      east: f.east,
+      north: f.north,
+      width: w,
+      height: h,
+      values,
+    };
+    const base = {
+      frame: f,
+      footprintsGeojson: { features },
+      name: "Cap",
+      includeFoliage: true,
+      chmGrid: grid,
+      treesSource: "chm",
+      includeGuideways: true,
+      includeBridges: true,
+      guidewayFeatures: [guide],
+      bridgeFeatures: [bridge],
+    };
+    const tight = buildClutter(Object.assign({}, base, { maxAttenuationAreas: 982 }));
+    const wide = buildClutter(
+      Object.assign({}, base, { maxAttenuationAreas: 1500, areaCapOverride: true })
+    );
+    assert.ok(tight.stats.openIntentBuildingAreas >= 900, "tight buildings " + tight.stats.openIntentBuildingAreas);
+    assert.equal(tight.stats.guidewayAreas, 0);
+    assert.equal(tight.stats.bridgeAreas, 0);
+    assert.equal(tight.stats.openIntentTreeAreas, 0);
+    assert.ok(wide.stats.openIntentBuildingAreas > tight.stats.openIntentBuildingAreas);
+    assert.ok(wide.stats.guidewayAreas > tight.stats.guidewayAreas);
+    assert.ok(wide.stats.bridgeAreas > tight.stats.bridgeAreas);
+    assert.ok(wide.stats.openIntentTreeAreas > tight.stats.openIntentTreeAreas);
+    assert.ok(wide.stats.attenuationAreasEmitted > tight.stats.attenuationAreasEmitted);
+    assert.ok(wide.stats.attenuationAreasEmitted <= 1500);
+    assert.match(wide.stats.summary, /Area cap 1500 \(test override\)\./);
+    assert.match(tight.stats.summary, /Area cap 982\./);
+    assert.equal(/test override/.test(tight.stats.summary), false);
   });
 });

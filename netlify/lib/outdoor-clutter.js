@@ -370,7 +370,7 @@ function makeGuidewayFeature(tags, coords, closed) {
  * or layer at or above 1. A bridge polygon replaces the buffered centerline
  * when the beam runs through that outline. A pedestrian skywalk stays a building.
  */
-function guidewayFeatures(records, bbox) {
+function guidewayFeatures(records, bbox, cap) {
   const lines = [];
   const polygons = [];
   const list = records || [];
@@ -439,9 +439,10 @@ function guidewayFeatures(records, bbox) {
       features.push(makeGuidewayFeature(line.tags, runs[r], false));
     }
   }
-  if (features.length <= GUIDEWAY_CAP) return features;
+  const limit = cap > 0 ? cap | 0 : GUIDEWAY_CAP;
+  if (features.length <= limit) return features;
   const sorted = features.slice().sort((a, b) => lineLength(b.coords) - lineLength(a.coords));
-  return sorted.slice(0, GUIDEWAY_CAP);
+  return sorted.slice(0, limit);
 }
 
 function isFootHighway(tags) {
@@ -551,7 +552,7 @@ function makeBridgeFeature(tags, coords, closed) {
  * A polygon the monorail already uses stays a guideway. Culverts and
  * spans under 10 m are left out. A footbridge is thin and optional.
  */
-function bridgeFeatures(records, bbox) {
+function bridgeFeatures(records, bbox, cap) {
   const lines = [];
   const polygons = [];
   const rails = [];
@@ -615,11 +616,12 @@ function bridgeFeatures(records, bbox) {
     }
   }
   const features = decks.concat(roads, feet);
-  if (features.length <= BRIDGE_CAP) return features;
+  const limit = cap > 0 ? cap | 0 : BRIDGE_CAP;
+  if (features.length <= limit) return features;
   const roadsFirst = features.filter((f) => !f.foot);
   const footLast = features.filter((f) => f.foot);
   roadsFirst.sort((a, b) => lineLength(b.coords) - lineLength(a.coords));
-  return roadsFirst.concat(footLast).slice(0, BRIDGE_CAP);
+  return roadsFirst.concat(footLast).slice(0, limit);
 }
 
 function fullyInside(coords, bbox) {
@@ -629,7 +631,7 @@ function fullyInside(coords, bbox) {
   return true;
 }
 
-function guidewaysFromElements(elements, bbox) {
+function guidewaysFromElements(elements, bbox, cap) {
   const records = [];
   const list = elements || [];
   for (let i = 0; i < list.length; i++) {
@@ -639,10 +641,10 @@ function guidewaysFromElements(elements, bbox) {
     if (coords.length < 2) continue;
     records.push({ tags: el.tags || {}, coords });
   }
-  return guidewayFeatures(records, bbox);
+  return guidewayFeatures(records, bbox, cap);
 }
 
-function bridgesFromElements(elements, bbox) {
+function bridgesFromElements(elements, bbox, cap) {
   const records = [];
   const list = elements || [];
   for (let i = 0; i < list.length; i++) {
@@ -652,10 +654,10 @@ function bridgesFromElements(elements, bbox) {
     if (coords.length < 2) continue;
     records.push({ tags: el.tags || {}, coords });
   }
-  return bridgeFeatures(records, bbox);
+  return bridgeFeatures(records, bbox, cap);
 }
 
-function bridgesFromParsedWays(ways, nodes, bbox) {
+function bridgesFromParsedWays(ways, nodes, bbox, cap) {
   const records = [];
   for (const way of ways.values()) {
     const coords = [];
@@ -669,10 +671,10 @@ function bridgesFromParsedWays(ways, nodes, bbox) {
     }
     if (coords.length >= 2) records.push({ tags: way.tags || {}, coords });
   }
-  return bridgeFeatures(records, bbox);
+  return bridgeFeatures(records, bbox, cap);
 }
 
-function guidewaysFromParsedWays(ways, nodes, bbox) {
+function guidewaysFromParsedWays(ways, nodes, bbox, cap) {
   const records = [];
   for (const way of ways.values()) {
     const coords = [];
@@ -686,7 +688,7 @@ function guidewaysFromParsedWays(ways, nodes, bbox) {
     }
     if (coords.length >= 2) records.push({ tags: way.tags || {}, coords });
   }
-  return guidewayFeatures(records, bbox);
+  return guidewayFeatures(records, bbox, cap);
 }
 
 function isParkingClass(props) {
@@ -699,7 +701,7 @@ function isParkingClass(props) {
  * Overpass elements to clutter features. `want` drops types the page turned off.
  * `bbox` drops a way that never touches the drawn box.
  */
-function parseOverpass(payload, want, bbox) {
+function parseOverpass(payload, want, bbox, deckCap) {
   const on = want || { water: true, parking: true, walls: true, poles: true };
   const elements = (payload && payload.elements) || [];
   const features = [];
@@ -773,8 +775,8 @@ function parseOverpass(payload, want, bbox) {
       });
     }
   }
-  const guides = guidewayFeatures(railRecords, bbox);
-  const bridges = bridgeFeatures(railRecords, bbox);
+  const guides = guidewayFeatures(railRecords, bbox, deckCap);
+  const bridges = bridgeFeatures(railRecords, bbox, deckCap);
   return { features: features.concat(guides, bridges), openWater };
 }
 
@@ -851,7 +853,7 @@ function spreadPoles(poles, bbox, cap) {
 }
 
 /** Caps so a downtown lamp grid or a long fence cannot fill the element budget. */
-function limitFeatures(features, bbox) {
+function limitFeatures(features, bbox, deckCap) {
   const water = [];
   const parking = [];
   const walls = [];
@@ -873,18 +875,20 @@ function limitFeatures(features, bbox) {
   const wallSorted = walls.slice().sort((a, b) => lineLength(b.coords) - lineLength(a.coords));
   const wallKept = wallSorted.slice(0, WALL_CAP);
   const pole = spreadPoles(poles, bbox || { west: -180, south: -90, east: 180, north: 90 }, POLE_CAP);
+  const guideLimit = deckCap > 0 ? deckCap | 0 : GUIDEWAY_CAP;
+  const bridgeLimit = deckCap > 0 ? deckCap | 0 : BRIDGE_CAP;
   const guideSorted = guideways.slice().sort((a, b) => lineLength(b.coords) - lineLength(a.coords));
-  const guideKept = guideSorted.slice(0, GUIDEWAY_CAP);
+  const guideKept = guideSorted.slice(0, guideLimit);
   const bridgeRoads = bridges.filter((f) => !f.foot).sort((a, b) => lineLength(b.coords) - lineLength(a.coords));
   const bridgeFeet = bridges.filter((f) => f.foot);
-  const bridgeKept = bridgeRoads.concat(bridgeFeet).slice(0, BRIDGE_CAP);
+  const bridgeKept = bridgeRoads.concat(bridgeFeet).slice(0, bridgeLimit);
   const notes = [];
   if (w.capped) notes.push("Water capped at " + WATER_CAP + ".");
   if (p.capped) notes.push("Parking capped at " + PARKING_CAP + ".");
   if (wallSorted.length > wallKept.length) notes.push("Walls capped at " + WALL_CAP + ".");
   if (pole.capped) notes.push("Light poles capped at " + POLE_CAP + ".");
-  if (guideSorted.length > guideKept.length) notes.push("Guideways capped at " + GUIDEWAY_CAP + ".");
-  if (bridges.length > bridgeKept.length) notes.push("Bridges capped at " + BRIDGE_CAP + ".");
+  if (guideSorted.length > guideKept.length) notes.push("Guideways capped at " + guideLimit + ".");
+  if (bridges.length > bridgeKept.length) notes.push("Bridges capped at " + bridgeLimit + ".");
   return {
     features: w.kept.concat(p.kept, wallKept, pole.kept, guideKept, bridgeKept),
     notes,
@@ -1224,9 +1228,9 @@ function hitY(a, b, y) {
   return [a[0] + t * (b[0] - a[0]), y];
 }
 
-function featuresFromMapXml(xml, want, bbox) {
+function featuresFromMapXml(xml, want, bbox, deckCap) {
   const elements = elementsFromMapXml(xml, bbox);
-  return parseOverpass({ elements }, want, bbox);
+  return parseOverpass({ elements }, want, bbox, deckCap);
 }
 
 function dedupeOutdoor(features) {
@@ -1255,6 +1259,7 @@ async function fetchOutdoorClutter(bbox, want, opts) {
   }
   const ua = (opts && opts.ua) || "openclutter";
   const tile = !!(opts && opts.tile);
+  const deckCap = opts && opts.deckCap > 0 ? opts.deckCap | 0 : 0;
   try {
     const maps = await fetchOsmMaps(bbox, {
       signal: ctrl.signal,
@@ -1263,8 +1268,8 @@ async function fetchOutdoorClutter(bbox, want, opts) {
       fetchImpl: opts && opts.fetchImpl,
     });
     if (maps.elements && maps.elements.length) {
-      const parsed = parseOverpass({ elements: maps.elements }, want, bbox);
-      const limited = limitFeatures(dedupeOutdoor(parsed.features || []), bbox);
+      const parsed = parseOverpass({ elements: maps.elements }, want, bbox, deckCap);
+      const limited = limitFeatures(dedupeOutdoor(parsed.features || []), bbox, deckCap);
       if (parsed.openWater) limited.notes.push("Open water lines were left out.");
       for (let i = 0; i < maps.notes.length; i++) limited.notes.push(maps.notes[i]);
       return { ok: true, features: limited.features, notes: limited.notes };
@@ -1273,11 +1278,11 @@ async function fetchOutdoorClutter(bbox, want, opts) {
       let features = [];
       let openWater = false;
       for (let i = 0; i < maps.xmls.length; i++) {
-        const parsed = featuresFromMapXml(maps.xmls[i], want, bbox);
+        const parsed = featuresFromMapXml(maps.xmls[i], want, bbox, deckCap);
         features = features.concat(parsed.features || []);
         if (parsed.openWater) openWater = true;
       }
-      const limited = limitFeatures(dedupeOutdoor(features), bbox);
+      const limited = limitFeatures(dedupeOutdoor(features), bbox, deckCap);
       if (openWater) limited.notes.push("Open water lines were left out.");
       for (let i = 0; i < maps.notes.length; i++) limited.notes.push(maps.notes[i]);
       return { ok: true, features: limited.features, notes: limited.notes };
@@ -1295,8 +1300,8 @@ async function fetchOutdoorClutter(bbox, want, opts) {
     });
     if (!r.ok) return { ok: false, features: [], notes: [] };
     const json = await r.json();
-    const parsed = parseOverpass(json, want, bbox);
-    const limited = limitFeatures(parsed.features, bbox);
+    const parsed = parseOverpass(json, want, bbox, deckCap);
+    const limited = limitFeatures(parsed.features, bbox, deckCap);
     if (parsed.openWater) limited.notes.push("Open water lines were left out.");
     return { ok: true, features: limited.features, notes: limited.notes };
   } catch {
@@ -1473,10 +1478,11 @@ function splitPolyline(pts, chunk) {
   return out;
 }
 
-function guidewayLineRings(coords, frame, halfM) {
+function guidewayLineRings(coords, frame, halfM, maxRings) {
+  const segCap = maxRings > 0 ? maxRings | 0 : GUIDEWAY_SEGMENT_CAP;
   const chunks = splitPolyline(coords, GUIDEWAY_CHUNK);
   const rings = [];
-  for (let c = 0; c < chunks.length && rings.length < GUIDEWAY_SEGMENT_CAP; c++) {
+  for (let c = 0; c < chunks.length && rings.length < segCap; c++) {
     const px = [];
     for (let i = 0; i < chunks[c].length; i++) px.push(llToPx(chunks[c][i][0], chunks[c][i][1], frame));
     const meters = px.map((p) => toMeters(p, frame));
@@ -1485,7 +1491,7 @@ function guidewayLineRings(coords, frame, halfM) {
       rings.push(buffered.map((p) => fromMeters(p, frame)));
       continue;
     }
-    for (let i = 0; i < meters.length - 1 && rings.length < GUIDEWAY_SEGMENT_CAP; i++) {
+    for (let i = 0; i < meters.length - 1 && rings.length < segCap; i++) {
       const q = segmentQuad(meters[i], meters[i + 1], halfM);
       if (q) rings.push(q.map((p) => fromMeters(p, frame)));
     }
@@ -1546,7 +1552,10 @@ function parkingMaterialFor(feat, buildingMat, slopeTop, lonlatRing) {
  * Pixel rings plus a parking recolor of buildings that already cover a garage.
  * A matched garage is not drawn a second time.
  */
-function planOutdoor({ features, frame, slopeTop, buildings, parkingRings }) {
+function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segmentCaps }) {
+  const guideCap = segmentCaps && segmentCaps.guideway > 0 ? segmentCaps.guideway | 0 : GUIDEWAY_SEGMENT_CAP;
+  const bridgeCap = segmentCaps && segmentCaps.bridge > 0 ? segmentCaps.bridge | 0 : BRIDGE_SEGMENT_CAP;
+  const footCap = segmentCaps && segmentCaps.footbridge > 0 ? segmentCaps.footbridge | 0 : FOOTBRIDGE_SEGMENT_CAP;
   const list = features || [];
   const parkingFeats = [];
   for (let i = 0; i < list.length; i++) {
@@ -1598,15 +1607,15 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings }) {
     if (f.kind === "parking" && consumed.has(f)) continue;
     if (f.kind === "guideway") {
       if (!f.closed && lineLength(f.coords) * 111000 < 8) continue;
-      if (guidewaySegs >= GUIDEWAY_SEGMENT_CAP) continue;
+      if (guidewaySegs >= guideCap) continue;
       const half = (f.widthM > 0 ? f.widthM : MONORAIL_WIDTH_M) / 2;
-      const rings = f.closed ? [lonLatRingToPx(f.coords, frame)] : guidewayLineRings(f.coords, frame, half);
+      const rings = f.closed ? [lonLatRingToPx(f.coords, frame)] : guidewayLineRings(f.coords, frame, half, guideCap);
       const deck = f.deckM > 0 ? f.deckM : MONORAIL_DECK_M;
       const thick = f.thicknessM > 2 ? f.thicknessM : GUIDEWAY_THICK_M;
       const material = materialForKind("guideway", thick, f.coords, null, guidewaySeat(slopeTop, f.coords) + deck);
       if (!material) continue;
       for (let r = 0; r < rings.length; r++) {
-        if (guidewaySegs >= GUIDEWAY_SEGMENT_CAP) break;
+        if (guidewaySegs >= guideCap) break;
         if (!rings[r] || rings[r].length < 4) continue;
         items.push({ ringPx: rings[r], material, kind: "guideway", thin: true });
         guidewaySegs++;
@@ -1616,15 +1625,17 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings }) {
     if (f.kind === "bridge") {
       const foot = !!f.foot;
       if (foot) {
-        if (footSegs >= FOOTBRIDGE_SEGMENT_CAP) continue;
-      } else if (bridgeSegs >= BRIDGE_SEGMENT_CAP) continue;
+        if (footSegs >= footCap) continue;
+      } else if (bridgeSegs >= bridgeCap) continue;
       const half = (f.widthM > 0 ? f.widthM : 8) / 2;
-      const rings = f.closed ? [lonLatRingToPx(f.coords, frame)] : guidewayLineRings(f.coords, frame, half);
+      const rings = f.closed
+        ? [lonLatRingToPx(f.coords, frame)]
+        : guidewayLineRings(f.coords, frame, half, foot ? footCap : bridgeCap);
       const deck = f.deckM > 0 ? f.deckM : BRIDGE_DECK_M;
       const material = materialForKind("bridge", BRIDGE_THICK_M, f.coords, null, guidewaySeat(slopeTop, f.coords) + deck);
       if (!material) continue;
       for (let r = 0; r < rings.length; r++) {
-        if (foot ? footSegs >= FOOTBRIDGE_SEGMENT_CAP : bridgeSegs >= BRIDGE_SEGMENT_CAP) break;
+        if (foot ? footSegs >= footCap : bridgeSegs >= bridgeCap) break;
         if (!rings[r] || rings[r].length < 4) continue;
         items.push({ ringPx: rings[r], material, kind: foot ? "footbridge" : "bridge", thin: true });
         if (foot) footSegs++;
@@ -1698,7 +1709,7 @@ function budgetNote(kind, keptCount, skipped) {
 }
 
 /** Parking and water stay ahead of poles when the attenuation cap is tight. */
-function fitOutdoorBudget(items, kinds, room) {
+function fitOutdoorBudget(items, kinds, room, opts) {
   const groups = new Map();
   for (let i = 0; i < BUDGET_ORDER.length; i++) groups.set(BUDGET_ORDER[i], []);
   for (let i = 0; i < items.length; i++) {
@@ -1710,16 +1721,21 @@ function fitOutdoorBudget(items, kinds, room) {
   const keptKinds = [];
   const notes = [];
   let left = Math.max(0, room | 0);
+  // Water and parking share this prefix so a crowd of ponds cannot spend
+  // the slots held for guideways and bridges. Omitted, they share `room`.
+  let frontLeft = opts && Number.isFinite(opts.front) ? Math.max(0, opts.front | 0) : left;
   const noted = new Set();
   for (let i = 0; i < BUDGET_ORDER.length; i++) {
     const kind = BUDGET_ORDER[i];
     const list = groups.get(kind) || [];
-    const take = list.slice(0, left);
+    const capped = kind === "parking" || kind === "water" ? Math.min(left, frontLeft) : left;
+    const take = list.slice(0, capped);
     for (let t = 0; t < take.length; t++) {
       kept.push(take[t]);
       keptKinds.push(kind);
     }
     left -= take.length;
+    if (kind === "parking" || kind === "water") frontLeft -= take.length;
     if (list.length > take.length) {
       const note = budgetNote(kind, take.length, list.length - take.length);
       if (!noted.has(note)) {

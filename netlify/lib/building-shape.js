@@ -317,7 +317,7 @@ function closedFromPts(pts) {
  * is only the fallback for a small extract. Only parts, pools, water, and
  * courtyard inners are kept. A plain building outer is not a new footprint.
  */
-function detailFromMapXml(xml, bbox) {
+function detailFromMapXml(xml, bbox, deckCap) {
   const text = String(xml || "");
   const nodes = new Map();
   const ways = new Map();
@@ -426,8 +426,8 @@ function detailFromMapXml(xml, bbox) {
     if (members.length) elements.push({ type: "relation", tags, members });
   }
   const parsed = parseBuildingDetail({ elements }, bbox);
-  parsed.guideways = guidewaysFromParsedWays(ways, nodes, bbox);
-  parsed.bridges = bridgesFromParsedWays(ways, nodes, bbox);
+  parsed.guideways = guidewaysFromParsedWays(ways, nodes, bbox, deckCap);
+  parsed.bridges = bridgesFromParsedWays(ways, nodes, bbox, deckCap);
   return parsed;
 }
 
@@ -491,6 +491,7 @@ async function fetchBuildingDetail(bbox, opts) {
   const ua = (opts && opts.ua) || "openclutter";
   const q = buildingDetailQuery(bbox);
   const tile = !!(opts && opts.tile);
+  const deckCap = opts && opts.deckCap > 0 ? opts.deckCap | 0 : 0;
   try {
     if (!ctrl.signal.aborted) {
       try {
@@ -506,14 +507,14 @@ async function fetchBuildingDetail(bbox, opts) {
             ok: true,
             parts: parsed.parts,
             openings: parsed.openings,
-            guideways: guidewaysFromElements(maps.elements, bbox),
-            bridges: bridgesFromElements(maps.elements, bbox),
+            guideways: guidewaysFromElements(maps.elements, bbox, deckCap),
+            bridges: bridgesFromElements(maps.elements, bbox, deckCap),
             notes: maps.notes,
           };
         }
         if (maps.xmls.length) {
           const packs = [];
-          for (let i = 0; i < maps.xmls.length; i++) packs.push(detailFromMapXml(maps.xmls[i], bbox));
+          for (let i = 0; i < maps.xmls.length; i++) packs.push(detailFromMapXml(maps.xmls[i], bbox, deckCap));
           const merged = mergeBuildingDetail(packs);
           return {
             ok: true,
@@ -550,8 +551,8 @@ async function fetchBuildingDetail(bbox, opts) {
           ok: true,
           parts: parsed.parts,
           openings: parsed.openings,
-          guideways: guidewaysFromElements(json.elements, bbox),
-          bridges: bridgesFromElements(json.elements, bbox),
+          guideways: guidewaysFromElements(json.elements, bbox, deckCap),
+          bridges: bridgesFromElements(json.elements, bbox, deckCap),
         };
       } catch (e) {
         if (ctrl.signal.aborted) return empty;

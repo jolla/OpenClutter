@@ -156,7 +156,7 @@ async function runBackgroundExport(event, onProgress) {
   return result;
 }
 const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
-const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings } = require("../lib/pipeline");
+const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings, parseAreaCapOverride, raisedDeckCap } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
@@ -1148,6 +1148,8 @@ async function handleClutter(event) {
   }
 
   const devHost = isDevDemHost(event);
+  const areaCapOverride = devHost ? parseAreaCapOverride(body.areaCap) : 0;
+  const deckCap = raisedDeckCap(areaCapOverride);
   if (body.async === true || body.async === "true") {
     return enqueueBackgroundExport(event, body, cors);
   }
@@ -1247,11 +1249,11 @@ async function handleClutter(event) {
           parking: includeParking,
           walls: includeWalls,
           poles: includePoles,
-        }, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background })
+        }, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background, deckCap })
       );
     }
     detailJob = beginOptional((signal) =>
-      fetchBuildingDetail(requestBbox, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background })
+      fetchBuildingDetail(requestBbox, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background, deckCap })
     );
     if (needImage) {
       frame = applyImageryMeta(frame, null, { width: frame.imgW, height: frame.imgH }, { requestBbox });
@@ -1732,6 +1734,8 @@ async function handleClutter(event) {
       includeGuideways: true,
       bridgeFeatures,
       includeBridges: true,
+      maxAttenuationAreas: areaCapOverride || undefined,
+      areaCapOverride: areaCapOverride > 0,
     });
   }
 
