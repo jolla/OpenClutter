@@ -14,6 +14,7 @@ const {
 } = require("../netlify/lib/geo-frame");
 const {
   terrainFromSamples,
+  depressWaterBasins,
   parseDemSamples,
   terrainBundleFields,
   noteMissingTerrain,
@@ -754,6 +755,72 @@ describe("Hamina draws the pit as a hole", () => {
     assert.ok(center.z < 5, "center is the floor, got " + center.z);
     assert.equal(terrain.clipboard.tiePoints.length, 2);
     assert.ok(floors.length + terrain.clipboard.raisedFloorZones.length <= pastePlanQuadBudget());
+  });
+
+  it("lowers a pond that covers a cell to the shoreline and keeps every ramp planar", () => {
+    const frame = geoFrame({ west: -115.17, south: 36.12, east: -115.16, north: 36.13, name: "Pond" });
+    const n = 8;
+    const samples = [];
+    for (let r = 0; r <= n; r++) {
+      for (let c = 0; c <= n; c++) {
+        const dx = c / n - 0.5;
+        const dy = r / n - 0.5;
+        const mound = Math.max(0, 1 - Math.hypot(dx, dy) / 0.45) * 12;
+        samples.push({
+          lon: frame.west + (c / n) * (frame.east - frame.west),
+          lat: frame.south + (r / n) * (frame.north - frame.south),
+          z: 600 + mound,
+        });
+      }
+    }
+    const terrain = terrainFromSamples(samples, frame, { terrainStyle: "sloped" });
+    const midLon = (frame.west + frame.east) / 2;
+    const midLat = (frame.south + frame.north) / 2;
+    const dLon = (frame.east - frame.west) * 0.22;
+    const dLat = (frame.north - frame.south) * 0.22;
+    const pond = [
+      [midLon - dLon, midLat - dLat],
+      [midLon + dLon, midLat - dLat],
+      [midLon + dLon, midLat + dLat],
+      [midLon - dLon, midLat + dLat],
+      [midLon - dLon, midLat - dLat],
+    ];
+    const beforeTop = slopeTopUnderRing(terrain, pond);
+    const lowered = depressWaterBasins(terrain, [pond]);
+    assert.ok(lowered > 0, "interior nodes " + lowered);
+    const afterTop = slopeTopUnderRing(terrain, pond);
+    assert.ok(afterTop < beforeTop - 1, "pond top " + afterTop + " stayed near " + beforeTop);
+    for (const zone of terrain.clipboard.slopedFloors) {
+      assert.equal(planarSlopedRamp(zone.area.coordinates[0]), true);
+    }
+    const fresh = terrainFromSamples(samples, frame, { terrainStyle: "sloped" });
+    const tinyD = (frame.east - frame.west) * 0.01;
+    const tiny = [
+      [midLon, midLat],
+      [midLon + tinyD, midLat],
+      [midLon + tinyD, midLat + tinyD],
+      [midLon, midLat + tinyD],
+      [midLon, midLat],
+    ];
+    assert.equal(depressWaterBasins(fresh, [tiny]), 0);
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [] },
+      name: "Pond",
+      terrain,
+      includeWater: true,
+      outdoorFeatures: [{ kind: "water", coords: pond, heightM: 0.1, explicitHeight: false }],
+    });
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    const water = areas.find((a) => a.area_material && String(a.area_material.name).indexOf("Water") === 0);
+    assert.ok(water);
+    assert.equal(water.area_material.rf_properties.attenuation_per_m, 0.1);
+    assert.ok(water.area_material.top_height > 0);
+    assert.equal(water.area_material.bottom_height > 0, true);
+    assert.ok(Math.abs(water.area_material.top_height - water.area_material.bottom_height - 0.1) < 0.001);
+    for (const zone of terrain.clipboard.slopedFloors) {
+      assert.equal(planarSlopedRamp(zone.area.coordinates[0]), true);
+    }
   });
 
   it("accepts every slope in the native open-pit clipboard", () => {
@@ -3212,5 +3279,77 @@ describe("a sloped building is cut into the hill", () => {
     assert.equal(mat.bottom_height, seat);
     assert.equal(mat.top_height, Math.round((seat + 7.620092660326749) * 10) / 10);
     assert.ok(mat.bottom_height + 0.2 >= uphill, "dug under the pad");
+  });
+});
+
+describe("terrain tips meet the neighbor edge", () => {
+  function samples(frame, n, zAt) {
+    const out = [];
+    for (let r = 0; r <= n; r++) {
+      for (let c = 0; c <= n; c++) {
+        out.push({
+          lon: frame.west + (c / n) * (frame.east - frame.west),
+          lat: frame.south + (r / n) * (frame.north - frame.south),
+          z: zAt(c / n, r / n),
+        });
+      }
+    }
+    return out;
+  }
+
+  it("keeps a rolling hill's ramp corners on the neighbor edge", () => {
+    const frame = geoFrame({ west: -118.36, south: 34.13, east: -118.345, north: 34.145, name: "Hollywood hill" });
+    const terrain = terrainFromSamples(
+      samples(frame, 24, (u, v) => {
+        const dx = (u - 0.4) * 6;
+        const dy = (v - 0.5) * 5;
+        return 200 + 35 * Math.exp(-(dx * dx + dy * dy)) + 12 * Math.sin(u * 8) * Math.cos(v * 6);
+      }),
+      frame,
+      { terrainStyle: "sloped" }
+    );
+    assert.equal(slopeCornerGap(terrain.clipboard.slopedFloors), 0);
+    const rings = terrain.clipboard.slopedFloors.map((z) => z.area.coordinates[0]);
+    for (const ring of rings) assert.equal(planarSlopedRamp(ring), true);
+    const cell = 8;
+    const buckets = new Map();
+    for (let i = 0; i < rings.length; i++) {
+      for (let e = 0; e < rings[i].length; e++) {
+        const a = rings[i][e];
+        const b = rings[i][(e + 1) % rings[i].length];
+        const minX = Math.min(a[0], b[0]);
+        const maxX = Math.max(a[0], b[0]);
+        const minY = Math.min(a[1], b[1]);
+        const maxY = Math.max(a[1], b[1]);
+        for (let x = Math.floor((minX - 0.05) / cell); x <= Math.floor((maxX + 0.05) / cell); x++) {
+          for (let y = Math.floor((minY - 0.05) / cell); y <= Math.floor((maxY + 0.05) / cell); y++) {
+            const key = x + "," + y;
+            if (!buckets.has(key)) buckets.set(key, []);
+            buckets.get(key).push({ a, b, i });
+          }
+        }
+      }
+    }
+    let worst = 0;
+    for (let i = 0; i < rings.length; i++) {
+      for (let k = 0; k < rings[i].length; k++) {
+        const p = rings[i][k];
+        const cand = buckets.get(Math.floor(p[0] / cell) + "," + Math.floor(p[1] / cell)) || [];
+        for (let e = 0; e < cand.length; e++) {
+          const edge = cand[e];
+          if (edge.i === i) continue;
+          const dx = edge.b[0] - edge.a[0];
+          const dy = edge.b[1] - edge.a[1];
+          const len2 = dx * dx + dy * dy;
+          if (len2 < 1e-4) continue;
+          const t = ((p[0] - edge.a[0]) * dx + (p[1] - edge.a[1]) * dy) / len2;
+          if (t <= 0.02 || t >= 0.98) continue;
+          const d = Math.hypot(p[0] - (edge.a[0] + dx * t), p[1] - (edge.a[1] + dy * t));
+          if (d > 0.02) continue;
+          worst = Math.max(worst, Math.abs(p[2] - (edge.a[2] + (edge.b[2] - edge.a[2]) * t)));
+        }
+      }
+    }
+    assert.ok(worst <= 0.15, "edge height disagrees by " + worst);
   });
 });

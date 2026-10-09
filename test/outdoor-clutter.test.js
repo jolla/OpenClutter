@@ -20,6 +20,10 @@ const {
   limitFeatures,
   fitOutdoorBudget,
   planOutdoor,
+  rvBoxes,
+  RV_LENGTH_M,
+  RV_WIDTH_M,
+  RV_HEIGHT_M,
   POLE_CAP,
   OUTDOOR_MISS,
   MONORAIL_WIDTH_M,
@@ -91,9 +95,10 @@ describe("outdoor clutter materials", () => {
       ["retaining", 3, "Retaining wall 3.0", 6, "#7A736C", false],
       ["hedge", 2.1, "Hedge 2.1", 1, "#6FA84A", true],
       ["pole", 9, "Light pole 9.0", 10, "#6E7378", false],
-      ["water", 0, "Water 2.1", 0.1, "#3D7EA6", false],
+      ["water", 0, "Water 0.1", 0.1, "#3D7EA6", false],
       ["guideway", 4.5, "Guideway 4.5", 9, "#6A6560", false],
       ["bridge", 2.1, "Bridge 2.1", 9, "#736E68", false],
+      ["rv", 3.5, "RV 3.5", 18, "#8A9098", false],
     ];
     for (let i = 0; i < samples.length; i++) {
       const [kind, height, name, db, color, transparent] = samples[i];
@@ -111,6 +116,41 @@ describe("outdoor clutter materials", () => {
       const listed = doc.find((m) => m.name === name);
       assert.deepEqual(listed, mat);
     }
+  });
+
+  it("seats water 0.1 m above the terrain and does not emit a negative height", () => {
+    const f = frame();
+    const ring = [
+      [f.west + (f.east - f.west) * 0.55, f.south + (f.north - f.south) * 0.55],
+      [f.west + (f.east - f.west) * 0.85, f.south + (f.north - f.south) * 0.55],
+      [f.west + (f.east - f.west) * 0.85, f.south + (f.north - f.south) * 0.85],
+      [f.west + (f.east - f.west) * 0.55, f.south + (f.north - f.south) * 0.85],
+      [f.west + (f.east - f.west) * 0.55, f.south + (f.north - f.south) * 0.55],
+    ];
+    const seated = planOutdoor({
+      features: [{ kind: "water", coords: ring, heightM: 2.1, explicitHeight: false }],
+      frame: f,
+      slopeTop: { seat: () => 6.4 },
+    });
+    assert.equal(seated.items.length, 1);
+    const mat = seated.items[0].material;
+    assert.equal(mat.name, "Water 0.1 @ 6.4");
+    assert.equal(mat.bottom_height, 6.4);
+    assert.equal(mat.top_height, 6.5);
+    assert.equal(mat.rf_properties.attenuation_per_m, 0.1);
+    assert.ok(mat.top_height > 0);
+    assert.ok(mat.bottom_height > 0);
+    assert.deepEqual(canonicalAreaMaterial(mat), mat);
+    const buried = {
+      name: "Water 0.1",
+      rf_properties: { attenuation_per_m: 0.1 },
+      top_height: -0.2,
+      display_color: "#3D7EA6",
+    };
+    assert.equal(canonicalAreaMaterial(buried), null);
+    const zeroBottom = outdoorMaterial("water", 0);
+    assert.equal("bottom_height" in zeroBottom, false);
+    assert.equal(zeroBottom.top_height, 0.1);
   });
 });
 
@@ -194,7 +234,8 @@ describe("outdoor clutter geometry", () => {
     const wall = findArea(areas, "Wall");
     const pole = findArea(areas, "Light pole");
     assert.equal(water.area_material.rf_properties.attenuation_per_m, 0.1);
-    assert.equal(water.area_material.top_height, 2.1);
+    assert.equal(water.area_material.top_height, 0.1);
+    assert.equal("bottom_height" in water.area_material, false);
     assert.equal(parking.area_material.name, "Parking 9.0");
     assert.equal(parking.area_material.rf_properties.attenuation_per_m, 2);
     assert.equal(fence.area_material.name, "Fence 2.1");
@@ -411,7 +452,7 @@ describe("outdoor clutter fetch", () => {
   it("keeps the page toggles on and the counts off the headline", () => {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     const app = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
-    for (const id of ["include-water", "include-parking", "include-walls", "include-poles"]) {
+    for (const id of ["include-water", "include-parking", "include-walls", "include-poles", "include-rvs"]) {
       assert.match(html, new RegExp('id="' + id + '" checked'));
     }
     assert.match(html, />\s*Water\s*</);
@@ -420,6 +461,8 @@ describe("outdoor clutter fetch", () => {
     assert.match(html, />\s*Poles\s*</);
     assert.match(app, /includeWater: document\.getElementById\("include-water"\)\.checked/);
     assert.match(app, /includePoles: document\.getElementById\("include-poles"\)\.checked/);
+    assert.match(app, /includeRvs: document\.getElementById\("include-rvs"\)\.checked/);
+    assert.match(html, />\s*RVs\s*</);
     const headline = app.slice(app.indexOf("function exportHeadline"), app.indexOf("function setCopyNote"));
     assert.equal(/guideway/i.test(headline), false);
     assert.equal(app.includes("Export did not finish. Try again."), false);
@@ -939,5 +982,147 @@ describe("elevated rail guideways", () => {
       wide.stats.attenuationAreasEmitted
     );
     assert.equal(/test override/.test(tight.stats.summary), false);
+  });
+});
+
+function metersAt(lat) {
+  return {
+    mLon: 111320 * Math.cos((lat * Math.PI) / 180),
+    mLat: 110540,
+  };
+}
+
+function siteRing(lon, lat, widthM, heightM) {
+  const m = metersAt(lat);
+  const dLon = widthM / m.mLon;
+  const dLat = heightM / m.mLat;
+  return [
+    [lon, lat],
+    [lon + dLon, lat],
+    [lon + dLon, lat + dLat],
+    [lon, lat + dLat],
+    [lon, lat],
+  ];
+}
+
+function boxSizeM(ring) {
+  const lat = ring[0][1];
+  const m = metersAt(lat);
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const n = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] ? ring.length - 1 : ring.length;
+  for (let i = 0; i < n; i++) {
+    const x = ring[i][0] * m.mLon;
+    const y = ring[i][1] * m.mLat;
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return { length: maxX - minX, width: maxY - minY };
+}
+
+describe("RV pitches and service-road rows", () => {
+  const lat = 36.12;
+  const lon = -115.16;
+  const site = siteRing(lon, lat, 220, 80);
+
+  it("asks Overpass for sites, pitches, and service roads only when RVs are on", () => {
+    const on = overpassQuery(BOX, { rvs: true });
+    assert.match(on, /tourism"="caravan_site"/);
+    assert.match(on, /tourism"="camp_site"/);
+    assert.match(on, /tourism"="camp_pitch"/);
+    assert.match(on, /highway/);
+    const off = overpassQuery(BOX, { water: true });
+    assert.equal(/camp_pitch/.test(off), false);
+    assert.equal(/caravan_site/.test(off), false);
+  });
+
+  it("drops one metal box on each pitch and lines it up with the road", () => {
+    const m = metersAt(lat);
+    const road = [
+      [lon + 20 / m.mLon, lat + 40 / m.mLat],
+      [lon + 180 / m.mLon, lat + 40 / m.mLat],
+    ];
+    const pitches = [];
+    for (let i = 0; i < 4; i++) {
+      pitches.push({
+        kind: "rv-pitch",
+        coords: [[lon + (40 + i * 30) / m.mLon, lat + 48 / m.mLat]],
+      });
+    }
+    pitches.push({
+      kind: "rv-pitch",
+      coords: [[lon - 50 / m.mLon, lat]],
+    });
+    const boxes = rvBoxes(
+      [{ kind: "rv-site", coords: site, holes: [] }, { kind: "rv-road", coords: road }].concat(pitches)
+    );
+    assert.equal(boxes.length, 4);
+    for (let i = 0; i < boxes.length; i++) {
+      const size = boxSizeM(boxes[i].coords);
+      assert.ok(Math.abs(size.length - RV_LENGTH_M) < 0.2, "length " + size.length);
+      assert.ok(Math.abs(size.width - RV_WIDTH_M) < 0.2, "width " + size.width);
+      assert.equal(boxes[i].heightM, RV_HEIGHT_M);
+    }
+    const parsed = parseOverpass(
+      {
+        elements: [
+          {
+            type: "way",
+            tags: { tourism: "caravan_site", name: "Oasis" },
+            geometry: site.map((p) => ({ lon: p[0], lat: p[1] })),
+          },
+          {
+            type: "way",
+            tags: { highway: "service" },
+            geometry: road.map((p) => ({ lon: p[0], lat: p[1] })),
+          },
+          {
+            type: "node",
+            lon: pitches[0].coords[0][0],
+            lat: pitches[0].coords[0][1],
+            tags: { tourism: "camp_pitch" },
+          },
+        ],
+      },
+      { rvs: true }
+    );
+    const rvs = parsed.features.filter((f) => f.kind === "rv");
+    assert.equal(rvs.length, 1);
+    const planned = planOutdoor({
+      features: rvs,
+      frame: frame(),
+      buildings: [],
+    });
+    assert.equal(planned.items.length, 1);
+    assert.equal(planned.items[0].material.name, "RV 3.5");
+    assert.equal(planned.items[0].material.rf_properties.attenuation_per_m, 18);
+    assert.equal(planned.items[0].thin, true);
+  });
+
+  it("grids both sides of the internal road when the site has no pitches", () => {
+    const m = metersAt(lat);
+    const road = [
+      [lon + 10 / m.mLon, lat + 40 / m.mLat],
+      [lon + 130 / m.mLon, lat + 40 / m.mLat],
+    ];
+    const boxes = rvBoxes([
+      { kind: "rv-site", coords: site, holes: [] },
+      { kind: "rv-road", coords: road },
+    ]);
+    assert.ok(boxes.length >= 16, "both sides " + boxes.length);
+    assert.equal(boxes.length % 2, 0);
+    const ys = boxes.map((b) => {
+      let s = 0;
+      for (let i = 0; i < 4; i++) s += b.coords[i][1];
+      return s / 4;
+    });
+    const north = ys.filter((y) => y > lat + 40 / m.mLat).length;
+    const south = ys.filter((y) => y < lat + 40 / m.mLat).length;
+    assert.equal(north, south);
+    assert.ok(north >= 8);
   });
 });

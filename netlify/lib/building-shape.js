@@ -47,6 +47,8 @@ function buildingDetailQuery(bbox) {
     'way["highway"]["layer"~"^[1-9]"](' + box + ");" +
     'way["man_made"="bridge"](' + box + ");" +
     'way["bridge"="viaduct"](' + box + ");" +
+    'way["building"~"^(static_caravan|mobile_home|caravan)$"](' + box + ");" +
+    'relation["building"~"^(static_caravan|mobile_home|caravan)$"](' + box + ");" +
     ");out geom;"
   );
 }
@@ -141,6 +143,22 @@ function heightTags(tags) {
   return { height, minH };
 }
 
+function isStaticCaravanTags(tags) {
+  const building = String((tags && tags.building) || "").toLowerCase();
+  return building === "static_caravan" || building === "mobile_home" || building === "caravan";
+}
+
+function caravanFeature(rings, tags) {
+  const feature = partFeature(rings, tags);
+  if (!feature) return null;
+  feature.properties.staticCaravan = true;
+  if (!(Number(feature.properties.height) > 2)) {
+    feature.properties.height = 3.5;
+    feature.properties.heightSource = "static-caravan";
+  }
+  return feature;
+}
+
 function isOpeningTags(tags) {
   if (!tags) return false;
   if (tags.leisure === "swimming_pool") return true;
@@ -197,6 +215,11 @@ function parseBuildingDetail(payload, bbox) {
       const ring = wayCoords(el);
       if (!ring) continue;
       if (bbox && !ringHitsBox(ring, bbox)) continue;
+      if (isStaticCaravanTags(tags)) {
+        const feature = caravanFeature([ring], tags);
+        if (feature) parts.push(feature);
+        continue;
+      }
       if (tags["building:part"] || bridgeLike(tags)) {
         const feature = partFeature([ring], tags);
         // A bridge with no height is a road deck, not a second building.
@@ -225,6 +248,13 @@ function parseBuildingDetail(payload, bbox) {
     if (isOpeningTags(tags)) {
       for (let o = 0; o < outers.length; o++) {
         if (!bbox || ringHitsBox(outers[o], bbox)) openings.push(outers[o]);
+      }
+      continue;
+    }
+    if (isStaticCaravanTags(tags)) {
+      for (let o = 0; o < outers.length; o++) {
+        const feature = caravanFeature([outers[o]].concat(inners), tags);
+        if (feature && (!bbox || ringHitsBox(outers[o], bbox))) parts.push(feature);
       }
       continue;
     }

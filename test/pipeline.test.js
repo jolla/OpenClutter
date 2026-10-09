@@ -1693,3 +1693,72 @@ describe("water stays when crowns would fill the area cap", () => {
     assert.equal(built.stats.attenuationAreasEmitted, 7);
   });
 });
+
+describe("RVs fill after buildings and before extra trees", () => {
+  it("keeps the trailers when crowns would take the leftover slots", () => {
+    const frame = geoFrame(WYNN);
+    const lon = frame.west + (frame.east - frame.west) * 0.15;
+    const lat = frame.south + (frame.north - frame.south) * 0.15;
+    const dLon = 0.0004;
+    const dLat = 0.00025;
+    const features = [];
+    for (let i = 0; i < 3; i++) {
+      features.push(
+        squareFeature(lon + i * 0.0012, lat, lon + i * 0.0012 + dLon, lat + dLat, { height: 12 })
+      );
+    }
+    const hits = canopyHitsGrid(frame, frame.west + (frame.east - frame.west) * 0.7, frame.south + (frame.north - frame.south) * 0.7, {
+      cols: 4,
+      rows: 3,
+      pct: 80,
+    });
+    const mLon = 111320 * Math.cos((lat * Math.PI) / 180);
+    const rv = [];
+    for (let i = 0; i < 4; i++) {
+      const x = lon + 0.004 + (i * 14) / mLon;
+      const y = lat + 0.001;
+      rv.push({
+        kind: "rv",
+        coords: [
+          [x, y],
+          [x + 12 / mLon, y],
+          [x + 12 / mLon, y + 2.6 / 110540],
+          [x, y + 2.6 / 110540],
+          [x, y],
+        ],
+        heightM: 3.5,
+        explicitHeight: true,
+      });
+    }
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features },
+      treePoints: [{ lon: hits[0].lon, lat: hits[0].lat, pct: 80, heightM: 12, median: true }],
+      canopyHits: hits,
+      name: "RV cap",
+      treesSource: "nlcd-canopy",
+      includeFoliage: true,
+      includeRvs: true,
+      maxAttenuationAreas: 5,
+      outdoorFeatures: rv,
+    });
+    assert.equal(built.stats.openIntentBuildingAreas, 3);
+    assert.equal(built.stats.rvAreas, 2);
+    assert.equal(built.stats.openIntentTreeAreas, 0);
+    assert.match(built.stats.summary, /RVs 2/);
+    const off = buildClutter({
+      frame,
+      footprintsGeojson: { features },
+      treePoints: [{ lon: hits[0].lon, lat: hits[0].lat, pct: 80, heightM: 12, median: true }],
+      canopyHits: hits,
+      name: "RV off",
+      treesSource: "nlcd-canopy",
+      includeFoliage: true,
+      includeRvs: false,
+      maxAttenuationAreas: 5,
+      outdoorFeatures: rv,
+    });
+    assert.equal(off.stats.rvAreas, 0);
+    assert.ok(off.stats.openIntentTreeAreas > 0);
+  });
+});

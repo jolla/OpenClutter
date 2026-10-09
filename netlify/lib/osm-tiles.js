@@ -141,6 +141,15 @@ function tileQuery(bbox) {
     'way["highway"]["layer"~"^[1-9]"](' + box + ");" +
     'way["man_made"="bridge"](' + box + ");" +
     'way["bridge"="viaduct"](' + box + ");" +
+    'way["tourism"="caravan_site"](' + box + ");" +
+    'relation["tourism"="caravan_site"](' + box + ");" +
+    'way["tourism"="camp_site"](' + box + ");" +
+    'relation["tourism"="camp_site"](' + box + ");" +
+    'node["tourism"="camp_pitch"](' + box + ");" +
+    'way["tourism"="camp_pitch"](' + box + ");" +
+    'way["highway"~"^(service|track|living_street|residential|unclassified)$"](' + box + ");" +
+    'way["building"~"^(static_caravan|mobile_home|caravan)$"](' + box + ");" +
+    'relation["building"~"^(static_caravan|mobile_home|caravan)$"](' + box + ");" +
     ");out geom;"
   );
 }
