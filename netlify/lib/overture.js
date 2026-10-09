@@ -327,39 +327,50 @@ async function fetchOvertureFootprints(frame, opts) {
       // Same-file row groups in parallel. A south-heavy Vegas box reads the
       // southern neighbor first; waiting for it to finish before the Sphere
       // group is how a late abort drops the dome. A group that aborts does
-      // not cancel a sibling that already parsed. A large draw reads one
-      // group at a time and keeps the largest roofs, so the list cannot grow
+      // not cancel a sibling that already parsed. A large draw reads a few
+      // groups at a time and keeps the largest roofs, so the list cannot grow
       // to every building in the box.
       const large = spanSideM(bbox) > LARGE_GROUP_SIDE_M;
-      const consume = async (g) => {
+      const readOne = async (g) => {
         if (signal.aborted) return "abort";
         try {
           const rows = await readGroupRows(reader, source, g, rowFilter, signal);
-          const chunk = featuresFromRows(rows, filterBox, large ? FOOTPRINT_KEEP : 0);
-          for (const f of chunk) features.push(f);
-          if (large && features.length > FOOTPRINT_KEEP) {
-            const kept = keepLargestFootprints(features, FOOTPRINT_KEEP);
-            features.length = 0;
-            for (let i = 0; i < kept.length; i++) features.push(kept[i]);
-          }
-          groupsRead++;
-          return "ok";
+          return featuresFromRows(rows, filterBox, large ? FOOTPRINT_KEEP : 0);
         } catch (e) {
           if (signal.aborted || isAbortError(e)) return "abort";
           throw e;
         }
       };
-      if (large) {
-        for (let g = 0; g < gs.length; g++) {
-          const status = await consume(gs[g]);
-          if (status === "abort") {
-            partial = true;
-            break;
-          }
+      const accept = (chunk) => {
+        if (chunk === "abort") {
+          partial = true;
+          return;
         }
+        for (let i = 0; i < chunk.length; i++) features.push(chunk[i]);
+        if (large && features.length > FOOTPRINT_KEEP) {
+          const kept = keepLargestFootprints(features, FOOTPRINT_KEEP);
+          features.length = 0;
+          for (let i = 0; i < kept.length; i++) features.push(kept[i]);
+        }
+        groupsRead++;
+      };
+      if (large) {
+        let cursor = 0;
+        const workers = Math.min(3, gs.length);
+        const jobs = [];
+        for (let w = 0; w < workers; w++) {
+          jobs.push((async () => {
+            while (!partial) {
+              const i = cursor++;
+              if (i >= gs.length) return;
+              accept(await readOne(gs[i]));
+            }
+          })());
+        }
+        await Promise.all(jobs);
       } else {
-        const results = await Promise.all(gs.map(consume));
-        if (results.some((r) => r === "abort")) partial = true;
+        const results = await Promise.all(gs.map(readOne));
+        for (let i = 0; i < results.length; i++) accept(results[i]);
       }
     }
   } catch (e) {
