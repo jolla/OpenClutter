@@ -280,6 +280,9 @@ function coverageSummary(stats) {
   if (stats && stats.includeGuideways) {
     line += " Guideways " + (stats.guidewayAreas || 0) + ".";
   }
+  if (stats && stats.includeBridges) {
+    line += " Bridges " + (stats.bridgeAreas || 0) + ".";
+  }
   return line;
 }
 
@@ -2040,6 +2043,8 @@ function buildClutter({
   outdoorMiss,
   guidewayFeatures,
   includeGuideways,
+  bridgeFeatures,
+  includeBridges,
   maxAttenuationAreas,
 }) {
   const featureList = footprintsGeojson?.features || [];
@@ -2112,6 +2117,7 @@ function buildClutter({
   let wallAreas = 0;
   let poleAreas = 0;
   let guidewayAreas = 0;
+  let bridgeAreas = 0;
   const outdoorOn =
     includeWater === true || includeParking === true || includeWalls === true || includePoles === true;
   const guideIn = [];
@@ -2124,9 +2130,11 @@ function buildClutter({
   }
   const explicitGuides = Array.isArray(guidewayFeatures) ? guidewayFeatures : [];
   const guides = explicitGuides.length ? explicitGuides : guideIn;
+  const explicitBridges = Array.isArray(bridgeFeatures) ? bridgeFeatures : [];
+  const bridges = explicitBridges;
   let planned = null;
   let converted = null;
-  const planGuides = guides.length > 0;
+  const planGuides = guides.length > 0 || bridges.length > 0;
   if ((outdoorOn && outdoorMiss !== true) || planGuides) {
     const buildings = [];
     if (includeParking === true && outdoorOn && outdoorMiss !== true) {
@@ -2138,7 +2146,7 @@ function buildClutter({
         });
       }
     }
-    const features = (outdoorOn && outdoorMiss !== true ? outdoorRest : []).concat(guides);
+    const features = (outdoorOn && outdoorMiss !== true ? outdoorRest : []).concat(guides, bridges);
     planned = planOutdoor({
       features,
       frame,
@@ -2148,17 +2156,25 @@ function buildClutter({
     });
     converted = outdoorToOi(planned.items, frame.imgW, frame.imgH, frame.mpuX);
   }
-  // Water and parking are a handful of areas (the pond, the lots). Hold
-  // those slots before crowns fill the 982 import cap. Poles, walls, and
-  // guideways are not held, so they drop before a tree does. Guideways
-  // stay ahead of light poles.
+  // Water, the rail, and road decks are held before crowns fill the 982
+  // cap. Poles and walls are not, so they drop before a tree does. The
+  // rail stays ahead of a road deck, and both stay ahead of light poles.
   let waterParking = 0;
+  let deckCount = 0;
   const outdoorKinds = converted ? converted.kinds : [];
   for (let i = 0; i < outdoorKinds.length; i++) {
-    if (outdoorKinds[i] === "water" || outdoorKinds[i] === "parking") waterParking++;
+    const kind = outdoorKinds[i];
+    if (kind === "water" || kind === "parking") waterParking++;
+    else if (kind === "guideway" || kind === "bridge") deckCount++;
   }
   const buildingSlots = Math.min(fp.oiAreas.length, areaCap);
-  const reserveFit = Math.min(waterParking, Math.max(0, areaCap - buildingSlots));
+  const leftover = Math.max(0, areaCap - buildingSlots);
+  // Trees used to take every slot the buildings left. A dense campus then
+  // reported Guideways 0. Hold the rail and the road decks first, then water.
+  const DECK_HOLD_MAX = 96;
+  const deckHold = Math.min(deckCount, DECK_HOLD_MAX, leftover);
+  const waterHold = Math.min(waterParking, Math.max(0, leftover - deckHold));
+  const reserveFit = deckHold + waterHold;
   const capped = capBuildingsAndTrees(fp.oiAreas, treeOi.areas, treeOi.kinds, areaCap, reserveFit);
   if (capped.droppedBuildings > 0 && Array.isArray(warnings)) {
     const keptRoofs = Math.min(fp.oiAreas.length, capped.areas.length);
@@ -2189,6 +2205,7 @@ function buildClutter({
       else if (k === "parking") parkingAreas++;
       else if (k === "pole") poleAreas++;
       else if (k === "guideway") guidewayAreas++;
+      else if (k === "bridge" || k === "footbridge") bridgeAreas++;
       else wallAreas++;
     }
     parkingAreas += planned.reclass || 0;
@@ -2201,6 +2218,8 @@ function buildClutter({
     if (wallDrop) notes.push(shapeNote(wallDrop, "wall"));
     if (drop.pole) notes.push(shapeNote(drop.pole, "light pole"));
     if (drop.guideway) notes.push(shapeNote(drop.guideway, "guideway"));
+    if (drop.bridge) notes.push(shapeNote(drop.bridge, "bridge"));
+    if (drop.footbridge) notes.push(shapeNote(drop.footbridge, "footbridge"));
     if (drop.water) notes.push(shapeNote(drop.water, "water area"));
     if (drop.parking) notes.push(shapeNote(drop.parking, "parking area"));
     if (Array.isArray(warnings)) {
@@ -2270,12 +2289,14 @@ function buildClutter({
     includeWalls: includeWalls === true,
     includePoles: includePoles === true,
     includeGuideways: includeGuideways === true || guides.length > 0,
+    includeBridges: includeBridges === true || bridges.length > 0,
     outdoorMiss: outdoorMiss === true,
     waterAreas,
     parkingAreas,
     wallAreas,
     poleAreas,
     guidewayAreas,
+    bridgeAreas,
     openintentVersion: OPENINTENT_VERSION,
     openclutterVersion: OPENCLUTTER_VERSION,
     coordinateUnit: "pixels",
