@@ -95,7 +95,7 @@ describe("outdoor clutter materials", () => {
       ["retaining", 3, "Retaining wall 3.0", 6, "#7A736C", false],
       ["hedge", 2.1, "Hedge 2.1", 1, "#6FA84A", true],
       ["pole", 9, "Light pole 9.0", 10, "#6E7378", false],
-      ["water", 0, "Water 2.1", 0.1, "#3D7EA6", false],
+      ["water", 0, "Water 0.1", 0.1, "#3D7EA6", false],
       ["guideway", 4.5, "Guideway 4.5", 9, "#6A6560", false],
       ["bridge", 2.1, "Bridge 2.1", 9, "#736E68", false],
       ["rv", 3.5, "RV 3.5", 18, "#8A9098", false],
@@ -116,6 +116,41 @@ describe("outdoor clutter materials", () => {
       const listed = doc.find((m) => m.name === name);
       assert.deepEqual(listed, mat);
     }
+  });
+
+  it("seats water 0.1 m above the terrain and does not emit a negative height", () => {
+    const f = frame();
+    const ring = [
+      [f.west + (f.east - f.west) * 0.55, f.south + (f.north - f.south) * 0.55],
+      [f.west + (f.east - f.west) * 0.85, f.south + (f.north - f.south) * 0.55],
+      [f.west + (f.east - f.west) * 0.85, f.south + (f.north - f.south) * 0.85],
+      [f.west + (f.east - f.west) * 0.55, f.south + (f.north - f.south) * 0.85],
+      [f.west + (f.east - f.west) * 0.55, f.south + (f.north - f.south) * 0.55],
+    ];
+    const seated = planOutdoor({
+      features: [{ kind: "water", coords: ring, heightM: 2.1, explicitHeight: false }],
+      frame: f,
+      slopeTop: { seat: () => 6.4 },
+    });
+    assert.equal(seated.items.length, 1);
+    const mat = seated.items[0].material;
+    assert.equal(mat.name, "Water 0.1 @ 6.4");
+    assert.equal(mat.bottom_height, 6.4);
+    assert.equal(mat.top_height, 6.5);
+    assert.equal(mat.rf_properties.attenuation_per_m, 0.1);
+    assert.ok(mat.top_height > 0);
+    assert.ok(mat.bottom_height > 0);
+    assert.deepEqual(canonicalAreaMaterial(mat), mat);
+    const buried = {
+      name: "Water 0.1",
+      rf_properties: { attenuation_per_m: 0.1 },
+      top_height: -0.2,
+      display_color: "#3D7EA6",
+    };
+    assert.equal(canonicalAreaMaterial(buried), null);
+    const zeroBottom = outdoorMaterial("water", 0);
+    assert.equal("bottom_height" in zeroBottom, false);
+    assert.equal(zeroBottom.top_height, 0.1);
   });
 });
 
@@ -199,7 +234,8 @@ describe("outdoor clutter geometry", () => {
     const wall = findArea(areas, "Wall");
     const pole = findArea(areas, "Light pole");
     assert.equal(water.area_material.rf_properties.attenuation_per_m, 0.1);
-    assert.equal(water.area_material.top_height, 2.1);
+    assert.equal(water.area_material.top_height, 0.1);
+    assert.equal("bottom_height" in water.area_material, false);
     assert.equal(parking.area_material.name, "Parking 9.0");
     assert.equal(parking.area_material.rf_properties.attenuation_per_m, 2);
     assert.equal(fence.area_material.name, "Fence 2.1");

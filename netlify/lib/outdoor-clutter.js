@@ -14,10 +14,11 @@
  * roads, about 12 m apart. A static caravan stays a building.
  *
  * Attenuation is 5 GHz dB/m, documented on the materials next to buildings.
- * OpenIntent has no reflection field. Water is a shallow volume at the
- * shortest custom height (just over 2 m), near-zero loss, not a mirror.
- * A chain-link fence is about 1.8 m in the field. A custom under or equal
- * to 2 m does not import, so the fence is 2.1 m.
+ * OpenIntent has no reflection field. Water is a 0.1 m sheet at 0.1 dB/m,
+ * not a mirror. OpenIntent top and bottom heights are minimum 0, so the
+ * sheet cannot extend below the floor. On a slope its top is 0.1 m above
+ * the terrain seat. A chain-link fence is about 1.8 m in the field. A
+ * custom under or equal to 2 m does not import, so the fence is 2.1 m.
  */
 
 const { llToPx } = require("./geo-frame");
@@ -204,7 +205,7 @@ function defaultHeight(kind, tags) {
   if (kind === "retaining") return 3;
   if (kind === "hedge") return 2.1;
   if (kind === "pole") return POLE_HEIGHT_M;
-  if (kind === "water") return 2.1;
+  if (kind === "water") return 0.1;
   return 0;
 }
 
@@ -216,7 +217,7 @@ function heightFor(kind, tags) {
     if (levels) return { heightM: levels * 3, explicitHeight: true };
     return { heightM: 9, explicitHeight: false };
   }
-  if (kind === "water") return { heightM: 2.1, explicitHeight: false };
+  if (kind === "water") return { heightM: 0.1, explicitHeight: false };
   if (kind === "pole") {
     if (explicit >= 8 && explicit <= 12) return { heightM: explicit, explicitHeight: true };
     return { heightM: POLE_HEIGHT_M, explicitHeight: false };

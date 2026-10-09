@@ -30,7 +30,7 @@ const { footprintRings } = require("./building-shape");
 const polygonClipping = require("polygon-clipping");
 const { piecesForFeature } = require("./roof-form");
 const { zipUnderLimit } = require("./zip-store");
-const { demUnderFootprint, normalizeTerrainResolution, GLO30_CREDIT, LIFT_LOCAL_M } = require("./terrain");
+const { demUnderFootprint, depressWaterBasins, normalizeTerrainResolution, GLO30_CREDIT, LIFT_LOCAL_M } = require("./terrain");
 const { version: OPENCLUTTER_VERSION } = require("./version");
 const { applyNlsBuildingHeights, NLS_CREDIT, HEIGHT_SOURCE } = require("./nls-building-height");
 
@@ -2537,6 +2537,14 @@ function buildClutter({
   }
   const { name, slug } = siteName(rawName);
   const imgName = `${slug}.jpg`;
+  if (includeWater === true && terrain && outdoorFeatures && outdoorFeatures.length) {
+    const waterRings = [];
+    for (let i = 0; i < outdoorFeatures.length; i++) {
+      const feat = outdoorFeatures[i];
+      if (feat && feat.kind === "water" && feat.coords && feat.coords.length >= 4) waterRings.push(feat.coords);
+    }
+    if (waterRings.length) depressWaterBasins(terrain, waterRings);
+  }
   const slopeTop = demUnderFootprint(terrain);
   const areaCap = maxAttenuationAreas > 0 ? maxAttenuationAreas | 0 : MAX_ATTENUATION_AREAS;
   const jsonByteBudget = jsonBudget > 0 ? jsonBudget | 0 : OPENINTENT_JSON_BUDGET;

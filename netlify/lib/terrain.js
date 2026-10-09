@@ -1270,8 +1270,7 @@ function raisedLayersForStep(grid, heights, step) {
  * the stack would pass RAISED_FLOOR_MAX. The caller coarsens the lattice if
  * even one band is still over that cap.
  */
-function buildRaisedLayerClipboard(samples, frame, cols, rows, elevationAt) {
-  const grid = lattice(samples, frame, cols, rows, elevationAt);
+function raisedMeshFromGrid(grid, frame) {
   const highs = cellHighCorners(grid);
   const steps = raisedBandSteps(highs.maxH);
   let best = null;
@@ -2251,8 +2250,7 @@ function contourError(grid, ramps, raised) {
   };
 }
 
-function cellRampMesh(grid, frame) {
-  const cols = grid.cols;
+function cellRampMesh(grid, frame) {  const cols = grid.cols;
   const rows = grid.rows;
   const raised = [];
   const pending = [];
@@ -2306,6 +2304,135 @@ function cellRampMesh(grid, frame) {
     sloped: sloped.length,
     slopeGapM: slopeCornerGap(sloped),
   };
+}
+
+function buildRaisedLayerClipboard(samples, frame, cols, rows, elevationAt) {
+  return raisedMeshFromGrid(lattice(samples, frame, cols, rows, elevationAt), frame);
+}
+
+function slopedMeshFromGrid(grid, frame) {
+  if (grid && !axisAlignedGrid(grid)) {
+    const contoured = contourMeshFromGrid(grid, frame);
+    if (contoured && contoured.sloped + contoured.raised > 0) return contoured;
+  }
+  return cellRampMesh(grid, frame);
+}
+
+/**
+ * Lower lattice nodes strictly inside a pond to that pond's shoreline.
+ * A pond counts only when it covers a whole terrain cell and has a bank
+ * outside that cell, so a puddle smaller than the mesh is left alone.
+ * Nodes are only lowered. The mesh is rebuilt with the same planar ramps.
+ * A ramp that would no longer be planar leaves the paste unchanged.
+ * @param {object} terrain
+ * @param {number[][][]} rings lon/lat rings
+ * @returns {number} nodes lowered
+ */
+function depressWaterBasins(terrain, rings) {
+  if (!terrain || terrain.pasteOmitted || !terrain.clipboard || !terrain.frame) return 0;
+  if (!terrain.elevationAt || !terrain.samples) return 0;
+  const cols = terrain.gridCols | 0;
+  const rows = terrain.gridRows | 0;
+  if (cols < 2 || rows < 2) return 0;
+  const list = [];
+  for (let i = 0; i < (rings || []).length; i++) {
+    const ring = rings[i];
+    if (ring && ring.length >= 4) list.push(ring);
+  }
+  if (!list.length) return 0;
+  const frame = terrain.frame;
+  const grid = lattice(terrain.samples, frame, cols, rows, terrain.elevationAt);
+  const inside = new Uint8Array(grid.nodes.length);
+  // Clipboard point-in-ring uses a meter epsilon. These nodes are degrees.
+  function lonLatInside(lon, lat, ring) {
+    let n = ring.length;
+    const a = ring[0];
+    const b = ring[n - 1];
+    if (a && b && a[0] === b[0] && a[1] === b[1]) n -= 1;
+    if (n < 3) return false;
+    let hit = false;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const yi = ring[i][1];
+      const yj = ring[j][1];
+      if (yi > lat !== yj > lat) {
+        const xi = ring[i][0];
+        const xj = ring[j][0];
+        const x = ((xj - xi) * (lat - yi)) / (yj - yi || 1e-20) + xi;
+        if (lon < x) hit = !hit;
+      }
+    }
+    return hit;
+  }
+  let lowered = 0;
+  for (let i = 0; i < list.length; i++) {
+    const ring = list[i];
+    inside.fill(0);
+    for (let r = 0; r <= rows; r++) {
+      for (let c = 0; c <= cols; c++) {
+        const lon = frame.west + (c / cols) * (frame.east - frame.west);
+        const lat = frame.south + (r / rows) * (frame.north - frame.south);
+        if (lonLatInside(lon, lat, ring)) inside[r * (cols + 1) + c] = 1;
+      }
+    }
+    let full = false;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const ids = [
+          r * (cols + 1) + c,
+          r * (cols + 1) + (c + 1),
+          (r + 1) * (cols + 1) + (c + 1),
+          (r + 1) * (cols + 1) + c,
+        ];
+        let nIn = 0;
+        for (let k = 0; k < 4; k++) if (inside[ids[k]]) nIn++;
+        if (nIn === 4) full = true;
+      }
+    }
+    if (!full) continue;
+    const stride = cols + 1;
+    const shore = new Uint8Array(inside.length);
+    let bank = Infinity;
+    for (let r = 0; r <= rows; r++) {
+      for (let c = 0; c <= cols; c++) {
+        const id = r * stride + c;
+        if (!inside[id]) continue;
+        const edge =
+          (c > 0 && !inside[id - 1]) ||
+          (c < cols && !inside[id + 1]) ||
+          (r > 0 && !inside[id - stride]) ||
+          (r < rows && !inside[id + stride]);
+        if (!edge) continue;
+        shore[id] = 1;
+        const z = grid.nodes[id].zRel;
+        if (z < bank) bank = z;
+      }
+    }
+    if (!(bank < Infinity)) continue;
+    for (let n = 0; n < inside.length; n++) {
+      if (!inside[n] || shore[n]) continue;
+      const node = grid.nodes[n];
+      if (node.zRel > bank + 1e-6) {
+        node.zRel = bank;
+        node.z = grid.minZ + bank;
+        lowered++;
+      }
+    }
+  }
+  if (!lowered) return 0;
+  const raisedStyle = terrain.terrainStyle === "raised";
+  const mesh = raisedStyle ? raisedMeshFromGrid(grid, frame) : slopedMeshFromGrid(grid, frame);
+  if (!mesh || !mesh.clip) return 0;
+  const floors = mesh.clip.slopedFloors || [];
+  for (let i = 0; i < floors.length; i++) {
+    const ring = floors[i].area && floors[i].area.coordinates && floors[i].area.coordinates[0];
+    if (ring && !planarSlopedRamp(ring)) return 0;
+  }
+  terrain.clipboard = mesh.clip;
+  terrain.raised = mesh.raised;
+  terrain.sloped = mesh.sloped;
+  terrain.slopeGapM = mesh.slopeGapM || 0;
+  if (mesh.bandM != null) terrain.bandM = mesh.bandM;
+  return lowered;
 }
 
 /**
@@ -3609,6 +3736,7 @@ module.exports = {
   RAISED_KEYS,
   SLOPED_KEYS,
   terrainFromSamples,
+  depressWaterBasins,
   pasteableQuad,
   planarSlopedRamp,
   slopeCornerGap,

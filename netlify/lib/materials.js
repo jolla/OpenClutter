@@ -43,8 +43,12 @@
  *                              A custom at or under 2 m does not import, so 2.1 m.
  *   Hedge              1 dB/m  light foliage, default 2.1 m, see-through
  *   Light pole        10 dB/m  metal post, default 9 m, about 0.3 m across
- *   Water              0.1 dB/m shallow ground volume at 2.1 m. OpenIntent has
- *                              no reflection field. This is not an RF mirror.
+ *   Water              0.1 dB/m a 0.1 m sheet. OpenIntent top_height and
+ *                              bottom_height are minimum 0, so a pond cannot
+ *                              sit below the floor. Hamina rejected
+ *                              bottom_height 0. On a slope the top is 0.1 m
+ *                              above the terrain seat. OpenIntent has no
+ *                              reflection field. This is not an RF mirror.
  */
 
 const { ZONE_TYPES, TYPE_BY_ID, oiMaterialFromType, pickBuildingTypeId } = require("./hamina-clipboard");
@@ -785,6 +789,9 @@ const OUTDOOR_SPECS = {
   rv: { label: "RV", db: 18, color: "#8A9098", transparent: false },
 };
 
+/** OpenIntent 2.0.1 material heights are minimum 0. A 0.1 m sheet is the thin water top. */
+const WATER_SHEET_M = 0.1;
+
 const OUTDOOR_NAME = /^(Parking|Retaining wall|Light pole|Guideway|Bridge|Wall|Fence|Hedge|Water|RV) (\d+\.\d)$/;
 const LIFTED_OUTDOOR_NAME = /^(Parking|Retaining wall|Light pole|Guideway|Bridge|Wall|Fence|Hedge|Water|RV) (\d+\.\d) @ (\d+\.\d)$/;
 
@@ -811,13 +818,14 @@ function isLiftedOutdoorName(name) {
 }
 
 /**
- * Custom outdoor object. Water is always the 2.1 m sheet. A pole keeps a
+ * Custom outdoor object. Water is a 0.1 m sheet: OpenIntent rejects a
+ * negative height, and bottom_height 0 does not import. A pole keeps a
  * tagged height only inside 8–12 m; otherwise it is 9 m. A fence tagged
  * 1.8 m falls back to 2.1 m because roundHeightM rejects a custom at or
- * under 2 m.
+ * under 2 m. Water is the exception, a sheet rather than an obstacle.
  */
 function outdoorHeight(kind, heightM) {
-  if (kind === "water") return 2.1;
+  if (kind === "water") return WATER_SHEET_M;
   const round = kind === "parking" ? roundBuildingHeightM : roundHeightM;
   const h = round(heightM);
   if (kind === "pole") {
@@ -839,7 +847,9 @@ function outdoorMaterial(kind, heightM) {
   const spec = OUTDOOR_SPECS[kind];
   if (!spec) return null;
   const h = outdoorHeight(kind, heightM);
-  if (!(h > 2)) return null;
+  if (kind === "water") {
+    if (h !== WATER_SHEET_M) return null;
+  } else if (!(h > 2)) return null;
   const name = spec.label + " " + h.toFixed(1);
   if (isPoisonedOiName(name) || !isOutdoorOiName(name)) return null;
   if (spec.transparent) return foliageOiMaterial(name, spec.color, h, spec.db);
@@ -851,7 +861,11 @@ function liftedOutdoorMaterial(base, bottomM) {
   const bottom = roundTenths(bottomM);
   if (!(bottom >= LIFT_LOCAL_M)) return null;
   const thickness = Number(base.top_height);
-  if (!(thickness > 2)) return null;
+  const parsed = OUTDOOR_NAME.exec(base.name || "");
+  const kind = parsed ? outdoorKindFromLabel(parsed[1]) : "";
+  if (kind === "water") {
+    if (Number(parsed[2]) !== WATER_SHEET_M) return null;
+  } else if (!(thickness > 2)) return null;
   const top = roundTenths(bottom + thickness);
   const mat = {
     name: base.name + " @ " + bottom.toFixed(1),
@@ -1059,6 +1073,7 @@ module.exports = {
   outdoorMaterial,
   liftedOutdoorMaterial,
   outdoorHeight,
+  WATER_SHEET_M,
   isOutdoorOiName,
   isLiftedOutdoorName,
   OUTDOOR_SPECS,
