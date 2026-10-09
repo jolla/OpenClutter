@@ -29,6 +29,14 @@ const WALL_CAP = 80;
 const WATER_CAP = 12;
 const PARKING_CAP = 20;
 const GUIDEWAY_CAP = 40;
+/** Segments kept for one beam. A 3 km monorail is more than one strip. */
+const GUIDEWAY_SEGMENT_CAP = 80;
+const BRIDGE_CAP = 40;
+const BRIDGE_SEGMENT_CAP = 40;
+const FOOTBRIDGE_SEGMENT_CAP = 12;
+const BRIDGE_MIN_M = 10;
+const BRIDGE_DECK_M = 6.5;
+const BRIDGE_THICK_M = 2.1;
 const POLE_SIDES = 10;
 const POLE_DIAMETER_M = 0.3;
 const POLE_HEIGHT_M = 9;
@@ -41,7 +49,6 @@ const RAIL_DECK_M = 6;
 const GUIDEWAY_THICK_M = 4.5;
 /** Centerline points per strip. The buffer stays under the 40 vertex cap. */
 const GUIDEWAY_CHUNK = 8;
-const GUIDEWAY_SEGMENT_CAP = 48;
 
 const RAIL_TYPES = { monorail: true, light_rail: true, subway: true, rail: true, tram: true };
 
@@ -79,6 +86,8 @@ function overpassQuery(bbox, want) {
     parts.push('node["man_made"~"^(mast|pole|lighting)$"](' + box + ");");
   }
   parts.push('way["railway"~"^(monorail|light_rail|subway|rail|tram)$"](' + box + ");");
+  parts.push('way["highway"]["bridge"~"^(yes|viaduct|covered)$"](' + box + ");");
+  parts.push('way["highway"]["layer"~"^[1-9]"](' + box + ");");
   parts.push('way["man_made"="bridge"](' + box + ");");
   parts.push('way["bridge"="viaduct"](' + box + ");");
   return "[out:json][timeout:6];(" + parts.join("") + ");out geom;";
@@ -435,6 +444,184 @@ function guidewayFeatures(records, bbox) {
   return sorted.slice(0, GUIDEWAY_CAP);
 }
 
+function isFootHighway(tags) {
+  const hw = String((tags && tags.highway) || "");
+  return (
+    hw === "footway" ||
+    hw === "path" ||
+    hw === "pedestrian" ||
+    hw === "steps" ||
+    hw === "cycleway" ||
+    hw === "corridor" ||
+    hw === "bridleway"
+  );
+}
+
+/** A road deck. Culverts and tunnels are not overpasses. */
+function isRoadBridgeWay(tags) {
+  if (!tags || !tags.highway || isBuried(tags) || isStructureNotDeck(tags)) return false;
+  if (tags.bridge === "culvert" || tags.bridge === "no") return false;
+  if (tags.bridge === "yes" || tags.bridge === "viaduct" || tags.bridge === "covered") return true;
+  return layerOf(tags) >= 1;
+}
+
+function isRoadDeckPolygon(tags) {
+  if (!isBridgeOutlineTags(tags) || railType(tags)) return false;
+  return true;
+}
+
+function spanMeters(coords) {
+  let minLon = Infinity;
+  let maxLon = -Infinity;
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  for (let i = 0; i < coords.length; i++) {
+    const lon = coords[i][0];
+    const lat = coords[i][1];
+    if (lon < minLon) minLon = lon;
+    if (lon > maxLon) maxLon = lon;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+  }
+  if (!Number.isFinite(minLon)) return 0;
+  const mid = (minLat + maxLat) / 2;
+  const mLon = 111320 * Math.cos((mid * Math.PI) / 180);
+  return Math.max((maxLon - minLon) * mLon, (maxLat - minLat) * 110540);
+}
+
+function bridgeDeckM(tags) {
+  const t = tags || {};
+  const minH = parseMeters(t.min_height || t["building:min_height"]);
+  if (minH > 1) return Math.round(minH * 10) / 10;
+  const minLevel = levelMeters(t["building:min_level"] != null ? t["building:min_level"] : t.min_level);
+  if (minLevel > 0) return minLevel;
+  const layer = layerOf(t);
+  const n = layer >= 1 ? layer : 1;
+  return Math.round(n * BRIDGE_DECK_M * 10) / 10;
+}
+
+function bridgeWidthM(tags) {
+  const t = tags || {};
+  const tagged = parseMeters(t.width);
+  if (tagged >= 2 && tagged <= 45) return Math.round(tagged * 10) / 10;
+  const lanes = Number(String(t.lanes || "").split(/[;,]/)[0]);
+  const hw = String(t.highway || "");
+  const foot = isFootHighway(t);
+  if (lanes >= 1 && lanes <= 14) {
+    const shoulder =
+      foot ? 0 : hw === "motorway" || hw === "trunk" || hw === "motorway_link" || hw === "trunk_link" ? 3 : 2;
+    return Math.round((lanes * 3.5 + shoulder) * 10) / 10;
+  }
+  if (hw === "motorway" || hw === "trunk") return 14;
+  if (/_link$/.test(hw) || hw === "ramp") return 6;
+  if (foot) return 2.5;
+  if (hw === "primary") return 12;
+  if (hw === "secondary") return 9;
+  return 8;
+}
+
+function makeBridgeFeature(tags, coords, closed) {
+  const deck = bridgeDeckM(tags);
+  let ring = coords;
+  if (closed) {
+    const open = isClosed(coords) ? coords.slice(0, -1) : coords.slice();
+    const thin = open.length > 32 ? subsample(open, 32) : open;
+    if (thin.length >= 3) {
+      ring = thin.slice();
+      ring.push(ring[0]);
+    }
+  }
+  return {
+    kind: "bridge",
+    coords: ring,
+    closed: !!closed,
+    heightM: BRIDGE_THICK_M,
+    thicknessM: BRIDGE_THICK_M,
+    deckM: deck,
+    widthM: closed ? 0 : bridgeWidthM(tags),
+    explicitHeight: true,
+    foot: isFootHighway(tags),
+    rank: 0,
+  };
+}
+
+/**
+ * Road overpasses. A highway with bridge=yes or viaduct, or layer at or
+ * above 1. A man_made=bridge polygon replaces the centerline it covers.
+ * A polygon the monorail already uses stays a guideway. Culverts and
+ * spans under 10 m are left out. A footbridge is thin and optional.
+ */
+function bridgeFeatures(records, bbox) {
+  const lines = [];
+  const polygons = [];
+  const rails = [];
+  const list = records || [];
+  for (let i = 0; i < list.length; i++) {
+    const rec = list[i];
+    if (!rec || !rec.coords || rec.coords.length < 2) continue;
+    const tags = rec.tags || {};
+    if (bbox && !anyInBox(rec.coords, bbox)) continue;
+    const closed = isClosed(rec.coords);
+    if (!closed && isGuidewayRail(tags)) rails.push(rec);
+    if (closed && isRoadDeckPolygon(tags)) {
+      if (spanMeters(rec.coords) < BRIDGE_MIN_M) continue;
+      polygons.push({ tags, coords: rec.coords });
+      continue;
+    }
+    if (!closed && isRoadBridgeWay(tags) && spanMeters(rec.coords) >= BRIDGE_MIN_M) {
+      lines.push({ tags, coords: rec.coords });
+    }
+  }
+  const keptPolys = [];
+  for (let i = 0; i < polygons.length; i++) {
+    let railDeck = false;
+    for (let k = 0; k < rails.length; k++) {
+      if (lineMostlyInside(rails[k].coords, polygons[i].coords)) {
+        railDeck = true;
+        break;
+      }
+    }
+    if (!railDeck) keptPolys.push(polygons[i]);
+  }
+  const decks = [];
+  for (let i = 0; i < keptPolys.length; i++) {
+    let coords = keptPolys[i].coords;
+    if (bbox && !fullyInside(coords, bbox)) {
+      const clipped = clipClosedRing(coords, bbox);
+      if (!clipped.length) continue;
+      coords = clipped[0];
+    }
+    if (spanMeters(coords) < BRIDGE_MIN_M) continue;
+    decks.push(makeBridgeFeature(keptPolys[i].tags, coords, true));
+  }
+  const roads = [];
+  const feet = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    let covered = false;
+    for (let p = 0; p < keptPolys.length; p++) {
+      if (lineMostlyInside(line.coords, keptPolys[p].coords)) {
+        covered = true;
+        break;
+      }
+    }
+    if (covered) continue;
+    const runs = bbox ? clipLineRuns(line.coords, bbox) : [line.coords];
+    for (let r = 0; r < runs.length; r++) {
+      if (runs[r].length < 2 || spanMeters(runs[r]) < BRIDGE_MIN_M) continue;
+      const feat = makeBridgeFeature(line.tags, runs[r], false);
+      if (feat.foot) feet.push(feat);
+      else roads.push(feat);
+    }
+  }
+  const features = decks.concat(roads, feet);
+  if (features.length <= BRIDGE_CAP) return features;
+  const roadsFirst = features.filter((f) => !f.foot);
+  const footLast = features.filter((f) => f.foot);
+  roadsFirst.sort((a, b) => lineLength(b.coords) - lineLength(a.coords));
+  return roadsFirst.concat(footLast).slice(0, BRIDGE_CAP);
+}
+
 function fullyInside(coords, bbox) {
   for (let i = 0; i < coords.length; i++) {
     if (!inBox(coords[i][0], coords[i][1], bbox)) return false;
@@ -453,6 +640,36 @@ function guidewaysFromElements(elements, bbox) {
     records.push({ tags: el.tags || {}, coords });
   }
   return guidewayFeatures(records, bbox);
+}
+
+function bridgesFromElements(elements, bbox) {
+  const records = [];
+  const list = elements || [];
+  for (let i = 0; i < list.length; i++) {
+    const el = list[i];
+    if (!el || el.type !== "way") continue;
+    const coords = wayCoords(el);
+    if (coords.length < 2) continue;
+    records.push({ tags: el.tags || {}, coords });
+  }
+  return bridgeFeatures(records, bbox);
+}
+
+function bridgesFromParsedWays(ways, nodes, bbox) {
+  const records = [];
+  for (const way of ways.values()) {
+    const coords = [];
+    const refs = way.refs || [];
+    for (let i = 0; i < refs.length; i++) {
+      const node = nodes.get(refs[i]);
+      if (!node || !Number.isFinite(node.lon) || !Number.isFinite(node.lat)) continue;
+      const prev = coords[coords.length - 1];
+      if (prev && prev[0] === node.lon && prev[1] === node.lat) continue;
+      coords.push([node.lon, node.lat]);
+    }
+    if (coords.length >= 2) records.push({ tags: way.tags || {}, coords });
+  }
+  return bridgeFeatures(records, bbox);
 }
 
 function guidewaysFromParsedWays(ways, nodes, bbox) {
@@ -557,7 +774,8 @@ function parseOverpass(payload, want, bbox) {
     }
   }
   const guides = guidewayFeatures(railRecords, bbox);
-  return { features: features.concat(guides), openWater };
+  const bridges = bridgeFeatures(railRecords, bbox);
+  return { features: features.concat(guides, bridges), openWater };
 }
 
 function ringAreaAbs(coords) {
@@ -639,6 +857,7 @@ function limitFeatures(features, bbox) {
   const walls = [];
   const poles = [];
   const guideways = [];
+  const bridges = [];
   for (let i = 0; i < (features || []).length; i++) {
     const f = features[i];
     if (!f) continue;
@@ -646,6 +865,7 @@ function limitFeatures(features, bbox) {
     else if (f.kind === "parking") parking.push(f);
     else if (f.kind === "pole") poles.push(f);
     else if (f.kind === "guideway") guideways.push(f);
+    else if (f.kind === "bridge") bridges.push(f);
     else if (LINE_KINDS[f.kind]) walls.push(f);
   }
   const w = keepLargest(water, WATER_CAP);
@@ -655,14 +875,18 @@ function limitFeatures(features, bbox) {
   const pole = spreadPoles(poles, bbox || { west: -180, south: -90, east: 180, north: 90 }, POLE_CAP);
   const guideSorted = guideways.slice().sort((a, b) => lineLength(b.coords) - lineLength(a.coords));
   const guideKept = guideSorted.slice(0, GUIDEWAY_CAP);
+  const bridgeRoads = bridges.filter((f) => !f.foot).sort((a, b) => lineLength(b.coords) - lineLength(a.coords));
+  const bridgeFeet = bridges.filter((f) => f.foot);
+  const bridgeKept = bridgeRoads.concat(bridgeFeet).slice(0, BRIDGE_CAP);
   const notes = [];
   if (w.capped) notes.push("Water capped at " + WATER_CAP + ".");
   if (p.capped) notes.push("Parking capped at " + PARKING_CAP + ".");
   if (wallSorted.length > wallKept.length) notes.push("Walls capped at " + WALL_CAP + ".");
   if (pole.capped) notes.push("Light poles capped at " + POLE_CAP + ".");
   if (guideSorted.length > guideKept.length) notes.push("Guideways capped at " + GUIDEWAY_CAP + ".");
+  if (bridges.length > bridgeKept.length) notes.push("Bridges capped at " + BRIDGE_CAP + ".");
   return {
-    features: w.kept.concat(p.kept, wallKept, pole.kept, guideKept),
+    features: w.kept.concat(p.kept, wallKept, pole.kept, guideKept, bridgeKept),
     notes,
   };
 }
@@ -1359,6 +1583,8 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings }) {
   const items = [];
   let shortWalls = 0;
   let guidewaySegs = 0;
+  let bridgeSegs = 0;
+  let footSegs = 0;
   for (let i = 0; i < list.length; i++) {
     const f = list[i];
     if (!f) continue;
@@ -1377,6 +1603,25 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings }) {
         if (!rings[r] || rings[r].length < 4) continue;
         items.push({ ringPx: rings[r], material, kind: "guideway", thin: true });
         guidewaySegs++;
+      }
+      continue;
+    }
+    if (f.kind === "bridge") {
+      const foot = !!f.foot;
+      if (foot) {
+        if (footSegs >= FOOTBRIDGE_SEGMENT_CAP) continue;
+      } else if (bridgeSegs >= BRIDGE_SEGMENT_CAP) continue;
+      const half = (f.widthM > 0 ? f.widthM : 8) / 2;
+      const rings = f.closed ? [lonLatRingToPx(f.coords, frame)] : guidewayLineRings(f.coords, frame, half);
+      const deck = f.deckM > 0 ? f.deckM : BRIDGE_DECK_M;
+      const material = materialForKind("bridge", BRIDGE_THICK_M, f.coords, null, guidewaySeat(slopeTop, f.coords) + deck);
+      if (!material) continue;
+      for (let r = 0; r < rings.length; r++) {
+        if (foot ? footSegs >= FOOTBRIDGE_SEGMENT_CAP : bridgeSegs >= BRIDGE_SEGMENT_CAP) break;
+        if (!rings[r] || rings[r].length < 4) continue;
+        items.push({ ringPx: rings[r], material, kind: foot ? "footbridge" : "bridge", thin: true });
+        if (foot) footSegs++;
+        else bridgeSegs++;
       }
       continue;
     }
@@ -1415,7 +1660,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings }) {
   return { items, updates, notes, reclass };
 }
 
-const BUDGET_ORDER = ["parking", "water", "wall", "retaining", "hedge", "fence", "guideway", "pole"];
+const BUDGET_ORDER = ["parking", "water", "guideway", "bridge", "wall", "retaining", "hedge", "fence", "footbridge", "pole"];
 
 function budgetNote(kind, keptCount, skipped) {
   const label =
@@ -1427,12 +1672,18 @@ function budgetNote(kind, keptCount, skipped) {
           ? "parking area"
           : kind === "guideway"
             ? "guideway"
-            : "wall";
+            : kind === "bridge"
+              ? "bridge"
+              : kind === "footbridge"
+                ? "footbridge"
+                : "wall";
   if (!(keptCount > 0)) {
     if (kind === "pole") return "Light poles left out to stay inside the area budget.";
     if (kind === "water") return "Water left out to stay inside the area budget.";
     if (kind === "parking") return "Parking left out to stay inside the area budget.";
     if (kind === "guideway") return "Guideways left out to stay inside the area budget.";
+    if (kind === "bridge") return "Bridges left out to stay inside the area budget.";
+    if (kind === "footbridge") return "Footbridges left out to stay inside the area budget.";
     return "Walls left out to stay inside the area budget.";
   }
   const noun = skipped === 1 ? label : label + "s";
@@ -1490,6 +1741,9 @@ module.exports = {
   RAIL_DECK_M,
   GUIDEWAY_THICK_M,
   GUIDEWAY_CAP,
+  BRIDGE_DECK_M,
+  BRIDGE_THICK_M,
+  BRIDGE_MIN_M,
   OUTDOOR_MISS,
   overpassQuery,
   parseOverpass,
@@ -1497,6 +1751,9 @@ module.exports = {
   guidewayFeatures,
   guidewaysFromElements,
   guidewaysFromParsedWays,
+  bridgeFeatures,
+  bridgesFromElements,
+  bridgesFromParsedWays,
   limitFeatures,
   fetchOutdoorClutter,
   isParkingClass,

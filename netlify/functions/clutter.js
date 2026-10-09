@@ -1590,6 +1590,7 @@ async function handleClutter(event) {
     }
   }
   let guidewayFeatures = [];
+  let bridgeFeatures = [];
   if (detailJob) {
     const pack = await detailJob.work;
     if (pack && pack !== TIMED_OUT && Array.isArray(pack.notes)) {
@@ -1599,6 +1600,7 @@ async function handleClutter(event) {
     }
     if (pack && pack !== TIMED_OUT && pack.ok !== false) {
       guidewayFeatures = pack.guideways || [];
+      bridgeFeatures = pack.bridges || [];
       try {
         const shaped = shapeBuildings(features, pack);
         features = shaped.features;
@@ -1727,6 +1729,8 @@ async function handleClutter(event) {
       outdoorMiss,
       guidewayFeatures,
       includeGuideways: true,
+      bridgeFeatures,
+      includeBridges: true,
     });
   }
 
@@ -1749,13 +1753,16 @@ async function handleClutter(event) {
       outdoorNotes = pack.notes || [];
       const rest = [];
       const fromOutdoor = [];
+      const fromBridges = [];
       for (let i = 0; i < outdoorFeatures.length; i++) {
         const feat = outdoorFeatures[i];
         if (feat && feat.kind === "guideway") fromOutdoor.push(feat);
+        else if (feat && feat.kind === "bridge") fromBridges.push(feat);
         else rest.push(feat);
       }
       outdoorFeatures = rest;
       if (!guidewayFeatures.length && fromOutdoor.length) guidewayFeatures = fromOutdoor;
+      if (!bridgeFeatures.length && fromBridges.length) bridgeFeatures = fromBridges;
     }
   }
 
