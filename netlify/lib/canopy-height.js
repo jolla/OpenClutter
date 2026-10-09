@@ -426,18 +426,34 @@ async function fetchChmGrid(frame, opts) {
   // An abort used to throw away every strip already read, and the export
   // then drew NLCD cell squares. Peaks in hand are enough to trace those crowns.
   const pack = () => packPeakGrid(frame, width, height, max, count);
+  const aborted = (e) =>
+    signal.aborted || /abort|timeout/i.test(String(e && e.message ? e.message : e));
+  async function readKey(key) {
+    const tiff = await geotiff.fromUrl(chmUrl(key), { cacheSize: 16 }, signal);
+    const image = await tiff.getImage();
+    const surveyed = await readSurveyPeaks(tiff, image, frame, width, height, max, count, signal);
+    if (!surveyed) return false;
+    return readPeakStrips(image, frame, width, height, max, count, signal);
+  }
   try {
     for (const key of keys) {
       if (signal.aborted) return pack();
-      const tiff = await geotiff.fromUrl(chmUrl(key), { cacheSize: 16 }, signal);
-      const image = await tiff.getImage();
-      const surveyed = await readSurveyPeaks(tiff, image, frame, width, height, max, count, signal);
-      if (!surveyed) return pack();
-      const finished = await readPeakStrips(image, frame, width, height, max, count, signal);
+      let finished = false;
+      try {
+        finished = await readKey(key);
+      } catch (e) {
+        if (aborted(e)) return pack();
+        try {
+          finished = await readKey(key);
+        } catch (e2) {
+          if (aborted(e2)) return pack();
+          throw e2;
+        }
+      }
       if (!finished) return pack();
     }
   } catch (e) {
-    if (signal.aborted || /abort|timeout/i.test(String(e && e.message ? e.message : e))) return pack();
+    if (aborted(e)) return pack();
     throw e;
   }
   return pack();

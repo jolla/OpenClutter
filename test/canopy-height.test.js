@@ -675,6 +675,59 @@ describe("canopy height replaces the color guess", () => {
     assert.ok(omitted.zip && omitted.zip.length > 50);
   });
 
+  it("retries a canopy tile once when the read throws", async () => {
+    const frame = { west: -87.93, south: 42.89, east: -87.929, north: 42.891 };
+    const [xW, yS] = mercator(frame.west, frame.south);
+    const [xE, yN] = mercator(frame.east, frame.north);
+    const width = 40;
+    const height = 40;
+    const origin = [Math.min(xW, xE), Math.max(yS, yN)];
+    const res = [(Math.max(xW, xE) - origin[0]) / width, (Math.min(yS, yN) - origin[1]) / height];
+    const image = {
+      getWidth: () => width,
+      getHeight: () => height,
+      getOrigin: () => origin,
+      getResolution: () => res,
+      readRasters: async ({ window }) => {
+        const cols = window[2] - window[0];
+        const rows = window[3] - window[1];
+        const data = new Uint8Array(cols * rows);
+        for (let y = 0; y < rows; y++) {
+          for (let x = 4; x < 20; x++) data[y * cols + x] = 14;
+        }
+        return data;
+      },
+    };
+    let calls = 0;
+    const grid = await fetchChmGrid(frame, {
+      signal: AbortSignal.timeout(5000),
+      loader: {
+        fromUrl: async () => {
+          calls++;
+          if (calls === 1) throw new Error("Error fetching data");
+          return { getImage: async () => image };
+        },
+      },
+    });
+    assert.equal(calls, 2);
+    assert.ok(grid && grid.nonzero > 0, "the second read keeps the canopy");
+    let failed = 0;
+    await assert.rejects(
+      () =>
+        fetchChmGrid(frame, {
+          signal: AbortSignal.timeout(5000),
+          loader: {
+            fromUrl: async () => {
+              failed++;
+              throw new Error("Error fetching data");
+            },
+          },
+        }),
+      /Error fetching data/
+    );
+    assert.equal(failed, 2);
+  });
+
   it("does not start a canopy read after the export has aborted", async () => {
     const ctrl = new AbortController();
     ctrl.abort();

@@ -1262,6 +1262,13 @@ async function fetchOutdoorClutter(bbox, want, opts) {
       tile,
       fetchImpl: opts && opts.fetchImpl,
     });
+    if (maps.elements && maps.elements.length) {
+      const parsed = parseOverpass({ elements: maps.elements }, want, bbox);
+      const limited = limitFeatures(dedupeOutdoor(parsed.features || []), bbox);
+      if (parsed.openWater) limited.notes.push("Open water lines were left out.");
+      for (let i = 0; i < maps.notes.length; i++) limited.notes.push(maps.notes[i]);
+      return { ok: true, features: limited.features, notes: limited.notes };
+    }
     if (maps.xmls.length) {
       let features = [];
       let openWater = false;
