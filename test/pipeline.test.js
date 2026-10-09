@@ -11,7 +11,7 @@ const {
   CLIPBOARD_COLLECTION_KEYS,
   pickBuildingTypeId,
 } = require("../netlify/lib/hamina-clipboard");
-const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS, capBuildingsAndTrees, dropNestedDuplicateRoofs, parseAreaCapOverride, raisedAreaHolds, raisedDeckCap, coverageSummary, MAX_ATTENUATION_AREAS } = require("../netlify/lib/pipeline");
+const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS, capBuildingsAndTrees, dropNestedDuplicateRoofs, parseAreaCapOverride, parseJsonBudgetOverride, raisedAreaHolds, raisedDeckCap, coverageSummary, MAX_ATTENUATION_AREAS, OPENINTENT_JSON_BUDGET, JSON_BUDGET_MAX } = require("../netlify/lib/pipeline");
 const { OI_BUILDING_NAMES, isVegetationOiName, isPoisonedOiName } = require("../netlify/lib/materials");
 const { zipStore, unzipStore, zipUnderLimit } = require("../netlify/lib/zip-store");
 const { version: APP_VERSION } = require("../netlify/lib/version");
@@ -233,30 +233,27 @@ describe("pipeline: footprints + trees share the frame", () => {
       assert.equal("itu_material_type" in a.area_material, false);
       assert.equal("bottom_height" in a.area_material, false);
       const coords = a.area.coordinates;
-      assert.ok(coords.length >= 12);
-      assert.equal(coords.length % 3, 0);
-      for (let i = 0; i < coords.length; i += 3) {
-        assert.equal(coords[i].coordinate_xyz.unit, "pixels");
-        assert.equal(coords[i + 1].coordinate_xyz.unit, "meters");
-        assert.equal(coords[i + 2].coordinate_xyz.unit, "feet");
+      assert.ok(coords.length >= 4);
+      const dumpedArea = JSON.stringify(a.area);
+      assert.equal(dumpedArea.includes("\n"), false);
+      assert.equal(dumpedArea.includes('"meters"'), false);
+      assert.equal(dumpedArea.includes('"feet"'), false);
+      for (let i = 0; i < coords.length; i++) {
         const px = coords[i].coordinate_xyz;
-        const m = coords[i + 1].coordinate_xyz;
-        assert.ok(Math.abs(m.x - px.x * frame.mpuX) < 1e-4);
-        assert.ok(Math.abs(m.y - px.y * frame.mpuX) < 1e-4);
-        const ft = coords[i + 2].coordinate_xyz;
-        assert.ok(Math.abs(ft.x - m.x / 0.3048) < 1e-3);
-        assert.ok(Math.abs(ft.y - m.y / 0.3048) < 1e-3);
+        assert.equal(px.unit, "pixels");
+        assert.equal(Object.keys(coords[i]).join(","), "coordinate_xyz");
+        const sx = String(px.x);
+        const sy = String(px.y);
+        const dx = sx.includes(".") ? sx.split(".")[1].length : 0;
+        const dy = sy.includes(".") ? sy.split(".")[1].length : 0;
+        assert.ok(dx <= 2 && dy <= 2, sx + "," + sy);
+        assert.ok(px.x >= 0 && px.x < frame.imgW);
+        assert.ok(px.y >= 0 && px.y < frame.imgH);
       }
       const first = coords[0].coordinate_xyz;
-      const lastPx = coords[coords.length - 3].coordinate_xyz;
-      assert.equal(first.unit, "pixels");
+      const lastPx = coords[coords.length - 1].coordinate_xyz;
       assert.equal(first.x, lastPx.x);
       assert.equal(first.y, lastPx.y);
-      for (let i = 0; i < coords.length; i += 3) {
-        const c = coords[i];
-        assert.ok(c.coordinate_xyz.x >= 0 && c.coordinate_xyz.x <= frame.imgW);
-        assert.ok(c.coordinate_xyz.y >= 0 && c.coordinate_xyz.y <= frame.imgH);
-      }
     }
     const bldg = built.clipboard.attenuatingZones.find((z) => z.typeId.startsWith("bldg"));
     const tree = built.clipboard.attenuatingZones.find((z) => z.typeId === "tree-trunk" || String(z.typeId).indexOf("foliage") === 0);
@@ -927,7 +924,8 @@ describe("OpenIntent attenuation_areas", () => {
     const expanded = ringToOi(tiny, w, h, 1);
     assert.ok(expanded);
     assert.equal(validateOiCoords(expanded, w, h).ok, true);
-    assert.equal(expanded.length % 3, 0);
+    assert.ok(expanded.length >= 4);
+    assert.equal(expanded.every((c) => c.coordinate_xyz.unit === "pixels"), true);
     const xs = expanded.filter((c) => c.coordinate_xyz.unit === "pixels").map((c) => c.coordinate_xyz.x);
     const ys = expanded.filter((c) => c.coordinate_xyz.unit === "pixels").map((c) => c.coordinate_xyz.y);
     assert.ok(Math.max(...xs) - Math.min(...xs) >= 3);
@@ -1241,11 +1239,14 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /function syncMapQuality/);
     assert.match(app, /imageryQuality: devPage\(\) \? selectedImageryQuality\(\) : undefined/);
     assert.match(app, /function areaCapOverride\(\)/);
+    assert.match(app, /function jsonBudgetOverride\(\)/);
     assert.match(app, /if \(!devPage\(\)\) return undefined/);
     assert.match(app, /areaCap: areaCapOverride\(\)/);
+    assert.match(app, /jsonBudget: jsonBudgetOverride\(\)/);
     assert.equal(/\u2014/.test(app.slice(app.indexOf("function areaCapOverride"), app.indexOf("function selectedImageryQuality"))), false);
     const clutterSrc = fs.readFileSync(path.join(__dirname, "../netlify/functions/clutter.js"), "utf8");
     assert.match(clutterSrc, /const areaCapOverride = devHost \? parseAreaCapOverride\(body\.areaCap\) : 0/);
+    assert.match(clutterSrc, /const jsonBudgetOverride = devHost \? parseJsonBudgetOverride\(body\.jsonBudget\) : 0/);
     assert.match(app, /const ESRI_TILE_MAX_ZOOM = 23/);
     assert.match(app, /const mapZoom = devPage\(\) \? ESRI_TILE_MAX_ZOOM : 18/);
     assert.match(app, /L\.map\("map", \{ maxZoom: mapZoom \}\)/);
@@ -1405,6 +1406,82 @@ describe("dev area cap override", () => {
     assert.match(coverageSummary(Object.assign({}, base, { areaCap: 3000, areaCapOverride: true })), /Area cap 3000 \(test override\)\.$/);
     assert.match(coverageSummary(Object.assign({}, base, { areaCap: 982, areaCapOverride: true })), /Area cap 982 \(test override\)\.$/);
     assert.equal(/\u2014/.test(coverageSummary(Object.assign({}, base, { areaCap: 3000, areaCapOverride: true }))), false);
+    const sized = coverageSummary(Object.assign({}, base, {
+      openIntentJsonBytes: 1250000,
+      jsonBudget: 3800000,
+      stoppedBy: "count",
+      areaCap: 982,
+    }));
+    assert.match(sized, /OpenIntent JSON 1\.25 MB\. Stopped at area cap 982\./);
+    const budgeted = coverageSummary(Object.assign({}, base, {
+      openIntentJsonBytes: 3799917,
+      jsonBudget: 3800000,
+      stoppedBy: "bytes",
+      areaCap: 5000,
+      areaCapOverride: true,
+    }));
+    assert.match(budgeted, /OpenIntent JSON 3\.80 MB\. Stopped at the 3\.80 MB byte budget\./);
+    assert.equal(/\u2014/.test(budgeted), false);
+  });
+
+  it("accepts a dev JSON budget from 3.8 MB through 5 MB", () => {
+    assert.equal(OPENINTENT_JSON_BUDGET, 3800000);
+    assert.equal(JSON_BUDGET_MAX, 5000000);
+    assert.equal(parseJsonBudgetOverride(3800000), 3800000);
+    assert.equal(parseJsonBudgetOverride(4500000), 4500000);
+    assert.equal(parseJsonBudgetOverride("4500000"), 4500000);
+    assert.equal(parseJsonBudgetOverride(5000000), 5000000);
+    assert.equal(parseJsonBudgetOverride(3799999), 0);
+    assert.equal(parseJsonBudgetOverride(5000001), 0);
+    assert.equal(parseJsonBudgetOverride(4500000.5), 0);
+    assert.equal(parseJsonBudgetOverride("4.5e6"), 0);
+    assert.equal(parseJsonBudgetOverride(""), 0);
+  });
+
+  it("stops at the byte budget before the count cap and keeps pixel vertices", () => {
+    const frame = geoFrame(WYNN);
+    const lon = frame.west + (frame.east - frame.west) * 0.2;
+    const lat = frame.south + (frame.north - frame.south) * 0.2;
+    const tall = squareFeature(lon + 0.005, lat, lon + 0.0066, lat + 0.0016, {
+      height: 80,
+      heightSource: "ms-global",
+    });
+    const shortWide = squareFeature(lon, lat, lon + 0.0032, lat + 0.0032, {
+      height: 6,
+      heightSource: "ms-global",
+    });
+    const both = buildClutter({
+      frame,
+      footprintsGeojson: { features: [shortWide, tall] },
+      name: "Byte one",
+      maxAttenuationAreas: 5,
+    });
+    assert.equal(both.stats.attenuationAreasEmitted, 2);
+    assert.equal(both.stats.stoppedBy, "areas");
+    assert.match(both.stats.summary, /Every area fit\./);
+    const two = buildClutter({
+      frame,
+      footprintsGeojson: { features: [shortWide, tall] },
+      name: "Byte one",
+      maxAttenuationAreas: 5,
+      jsonBudget: both.stats.openIntentJsonBytes - 1,
+    });
+    assert.equal(two.stats.attenuationAreasEmitted, 1);
+    assert.equal(two.stats.stoppedBy, "bytes");
+    assert.ok(two.stats.openIntentJsonBytes <= both.stats.openIntentJsonBytes - 1);
+    assert.match(two.stats.summary, /Stopped at the \d+\.\d+ MB byte budget/);
+    assert.equal(/\u2014/.test(two.stats.summary), false);
+    const coords = two.openintent.floorplans[0].attenuation_areas[0].area.coordinates;
+    assert.equal(coords.every((c) => c.coordinate_xyz.unit === "pixels"), true);
+    const underCap = buildClutter({
+      frame,
+      footprintsGeojson: { features: [shortWide, tall] },
+      name: "Byte one",
+      maxAttenuationAreas: 1,
+    });
+    assert.equal(underCap.stats.stoppedBy, "count");
+    assert.match(underCap.stats.summary, /Stopped at area cap 1\./);
+    assert.ok(underCap.stats.openIntentJsonBytes < OPENINTENT_JSON_BUDGET);
   });
 
   it("gives slots above 982 to buildings, trees, and decks", () => {

@@ -156,7 +156,7 @@ async function runBackgroundExport(event, onProgress) {
   return result;
 }
 const { geoFrame, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
-const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings, parseAreaCapOverride, raisedDeckCap } = require("../lib/pipeline");
+const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings, parseAreaCapOverride, parseJsonBudgetOverride, raisedDeckCap } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
@@ -1149,6 +1149,7 @@ async function handleClutter(event) {
 
   const devHost = isDevDemHost(event);
   const areaCapOverride = devHost ? parseAreaCapOverride(body.areaCap) : 0;
+  const jsonBudgetOverride = devHost ? parseJsonBudgetOverride(body.jsonBudget) : 0;
   const deckCap = raisedDeckCap(areaCapOverride);
   if (body.async === true || body.async === "true") {
     return enqueueBackgroundExport(event, body, cors);
@@ -1736,6 +1737,7 @@ async function handleClutter(event) {
       includeBridges: true,
       maxAttenuationAreas: areaCapOverride || undefined,
       areaCapOverride: areaCapOverride > 0,
+      jsonBudget: jsonBudgetOverride || undefined,
     });
   }
 

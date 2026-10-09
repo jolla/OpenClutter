@@ -695,9 +695,11 @@ describe("Finland ground-meter image (Hamina scale)", () => {
     const coords = fp.attenuation_areas[0].area.coordinates;
     const xs = [];
     const ys = [];
-    for (let i = 1; i < coords.length; i += 3) {
-      xs.push(coords[i].coordinate_xyz.x);
-      ys.push(coords[i].coordinate_xyz.y);
+    for (let i = 0; i < coords.length; i++) {
+      const p = coords[i].coordinate_xyz;
+      assert.equal(p.unit, "pixels");
+      xs.push(p.x * locked.frame.mpuX);
+      ys.push(p.y * locked.frame.mpuX);
     }
     const wM = Math.max(...xs) - Math.min(...xs);
     const hM = Math.max(...ys) - Math.min(...ys);
