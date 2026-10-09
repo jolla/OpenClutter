@@ -11,9 +11,9 @@ const {
   CLIPBOARD_COLLECTION_KEYS,
   pickBuildingTypeId,
 } = require("../netlify/lib/hamina-clipboard");
-const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS, capBuildingsAndTrees, dropNestedDuplicateRoofs } = require("../netlify/lib/pipeline");
+const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS, capBuildingsAndTrees, dropNestedDuplicateRoofs, parseAreaCapOverride, raisedAreaHolds, raisedDeckCap, coverageSummary, MAX_ATTENUATION_AREAS } = require("../netlify/lib/pipeline");
 const { OI_BUILDING_NAMES, isVegetationOiName, isPoisonedOiName } = require("../netlify/lib/materials");
-const { zipStore, unzipStore } = require("../netlify/lib/zip-store");
+const { zipStore, unzipStore, zipUnderLimit } = require("../netlify/lib/zip-store");
 const { version: APP_VERSION } = require("../netlify/lib/version");
 const { canopyHitsGrid } = require("./canopy-grid");
 
@@ -1098,6 +1098,27 @@ describe("zip store", () => {
     assert.equal(files["openIntent_Site.json"].toString(), "{}");
     assert.equal(JSON.parse(files["hamina-clipboard.json"]).header.type, "HaminaClipboard");
   });
+
+  it("deflates json when the stored zip is over the download limit and leaves a small zip stored", () => {
+    const json = Buffer.from('{"areas":"' + "x".repeat(80000) + '"}');
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    const files = [
+      { name: "openIntent_Site.json", data: json },
+      { name: "images/site.jpg", data: jpeg },
+    ];
+    const stored = zipStore(files);
+    const fitted = zipUnderLimit(files, 4000);
+    assert.ok(stored.length > 4000);
+    assert.ok(fitted.length < stored.length);
+    assert.ok(fitted.length <= 4000, "deflated " + fitted.length);
+    assert.equal(fitted.readUInt16LE(8), 8);
+    const back = unzipStore(fitted);
+    assert.equal(back["openIntent_Site.json"].toString(), json.toString());
+    assert.equal(back["images/site.jpg"].length, jpeg.length);
+    const small = zipUnderLimit([{ name: "a.json", data: Buffer.from("{}") }], 4400000);
+    assert.equal(small.readUInt16LE(8), 0);
+    assert.equal(unzipStore(small)["a.json"].toString(), "{}");
+  });
 });
 
 describe("building type pick", () => {
@@ -1219,6 +1240,12 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /function selectedImageryQuality/);
     assert.match(app, /function syncMapQuality/);
     assert.match(app, /imageryQuality: devPage\(\) \? selectedImageryQuality\(\) : undefined/);
+    assert.match(app, /function areaCapOverride\(\)/);
+    assert.match(app, /if \(!devPage\(\)\) return undefined/);
+    assert.match(app, /areaCap: areaCapOverride\(\)/);
+    assert.equal(/\u2014/.test(app.slice(app.indexOf("function areaCapOverride"), app.indexOf("function selectedImageryQuality"))), false);
+    const clutterSrc = fs.readFileSync(path.join(__dirname, "../netlify/functions/clutter.js"), "utf8");
+    assert.match(clutterSrc, /const areaCapOverride = devHost \? parseAreaCapOverride\(body\.areaCap\) : 0/);
     assert.match(app, /const ESRI_TILE_MAX_ZOOM = 23/);
     assert.match(app, /const mapZoom = devPage\(\) \? ESRI_TILE_MAX_ZOOM : 18/);
     assert.match(app, /L\.map\("map", \{ maxZoom: mapZoom \}\)/);
@@ -1346,6 +1373,78 @@ describe("attenuation cap keeps discrete trees", () => {
     const text = notes.join(" ");
     assert.match(text, /largest, tallest roofs/);
     assert.match(text, /did not fit in the 1 area budget/);
+    assert.match(built.stats.summary, /Area cap 1\./);
+    assert.equal(/test override/.test(built.stats.summary), false);
+  });
+});
+
+describe("dev area cap override", () => {
+  it("accepts 982 through 5000 and ignores anything else", () => {
+    assert.equal(parseAreaCapOverride(982), 982);
+    assert.equal(parseAreaCapOverride(1500), 1500);
+    assert.equal(parseAreaCapOverride(5000), 5000);
+    assert.equal(parseAreaCapOverride("3000"), 3000);
+    assert.equal(parseAreaCapOverride(" 1500 "), 1500);
+    assert.equal(parseAreaCapOverride(981), 0);
+    assert.equal(parseAreaCapOverride(5001), 0);
+    assert.equal(parseAreaCapOverride(6000), 0);
+    assert.equal(parseAreaCapOverride(1500.5), 0);
+    assert.equal(parseAreaCapOverride("1500.5"), 0);
+    assert.equal(parseAreaCapOverride("foo"), 0);
+    assert.equal(parseAreaCapOverride(""), 0);
+    assert.equal(parseAreaCapOverride(null), 0);
+    assert.equal(raisedDeckCap(982), 0);
+    assert.ok(raisedDeckCap(1500) >= 160);
+    assert.ok(raisedDeckCap(5000) > raisedDeckCap(1500));
+  });
+
+  it("names the active cap, and the override, in the details line", () => {
+    const base = { buildingsKept: 1, fetched: 1, attenuationAreasEmitted: 1, includeFoliage: false, treesKept: 0, treesSource: "none" };
+    assert.match(coverageSummary(base), /Area cap 982\.$/);
+    assert.equal(/test override/.test(coverageSummary(base)), false);
+    assert.match(coverageSummary(Object.assign({}, base, { areaCap: 3000, areaCapOverride: true })), /Area cap 3000 \(test override\)\.$/);
+    assert.match(coverageSummary(Object.assign({}, base, { areaCap: 982, areaCapOverride: true })), /Area cap 982 \(test override\)\.$/);
+    assert.equal(/\u2014/.test(coverageSummary(Object.assign({}, base, { areaCap: 3000, areaCapOverride: true }))), false);
+  });
+
+  it("gives slots above 982 to buildings, trees, and decks", () => {
+    const counts = { buildings: 4500, treeAreas: 2000, deckCount: 700, waterParking: 8 };
+    const at982 = raisedAreaHolds(982, counts);
+    assert.equal(at982.buildingLimit + at982.treeHold + at982.deckHold + at982.waterHold <= 982, true);
+    const low = raisedAreaHolds(1500, counts);
+    const mid = raisedAreaHolds(3000, counts);
+    const high = raisedAreaHolds(5000, counts);
+    for (const hold of [low, mid, high]) {
+      const sum = hold.buildingLimit + hold.treeHold + hold.deckHold + hold.waterHold;
+      assert.equal(sum, hold === low ? 1500 : hold === mid ? 3000 : 5000);
+    }
+    assert.ok(low.buildingLimit > 982);
+    assert.ok(mid.buildingLimit > low.buildingLimit);
+    assert.ok(high.buildingLimit > mid.buildingLimit);
+    assert.ok(low.treeHold > 0);
+    assert.ok(mid.treeHold > low.treeHold);
+    assert.ok(high.treeHold > mid.treeHold);
+    assert.ok(low.deckHold >= 96);
+    assert.ok(mid.deckHold > low.deckHold);
+    assert.ok(high.deckHold > mid.deckHold);
+    assert.equal(low.waterHold, 8);
+    assert.equal(MAX_ATTENUATION_AREAS, 982);
+  });
+
+  it("stops building pieces at the ceiling the caller sets", () => {
+    const frame = geoFrame(WYNN);
+    const features = [];
+    for (let i = 0; i < 4; i++) {
+      const lon = frame.west + 0.001 + i * 0.002;
+      const lat = frame.south + 0.001;
+      features.push(squareFeature(lon, lat, lon + 0.0008, lat + 0.0008, { height: 12 }));
+    }
+    const capped = footprintsToClutter(features, frame, null, null, { buildingCeiling: 2 });
+    assert.equal(capped.oiAreas.length, 2);
+    assert.ok(capped.stats.droppedCap >= 2);
+    const open = footprintsToClutter(features, frame);
+    assert.equal(open.oiAreas.length, 4);
+    assert.equal(open.stats.droppedCap, 0);
   });
 });
 
