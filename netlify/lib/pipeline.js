@@ -1509,7 +1509,7 @@ function clipMultiArea(geom) {
  * its bottom moves up to the outer roof. A band that already starts at the
  * outer top (a dome step, a tower seated on its podium) stays.
  */
-function dropNestedDuplicateRoofs(areas) {
+function dropNestedDuplicateRoofs(areas, zones) {
   const items = [];
   for (let i = 0; i < (areas || []).length; i++) {
     const area = areas[i];
@@ -1573,11 +1573,19 @@ function dropNestedDuplicateRoofs(areas) {
   }
   if (!drop.size) return 0;
   const next = [];
+  const nextZones = [];
+  const paired = zones && zones.length === areas.length;
   for (let i = 0; i < areas.length; i++) {
-    if (!drop.has(i)) next.push(areas[i]);
+    if (drop.has(i)) continue;
+    next.push(areas[i]);
+    if (paired) nextZones.push(zones[i]);
   }
   areas.length = 0;
   for (let i = 0; i < next.length; i++) areas.push(next[i]);
+  if (paired) {
+    zones.length = 0;
+    for (let i = 0; i < nextZones.length; i++) zones.push(nextZones[i]);
+  }
   return drop.size;
 }
 
@@ -1871,7 +1879,7 @@ function ringsUnderVertexCap(ring, maxPts, eps, mpd, depth, root) {
   return out;
 }
 
-function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase, shapePart, keepOut) {
+function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone) {
   const px = [];
   for (let i = 0; i < ring.length; i++) {
     const xy = llToPx(ring[i][0], ring[i][1], frame);
@@ -1919,7 +1927,8 @@ function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSou
       heightSource,
       levelBase,
       shapePart,
-      keepOut
+      keepOut,
+      keepSpanZone
     );
     if (result === "keep") sawKeep = true;
     else if (result === "span") sawSpan = true;
@@ -1963,7 +1972,7 @@ function stashBuilding(buckets, frame, affine, clipRing, overlayPts, clipPx, pic
   );
 }
 
-function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase, shapePart, keepOut) {
+function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone) {
   const simple = simplifyRing(ring, maxPts, eps);
   if (!simple || simple.length < 4) return "skip";
   const detailVerts = ringVertexCount(simple);
@@ -1993,8 +2002,10 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
   const slopeRings = slopeRingsForEmit(ring, simple, clippedPts, frame);
   const minSpan = minOiSpanPx(frame.mpuX);
   if (thinSliverDrop(clippedPts, minSpan)) {
-    // Clipboard keeps the exact sliver. OpenIntent must not, or Hamina drops
-    // every attenuating object.
+    // Clipboard keeps a building that is only a sliver. A fragment cut off a
+    // larger roof is not that building: OpenIntent drops it, and a second
+    // clipboard zone would no longer match the area list.
+    if (keepSpanZone === false) return "tiny";
     const pickedThin = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart);
     if (pickedThin.lifted) buckets.lifted++;
     stashBuilding(buckets, frame, affine, clipRing, clippedPts, clippedPts, pickedThin);
@@ -2014,7 +2025,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     if (ringVertexCount(clippedPts) > MAX_OI_RING_VERTS) return "verts";
     return "clip";
   }
-  const picked = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart);
+  let picked = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart);
   const area = emitIfValid(makeOiArea(oiCoords, picked.material), frame.imgW, frame.imgH);
   if (!area) return "invalid";
   buckets.oiAreas.push(area);
@@ -2047,7 +2058,14 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     }
   }
   const z = clipZone(picked.typeId, affine ? clipRing : clipFromImage);
-  if (z) buckets.clipZones.push(z);
+  if (!z) {
+    buckets.oiAreas.pop();
+    if (picked.clipType) buckets.clipTypes.pop();
+    if (picked.material) buckets.materials.pop();
+    if (picked.measured) buckets.measured--;
+    return "clip";
+  }
+  buckets.clipZones.push(z);
   const cxs = clippedPts.map((p) => p[0]);
   const cys = clippedPts.map((p) => p[1]);
   buckets.aabbs.push({
@@ -2236,7 +2254,8 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
             heightSource,
             levelBase,
             shapePart,
-            keepOut
+            keepOut,
+            parts.length === 1
           );
           if (result === "keep") {
             stats.buildings++;
@@ -2255,7 +2274,7 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
       }
     }
   }
-  stats.droppedNested = dropNestedDuplicateRoofs(oiAreas);
+  stats.droppedNested = dropNestedDuplicateRoofs(oiAreas, clipZones);
   stats.buildings = oiAreas.length;
   stats.measuredBuildings = buckets.measured;
   stats.buildingsLifted = buckets.lifted;

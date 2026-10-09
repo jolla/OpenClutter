@@ -1294,8 +1294,760 @@ function buildRaisedLayerClipboard(samples, frame, cols, rows, elevationAt) {
   };
 }
 
-function buildTerrainClipboard(samples, frame, cols, rows, elevationAt) {
-  const grid = lattice(samples, frame, cols, rows, elevationAt);
+/**
+ * A pure north-south or east-west grade already shares full edges: every
+ * node in a row (or column) is the same height. Those stay one ramp per cell
+ * so the low edge is the downhill side. Anything else is contoured.
+ */
+function axisAlignedGrid(grid) {
+  const cols = grid.cols;
+  const rows = grid.rows;
+  let rowsFlat = true;
+  for (let r = 0; r <= rows && rowsFlat; r++) {
+    const z0 = at(grid, 0, r).zRel;
+    for (let c = 1; c <= cols; c++) {
+      if (Math.abs(at(grid, c, r).zRel - z0) > SLOPED_FLAT_M) rowsFlat = false;
+    }
+  }
+  if (rowsFlat) return true;
+  for (let c = 0; c <= cols; c++) {
+    const z0 = at(grid, c, 0).zRel;
+    for (let r = 1; r <= rows; r++) {
+      if (Math.abs(at(grid, c, r).zRel - z0) > SLOPED_FLAT_M) return false;
+    }
+  }
+  return true;
+}
+
+function quantizeStep(z, step) {
+  return round1(Math.round(z / step) * step);
+}
+
+function dedupeContour(poly) {
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i];
+    const q = { x: round3(p.x), y: round3(p.y), z: round1(p.z) };
+    const prev = out[out.length - 1];
+    if (prev && Math.abs(prev.x - q.x) < 1e-3 && Math.abs(prev.y - q.y) < 1e-3) continue;
+    out.push(q);
+  }
+  if (out.length > 1) {
+    const a = out[0];
+    const b = out[out.length - 1];
+    if (Math.abs(a.x - b.x) < 1e-3 && Math.abs(a.y - b.y) < 1e-3) out.pop();
+  }
+  return out;
+}
+
+function contourInterp(a, b, z) {
+  const dz = b.z - a.z;
+  const t = dz === 0 ? 0 : (z - a.z) / dz;
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z };
+}
+
+function clipBandHalf(poly, limit, above) {
+  if (!poly.length) return [];
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const aIn = above ? a.z >= limit - 1e-6 : a.z <= limit + 1e-6;
+    const bIn = above ? b.z >= limit - 1e-6 : b.z <= limit + 1e-6;
+    if (aIn && bIn) out.push({ x: b.x, y: b.y, z: b.z });
+    else if (aIn && !bIn) out.push(contourInterp(a, b, limit));
+    else if (!aIn && bIn) {
+      out.push(contourInterp(a, b, limit));
+      out.push({ x: b.x, y: b.y, z: b.z });
+    }
+  }
+  return dedupeContour(out);
+}
+
+function orientContour(pts) {
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const q = pts[(i + 1) % pts.length];
+    a += p.x * q.y - q.x * p.y;
+  }
+  if (a < 0) pts.reverse();
+  return pts;
+}
+
+function contourArea(pts) {
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const q = pts[(i + 1) % pts.length];
+    a += p.x * q.y - q.x * p.y;
+  }
+  return Math.abs(a) / 2;
+}
+
+/** Four points sorted around their center, rotated so the low edge is first. */
+function tryRampPoints(pts) {
+  if (!pts || pts.length !== 4) return null;
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < 4; i++) {
+    cx += pts[i].x;
+    cy += pts[i].y;
+  }
+  cx /= 4;
+  cy /= 4;
+  const ordered = pts.slice().sort(function (a, b) {
+    return Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx);
+  });
+  const base = ordered.map(function (p) {
+    return [round3(p.x), round3(p.y), round1(p.z)];
+  });
+  for (let rot = 0; rot < 4; rot++) {
+    const ring = [];
+    for (let k = 0; k < 4; k++) ring.push(base[(rot + k) % 4].slice());
+    if (planarSlopedRamp(ring) && pasteableQuad(ring)) return ring;
+  }
+  return null;
+}
+
+function bandHeights(pts) {
+  const zs = [];
+  for (let i = 0; i < pts.length; i++) {
+    if (zs.indexOf(pts[i].z) < 0) zs.push(pts[i].z);
+  }
+  zs.sort(function (a, b) {
+    return a - b;
+  });
+  if (zs.length !== 2) return null;
+  return zs;
+}
+
+function sameContourPoint(a, b) {
+  return Math.abs(a.x - b.x) < 1e-3 && Math.abs(a.y - b.y) < 1e-3;
+}
+
+function contourEdgeKey(a, b) {
+  const k1 = a.x.toFixed(3) + "," + a.y.toFixed(3);
+  const k2 = b.x.toFixed(3) + "," + b.y.toFixed(3);
+  return k1 < k2 ? k1 + "|" + k2 : k2 + "|" + k1;
+}
+
+function mergeContourPolys(a, b) {
+  for (let i = 0; i < a.length; i++) {
+    const a2 = a[(i + 1) % a.length];
+    for (let j = 0; j < b.length; j++) {
+      const b2 = b[(j + 1) % b.length];
+      const forward = sameContourPoint(a[i], b[j]) && sameContourPoint(a2, b2);
+      const back = sameContourPoint(a[i], b2) && sameContourPoint(a2, b[j]);
+      if (!forward && !back) continue;
+      const out = [];
+      for (let k = 1; k < a.length; k++) out.push(a[(i + k) % a.length]);
+      const startB = back ? j : (j + 1) % b.length;
+      for (let k = 1; k < b.length; k++) out.push(b[(startB + k) % b.length]);
+      return orientContour(dedupeContour(out));
+    }
+  }
+  return null;
+}
+
+function collapseColinearContour(pts) {
+  if (pts.length <= 4) return pts;
+  const out = [];
+  for (let i = 0; i < pts.length; i++) {
+    const prev = pts[(i + pts.length - 1) % pts.length];
+    const cur = pts[i];
+    const next = pts[(i + 1) % pts.length];
+    const cross = (cur.x - prev.x) * (next.y - cur.y) - (cur.y - prev.y) * (next.x - cur.x);
+    if (Math.abs(cross) > 1e-3) out.push(cur);
+  }
+  return out.length >= 3 ? out : pts;
+}
+
+function resampleContour(chain, segs) {
+  let total = 0;
+  const segLen = [];
+  for (let i = 0; i < chain.length - 1; i++) {
+    const d = Math.hypot(chain[i + 1].x - chain[i].x, chain[i + 1].y - chain[i].y);
+    segLen.push(d);
+    total += d;
+  }
+  const out = [{ x: chain[0].x, y: chain[0].y, z: chain[0].z }];
+  for (let s = 1; s <= segs; s++) {
+    const target = total > 0 ? (total * s) / segs : 0;
+    let acc = 0;
+    let placed = false;
+    for (let i = 0; i < segLen.length; i++) {
+      if (acc + segLen[i] >= target - 1e-8) {
+        const t = segLen[i] === 0 ? 0 : (target - acc) / segLen[i];
+        const p = chain[i];
+        const q = chain[i + 1];
+        out.push({
+          x: round3(p.x + (q.x - p.x) * t),
+          y: round3(p.y + (q.y - p.y) * t),
+          z: round1(p.z + (q.z - p.z) * t),
+        });
+        placed = true;
+        break;
+      }
+      acc += segLen[i];
+    }
+    if (!placed) out.push(chain[chain.length - 1]);
+  }
+  return out;
+}
+
+function stitchContourStrip(low, high) {
+  if (low.length < 2 || high.length < 2) return null;
+  const nSeg = Math.max(low.length - 1, high.length - 1);
+  const L = resampleContour(low, nSeg);
+  const H = resampleContour(high, nSeg);
+  const quads = [];
+  for (let i = 0; i < nSeg; i++) {
+    const quad = tryRampPoints([L[i], L[i + 1], H[i + 1], H[i]]) || tryRampPoints([L[i], L[i + 1], H[i], H[i + 1]]);
+    if (!quad) return null;
+    quads.push(quad);
+  }
+  return quads;
+}
+
+function stitchContourPoly(pts) {
+  const heights = bandHeights(pts);
+  if (!heights || pts.length < 4) return null;
+  const lo = heights[0];
+  const hi = heights[1];
+  const tag = pts.map(function (p) {
+    return Math.abs(p.z - lo) <= Math.abs(p.z - hi) ? "L" : "H";
+  });
+  let start = 0;
+  for (let i = 0; i < pts.length; i++) {
+    if (tag[i] !== tag[(i + pts.length - 1) % pts.length]) {
+      start = i;
+      break;
+    }
+  }
+  const runs = [];
+  for (let k = 0; k < pts.length; k++) {
+    const i = (start + k) % pts.length;
+    if (!runs.length || runs[runs.length - 1].tag !== tag[i]) runs.push({ tag: tag[i], pts: [pts[i]] });
+    else runs[runs.length - 1].pts.push(pts[i]);
+  }
+  const lows = runs.filter(function (r) {
+    return r.tag === "L";
+  });
+  const highs = runs.filter(function (r) {
+    return r.tag === "H";
+  });
+  if (lows.length !== 1 || highs.length !== 1) return null;
+  if (lows[0].pts.length < 2 || highs[0].pts.length < 2) return null;
+  return stitchContourStrip(lows[0].pts, highs[0].pts) || stitchContourStrip(lows[0].pts, highs[0].pts.slice().reverse());
+}
+
+/**
+ * A one-corner band is a triangle. The ramp's low edge sits just inside that
+ * triangle, parallel to the far contour, so the quad covers the band without
+ * crossing into the neighbor. The tiny tip is a raised floor at the corner height.
+ */
+function capContourTriangle(pts) {
+  let iA = -1;
+  for (let i = 0; i < 3; i++) {
+    const z1 = pts[(i + 1) % 3].z;
+    const z2 = pts[(i + 2) % 3].z;
+    if (z1 === z2 && pts[i].z !== z1) iA = i;
+  }
+  if (iA < 0) return null;
+  const A = pts[iA];
+  const B = pts[(iA + 1) % 3];
+  const C = pts[(iA + 2) % 3];
+  const ab = Math.hypot(B.x - A.x, B.y - A.y);
+  const ac = Math.hypot(C.x - A.x, C.y - A.y);
+  if (!(ab > 0.2) || !(ac > 0.2)) return null;
+  const altitude =
+    Math.abs((B.x - A.x) * (C.y - A.y) - (B.y - A.y) * (C.x - A.x)) / (Math.hypot(C.x - B.x, C.y - B.y) || 1);
+  const t = Math.max(0.08, Math.min(0.4, altitude > 0 ? 0.45 / altitude : 0.2));
+  const S1 = { x: round3(A.x + (B.x - A.x) * t), y: round3(A.y + (B.y - A.y) * t), z: A.z };
+  const S2 = { x: round3(A.x + (C.x - A.x) * t), y: round3(A.y + (C.y - A.y) * t), z: A.z };
+  const ramp = tryRampPoints([S1, S2, B, C]);
+  if (!ramp) return null;
+  const mx = (S1.x + S2.x) / 2;
+  const my = (S1.y + S2.y) / 2;
+  const bump = [round3(mx + (A.x - mx) * 0.35), round3(my + (A.y - my) * 0.35)];
+  const tip = [
+    [round3(A.x), round3(A.y)],
+    [S1.x, S1.y],
+    bump,
+    [S2.x, S2.y],
+  ];
+  return { ramp: ramp, raised: pasteableQuad(tip) ? { ring: tip, h: A.z } : null };
+}
+
+function raisedFromRing(ring, height) {
+  if (!pasteableQuad(ring)) return null;
+  return {
+    area: zoneArea(ring.map(function (p) {
+      return [p[0], p[1]];
+    })),
+    height: round1(height),
+    attenuationDbPerMeter: 0,
+    slabOnly: false,
+  };
+}
+
+/**
+ * A flat triangle has no fourth corner Hamina would accept as a raised pad.
+ * The ramp keeps every boundary vertex at that height and lifts a short interior
+ * shelf by 0.1 m, so the shared edge still matches the neighbor.
+ */
+function coverFlatTriangle(pts, ramps) {
+  let longest = 0;
+  let iB = 0;
+  for (let i = 0; i < 3; i++) {
+    const d = Math.hypot(pts[(i + 1) % 3].x - pts[i].x, pts[(i + 1) % 3].y - pts[i].y);
+    if (d > longest) {
+      longest = d;
+      iB = i;
+    }
+  }
+  const B = pts[iB];
+  const C = pts[(iB + 1) % 3];
+  const A = pts[(iB + 2) % 3];
+  const ab = Math.hypot(B.x - A.x, B.y - A.y);
+  const ac = Math.hypot(C.x - A.x, C.y - A.y);
+  if (!(ab > 0.2) || !(ac > 0.2)) return;
+  const t = Math.max(0.04, Math.min(0.2, 0.35 / Math.min(ab, ac)));
+  const hi = round1(B.z + 0.1);
+  const S1 = { x: round3(A.x + (B.x - A.x) * t), y: round3(A.y + (B.y - A.y) * t), z: hi };
+  const S2 = { x: round3(A.x + (C.x - A.x) * t), y: round3(A.y + (C.y - A.y) * t), z: hi };
+  const ramp = tryRampPoints([
+    { x: B.x, y: B.y, z: B.z },
+    { x: C.x, y: C.y, z: C.z },
+    S2,
+    S1,
+  ]);
+  if (!ramp) return;
+  const zone = slopedZone(ramp);
+  if (zone) ramps.push(zone);
+}
+
+function contourPolysForQuad(corners, step) {
+  const q = corners.map(function (p) {
+    return { x: p.x, y: p.y, z: quantizeStep(p.z, step) };
+  });
+  let zmin = Infinity;
+  let zmax = -Infinity;
+  for (let i = 0; i < q.length; i++) {
+    if (q[i].z < zmin) zmin = q[i].z;
+    if (q[i].z > zmax) zmax = q[i].z;
+  }
+  if (zmax - zmin < SLOPED_FLAT_M) return [{ pts: q, flat: true, h: zmin }];
+  const polys = [];
+  for (let lo = zmin; lo < zmax - 1e-6; lo = round1(lo + step)) {
+    const hi = round1(lo + step);
+    let poly = q.map(function (p) {
+      return { x: p.x, y: p.y, z: p.z };
+    });
+    poly = clipBandHalf(poly, lo, true);
+    poly = clipBandHalf(poly, hi, false);
+    poly = orientContour(dedupeContour(poly));
+    if (poly.length >= 3) polys.push({ pts: poly, flat: false });
+  }
+  return polys;
+}
+
+function refineContourQuads(grid, step) {
+  const leaves = [];
+  for (let r = 0; r < grid.rows; r++) {
+    for (let c = 0; c < grid.cols; c++) {
+      leaves.push(
+        [at(grid, c, r), at(grid, c + 1, r), at(grid, c + 1, r + 1), at(grid, c, r + 1)].map(function (n) {
+          return { x: n.x, y: n.y, z: quantizeStep(n.zRel, step) };
+        })
+      );
+    }
+  }
+  return leaves;
+}
+
+function pushCap(ramps, raised, cap) {
+  const zone = slopedZone(cap.ramp);
+  if (zone) ramps.push(zone);
+  if (cap.raised) {
+    const pad = raisedFromRing(cap.raised.ring, cap.raised.h);
+    if (pad) raised.push(pad);
+  }
+}
+
+function contourTriSign(p, a, b) {
+  return (p.x - b.x) * (a.y - b.y) - (a.x - b.x) * (p.y - b.y);
+}
+
+function contourPointInTri(p, a, b, c) {
+  const d1 = contourTriSign(p, a, b);
+  const d2 = contourTriSign(p, b, c);
+  const d3 = contourTriSign(p, c, a);
+  const neg = d1 < -1e-8 || d2 < -1e-8 || d3 < -1e-8;
+  const pos = d1 > 1e-8 || d2 > 1e-8 || d3 > 1e-8;
+  return !(neg && pos);
+}
+
+/** Ears stay inside the ring. A fan from one corner would cross a concave band. */
+function earClipContour(pts) {
+  const poly = pts.slice();
+  const tris = [];
+  if (poly.length < 3) return tris;
+  if (poly.length === 3) return [poly.slice()];
+  let guard = poly.length * poly.length;
+  while (poly.length > 3 && guard-- > 0) {
+    let clipped = false;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[(i + poly.length - 1) % poly.length];
+      const b = poly[i];
+      const c = poly[(i + 1) % poly.length];
+      const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+      if (cross <= 1e-4) continue;
+      let inside = false;
+      for (let k = 0; k < poly.length; k++) {
+        if (sameContourPoint(poly[k], a) || sameContourPoint(poly[k], b) || sameContourPoint(poly[k], c)) continue;
+        if (contourPointInTri(poly[k], a, b, c)) {
+          inside = true;
+          break;
+        }
+      }
+      if (inside) continue;
+      tris.push([a, b, c]);
+      poly.splice(i, 1);
+      clipped = true;
+      break;
+    }
+    if (!clipped) break;
+  }
+  if (poly.length === 3) tris.push(poly.slice());
+  return tris;
+}
+
+function contourTriFlat(tri) {
+  return Math.max(tri[0].z, tri[1].z, tri[2].z) - Math.min(tri[0].z, tri[1].z, tri[2].z) < SLOPED_FLAT_M;
+}
+
+/**
+ * A band that is not one ramp is cut into triangles. Each triangle keeps a
+ * shelf inside itself, so the pieces meet the neighboring band on the shared
+ * edge and do not paint the next cell.
+ */
+function coverContourPoly(pts, ramps, raised) {
+  const tris = earClipContour(orientContour(pts.slice()));
+  const pending = tris.map(function (t) {
+    return { t: t, live: true };
+  });
+  for (let i = 0; i < pending.length; i++) {
+    if (!pending[i].live || !contourTriFlat(pending[i].t)) continue;
+    let merged = false;
+    for (let j = 0; j < pending.length && !merged; j++) {
+      if (i === j || !pending[j].live || contourTriFlat(pending[j].t)) continue;
+      const flat = pending[i].t;
+      const other = pending[j].t;
+      for (let e = 0; e < 3 && !merged; e++) {
+        const a = flat[e];
+        const b = flat[(e + 1) % 3];
+        const c = flat[(e + 2) % 3];
+        for (let f = 0; f < 3; f++) {
+          const p = other[f];
+          const q = other[(f + 1) % 3];
+          const shares = (sameContourPoint(a, p) && sameContourPoint(b, q)) || (sameContourPoint(a, q) && sameContourPoint(b, p));
+          if (!shares) continue;
+          const apex = other[(f + 2) % 3];
+          if (apex.z === a.z && apex.z === b.z) continue;
+          const left = capContourTriangle([apex, a, c]);
+          const right = capContourTriangle([apex, c, b]);
+          if (left) pushCap(ramps, raised, left);
+          if (right) pushCap(ramps, raised, right);
+          pending[i].live = false;
+          pending[j].live = false;
+          merged = true;
+          break;
+        }
+      }
+    }
+  }
+  for (let i = 0; i < pending.length; i++) {
+    if (!pending[i].live || contourTriFlat(pending[i].t)) continue;
+    const cap = capContourTriangle(pending[i].t);
+    if (cap) pushCap(ramps, raised, cap);
+  }
+}
+
+function contourPiecesAtStep(grid, step) {
+  const polys = [];
+  const quads = refineContourQuads(grid, step);
+  for (let i = 0; i < quads.length; i++) {
+    const corners = quads[i];
+      const zmin = Math.min(corners[0].z, corners[1].z, corners[2].z, corners[3].z);
+      const zmax = Math.max(corners[0].z, corners[1].z, corners[2].z, corners[3].z);
+      // A saddle is not one plane. Two triangles are, and the shared diagonal
+      // is the same line from both sides, so the bands meet instead of stacking.
+      const leaves =
+        zmax - zmin < SLOPED_FLAT_M
+          ? [corners]
+          : [
+              [corners[0], corners[1], corners[2]],
+              [corners[0], corners[2], corners[3]],
+            ];
+      for (let t = 0; t < leaves.length; t++) {
+        const parts = contourPolysForQuad(leaves[t], step);
+        for (let k = 0; k < parts.length; k++) polys.push(parts[k]);
+      }
+  }
+  const alive = polys.map(function (p) {
+    return { pts: p.pts, flat: p.flat, h: p.h, live: true };
+  });
+  for (let pass = 0; pass < 8; pass++) {
+    let changed = false;
+    const buckets = new Map();
+    for (let i = 0; i < alive.length; i++) {
+      if (!alive[i].live || alive[i].flat) continue;
+      const pts = alive[i].pts;
+      for (let k = 0; k < pts.length; k++) {
+        const key = contourEdgeKey(pts[k], pts[(k + 1) % pts.length]);
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key).push(i);
+      }
+    }
+    const used = new Set();
+    for (const ids of buckets.values()) {
+      if (ids.length !== 2) continue;
+      const ia = ids[0];
+      const ib = ids[1];
+      if (used.has(ia) || used.has(ib) || !alive[ia].live || !alive[ib].live) continue;
+      const za = bandHeights(alive[ia].pts);
+      const zb = bandHeights(alive[ib].pts);
+      if (!za || !zb || za[0] !== zb[0] || za[1] !== zb[1]) continue;
+      const uni = mergeContourPolys(alive[ia].pts, alive[ib].pts);
+      if (!uni) continue;
+      const collapsed = collapseColinearContour(uni);
+      if (collapsed.length !== 4 || !tryRampPoints(collapsed)) continue;
+      const zu = bandHeights(collapsed);
+      if (!zu || zu[0] !== za[0] || zu[1] !== za[1]) continue;
+      const aArea = contourArea(alive[ia].pts);
+      const bArea = contourArea(alive[ib].pts);
+      const uArea = contourArea(collapsed);
+      if (Math.abs(uArea - aArea - bArea) > Math.max(1, 0.05 * (aArea + bArea))) continue;
+      alive[ia].live = false;
+      alive[ib].live = false;
+      alive.push({ pts: collapsed, flat: false, live: true });
+      used.add(ia);
+      used.add(ib);
+      changed = true;
+    }
+    if (!changed) break;
+  }
+  const ramps = [];
+  const raised = [];
+  for (let i = 0; i < alive.length; i++) {
+    const p = alive[i];
+    if (!p.live) continue;
+    const flat = p.flat || p.pts.every(function (q) {
+      return Math.abs(q.z - p.pts[0].z) < SLOPED_FLAT_M;
+    });
+    if (flat) {
+      if (p.pts.length === 4) {
+        const pad = raisedFromRing(
+          p.pts.map(function (q) {
+            return [q.x, q.y];
+          }),
+          p.h != null ? p.h : p.pts[0].z
+        );
+        if (pad) raised.push(pad);
+      } else if (p.pts.length === 3) coverFlatTriangle(p.pts, ramps);
+      continue;
+    }
+    const ramp = tryRampPoints(p.pts);
+    if (ramp) {
+      const zone = slopedZone(ramp);
+      if (zone) ramps.push(zone);
+      continue;
+    }
+    const stitched = stitchContourPoly(p.pts);
+    if (stitched && stitched.length) {
+      for (let k = 0; k < stitched.length; k++) {
+        const zone = slopedZone(stitched[k]);
+        if (zone) ramps.push(zone);
+      }
+      continue;
+    }
+    if (p.pts.length === 3) {
+      const cap = capContourTriangle(p.pts);
+      if (cap) pushCap(ramps, raised, cap);
+      continue;
+    }
+    coverContourPoly(p.pts, ramps, raised);
+  }
+  return { ramps: ramps, raised: raised };
+}
+
+function contourVertexGap(floors) {
+  return slopeCornerGap(floors);
+}
+
+/**
+ * Contour bands, the way the native pit paste is built: each ramp's low edge
+ * and high edge are one height, and the next ramp picks up that same edge.
+ * Cells that are not a plane are split first. The finest step that still fits
+ * the paste budget is the one that ships.
+ */
+function contourStepsForGrid(grid) {
+  let maxCell = 0;
+  for (let r = 0; r < grid.rows; r++) {
+    for (let c = 0; c < grid.cols; c++) {
+      const zs = [at(grid, c, r).zRel, at(grid, c + 1, r).zRel, at(grid, c + 1, r + 1).zRel, at(grid, c, r + 1).zRel];
+      const span = Math.max(...zs) - Math.min(...zs);
+      if (span > maxCell) maxCell = span;
+    }
+  }
+  // One-meter bands are the accuracy target. Coarser steps are only the
+  // fallback when that many ramps would exceed the paste budget.
+  if (maxCell > 40) return [2, 4, 8];
+  return [1, 2, 4, 8];
+}
+
+function contourMeshFromGrid(grid, frame) {
+  const budget = Math.max(1, pastePlanQuadBudget());
+  const steps = contourStepsForGrid(grid);
+  let chosen = null;
+  for (let i = 0; i < steps.length; i++) {
+    const pieces = contourPiecesAtStep(grid, steps[i]);
+    if (!pieces.ramps.length && !pieces.raised.length) continue;
+    chosen = { pieces: pieces, step: steps[i] };
+    if (pieces.ramps.length + pieces.raised.length <= budget) break;
+  }
+  if (!chosen) return null;
+  const clip = emptyClipboard();
+  clip.raisedFloorZones = chosen.pieces.raised;
+  clip.slopedFloors = chosen.pieces.ramps;
+  clip.attenuatingZones = [];
+  stampGpsTiePoints(clip, frame);
+  const err = contourError(grid, chosen.pieces.ramps, chosen.pieces.raised);
+  return {
+    grid: grid,
+    clip: clip,
+    raised: chosen.pieces.raised.length,
+    sloped: chosen.pieces.ramps.length,
+    slopeGapM: contourVertexGap(chosen.pieces.ramps),
+    contourStepM: chosen.step,
+    vertMeanM: err.mean,
+    vertMaxM: err.max,
+    cover: err.cover,
+  };
+}
+
+function bilinearZ(grid, x, y) {
+  const cols = grid.cols;
+  const rows = grid.rows;
+  const x0 = at(grid, 0, 0).x;
+  const x1 = at(grid, cols, 0).x;
+  const y0 = at(grid, 0, 0).y;
+  const y1 = at(grid, 0, rows).y;
+  const tx = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
+  const ty = y1 === y0 ? 0 : (y - y0) / (y1 - y0);
+  const fc = Math.max(0, Math.min(cols - 1e-6, tx * cols));
+  const fr = Math.max(0, Math.min(rows - 1e-6, ty * rows));
+  const c = Math.floor(fc);
+  const r = Math.floor(fr);
+  const u = fc - c;
+  const v = fr - r;
+  const z00 = at(grid, c, r).zRel;
+  const z10 = at(grid, c + 1, r).zRel;
+  const z01 = at(grid, c, r + 1).zRel;
+  const z11 = at(grid, c + 1, r + 1).zRel;
+  return z00 + (z10 - z00) * u + (z01 - z00) * v + (z00 - z10 - z01 + z11) * u * v;
+}
+
+function ruledRampZ(ring, x, y) {
+  const z0 = ring[0][2];
+  const z1 = ring[2][2];
+  let best = null;
+  for (let k = 0; k <= 6; k++) {
+    const s = k / 6;
+    const ax = ring[0][0] * (1 - s) + ring[1][0] * s;
+    const ay = ring[0][1] * (1 - s) + ring[1][1] * s;
+    const bx = ring[3][0] * (1 - s) + ring[2][0] * s;
+    const by = ring[3][1] * (1 - s) + ring[2][1] * s;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const den = dx * dx + dy * dy;
+    const t = den > 0 ? ((x - ax) * dx + (y - ay) * dy) / den : 0;
+    const px = ax + dx * t;
+    const py = ay + dy * t;
+    const d2 = (px - x) * (px - x) + (py - y) * (py - y);
+    if (!best || d2 < best.d2) best = { d2: d2, t: t };
+  }
+  const t = Math.max(0, Math.min(1, best.t));
+  return z0 + (z1 - z0) * t;
+}
+
+function contourPointIn(ring, x, y) {
+  let hit = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const yi = ring[i][1];
+    const yj = ring[j][1];
+    if (yi > y !== yj > y) {
+      const xi = ring[i][0];
+      const xj = ring[j][0];
+      const xint = ((xj - xi) * (y - yi)) / (yj - yi || 1e-20) + xi;
+      if (x < xint) hit = !hit;
+    }
+  }
+  return hit;
+}
+
+function contourError(grid, ramps, raised) {
+  let n = 0;
+  let inside = 0;
+  let sum = 0;
+  let max = 0;
+  const cols = grid.cols;
+  const rows = grid.rows;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const sw = at(grid, c, r);
+      const se = at(grid, c + 1, r);
+      const nw = at(grid, c, r + 1);
+      const x = (sw.x + se.x) / 2;
+      const y = (sw.y + nw.y) / 2;
+      const zTrue = bilinearZ(grid, x, y);
+      let zMesh = null;
+      for (let i = 0; i < ramps.length; i++) {
+        const ring = ramps[i].area.coordinates[0];
+        if (contourPointIn(ring, x, y)) {
+          zMesh = ruledRampZ(ring, x, y);
+          break;
+        }
+      }
+      if (zMesh == null) {
+        for (let i = 0; i < raised.length; i++) {
+          const ring = raised[i].area.coordinates[0];
+          if (contourPointIn(ring, x, y)) {
+            zMesh = raised[i].height;
+            break;
+          }
+        }
+      }
+      n++;
+      if (zMesh == null) continue;
+      inside++;
+      const e = Math.abs(zMesh - zTrue);
+      sum += e;
+      if (e > max) max = e;
+    }
+  }
+  return {
+    mean: n && inside ? Math.round((sum / inside) * 100) / 100 : 0,
+    max: Math.round(max * 100) / 100,
+    cover: n ? inside / n : 0,
+  };
+}
+
+function cellRampMesh(grid, frame) {
+  const cols = grid.cols;
+  const rows = grid.rows;
   const raised = [];
   const pending = [];
   const choices = [];
@@ -1348,6 +2100,15 @@ function buildTerrainClipboard(samples, frame, cols, rows, elevationAt) {
     sloped: sloped.length,
     slopeGapM: slopeCornerGap(sloped),
   };
+}
+
+function buildTerrainClipboard(samples, frame, cols, rows, elevationAt, legacy) {
+  const grid = lattice(samples, frame, cols, rows, elevationAt);
+  if (!legacy && !axisAlignedGrid(grid)) {
+    const contoured = contourMeshFromGrid(grid, frame);
+    if (contoured && contoured.sloped + contoured.raised > 0) return contoured;
+  }
+  return cellRampMesh(grid, frame);
 }
 
 /**
@@ -1430,7 +2191,11 @@ function terrainFromSamples(samples, frame, opts) {
   }
   function rebuild(c, r) {
     if (style === "sloped") {
-      return { mesh: buildTerrainClipboard(clean, frame, c, r, elevationAt), cols: c, rows: r };
+      return {
+        mesh: buildTerrainClipboard(clean, frame, c, r, elevationAt, opts && opts.legacyMesh),
+        cols: c,
+        rows: r,
+      };
     }
     return settleRaised(c, r);
   }
@@ -1504,6 +2269,9 @@ function terrainFromSamples(samples, frame, opts) {
     raised: mesh.raised,
     sloped: mesh.sloped,
     slopeGapM: mesh.slopeGapM || 0,
+    contourStepM: mesh.contourStepM,
+    vertMeanM: mesh.vertMeanM,
+    vertMaxM: mesh.vertMaxM,
     frame,
     // datumZ is the lowest DEM sample. Raised floors, sloped-floor z, and
     // building bottoms are meters above it. Larger z is higher ground.
@@ -1658,41 +2426,31 @@ function boundsOverlap(a, b) {
   return aL <= bR + FLOOR_TOUCH_M && aR + FLOOR_TOUCH_M >= bL && aB <= bT + FLOOR_TOUCH_M && aT + FLOOR_TOUCH_M >= bB;
 }
 
-function clamp01(t) {
-  if (t < 0) return 0;
-  if (t > 1) return 1;
-  return t;
-}
-
 /**
  * Stored ramp z at one clipboard point. Edge 0–1 is the smaller stored z
  * and edge 2–3 is the larger. Corners on one edge can differ; the height is
  * bilinear between those four values. Opposite of vertex 0 is vertex 3.
  */
 function storedRampZ(ring, x, y) {
-  const horizontal = Math.abs(ring[0][1] - ring[1][1]) <= 0.002;
-  let s;
-  let t;
-  if (horizontal) {
-    const x0 = ring[0][0];
-    const x1 = ring[1][0];
-    s = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
-    const y0 = ring[0][1];
-    const y1 = ring[3][1];
-    t = y1 === y0 ? 0 : (y - y0) / (y1 - y0);
-  } else {
-    const y0 = ring[0][1];
-    const y1 = ring[1][1];
-    s = y1 === y0 ? 0 : (y - y0) / (y1 - y0);
-    const x0 = ring[0][0];
-    const x1 = ring[3][0];
-    t = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
-  }
-  s = clamp01(s);
-  t = clamp01(t);
-  const z0 = ring[0][2] * (1 - s) + ring[1][2] * s;
-  const z1 = ring[3][2] * (1 - s) + ring[2][2] * s;
-  return z0 * (1 - t) + z1 * t;
+  const zLo = ring[0][2];
+  const zHi = ring[2][2];
+  const p = ring[0];
+  const q = ring[1];
+  const r = ring[2];
+  const ux = q[0] - p[0];
+  const uy = q[1] - p[1];
+  const uz = q[2] - p[2];
+  const vx = r[0] - p[0];
+  const vy = r[1] - p[1];
+  const vz = r[2] - p[2];
+  const nx = uy * vz - uz * vy;
+  const ny = uz * vx - ux * vz;
+  const nz = ux * vy - uy * vx;
+  let z = p[2];
+  if (Math.abs(nz) > 1e-8) z = p[2] - (nx * (x - p[0]) + ny * (y - p[1])) / nz;
+  if (z < zLo) z = zLo;
+  else if (z > zHi) z = zHi;
+  return z;
 }
 
 /**
@@ -1787,10 +2545,13 @@ function visiblePastedFloorZ(terrain, zones, x, y) {
     const quad = zone.area && zone.area.coordinates && zone.area.coordinates[0];
     if (!quad || quad.length < 4) continue;
     const box = quadBox(quad);
-    const cx = Math.min(box.R, Math.max(box.L, x));
-    const cy = Math.min(box.T, Math.max(box.B, y));
-    if ((x - cx) * (x - cx) + (y - cy) * (y - cy) > edge2) continue;
-    const z = pastedFloorZ(zone, cx, cy);
+    if (x < box.L - FLOOR_EDGE_M || x > box.R + FLOOR_EDGE_M || y < box.B - FLOOR_EDGE_M || y > box.T + FLOOR_EDGE_M) {
+      continue;
+    }
+    // A rotated ramp's box contains the neighbor. Only the quad itself, or a
+    // point a few centimeters off its edge, is that floor.
+    if (dist2ToRing(quad, x, y) > edge2) continue;
+    const z = pastedFloorZ(zone, x, y);
     if (!Number.isFinite(z)) continue;
     if (best == null || z > best) best = z;
   }
@@ -1818,13 +2579,45 @@ function pastedFloorExtent(terrain, xy) {
     const over = overlapVertices(xy, quad);
     for (let k = 0; k < over.length; k++) pts.push(over[k]);
     const nq = Math.min(ringPointCount(quad), 4);
+    let sx = 0;
+    let sy = 0;
     for (let k = 0; k < nq; k++) {
       const x = quad[k][0];
       const y = quad[k][1];
+      sx += x;
+      sy += y;
       // A corner in the middle of the footprint is the high or low point of
       // that quad. The edge test misses it, and the seat then floats or digs.
       if (dist2ToRing(xy, x, y) > edge2 && !pointInOrOnRing(x, y, xy)) continue;
       pts.push([x, y]);
+      const b = quad[(k + 1) % nq];
+      const mx = (x + b[0]) / 2;
+      const my = (y + b[1]) / 2;
+      if (pointInOrOnRing(mx, my, xy)) pts.push([mx, my]);
+    }
+    const cx = sx / nq;
+    const cy = sy / nq;
+    if (pointInOrOnRing(cx, cy, xy)) pts.push([cx, cy]);
+  }
+  if (xy.length >= 3) {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    const nv = ringPointCount(xy);
+    for (let i = 0; i < nv; i++) {
+      if (xy[i][0] < minX) minX = xy[i][0];
+      if (xy[i][0] > maxX) maxX = xy[i][0];
+      if (xy[i][1] < minY) minY = xy[i][1];
+      if (xy[i][1] > maxY) maxY = xy[i][1];
+    }
+    const g = 4;
+    for (let gy = 0; gy <= g; gy++) {
+      for (let gx = 0; gx <= g; gx++) {
+        const x = minX + (gx / g) * (maxX - minX);
+        const y = minY + (gy / g) * (maxY - minY);
+        if (pointInOrOnRing(x, y, xy)) pts.push([x, y]);
+      }
     }
   }
   let max = 0;
@@ -2029,6 +2822,24 @@ function rampStrip(quad, t0, t1) {
  * can still rise many meters, and a building seated on that whole ramp would
  * bury its roof in the uphill end. Raised plates stay one cell high.
  */
+function raisedStrips(terrain) {
+  const floors = (terrain.clipboard && terrain.clipboard.raisedFloorZones) || [];
+  const strips = [];
+  for (let i = 0; i < floors.length; i++) {
+    const zone = floors[i];
+    const quad = zone.area && zone.area.coordinates && zone.area.coordinates[0];
+    if (!quad || quad.length < 4) continue;
+    const clip = closeClipRing(
+      quad.map(function (p) {
+        return [p[0], p[1]];
+      })
+    );
+    if (!clip) continue;
+    strips.push({ clip: clip, z: round1(Number(zone.height) || 0) });
+  }
+  return strips;
+}
+
 function rampStrips(terrain, band) {
   const floors = (terrain.clipboard && terrain.clipboard.slopedFloors) || [];
   const step = band > 0 ? band : SPLIT_FLOOR_M;
@@ -2099,8 +2910,8 @@ function splitRingByFloor(terrain, ring) {
   let band = SPLIT_FLOOR_M;
   let groups = null;
   while (band < 80) {
-    const cells = (useRamps ? rampStrips(terrain, band) : terrainFloorCells(terrain)).filter((cell) =>
-      boundsOverlap(xy, cell.clip)
+    const cells = (useRamps ? rampStrips(terrain, band).concat(raisedStrips(terrain)) : terrainFloorCells(terrain)).filter(
+      (cell) => boundsOverlap(xy, cell.clip)
     );
     if (cells.length < 2) {
       if (!groups) return [ring];
@@ -2138,6 +2949,23 @@ function splitRingByFloor(terrain, ring) {
     for (let i = 0; i < rings.length; i++) pieces.push(rings[i]);
   }
   if (pieces.length < 2) return [ring];
+  const cleaned = [];
+  for (let i = 0; i < pieces.length; i++) {
+    const clip = closeClipRing(ringToClipboard(pieces[i], frame));
+    if (!clip) continue;
+    let geom = null;
+    try {
+      geom = polygonClipping.union([[clip]]);
+    } catch {
+      geom = null;
+    }
+    const rings = geom ? ringsFromClipGeom(geom, frame) : [pieces[i]];
+    for (let k = 0; k < rings.length; k++) cleaned.push(rings[k]);
+  }
+  if (cleaned.length >= 2) {
+    pieces.length = 0;
+    for (let i = 0; i < cleaned.length; i++) pieces.push(cleaned[i]);
+  }
   let area = 0;
   for (let i = 0; i < pieces.length; i++) {
     const clip = ringToClipboard(pieces[i], frame);

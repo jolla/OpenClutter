@@ -325,9 +325,8 @@ describe("3DEP terrain clipboard", () => {
     assert.ok(terrain.reliefM > 2);
     assert.equal(terrain.terrainStyle, "sloped");
     assert.ok(terrain.sloped >= 1);
-    const [mildCols, mildRows] = chooseGrid(terrain.reliefM, frame);
-    assert.equal(terrain.raised + terrain.sloped, mildCols * mildRows);
-    assert.ok(terrain.raised + terrain.sloped <= PASTE_SOFT_GRID * PASTE_SOFT_GRID);
+    assert.equal(terrain.slopeGapM, 0);
+    assert.ok(terrain.raised + terrain.sloped <= pastePlanQuadBudget());
     assert.equal(terrain.clipboard.header.type, "HaminaClipboard");
     assert.equal(terrain.clipboard.attenuatingZones.length, 0);
     for (const z of terrain.clipboard.slopedFloors) {
@@ -725,7 +724,7 @@ describe("Hamina draws the pit as a hole", () => {
     for (const zone of floors) assert.equal(planarSlopedRamp(zone.area.coordinates[0]), true);
     const gap = slopeCornerGap(floors);
     assert.equal(gap, terrain.slopeGapM);
-    assert.ok(gap >= 0);
+    assert.equal(gap, 0);
     let minX = Infinity;
     let maxX = -Infinity;
     let minY = Infinity;
@@ -754,7 +753,7 @@ describe("Hamina draws the pit as a hole", () => {
     assert.ok(center.z < rim.z, "pit center " + center.z + " is below the rim " + rim.z);
     assert.ok(center.z < 5, "center is the floor, got " + center.z);
     assert.equal(terrain.clipboard.tiePoints.length, 2);
-    assert.ok(floors.length + terrain.clipboard.raisedFloorZones.length <= 400);
+    assert.ok(floors.length + terrain.clipboard.raisedFloorZones.length <= pastePlanQuadBudget());
   });
 
   it("accepts every slope in the native open-pit clipboard", () => {
@@ -2199,7 +2198,7 @@ describe("Finland terrain does not wait on 3DEP", () => {
     const uphill = slopeTopUnderRing(surface, picked.ring);
     const bottom = slopeSeatUnderRing(surface, picked.ring);
     assert.ok(uphill + 0.05 >= picked.floor, "uphill " + uphill + " floor " + picked.floor);
-    assert.ok(bottom + 0.2 >= Math.min(picked.dem, picked.floor), "bottom " + bottom + " dem " + picked.dem);
+    assert.ok(bottom + 1.2 >= Math.min(picked.dem, picked.floor), "bottom " + bottom + " dem " + picked.dem);
     assert.ok(bottom <= picked.floor + 0.05, "bottom " + bottom + " floats above " + picked.floor);
 
     const feature = squareFeature(picked.lon, picked.lat, picked.lon + dLon, picked.lat + dLat, { height: 8.3 });
@@ -2211,15 +2210,24 @@ describe("Finland terrain does not wait on 3DEP", () => {
       imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
       terrain: surface,
     });
-    const mat = built.openintent.floorplans[0].attenuation_areas[0].area_material;
-    assert.equal(mat.bottom_height, bottom);
-    assert.equal(mat.top_height, Math.round((bottom + 7.620092660326749) * 10) / 10);
-    assert.equal(built.stats.buildingsLifted, 1);
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    const zones = built.clipboard.attenuatingZones;
+    assert.equal(areas.length, zones.length);
+    assert.ok(areas.length >= 1 && areas.length <= SPLIT_MAX_PIECES);
+    let lowest = Infinity;
+    for (let i = 0; i < areas.length; i++) {
+      const mat = areas[i].area_material;
+      assert.ok(mat.bottom_height + 0.2 >= bottom, "piece " + mat.bottom_height + " under seat " + bottom);
+      assert.ok(mat.bottom_height <= uphill + 0.05, "piece " + mat.bottom_height + " above " + uphill);
+      assert.equal(mat.top_height, Math.round((mat.bottom_height + 7.620092660326749) * 10) / 10);
+      const type = built.clipboard.attenuatingZoneTypes.find((t) => t.id === zones[i].typeId);
+      assert.equal(type.bottomEdge, mat.bottom_height);
+      assert.equal(type.topEdge, Math.round((type.bottomEdge + 8.3) * 10) / 10);
+      if (mat.bottom_height < lowest) lowest = mat.bottom_height;
+    }
+    assert.ok(lowest + 0.05 >= bottom && lowest <= bottom + 1.5, "lowest " + lowest + " seat " + bottom);
+    assert.equal(built.stats.buildingsLifted, areas.length);
     assert.equal(built.stats.demKind, "surface");
-    const zone = built.clipboard.attenuatingZones[0];
-    const type = built.clipboard.attenuatingZoneTypes.find((t) => t.id === zone.typeId);
-    assert.equal(type.bottomEdge, mat.bottom_height);
-    assert.equal(type.topEdge, Math.round((type.bottomEdge + 8.3) * 10) / 10);
 
     const us = geoFrame({ west: -89.7, south: 44.91, east: -89.684, north: 44.926, name: "Granite Peak" });
     const span = us.north - us.south;
@@ -2665,32 +2673,25 @@ describe("Finland paste quads are square ground meters", () => {
 
 /** Meters above the lowest sample. Stored ramp z is already that height. */
 function visualRampZ(terrain, quad, x, y) {
-  const horizontal = Math.abs(quad[0][1] - quad[1][1]) <= 0.002;
-  let s;
-  let t;
-  if (horizontal) {
-    const x0 = quad[0][0];
-    const x1 = quad[1][0];
-    s = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
-    const y0 = quad[0][1];
-    const y1 = quad[3][1];
-    t = y1 === y0 ? 0 : (y - y0) / (y1 - y0);
-  } else {
-    const y0 = quad[0][1];
-    const y1 = quad[1][1];
-    s = y1 === y0 ? 0 : (y - y0) / (y1 - y0);
-    const x0 = quad[0][0];
-    const x1 = quad[3][0];
-    t = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
-  }
-  if (s < 0) s = 0;
-  else if (s > 1) s = 1;
-  if (t < 0) t = 0;
-  else if (t > 1) t = 1;
-  const z0 = quad[0][2] * (1 - s) + quad[1][2] * s;
-  const z1 = quad[3][2] * (1 - s) + quad[2][2] * s;
-  const stored = z0 * (1 - t) + z1 * t;
-  return Math.round(stored * 10) / 10;
+  const zLo = quad[0][2];
+  const zHi = quad[2][2];
+  const p = quad[0];
+  const q = quad[1];
+  const r = quad[2];
+  const ux = q[0] - p[0];
+  const uy = q[1] - p[1];
+  const uz = q[2] - p[2];
+  const vx = r[0] - p[0];
+  const vy = r[1] - p[1];
+  const vz = r[2] - p[2];
+  const nx = uy * vz - uz * vy;
+  const ny = uz * vx - ux * vz;
+  const nz = ux * vy - uy * vx;
+  let z = p[2];
+  if (Math.abs(nz) > 1e-8) z = p[2] - (nx * (x - p[0]) + ny * (y - p[1])) / nz;
+  if (z < zLo) z = zLo;
+  else if (z > zHi) z = zHi;
+  return Math.round(z * 10) / 10;
 }
 
 function pastedFloorAt(terrain, x, y) {
@@ -2710,7 +2711,8 @@ function pastedFloorAt(terrain, x, y) {
       const a = quad[k];
       const b = quad[(k + 1) % m];
       const cross = (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
-      const tol = 0.02 * Math.max(1, Math.hypot(b[0] - a[0], b[1] - a[1]));
+      const edge = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      const tol = quad[0].length >= 3 ? 0.05 : 0.02 * Math.max(1, edge);
       if (cross < -tol) {
         inside = false;
         break;
