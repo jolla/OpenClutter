@@ -782,10 +782,11 @@ const OUTDOOR_SPECS = {
   water: { label: "Water", db: 0.1, color: "#3D7EA6", transparent: false },
   guideway: { label: "Guideway", db: 9, color: "#6A6560", transparent: false },
   bridge: { label: "Bridge", db: 9, color: "#736E68", transparent: false },
+  rv: { label: "RV", db: 18, color: "#8A9098", transparent: false },
 };
 
-const OUTDOOR_NAME = /^(Parking|Retaining wall|Light pole|Guideway|Bridge|Wall|Fence|Hedge|Water) (\d+\.\d)$/;
-const LIFTED_OUTDOOR_NAME = /^(Parking|Retaining wall|Light pole|Guideway|Bridge|Wall|Fence|Hedge|Water) (\d+\.\d) @ (\d+\.\d)$/;
+const OUTDOOR_NAME = /^(Parking|Retaining wall|Light pole|Guideway|Bridge|Wall|Fence|Hedge|Water|RV) (\d+\.\d)$/;
+const LIFTED_OUTDOOR_NAME = /^(Parking|Retaining wall|Light pole|Guideway|Bridge|Wall|Fence|Hedge|Water|RV) (\d+\.\d) @ (\d+\.\d)$/;
 
 function outdoorKindFromLabel(label) {
   if (label === "Parking") return "parking";
@@ -797,6 +798,7 @@ function outdoorKindFromLabel(label) {
   if (label === "Water") return "water";
   if (label === "Guideway") return "guideway";
   if (label === "Bridge") return "bridge";
+  if (label === "RV") return "rv";
   return "";
 }
 
@@ -829,6 +831,7 @@ function outdoorHeight(kind, heightM) {
   if (kind === "retaining") return 3;
   if (kind === "guideway") return 4.5;
   if (kind === "bridge") return 2.1;
+  if (kind === "rv") return 3.5;
   return 0;
 }
 

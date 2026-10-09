@@ -1199,7 +1199,8 @@ async function handleClutter(event) {
   const includeParking = wantOutdoorFlag(event, body, "includeParking");
   const includeWalls = wantOutdoorFlag(event, body, "includeWalls");
   const includePoles = wantOutdoorFlag(event, body, "includePoles");
-  const outdoorOn = includeWater || includeParking || includeWalls || includePoles;
+  const includeRvs = wantOutdoorFlag(event, body, "includeRvs");
+  const outdoorOn = includeWater || includeParking || includeWalls || includePoles || includeRvs;
   const includeTerrain = wantTerrain(event, body);
   // The dev page sets this and reads elevation on its own request. The zip
   // then does not start a DEM, so the map cannot omit it.
@@ -1263,6 +1264,7 @@ async function handleClutter(event) {
           parking: includeParking,
           walls: includeWalls,
           poles: includePoles,
+          rvs: includeRvs,
         }, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background, deckCap })
       );
     }
@@ -1748,6 +1750,7 @@ async function handleClutter(event) {
       includeParking,
       includeWalls,
       includePoles,
+      includeRvs,
       outdoorMiss,
       guidewayFeatures,
       includeGuideways: true,

@@ -544,4 +544,44 @@ describe("building outlines", () => {
     const source = areaM(ring);
     assert.ok(sum > source * 0.75 && sum < source * 1.2, "pieces " + Math.round(sum) + " vs source " + Math.round(source));
   });
+
+  it("keeps a narrow static caravan as a building", () => {
+    const lon = -115.16;
+    const lat = 36.12;
+    const mLon = 111320 * Math.cos((lat * Math.PI) / 180);
+    const dLon = 20 / mLon;
+    const dLat = 1.4 / 110540;
+    const ring = [
+      { lon, lat },
+      { lon: lon + dLon, lat },
+      { lon: lon + dLon, lat: lat + dLat },
+      { lon, lat: lat + dLat },
+      { lon, lat },
+    ];
+    const parsed = parseBuildingDetail({
+      elements: [
+        { type: "way", tags: { building: "static_caravan" }, geometry: ring },
+        { type: "way", tags: { building: "yes", name: "Lodge" }, geometry: ring },
+      ],
+    });
+    assert.equal(parsed.parts.length, 1);
+    assert.equal(parsed.parts[0].properties.staticCaravan, true);
+    assert.equal(parsed.parts[0].properties.height, 3.5);
+    const frame = geoFrame(
+      { west: lon - 0.001, south: lat - 0.001, east: lon + 0.002, north: lat + 0.001, name: "Caravan" },
+      { maxSide: 400, metersPerPx: 0.4 }
+    );
+    const kept = footprintsToClutter(parsed.parts, frame);
+    assert.equal(kept.stats.buildings, 1);
+    assert.equal(kept.stats.droppedSpan, 0);
+    assert.equal(kept.oiAreas[0].area_material.name, "Building - 3.5");
+    const plain = parsed.parts.map((f) => {
+      const copy = JSON.parse(JSON.stringify(f));
+      delete copy.properties.staticCaravan;
+      return copy;
+    });
+    const dropped = footprintsToClutter(plain, frame);
+    assert.equal(dropped.stats.buildings, 0);
+    assert.equal(dropped.stats.droppedSpan, 1);
+  });
 });

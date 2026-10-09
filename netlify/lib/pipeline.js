@@ -288,6 +288,7 @@ function coverageSummary(stats) {
     if (stats.includeParking) bits.push("Parking " + (stats.parkingAreas || 0));
     if (stats.includeWalls) bits.push("Walls " + (stats.wallAreas || 0));
     if (stats.includePoles) bits.push("Poles " + (stats.poleAreas || 0));
+    if (stats.includeRvs) bits.push("RVs " + (stats.rvAreas || 0));
     if (bits.length) line += " " + bits.join(". ") + ".";
   }
   if (stats && stats.includeGuideways) {
@@ -371,11 +372,14 @@ function raisedAreaHolds(areaCap, counts) {
   const treeAreas = counts && counts.treeAreas > 0 ? counts.treeAreas | 0 : 0;
   const deckCount = counts && counts.deckCount > 0 ? counts.deckCount | 0 : 0;
   const waterParking = counts && counts.waterParking > 0 ? counts.waterParking | 0 : 0;
+  const rvCount = counts && counts.rvCount > 0 ? counts.rvCount | 0 : 0;
   let waterHold = Math.min(waterParking, extra);
   let rest = extra - waterHold;
   const deckWant = Math.max(96, Math.floor(extra * 0.15));
   let deckHold = Math.min(deckCount, rest, deckWant);
   rest -= deckHold;
+  let rvHold = Math.min(rvCount, rest);
+  rest -= rvHold;
   const treeWant = Math.floor(extra * 0.35);
   let treeHold = Math.min(treeAreas, rest, treeWant);
   rest -= treeHold;
@@ -385,6 +389,11 @@ function raisedAreaHolds(areaCap, counts) {
     const addTrees = Math.min(spare, Math.max(0, treeAreas - treeHold));
     treeHold += addTrees;
     spare -= addTrees;
+  }
+  if (spare > 0) {
+    const addRvs = Math.min(spare, Math.max(0, rvCount - rvHold));
+    rvHold += addRvs;
+    spare -= addRvs;
   }
   if (spare > 0) {
     const addDecks = Math.min(spare, Math.max(0, deckCount - deckHold));
@@ -399,7 +408,7 @@ function raisedAreaHolds(areaCap, counts) {
   if (spare > 0) {
     buildingLimit += Math.min(spare, Math.max(0, buildings - buildingLimit));
   }
-  return { buildingLimit, treeHold, deckHold, waterHold };
+  return { buildingLimit, treeHold, deckHold, waterHold, rvHold };
 }
 
 const TERRAIN_README =
@@ -1738,6 +1747,7 @@ function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase
   const picked = materialForBuilding(thickness, areaM2, {
     exactMetres:
       heightSource === HEIGHT_SOURCE ||
+      heightSource === "static-caravan" ||
       base > 0 ||
       shapePart === true ||
       (measuredSource && measuredExceedsStock(thickness)),
@@ -1899,7 +1909,7 @@ function ringsUnderVertexCap(ring, maxPts, eps, mpd, depth, root) {
   return out;
 }
 
-function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone) {
+function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone, keepThin) {
   const px = [];
   for (let i = 0; i < ring.length; i++) {
     const xy = llToPx(ring[i][0], ring[i][1], frame);
@@ -1920,7 +1930,7 @@ function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSou
   const clipped = clipRingToRect(px, frame.imgW, frame.imgH);
   if (!clipped || clipped.length < 3) return "clip";
   const am = pxRingAreaM2(clipped, frame.mpuX, frame.mpuY);
-  if (!(am >= MIN_AREA_M2)) return "tiny";
+  if (!(am >= (keepThin ? 8 : MIN_AREA_M2))) return "tiny";
   // Mega uses the on-map area and the tight Douglas–Peucker count, not a
   // subsample. A coarse blob above 150,000 m² is still dropped. A concave
   // podium keeps its corners and is not classified as that blob. An outline
@@ -1948,7 +1958,8 @@ function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSou
       levelBase,
       shapePart,
       keepOut,
-      keepSpanZone
+      keepSpanZone,
+      keepThin
     );
     if (result === "keep") sawKeep = true;
     else if (result === "span") sawSpan = true;
@@ -1992,8 +2003,7 @@ function stashBuilding(buckets, frame, affine, clipRing, overlayPts, clipPx, pic
   );
 }
 
-function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone) {
-  const simple = simplifyRing(ring, maxPts, eps);
+function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone, keepThin) {  const simple = simplifyRing(ring, maxPts, eps);
   if (!simple || simple.length < 4) return "skip";
   const detailVerts = ringVertexCount(simple);
   const pts = [];
@@ -2018,13 +2028,15 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
   if (!clippedPts || clippedPts.length < 3) return "clip";
   const am = pxRingAreaM2(clippedPts, frame.mpuX, frame.mpuY);
   if (isMegaCampus(am, detailVerts)) return "mega";
-  if (am < MIN_AREA_M2) return "tiny";
+  // A static caravan is a real trailer, often narrower than the 3 m sliver floor.
+  if (am < (keepThin ? 8 : MIN_AREA_M2)) return "tiny";
   const slopeRings = slopeRingsForEmit(ring, simple, clippedPts, frame);
   const minSpan = minOiSpanPx(frame.mpuX);
-  if (thinSliverDrop(clippedPts, minSpan)) {
+  if (!keepThin && thinSliverDrop(clippedPts, minSpan)) {
     // Clipboard keeps a building that is only a sliver. A fragment cut off a
     // larger roof is not that building: OpenIntent drops it, and a second
-    // clipboard zone would no longer match the area list.
+    // clipboard zone would no longer match the area list. A static caravan
+    // is the building, so it stays in the area list instead of this path.
     if (keepSpanZone === false) return "tiny";
     const pickedThin = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart);
     if (pickedThin.lifted) buckets.lifted++;
@@ -2040,14 +2052,27 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
       if (Number.isFinite(xy[0]) && Number.isFinite(xy[1])) keepOutPx.push(xy);
     }
   }
-  const oiCoords = ringToOi(clippedPts, frame.imgW, frame.imgH, frame.mpuX, { keepOutPx });
+  const oiOpts = { keepOutPx };
+  if (keepThin) {
+    const b = ringBBox(clippedPts);
+    const drawn = Math.min(b.w, b.h);
+    oiOpts.keepShape = true;
+    oiOpts.minSpanPx = Math.max(drawn * 0.98, 0.05);
+    oiOpts.spanFloorPx = Math.min(MIN_OI_SPAN_PX, Math.max(drawn * 0.5, 0.02));
+  }
+  const oiCoords = ringToOi(clippedPts, frame.imgW, frame.imgH, frame.mpuX, oiOpts);
   if (!oiCoords) {
     if (ringVertexCount(clippedPts) > MAX_OI_RING_VERTS) return "verts";
     return "clip";
   }
   const drawnRing = llFromOiPixels(oiPixelCoords(oiCoords), frame);
   let picked = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart, drawnRing);
-  const area = emitIfValid(makeOiArea(oiCoords, picked.material), frame.imgW, frame.imgH);
+  const area = emitIfValid(
+    makeOiArea(oiCoords, picked.material),
+    frame.imgW,
+    frame.imgH,
+    keepThin ? oiOpts.spanFloorPx : undefined
+  );
   if (!area) return "invalid";
   buckets.oiAreas.push(area);
   if (picked.clipType) buckets.clipTypes.push(picked.clipType);
@@ -2258,6 +2283,7 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
         }
       }
       const keepOut = Array.isArray(props.keepOut) ? props.keepOut : [];
+      const keepThin = props.staticCaravan === true;
       for (const ring of rings) {
         const parts = slopeTop && typeof slopeTop.split === "function" ? slopeTop.split(ring) : [ring];
         for (let p = 0; p < parts.length; p++) {
@@ -2276,7 +2302,8 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
             levelBase,
             shapePart,
             keepOut,
-            parts.length === 1
+            parts.length === 1,
+            keepThin
           );
           if (result === "keep") {
             stats.buildings++;
@@ -2478,6 +2505,7 @@ function buildClutter({
   includeParking,
   includeWalls,
   includePoles,
+  includeRvs,
   outdoorMiss,
   guidewayFeatures,
   includeGuideways,
@@ -2563,8 +2591,13 @@ function buildClutter({
   let poleAreas = 0;
   let guidewayAreas = 0;
   let bridgeAreas = 0;
+  let rvAreas = 0;
   const outdoorOn =
-    includeWater === true || includeParking === true || includeWalls === true || includePoles === true;
+    includeWater === true ||
+    includeParking === true ||
+    includeWalls === true ||
+    includePoles === true ||
+    includeRvs === true;
   const guideIn = [];
   const outdoorRest = [];
   const rawOutdoor = outdoorFeatures || [];
@@ -2610,11 +2643,13 @@ function buildClutter({
   // rail stays ahead of a road deck, and both stay ahead of light poles.
   let waterParking = 0;
   let deckCount = 0;
+  let rvCount = 0;
   const outdoorKinds = converted ? converted.kinds : [];
   for (let i = 0; i < outdoorKinds.length; i++) {
     const kind = outdoorKinds[i];
     if (kind === "water" || kind === "parking") waterParking++;
     else if (kind === "guideway" || kind === "bridge") deckCount++;
+    else if (kind === "rv") rvCount++;
   }
   // Trees used to take every slot the buildings left. A dense campus then
   // reported Guideways 0. Hold the rail and the road decks first, then water.
@@ -2623,6 +2658,9 @@ function buildClutter({
   const DECK_HOLD_MAX = 96;
   let reserveFit = 0;
   let outdoorFront = null;
+  let deckHold = 0;
+  let waterHold = 0;
+  let rvHold = 0;
   let capped;
   let buildingInput = fp.oiAreas;
   let slicedOff = 0;
@@ -2632,6 +2670,7 @@ function buildClutter({
       treeAreas: treeOi.areas.length,
       deckCount,
       waterParking,
+      rvCount,
     });
     buildingInput = fp.oiAreas.slice(0, holds.buildingLimit);
     slicedOff = fp.oiAreas.length - buildingInput.length;
@@ -2643,12 +2682,16 @@ function buildClutter({
       0
     );
     outdoorFront = holds.waterHold;
+    deckHold = holds.deckHold;
+    waterHold = holds.waterHold;
+    rvHold = holds.rvHold;
   } else {
     const buildingSlots = Math.min(fp.oiAreas.length, areaCap);
     const leftover = Math.max(0, areaCap - buildingSlots);
-    const deckHold = Math.min(deckCount, DECK_HOLD_MAX, leftover);
-    const waterHold = Math.min(waterParking, Math.max(0, leftover - deckHold));
-    reserveFit = deckHold + waterHold;
+    deckHold = Math.min(deckCount, DECK_HOLD_MAX, leftover);
+    waterHold = Math.min(waterParking, Math.max(0, leftover - deckHold));
+    rvHold = Math.min(rvCount, Math.max(0, leftover - deckHold - waterHold));
+    reserveFit = deckHold + waterHold + rvHold;
     capped = capBuildingsAndTrees(fp.oiAreas, treeOi.areas, treeOi.kinds, areaCap, reserveFit);
   }
   const buildingsBeforeBytes = buildingInput.length - capped.droppedBuildings;
@@ -2663,15 +2706,30 @@ function buildClutter({
       if (u.index < buildingsBeforeBytes && areas[u.index]) areas[u.index].area_material = u.material;
     }
     const room = Math.max(0, areaCap - areas.length);
+    const rvList = [];
+    const otherAreas = [];
+    const otherKinds = [];
+    for (let i = 0; i < converted.kinds.length; i++) {
+      if (converted.kinds[i] === "rv") rvList.push(converted.areas[i]);
+      else {
+        otherAreas.push(converted.areas[i]);
+        otherKinds.push(converted.kinds[i]);
+      }
+    }
+    // Decks and water keep the slots already held for them. RVs take the
+    // rest of that room before walls, and trees were already held back.
+    const protectedOutdoor = Math.min(room, deckHold + waterHold);
+    const rvRoom = Math.min(rvList.length, Math.max(0, room - protectedOutdoor));
+    const rvTake = rvList.slice(0, rvRoom);
     const fit = fitOutdoorBudget(
-      converted.areas,
-      converted.kinds,
-      room,
+      otherAreas,
+      otherKinds,
+      room - rvTake.length,
       outdoorFront == null ? undefined : { front: outdoorFront }
     );
-    outdoorKeptKinds = fit.kinds;
-    outdoorLeft = converted.areas.length - fit.items.length;
-    areas = areas.concat(fit.items);
+    outdoorKeptKinds = fit.kinds.concat(rvTake.map(function () { return "rv"; }));
+    outdoorLeft = converted.areas.length - fit.items.length - rvTake.length;
+    areas = areas.concat(fit.items, rvTake);
     const drop = converted.droppedByKind || {};
     const wallDrop =
       (drop.wall || 0) + (drop.fence || 0) + (drop.retaining || 0) + (drop.hedge || 0);
@@ -2685,6 +2743,7 @@ function buildClutter({
     if (drop.footbridge) notes.push(shapeNote(drop.footbridge, "footbridge"));
     if (drop.water) notes.push(shapeNote(drop.water, "water area"));
     if (drop.parking) notes.push(shapeNote(drop.parking, "parking area"));
+    if (drop.rv) notes.push(shapeNote(drop.rv, "RV"));
     if (Array.isArray(warnings)) {
       for (let i = 0; i < notes.length; i++) {
         if (notes[i] && warnings.indexOf(notes[i]) < 0) warnings.push(notes[i]);
@@ -2713,6 +2772,7 @@ function buildClutter({
   }
   const deckPieces = [];
   const waterPieces = [];
+  const rvPieces = [];
   const latePieces = [];
   for (let i = 0; i < outdoorKeptKinds.length; i++) {
     const kind = outdoorKeptKinds[i];
@@ -2720,12 +2780,14 @@ function buildClutter({
     cursor++;
     if (kind === "guideway" || kind === "bridge" || kind === "footbridge") deckPieces.push(piece);
     else if (kind === "water" || kind === "parking") waterPieces.push(piece);
+    else if (kind === "rv") rvPieces.push(piece);
     else latePieces.push(piece);
   }
-  // Buildings, then water and parking, then the rail and road decks, then trees.
-  // Walls and poles are last. A byte trim drops that tail first.
+  // Buildings, then water and parking, then the rail and road decks, then RVs.
+  // Trees follow RVs. Walls and poles are last. A byte trim drops that tail first.
   for (let i = 0; i < waterPieces.length; i++) chunks.push(waterPieces[i]);
   for (let i = 0; i < deckPieces.length; i++) chunks.push(deckPieces[i]);
+  for (let i = 0; i < rvPieces.length; i++) chunks.push(rvPieces[i]);
   for (let i = 0; i < treePieces.length; i++) chunks.push(treePieces[i]);
   for (let i = 0; i < latePieces.length; i++) chunks.push(latePieces[i]);
   const fitted = fitChunksToJsonBudget(frame, name, imgName, chunks, jsonByteBudget);
@@ -2740,6 +2802,7 @@ function buildClutter({
   poleAreas = 0;
   guidewayAreas = 0;
   bridgeAreas = 0;
+  rvAreas = 0;
   for (let i = 0; i < fitted.chunks.length; i++) {
     const chunk = fitted.chunks[i];
     if (chunk.role === "building") buildingEmitted++;
@@ -2752,6 +2815,7 @@ function buildClutter({
     else if (chunk.kind === "pole") poleAreas++;
     else if (chunk.kind === "guideway") guidewayAreas++;
     else if (chunk.kind === "bridge" || chunk.kind === "footbridge") bridgeAreas++;
+    else if (chunk.kind === "rv") rvAreas++;
     else wallAreas++;
   }
   if (planned) {
@@ -2837,6 +2901,7 @@ function buildClutter({
     includeParking: includeParking === true,
     includeWalls: includeWalls === true,
     includePoles: includePoles === true,
+    includeRvs: includeRvs === true,
     includeGuideways: includeGuideways === true || guides.length > 0,
     includeBridges: includeBridges === true || bridges.length > 0,
     outdoorMiss: outdoorMiss === true,
@@ -2846,6 +2911,7 @@ function buildClutter({
     poleAreas,
     guidewayAreas,
     bridgeAreas,
+    rvAreas,
     areaCap,
     areaCapOverride: capIsOverride,
     openIntentJsonBytes: Buffer.byteLength(oiJson),

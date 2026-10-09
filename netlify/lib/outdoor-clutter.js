@@ -9,6 +9,10 @@
  * fail the Vegas read when the field is absent. A footprint that already
  * carries class or subtype "parking" is recolored instead of drawn twice.
  *
+ * An RV park (tourism=caravan_site or camp_site) gets one metal box per
+ * mapped pitch. With no pitches, boxes sit on both sides of the internal
+ * roads, about 12 m apart. A static caravan stays a building.
+ *
  * Attenuation is 5 GHz dB/m, documented on the materials next to buildings.
  * OpenIntent has no reflection field. Water is a shallow volume at the
  * shortest custom height (just over 2 m), near-zero loss, not a mirror.
@@ -50,6 +54,17 @@ const GUIDEWAY_THICK_M = 4.5;
 /** Centerline points per strip. The buffer stays under the 40 vertex cap. */
 const GUIDEWAY_CHUNK = 8;
 
+/** One trailer. 12 by 2.6 m in plan, 3.5 m tall, metal shell. */
+const RV_LENGTH_M = 12;
+const RV_WIDTH_M = 2.6;
+const RV_HEIGHT_M = 3.5;
+const RV_SPACING_M = 12;
+const RV_ROAD_OFFSET_M = 4;
+const RV_DEDUPE_M = 8;
+const RV_CAP = 400;
+const RV_ROAD_SEARCH_M = 40;
+const RV_ROADS = { service: true, track: true, living_street: true, residential: true, unclassified: true };
+
 const RAIL_TYPES = { monorail: true, light_rail: true, subway: true, rail: true, tram: true };
 
 const THICK_M = { wall: 0.4, fence: 0.15, retaining: 0.5, hedge: 0.6 };
@@ -58,7 +73,7 @@ const LINE_KINDS = { wall: true, fence: true, retaining: true, hedge: true };
 const OUTDOOR_MISS = "Outdoor clutter did not return. Export again.";
 
 function wantAny(want) {
-  return !!(want && (want.water || want.parking || want.walls || want.poles));
+  return !!(want && (want.water || want.parking || want.walls || want.poles || want.rvs));
 }
 
 function overpassQuery(bbox, want) {
@@ -84,6 +99,15 @@ function overpassQuery(bbox, want) {
   if (want.poles) {
     parts.push('node["highway"="street_lamp"](' + box + ");");
     parts.push('node["man_made"~"^(mast|pole|lighting)$"](' + box + ");");
+  }
+  if (want.rvs) {
+    parts.push('way["tourism"="caravan_site"](' + box + ");");
+    parts.push('relation["tourism"="caravan_site"](' + box + ");");
+    parts.push('way["tourism"="camp_site"](' + box + ");");
+    parts.push('relation["tourism"="camp_site"](' + box + ");");
+    parts.push('node["tourism"="camp_pitch"](' + box + ");");
+    parts.push('way["tourism"="camp_pitch"](' + box + ");");
+    parts.push('way["highway"~"^(service|track|living_street|residential|unclassified)$"](' + box + ");");
   }
   parts.push('way["railway"~"^(monorail|light_rail|subway|rail|tram)$"](' + box + ");");
   parts.push('way["highway"]["bridge"~"^(yes|viaduct|covered)$"](' + box + ");");
@@ -115,6 +139,25 @@ function isClosed(coords) {
   const a = coords[0];
   const b = coords[coords.length - 1];
   return Math.abs(a[0] - b[0]) < 1e-7 && Math.abs(a[1] - b[1]) < 1e-7;
+}
+
+/** Closed ways stay as rings. Open pieces of a multipolygon are stitched. */
+function closedRingsFromLines(lines) {
+  const rings = [];
+  const open = [];
+  for (let i = 0; i < (lines || []).length; i++) {
+    const coords = lines[i];
+    if (!coords || coords.length < 2) continue;
+    if (isClosed(coords)) rings.push(coords);
+    else open.push(coords);
+  }
+  if (open.length) {
+    const chains = stitchChains(open);
+    for (let i = 0; i < chains.length; i++) {
+      if (isClosed(chains[i])) rings.push(chains[i]);
+    }
+  }
+  return rings;
 }
 
 function wayCoords(el) {
@@ -697,6 +740,275 @@ function isParkingClass(props) {
   return raw === "parking" || raw === "parking_garage" || raw === "garage";
 }
 
+function isRvSiteTags(tags) {
+  const tourism = tags && tags.tourism;
+  return tourism === "caravan_site" || tourism === "camp_site";
+}
+
+function isRvPitchTags(tags) {
+  return !!(tags && tags.tourism === "camp_pitch");
+}
+
+function isRvRoadTags(tags) {
+  if (!tags || !RV_ROADS[tags.highway]) return false;
+  if (tags.tunnel && tags.tunnel !== "no") return false;
+  const layer = Number(tags.layer);
+  if (Number.isFinite(layer) && layer < 0) return false;
+  const bridge = tags.bridge;
+  if (bridge === "yes" || bridge === "viaduct" || bridge === "covered") return false;
+  return true;
+}
+
+function rvProject(lat) {
+  const mLon = 111320 * Math.cos((lat * Math.PI) / 180);
+  return {
+    to(lon, lat2) {
+      return [lon * mLon, lat2 * 110540];
+    },
+    from(x, y) {
+      return [x / mLon, y / 110540];
+    },
+  };
+}
+
+function ringCentroidLL(coords) {
+  if (!coords || !coords.length) return null;
+  let n = coords.length;
+  const a = coords[0];
+  const b = coords[n - 1];
+  if (n > 1 && Math.abs(a[0] - b[0]) < 1e-12 && Math.abs(a[1] - b[1]) < 1e-12) n--;
+  if (n < 1) return null;
+  let sx = 0;
+  let sy = 0;
+  for (let i = 0; i < n; i++) {
+    sx += coords[i][0];
+    sy += coords[i][1];
+  }
+  return [sx / n, sy / n];
+}
+
+function pointInSite(pt, site) {
+  if (!pointInRing(pt, site.coords)) return false;
+  const holes = site.holes || [];
+  for (let i = 0; i < holes.length; i++) {
+    if (pointInRing(pt, holes[i])) return false;
+  }
+  return true;
+}
+
+function roadInsideSite(coords, site) {
+  let inside = 0;
+  let n = 0;
+  for (let i = 0; i < coords.length; i++) {
+    if (i === coords.length - 1 && coords.length > 1) {
+      const a = coords[i];
+      const b = coords[0];
+      if (Math.abs(a[0] - b[0]) < 1e-12 && Math.abs(a[1] - b[1]) < 1e-12) continue;
+    }
+    n++;
+    if (pointInSite(coords[i], site)) inside++;
+  }
+  return inside >= 2 || (n > 0 && inside / n >= 0.6);
+}
+
+function rvRect(proj, x, y, ux, uy) {
+  const hl = RV_LENGTH_M / 2;
+  const hw = RV_WIDTH_M / 2;
+  const px = -uy;
+  const py = ux;
+  const corners = [
+    [x + ux * hl + px * hw, y + uy * hl + py * hw],
+    [x - ux * hl + px * hw, y - uy * hl + py * hw],
+    [x - ux * hl - px * hw, y - uy * hl - py * hw],
+    [x + ux * hl - px * hw, y + uy * hl - py * hw],
+  ];
+  const ring = [];
+  for (let i = 0; i < corners.length; i++) ring.push(proj.from(corners[i][0], corners[i][1]));
+  ring.push(ring[0]);
+  return ring;
+}
+
+function nearestRoadHeading(x, y, roads) {
+  let best = null;
+  let bestD = RV_ROAD_SEARCH_M * RV_ROAD_SEARCH_M;
+  for (let r = 0; r < roads.length; r++) {
+    const line = roads[r];
+    for (let i = 1; i < line.length; i++) {
+      const ax = line[i - 1][0];
+      const ay = line[i - 1][1];
+      const bx = line[i][0];
+      const by = line[i][1];
+      const dx = bx - ax;
+      const dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      if (len2 < 0.25) continue;
+      let t = ((x - ax) * dx + (y - ay) * dy) / len2;
+      if (t < 0) t = 0;
+      else if (t > 1) t = 1;
+      const px = ax + t * dx;
+      const py = ay + t * dy;
+      const ddx = x - px;
+      const ddy = y - py;
+      const d2 = ddx * ddx + ddy * ddy;
+      if (d2 < bestD) {
+        bestD = d2;
+        const len = Math.sqrt(len2);
+        best = { ux: dx / len, uy: dy / len };
+      }
+    }
+  }
+  return best;
+}
+
+function pitchHeading(coords, proj) {
+  const pts = [];
+  let n = coords.length;
+  if (n > 1 && coords[0][0] === coords[n - 1][0] && coords[0][1] === coords[n - 1][1]) n--;
+  for (let i = 0; i < n; i++) pts.push(proj.to(coords[i][0], coords[i][1]));
+  let best = 0;
+  let ux = 1;
+  let uy = 0;
+  for (let i = 0; i < pts.length; i++) {
+    for (let j = i + 1; j < pts.length; j++) {
+      const dx = pts[j][0] - pts[i][0];
+      const dy = pts[j][1] - pts[i][1];
+      const d = dx * dx + dy * dy;
+      if (d > best) {
+        best = d;
+        const len = Math.sqrt(d) || 1;
+        ux = dx / len;
+        uy = dy / len;
+      }
+    }
+  }
+  return { ux, uy };
+}
+
+function tooNear(x, y, placed) {
+  const lim = RV_DEDUPE_M * RV_DEDUPE_M;
+  for (let i = 0; i < placed.length; i++) {
+    const dx = x - placed[i].x;
+    const dy = y - placed[i].y;
+    if (dx * dx + dy * dy < lim) return true;
+  }
+  return false;
+}
+
+function pushRv(out, placed, proj, x, y, heading) {
+  if (out.length >= RV_CAP) return false;
+  if (tooNear(x, y, placed)) return false;
+  const ring = rvRect(proj, x, y, heading.ux, heading.uy);
+  placed.push({ x, y });
+  out.push({
+    kind: "rv",
+    coords: ring,
+    closed: true,
+    heightM: RV_HEIGHT_M,
+    explicitHeight: true,
+    rank: 0,
+  });
+  return true;
+}
+
+function roadStations(line, spacing) {
+  const stations = [];
+  if (!line || line.length < 2) return stations;
+  let carry = spacing * 0.5;
+  for (let i = 1; i < line.length; i++) {
+    const ax = line[i - 1][0];
+    const ay = line[i - 1][1];
+    const bx = line[i][0];
+    const by = line[i][1];
+    const dx = bx - ax;
+    const dy = by - ay;
+    const seg = Math.hypot(dx, dy);
+    if (seg < 0.5) continue;
+    const ux = dx / seg;
+    const uy = dy / seg;
+    let dist = carry;
+    while (dist <= seg + 1e-6) {
+      stations.push({ x: ax + ux * dist, y: ay + uy * dist, ux, uy });
+      dist += spacing;
+    }
+    carry = dist - seg;
+  }
+  return stations;
+}
+
+/**
+ * One metal box per pitch inside a caravan or camp site.
+ * A site with no pitches gets a box every ~12 m on both sides of an internal road.
+ */
+function rvBoxes(features) {
+  const sites = [];
+  const pitches = [];
+  const roads = [];
+  for (let i = 0; i < (features || []).length; i++) {
+    const f = features[i];
+    if (!f) continue;
+    if (f.kind === "rv-site" && f.coords && f.coords.length >= 4) sites.push(f);
+    else if (f.kind === "rv-pitch" && f.coords && f.coords.length) pitches.push(f);
+    else if (f.kind === "rv-road" && f.coords && f.coords.length >= 2) roads.push(f);
+  }
+  const boxes = [];
+  if (!sites.length) return boxes;
+  const usedPitch = new Set();
+  for (let s = 0; s < sites.length && boxes.length < RV_CAP; s++) {
+    const site = sites[s];
+    const origin = ringCentroidLL(site.coords);
+    if (!origin) continue;
+    const proj = rvProject(origin[1]);
+    const insidePitches = [];
+    for (let p = 0; p < pitches.length; p++) {
+      if (usedPitch.has(p)) continue;
+      const pitch = pitches[p];
+      const center = pitch.coords.length === 1 ? pitch.coords[0] : ringCentroidLL(pitch.coords);
+      if (!center || !pointInSite(center, site)) continue;
+      usedPitch.add(p);
+      insidePitches.push({ pitch, center });
+    }
+    const siteRoads = [];
+    for (let r = 0; r < roads.length; r++) {
+      if (!roadInsideSite(roads[r].coords, site)) continue;
+      const line = [];
+      for (let k = 0; k < roads[r].coords.length; k++) {
+        line.push(proj.to(roads[r].coords[k][0], roads[r].coords[k][1]));
+      }
+      if (line.length >= 2) siteRoads.push(line);
+    }
+    const placed = [];
+    if (insidePitches.length) {
+      for (let p = 0; p < insidePitches.length && boxes.length < RV_CAP; p++) {
+        const item = insidePitches[p];
+        const xy = proj.to(item.center[0], item.center[1]);
+        let heading = nearestRoadHeading(xy[0], xy[1], siteRoads);
+        if (!heading) heading = pitchHeading(item.pitch.coords, proj);
+        pushRv(boxes, placed, proj, xy[0], xy[1], heading);
+      }
+      continue;
+    }
+    for (let r = 0; r < siteRoads.length && boxes.length < RV_CAP; r++) {
+      const stations = roadStations(siteRoads[r], RV_SPACING_M);
+      for (let i = 0; i < stations.length && boxes.length < RV_CAP; i++) {
+        const st = stations[i];
+        const heading = { ux: st.ux, uy: st.uy };
+        const ox = -st.uy * RV_ROAD_OFFSET_M;
+        const oy = st.ux * RV_ROAD_OFFSET_M;
+        const sides = [
+          [st.x + ox, st.y + oy],
+          [st.x - ox, st.y - oy],
+        ];
+        for (let side = 0; side < sides.length && boxes.length < RV_CAP; side++) {
+          const ll = proj.from(sides[side][0], sides[side][1]);
+          if (!pointInSite(ll, site)) continue;
+          pushRv(boxes, placed, proj, sides[side][0], sides[side][1], heading);
+        }
+      }
+    }
+  }
+  return boxes;
+}
+
 /**
  * Overpass elements to clutter features. `want` drops types the page turned off.
  * `bbox` drops a way that never touches the drawn box.
@@ -710,20 +1022,61 @@ function parseOverpass(payload, want, bbox, deckCap) {
   for (let i = 0; i < elements.length; i++) {
     const el = elements[i];
     const tags = (el && el.tags) || {};
-    if (el.type === "node" && on.poles && isPoleNode(tags)) {
+    if (el.type === "node") {
       const lon = +el.lon;
       const lat = +el.lat;
       if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
       if (bbox && !inBox(lon, lat, bbox)) continue;
-      const h = heightFor("pole", tags);
-      features.push({
-        kind: "pole",
-        coords: [[lon, lat]],
-        closed: false,
-        heightM: h.heightM,
-        explicitHeight: h.explicitHeight,
-        rank: poleRank(tags),
-      });
+      if (on.poles && isPoleNode(tags)) {
+        const h = heightFor("pole", tags);
+        features.push({
+          kind: "pole",
+          coords: [[lon, lat]],
+          closed: false,
+          heightM: h.heightM,
+          explicitHeight: h.explicitHeight,
+          rank: poleRank(tags),
+        });
+      } else if (on.rvs && isRvPitchTags(tags)) {
+        features.push({
+          kind: "rv-pitch",
+          coords: [[lon, lat]],
+          closed: false,
+          heightM: RV_HEIGHT_M,
+          explicitHeight: true,
+          rank: 0,
+        });
+      }
+      continue;
+    }
+    if (el.type === "relation") {
+      if (on.rvs && isRvSiteTags(tags)) {
+        const outerLines = [];
+        const innerLines = [];
+        const members = el.members || [];
+        for (let m = 0; m < members.length; m++) {
+          const mem = members[m];
+          if (mem.type && mem.type !== "way") continue;
+          const memberCoords = wayCoords(mem);
+          if (memberCoords.length < 2) continue;
+          if (mem.role === "inner") innerLines.push(memberCoords);
+          else outerLines.push(memberCoords);
+        }
+        const outers = closedRingsFromLines(outerLines);
+        const inners = closedRingsFromLines(innerLines);
+        for (let o = 0; o < outers.length; o++) {
+          if (bbox && !anyInBox(outers[o], bbox)) continue;
+          features.push({
+            kind: "rv-site",
+            coords: outers[o],
+            holes: inners,
+            closed: true,
+            heightM: 0,
+            explicitHeight: false,
+            rank: 0,
+          });
+        }
+      }
       continue;
     }
     if (el.type !== "way") continue;
@@ -764,20 +1117,62 @@ function parseOverpass(payload, want, bbox, deckCap) {
       const kind = barrierKind(tags);
       const h = heightFor(kind, tags);
       const line = isClosed(coords) ? coords.slice(0, -1) : coords.slice();
-      if (line.length < 2) continue;
+      if (line.length >= 2) {
+        features.push({
+          kind,
+          coords: line,
+          closed: false,
+          heightM: h.heightM,
+          explicitHeight: h.explicitHeight,
+          rank: 0,
+        });
+      }
+    }
+    if (on.rvs && isRvSiteTags(tags) && isClosed(coords)) {
       features.push({
-        kind,
-        coords: line,
-        closed: false,
-        heightM: h.heightM,
-        explicitHeight: h.explicitHeight,
+        kind: "rv-site",
+        coords,
+        holes: [],
+        closed: true,
+        heightM: 0,
+        explicitHeight: false,
         rank: 0,
       });
     }
+    if (on.rvs && isRvPitchTags(tags)) {
+      features.push({
+        kind: "rv-pitch",
+        coords,
+        closed: isClosed(coords),
+        heightM: RV_HEIGHT_M,
+        explicitHeight: true,
+        rank: 0,
+      });
+    }
+    if (on.rvs && isRvRoadTags(tags)) {
+      const line = isClosed(coords) ? coords.slice(0, -1) : coords.slice();
+      if (line.length >= 2) {
+        features.push({
+          kind: "rv-road",
+          coords: line,
+          closed: false,
+          heightM: 0,
+          explicitHeight: false,
+          rank: 0,
+        });
+      }
+    }
+  }
+  const boxes = on.rvs ? rvBoxes(features) : [];
+  const plain = [];
+  for (let i = 0; i < features.length; i++) {
+    const kind = features[i] && features[i].kind;
+    if (kind === "rv-site" || kind === "rv-pitch" || kind === "rv-road") continue;
+    plain.push(features[i]);
   }
   const guides = guidewayFeatures(railRecords, bbox, deckCap);
   const bridges = bridgeFeatures(railRecords, bbox, deckCap);
-  return { features: features.concat(guides, bridges), openWater };
+  return { features: plain.concat(boxes, guides, bridges), openWater };
 }
 
 function ringAreaAbs(coords) {
@@ -860,6 +1255,7 @@ function limitFeatures(features, bbox, deckCap) {
   const poles = [];
   const guideways = [];
   const bridges = [];
+  const rvs = [];
   for (let i = 0; i < (features || []).length; i++) {
     const f = features[i];
     if (!f) continue;
@@ -868,6 +1264,7 @@ function limitFeatures(features, bbox, deckCap) {
     else if (f.kind === "pole") poles.push(f);
     else if (f.kind === "guideway") guideways.push(f);
     else if (f.kind === "bridge") bridges.push(f);
+    else if (f.kind === "rv") rvs.push(f);
     else if (LINE_KINDS[f.kind]) walls.push(f);
   }
   const w = keepLargest(water, WATER_CAP);
@@ -889,8 +1286,10 @@ function limitFeatures(features, bbox, deckCap) {
   if (pole.capped) notes.push("Light poles capped at " + POLE_CAP + ".");
   if (guideSorted.length > guideKept.length) notes.push("Guideways capped at " + guideLimit + ".");
   if (bridges.length > bridgeKept.length) notes.push("Bridges capped at " + bridgeLimit + ".");
+  const rvKept = rvs.slice(0, RV_CAP);
+  if (rvs.length > rvKept.length) notes.push("RVs capped at " + RV_CAP + ".");
   return {
-    features: w.kept.concat(p.kept, wallKept, pole.kept, guideKept, bridgeKept),
+    features: w.kept.concat(p.kept, wallKept, pole.kept, guideKept, bridgeKept, rvKept),
     notes,
   };
 }
@@ -1011,15 +1410,53 @@ function elementsFromMapXml(xml, bbox) {
       continue;
     }
     if (barrierKind(tags)) pushWay(tags, pts);
+    if (isRvSiteTags(tags) || isRvPitchTags(tags) || isRvRoadTags(tags)) pushWay(tags, pts);
   }
   for (const node of nodes.values()) {
-    if (isPoleNode(node.tags)) elements.push({ type: "node", lon: node.lon, lat: node.lat, tags: node.tags });
+    if (isPoleNode(node.tags) || isRvPitchTags(node.tags)) {
+      elements.push({ type: "node", lon: node.lon, lat: node.lat, tags: node.tags });
+    }
   }
   for (let r = 0; r < relations.length; r++) {
     const rel = relations[r];
     const tags = rel.tags || {};
     const water = isWaterWay(tags);
     const parking = isParkingWay(tags);
+    if (isRvSiteTags(tags)) {
+      const parts = [];
+      const holeParts = [];
+      for (let m = 0; m < rel.members.length; m++) {
+        const member = rel.members[m];
+        if (member.type !== "way") continue;
+        const way = ways.get(member.ref);
+        if (!way) continue;
+        const pts = wayPoints(way);
+        if (pts.length < 2) continue;
+        if (member.role === "inner") holeParts.push(pts);
+        else parts.push(pts);
+      }
+      const members = [];
+      const outerChains = stitchChains(parts);
+      const innerChains = stitchChains(holeParts);
+      for (let c = 0; c < outerChains.length; c++) {
+        if (!isClosed(outerChains[c])) continue;
+        const geometry = [];
+        for (let p = 0; p < outerChains[c].length; p++) {
+          geometry.push({ lon: outerChains[c][p][0], lat: outerChains[c][p][1] });
+        }
+        members.push({ type: "way", role: "outer", geometry });
+      }
+      for (let c = 0; c < innerChains.length; c++) {
+        if (!isClosed(innerChains[c])) continue;
+        const geometry = [];
+        for (let p = 0; p < innerChains[c].length; p++) {
+          geometry.push({ lon: innerChains[c][p][0], lat: innerChains[c][p][1] });
+        }
+        members.push({ type: "way", role: "inner", geometry });
+      }
+      if (members.length) elements.push({ type: "relation", tags, members });
+      continue;
+    }
     if (!water && !parking) continue;
     if (tags.type && tags.type !== "multipolygon") continue;
     const parts = [];
@@ -1666,6 +2103,13 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       }
       continue;
     }
+    if (f.kind === "rv") {
+      const ringPx = lonLatRingToPx(f.coords, frame);
+      const material = materialForKind("rv", f.heightM || RV_HEIGHT_M, f.coords, slopeTop, 0);
+      if (!material || ringPx.length < 4) continue;
+      items.push({ ringPx, material, kind: "rv", thin: true });
+      continue;
+    }
     if (f.kind === "water" || f.kind === "parking") {
       const ringPx = lonLatRingToPx(f.coords, frame);
       const material = materialForKind(f.kind, f.heightM, f.coords, slopeTop, 0);
@@ -1678,7 +2122,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
   return { items, updates, notes, reclass };
 }
 
-const BUDGET_ORDER = ["parking", "water", "guideway", "bridge", "wall", "retaining", "hedge", "fence", "footbridge", "pole"];
+const BUDGET_ORDER = ["parking", "water", "guideway", "bridge", "rv", "wall", "retaining", "hedge", "fence", "footbridge", "pole"];
 
 function budgetNote(kind, keptCount, skipped) {
   const label =
@@ -1692,9 +2136,11 @@ function budgetNote(kind, keptCount, skipped) {
             ? "guideway"
             : kind === "bridge"
               ? "bridge"
-              : kind === "footbridge"
-                ? "footbridge"
-                : "wall";
+              :     kind === "footbridge"
+      ? "footbridge"
+      : kind === "rv"
+        ? "RV"
+        : "wall";
   if (!(keptCount > 0)) {
     if (kind === "pole") return "Light poles left out to stay inside the area budget.";
     if (kind === "water") return "Water left out to stay inside the area budget.";
@@ -1702,6 +2148,7 @@ function budgetNote(kind, keptCount, skipped) {
     if (kind === "guideway") return "Guideways left out to stay inside the area budget.";
     if (kind === "bridge") return "Bridges left out to stay inside the area budget.";
     if (kind === "footbridge") return "Footbridges left out to stay inside the area budget.";
+    if (kind === "rv") return "RVs left out to stay inside the area budget.";
     return "Walls left out to stay inside the area budget.";
   }
   const noun = skipped === 1 ? label : label + "s";
@@ -1767,8 +2214,14 @@ module.exports = {
   BRIDGE_DECK_M,
   BRIDGE_THICK_M,
   BRIDGE_MIN_M,
+  RV_LENGTH_M,
+  RV_WIDTH_M,
+  RV_HEIGHT_M,
+  RV_SPACING_M,
+  RV_CAP,
   OUTDOOR_MISS,
   overpassQuery,
+  rvBoxes,
   parseOverpass,
   featuresFromMapXml,
   guidewayFeatures,
