@@ -1229,6 +1229,76 @@ function ringCoversPoint(ring, pt) {
  * (`keepShape`) may still fall back to a hull when nothing else is valid,
  * because a crown is not a courtyard.
  */
+/** Open ring in degrees or pixels. Does not merge points that are metres apart. */
+function openDegRing(ring) {
+  const src =
+    ring && ring.length >= 2 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+      ? ring.slice(0, -1)
+      : (ring || []).slice();
+  const out = [];
+  for (let i = 0; i < src.length; i++) {
+    const p = src[i];
+    if (!p || !Number.isFinite(+p[0]) || !Number.isFinite(+p[1])) continue;
+    const q = [+p[0], +p[1]];
+    const last = out[out.length - 1];
+    if (last && Math.abs(last[0] - q[0]) < 1e-8 && Math.abs(last[1] - q[1]) < 1e-8) continue;
+    out.push(q);
+  }
+  if (out.length >= 2) {
+    const a = out[0];
+    const b = out[out.length - 1];
+    if (Math.abs(a[0] - b[0]) < 1e-8 && Math.abs(a[1] - b[1]) < 1e-8) out.pop();
+  }
+  return out;
+}
+
+function closeDegRing(open) {
+  if (!open || open.length < 3) return null;
+  return open.concat([[open[0][0], open[0][1]]]);
+}
+
+/**
+ * Area of the triangle through the three vertices farthest from the centroid,
+ * divided by the polygon area. Same coordinate units as the ring. A value
+ * near 1 means the outline is already a triangle.
+ */
+function extremeTriRatio(ring) {
+  const open = openDegRing(ring);
+  if (open.length < 3) return 0;
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < open.length; i++) {
+    cx += open[i][0];
+    cy += open[i][1];
+  }
+  cx /= open.length;
+  cy /= open.length;
+  const ranked = open.slice().sort((a, b) => {
+    const da = (a[0] - cx) * (a[0] - cx) + (a[1] - cy) * (a[1] - cy);
+    const db = (b[0] - cx) * (b[0] - cx) + (b[1] - cy) * (b[1] - cy);
+    return db - da;
+  });
+  let best = 0;
+  const n = Math.min(12, ranked.length);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      for (let k = j + 1; k < n; k++) {
+        const a = ranked[i];
+        const b = ranked[j];
+        const c = ranked[k];
+        const t = Math.abs(a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1])) / 2;
+        if (t > best) best = t;
+      }
+    }
+  }
+  let poly = 0;
+  for (let i = 0, j = open.length - 1; i < open.length; j = i++) {
+    poly += open[j][0] * open[i][1] - open[i][0] * open[j][1];
+  }
+  poly = Math.abs(poly) / 2;
+  return poly > 0 ? best / poly : 0;
+}
+
 function capOiRingPx(ring, maxPts, opts) {
   const limit = Math.max(3, maxPts | 0);
   const open = uniqueOpenRing(ring);
@@ -1236,6 +1306,7 @@ function capOiRingPx(ring, maxPts, opts) {
   if (open.length <= limit) return open.concat([open[0]]);
   const keepShape = !!(opts && opts.keepShape);
   const maxEps = opts && Number(opts.maxEpsPx) > 0 ? Number(opts.maxEpsPx) : keepShape ? 80 : 2;
+  const sourceTri = extremeTriRatio(open);
   const maxGrow = opts && Number(opts.maxGrow) > 0 ? Number(opts.maxGrow) : 1.08;
   const keepOut = (opts && opts.keepOutPx) || [];
   const candidates = [];
@@ -1255,8 +1326,12 @@ function capOiRingPx(ring, maxPts, opts) {
     for (let i = Math.floor(step / 2); i < open.length && shifted.length < limit; i += step) shifted.push(open[i]);
     if (shifted.length >= 3) candidates.push(shifted);
   }
-  const hull = convexHullOpen(open);
-  if (hull.length >= 3) candidates.push(hull.length > limit ? subsampleOpen(hull, limit) : hull);
+  // A building must not fall back to the convex hull. That hull is the
+  // courtyard-filling wedge. Foliage may still use it: a crown is one mass.
+  if (keepShape) {
+    const hull = convexHullOpen(open);
+    if (hull.length >= 3) candidates.push(hull.length > limit ? subsampleOpen(hull, limit) : hull);
+  }
   const origin = ringCentroidPx(open);
   const area0 = ringAreaPx(open);
   let best = null;
@@ -1277,6 +1352,9 @@ function capOiRingPx(ring, maxPts, opts) {
     const areaErr = area0 > 1e-6 ? Math.abs(area - area0) / area0 : 0;
     const score = drift + areaErr * 6;
     const grows = area0 > 1e-6 && area > area0 * maxGrow;
+    // Subsampling a concave roof chords across the bays and leaves a triangle.
+    // That candidate is not a simpler copy of the building.
+    if (!keepShape && sourceTri < 0.8 && extremeTriRatio(c) >= 0.9) continue;
     const pick = { c, score };
     if (!grows && (!best || score < best.score - 1e-6 || (Math.abs(score - best.score) <= 1e-6 && c.length > best.c.length))) {
       best = pick;
@@ -1650,58 +1728,206 @@ function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase
   return picked;
 }
 
-function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase, shapePart, keepOut) {
-  const amRaw = ringAreaM2(ring, frame.mpd);
-  // Large detailed roofs (Wynn casino) self-intersect if Douglas–Peucker is too
-  // aggressive; try a tighter pass before giving up as clip. These budgets
-  // stay high so isMegaCampus can see ≥40 detail verts (#24, including the
-  // 56-vert large-roof pass). ringToOi then caps the emitted ring to
-  // MAX_OI_RING_VERTS — the detail count is not the OpenIntent vertex count.
-  const budgets =
-    amRaw > 80000
-      ? [
-          [180, 1e-6],
-          [320, 5e-7],
-          [400, 1e-7],
-        ]
-      : amRaw > 20000
-        ? [
-            [96, 2.5e-6],
-            [160, 1e-6],
-          ]
-        : amRaw > 8000
-          ? [[56, 2.5e-6]]
-          : amRaw > 1500
-            ? [[40, 2.5e-6]]
-            : [[32, 2.5e-6]];
+function dpDegRing(ring, eps) {
+  const open = openDegRing(ring);
+  if (open.length < 3) return null;
+  if (!(eps > 0) || open.length <= 3) return closeDegRing(open);
+  const out = simplifyDP(open, eps * eps);
+  if (!out || out.length < 3) return null;
+  return closeDegRing(out);
+}
 
+/** A subsample turned a concave roof into a triangle. The source was not one. */
+function collapsedWedge(source, candidate, mpd) {
+  if (ringAreaM2(source, mpd) < 5000) return false;
+  return extremeTriRatio(source) < 0.8 && extremeTriRatio(candidate) >= 0.9;
+}
+
+/**
+ * Cut a ring in half along the long axis. Each piece must be shorter on that
+ * axis than the source, so a bad clip cannot recurse forever.
+ */
+function splitRingHalf(ring) {
+  const open = openDegRing(ring);
+  if (open.length < 4) return [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let area = 0;
+  for (let i = 0, j = open.length - 1; i < open.length; j = i++) {
+    const p = open[i];
+    if (p[0] < minX) minX = p[0];
+    if (p[1] < minY) minY = p[1];
+    if (p[0] > maxX) maxX = p[0];
+    if (p[1] > maxY) maxY = p[1];
+    area += open[j][0] * p[1] - p[0] * open[j][1];
+  }
+  const spanX = maxX - minX;
+  const spanY = maxY - minY;
+  if (!(spanX > 0) || !(spanY > 0)) return [];
+  const vertical = spanX >= spanY;
+  const mid = vertical ? (minX + maxX) / 2 : (minY + maxY) / 2;
+  const span = vertical ? spanX : spanY;
+  const pad = Math.max(spanX, spanY);
+  const box = (low) => {
+    if (vertical) {
+      const x0 = low ? minX - pad : mid;
+      const x1 = low ? mid : maxX + pad;
+      return [
+        [x0, minY - pad],
+        [x1, minY - pad],
+        [x1, maxY + pad],
+        [x0, maxY + pad],
+        [x0, minY - pad],
+      ];
+    }
+    const y0 = low ? minY - pad : mid;
+    const y1 = low ? mid : maxY + pad;
+    return [
+      [minX - pad, y0],
+      [maxX + pad, y0],
+      [maxX + pad, y1],
+      [minX - pad, y1],
+      [minX - pad, y0],
+    ];
+  };
+  const ordered = area < 0 ? open.slice().reverse() : open;
+  const subject = closeDegRing(ordered);
+  if (!subject) return [];
+  let raw = [];
+  try {
+    const a = polygonClipping.intersection([[subject]], [box(true)]);
+    const b = polygonClipping.intersection([[subject]], [box(false)]);
+    const multis = [a, b];
+    for (let m = 0; m < multis.length; m++) {
+      const multi = multis[m] || [];
+      for (let p = 0; p < multi.length; p++) {
+        const outer = multi[p] && multi[p][0];
+        if (outer && outer.length >= 4) raw.push(outer);
+      }
+    }
+  } catch {
+    return [];
+  }
+  const kept = [];
+  for (let i = 0; i < raw.length; i++) {
+    const piece = openDegRing(raw[i]);
+    if (piece.length < 3) continue;
+    let s0 = Infinity;
+    let s1 = -Infinity;
+    for (let k = 0; k < piece.length; k++) {
+      const v = vertical ? piece[k][0] : piece[k][1];
+      if (v < s0) s0 = v;
+      if (v > s1) s1 = v;
+    }
+    if (s1 - s0 >= span * 0.98) continue;
+    const closed = closeDegRing(piece);
+    if (closed) kept.push(closed);
+  }
+  return kept.length >= 2 ? kept : [];
+}
+
+/**
+ * Douglas–Peucker down to the OpenIntent vertex cap, within about 2 m.
+ * A ring that still has more corners is cut into pieces. It is never
+ * replaced by a subsample or a convex hull.
+ */
+function wedgePieceOf(root, piece, mpd) {
+  if (!root || !piece) return false;
+  if (ringAreaM2(piece, mpd) < 5000) return false;
+  return extremeTriRatio(root) < 0.8 && extremeTriRatio(piece) >= 0.9;
+}
+
+function ringsUnderVertexCap(ring, maxPts, eps, mpd, depth, root) {
+  const rootRing = root || ring;
+  const open = openDegRing(ring);
+  if (open.length < 3) return [];
+  const closed = closeDegRing(open);
+  if (!closed) return [];
+  if (ringAreaM2(closed, mpd) < MIN_AREA_M2) return [];
+  if (open.length <= maxPts) {
+    if (depth > 0 && wedgePieceOf(rootRing, closed, mpd)) return [];
+    return [closed];
+  }
+  const simplified = dpDegRing(closed, eps);
+  if (
+    simplified &&
+    ringVertexCount(simplified) >= 3 &&
+    ringVertexCount(simplified) <= maxPts &&
+    !collapsedWedge(closed, simplified, mpd) &&
+    !wedgePieceOf(rootRing, simplified, mpd)
+  ) {
+    return [simplified];
+  }
+  if (depth >= 6) return [];
+  const parts = splitRingHalf(closed);
+  if (parts.length < 2) return [];
+  const out = [];
+  for (let i = 0; i < parts.length; i++) {
+    const sub = ringsUnderVertexCap(parts[i], maxPts, eps, mpd, depth + 1, rootRing);
+    for (let s = 0; s < sub.length; s++) out.push(sub[s]);
+  }
+  return out;
+}
+
+function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase, shapePart, keepOut) {
+  const px = [];
+  for (let i = 0; i < ring.length; i++) {
+    const xy = llToPx(ring[i][0], ring[i][1], frame);
+    if (Number.isFinite(xy[0]) && Number.isFinite(xy[1])) px.push(xy);
+  }
+  if (px.length < 3) return "skip";
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < px.length; i++) {
+    if (px[i][0] < minX) minX = px[i][0];
+    if (px[i][1] < minY) minY = px[i][1];
+    if (px[i][0] > maxX) maxX = px[i][0];
+    if (px[i][1] > maxY) maxY = px[i][1];
+  }
+  if (maxX < 0 || maxY < 0 || minX > frame.imgW || minY > frame.imgH) return "clip";
+  const clipped = clipRingToRect(px, frame.imgW, frame.imgH);
+  if (!clipped || clipped.length < 3) return "clip";
+  const am = pxRingAreaM2(clipped, frame.mpuX, frame.mpuY);
+  if (!(am >= MIN_AREA_M2)) return "tiny";
+  // Mega uses the on-map area and the tight Douglas–Peucker count, not a
+  // subsample. A coarse blob above 150,000 m² is still dropped. A concave
+  // podium keeps its corners and is not classified as that blob. An outline
+  // that misses the map is a clip, same as before.
+  const tight = am > 80000 ? 1e-7 : am > 20000 ? 1e-6 : 2.5e-6;
+  const detailed = dpDegRing(ring, tight) || ring;
+  if (isMegaCampus(am, ringVertexCount(detailed))) return "mega";
+  const tol = 2 / Math.min(frame.mpd.lon, frame.mpd.lat);
+  const pieces = ringsUnderVertexCap(ring, MAX_OI_RING_VERTS, tol, frame.mpd, 0);
+  if (!pieces.length) return ringVertexCount(ring) > MAX_OI_RING_VERTS ? "verts" : "skip";
+  let sawKeep = false;
+  let sawSpan = false;
   let lastFail = "skip";
-  for (const [maxPts, eps] of budgets) {
+  for (let i = 0; i < pieces.length; i++) {
     const result = emitBuildingSimplified(
-      ring,
+      pieces[i],
       heightM,
       frame,
       affine,
       buckets,
-      maxPts,
-      eps,
+      MAX_OI_RING_VERTS,
+      tol,
       slopeTop,
       heightSource,
       levelBase,
       shapePart,
       keepOut
     );
-    if (result === "keep") return "keep";
-    // Tiny clipped area will not grow with more verts. A one-axis sliver
-    // will not grow a short side either — do not retry and double-count it.
-    if (result === "tiny" || result === "span") return result;
-    // Mega from a coarse simplify may clear once detail verts are preserved.
-    if (result === "mega") {
-      lastFail = "mega";
-      continue;
-    }
-    lastFail = result;
+    if (result === "keep") sawKeep = true;
+    else if (result === "span") sawSpan = true;
+    else if (result === "tiny") continue;
+    else lastFail = result;
   }
+  if (sawKeep) return "keep";
+  if (sawSpan) return "span";
   return lastFail;
 }
 
