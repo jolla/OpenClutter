@@ -2264,6 +2264,8 @@ function buildClutter({
   let reserveFit = 0;
   let outdoorFront = null;
   let capped;
+  let buildingInput = fp.oiAreas;
+  let slicedOff = 0;
   if (areaCap > MAX_ATTENUATION_AREAS) {
     const holds = raisedAreaHolds(areaCap, {
       buildings: fp.oiAreas.length,
@@ -2271,9 +2273,10 @@ function buildClutter({
       deckCount,
       waterParking,
     });
-    const buildings = fp.oiAreas.slice(0, holds.buildingLimit);
+    buildingInput = fp.oiAreas.slice(0, holds.buildingLimit);
+    slicedOff = fp.oiAreas.length - buildingInput.length;
     capped = capBuildingsAndTrees(
-      buildings,
+      buildingInput,
       treeOi.areas,
       treeOi.kinds,
       holds.buildingLimit + holds.treeHold,
@@ -2288,19 +2291,19 @@ function buildClutter({
     reserveFit = deckHold + waterHold;
     capped = capBuildingsAndTrees(fp.oiAreas, treeOi.areas, treeOi.kinds, areaCap, reserveFit);
   }
-  if (capped.droppedBuildings > 0 && Array.isArray(warnings)) {
-    const keptRoofs = Math.min(fp.oiAreas.length, capped.areas.length);
+  const buildingEmitted = buildingInput.length - capped.droppedBuildings;
+  const roofsLeftOut = slicedOff + capped.droppedBuildings;
+  if (roofsLeftOut > 0 && Array.isArray(warnings)) {
     warnings.push(
       "Kept the " +
-        keptRoofs +
+        buildingEmitted +
         " largest, tallest roofs. " +
-        capped.droppedBuildings +
+        roofsLeftOut +
         " more did not fit in the " +
         areaCap +
         " area budget."
     );
   }
-  const buildingEmitted = Math.min(fp.oiAreas.length, capped.areas.length);
   const treeEmitted = capped.areas.length - buildingEmitted;
   let areas = capped.areas;
   if (planned && converted) {
@@ -2395,7 +2398,7 @@ function buildClutter({
     areas: areas.length,
     droppedInvalid: fp.stats.droppedInvalid || 0,
     droppedTreeRings: treeOi.droppedInvalid,
-    droppedAreasCap: capped.droppedBuildings,
+    droppedAreasCap: roofsLeftOut,
     droppedTreeAreas: capped.droppedTrees,
     attenuationAreasEmitted: areas.length,
     openIntentBuildingAreas: buildingEmitted,
