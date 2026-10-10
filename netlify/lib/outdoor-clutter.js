@@ -32,6 +32,7 @@ const { fetchOsmMaps, ringKey, bboxSpanM, TILE_SPAN_M } = require("./osm-tiles")
 const { intersectionAreaPx, ringsMinus } = require("./poly-clip");
 const { LIFT_LOCAL_M } = require("./terrain");
 const { outdoorMaterial, liftedOutdoorMaterial } = require("./materials");
+const { placesFromElements } = require("./map-notes");
 
 const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
 const FETCH_MS = 3200;
@@ -1188,7 +1189,11 @@ function parseOverpass(payload, want, bbox, deckCap) {
   }
   const guides = guidewayFeatures(railRecords, bbox, deckCap);
   const bridges = bridgeFeatures(railRecords, bbox, deckCap);
-  return { features: plain.concat(boxes, guides, bridges), openWater };
+  return {
+    features: plain.concat(boxes, guides, bridges),
+    openWater,
+    places: placesFromElements(elements),
+  };
 }
 
 function ringAreaAbs(coords) {
@@ -1725,20 +1730,22 @@ async function fetchOutdoorClutter(bbox, want, opts) {
       const limited = limitFeatures(dedupeOutdoor(parsed.features || []), bbox, deckCap);
       if (parsed.openWater) limited.notes.push("Open water lines were left out.");
       for (let i = 0; i < maps.notes.length; i++) limited.notes.push(maps.notes[i]);
-      return { ok: true, features: limited.features, notes: limited.notes };
+      return { ok: true, features: limited.features, notes: limited.notes, places: parsed.places || [] };
     }
     if (maps.xmls.length) {
       let features = [];
       let openWater = false;
+      const places = [];
       for (let i = 0; i < maps.xmls.length; i++) {
         const parsed = featuresFromMapXml(maps.xmls[i], want, bbox, deckCap);
         features = features.concat(parsed.features || []);
+        if (parsed.places) places.push.apply(places, parsed.places);
         if (parsed.openWater) openWater = true;
       }
       const limited = limitFeatures(dedupeOutdoor(features), bbox, deckCap);
       if (openWater) limited.notes.push("Open water lines were left out.");
       for (let i = 0; i < maps.notes.length; i++) limited.notes.push(maps.notes[i]);
-      return { ok: true, features: limited.features, notes: limited.notes };
+      return { ok: true, features: limited.features, notes: limited.notes, places };
     }
     if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
       return { ok: true, features: [], notes: maps.notes };
@@ -1756,7 +1763,7 @@ async function fetchOutdoorClutter(bbox, want, opts) {
     const parsed = parseOverpass(json, want, bbox, deckCap);
     const limited = limitFeatures(parsed.features, bbox, deckCap);
     if (parsed.openWater) limited.notes.push("Open water lines were left out.");
-    return { ok: true, features: limited.features, notes: limited.notes };
+    return { ok: true, features: limited.features, notes: limited.notes, places: parsed.places || [] };
   } catch {
     return { ok: false, features: [], notes: [] };
   } finally {
