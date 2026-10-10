@@ -16,7 +16,11 @@
  *    stub inside a fuller outline. A stub up to 2.4× smaller is replaced when
  *    it sits inside the fuller ring. A center stub up to 8× smaller is replaced
  *    only when each centroid lies inside the other ring (the same roof, not a
- *    house inside a campus). A smaller stub never replaces a larger ring.
+ *    house inside a campus). A traced outline, dozens of corners and not a
+ *    triangle, may replace a concentric stub up to 16× smaller. That is the
+ *    retail podium when Microsoft only captured one piece of it. A tower is
+ *    kept and the podium is added beside it. A smaller stub never replaces a
+ *    larger ring.
  *    Imagery roof fill still runs after this and does not invent rings.
  * 4. Centroid-in-ring still misses the same roof drawn twice when the outlines
  *    are shifted (Oak Creek duplicates sit 14–16 m apart, IoU ~0.7, and neither
@@ -127,6 +131,13 @@ const STUB_RATIO_MAX = 2.4;
  * not fall inside a house, so this does not promote a hull over a real roof.
  */
 const CONCENTRIC_STUB_RATIO_MAX = 8;
+/**
+ * A street-map ring with dozens of corners can be the whole podium while
+ * Microsoft only has one block of it. 8× misses the Wynn retail ring
+ * (about 57,000 m² over a 6,900 m² fragment). A triangle does not qualify.
+ */
+const TRACED_STUB_RATIO_MAX = 16;
+const TRACED_STUB_MIN_VERTS = 80;
 /** Intersection / candidate area above this is the same roof, not a neighbor. */
 const STACK_COVER = 0.55;
 /** Ignore a shared wall. Notch anything larger that still stacks. */
@@ -187,6 +198,71 @@ function centroidNear(c, ring) {
 /**
  * @returns {boolean}
  */
+function extremeTriRatio(ring) {
+  if (!ring || ring.length < 4) return 0;
+  const closed =
+    ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1];
+  const open = closed ? ring.slice(0, -1) : ring.slice();
+  if (open.length < 3) return 0;
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < open.length; i++) {
+    cx += +open[i][0];
+    cy += +open[i][1];
+  }
+  cx /= open.length;
+  cy /= open.length;
+  const ranked = open.slice().sort((a, b) => {
+    const da = (a[0] - cx) * (a[0] - cx) + (a[1] - cy) * (a[1] - cy);
+    const db = (b[0] - cx) * (b[0] - cx) + (b[1] - cy) * (b[1] - cy);
+    return db - da;
+  });
+  let best = 0;
+  const n = Math.min(12, ranked.length);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      for (let k = j + 1; k < n; k++) {
+        const a = ranked[i];
+        const b = ranked[j];
+        const c = ranked[k];
+        const t = Math.abs(+a[0] * (+b[1] - +c[1]) + +b[0] * (+c[1] - +a[1]) + +c[0] * (+a[1] - +b[1])) / 2;
+        if (t > best) best = t;
+      }
+    }
+  }
+  let poly = 0;
+  for (let i = 0, j = open.length - 1; i < open.length; j = i++) {
+    poly += +open[j][0] * +open[i][1] - +open[i][0] * +open[j][1];
+  }
+  poly = Math.abs(poly) / 2;
+  return poly > 0 ? best / poly : 0;
+}
+
+/**
+ * The candidate is a traced roof and the owner is a concentric fragment of
+ * it, past the 8× stub cap and within 16×. A triangle is not traced.
+ */
+function concentricTracedStub(owner, candidate) {
+  const ownerRing = singleExterior(owner);
+  const candRing = singleExterior(candidate);
+  if (!ownerRing || !candRing) return false;
+  const va = ringVertexCount(ownerRing);
+  const vb = ringVertexCount(candRing);
+  const aa = ringAreaM2(ownerRing);
+  const ab = ringAreaM2(candRing);
+  if (!(aa > 1) || !(ab > 1) || vb < TRACED_STUB_MIN_VERTS) return false;
+  if (extremeTriRatio(candRing) >= 0.9) return false;
+  const ratio = ab / aa;
+  if (!(ratio > CONCENTRIC_STUB_RATIO_MAX && ratio <= TRACED_STUB_RATIO_MAX)) return false;
+  if (!(ab < MEGA_CAMPUS_M2)) return false;
+  if (!(vb + 1 >= va)) return false;
+  const ownerC = centroid(ownerRing);
+  const candC = centroid(candRing);
+  if (!ownerC || !pointInRing(ownerC, candRing)) return false;
+  if (!candC || !pointInRing(candC, ownerRing)) return false;
+  return true;
+}
+
 function shouldReplaceGeometry(owner, candidate) {
   const ownerRing = singleExterior(owner);
   const candRing = singleExterior(candidate);
@@ -208,6 +284,13 @@ function shouldReplaceGeometry(owner, candidate) {
     candC &&
     pointInRing(candC, ownerRing)
   ) {
+    return true;
+  }
+  if (concentricTracedStub(owner, candidate)) {
+    const oh = featureHeight(owner);
+    const ch = featureHeight(candidate);
+    // A tower standing in the podium is not the fragment to overwrite.
+    if (oh >= 30 && oh > (ch || 0) + 12) return false;
     return true;
   }
   return false;
@@ -393,6 +476,10 @@ function conflateFootprints(primary, secondary, opts) {
       if (replace && shouldReplaceGeometry(owner.feature, f)) {
         replaceGeometry(owner.feature, f, owners);
         geometriesReplaced++;
+      } else if (replace && concentricTracedStub(owner.feature, f)) {
+        // The owner is a tower inside this outline. Keep the tower and the podium.
+        covered = false;
+        continue;
       }
       const how = applyHeight(owner.feature, f, rankHeight);
       if (how === "filled") heightsTransferred++;
