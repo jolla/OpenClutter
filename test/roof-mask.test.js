@@ -3,7 +3,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const { geoFrame } = require("../netlify/lib/geo-frame");
-const { imageryRoofFeatures, darkRectRoofs, pointInRing } = require("../netlify/lib/roof-mask");
+const { imageryRoofFeatures, darkRectRoofs, darkPanelsWhenRoofFillSkipped, pointInRing } = require("../netlify/lib/roof-mask");
 
 function paint(w, h, draw) {
   const data = new Uint8Array(w * h * 4);
@@ -152,6 +152,16 @@ describe("dark panel rectangles", () => {
     };
     const found = darkRectRoofs(panelImage(), frame, [covered]);
     assert.equal(found.features.length, 0);
+  });
+
+  it("still emits the dark rectangle when the 6 MP roof fill did not decode", () => {
+    const found = darkPanelsWhenRoofFillSkipped(null, panelImage(), frame, [neighborTouching(40, 50, 110, 115)]);
+    assert.equal(found.features.length, 1);
+    assert.equal(pointInRing(ll(75, 82), found.features[0].geometry.coordinates[0]), true);
+    const skipped = darkPanelsWhenRoofFillSkipped({ data: new Uint8Array(16), width: 4, height: 4 }, panelImage(), frame, [
+      neighborTouching(40, 50, 110, 115),
+    ]);
+    assert.equal(skipped.features.length, 0);
   });
 
   it("rejects a dark road and a panel with no building beside it", () => {

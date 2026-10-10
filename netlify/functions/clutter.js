@@ -201,7 +201,7 @@ function setFetchChmGridForTests(fn) {
 }
 const { gpsClipboard, stampGpsTiePoints } = require("../lib/hamina-clipboard");
 const { treeHitsBuilding } = require("../lib/vegetation");
-const { supplementFootprints } = require("../lib/roof-mask");
+const { supplementFootprints, darkPanelsWhenRoofFillSkipped } = require("../lib/roof-mask");
 const { surfaceMasksFromImage } = require("../lib/surface-mask");
 const { rejectPavementFootprints } = require("../lib/pavement");
 function json(status, cors, obj) {
@@ -801,7 +801,7 @@ function decodeImagery(imgBuf) {
   }
 }
 
-/** Roof cores on a 4K plate. Roof fill stays at 6 MP; this decode is separate. */
+/** Roof cores and dark panel rectangles on a 4K plate. The 6 MP roof fill stays separate. */
 function decodeRoofImagery(imgBuf) {
   if (!imgBuf || imgBuf.length < 100 || imgBuf.length > 12000000) return null;
   try {
@@ -1633,6 +1633,13 @@ async function handleClutter(event) {
       bridgeFeatures = pack.bridges || [];
       try {
         const roofRaw = decoded || decodeRoofImagery(imgBuf);
+        // A 4K plate is past the 6 MP roof-fill decode, so that pass never
+        // sees the dark panels. The roof decode already has the plate.
+        const darkPanels = darkPanelsWhenRoofFillSkipped(decoded, roofRaw, frame, features);
+        if (darkPanels.features.length) {
+          features = features.concat(darkPanels.features);
+          footprintMeta.imageryRoofs += darkPanels.features.length;
+        }
         const shaped = shapeBuildings(features, Object.assign({}, pack, {
           imagery: roofRaw
             ? { data: roofRaw.data, width: roofRaw.width, height: roofRaw.height, frame }
