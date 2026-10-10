@@ -701,6 +701,53 @@ function dissolveFoliageRings(areas, clipSet) {
   }));
 }
 
+/**
+ * Subject ring with the clip rings removed. No overlap returns the subject
+ * ring itself. A roof inside the subject becomes a hole, then a simple ring,
+ * so the roof is not inside the result. A piece that still covers a clip is
+ * dropped. A clip that swallows the subject leaves nothing.
+ */
+function ringsMinus(subject, cuts) {
+  const closed = orientPositive(subject);
+  if (closed.length < 4) return [];
+  const clips = [];
+  const bb = bounds(closed);
+  for (let i = 0; i < (cuts || []).length; i++) {
+    const clip = orientPositive(cuts[i]);
+    if (clip.length < 4) continue;
+    if (!bboxHit(bb, bounds(clip), 0)) continue;
+    if (intersectionAreaPx(closed, clip) <= 0.5) continue;
+    clips.push(clip);
+  }
+  if (!clips.length) return [subject];
+  let geom = [[closed]];
+  for (let i = 0; i < clips.length; i++) {
+    try {
+      geom = polygonClipping.difference(geom, [[clips[i]]]);
+    } catch {
+      return [];
+    }
+    if (!geom || !geom.length) return [];
+  }
+  const pieces = [];
+  const opened = openHoles(geom);
+  for (let i = 0; i < opened.length; i++) {
+    const under = piecesUnderCap(opened[i], 36, 1.4);
+    for (let k = 0; k < under.length; k++) {
+      const piece = under[k];
+      let blocked = false;
+      for (let c = 0; c < clips.length; c++) {
+        if (overlapsRing(piece, clips[c], 0.5)) {
+          blocked = true;
+          break;
+        }
+      }
+      if (!blocked) pieces.push(piece);
+    }
+  }
+  return pieces;
+}
+
 function clipFoliageRing(ring, clipSet) {
   const closed = orientPositive(ring);
   if (closed.length < 4) return [];
@@ -782,4 +829,5 @@ module.exports = {
   clipFoliageRing,
   simpleExteriorRings,
   dissolveFoliageRings,
+  ringsMinus,
 };

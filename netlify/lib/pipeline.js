@@ -2895,7 +2895,7 @@ function buildClutter({
   const planGuides = guides.length > 0 || bridges.length > 0;
   if ((outdoorOn && outdoorMiss !== true) || planGuides) {
     const buildings = [];
-    if (includeParking === true && outdoorOn && outdoorMiss !== true) {
+    if ((includeWater === true || includeParking === true) && outdoorOn && outdoorMiss !== true) {
       for (let i = 0; i < fp.oiAreas.length; i++) {
         buildings.push({
           index: i,
