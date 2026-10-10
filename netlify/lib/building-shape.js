@@ -200,8 +200,9 @@ function partFeature(rings, tags) {
 
 /**
  * OSM building:part ways and relations become footprints. Pools, water, and
- * multipolygon inner rings become openings. A `building=*` outer is not a
- * new footprint: Overture already has that complex outline.
+ * multipolygon inner rings become openings. A `building=*` outer becomes a
+ * footprint only when no emitted roof already covers it, so a cabin or a
+ * bathhouse the other sources missed still appears.
  */
 function parseBuildingDetail(payload, bbox) {
   const elements = (payload && payload.elements) || [];
@@ -2076,8 +2077,9 @@ function shapeBuildings(features, detail) {
   const dropped = dropParentsOverOpenings(cut, openings, largeDrops);
   const trimmed = trimTaperedFootprints(dropped.features);
   const notches = dropDiagonalNotches(trimmed.features, osmRings);
+  const filled = fillMissingOsmFootprints(notches.features, osmRings);
   return {
-    features: notches.features,
+    features: filled.features,
     stats: {
       parts: keptParts.length,
       openings: openings.length,
@@ -2087,10 +2089,54 @@ function shapeBuildings(features, detail) {
       wedgesDropped: repaired.dropped + notches.dropped,
       coresCarved: carved.carved,
       tapersCut: trimmed.cut,
-      pieces: notches.features.length,
+      pieces: filled.features.length,
+      osmFilled: filled.added,
       largeDrops: largeDrops,
     },
   };
+}
+
+/**
+ * Street-map buildings the footprint sources missed. A cabin or a bathhouse
+ * with no overlapping roof is added at one floor. A ring that already sits
+ * on an emitted roof stays out, so a motel wing is not drawn twice. A shed
+ * under 25 m² and a complex over 2500 m² stay out.
+ */
+const OSM_FILL_MIN_M2 = 25;
+const OSM_FILL_MAX_M2 = 2500;
+const OSM_FILL_COVER = 0.12;
+
+function fillMissingOsmFootprints(features, osmRings) {
+  const list = features || [];
+  const rings = osmRings || [];
+  if (!rings.length) return { features: list, added: 0 };
+  const existing = [];
+  for (let i = 0; i < list.length; i++) {
+    const ext = exteriorsOf(list[i]);
+    for (let k = 0; k < ext.length; k++) existing.push(ext[k]);
+  }
+  const out = list.slice();
+  let added = 0;
+  for (let i = 0; i < rings.length; i++) {
+    const closed = closeRing(rings[i]);
+    if (!closed || closed.length < 4) continue;
+    const area = meterArea(closed);
+    if (!(area >= OSM_FILL_MIN_M2 && area <= OSM_FILL_MAX_M2)) continue;
+    let covered = false;
+    for (let e = 0; e < existing.length && !covered; e++) {
+      const inter = intersectionArea(closed, existing[e]);
+      if (area > 0 && inter / area >= OSM_FILL_COVER) covered = true;
+    }
+    if (covered) continue;
+    out.push({
+      type: "Feature",
+      properties: { height: 4.5, heightSource: "osm", geomSource: "osm-building" },
+      geometry: { type: "Polygon", coordinates: [closed] },
+    });
+    existing.push(closed);
+    added++;
+  }
+  return { features: out, added };
 }
 
 /**
