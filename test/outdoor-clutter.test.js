@@ -4,7 +4,8 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { geoFrame } = require("../netlify/lib/geo-frame");
+const { geoFrame, llToPx } = require("../netlify/lib/geo-frame");
+const { pointInRing } = require("../netlify/lib/poly-clip");
 const { buildClutter } = require("../netlify/lib/pipeline");
 const {
   outdoorMaterial,
@@ -152,6 +153,48 @@ describe("outdoor clutter materials", () => {
     assert.equal("bottom_height" in zeroBottom, false);
     assert.equal(zeroBottom.top_height, 0.1);
   });
+
+  it("cuts a water sheet off an emitted roof and keeps the pond beside it", () => {
+    const f = frame();
+    const span = (xa, ya, xb, yb) => [
+      [f.west + (f.east - f.west) * xa, f.south + (f.north - f.south) * ya],
+      [f.west + (f.east - f.west) * xb, f.south + (f.north - f.south) * ya],
+      [f.west + (f.east - f.west) * xb, f.south + (f.north - f.south) * yb],
+      [f.west + (f.east - f.west) * xa, f.south + (f.north - f.south) * yb],
+      [f.west + (f.east - f.west) * xa, f.south + (f.north - f.south) * ya],
+    ];
+    const roof = span(0.48, 0.48, 0.62, 0.66);
+    const planned = planOutdoor({
+      features: [{ kind: "water", coords: span(0.35, 0.35, 0.8, 0.8), heightM: 0.1, explicitHeight: false }],
+      frame: f,
+      buildings: [{ ringPx: roof.map((p) => llToPx(p[0], p[1], f)) }],
+    });
+    assert.ok(planned.items.length >= 1);
+    const roofCenter = llToPx(
+      f.west + (f.east - f.west) * 0.55,
+      f.south + (f.north - f.south) * 0.57,
+      f
+    );
+    const pond = llToPx(
+      f.west + (f.east - f.west) * 0.72,
+      f.south + (f.north - f.south) * 0.72,
+      f
+    );
+    assert.equal(
+      planned.items.some((item) => pointInRing(roofCenter, item.ringPx)),
+      false
+    );
+    assert.equal(
+      planned.items.some((item) => pointInRing(pond, item.ringPx)),
+      true
+    );
+    const covered = planOutdoor({
+      features: [{ kind: "water", coords: span(0.5, 0.5, 0.6, 0.62), heightM: 0.1, explicitHeight: false }],
+      frame: f,
+      buildings: [{ ringPx: span(0.42, 0.42, 0.7, 0.72).map((p) => llToPx(p[0], p[1], f)) }],
+    });
+    assert.equal(covered.items.length, 0);
+  });
 });
 
 describe("outdoor clutter geometry", () => {
@@ -252,6 +295,53 @@ describe("outdoor clutter geometry", () => {
     assert.match(built.stats.summary, /Water 1\. Parking 1\. Walls 2\. Poles 1\./);
     assert.equal(built.openintent.area_materials.every((m) => !isPoisonedOiName(m.name)), true);
     assert.equal(/did not finish|timed out/i.test(warnings.join(" ")), false);
+  });
+
+  it("keeps water off a roof when parking is off", () => {
+    const f = frame();
+    const x0 = f.west + (f.east - f.west) * 0.4;
+    const x1 = f.west + (f.east - f.west) * 0.58;
+    const y0 = f.south + (f.north - f.south) * 0.4;
+    const y1 = f.south + (f.north - f.south) * 0.58;
+    const built = buildClutter({
+      frame: f,
+      footprintsGeojson: { features: [square(x0, y0, x1, y1, { height: 18 })] },
+      name: "WaterCut",
+      warnings: [],
+      includeWater: true,
+      includeParking: false,
+      outdoorFeatures: [
+        {
+          kind: "water",
+          coords: [
+            [f.west + (f.east - f.west) * 0.28, f.south + (f.north - f.south) * 0.28],
+            [f.west + (f.east - f.west) * 0.78, f.south + (f.north - f.south) * 0.28],
+            [f.west + (f.east - f.west) * 0.78, f.south + (f.north - f.south) * 0.78],
+            [f.west + (f.east - f.west) * 0.28, f.south + (f.north - f.south) * 0.78],
+            [f.west + (f.east - f.west) * 0.28, f.south + (f.north - f.south) * 0.28],
+          ],
+          heightM: 0.1,
+          explicitHeight: false,
+        },
+      ],
+    });
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    const water = areas.filter((a) => a.area_material && String(a.area_material.name).indexOf("Water") === 0);
+    assert.equal(built.stats.waterAreas, water.length);
+    assert.ok(water.length >= 1);
+    const roofCenter = llToPx((x0 + x1) / 2, (y0 + y1) / 2, f);
+    const pond = llToPx(
+      f.west + (f.east - f.west) * 0.7,
+      f.south + (f.north - f.south) * 0.7,
+      f
+    );
+    const rings = water.map((a) =>
+      a.area.coordinates
+        .filter((c) => c.coordinate_xyz.unit === "pixels")
+        .map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y])
+    );
+    assert.equal(rings.some((ring) => pointInRing(roofCenter, ring)), false);
+    assert.equal(rings.some((ring) => pointInRing(pond, ring)), true);
   });
 
   it("recolors an overlapping building as parking and does not draw it twice", () => {

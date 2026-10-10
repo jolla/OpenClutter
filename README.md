@@ -8,6 +8,8 @@
 
 **v1.1.97** on `dev` — Sloped terrain is an adaptive mesh, not a fixed 20×20 grid. The paste spends its budget on the worst saddles, keeps a planar fit near half a meter, and merges a flat bench into one raised floor. Neighboring ramps share an edge height, and a coarse piece is split where it meets a finer one so the seam has no gap. A pure north-south or east-west grade stays one ramp per cell. The badge stays (`dev · v1.1.97`).
 
+**v1.1.106** on `dev` — Water is cut back where an emitted building covers it, including a dark panel roof, so the sheet does not sit on that roof. A charcoal panel roof is not read as water from the aerial. A real pond beside the roof stays water. The badge stays (`dev · v1.1.106`).
+
 **v1.1.105** on `dev` — A 4K map plate is larger than the 6 MP roof-fill decode, so that pass was skipping the plate entirely. Dark panel rectangles now use the same plate as the roof cores. A panel block that touches a building already on the map is still seated at 18 m. The badge stays (`dev · v1.1.105`).
 
 **v1.1.104** on `dev` — A dark panel roof that the footprint layers miss is added as a rectangle along the panels, between about 4,500 and 20,000 m². It has to sit against a building already on the map, and the middle of the rectangle has to be that dark panel tone. Roads, open water, and bright roofs stay on their own paths. The height is 18 m. This is the west solar block between the curved road and the convention hall. The badge stays (`dev · v1.1.104`).

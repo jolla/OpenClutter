@@ -17,13 +17,15 @@
  * OpenIntent has no reflection field. Water is a 0.1 m sheet at 0.1 dB/m,
  * not a mirror. OpenIntent top and bottom heights are minimum 0, so the
  * sheet cannot extend below the floor. On a slope its top is 0.1 m above
- * the terrain seat. A chain-link fence is about 1.8 m in the field. A
+ * the terrain seat. A water polygon is cut back where an emitted building
+ * covers it, including a dark panel roof, so the sheet never sits on that
+ * roof. A chain-link fence is about 1.8 m in the field. A
  * custom under or equal to 2 m does not import, so the fence is 2.1 m.
  */
 
-const { llToPx } = require("./geo-frame");
+const { llToPx, pxToLl } = require("./geo-frame");
 const { fetchOsmMaps, ringKey, bboxSpanM, TILE_SPAN_M } = require("./osm-tiles");
-const { intersectionAreaPx } = require("./poly-clip");
+const { intersectionAreaPx, ringsMinus } = require("./poly-clip");
 const { LIFT_LOCAL_M } = require("./terrain");
 const { outdoorMaterial, liftedOutdoorMaterial } = require("./materials");
 
@@ -1995,9 +1997,32 @@ function parkingMaterialFor(feat, buildingMat, slopeTop, lonlatRing) {
   return materialForKind("parking", h, lonlatRing, null, bottom);
 }
 
+function buildingRingsPx(buildings, frame) {
+  const cuts = [];
+  for (let b = 0; b < (buildings || []).length; b++) {
+    const building = buildings[b];
+    if (!building) continue;
+    const ring =
+      building.ringPx && building.ringPx.length >= 3
+        ? closePx(building.ringPx)
+        : building.ring && building.ring.length >= 3
+          ? lonLatRingToPx(building.ring, frame)
+          : null;
+    if (ring && ring.length >= 4) cuts.push(ring);
+  }
+  return cuts;
+}
+
+function pxRingToLonLat(ring, frame) {
+  const out = [];
+  for (let i = 0; i < ring.length; i++) out.push(pxToLl(ring[i][0], ring[i][1], frame));
+  return out;
+}
+
 /**
  * Pixel rings plus a parking recolor of buildings that already cover a garage.
- * A matched garage is not drawn a second time.
+ * A matched garage is not drawn a second time. Water is cut against those
+ * same roofs so a pond or a mis-tagged panel block does not cover them.
  */
 function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segmentCaps }) {
   const guideCap = segmentCaps && segmentCaps.guideway > 0 ? segmentCaps.guideway | 0 : GUIDEWAY_SEGMENT_CAP;
@@ -2150,11 +2175,19 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
     }
     if (f.kind === "water" || f.kind === "parking") {
       const parts = slopeAreaParts(slopeTop, f.coords);
+      const cuts = f.kind === "water" ? buildingRingsPx(buildings, frame) : null;
       for (let p = 0; p < parts.length; p++) {
-        const ringPx = lonLatRingToPx(parts[p], frame);
-        const material = materialForKind(f.kind, f.heightM, parts[p], slopeTop, 0);
-        if (!material || ringPx.length < 4) continue;
-        items.push({ ringPx, material, kind: f.kind, thin: false });
+        const basePx = lonLatRingToPx(parts[p], frame);
+        const pieces = cuts ? ringsMinus(basePx, cuts) : [basePx];
+        const untouched = pieces.length === 1 && pieces[0] === basePx;
+        for (let s = 0; s < pieces.length; s++) {
+          const ringPx = pieces[s];
+          if (!ringPx || ringPx.length < 4) continue;
+          const lonlat = untouched ? parts[p] : pxRingToLonLat(ringPx, frame);
+          const material = materialForKind(f.kind, f.heightM, lonlat, slopeTop, 0);
+          if (!material) continue;
+          items.push({ ringPx, material, kind: f.kind, thin: false });
+        }
       }
     }
   }
