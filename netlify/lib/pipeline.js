@@ -51,14 +51,17 @@ const TRUNK_OI_SPAN_PX = 0.02;
  */
 const MIN_OI_SPAN_M = 3;
 /**
- * Last Hamina import that showed clutter was 982 areas (PR #12, stock names).
- * Buildings fill the cap first. Tree rings use stock Foliage - Heavy / Light,
- * or a measured-height custom of that shape, and take whatever slots remain.
+ * 982 was the last count Jerry had confirmed before the byte budget.
+ * It is no longer the default. A dev page can still set ?areaCap= from
+ * 982 through 5000. Buildings fill a count cap first. Tree rings use stock
+ * Foliage - Heavy / Light, or a measured-height custom of that shape.
  */
 const MAX_ATTENUATION_AREAS = 982;
 /** Same byte ceiling as export-jobs ZIP_DOWNLOAD_MAX. A stored zip past this is deflated. */
 const ZIP_DOWNLOAD_MAX = 4400000;
 const AREA_CAP_MAX = 5000;
+/** Default export stops on the 3.8 MB JSON budget. 5000 is only a sanity cap. */
+const DEFAULT_AREA_CAP = AREA_CAP_MAX;
 /**
  * Hamina posts the OpenIntent JSON to /graphql. 982 areas at the old
  * triple encoding was 3,858,995 bytes and imported. 1500 areas was
@@ -302,11 +305,20 @@ function coverageSummary(stats) {
   if (stats && stats.includeBridges) {
     line += " Bridges " + (stats.bridgeAreas || 0) + ".";
   }
-  const cap = stats && stats.areaCap > 0 ? stats.areaCap | 0 : MAX_ATTENUATION_AREAS;
-  line +=
-    stats && stats.areaCapOverride
-      ? " Area cap " + cap + " (test override)."
-      : " Area cap " + cap + ".";
+  const cap = stats && stats.areaCap > 0 ? stats.areaCap | 0 : DEFAULT_AREA_CAP;
+  const countOverride = (stats && stats.areaCapOverride) || cap !== DEFAULT_AREA_CAP;
+  if (stats && stats.areaCapOverride) {
+    line += " Area cap " + cap + " (test override).";
+  } else if (countOverride) {
+    line += " Area cap " + cap + ".";
+  } else {
+    line +=
+      " Byte budget " +
+      (OPENINTENT_JSON_BUDGET / 1e6).toFixed(2) +
+      " MB. Sanity cap " +
+      DEFAULT_AREA_CAP +
+      ".";
+  }
   const largeNotes = stats && Array.isArray(stats.largeDropNotes) ? stats.largeDropNotes : [];
   if (largeNotes.length) line += " " + largeNotes.join(" ");
   if (stats && stats.openIntentJsonBytes > 0) {
@@ -317,7 +329,9 @@ function coverageSummary(stats) {
       const budget = stats.jsonBudget > 0 ? stats.jsonBudget : OPENINTENT_JSON_BUDGET;
       line += " Stopped at the " + (budget / 1e6).toFixed(2) + " MB byte budget.";
     } else if (stats.stoppedBy === "count") {
-      line += " Stopped at area cap " + cap + ".";
+      line += countOverride
+        ? " Stopped at area cap " + cap + "."
+        : " Stopped at the " + DEFAULT_AREA_CAP + " area sanity cap.";
     } else {
       line += " Every area fit.";
     }
@@ -342,7 +356,8 @@ function parseJsonBudgetOverride(value) {
 /**
  * Dev-only area cap from the page query or the export body.
  * An integer from 982 through 5000 is kept. Anything else is ignored
- * so the export stays at 982. 6000 is not clamped down to 5000.
+ * so the export stays on the 3.8 MB byte budget and the 5000 sanity cap.
+ * 6000 is not clamped down to 5000.
  */
 function parseAreaCapOverride(value) {
   if (value == null || value === "" || typeof value === "boolean") return 0;
@@ -2802,7 +2817,7 @@ function buildClutter({
     if (waterRings.length) depressWaterBasins(terrain, waterRings);
   }
   const slopeTop = demUnderFootprint(terrain);
-  const areaCap = maxAttenuationAreas > 0 ? maxAttenuationAreas | 0 : MAX_ATTENUATION_AREAS;
+  const areaCap = maxAttenuationAreas > 0 ? maxAttenuationAreas | 0 : DEFAULT_AREA_CAP;
   const jsonByteBudget = jsonBudget > 0 ? jsonBudget | 0 : OPENINTENT_JSON_BUDGET;
   const capIsOverride = areaCapOverride === true;
   const buildingCeiling =
@@ -3276,6 +3291,7 @@ module.exports = {
   MAX_AREA_M2,
   MAX_BUILDINGS,
   MAX_ATTENUATION_AREAS,
+  DEFAULT_AREA_CAP,
   AREA_CAP_MAX,
   OPENINTENT_JSON_BUDGET,
   JSON_BUDGET_MAX,

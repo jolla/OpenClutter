@@ -1849,8 +1849,8 @@ async function handleClutter(event) {
       noteShrink(before, exportFeatures.length);
     }
   } else if (!background && exportFeatures.length > ZIP_SHRINK_STEPS[0]) {
-    // 640 / 4.2 MB are the synchronous download. Hamina's 982-area import
-    // cap still applies inside the pipeline. A background zip is trimmed
+    // 640 / 4.2 MB are the synchronous download. The pipeline stops at the
+    // 3.8 MB OpenIntent byte budget, with a 5000 area sanity cap. A background zip is trimmed
     // only when the download itself would be rejected.
     const before = exportFeatures.length;
     exportFeatures = largestFeatures(exportFeatures, ZIP_SHRINK_STEPS[0], frame.mpd);

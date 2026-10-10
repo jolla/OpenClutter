@@ -882,7 +882,7 @@ describe("elevated rail guideways", () => {
     assert.ok(span.short > 11 && span.short < 14.5, "deck width " + span.short);
     assert.equal(built.stats.bridgeAreas, 1);
     assert.match(built.stats.summary, /Bridges 1\./);
-    assert.match(built.stats.summary, /Area cap 982\./);
+    assert.match(built.stats.summary, /Byte budget 3\.80 MB\. Sanity cap 5000\./);
   });
 
   it("fills extra slots above 982 with buildings, trees, bridges, and guideways", () => {

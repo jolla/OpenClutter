@@ -36,6 +36,7 @@ function areaCapOverride() {
   }
   if (raw == null || !/^\d+$/.test(raw)) return undefined;
   const n = Number(raw);
+  // Optional upper bound. Omitting it leaves the 3.8 MB byte budget and the 5000 sanity cap.
   if (n < 982 || n > 5000) return undefined;
   return n;
 }

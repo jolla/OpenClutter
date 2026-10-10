@@ -1427,7 +1427,7 @@ describe("dev area cap override", () => {
 
   it("names the active cap, and the override, in the details line", () => {
     const base = { buildingsKept: 1, fetched: 1, attenuationAreasEmitted: 1, includeFoliage: false, treesKept: 0, treesSource: "none" };
-    assert.match(coverageSummary(base), /Area cap 982\.$/);
+    assert.match(coverageSummary(base), /Byte budget 3\.80 MB\. Sanity cap 5000\.$/);
     const named = coverageSummary(Object.assign({}, base, {
       largeDropNotes: ["Dropped building 1200 m2: triangular outline covered open ground."],
     }));
