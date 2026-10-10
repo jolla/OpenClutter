@@ -201,7 +201,7 @@ function setFetchChmGridForTests(fn) {
 }
 const { gpsClipboard, stampGpsTiePoints } = require("../lib/hamina-clipboard");
 const { treeHitsBuilding } = require("../lib/vegetation");
-const { supplementFootprints, darkPanelsWhenRoofFillSkipped } = require("../lib/roof-mask");
+const { supplementFootprints, darkPanelsWhenRoofFillSkipped, darkRectRoofs } = require("../lib/roof-mask");
 const { surfaceMasksFromImage } = require("../lib/surface-mask");
 const { rejectPavementFootprints } = require("../lib/pavement");
 function json(status, cors, obj) {
@@ -1646,6 +1646,16 @@ async function handleClutter(event) {
             : null,
         }));
         features = shaped.features;
+        // The first dark-panel pass sees the coarse outline, which still
+        // covers the west solar block, so that rectangle is rejected. After
+        // the outline is cut back, the same plate can emit it.
+        if (roofRaw) {
+          const latePanels = darkRectRoofs(roofRaw, frame, features);
+          if (latePanels.features.length) {
+            features = features.concat(latePanels.features);
+            footprintMeta.imageryRoofs += latePanels.features.length;
+          }
+        }
         footprintMeta.osmParts = shaped.stats.parts;
         footprintMeta.poolOpenings = shaped.stats.openings;
         footprintMeta.parentsDropped = shaped.stats.parentsDropped;
