@@ -27,7 +27,9 @@
  * "Foliage - Light 7.5": same color and dB/m, real top_height. That is not
  * "Foliage 14.2 m".
  * Still off OpenIntent: the names Tree Trunk, Hotel podium, "Foliage N.N m",
- * "Tree Trunk N.N m", "Building N.N m".
+ * "Tree Trunk N.N m", "Building N.N m". A low base under a tower is
+ * "Building - Podium", a warm light gray, at the same 5 dB/m. That is not
+ * "Hotel podium".
  * A laser-measured building height uses the same custom shape as foliage:
  * "Building - 8.3" (thickness, top_height 8.3). On a slope it is
  * "Building - 8.3 @ 3.2": thickness, then bottom height from floor.
@@ -55,10 +57,12 @@ const { ZONE_TYPES, TYPE_BY_ID, oiMaterialFromType, pickBuildingTypeId } = requi
 const { LIFT_LOCAL_M } = require("./terrain");
 
 /**
- * One cool gray for every building. Height is only a small lightness step:
- * shorter is slightly lighter, taller is slightly darker. A missing height
- * is the middle gray. Footprint area is not a height and is not read here.
- * Foliage greens are not in this set. These values are display_color.
+ * One cool gray for every tower and ordinary building. Height is only a
+ * small lightness step: shorter is slightly lighter, taller is slightly
+ * darker. A missing height is the middle gray. Footprint area is not a
+ * height and is not read here. A podium base is the warm light gray below,
+ * not one of these steps. Foliage greens are not in this set.
+ * These values are display_color.
  */
 const BUILDING_NEUTRAL_COLOR = "#B4BAC0";
 const BUILDING_COLOR_SHORT = "#C5CBD1";
@@ -66,6 +70,9 @@ const BUILDING_COLOR_LOW = "#BDC3C9";
 const BUILDING_COLOR_MID = "#B4BAC0";
 const BUILDING_COLOR_TALL = "#ABB1B7";
 const BUILDING_COLOR_TOWER = "#A2A8AE";
+/** Warm light gray. Still reads as a building, distinct from the cool tower grays. */
+const PODIUM_COLOR = "#D8D2C4";
+const PODIUM_NAME = "Building - Podium";
 
 /** Hamina-native outdoor building materials (from Jerry's gold OpenIntent zip). */
 const OI_BUILDING_TYPES = [
@@ -201,6 +208,8 @@ const LIFTED_FOLIAGE_NAME = /^Foliage - (Heavy|Light)(?: (\d+\.\d))? @ (\d+\.\d)
 const MEASURED_BUILDING_NAME = /^Building - (\d+\.\d)$/;
 /** "Building - 8.3 @ 3.2" — thickness, then bottom height from floor. */
 const LIFTED_MEASURED_BUILDING_NAME = /^Building - (\d+\.\d) @ (\d+\.\d)$/;
+/** "Building - Podium 86.4" — the number is bottom height from floor. */
+const LIFTED_PODIUM_NAME = /^Building - Podium (\d+\.\d)$/;
 
 function isLiftedBuildingName(name) {
   return LIFTED_BUILDING_NAME.test(name || "");
@@ -216,6 +225,116 @@ function isMeasuredBuildingOiName(name) {
 
 function isLiftedMeasuredBuildingName(name) {
   return LIFTED_MEASURED_BUILDING_NAME.test(name || "");
+}
+
+function isPodiumName(name) {
+  return name === PODIUM_NAME;
+}
+
+function isLiftedPodiumName(name) {
+  return LIFTED_PODIUM_NAME.test(name || "");
+}
+
+/**
+ * Same attenuation and top as the building it replaces. Only the name and
+ * the warm gray change. A slope keeps "Building - Podium B.B".
+ */
+function asPodium(picked) {
+  if (!picked || !picked.material) return picked;
+  const src = picked.material;
+  const db =
+    src.rf_properties && src.rf_properties.attenuation_per_m != null
+      ? src.rf_properties.attenuation_per_m
+      : 5;
+  const bottom = Number(src.bottom_height);
+  const lifted = bottom >= LIFT_LOCAL_M;
+  const top = Number(src.top_height);
+  if (!(top > 2)) return picked;
+  const mat = lifted
+    ? {
+        name: PODIUM_NAME + " " + roundTenths(bottom).toFixed(1),
+        rf_properties: { attenuation_per_m: db },
+        top_height: top,
+        bottom_height: roundTenths(bottom),
+        display_color: PODIUM_COLOR,
+      }
+    : {
+        name: PODIUM_NAME,
+        rf_properties: { attenuation_per_m: db },
+        top_height: top,
+        display_color: PODIUM_COLOR,
+      };
+  // OpenIntent keeps the stock floor edge. The clipboard keeps the measured
+  // top it already had (an 8 m base stays topEdge 8, not the Two Floor 7.62).
+  const prior = picked.clipType;
+  const clipTop = prior && Number(prior.topEdge) > 2 ? Number(prior.topEdge) : top;
+  const clipBottom = lifted ? roundTenths(bottom) : prior && prior.bottomEdge != null ? Number(prior.bottomEdge) : null;
+  const id =
+    "bldg-podium" +
+    (clipBottom != null ? "-b" + roundTenths(clipBottom).toFixed(1).replace(".", "_") : "") +
+    "-" +
+    String(Math.round(clipTop * 1000));
+  return {
+    material: mat,
+    clipType: {
+      id,
+      name: mat.name,
+      color: PODIUM_COLOR,
+      shortcutKey: "",
+      topEdge: clipTop,
+      bottomEdge: clipBottom,
+      attenuationDbPerMeter: db,
+      ituRModelEnabled: true,
+      transparencyEnabled: false,
+    },
+    typeId: id,
+    measured: picked.measured,
+    exactHeight: picked.exactHeight,
+    buildingHeight: picked.buildingHeight || picked.exactHeight || top,
+    lifted: !!picked.lifted,
+  };
+}
+
+function canonicalPodium(material) {
+  if (!material || typeof material !== "object" || Array.isArray(material)) return null;
+  if (!isPodiumName(material.name)) return null;
+  if ("itu_material_type" in material || "bottom_height" in material || "transparencyEnabled" in material) return null;
+  const keys = Object.keys(material);
+  if (keys.length !== 4) return null;
+  if (!keys.every((k) => ["name", "rf_properties", "top_height", "display_color"].includes(k))) return null;
+  const top = Number(material.top_height);
+  if (!(top > 2 && top < 400)) return null;
+  const canon = {
+    name: PODIUM_NAME,
+    rf_properties: { attenuation_per_m: 5 },
+    top_height: top,
+    display_color: PODIUM_COLOR,
+  };
+  if (JSON.stringify(material) !== JSON.stringify(canon)) return null;
+  return cloneMaterial(canon);
+}
+
+function canonicalLiftedPodium(material) {
+  if (!material || typeof material !== "object" || Array.isArray(material)) return null;
+  if ("itu_material_type" in material || !("bottom_height" in material) || "transparencyEnabled" in material) return null;
+  const keys = Object.keys(material);
+  if (keys.length !== 5) return null;
+  if (!keys.every((k) => ["name", "rf_properties", "top_height", "bottom_height", "display_color"].includes(k))) return null;
+  const parsed = LIFTED_PODIUM_NAME.exec(material.name || "");
+  if (!parsed) return null;
+  const bottom = roundTenths(material.bottom_height);
+  if (!(bottom >= LIFT_LOCAL_M) || Number(parsed[1]) !== bottom) return null;
+  const top = Number(material.top_height);
+  if (!(top > bottom + 2 && top < 400)) return null;
+  const canon = {
+    name: PODIUM_NAME + " " + bottom.toFixed(1),
+    rf_properties: { attenuation_per_m: 5 },
+    top_height: top,
+    bottom_height: bottom,
+    display_color: PODIUM_COLOR,
+  };
+  if (JSON.stringify(material) !== JSON.stringify(canon)) return null;
+  return cloneMaterial(canon);
 }
 
 /**
@@ -914,6 +1033,8 @@ function canonicalAreaMaterial(material) {
   if (!material || typeof material !== "object" || Array.isArray(material)) return null;
   if ("itu_material_type" in material) return null;
   if (isTrunkOiName(material.name)) return canonicalTrunk(material);
+  if (isLiftedPodiumName(material.name)) return canonicalLiftedPodium(material);
+  if (isPodiumName(material.name)) return canonicalPodium(material);
   if (isLiftedOutdoorName(material.name)) return canonicalLiftedOutdoor(material);
   if (isOutdoorOiName(material.name)) return canonicalOutdoor(material);
   if ("bottom_height" in material) {
@@ -971,15 +1092,30 @@ function measuredBuildingSortKey(name) {
   return m ? Number(m[1]) : 0;
 }
 
+function podiumKey(mat) {
+  return mat.name + "\n" + mat.top_height + "\n" + (mat.bottom_height == null ? "" : mat.bottom_height);
+}
+
 function documentMaterials(areas) {
   const veg = new Map();
   const lifted = new Map();
   const measured = new Map();
   const trunks = new Map();
   const outdoor = new Map();
+  const podiums = new Map();
   for (const a of areas || []) {
     const mat = a && a.area_material;
     if (!mat || typeof mat !== "object") continue;
+    if (isPodiumName(mat.name)) {
+      const canon = canonicalPodium(mat);
+      if (canon) podiums.set(podiumKey(canon), canon);
+      continue;
+    }
+    if (isLiftedPodiumName(mat.name)) {
+      const canon = canonicalLiftedPodium(mat);
+      if (canon && !lifted.has(podiumKey(canon))) lifted.set(podiumKey(canon), canon);
+      continue;
+    }
     if (isLiftedOutdoorName(mat.name) || isOutdoorOiName(mat.name)) {
       const canon = isLiftedOutdoorName(mat.name) ? canonicalLiftedOutdoor(mat) : canonicalOutdoor(mat);
       if (!canon) continue;
@@ -1032,7 +1168,11 @@ function documentMaterials(areas) {
   });
   const trunkList = Array.from(trunks.values()).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const outdoorList = Array.from(outdoor.values()).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  return buildingCatalog().concat(measuredList, slope, extra, trunkList, outdoorList);
+  const podiumList = Array.from(podiums.values()).sort((a, b) => {
+    if (a.top_height !== b.top_height) return a.top_height - b.top_height;
+    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+  });
+  return buildingCatalog().concat(podiumList, measuredList, slope, extra, trunkList, outdoorList);
 }
 
 module.exports = {
@@ -1046,6 +1186,11 @@ module.exports = {
   BUILDING_COLOR_MID,
   BUILDING_COLOR_TALL,
   BUILDING_COLOR_TOWER,
+  PODIUM_COLOR,
+  PODIUM_NAME,
+  asPodium,
+  isPodiumName,
+  isLiftedPodiumName,
   measuredBuildingMaterial,
   measuredFoliageMaterial,
   measuredTrunkMaterial,

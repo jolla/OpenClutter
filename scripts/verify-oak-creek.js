@@ -18,7 +18,7 @@
  *     --max-time 12 \
  *     -d '{"west":-87.92259693145752,"south":42.89043196008693,"east":-87.91184663772584,"north":42.90325386116256,"name":"Oak Creek WI commercial","trees":[],"format":"bundle"}'
  *
- * Pass: HTTP 200, wall clock under 10s, attenuation_areas > 0 and ≤ 982,
+ * Pass: HTTP 200, wall clock under 10s, attenuation_areas > 0 and ≤ 5000,
  * the gold Building - One/Two/Five/Ten Floor prefix, plus stock
  * Foliage - Heavy / Foliage - Light or Foliage - Heavy H.H / Foliage - Light H.H
  * only when a tree area uses that material. Every
@@ -115,7 +115,7 @@ function checkZip(zipBuf) {
       if (!cat || JSON.stringify(m) !== JSON.stringify(cat) || "bottom_height" in m) mismatches++;
     }
     if (!(areas > 0)) failures.push("attenuation_areas.length is " + areas);
-    if (areas > 982) failures.push("attenuation_areas " + areas + " above the last accepted import (982)");
+    if (areas > 5000) failures.push("attenuation_areas " + areas + " above the 5000 sanity cap");
     const goldPrefix = materials.slice(0, STOCK_NAMES.length);
     if (goldPrefix.join("|") !== STOCK_NAMES.join("|")) {
       failures.push("gold Building prefix mismatch: " + materials.join(" | "));

@@ -8,6 +8,8 @@
 
 **v1.1.97** on `dev` — Sloped terrain is an adaptive mesh, not a fixed 20×20 grid. The paste spends its budget on the worst saddles, keeps a planar fit near half a meter, and merges a flat bench into one raised floor. Neighboring ramps share an edge height, and a coarse piece is split where it meets a finer one so the seam has no gap. A pure north-south or east-west grade stays one ramp per cell. The badge stays (`dev · v1.1.97`).
 
+**v1.1.103** on `dev` — A low-rise base under a tower is Building - Podium, a warm light gray (`#D8D2C4`), at the same 5 dB/m as other buildings. Towers stay the cool gray, and a taller tower is a step darker. A base qualifies when it is about 30 m or less, or under 40 percent of the tallest tower it touches, and that tower is at least 2.5 times as tall. A low building:part under a tall building is the same. A plain low-rise with no tower stays cool gray. A traced podium outline replaces a Microsoft fragment when that fragment is one piece of the same roof, up to 16 times smaller, so the west solar block stays between the podium and the convention hall. A tower inside that outline is kept. The export fills areas until the OpenIntent JSON reaches 3.8 MB. There is no 982 count cap unless a dev page sets ?areaCap=. The sanity cap is 5000. Details names the byte budget, that sanity cap, and each building over 1000 m2 that a count cap leaves out. The badge stays (`dev · v1.1.103`).
+
 **v1.1.102** on `dev` — A large canopy on a slope is cut along the terrain mesh and each piece sits on the local ground, with the crown thickness above that ground. Downhill ski runs stay open. The same local seat applies to a building or other large clutter that climbs the hill. The badge stays (`dev · v1.1.102`).
 
 **v1.1.101** on `dev` — The retail podium between the towers and the golf course stays when two roof cores replace a coarse triangle. If that outline is only a triangle, the street-map ring is the fallback, then a cleaned copy of the source that is not a convex hull. A pool cut keeps the remaining pieces of a large building, and a piece over 1000 m2 is not dropped as a sliver. Details names every dropped building over 1000 m2 and the reason. The badge stays (`dev · v1.1.101`).
@@ -195,7 +197,7 @@ One bbox drives everything:
 
 ### Materials that import
 
-Building `area_material` objects keep exactly these keys: `name`, `rf_properties.attenuation_per_m`, `top_height`, `display_color`. Foliage adds `transparencyEnabled: true`, the flag Hamina already uses for Transparent in 3D on an attenuating zone type. Buildings omit that key. No `itu_material_type`, no `bottom_height` on a flat site. The object deep-equals its catalog entry (a stock name with a different `top_height` is rejected). Buildings are always the gold prefix. A vegetation material is added only when an area uses it, so a buildings-only zip stays the four gold objects. Clipboard foliage types set the same `transparencyEnabled` flag; building types leave it false. Hamina only draws that transparency when Transparency effects are on in Settings.
+Building `area_material` objects keep exactly these keys: `name`, `rf_properties.attenuation_per_m`, `top_height`, `display_color`. Foliage adds `transparencyEnabled: true`, the flag Hamina already uses for Transparent in 3D on an attenuating zone type. Buildings omit that key. No `itu_material_type`, no `bottom_height` on a flat site. The object deep-equals its catalog entry (a stock name with a different `top_height` is rejected). Buildings are always the gold prefix. A vegetation material is added only when an area uses it, and Building - Podium is added only when a base uses it, so a buildings-only zip with no podium stays the four gold objects. Clipboard foliage types set the same `transparencyEnabled` flag; building types leave it false. Hamina only draws that transparency when Transparency effects are on in Settings.
 
 | Name | Color | Top height | dB/m | Used for |
 |---|---|---|---|---|
@@ -203,6 +205,7 @@ Building `area_material` objects keep exactly these keys: `name`, `rf_properties
 | Building - Two Floor | `#BDC3C9` | 7.620092660326749 | 5 | buildings under 11 m |
 | Building - Five Floor | `#B4BAC0` | 15.240185320653499 | 5 | buildings under 24 m |
 | Building - Ten Floor | `#ABB1B7` | 32 | 5 | buildings through 32 m |
+| Building - Podium | `#D8D2C4` | same top as the floor it replaced | 5 | a low base that touches or contains a tower at least 2.5 times as tall. On a slope the name is `Building - Podium B.B` |
 | Building - H.H | same gray, by height | measured metres | 5 | a measured height. Above 32.25 m, including a 187 m tower, the color is `#A2A8AE`. No height number is the middle gray `#B4BAC0` |
 | Foliage - Heavy | `#3F7D2A` | 19.68 ft | 1.5 | stock canopy, and measured heights within 0.25 m of that |
 | Foliage - Light | `#6FA84A` | 19.68 ft | 1 | lighter stock canopy |
