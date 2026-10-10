@@ -1803,8 +1803,14 @@ function thicknessOf(material) {
 }
 
 function seatBottom(slopeTop, ring) {
-  if (!slopeTop || typeof slopeTop.seat !== "function" || !ring || ring.length < 3) return 0;
-  const z = Number(slopeTop.seat(ring));
+  if (!slopeTop || typeof slopeTop.seat !== "function" || !ring || ring.length < 2) return 0;
+  let sample = ring;
+  if (ring.length < 3 && ring[0] && ring[1]) {
+    const mid = [(+ring[0][0] + +ring[1][0]) / 2, (+ring[0][1] + +ring[1][1]) / 2];
+    sample = [ring[0], mid, ring[1]];
+  }
+  if (sample.length < 3) return 0;
+  const z = Number(slopeTop.seat(sample));
   return z >= LIFT_LOCAL_M ? z : 0;
 }
 

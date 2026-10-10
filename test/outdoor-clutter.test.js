@@ -119,6 +119,22 @@ describe("outdoor clutter materials", () => {
     }
   });
 
+  it("seats a two-point fence on the slope instead of the floor", () => {
+    const f = frame();
+    const line = [
+      [f.west + (f.east - f.west) * 0.4, f.south + (f.north - f.south) * 0.4],
+      [f.west + (f.east - f.west) * 0.62, f.south + (f.north - f.south) * 0.44],
+    ];
+    const seated = planOutdoor({
+      features: [{ kind: "fence", coords: line, heightM: 2.1, explicitHeight: false }],
+      frame: f,
+      slopeTop: { seat: () => 34.2 },
+    });
+    assert.ok(seated.items.length >= 1, "fence segments " + seated.items.length);
+    assert.equal(seated.items[0].material.bottom_height, 34.2);
+    assert.equal(seated.items[0].material.top_height, 36.3);
+  });
+
   it("seats water 0.1 m above the terrain and does not emit a negative height", () => {
     const f = frame();
     const ring = [

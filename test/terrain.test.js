@@ -3487,6 +3487,41 @@ describe("terrain paste stays the size Hamina accepted", () => {
     }
   });
 
+  it("seats a two-point fence line on the pasted ramp", () => {
+    const frame = geoFrame({ west: -71.55, south: 44.46, east: -71.54, north: 44.47, name: "Fence hill" });
+    const a = [-71.547, 44.464];
+    const b = [-71.546, 44.465];
+    const ca = llToClipboard(a[0], a[1], frame);
+    const cb = llToClipboard(b[0], b[1], frame);
+    const pad = 40;
+    const minX = Math.min(ca[0], cb[0]) - pad;
+    const maxX = Math.max(ca[0], cb[0]) + pad;
+    const minY = Math.min(ca[1], cb[1]) - pad;
+    const maxY = Math.max(ca[1], cb[1]) + pad;
+    const terrain = {
+      frame,
+      clipboard: {
+        slopedFloors: [
+          {
+            area: {
+              type: "Polygon",
+              coordinates: [[
+                [minX, minY, 34],
+                [maxX, minY, 34],
+                [maxX, maxY, 36],
+                [minX, maxY, 36],
+                [minX, minY, 34],
+              ]],
+            },
+          },
+        ],
+        raisedFloorZones: [],
+      },
+    };
+    const seat = slopeSeatUnderRing(terrain, [a, b]);
+    assert.ok(seat >= 33.5 && seat <= 36, "seat " + seat);
+  });
+
   it("honors a dev floor probe and ignores values outside 100 to 6000", () => {
     assert.equal(parseTerrainFloorOverride(1500), 1500);
     assert.equal(parseTerrainFloorOverride("800"), 800);
