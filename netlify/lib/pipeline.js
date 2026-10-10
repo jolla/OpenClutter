@@ -1923,7 +1923,12 @@ function splitRingHalf(ring) {
 function wedgePieceOf(root, piece, mpd) {
   if (!root || !piece) return false;
   if (ringAreaM2(piece, mpd) < 5000) return false;
-  return extremeTriRatio(root) < 0.8 && extremeTriRatio(piece) >= 0.82;
+  const rootTri = extremeTriRatio(root);
+  const pieceTri = extremeTriRatio(piece);
+  if (pieceTri < 0.82) return false;
+  if (rootTri < 0.8) return true;
+  // A split that sharpens into a diagonal slab. A pure triangle stays.
+  return rootTri < 0.92 && pieceTri >= 0.9;
 }
 
 function ringsUnderVertexCap(ring, maxPts, eps, mpd, depth, root) {
