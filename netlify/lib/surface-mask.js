@@ -6,8 +6,10 @@
  *
  * NLCD Tree Canopy Cover is a percent, not a land-cover class, and the public
  * NLCD land-cover ImageServer requires a token. Open water is therefore read
- * from the aerial: blue/teal pixels, plus dark smooth ponds that are bluer
- * than a building shadow. Woody wetland stays canopy — it is trees.
+ * from the aerial: blue/teal pixels, plus dark smooth ponds that are clearly
+ * bluer than a building shadow. A charcoal panel roof is dark and only
+ * slightly blue, so it stays out of the water mask. Woody wetland stays
+ * canopy — it is trees.
  *
  * Major pavement is optional suppression, not a footprint. Smooth mid-gray
  * regions above ~2000 m² (empty asphalt / concrete) are subtracted. Car-filled
@@ -60,7 +62,16 @@ function classifyPixel(r, g, b, std) {
   const exg = 2 * g - r - b;
   const blue = b > r + 10 && b + 3 >= g && g + 8 >= r && Y > 22 && Y < 130 && sat > 0.1 && exg < 24;
   if (blue && std < 18) return 1;
-  const darkPond = Y >= 18 && Y <= 62 && b >= r + 2 && g + 4 >= r && exg < 10 && sat < 0.5 && sat > 0.03 && std < 8;
+  const darkPond =
+    Y >= 24 &&
+    Y <= 62 &&
+    b > r + 8 &&
+    b + 1 >= g &&
+    g + 4 >= r &&
+    exg < 10 &&
+    sat < 0.5 &&
+    sat > 0.08 &&
+    std < 8;
   if (darkPond) return 1;
   const pavement = Y >= 108 && Y <= 198 && sat < 0.13 && exg < 7 && std < 10.5 && b < r + 14;
   if (pavement) return 2;

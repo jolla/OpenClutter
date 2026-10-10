@@ -224,6 +224,30 @@ describe("foliage rings stay off buildings and water", () => {
     );
   });
 
+  it("does not read a charcoal panel roof as water", () => {
+    const w = 200;
+    const h = 160;
+    const data = Buffer.alloc(w * h * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 40;
+      data[i + 1] = 95;
+      data[i + 2] = 36;
+      data[i + 3] = 255;
+    }
+    for (let y = 20; y < 70; y++) {
+      for (let x = 20; x < 90; x++) {
+        const i = (y * w + x) * 4;
+        data[i] = 16;
+        data[i + 1] = 19;
+        data[i + 2] = 22;
+      }
+    }
+    const img = { imgW: w, imgH: h, mpuX: 1, mpuY: 1 };
+    const masks = surfaceMasksFromImage({ data, width: w, height: h }, img);
+    assert.equal(masks.waterRings.length, 0);
+    assert.equal(masks.waterM2, 0);
+  });
+
   it("does not stack two crowns that overlap each other", () => {
     const { hits } = canopyHits();
     const built = buildClutter({
