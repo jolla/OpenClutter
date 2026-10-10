@@ -1265,6 +1265,20 @@ describe("RV pitches and service-road rows", () => {
     assert.equal(planned.items[0].thin, true);
   });
 
+  it("keeps every mapped pitch when the park has more than 400 sites", () => {
+    const m = metersAt(lat);
+    const wide = siteRing(lon, lat, 9000, 50);
+    const pitches = [];
+    for (let i = 0; i < 420; i++) {
+      pitches.push({
+        kind: "rv-pitch",
+        coords: [[lon + (30 + i * 20) / m.mLon, lat + 20 / m.mLat]],
+      });
+    }
+    const boxes = rvBoxes([{ kind: "rv-site", coords: wide, holes: [] }].concat(pitches));
+    assert.equal(boxes.length, 420);
+  });
+
   it("grids both sides of the internal road when the site has no pitches", () => {
     const m = metersAt(lat);
     const road = [

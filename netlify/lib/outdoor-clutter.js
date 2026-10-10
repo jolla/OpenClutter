@@ -68,7 +68,8 @@ const RV_HEIGHT_M = 3.5;
 const RV_SPACING_M = 12;
 const RV_ROAD_OFFSET_M = 4;
 const RV_DEDUPE_M = 8;
-const RV_CAP = 400;
+/** A mapped campground can pass 400 pitches. The cap used to drop the last row. */
+const RV_CAP = 800;
 const RV_ROAD_SEARCH_M = 40;
 const RV_ROADS = { service: true, track: true, living_street: true, residential: true, unclassified: true };
 
