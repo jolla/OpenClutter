@@ -10,10 +10,13 @@
 # has to be listed or a Finland export throws ENOENT and the gateway returns 502.
 [functions."clutter"]
   included_files = ["netlify/lib/nls-hamina-ndsm.gz"]
+  external_node_modules = ["laz-perf"]
 
 # Same laser grid. esbuild does not copy the gzip into the background bundle.
+# laz-perf stays external so its wasm file loads from node_modules.
 [functions."clutter-export-background"]
   included_files = ["netlify/lib/nls-hamina-ndsm.gz"]
+  external_node_modules = ["laz-perf"]
 
 # Production API (main deploy only — keep ahead of /dev rules).
 [[redirects]]

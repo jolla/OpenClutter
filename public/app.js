@@ -69,6 +69,17 @@ function jsonBudgetOverride() {
   return n;
 }
 
+function lidarEnabled() {
+  if (!devPage()) return undefined;
+  let raw = "";
+  try {
+    raw = new URLSearchParams(location.search || "").get("lidar");
+  } catch (err) {
+    return undefined;
+  }
+  return raw === "1" ? true : undefined;
+}
+
 function selectedImageryQuality() {
   const sel = document.getElementById("map-quality");
   const value = sel ? String(sel.value || "") : "";
@@ -852,6 +863,7 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
       areaCap: areaCapOverride(),
       jsonBudget: jsonBudgetOverride(),
       terrainFloors: terrainFloorsOverride(),
+      lidar: lidarEnabled(),
       trees: foliage ? trees : [],
       treesSource: foliage ? treesSource : "none",
       canopyHits: foliage && canopyHits && canopyHits.length ? canopyHits : undefined,
@@ -950,6 +962,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       areaCap: areaCapOverride(),
       jsonBudget: jsonBudgetOverride(),
       terrainFloors: terrainFloorsOverride(),
+      lidar: lidarEnabled(),
       trees: foliage ? trees : [],
       treesSource: foliage ? treesSource : "none",
       canopyHits: foliage && canopyHits && canopyHits.length ? canopyHits : undefined,
