@@ -551,10 +551,8 @@ describe("building outlines", () => {
       roads: [],
       imagery: { data, width, height, frame: frameLL },
     });
-    assert.equal(shaped.stats.coresCarved, 1);
+    assert.equal(shaped.stats.coresCarved, 0);
     assert.equal(shaped.stats.largeDrops.length, 0);
-    const cores = shaped.features.filter((f) => f.properties && f.properties.roofCore);
-    assert.equal(cores.length, 2);
     let podiumHit = 0;
     let golfHit = 0;
     let poolHit = 0;
@@ -563,9 +561,10 @@ describe("building outlines", () => {
       if (pointInRingLL(podium, ring)) podiumHit++;
       if (pointInRingLL(golf, ring)) golfHit++;
       if (pointInRingLL(poolAt, ring)) poolHit++;
-      if (shaped.features[i].properties && shaped.features[i].properties.roofCore) {
-        assert.equal(shaped.features[i].properties.height, 18);
-      }
+      assert.equal(shaped.features[i].properties.height, 18);
+      const tri = triOf(ring);
+      const area = areaM(ring);
+      assert.ok(!(area > 5000 && tri >= 0.82), "diagonal piece tri " + tri.toFixed(2));
     }
     assert.ok(podiumHit >= 1, "retail wing was dropped");
     assert.equal(golfHit, 0);
@@ -608,6 +607,66 @@ describe("building outlines", () => {
     assert.equal(overlayPool, 0);
     assert.equal(overlayGolf, 0);
     assert.equal(built.stats.largeDropNotes.join(" ").includes("\u2014"), false);
+  });
+
+  it("drops the diagonal podium wedge and keeps the retail ring on the solar block", () => {
+    const fc = JSON.parse(
+      fs.readFileSync(path.join(__dirname, "fixtures/wynn-golf/retail-111322055.geojson"), "utf8")
+    );
+    const osm = fc.features[0].geometry.coordinates[0];
+    const solar = [-115.16808, 36.12581];
+    const wedgeAt = [-115.1683, 36.1268];
+    const wedge = [
+      [-115.168634, 36.126992],
+      [-115.168124, 36.126321],
+      [-115.168124, 36.126772],
+      [-115.16759, 36.126772],
+      [-115.167513, 36.127556],
+      [-115.168634, 36.126992],
+    ];
+    assert.equal(pointInRingLL(solar, osm), true);
+    assert.equal(pointInRingLL(wedgeAt, osm), false);
+    const retail = {
+      type: "Feature",
+      properties: { height: 12, heightSource: "overture", geomSource: "overture" },
+      geometry: { type: "Polygon", coordinates: [osm] },
+    };
+    const slab = {
+      type: "Feature",
+      properties: { height: 12, heightSource: "overture", geomSource: "overture" },
+      geometry: { type: "Polygon", coordinates: [wedge] },
+    };
+    const shaped = shapeBuildings([retail, slab], { buildings: [osm], openings: [], roads: [] });
+    assert.ok(shaped.stats.wedgesDropped >= 1);
+    let solarHit = 0;
+    let wedgeHit = 0;
+    for (let i = 0; i < shaped.features.length; i++) {
+      const ring = shaped.features[i].geometry.coordinates[0];
+      if (pointInRingLL(solar, ring)) solarHit++;
+      if (pointInRingLL(wedgeAt, ring)) wedgeHit++;
+      const tri = triOf(ring);
+      const area = areaM(ring);
+      assert.ok(!(area > 5000 && tri >= 0.82), "diagonal piece area " + Math.round(area) + " tri " + tri.toFixed(2));
+    }
+    assert.ok(solarHit >= 1, "solar block missing");
+    assert.equal(wedgeHit, 0);
+    const map = geoFrame(
+      { west: -115.1694, south: 36.1244, east: -115.1638, north: 36.1289, name: "Wynn solar" },
+      { maxSide: 1600, metersPerPx: 0.5 }
+    );
+    const built = footprintsToClutter(shaped.features, map);
+    let overlaySolar = 0;
+    let overlayWedge = 0;
+    for (let i = 0; i < built.overlayRings.length; i++) {
+      const ring = built.overlayRings[i].map((p) => pxToLl(p[0], p[1], map));
+      if (pointInRingLL(solar, ring)) overlaySolar++;
+      if (pointInRingLL(wedgeAt, ring)) overlayWedge++;
+      const tri = triOf(ring);
+      const area = areaM(ring);
+      assert.ok(!(area > 5000 && tri >= 0.82), "emitted wedge area " + Math.round(area) + " tri " + tri.toFixed(2));
+    }
+    assert.ok(overlaySolar >= 1, "solar missing after the vertex cap");
+    assert.equal(overlayWedge, 0);
   });
 
   it("leaves a single-tone sprawling outline uncut", () => {
@@ -695,7 +754,7 @@ describe("building outlines", () => {
       const area = areaM(coords);
       const tri = triOf(coords);
       sum += area;
-      assert.ok(!(area > 5000 && tri >= 0.9), "piece is a wedge area " + Math.round(area) + " tri " + tri.toFixed(2));
+      assert.ok(!(area > 5000 && tri >= 0.82), "piece is a wedge area " + Math.round(area) + " tri " + tri.toFixed(2));
     }
     const source = areaM(ring);
     assert.ok(sum > source * 0.75 && sum < source * 1.2, "pieces " + Math.round(sum) + " vs source " + Math.round(source));

@@ -1239,13 +1239,11 @@ function ringAreaDeg(ring) {
  * That is the Overture copy of a concave podium: the real retail ring is
  * not a triangle, and the copied ring is.
  */
-function coarseWedge(ring) {
-  const area = meterArea(ring);
-  if (!(area >= 5000)) return false;
+function ringTriRatio(ring) {
   const closed = closeRing(ring);
-  if (!closed) return false;
+  if (!closed) return 0;
   const open = closed.slice(0, -1);
-  if (open.length < 3) return false;
+  if (open.length < 3) return 0;
   let cx = 0;
   let cy = 0;
   for (let i = 0; i < open.length; i++) {
@@ -1273,7 +1271,66 @@ function coarseWedge(ring) {
     }
   }
   const poly = ringAreaDeg(open);
-  return poly > 0 && best / poly >= 0.9;
+  return poly > 0 ? best / poly : 0;
+}
+
+function coarseWedge(ring) {
+  const area = meterArea(ring);
+  if (!(area >= 5000)) return false;
+  return ringTriRatio(ring) >= 0.9;
+}
+
+/**
+ * A carved piece whose corners already cover it. Below the coarse-triangle
+ * cutoff, so a 0.87 slab was still being drawn as a diagonal podium.
+ */
+function diagonalCut(ring) {
+  const area = meterArea(ring);
+  if (!(area >= 5000)) return false;
+  return ringTriRatio(ring) >= 0.82;
+}
+
+/**
+ * The street-map outline this footprint belongs to, including a ring much
+ * larger than a carved fragment. A coarse triangle is not the host.
+ */
+function osmHostRing(source, osmRings) {
+  const host = meterArea(source);
+  let best = null;
+  let bestInter = 0;
+  for (let i = 0; i < (osmRings || []).length; i++) {
+    const closed = closeRing(osmRings[i]);
+    if (!closed || coarseWedge(closed)) continue;
+    const oa = meterArea(closed);
+    if (oa < 8000) continue;
+    const inter = intersectionArea(closed, source);
+    if (!(inter >= 2000)) continue;
+    if (inter / oa < 0.25 && inter / Math.max(host, 1) < 0.35) continue;
+    if (inter > bestInter) {
+      bestInter = inter;
+      best = closed;
+    }
+  }
+  return best;
+}
+
+function ringBbox(ring) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const p = ring[i];
+    if (p[0] < minX) minX = p[0];
+    if (p[1] < minY) minY = p[1];
+    if (p[0] > maxX) maxX = p[0];
+    if (p[1] > maxY) maxY = p[1];
+  }
+  return [minX, minY, maxX, maxY];
+}
+
+function bboxHits(a, b) {
+  return a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
 }
 
 function bestOsmReplacement(wedge, osmRings) {
@@ -1870,10 +1927,34 @@ function carveTwinRoofs(features, imagery, ground, osmRings, notes) {
     const coreRings = [];
     for (let c = 0; c < pieces.length; c++) coreRings.push(pieces[c].geometry.coordinates[0]);
     const bodies = bodyFeatures(feature, closed, osmRings, coreRings, keepOut);
+    const emitted = [];
+    for (let b = 0; b < bodies.length; b++) emitted.push(bodies[b]);
+    for (let c = 0; c < pieces.length; c++) emitted.push(pieces[c]);
+    let dirty = false;
+    for (let e = 0; e < emitted.length && !dirty; e++) {
+      const rings = exteriorsOf(emitted[e]);
+      if (rings.length === 1 && diagonalCut(rings[0])) dirty = true;
+    }
+    // A diagonal slab is not a roof. Keep the street-map ring whole.
+    if (dirty) {
+      const host = osmHostRing(closed, osmRings) || (!coarseWedge(closed) ? closed : null);
+      if (host) {
+        out.push(seatLowRise(feature, host, keepOut));
+        continue;
+      }
+      let keptAny = false;
+      for (let e = 0; e < emitted.length; e++) {
+        const rings = exteriorsOf(emitted[e]);
+        if (rings.length === 1 && diagonalCut(rings[0])) continue;
+        out.push(emitted[e]);
+        keptAny = true;
+      }
+      if (!keptAny) out.push(feature);
+      continue;
+    }
     if (!bodies.length) noteLargeDrop(notes, area, "roof cores replaced the outline");
     carved++;
-    for (let b = 0; b < bodies.length; b++) out.push(bodies[b]);
-    for (let c = 0; c < pieces.length; c++) out.push(pieces[c]);
+    for (let e = 0; e < emitted.length; e++) out.push(emitted[e]);
   }
   return { features: out, carved };
 }
@@ -1882,8 +1963,10 @@ function carveTwinRoofs(features, imagery, ground, osmRings, notes) {
  * Add OSM parts, open pools and courtyards, and keep a part that is the
  * detailed footprint of a same-height wing. A tower stays on its podium.
  * A triangular copy of a concave building takes that building's outline.
- * A sprawling low-rise outline with two separate roof tones becomes those
- * two blocks.
+ * A roof-core carve that leaves a diagonal wedge is dropped and the
+ * street-map ring is kept whole. A diagonal slab in the notch beside that
+ * ring is left out. A sprawling outline with two clean roof tones still
+ * becomes those two blocks.
  */
 function shapeBuildings(features, detail) {
   const openings = (detail && detail.openings) || [];
@@ -1949,21 +2032,67 @@ function shapeBuildings(features, detail) {
   const cut = subtractSameHeightParts(opened, largeDrops);
   const dropped = dropParentsOverOpenings(cut, openings, largeDrops);
   const trimmed = trimTaperedFootprints(dropped.features);
+  const notches = dropDiagonalNotches(trimmed.features, osmRings);
   return {
-    features: trimmed.features,
+    features: notches.features,
     stats: {
       parts: keptParts.length,
       openings: openings.length,
       notched,
       parentsDropped: dropped.dropped,
       wedgesReplaced: repaired.replaced,
-      wedgesDropped: repaired.dropped,
+      wedgesDropped: repaired.dropped + notches.dropped,
       coresCarved: carved.carved,
       tapersCut: trimmed.cut,
-      pieces: trimmed.features.length,
+      pieces: notches.features.length,
       largeDrops: largeDrops,
     },
   };
+}
+
+/**
+ * A diagonal slab parked in the notch of a large street-map outline is the
+ * carve, not a roof. The outline itself stays. A lone triangle with no
+ * large outline beside it stays.
+ */
+function dropDiagonalNotches(features, osmRings) {
+  const hosts = [];
+  for (let i = 0; i < (osmRings || []).length; i++) {
+    const closed = closeRing(osmRings[i]);
+    if (!closed || coarseWedge(closed)) continue;
+    if (meterArea(closed) < 25000) continue;
+    hosts.push(closed);
+  }
+  if (!hosts.length) return { features, dropped: 0 };
+  const hostBoxes = [];
+  for (let i = 0; i < hosts.length; i++) hostBoxes.push(ringBbox(hosts[i]));
+  const out = [];
+  let dropped = 0;
+  for (let i = 0; i < features.length; i++) {
+    const rings = exteriorsOf(features[i]);
+    if (rings.length !== 1 || !diagonalCut(rings[0])) {
+      out.push(features[i]);
+      continue;
+    }
+    const area = meterArea(rings[0]);
+    if (!(area <= 12000)) {
+      out.push(features[i]);
+      continue;
+    }
+    const box = ringBbox(rings[0]);
+    let notch = false;
+    for (let h = 0; h < hosts.length && !notch; h++) {
+      if (!bboxHits(box, hostBoxes[h])) continue;
+      const inter = intersectionArea(rings[0], hosts[h]);
+      if (inter / area < 0.5) notch = true;
+    }
+    if (!notch) {
+      out.push(features[i]);
+      continue;
+    }
+    dropped++;
+  }
+  return { features: out, dropped };
 }
 
 /**

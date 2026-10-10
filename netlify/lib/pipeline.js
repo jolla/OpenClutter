@@ -1385,7 +1385,7 @@ function capOiRingPx(ring, maxPts, opts) {
     const grows = area0 > 1e-6 && area > area0 * maxGrow;
     // Subsampling a concave roof chords across the bays and leaves a triangle.
     // That candidate is not a simpler copy of the building.
-    if (!keepShape && sourceTri < 0.8 && extremeTriRatio(c) >= 0.9) continue;
+    if (!keepShape && sourceTri < 0.8 && extremeTriRatio(c) >= 0.82) continue;
     const pick = { c, score };
     if (!grows && (!best || score < best.score - 1e-6 || (Math.abs(score - best.score) <= 1e-6 && c.length > best.c.length))) {
       best = pick;
@@ -1827,7 +1827,7 @@ function dpDegRing(ring, eps) {
 /** A subsample turned a concave roof into a triangle. The source was not one. */
 function collapsedWedge(source, candidate, mpd) {
   if (ringAreaM2(source, mpd) < 5000) return false;
-  return extremeTriRatio(source) < 0.8 && extremeTriRatio(candidate) >= 0.9;
+  return extremeTriRatio(source) < 0.8 && extremeTriRatio(candidate) >= 0.82;
 }
 
 /**
@@ -1923,7 +1923,7 @@ function splitRingHalf(ring) {
 function wedgePieceOf(root, piece, mpd) {
   if (!root || !piece) return false;
   if (ringAreaM2(piece, mpd) < 5000) return false;
-  return extremeTriRatio(root) < 0.8 && extremeTriRatio(piece) >= 0.9;
+  return extremeTriRatio(root) < 0.8 && extremeTriRatio(piece) >= 0.82;
 }
 
 function ringsUnderVertexCap(ring, maxPts, eps, mpd, depth, root) {
