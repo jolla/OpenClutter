@@ -140,6 +140,23 @@ describe("dark panel rectangles", () => {
     assert.equal(pointInRing(center, ring), true);
   });
 
+  it("emits the panel block once a covering outline is only the building beside it", () => {
+    const image = panelImage();
+    const a = ll(40, 115);
+    const b = ll(110, 115);
+    const c = ll(110, 50);
+    const d = ll(40, 50);
+    const covered = {
+      type: "Feature",
+      properties: { height: 16 },
+      geometry: { type: "Polygon", coordinates: [[a, b, c, d, a]] },
+    };
+    assert.equal(darkRectRoofs(image, frame, [covered]).features.length, 0);
+    const trimmed = darkRectRoofs(image, frame, [neighborTouching(40, 50, 110, 115)]);
+    assert.equal(trimmed.features.length, 1);
+    assert.equal(pointInRing(ll(75, 82), trimmed.features[0].geometry.coordinates[0]), true);
+  });
+
   it("does not emit a second rectangle when a footprint already covers the panels", () => {
     const a = ll(40, 115);
     const b = ll(110, 115);
