@@ -15,6 +15,8 @@
  *   5. Otherwise emit the convex hull as a GeoJSON polygon. A much smaller
  *      vector whose centroid sits inside that hull is a partial stub and is
  *      dropped so the full outline replaces it.
+ *   6. A dark panel roof is a separate pass. It is a rectangle on the
+ *      panel axis, not a convex hull of the surrounding dark pixels.
  * OSM building rings are not read.
  */
 
@@ -358,6 +360,491 @@ function imageryRoofFeatures(raw, frame, features, mode) {
   return { features: out, dropIndexes: Array.from(drop) };
 }
 
+/**
+ * A dark panel roof is a solid rectangle, not the convex hull of every
+ * dark pixel nearby. A campus shadow connects panels, roads, and trees
+ * into one low-fill blob; the hull of that blob covers the golf course.
+ * The rectangle has to sit against a footprint that is already on the map.
+ * A tower height is not copied onto it.
+ */
+const DARK_RECT_MIN_M2 = 4500;
+const DARK_RECT_MAX_M2 = 20000;
+const DARK_RECT_MAX_ASPECT = 2.3;
+const DARK_RECT_MIN_SIDE_M = 48;
+const DARK_RECT_MAX_SIDE_M = 176;
+const DARK_RECT_MIN_OCC = 0.68;
+const DARK_RECT_MAX_Y = 64;
+const DARK_RECT_MAX_COVER = 0.45;
+const DARK_RECT_TOUCH_M = 40;
+const DARK_RECT_CAP = 4;
+const DARK_RECT_HEIGHT_M = 18;
+
+function darkCell(rgb) {
+  if (!rgb) return "skip";
+  const r = rgb[0];
+  const g = rgb[1];
+  const b = rgb[2];
+  const y = luma(r, g, b);
+  if (g > r + 10 && g > b + 6 && g > 70) return "green";
+  if (b > r + 12 && b > g + 4 && b > 45) return "water";
+  if (y < 78) return "dark";
+  return "other";
+}
+
+function meterRingsOf(features, frame) {
+  const rings = [];
+  const list = features || [];
+  for (let i = 0; i < list.length; i++) {
+    const exteriors = featureExteriorRings(list[i] && list[i].geometry);
+    for (let r = 0; r < exteriors.length; r++) {
+      const ring = exteriors[r];
+      if (!ring || ring.length < 4) continue;
+      const meters = [];
+      for (let k = 0; k < ring.length; k++) {
+        meters.push([(ring[k][0] - frame.west) * frame.mpd.lon, (ring[k][1] - frame.south) * frame.mpd.lat]);
+      }
+      rings.push({ lonlat: ring, meters });
+    }
+  }
+  return rings;
+}
+
+function distPointSegM(p, a, b) {
+  const vx = b[0] - a[0];
+  const vy = b[1] - a[1];
+  const wx = p[0] - a[0];
+  const wy = p[1] - a[1];
+  const c2 = vx * vx + vy * vy;
+  const t = c2 > 0 ? Math.max(0, Math.min(1, (vx * wx + vy * wy) / c2)) : 0;
+  return Math.hypot(p[0] - (a[0] + t * vx), p[1] - (a[1] + t * vy));
+}
+
+function ringTouches(rectMeters, neighbors, touchM) {
+  if (!neighbors.length) return false;
+  for (let n = 0; n < neighbors.length; n++) {
+    const ring = neighbors[n].meters;
+    const open = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+      ? ring.length - 1
+      : ring.length;
+    for (let i = 0; i < rectMeters.length; i++) {
+      const p = rectMeters[i];
+      if (pointInRing(p, ring)) return true;
+      for (let k = 0; k < open; k++) {
+        if (distPointSegM(p, ring[k], ring[(k + 1) % open]) <= touchM) return true;
+      }
+    }
+    for (let k = 0; k < open; k++) {
+      if (pointInRing(ring[k], rectMeters)) return true;
+    }
+  }
+  return false;
+}
+
+function coverFraction(ringLonLat, neighbors) {
+  const a = ringLonLat[0];
+  const b = ringLonLat[1];
+  const c = ringLonLat[2];
+  const d = ringLonLat[3];
+  if (!a || !b || !c || !d) return 1;
+  let inside = 0;
+  let n = 0;
+  for (let i = 1; i <= 5; i++) {
+    for (let j = 1; j <= 5; j++) {
+      const u = i / 6;
+      const v = j / 6;
+      const lon = a[0] * (1 - u) * (1 - v) + b[0] * u * (1 - v) + c[0] * u * v + d[0] * (1 - u) * v;
+      const lat = a[1] * (1 - u) * (1 - v) + b[1] * u * (1 - v) + c[1] * u * v + d[1] * (1 - u) * v;
+      n++;
+      for (let k = 0; k < neighbors.length; k++) {
+        if (pointInRing([lon, lat], neighbors[k].lonlat)) {
+          inside++;
+          break;
+        }
+      }
+    }
+  }
+  return n ? inside / n : 1;
+}
+
+function prefixSums(src, cols, rows) {
+  const stride = cols + 1;
+  const acc = new Float64Array((rows + 1) * stride);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      acc[(r + 1) * stride + (c + 1)] =
+        (src[r * cols + c] || 0) + acc[r * stride + (c + 1)] + acc[(r + 1) * stride + c] - acc[r * stride + c];
+    }
+  }
+  return acc;
+}
+
+function prefixRect(acc, cols, r0, r1, c0, c1) {
+  const stride = cols + 1;
+  return acc[r1 * stride + c1] - acc[r0 * stride + c1] - acc[r1 * stride + c0] + acc[r0 * stride + c0];
+}
+
+function closeDark(mask, cols, rows) {
+  const n = cols * rows;
+  const dil = new Uint8Array(n);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      let on = 0;
+      for (let dy = -1; dy <= 1 && !on; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const rr = r + dy;
+          const cc = c + dx;
+          if (rr < 0 || cc < 0 || rr >= rows || cc >= cols) continue;
+          if (mask[rr * cols + cc]) on = 1;
+        }
+      }
+      dil[r * cols + c] = on;
+    }
+  }
+  const out = new Uint8Array(n);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      let on = 1;
+      for (let dy = -1; dy <= 1 && on; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const rr = r + dy;
+          const cc = c + dx;
+          if (rr < 0 || cc < 0 || rr >= rows || cc >= cols || !dil[rr * cols + cc]) on = 0;
+        }
+      }
+      out[r * cols + c] = on;
+    }
+  }
+  return out;
+}
+
+function darkComponents(mask, cols, rows) {
+  const seen = new Uint8Array(mask.length);
+  const comps = [];
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i] || seen[i]) continue;
+    const q = [i];
+    seen[i] = 1;
+    const comp = [];
+    while (q.length) {
+      const k = q.pop();
+      comp.push(k);
+      const r = (k / cols) | 0;
+      const c = k - r * cols;
+      const nbrs = [k + 1, k - 1, k + cols, k - cols];
+      const cs = [c + 1, c - 1, c, c];
+      const rs = [r, r, r + 1, r - 1];
+      for (let d = 0; d < 4; d++) {
+        if (cs[d] < 0 || cs[d] >= cols || rs[d] < 0 || rs[d] >= rows) continue;
+        const nk = nbrs[d];
+        if (mask[nk] && !seen[nk]) {
+          seen[nk] = 1;
+          q.push(nk);
+        }
+      }
+    }
+    comps.push(comp);
+  }
+  return comps;
+}
+
+function searchDarkGrid(minE, maxE, minN, maxN, stepM, ux, uy, sampleAt) {
+  const px = -uy;
+  const py = ux;
+  const corners = [
+    [minE, minN],
+    [maxE, minN],
+    [maxE, maxN],
+    [minE, maxN],
+  ];
+  let amin = Infinity;
+  let amax = -Infinity;
+  let pmin = Infinity;
+  let pmax = -Infinity;
+  for (let i = 0; i < corners.length; i++) {
+    const along = corners[i][0] * ux + corners[i][1] * uy;
+    const perp = corners[i][0] * px + corners[i][1] * py;
+    if (along < amin) amin = along;
+    if (along > amax) amax = along;
+    if (perp < pmin) pmin = perp;
+    if (perp > pmax) pmax = perp;
+  }
+  amin -= stepM;
+  pmin -= stepM;
+  const rows = Math.ceil((amax - amin) / stepM);
+  const cols = Math.ceil((pmax - pmin) / stepM);
+  if (rows < 8 || cols < 8 || rows > 48 || cols > 48) return null;
+  const n = rows * cols;
+  const dark = new Float64Array(n);
+  const ysum = new Float64Array(n);
+  const water = new Float64Array(n);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const along = amin + (r + 0.5) * stepM;
+      const perp = pmin + (c + 0.5) * stepM;
+      const east = along * ux + perp * px;
+      const north = along * uy + perp * py;
+      const sample = sampleAt(east, north);
+      if (!sample) continue;
+      const k = r * cols + c;
+      ysum[k] = sample.y;
+      if (sample.dark) dark[k] = 1;
+      if (sample.water) water[k] = 1;
+    }
+  }
+  const darkSum = prefixSums(dark, cols, rows);
+  const ySum = prefixSums(ysum, cols, rows);
+  const waterSum = prefixSums(water, cols, rows);
+  const minCells = Math.ceil(DARK_RECT_MIN_SIDE_M / stepM);
+  const maxCells = Math.floor(DARK_RECT_MAX_SIDE_M / stepM);
+  let best = null;
+  for (let r0 = 0; r0 < rows; r0++) {
+    const r1Max = Math.min(rows, r0 + maxCells);
+    for (let r1 = r0 + minCells; r1 <= r1Max; r1++) {
+      const height = (r1 - r0) * stepM;
+      for (let c0 = 0; c0 < cols; c0++) {
+        const c1Max = Math.min(cols, c0 + maxCells);
+        for (let c1 = c0 + minCells; c1 <= c1Max; c1++) {
+          const width = (c1 - c0) * stepM;
+          const aspect = Math.max(width, height) / Math.min(width, height);
+          if (aspect > DARK_RECT_MAX_ASPECT) continue;
+          const area = width * height;
+          if (area < DARK_RECT_MIN_M2 || area > DARK_RECT_MAX_M2) continue;
+          if (best && area <= best.area) continue;
+          const cellsN = (r1 - r0) * (c1 - c0);
+          const occ = prefixRect(darkSum, cols, r0, r1, c0, c1) / cellsN;
+          if (occ < DARK_RECT_MIN_OCC) continue;
+          const meanY = prefixRect(ySum, cols, r0, r1, c0, c1) / cellsN;
+          if (meanY > DARK_RECT_MAX_Y) continue;
+          const waterFrac = prefixRect(waterSum, cols, r0, r1, c0, c1) / cellsN;
+          if (waterFrac > 0.1) continue;
+          best = { r0, r1, c0, c1, area, occ, meanY, amin, pmin, ux, uy, px, py, stepM };
+        }
+      }
+    }
+  }
+  return best;
+}
+
+function rectLonLat(rect, frame) {
+  const corners = [
+    [rect.r0, rect.c0],
+    [rect.r1, rect.c0],
+    [rect.r1, rect.c1],
+    [rect.r0, rect.c1],
+  ];
+  const ring = [];
+  for (let i = 0; i < corners.length; i++) {
+    const along = rect.amin + corners[i][0] * rect.stepM;
+    const perp = rect.pmin + corners[i][1] * rect.stepM;
+    const east = along * rect.ux + perp * rect.px;
+    const north = along * rect.uy + perp * rect.py;
+    ring.push([frame.west + east / frame.mpd.lon, frame.south + north / frame.mpd.lat]);
+  }
+  ring.push(ring[0].slice());
+  return ring;
+}
+
+function darkRectRoofs(raw, frame, features) {
+  if (!raw || !raw.data || !frame || !frame.mpd || !(raw.width > 32) || !(raw.height > 32)) {
+    return { features: [] };
+  }
+  const mpu = frame.mpuX > 0 ? frame.mpuX : 1;
+  const stepM = 8;
+  let stepPx = Math.max(3, Math.round(stepM / mpu));
+  while ((raw.width / stepPx) * (raw.height / stepPx) > 42000 && stepPx < 28) stepPx++;
+  const cols = Math.floor(raw.width / stepPx);
+  const rows = Math.floor(raw.height / stepPx);
+  if (cols < 12 || rows < 12) return { features: [] };
+  const dark = new Uint8Array(rows * cols);
+  const yv = new Float32Array(rows * cols);
+  const data = raw.data;
+  const w = raw.width;
+  let darkN = 0;
+  for (let r = 1; r < rows - 1; r++) {
+    for (let c = 1; c < cols - 1; c++) {
+      let n = 0;
+      let nd = 0;
+      let sumY = 0;
+      const spots = [
+        [0.5, 0.5],
+        [0.25, 0.25],
+        [0.75, 0.25],
+        [0.25, 0.75],
+        [0.75, 0.75],
+      ];
+      for (let s = 0; s < spots.length; s++) {
+        const x = Math.round(c * stepPx + spots[s][0] * (stepPx - 1));
+        const y = Math.round(r * stepPx + spots[s][1] * (stepPx - 1));
+        if (x < 0 || y < 0 || x >= w || y >= raw.height) continue;
+        const i = (y * w + x) * 4;
+        const kind = darkCell([data[i], data[i + 1], data[i + 2]]);
+        n++;
+        sumY += luma(data[i], data[i + 1], data[i + 2]);
+        if (kind === "dark") nd++;
+      }
+      const k = r * cols + c;
+      yv[k] = n ? sumY / n : 255;
+      if (n && nd / n >= 0.6) {
+        dark[k] = 1;
+        darkN++;
+      }
+    }
+  }
+  if (darkN * stepM * stepM < DARK_RECT_MIN_M2) return { features: [] };
+  const spanX = (frame.east - frame.west) * frame.mpd.lon;
+  const spanY = (frame.north - frame.south) * frame.mpd.lat;
+  function sampleAt(east, north) {
+    const x = (east / spanX) * w;
+    const y = raw.height - (north / spanY) * raw.height;
+    const xi = Math.round(x);
+    const yi = Math.round(y);
+    if (xi < 1 || yi < 1 || xi >= w - 1 || yi >= raw.height - 1) return null;
+    let nd = 0;
+    let nw = 0;
+    let n = 0;
+    let sumY = 0;
+    const shifts = [
+      [0, 0],
+      [-2, 0],
+      [2, 0],
+      [0, -2],
+      [0, 2],
+    ];
+    for (let s = 0; s < shifts.length; s++) {
+      const xx = xi + shifts[s][0];
+      const yy = yi + shifts[s][1];
+      if (xx < 0 || yy < 0 || xx >= w || yy >= raw.height) continue;
+      const i = (yy * w + xx) * 4;
+      const kind = darkCell([data[i], data[i + 1], data[i + 2]]);
+      n++;
+      sumY += luma(data[i], data[i + 1], data[i + 2]);
+      if (kind === "dark") nd++;
+      else if (kind === "water") nw++;
+    }
+    if (!n) return null;
+    return { dark: nd / n >= 0.6, y: sumY / n, water: nw / n >= 0.6 };
+  }
+  const closed = closeDark(dark, cols, rows);
+  const comps = darkComponents(closed, cols, rows);
+  const cellM = stepPx * mpu;
+  const found = [];
+  for (let ci = 0; ci < comps.length; ci++) {
+    const comp = comps[ci];
+    const pts = [];
+    for (let i = 0; i < comp.length; i++) {
+      const k = comp[i];
+      if (!dark[k]) continue;
+      const r = (k / cols) | 0;
+      const c = k - r * cols;
+      const x = (c + 0.5) * stepPx;
+      const y = (r + 0.5) * stepPx;
+      const east = (x / w) * (frame.east - frame.west) * frame.mpd.lon;
+      const north = ((raw.height - y) / raw.height) * (frame.north - frame.south) * frame.mpd.lat;
+      pts.push([east, north, yv[k]]);
+    }
+    if (pts.length * cellM * cellM < 2500) continue;
+    let minE = Infinity;
+    let maxE = -Infinity;
+    let minN = Infinity;
+    let maxN = -Infinity;
+    for (let i = 0; i < pts.length; i++) {
+      if (pts[i][0] < minE) minE = pts[i][0];
+      if (pts[i][0] > maxE) maxE = pts[i][0];
+      if (pts[i][1] < minN) minN = pts[i][1];
+      if (pts[i][1] > maxN) maxN = pts[i][1];
+    }
+    const windows = [];
+    if (maxE - minE <= 300 && maxN - minN <= 300) windows.push([minE - 16, maxE + 16, minN - 16, maxN + 16, pts]);
+    else {
+      for (let e0 = minE; e0 < maxE; e0 += 110) {
+        for (let n0 = minN; n0 < maxN; n0 += 110) {
+          const slice = [];
+          for (let i = 0; i < pts.length; i++) {
+            if (pts[i][0] >= e0 && pts[i][0] < e0 + 260 && pts[i][1] >= n0 && pts[i][1] < n0 + 260) {
+              slice.push(pts[i]);
+            }
+          }
+          if (slice.length * cellM * cellM >= 3000) windows.push([e0, e0 + 260, n0, n0 + 260, slice]);
+        }
+      }
+    }
+    for (let wi = 0; wi < windows.length; wi++) {
+      const win = windows[wi];
+      const slice = win[4];
+      let mx = 0;
+      let my = 0;
+      for (let i = 0; i < slice.length; i++) {
+        mx += slice[i][0];
+        my += slice[i][1];
+      }
+      mx /= slice.length;
+      my /= slice.length;
+      let xx = 0;
+      let xy = 0;
+      let yy = 0;
+      for (let i = 0; i < slice.length; i++) {
+        const dx = slice[i][0] - mx;
+        const dy = slice[i][1] - my;
+        xx += dx * dx;
+        xy += dx * dy;
+        yy += dy * dy;
+      }
+      const theta = 0.5 * Math.atan2(2 * xy, xx - yy);
+      const angles = [theta, theta + (8 * Math.PI) / 180, theta - (8 * Math.PI) / 180];
+      for (let a = 0; a < angles.length; a++) {
+        const hit = searchDarkGrid(win[0], win[1], win[2], win[3], stepM, Math.cos(angles[a]), Math.sin(angles[a]), sampleAt);
+        if (hit) found.push(hit);
+      }
+    }
+  }
+  found.sort((a, b) => b.area - a.area || a.meanY - b.meanY);
+  const neighbors = meterRingsOf(features, frame);
+  const kept = [];
+  for (let i = 0; i < found.length; i++) {
+    const ring = rectLonLat(found[i], frame);
+    const c = ringCentroid(ring);
+    if (!c) continue;
+    let near = false;
+    for (let k = 0; k < kept.length; k++) {
+      const dx = (c[0] - kept[k].c[0]) * frame.mpd.lon;
+      const dy = (c[1] - kept[k].c[1]) * frame.mpd.lat;
+      if (dx * dx + dy * dy < 80 * 80) {
+        near = true;
+        break;
+      }
+    }
+    if (near) continue;
+    const px = llToImage(c[0], c[1], frame);
+    const xi = Math.round(px[0]);
+    const yi = Math.round(px[1]);
+    if (xi < 0 || yi < 0 || xi >= raw.width || yi >= raw.height) continue;
+    const pi = (yi * raw.width + xi) * 4;
+    const centerKind = darkCell([data[pi], data[pi + 1], data[pi + 2]]);
+    if (centerKind !== "dark" || luma(data[pi], data[pi + 1], data[pi + 2]) > 42) continue;
+    const meters = [];
+    for (let k = 0; k < ring.length; k++) {
+      meters.push([(ring[k][0] - frame.west) * frame.mpd.lon, (ring[k][1] - frame.south) * frame.mpd.lat]);
+    }
+    if (coverFraction(ring, neighbors) >= DARK_RECT_MAX_COVER) continue;
+    if (!ringTouches(meters, neighbors, DARK_RECT_TOUCH_M)) continue;
+    kept.push({ c, ring, meanY: found[i].meanY, area: found[i].area });
+    if (kept.length >= DARK_RECT_CAP) break;
+  }
+  const out = [];
+  for (let i = 0; i < kept.length; i++) {
+    out.push({
+      type: "Feature",
+      properties: {
+        source: "imagery-roof",
+        height: DARK_RECT_HEIGHT_M,
+        heightSource: "imagery-roof",
+      },
+      geometry: { type: "Polygon", coordinates: [kept[i].ring] },
+    });
+  }
+  return { features: out };
+}
+
 function supplementFootprints(raw, frame, features) {
   const found = imageryRoofFeatures(raw, frame, features || []);
   const drop = new Set(found.dropIndexes || []);
@@ -373,9 +860,10 @@ function supplementFootprints(raw, frame, features) {
   for (let i = 0; i < withBright.length; i++) {
     if (!membraneDrop.has(i)) afterMembrane.push(withBright[i]);
   }
+  const dark = darkRectRoofs(raw, frame, afterMembrane);
   return {
-    features: afterMembrane.concat(membrane.features),
-    imageryRoofs: found.features.length + membrane.features.length,
+    features: afterMembrane.concat(membrane.features, dark.features),
+    imageryRoofs: found.features.length + membrane.features.length + dark.features.length,
     droppedStubs: (found.dropIndexes || []).length + membraneDrop.size,
   };
 }
@@ -384,6 +872,7 @@ module.exports = {
   MIN_ROOF_M2,
   MIN_MEMBRANE_M2,
   imageryRoofFeatures,
+  darkRectRoofs,
   supplementFootprints,
   imagePxToLl,
   pointInRing,

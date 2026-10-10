@@ -3,7 +3,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const { geoFrame } = require("../netlify/lib/geo-frame");
-const { imageryRoofFeatures, pointInRing } = require("../netlify/lib/roof-mask");
+const { imageryRoofFeatures, darkRectRoofs, pointInRing } = require("../netlify/lib/roof-mask");
 
 function paint(w, h, draw) {
   const data = new Uint8Array(w * h * 4);
@@ -93,5 +93,71 @@ describe("imagery roof mask", () => {
     };
     const found = imageryRoofFeatures(raw(), frame, [feature]);
     assert.equal(found.features.length, 0);
+  });
+});
+
+describe("dark panel rectangles", () => {
+  const frame = geoFrame(
+    { west: -87.92, south: 42.898, east: -87.915, north: 42.902 },
+    { imgW: 200, imgH: 200, maxSpanM: 5000 }
+  );
+
+  function ll(x, y) {
+    return [
+      frame.west + (x / 200) * (frame.east - frame.west),
+      frame.north - (y / 200) * (frame.north - frame.south),
+    ];
+  }
+
+  function neighborTouching(x0, y0, x1, y1) {
+    const a = ll(x1, y1);
+    const b = ll(x1 + 18, y1);
+    const c = ll(x1 + 18, y0);
+    const d = ll(x1, y0);
+    return {
+      type: "Feature",
+      properties: { height: 12 },
+      geometry: { type: "Polygon", coordinates: [[a, b, c, d, a]] },
+    };
+  }
+
+  function panelImage() {
+    return paint(200, 200, (x, y) => {
+      if (x >= 40 && x <= 110 && y >= 50 && y <= 115) return [24, 28, 26];
+      return [36, 98, 42];
+    });
+  }
+
+  it("emits a dark rectangle beside a building and keeps its center", () => {
+    const found = darkRectRoofs(panelImage(), frame, [neighborTouching(40, 50, 110, 115)]);
+    assert.equal(found.features.length, 1);
+    const feature = found.features[0];
+    assert.equal(feature.properties.source, "imagery-roof");
+    assert.equal(feature.properties.height, 18);
+    const ring = feature.geometry.coordinates[0];
+    assert.equal(ring.length, 5);
+    const center = ll(75, 82);
+    assert.equal(pointInRing(center, ring), true);
+  });
+
+  it("does not emit a second rectangle when a footprint already covers the panels", () => {
+    const a = ll(40, 115);
+    const b = ll(110, 115);
+    const c = ll(110, 50);
+    const d = ll(40, 50);
+    const covered = {
+      type: "Feature",
+      properties: { height: 16 },
+      geometry: { type: "Polygon", coordinates: [[a, b, c, d, a]] },
+    };
+    const found = darkRectRoofs(panelImage(), frame, [covered]);
+    assert.equal(found.features.length, 0);
+  });
+
+  it("rejects a dark road and a panel with no building beside it", () => {
+    const road = paint(200, 200, (x, y) => (x >= 20 && x <= 32 ? [30, 32, 28] : [36, 98, 42]));
+    const beside = neighborTouching(20, 0, 32, 200);
+    assert.equal(darkRectRoofs(road, frame, [beside]).features.length, 0);
+    assert.equal(darkRectRoofs(panelImage(), frame, []).features.length, 0);
   });
 });
