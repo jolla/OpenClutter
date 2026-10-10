@@ -40,7 +40,23 @@
     .checks { display: flex; flex-wrap: wrap; gap: 0 12px; }
     .checks .check { margin-top: 6px; }
     #copy-terrain { width: 100%; margin-top: 10px; }
-    #clutter-options[hidden], .sub[hidden] { display: none; }
+    .sub[hidden] { display: none; }
+    .map-quality {
+      display: flex; align-items: center; gap: 8px; margin-top: 10px;
+      font-size: 12px; color: #8b949e;
+    }
+    .map-quality[hidden] { display: none; }
+    .map-quality select {
+      flex: 1; background: #0d1117; color: #e8eaed; border: 1px solid #30363d;
+      border-radius: 8px; padding: 4px 8px; font: inherit; font-size: 12px;
+    }
+    #advanced { margin-top: 12px; }
+    #advanced > summary {
+      cursor: pointer; width: fit-content; list-style: none;
+      color: #58a6ff; font-size: 12px; font-weight: 500;
+      text-decoration: underline; text-underline-offset: 2px; user-select: none;
+    }
+    #advanced > summary::-webkit-details-marker { display: none; }
     .row { display: flex; gap: 8px; margin-top: 10px; }
     .row button { flex: 1; }
     .hint { margin: 8px 0 0; font-size: 11px; line-height: 1.35; color: #6e7681; }
@@ -88,7 +104,7 @@
 <body>
   <div id="map"></div>
   <div class="panel">
-    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.113</span></p>
+    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.114</span></p>
     <h1>OpenClutter</h1>
     <div class="sub" id="panel-sub">Export a zip. Import it in Hamina for the aerial map and buildings.</div>
     <form id="search">
@@ -100,34 +116,6 @@
       <button type="button" id="export" disabled>Export</button>
     </div>
     <p id="draw-hint" class="hint">Drag a box, or click corners and click the first to close.</p>
-    <div id="clutter-options">
-      <label class="check" for="include-foliage">
-        <input type="checkbox" id="include-foliage" checked />
-        Foliage
-      </label>
-      <div class="checks">
-        <label class="check" for="include-water">
-          <input type="checkbox" id="include-water" checked />
-          Water
-        </label>
-        <label class="check" for="include-parking">
-          <input type="checkbox" id="include-parking" checked />
-          Parking
-        </label>
-        <label class="check" for="include-walls">
-          <input type="checkbox" id="include-walls" checked />
-          Walls
-        </label>
-        <label class="check" for="include-poles">
-          <input type="checkbox" id="include-poles" checked />
-          Poles
-        </label>
-        <label class="check" for="include-rvs">
-          <input type="checkbox" id="include-rvs" checked />
-          RVs
-        </label>
-      </div>
-    </div>
     <button type="button" id="copy-terrain" class="secondary" hidden>Copy terrain</button>
     <p id="copy-note" class="hint" hidden></p>
     <div id="status">
@@ -137,6 +125,52 @@
         <div id="status-body"></div>
       </details>
     </div>
+    <details id="advanced">
+      <summary>Advanced</summary>
+      <div id="clutter-options">
+        <label class="check" for="include-foliage">
+          <input type="checkbox" id="include-foliage" checked />
+          Foliage
+        </label>
+        <div class="checks">
+          <label class="check" for="include-water">
+            <input type="checkbox" id="include-water" checked />
+            Water
+          </label>
+          <label class="check" for="include-parking">
+            <input type="checkbox" id="include-parking" checked />
+            Parking
+          </label>
+          <label class="check" for="include-walls">
+            <input type="checkbox" id="include-walls" checked />
+            Walls
+          </label>
+          <label class="check" for="include-poles">
+            <input type="checkbox" id="include-poles" checked />
+            Poles
+          </label>
+          <label class="check" for="include-rvs">
+            <input type="checkbox" id="include-rvs" checked />
+            RVs
+          </label>
+        </div>
+      </div>
+      <label class="check" id="include-terrain-row" for="include-terrain">
+        <input type="checkbox" id="include-terrain" checked />
+        Terrain
+      </label>
+      <label id="map-quality-row" class="map-quality">
+        Map
+        <select id="map-quality" aria-label="Map quality">
+          <option value="auto" selected>Auto</option>
+          <option value="low">Low · 256 px</option>
+          <option value="standard">Standard · 640 px</option>
+          <option value="high">High · 1040 px</option>
+          <option value="sharp">Sharp · 2048 px</option>
+          <option value="4k">4K · 4096 px</option>
+        </select>
+      </label>
+    </details>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/tree-detect.js"></script>
