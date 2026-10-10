@@ -36,6 +36,7 @@ const { zipUnderLimit } = require("./zip-store");
 const { demUnderFootprint, depressWaterBasins, normalizeTerrainResolution, GLO30_CREDIT, LIFT_LOCAL_M } = require("./terrain");
 const { version: OPENCLUTTER_VERSION } = require("./version");
 const { applyNlsBuildingHeights, NLS_CREDIT, HEIGHT_SOURCE } = require("./nls-building-height");
+const { HEIGHT_SOURCE: LIDAR_HEIGHT } = require("./usgs-lidar");
 
 const MIN_AREA_M2 = 25;
 const MAX_AREA_M2 = 40000;
@@ -1792,10 +1793,12 @@ function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase
     heightSource === "ms-global" ||
     heightSource === "fema" ||
     heightSource === "overture-floors" ||
-    heightSource === HEIGHT_SOURCE;
+    heightSource === HEIGHT_SOURCE ||
+    heightSource === LIDAR_HEIGHT;
   const picked = materialForBuilding(thickness, areaM2, {
     exactMetres:
       heightSource === HEIGHT_SOURCE ||
+      heightSource === LIDAR_HEIGHT ||
       heightSource === "static-caravan" ||
       base > 0 ||
       shapePart === true ||
