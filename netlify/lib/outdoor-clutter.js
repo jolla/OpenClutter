@@ -13,6 +13,10 @@
  * mapped pitch. With no pitches, boxes sit on both sides of the internal
  * roads, about 12 m apart. A static caravan stays a building.
  *
+ * A surface parking lot is a 2.1 m car layer. A multi-storey garage or
+ * building=parking stays about 9 m and can recolor a footprint that already
+ * covers it. An underground lot is left out.
+ *
  * Attenuation is 5 GHz dB/m, documented on the materials next to buildings.
  * OpenIntent has no reflection field. Water is a 0.1 m sheet at 0.1 dB/m,
  * not a mirror. OpenIntent top and bottom heights are minimum 0, so the
@@ -93,6 +97,7 @@ function overpassQuery(bbox, want) {
     parts.push('way["landuse"="reservoir"](' + box + ");");
   }
   if (want.parking) {
+    parts.push('way["amenity"="parking"](' + box + ");");
     parts.push('way["amenity"="parking"]["parking"="multi-storey"](' + box + ");");
     parts.push('way["building"="parking"](' + box + ");");
   }
@@ -217,7 +222,8 @@ function heightFor(kind, tags) {
     if (explicit > 2) return { heightM: explicit, explicitHeight: true };
     const levels = parseLevels(tags || {});
     if (levels) return { heightM: levels * 3, explicitHeight: true };
-    return { heightM: 9, explicitHeight: false };
+    if (parkingStructure(tags)) return { heightM: 9, explicitHeight: false };
+    return { heightM: 2.1, explicitHeight: false };
   }
   if (kind === "water") return { heightM: 0.1, explicitHeight: false };
   if (kind === "pole") {
@@ -235,10 +241,15 @@ function poleRank(tags) {
   return 3;
 }
 
+function parkingStructure(tags) {
+  if (!tags) return false;
+  return tags.parking === "multi-storey" || tags.building === "parking";
+}
+
 function isParkingWay(tags) {
   if (!tags) return false;
   if (tags.parking === "underground" || tags.location === "underground") return false;
-  if (tags.amenity === "parking" && tags.parking === "multi-storey") return true;
+  if (tags.amenity === "parking") return true;
   if (tags.building === "parking") return true;
   return false;
 }
@@ -1096,6 +1107,7 @@ function parseOverpass(payload, want, bbox, deckCap) {
         closed: true,
         heightM: h.heightM,
         explicitHeight: h.explicitHeight,
+        structure: parkingStructure(tags),
         rank: 0,
       });
       continue;
@@ -2049,6 +2061,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
     const bPx = building.ringPx && building.ringPx.length >= 3 ? closePx(building.ringPx) : lonLatRingToPx(building.ring, frame);
     let match = null;
     for (let i = 0; i < parkingFeats.length; i++) {
+      if (parkingFeats[i].structure === false) continue;
       const pPx = lonLatRingToPx(parkingFeats[i].coords, frame);
       if (overlapFraction(bPx, pPx) >= 0.4) {
         match = parkingFeats[i];
@@ -2181,7 +2194,10 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
     }
     if (f.kind === "water" || f.kind === "parking") {
       const parts = slopeAreaParts(slopeTop, f.coords);
-      const cuts = f.kind === "water" ? buildingRingsPx(buildings, frame) : null;
+      const cuts =
+        f.kind === "water" || (f.kind === "parking" && f.structure === false)
+          ? buildingRingsPx(buildings, frame)
+          : null;
       for (let p = 0; p < parts.length; p++) {
         const basePx = lonLatRingToPx(parts[p], frame);
         const pieces = cuts ? ringsMinus(basePx, cuts) : [basePx];
