@@ -549,9 +549,10 @@ describe("outdoor clutter fetch", () => {
     assert.match(html, />\s*Parking\s*</);
     assert.match(html, />\s*Walls\s*</);
     assert.match(html, />\s*Poles\s*</);
-    assert.match(app, /includeWater: document\.getElementById\("include-water"\)\.checked/);
-    assert.match(app, /includePoles: document\.getElementById\("include-poles"\)\.checked/);
-    assert.match(app, /includeRvs: document\.getElementById\("include-rvs"\)\.checked/);
+    assert.match(app, /includeWater: clutterChecked\("include-water"\)/);
+    assert.match(app, /includePoles: clutterChecked\("include-poles"\)/);
+    assert.match(app, /includeRvs: clutterChecked\("include-rvs"\)/);
+    assert.match(app, /function clutterChecked\(id\) \{\n  if \(devPage\(\)\) return true;/);
     assert.match(html, />\s*RVs\s*</);
     const headline = app.slice(app.indexOf("function exportHeadline"), app.indexOf("function setCopyNote"));
     assert.equal(/guideway/i.test(headline), false);

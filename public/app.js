@@ -9,21 +9,12 @@ function devPage() {
   );
 }
 
-function syncTerrainControls() {
+function syncDevPanel() {
   const dev = devPage();
-  const row = document.getElementById("include-terrain-row");
-  const hint = document.getElementById("terrain-hint");
-  if (row) row.hidden = !dev;
-  if (hint) hint.hidden = !dev;
-  syncMapQuality();
-}
-
-function syncMapQuality() {
-  const dev = devPage();
-  const row = document.getElementById("map-quality-row");
-  const hint = document.getElementById("map-quality-hint");
-  if (row) row.hidden = !dev;
-  if (hint) hint.hidden = !dev;
+  const extras = document.getElementById("clutter-options");
+  const sub = document.getElementById("panel-sub");
+  if (extras) extras.hidden = dev;
+  if (sub) sub.hidden = dev;
 }
 
 function areaCapOverride() {
@@ -81,31 +72,29 @@ function lidarEnabled() {
 }
 
 function selectedImageryQuality() {
-  const sel = document.getElementById("map-quality");
-  const value = sel ? String(sel.value || "") : "";
-  if (value === "low" || value === "standard" || value === "high" || value === "sharp" || value === "4k") return value;
   return "auto";
 }
 
+function clutterChecked(id) {
+  if (devPage()) return true;
+  const input = document.getElementById(id);
+  return !!(input && input.checked);
+}
+
 function terrainExportEnabled() {
-  const row = document.getElementById("include-terrain-row");
-  const input = document.getElementById("include-terrain");
-  if (!row || row.hidden || !input) return true;
-  return !!input.checked;
+  return true;
 }
 
 (function markDeployEnv() {
   const badge = document.getElementById("env-badge");
   if (badge && devPage()) badge.classList.add("on");
-  syncTerrainControls();
+  syncDevPanel();
   const ver = document.getElementById("app-version");
   if (ver && window.OPENCLUTTER_VERSION) ver.textContent = "v" + window.OPENCLUTTER_VERSION;
 })();
 
 let bbox = null;
 let terrainPasteGpsOnly = false;
-const includeTerrainInput = document.getElementById("include-terrain");
-if (includeTerrainInput) includeTerrainInput.addEventListener("change", syncTerrainControls);
 
 // World Imagery's tile pyramid ends at level 23 (~0.02 m at the equator).
 // Leaflet's default map zoom is 18, which is why a drawn site looked soft.
@@ -749,8 +738,8 @@ if (copyTerrainBtn) {
       await navigator.clipboard.writeText(terrainPasteJson);
       setCopyNote(
         terrainPasteGpsOnly
-          ? "Copied two GPS points. Paste them in Planner Plus. Do not import them as OpenIntent."
-          : "Copied terrain. Paste it in Planner Plus. Do not import it as OpenIntent."
+          ? "Copied. Paste the GPS points separately in Hamina."
+          : "Copied. Paste terrain separately in Hamina."
       );
     } catch (e) {
       setCopyNote(
@@ -824,6 +813,13 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
   if (summary) lines.push(summary);
   for (let i = 0; i < warnLines.length; i++) lines.push(warnLines[i]);
   setStatus(lines.join("\n"));
+  if (copyTerrainBtn && !copyTerrainBtn.hidden) {
+    setCopyNote(
+      terrainPasteGpsOnly
+        ? "Paste the GPS points separately in Hamina."
+        : "Paste terrain separately in Hamina."
+    );
+  }
 }
 
 function jobStatusText(job) {
@@ -850,11 +846,11 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
       ...bbox,
       name: document.getElementById("q").value || "Site",
       includeFoliage: foliage,
-      includeWater: document.getElementById("include-water").checked,
-      includeParking: document.getElementById("include-parking").checked,
-      includeWalls: document.getElementById("include-walls").checked,
-      includePoles: document.getElementById("include-poles").checked,
-      includeRvs: document.getElementById("include-rvs").checked,
+      includeWater: clutterChecked("include-water"),
+      includeParking: clutterChecked("include-parking"),
+      includeWalls: clutterChecked("include-walls"),
+      includePoles: clutterChecked("include-poles"),
+      includeRvs: clutterChecked("include-rvs"),
       includeTerrain: terrain,
       deferTerrain: false,
       terrainResolution: terrain ? "auto" : undefined,
@@ -947,11 +943,11 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       ...bbox,
       name: document.getElementById("q").value || "Site",
       includeFoliage: foliage,
-      includeWater: document.getElementById("include-water").checked,
-      includeParking: document.getElementById("include-parking").checked,
-      includeWalls: document.getElementById("include-walls").checked,
-      includePoles: document.getElementById("include-poles").checked,
-      includeRvs: document.getElementById("include-rvs").checked,
+      includeWater: clutterChecked("include-water"),
+      includeParking: clutterChecked("include-parking"),
+      includeWalls: clutterChecked("include-walls"),
+      includePoles: clutterChecked("include-poles"),
+      includeRvs: clutterChecked("include-rvs"),
       includeTerrain: terrain,
       deferTerrain: terrain && devPage(),
       terrainResolution: terrain ? "auto" : undefined,
@@ -999,7 +995,7 @@ document.getElementById("export").onclick = async () => {
   }
   if (!bbox) return;
   exportBtn.disabled = true;
-  const includeFoliage = document.getElementById("include-foliage").checked;
+  const includeFoliage = clutterChecked("include-foliage");
   const includeTerrain = terrainExportEnabled();
   setStatus("Export is still working.");
   try {
