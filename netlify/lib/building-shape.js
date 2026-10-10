@@ -1458,6 +1458,15 @@ function repairCoarseWedges(features, osmRings, ground, notes) {
         replaced++;
         continue;
       }
+      // The Overture copy of way 111413431 is this wedge. Its own trim
+      // fails, and the street-map ring is also triangular, so the usual
+      // replacement skips it. Seat that outline instead of dropping the roof.
+      const outlined = streetOutlineForWedge(rings[0], osmRings);
+      if (outlined && outlined.length) {
+        replace.set(i, outlined);
+        replaced++;
+        continue;
+      }
       drop.add(i);
       dropped++;
       noteLargeDrop(notes, host, "triangular outline covered open ground");
@@ -1811,6 +1820,40 @@ function realBuildingBody(source, osmRings) {
  * A cleaned copy of a coarse triangle: the thick body after a taper cut.
  * Never a convex hull, and never the triangle itself.
  */
+/**
+ * The street-map ring for a coarse wedge, including a ring that is itself
+ * triangular. A traced outline (many corners) is the roof. A 3-point
+ * triangle is not.
+ */
+function streetOutlineForWedge(wedge, osmRings) {
+  const host = meterArea(wedge);
+  if (!(host > 0)) return null;
+  let best = null;
+  let bestInter = 0;
+  for (let i = 0; i < (osmRings || []).length; i++) {
+    const closed = closeRing(osmRings[i]);
+    if (!closed) continue;
+    const oa = meterArea(closed);
+    const ratio = oa / host;
+    if (ratio < 0.7 || ratio > 1.45) continue;
+    const inter = intersectionArea(closed, wedge);
+    if (!(inter / host >= 0.75)) continue;
+    if (inter > bestInter) {
+      bestInter = inter;
+      best = closed;
+    }
+  }
+  if (!best) return null;
+  const cleaned = cleanedSourceBody(best);
+  if (cleaned.length) return cleaned;
+  const open =
+    best.length > 1 && best[0][0] === best[best.length - 1][0] && best[0][1] === best[best.length - 1][1]
+      ? best.length - 1
+      : best.length;
+  if (open >= 40) return [best];
+  return null;
+}
+
 function cleanedSourceBody(source) {
   const closed = closeRing(source);
   if (!closed) return [];

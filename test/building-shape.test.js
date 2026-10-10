@@ -799,4 +799,58 @@ describe("building outlines", () => {
     assert.equal(dropped.stats.buildings, 0);
     assert.equal(dropped.stats.droppedSpan, 1);
   });
+
+  it("emits OSM way 111413431 over the solar block after the vertex cap", () => {
+    const fc = JSON.parse(
+      fs.readFileSync(path.join(__dirname, "fixtures/wynn-golf/solar-111413431.geojson"), "utf8")
+    );
+    const osm = fc.features[0].geometry.coordinates[0];
+    const overture = fc.features[1];
+    const solar = [
+      [-115.1652, 36.124],
+      [-115.1644, 36.1239],
+      [-115.1652, 36.12435],
+      [-115.165, 36.1236],
+    ];
+    for (let i = 0; i < solar.length; i++) {
+      assert.equal(pointInRingLL(solar[i], osm), true);
+      assert.equal(pointInRingLL(solar[i], overture.geometry.coordinates[0]), true);
+    }
+    const road = [];
+    for (let i = 0; i <= 16; i++) road.push([-115.1646, 36.1236 + i * (0.0032 / 16)]);
+    const dropped = shapeBuildings([JSON.parse(JSON.stringify(overture))], { buildings: [], roads: [road] });
+    assert.equal(dropped.features.length, 0);
+    assert.match(dropped.stats.largeDrops.join(" "), /36866 m2: triangular outline covered open ground/);
+    const shaped = shapeBuildings([JSON.parse(JSON.stringify(overture))], { buildings: [osm], roads: [road] });
+    assert.equal(shaped.stats.wedgesReplaced, 1);
+    assert.equal(shaped.stats.largeDrops.length, 0);
+    for (let i = 0; i < solar.length; i++) {
+      let hit = false;
+      for (let f = 0; f < shaped.features.length; f++) {
+        const ring = shaped.features[f].geometry.coordinates[0];
+        if (!pointInRingLL(solar[i], ring)) continue;
+        hit = true;
+        assert.ok(shaped.features[f].properties.height >= 15 && shaped.features[f].properties.height <= 20);
+      }
+      assert.equal(hit, true, "shaped ring missed solar point " + i);
+    }
+    const frame = geoFrame(
+      { west: -115.16942, south: 36.120084, east: -115.153863, north: 36.131185, name: "Wynn" },
+      { maxSide: 400, metersPerPx: 2 }
+    );
+    const built = footprintsToClutter(shaped.features, frame);
+    assert.equal(built.stats.droppedVerts, 0);
+    for (let i = 0; i < solar.length; i++) {
+      let hit = false;
+      let height = 0;
+      for (let r = 0; r < built.overlayRings.length; r++) {
+        const ring = built.overlayRings[r].map((p) => pxToLl(p[0], p[1], frame));
+        if (!pointInRingLL(solar[i], ring)) continue;
+        hit = true;
+        height = built.overlayHeights[r];
+      }
+      assert.equal(hit, true, "solar point " + i + " was dropped");
+      assert.ok(height >= 15 && height <= 20, "height " + height);
+    }
+  });
 });
