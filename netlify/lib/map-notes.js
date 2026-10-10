@@ -1,6 +1,6 @@
 "use strict";
 
-const { llToClipboard } = require("./geo-frame");
+const { llToClipboard, pxToLl } = require("./geo-frame");
 
 /**
  * HaminaClipboard mapNotes item, as written by Hamina Clipboard Tools
@@ -253,6 +253,69 @@ function extentOf(points) {
   return { minLon, maxLon, minLat, maxLat };
 }
 
+function separatePeaks(rows, sepM, cap) {
+  const ranked = rows.slice().sort((a, b) => (b.heightM || 0) - (a.heightM || 0));
+  const kept = [];
+  for (let i = 0; i < ranked.length && kept.length < cap; i++) {
+    const row = ranked[i];
+    let close = false;
+    for (let k = 0; k < kept.length; k++) {
+      if (metersBetween(row.lon, row.lat, kept[k].lon, kept[k].lat) < sepM) close = true;
+    }
+    if (close) continue;
+    kept.push(row);
+  }
+  return kept;
+}
+
+/** Thickness of an emitted area. A seated crown stores the seat in bottom_height. */
+function areaThickness(material) {
+  const top = material && +material.top_height;
+  if (!Number.isFinite(top)) return 0;
+  const bottom = material && material.bottom_height != null ? +material.bottom_height : 0;
+  if (Number.isFinite(bottom) && bottom > 0 && top > bottom) return top - bottom;
+  return top;
+}
+
+/**
+ * Tall crowns and buildings from the OpenIntent that actually shipped.
+ * Tree points often have no height yet; the canopy thickness is on the area.
+ */
+function tallRowsFromOpenIntent(oi, frame) {
+  const areas =
+    oi && oi.floorplans && oi.floorplans[0] && oi.floorplans[0].attenuation_areas;
+  if (!Array.isArray(areas) || !frame || !(frame.imgW > 0) || !(frame.imgH > 0)) return [];
+  const foliage = [];
+  const buildings = [];
+  for (let i = 0; i < areas.length; i++) {
+    const area = areas[i];
+    const material = (area && area.area_material) || {};
+    const name = String(material.name || "");
+    const thick = areaThickness(material);
+    const coords = area && area.area && area.area.coordinates;
+    if (!Array.isArray(coords) || !coords.length) continue;
+    let x = 0;
+    let y = 0;
+    let n = 0;
+    for (let c = 0; c < coords.length; c++) {
+      const p = coords[c] && coords[c].coordinate_xyz;
+      if (!p || !Number.isFinite(+p.x) || !Number.isFinite(+p.y)) continue;
+      x += +p.x;
+      y += +p.y;
+      n++;
+    }
+    if (!n) continue;
+    const ll = pxToLl(x / n, y / n, frame);
+    const row = { lon: ll[0], lat: ll[1], heightM: thick };
+    if (name.indexOf("Foliage") === 0 && thick >= 15) {
+      foliage.push(Object.assign({ name: "tree" }, row));
+    } else if (name.indexOf("Building") === 0 && thick >= 12) {
+      buildings.push(Object.assign({ name: "" }, row));
+    }
+  }
+  return separatePeaks(foliage, 80, 2).concat(separatePeaks(buildings, 40, 2));
+}
+
 function buildMapNotes(opts) {
   const frame = opts && opts.frame;
   const places = (opts && opts.places) || [];
@@ -339,6 +402,8 @@ function buildMapNotes(opts) {
     if (p.heightM && p.heightM < 12) continue;
     talls.push(p);
   }
+  const shipped = tallRowsFromOpenIntent(opts && opts.openintent, frame);
+  for (let i = 0; i < shipped.length; i++) talls.push(shipped[i]);
   talls.sort((a, b) => (b.heightM || 0) - (a.heightM || 0));
   const trees = (opts && opts.trees) || [];
   const treePeaks = [];
@@ -360,10 +425,13 @@ function buildMapNotes(opts) {
   let tallKept = 0;
   for (let i = 0; i < talls.length && tallKept < 4; i++) {
     const t = talls[i];
-    const meters = t.heightM ? ", " + Math.round(t.heightM) + " m" : "";
-    const name = t.name ? ", " + t.name : "";
+    const meters = t.heightM ? Math.round(t.heightM) + " m" : "";
     const before = out.length;
-    pushNote(out, placed, t.lon, t.lat, frame, "Tall obstruction" + meters + name, 18);
+    const text =
+      t.name === "tree"
+        ? "Tall obstruction, tree" + (meters ? ", " + meters : "")
+        : "Tall obstruction" + (meters ? ", " + meters : "") + (t.name ? ", " + t.name : "");
+    pushNote(out, placed, t.lon, t.lat, frame, text, 18);
     if (out.length > before) tallKept++;
   }
 
