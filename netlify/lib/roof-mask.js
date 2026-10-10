@@ -15,8 +15,8 @@
  *   5. Otherwise emit the convex hull as a GeoJSON polygon. A much smaller
  *      vector whose centroid sits inside that hull is a partial stub and is
  *      dropped so the full outline replaces it.
- *   6. A dark panel roof is a separate pass. It is a rectangle on the
- *      panel axis, not a convex hull of the surrounding dark pixels.
+ *   6. Dark pixels are not a roof. Tower shadow, roads, and trees share
+ *      that luminance, so this module does not emit a building from them.
  * OSM building rings are not read.
  */
 
@@ -645,206 +645,15 @@ function rectLonLat(rect, frame) {
 }
 
 function darkRectRoofs(raw, frame, features) {
-  if (!raw || !raw.data || !frame || !frame.mpd || !(raw.width > 32) || !(raw.height > 32)) {
-    return { features: [] };
-  }
-  const mpu = frame.mpuX > 0 ? frame.mpuX : 1;
-  const stepM = 8;
-  let stepPx = Math.max(3, Math.round(stepM / mpu));
-  while ((raw.width / stepPx) * (raw.height / stepPx) > 42000 && stepPx < 28) stepPx++;
-  const cols = Math.floor(raw.width / stepPx);
-  const rows = Math.floor(raw.height / stepPx);
-  if (cols < 12 || rows < 12) return { features: [] };
-  const dark = new Uint8Array(rows * cols);
-  const yv = new Float32Array(rows * cols);
-  const data = raw.data;
-  const w = raw.width;
-  let darkN = 0;
-  for (let r = 1; r < rows - 1; r++) {
-    for (let c = 1; c < cols - 1; c++) {
-      let n = 0;
-      let nd = 0;
-      let sumY = 0;
-      const spots = [
-        [0.5, 0.5],
-        [0.25, 0.25],
-        [0.75, 0.25],
-        [0.25, 0.75],
-        [0.75, 0.75],
-      ];
-      for (let s = 0; s < spots.length; s++) {
-        const x = Math.round(c * stepPx + spots[s][0] * (stepPx - 1));
-        const y = Math.round(r * stepPx + spots[s][1] * (stepPx - 1));
-        if (x < 0 || y < 0 || x >= w || y >= raw.height) continue;
-        const i = (y * w + x) * 4;
-        const kind = darkCell([data[i], data[i + 1], data[i + 2]]);
-        n++;
-        sumY += luma(data[i], data[i + 1], data[i + 2]);
-        if (kind === "dark") nd++;
-      }
-      const k = r * cols + c;
-      yv[k] = n ? sumY / n : 255;
-      if (n && nd / n >= 0.6) {
-        dark[k] = 1;
-        darkN++;
-      }
-    }
-  }
-  if (darkN * stepM * stepM < DARK_RECT_MIN_M2) return { features: [] };
-  const spanX = (frame.east - frame.west) * frame.mpd.lon;
-  const spanY = (frame.north - frame.south) * frame.mpd.lat;
-  function sampleAt(east, north) {
-    const x = (east / spanX) * w;
-    const y = raw.height - (north / spanY) * raw.height;
-    const xi = Math.round(x);
-    const yi = Math.round(y);
-    if (xi < 1 || yi < 1 || xi >= w - 1 || yi >= raw.height - 1) return null;
-    let nd = 0;
-    let nw = 0;
-    let n = 0;
-    let sumY = 0;
-    const shifts = [
-      [0, 0],
-      [-2, 0],
-      [2, 0],
-      [0, -2],
-      [0, 2],
-    ];
-    for (let s = 0; s < shifts.length; s++) {
-      const xx = xi + shifts[s][0];
-      const yy = yi + shifts[s][1];
-      if (xx < 0 || yy < 0 || xx >= w || yy >= raw.height) continue;
-      const i = (yy * w + xx) * 4;
-      const kind = darkCell([data[i], data[i + 1], data[i + 2]]);
-      n++;
-      sumY += luma(data[i], data[i + 1], data[i + 2]);
-      if (kind === "dark") nd++;
-      else if (kind === "water") nw++;
-    }
-    if (!n) return null;
-    return { dark: nd / n >= 0.6, y: sumY / n, water: nw / n >= 0.6 };
-  }
-  const closed = closeDark(dark, cols, rows);
-  const comps = darkComponents(closed, cols, rows);
-  const cellM = stepPx * mpu;
-  const found = [];
-  for (let ci = 0; ci < comps.length; ci++) {
-    const comp = comps[ci];
-    const pts = [];
-    for (let i = 0; i < comp.length; i++) {
-      const k = comp[i];
-      if (!dark[k]) continue;
-      const r = (k / cols) | 0;
-      const c = k - r * cols;
-      const x = (c + 0.5) * stepPx;
-      const y = (r + 0.5) * stepPx;
-      const east = (x / w) * (frame.east - frame.west) * frame.mpd.lon;
-      const north = ((raw.height - y) / raw.height) * (frame.north - frame.south) * frame.mpd.lat;
-      pts.push([east, north, yv[k]]);
-    }
-    if (pts.length * cellM * cellM < 2500) continue;
-    let minE = Infinity;
-    let maxE = -Infinity;
-    let minN = Infinity;
-    let maxN = -Infinity;
-    for (let i = 0; i < pts.length; i++) {
-      if (pts[i][0] < minE) minE = pts[i][0];
-      if (pts[i][0] > maxE) maxE = pts[i][0];
-      if (pts[i][1] < minN) minN = pts[i][1];
-      if (pts[i][1] > maxN) maxN = pts[i][1];
-    }
-    const windows = [];
-    if (maxE - minE <= 300 && maxN - minN <= 300) windows.push([minE - 16, maxE + 16, minN - 16, maxN + 16, pts]);
-    else {
-      for (let e0 = minE; e0 < maxE; e0 += 110) {
-        for (let n0 = minN; n0 < maxN; n0 += 110) {
-          const slice = [];
-          for (let i = 0; i < pts.length; i++) {
-            if (pts[i][0] >= e0 && pts[i][0] < e0 + 260 && pts[i][1] >= n0 && pts[i][1] < n0 + 260) {
-              slice.push(pts[i]);
-            }
-          }
-          if (slice.length * cellM * cellM >= 3000) windows.push([e0, e0 + 260, n0, n0 + 260, slice]);
-        }
-      }
-    }
-    for (let wi = 0; wi < windows.length; wi++) {
-      const win = windows[wi];
-      const slice = win[4];
-      let mx = 0;
-      let my = 0;
-      for (let i = 0; i < slice.length; i++) {
-        mx += slice[i][0];
-        my += slice[i][1];
-      }
-      mx /= slice.length;
-      my /= slice.length;
-      let xx = 0;
-      let xy = 0;
-      let yy = 0;
-      for (let i = 0; i < slice.length; i++) {
-        const dx = slice[i][0] - mx;
-        const dy = slice[i][1] - my;
-        xx += dx * dx;
-        xy += dx * dy;
-        yy += dy * dy;
-      }
-      const theta = 0.5 * Math.atan2(2 * xy, xx - yy);
-      const angles = [theta, theta + (8 * Math.PI) / 180, theta - (8 * Math.PI) / 180];
-      for (let a = 0; a < angles.length; a++) {
-        const hit = searchDarkGrid(win[0], win[1], win[2], win[3], stepM, Math.cos(angles[a]), Math.sin(angles[a]), sampleAt);
-        if (hit) found.push(hit);
-      }
-    }
-  }
-  found.sort((a, b) => b.area - a.area || a.meanY - b.meanY);
-  const neighbors = meterRingsOf(features, frame);
-  const kept = [];
-  for (let i = 0; i < found.length; i++) {
-    const ring = rectLonLat(found[i], frame);
-    const c = ringCentroid(ring);
-    if (!c) continue;
-    let near = false;
-    for (let k = 0; k < kept.length; k++) {
-      const dx = (c[0] - kept[k].c[0]) * frame.mpd.lon;
-      const dy = (c[1] - kept[k].c[1]) * frame.mpd.lat;
-      if (dx * dx + dy * dy < 80 * 80) {
-        near = true;
-        break;
-      }
-    }
-    if (near) continue;
-    const xi = Math.round(((c[0] - frame.west) / (frame.east - frame.west)) * raw.width);
-    const yi = Math.round(((frame.north - c[1]) / (frame.north - frame.south)) * raw.height);
-    if (xi < 0 || yi < 0 || xi >= raw.width || yi >= raw.height) continue;
-    const pi = (yi * raw.width + xi) * 4;
-    const centerKind = darkCell([data[pi], data[pi + 1], data[pi + 2]]);
-    if (centerKind !== "dark" || luma(data[pi], data[pi + 1], data[pi + 2]) > 42) continue;
-    const meters = [];
-    for (let k = 0; k < ring.length; k++) {
-      meters.push([(ring[k][0] - frame.west) * frame.mpd.lon, (ring[k][1] - frame.south) * frame.mpd.lat]);
-    }
-    if (coverFraction(ring, neighbors) >= DARK_RECT_MAX_COVER) continue;
-    if (!ringTouches(meters, neighbors, DARK_RECT_TOUCH_M)) continue;
-    kept.push({ c, ring, meanY: found[i].meanY, area: found[i].area });
-    if (kept.length >= DARK_RECT_CAP) break;
-  }
-  const out = [];
-  for (let i = 0; i < kept.length; i++) {
-    out.push({
-      type: "Feature",
-      properties: {
-        source: "imagery-roof",
-        height: DARK_RECT_HEIGHT_M,
-        heightSource: "imagery-roof",
-      },
-      geometry: { type: "Polygon", coordinates: [kept[i].ring] },
-    });
-  }
-  return { features: out };
+  // Dark pixels are tower shadow, roads, and trees as often as a roof.
+  // This pass must not invent a building from them.
+  void raw;
+  void frame;
+  void features;
+  return { features: [] };
 }
 
-/** The 6 MP roof fill does not decode a 4K plate. Dark panels still use that plate. */
+/** Dark pixels are not a roof. A skipped 6 MP decode does not invent one. */
 function darkPanelsWhenRoofFillSkipped(decoded, roofRaw, frame, features) {
   if (decoded) return { features: [] };
   return darkRectRoofs(roofRaw, frame, features);
