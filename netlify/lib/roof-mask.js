@@ -814,9 +814,8 @@ function darkRectRoofs(raw, frame, features) {
       }
     }
     if (near) continue;
-    const px = llToImage(c[0], c[1], frame);
-    const xi = Math.round(px[0]);
-    const yi = Math.round(px[1]);
+    const xi = Math.round(((c[0] - frame.west) / (frame.east - frame.west)) * raw.width);
+    const yi = Math.round(((frame.north - c[1]) / (frame.north - frame.south)) * raw.height);
     if (xi < 0 || yi < 0 || xi >= raw.width || yi >= raw.height) continue;
     const pi = (yi * raw.width + xi) * 4;
     const centerKind = darkCell([data[pi], data[pi + 1], data[pi + 2]]);
@@ -843,6 +842,12 @@ function darkRectRoofs(raw, frame, features) {
     });
   }
   return { features: out };
+}
+
+/** The 6 MP roof fill does not decode a 4K plate. Dark panels still use that plate. */
+function darkPanelsWhenRoofFillSkipped(decoded, roofRaw, frame, features) {
+  if (decoded) return { features: [] };
+  return darkRectRoofs(roofRaw, frame, features);
 }
 
 function supplementFootprints(raw, frame, features) {
@@ -873,6 +878,7 @@ module.exports = {
   MIN_MEMBRANE_M2,
   imageryRoofFeatures,
   darkRectRoofs,
+  darkPanelsWhenRoofFillSkipped,
   supplementFootprints,
   imagePxToLl,
   pointInRing,
