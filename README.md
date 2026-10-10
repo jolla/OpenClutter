@@ -8,6 +8,8 @@
 
 **v1.1.97** on `dev` — Sloped terrain is an adaptive mesh, not a fixed 20×20 grid. The paste spends its budget on the worst saddles, keeps a planar fit near half a meter, and merges a flat bench into one raised floor. Neighboring ramps share an edge height, and a coarse piece is split where it meets a finer one so the seam has no gap. A pure north-south or east-west grade stays one ramp per cell. The badge stays (`dev · v1.1.97`).
 
+**v1.1.112** on `dev` — The solar block south of the Wynn podium stays in the export. That outline is OSM way 111413431. It has more corners than the import cap, and cutting it in half made each piece look just triangular enough to throw away, so the whole roof was dropped. Those pieces are the roof, seated at 18 m. The badge stays (`dev · v1.1.112`).
+
 **v1.1.111** on `dev` — A dev page can pass `?lidar=1` to read USGS 3DEP lidar for that draw. Building heights come from the cloud, and a roof the street map missed can be added when the returns cover more than 200 m². The sample stays inside the export budget, so a large draw is coarser than 1 m. A draw outside 3DEP, including Montreal, skips the pass. The badge stays (`dev · v1.1.111`).
 
 **v1.1.110** on `dev` — A diagonal podium slab over the retail ring is replaced by that street-map outline, seated at 18 m. The solar wing of the outline stays covered, and the slab is not drawn. The badge stays (`dev · v1.1.110`).

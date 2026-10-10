@@ -1929,6 +1929,10 @@ function wedgePieceOf(root, piece, mpd) {
   const rootTri = extremeTriRatio(root);
   const pieceTri = extremeTriRatio(piece);
   if (pieceTri < 0.82) return false;
+  // Halving a traced block makes each piece a little more triangular.
+  // Way 111413431 is that block: the halves still cover the solar roof.
+  // A diagonal slab is much sharper than the outline it was cut from.
+  if (pieceTri < rootTri + 0.12) return false;
   if (rootTri < 0.8) return true;
   // A split that sharpens into a diagonal slab. A pure triangle stays.
   return rootTri < 0.92 && pieceTri >= 0.9;
