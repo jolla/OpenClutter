@@ -160,7 +160,7 @@ const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchSlopeForest } = require("../lib/slope-forest");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
-const { fetchUsgsLidar, applyLidarSample, lidarNote } = require("../lib/usgs-lidar");
+const { fetchUsgsLidar, applyLidarSample, lidarNote, lidarStatusLine } = require("../lib/usgs-lidar");
 const exportJobs = require("../lib/export-jobs");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
 const { fetchMsGlobalFootprints, globalSkipWarning } = require("../lib/ms-global");
@@ -1705,10 +1705,13 @@ async function handleClutter(event) {
       footprintMeta.lidarBytes = lidar.bytes || 0;
       footprintMeta.lidarSpacing = lidar.spacingM || 0;
       footprintMeta.lidarMs = lidar.ms || 0;
-      const note = lidarNote(lidar);
+      const status = lidarStatusLine(lidar);
+      if (warnings.indexOf(status) < 0) warnings.push(status);
+      const used = status === "Lidar heights used.";
+      const note = used ? lidarNote(lidar) : "";
       if (note && warnings.indexOf(note) < 0) warnings.push(note);
     } catch {
-      warnings.push("USGS lidar omitted: the point cloud could not be read. Building heights are unchanged.");
+      warnings.push("Lidar heights not used.");
     }
   }
 

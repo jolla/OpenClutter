@@ -75,15 +75,21 @@ function jsonBudgetOverride() {
   return n;
 }
 
-function lidarEnabled() {
-  if (!devPage()) return undefined;
+function lidarQueryOn() {
   let raw = "";
   try {
     raw = new URLSearchParams(location.search || "").get("lidar");
   } catch (err) {
-    return undefined;
+    return false;
   }
-  return raw === "1" ? true : undefined;
+  return raw === "1";
+}
+
+function lidarEnabled() {
+  if (!devPage()) return undefined;
+  const input = document.getElementById("include-lidar");
+  if (input && input.checked) return true;
+  return lidarQueryOn() ? true : undefined;
 }
 
 function selectedImageryQuality() {
@@ -110,6 +116,8 @@ function terrainExportEnabled() {
   if (badge && devPage()) badge.classList.add("on");
   syncDevPanel();
   restoreAdvanced();
+  const lidarBox = document.getElementById("include-lidar");
+  if (lidarBox && devPage() && lidarQueryOn()) lidarBox.checked = true;
   const ver = document.getElementById("app-version");
   if (ver && window.OPENCLUTTER_VERSION) ver.textContent = "v" + window.OPENCLUTTER_VERSION;
 })();
@@ -222,6 +230,8 @@ function exportHeadline(stats, warnings, foliageOn) {
   const px = mapLine && String(mapLine).match(/(\d+) px/);
   if (stepped) bits.push(stepped[1] + " px, down from " + stepped[2]);
   else if (px) bits.push(px[1] + " px");
+  const lidarLine = (warnings || []).find((w) => /^Lidar heights (used|not used)\./.test(String(w)));
+  if (lidarLine) bits.push(String(lidarLine).replace(/\.$/, ""));
   if (!bits.length) return "Zip ready.";
   return "Zip ready. " + bits.join(", ") + ".";
 }
@@ -835,7 +845,10 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
   if (pasteLine) lines.push(pasteLine);
   if (gpsNote) lines.push(gpsNote);
   if (summary) lines.push(summary);
-  for (let i = 0; i < warnLines.length; i++) lines.push(warnLines[i]);
+  for (let i = 0; i < warnLines.length; i++) {
+    if (/^Lidar heights (used|not used)\.$/.test(warnLines[i])) continue;
+    lines.push(warnLines[i]);
+  }
   setStatus(lines.join("\n"));
   if (copyTerrainBtn && !copyTerrainBtn.hidden) {
     setCopyNote(

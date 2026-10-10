@@ -15,8 +15,8 @@
  * The background export cannot download a full 1 m cloud for a multi-km²
  * draw. Hierarchy counts pick the finest depth that stays inside the point,
  * byte, tile, and time caps. A finer grid would be a cached nDSM, not a
- * live read. Outside 3DEP the export continues and says so. Quebec open
- * lidar is not wired in.
+ * live read. Outside 3DEP the export continues with the other heights.
+ * Quebec open lidar is not wired in. The page turns this on from Advanced.
  */
 
 const { userAgent } = require("./version");
@@ -644,6 +644,14 @@ function mb(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1);
 }
 
+/** One status line. Used only when a building height or a new roof came from the cloud. */
+function lidarStatusLine(sample) {
+  const heights = sample ? +sample.heights || 0 : 0;
+  const added = sample ? +sample.added || 0 : 0;
+  if (sample && !sample.skipped && (heights > 0 || added > 0)) return "Lidar heights used.";
+  return "Lidar heights not used.";
+}
+
 function lidarNote(sample) {
   if (!sample) return "";
   if (sample.skipped) return sample.warning || outsideNote(sample.frame || {});
@@ -1051,6 +1059,7 @@ module.exports = {
   outsideNote,
   gridFromPoints,
   applyLidarSample,
+  lidarStatusLine,
   lidarNote,
   fetchUsgsLidar,
   gpsDay,

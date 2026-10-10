@@ -10,6 +10,7 @@ const {
   gpsDay,
   gridFromPoints,
   applyLidarSample,
+  lidarStatusLine,
   fetchUsgsLidar,
   mercator,
   HEIGHT_SOURCE,
@@ -221,15 +222,32 @@ describe("USGS lidar", () => {
     assert.ok(applied.trees[0].heightM > 10);
   });
 
-  it("sends lidar only from the dev query flag", () => {
+  it("says whether lidar heights were used", () => {
+    assert.equal(lidarStatusLine(null), "Lidar heights not used.");
+    assert.equal(lidarStatusLine({ skipped: "outside" }), "Lidar heights not used.");
+    assert.equal(lidarStatusLine({ heights: 0, added: 0 }), "Lidar heights not used.");
+    assert.equal(lidarStatusLine({ heights: 4, added: 0 }), "Lidar heights used.");
+    assert.equal(lidarStatusLine({ heights: 0, added: 2 }), "Lidar heights used.");
+    assert.equal(lidarStatusLine({ skipped: "outside", heights: 4 }), "Lidar heights not used.");
+  });
+
+  it("sends lidar from the Advanced toggle, off unless checked", () => {
     const app = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
+    const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     const clutter = fs.readFileSync(path.join(__dirname, "../netlify/functions/clutter.js"), "utf8");
     const toml = fs.readFileSync(path.join(__dirname, "../netlify.toml"), "utf8");
+    assert.match(html, /id="include-lidar"/);
+    assert.equal(/id="include-lidar"[^>]*checked/.test(html), false);
+    assert.match(html, />\s*Lidar heights\s*</);
     assert.match(app, /function lidarEnabled\(\)/);
     assert.match(app, /get\("lidar"\)/);
     assert.match(app, /raw === "1"/);
+    assert.match(app, /include-lidar/);
+    assert.match(app, /Lidar heights \(used\|not used\)/);
     assert.equal(app.split("lidar: lidarEnabled()").length, 3);
     assert.match(clutter, /devHost && \(body\.lidar === true/);
+    assert.match(clutter, /lidarStatusLine\(lidar\)/);
+    assert.match(clutter, /Lidar heights not used\./);
     assert.match(toml, /external_node_modules = \["laz-perf"\]/);
   });
 });
