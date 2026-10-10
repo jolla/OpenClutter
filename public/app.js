@@ -832,8 +832,18 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
   const summary = (data.stats && data.stats.summary) || "";
   const terrainNote = terrainOff ? "Terrain off" : data.terrainStatus || "";
   const pasteLine = terrainOff ? "" : OpenClutterExport.terrainPasteLine(data && data.terrainClipboard);
+  let pastedNotes = 0;
+  if (terrainPasteJson) {
+    try {
+      const pasted = JSON.parse(terrainPasteJson);
+      pastedNotes = pasted && Array.isArray(pasted.mapNotes) ? pasted.mapNotes.length : 0;
+    } catch (err) {
+      pastedNotes = 0;
+    }
+  }
   const gpsNote = terrainPasteJson
-    ? "Two GPS points, the southwest and northeast corners of the imported map, are on the paste."
+    ? "Two GPS points, the southwest and northeast corners of the imported map, are on the paste." +
+      (pastedNotes ? " Map notes are on that paste." : "")
     : "";
   const warnLines = (Array.isArray(data.warnings) ? data.warnings.filter(Boolean) : []).filter(
     (line) => !terrainOff || !/terrain/i.test(line)
@@ -897,6 +907,7 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
       jsonBudget: jsonBudgetOverride(),
       terrainFloors: terrainFloorsOverride(),
       lidar: lidarEnabled(),
+      mapNotes: clutterChecked("include-map-notes"),
       trees: foliage ? trees : [],
       treesSource: foliage ? treesSource : "none",
       canopyHits: foliage && canopyHits && canopyHits.length ? canopyHits : undefined,
@@ -996,6 +1007,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       jsonBudget: jsonBudgetOverride(),
       terrainFloors: terrainFloorsOverride(),
       lidar: lidarEnabled(),
+      mapNotes: clutterChecked("include-map-notes"),
       trees: foliage ? trees : [],
       treesSource: foliage ? treesSource : "none",
       canopyHits: foliage && canopyHits && canopyHits.length ? canopyHits : undefined,
@@ -1090,7 +1102,15 @@ document.getElementById("export").onclick = async () => {
     });
     downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
     if (paste && paste.terrainClipboard) {
+      const keptNotes = data.terrainClipboard && data.terrainClipboard.mapNotes;
       data.terrainClipboard = paste.terrainClipboard;
+      if (
+        Array.isArray(keptNotes) &&
+        keptNotes.length &&
+        (!data.terrainClipboard.mapNotes || !data.terrainClipboard.mapNotes.length)
+      ) {
+        data.terrainClipboard.mapNotes = keptNotes;
+      }
       data.terrainStatus = paste.terrainStatus || "";
       if (Array.isArray(data.warnings)) {
         data.warnings = data.warnings.filter((w) => !/terrain omitted|export budget spent/i.test(String(w)));
