@@ -3287,6 +3287,12 @@ function pastedFloorExtent(terrain, xy) {
  * ring vertices and the centroid.
  */
 function floorExtentUnderRing(terrain, ring) {
+  // A fence or a short wall is often two points. The seat used to require a
+  // polygon, so that segment stayed on the floor while the hill was at 30 m.
+  if (ring && ring.length === 2 && ring[0] && ring[1]) {
+    const mid = [(+ring[0][0] + +ring[1][0]) / 2, (+ring[0][1] + +ring[1][1]) / 2];
+    ring = [ring[0], mid, ring[1], ring[0]];
+  }
   if (!terrain || !ring || ring.length < 3) return { min: 0, max: 0 };
   const frame = terrain.frame;
   const xy = frame ? ringToClipboard(ring, frame) : [];
