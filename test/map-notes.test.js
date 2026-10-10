@@ -102,6 +102,54 @@ describe("Hamina map notes", () => {
     assert.equal(parsed.buildings.length, 1);
   });
 
+  it("notes a shipped canopy of at least 15 m and skips a short building", () => {
+    const notes = buildMapNotes({
+      frame,
+      places: [],
+      features: [],
+      openintent: {
+        floorplans: [
+          {
+            attenuation_areas: [
+              {
+                area_material: {
+                  name: "Foliage - Heavy 28.0 @ 46.4",
+                  top_height: 74.4,
+                  bottom_height: 46.4,
+                },
+                area: {
+                  coordinates: [
+                    { coordinate_xyz: { x: frame.imgW * 0.4, y: frame.imgH * 0.6 } },
+                    { coordinate_xyz: { x: frame.imgW * 0.42, y: frame.imgH * 0.6 } },
+                    { coordinate_xyz: { x: frame.imgW * 0.41, y: frame.imgH * 0.62 } },
+                  ],
+                },
+              },
+              {
+                area_material: {
+                  name: "Building - Two Floor 44.3",
+                  top_height: 51.9,
+                  bottom_height: 44.3,
+                },
+                area: {
+                  coordinates: [
+                    { coordinate_xyz: { x: 10, y: 10 } },
+                    { coordinate_xyz: { x: 20, y: 10 } },
+                    { coordinate_xyz: { x: 15, y: 20 } },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const text = notes.map((n) => n.text).join("\n");
+    assert.match(text, /Tall obstruction, tree, 28 m/);
+    assert.equal(/Building - Two Floor/.test(text), false);
+    assert.equal(/Tall obstruction, 8 m/.test(text), false);
+  });
+
   it("the page sends map notes unless the toggle is off", () => {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     const app = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");

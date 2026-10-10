@@ -2087,6 +2087,7 @@ async function handleClutter(event) {
         places: planningPlaces,
         features: exportFeatures,
         trees: treePoints,
+        openintent: built.openintent,
       });
       if (terrainFields.terrainClipboard) stampMapNotes(terrainFields.terrainClipboard, notes);
       stampMapNotes(gpsPaste, notes);
