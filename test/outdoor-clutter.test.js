@@ -542,7 +542,9 @@ describe("outdoor clutter fetch", () => {
   it("keeps the page toggles on and the counts off the headline", () => {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     const app = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
-    for (const id of ["include-water", "include-parking", "include-walls", "include-poles", "include-rvs"]) {
+    assert.match(html, /id="include-water"/);
+    assert.equal(/id="include-water"[^>]*checked/.test(html), false);
+    for (const id of ["include-parking", "include-walls", "include-poles", "include-rvs"]) {
       assert.match(html, new RegExp('id="' + id + '" checked'));
     }
     assert.match(html, />\s*Water\s*</);
