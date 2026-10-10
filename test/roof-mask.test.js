@@ -128,33 +128,11 @@ describe("dark panel rectangles", () => {
     });
   }
 
-  it("emits a dark rectangle beside a building and keeps its center", () => {
+  it("does not invent a building from a dark rectangle", () => {
     const found = darkRectRoofs(panelImage(), frame, [neighborTouching(40, 50, 110, 115)]);
-    assert.equal(found.features.length, 1);
-    const feature = found.features[0];
-    assert.equal(feature.properties.source, "imagery-roof");
-    assert.equal(feature.properties.height, 18);
-    const ring = feature.geometry.coordinates[0];
-    assert.equal(ring.length, 5);
-    const center = ll(75, 82);
-    assert.equal(pointInRing(center, ring), true);
-  });
-
-  it("emits the panel block once a covering outline is only the building beside it", () => {
-    const image = panelImage();
-    const a = ll(40, 115);
-    const b = ll(110, 115);
-    const c = ll(110, 50);
-    const d = ll(40, 50);
-    const covered = {
-      type: "Feature",
-      properties: { height: 16 },
-      geometry: { type: "Polygon", coordinates: [[a, b, c, d, a]] },
-    };
-    assert.equal(darkRectRoofs(image, frame, [covered]).features.length, 0);
-    const trimmed = darkRectRoofs(image, frame, [neighborTouching(40, 50, 110, 115)]);
-    assert.equal(trimmed.features.length, 1);
-    assert.equal(pointInRing(ll(75, 82), trimmed.features[0].geometry.coordinates[0]), true);
+    assert.equal(found.features.length, 0);
+    const skipped = darkPanelsWhenRoofFillSkipped(null, panelImage(), frame, [neighborTouching(40, 50, 110, 115)]);
+    assert.equal(skipped.features.length, 0);
   });
 
   it("does not emit a second rectangle when a footprint already covers the panels", () => {
@@ -169,16 +147,6 @@ describe("dark panel rectangles", () => {
     };
     const found = darkRectRoofs(panelImage(), frame, [covered]);
     assert.equal(found.features.length, 0);
-  });
-
-  it("still emits the dark rectangle when the 6 MP roof fill did not decode", () => {
-    const found = darkPanelsWhenRoofFillSkipped(null, panelImage(), frame, [neighborTouching(40, 50, 110, 115)]);
-    assert.equal(found.features.length, 1);
-    assert.equal(pointInRing(ll(75, 82), found.features[0].geometry.coordinates[0]), true);
-    const skipped = darkPanelsWhenRoofFillSkipped({ data: new Uint8Array(16), width: 4, height: 4 }, panelImage(), frame, [
-      neighborTouching(40, 50, 110, 115),
-    ]);
-    assert.equal(skipped.features.length, 0);
   });
 
   it("rejects a dark road and a panel with no building beside it", () => {
