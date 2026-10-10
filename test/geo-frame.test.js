@@ -94,8 +94,13 @@ describe("shared geo frame", () => {
     assert.ok(IMAGERY_MAX_SIDE_DEV > 1600);
     const plan = imageryExportPlan(true);
     assert.deepEqual(
-      plan.map((step) => step.maxSide),
-      [400, 256]
+      plan.map((step) => [step.maxSide, step.metersPerPx]),
+      [
+        [4096, 0.15],
+        [2048, 0.4],
+        [1040, 0.5],
+        [400, 2],
+      ]
     );
     assert.deepEqual(imageryExportPlan(false), [{ maxSide: 1040, metersPerPx: 1 }]);
     const pointeClaire = {
@@ -108,13 +113,16 @@ describe("shared geo frame", () => {
     assert.deepEqual(
       sharp.map((step) => [step.maxSide, step.metersPerPx]),
       [
+        [4096, 0.15],
+        [2048, 0.4],
         [1040, 0.5],
-        [400, 1],
+        [400, 2],
       ]
     );
     const sharpFrame = geoFrame(pointeClaire, { maxSide: sharp[0].maxSide, metersPerPx: sharp[0].metersPerPx });
-    assert.ok(Math.max(sharpFrame.imgW, sharpFrame.imgH) >= 600);
-    assert.ok(Math.max(sharpFrame.imgW, sharpFrame.imgH) <= 1040);
+    assert.ok(Math.max(sharpFrame.imgW, sharpFrame.imgH) < 4096);
+    assert.ok(sharpFrame.mpuX <= 0.16, String(sharpFrame.mpuX));
+    assert.ok(sharpFrame.mpuX >= 0.14, String(sharpFrame.mpuX));
     const prod = geoFrame(oak);
     const dev = geoFrame(oak, { maxSide: imageryMaxSide(true), metersPerPx: imageryMetersPerPx(true) });
     assert.ok(Math.max(prod.imgW, prod.imgH) <= 1040);
@@ -136,15 +144,19 @@ describe("shared geo frame", () => {
     assert.deepEqual(
       imageryExportPlan(true, wico).map((step) => [step.maxSide, step.metersPerPx]),
       [
+        [4096, 0.15],
+        [2048, 0.4],
+        [1040, 0.5],
         [400, 2],
-        [256, 2],
       ]
     );
     assert.deepEqual(
       imageryExportPlan(true, wico, "auto").map((step) => [step.maxSide, step.metersPerPx]),
       [
+        [4096, 0.15],
+        [2048, 0.4],
+        [1040, 0.5],
         [400, 2],
-        [256, 2],
       ]
     );
     assert.deepEqual(imageryExportPlan(true, wico, "low"), [{ maxSide: 256, metersPerPx: 2 }]);
@@ -186,6 +198,30 @@ describe("shared geo frame", () => {
     );
     assert.deepEqual(imageryExportPlan(false, wico, "sharp"), [{ maxSide: 1040, metersPerPx: 1 }]);
     assert.equal(imageryQualityPlan("nope"), null);
+  });
+
+  it("scales Auto to a small site and to the Wynn draw", () => {
+    const small = {
+      west: -73.8285,
+      south: 45.4272,
+      east: -73.8239,
+      north: 45.4305,
+    };
+    const wynn = {
+      west: -115.16942,
+      south: 36.120084,
+      east: -115.153863,
+      north: 36.131185,
+    };
+    const smallStep = imageryExportPlan(true, small, "auto")[0];
+    const smallFrame = geoFrame(small, smallStep);
+    assert.equal(Math.max(smallFrame.imgW, smallFrame.imgH), 2432);
+    assert.ok(Math.abs(smallFrame.mpuX - 0.15) < 0.005, String(smallFrame.mpuX));
+    const wynnStep = imageryExportPlan(true, wynn, "auto")[0];
+    const wynnFrame = geoFrame(wynn, wynnStep);
+    assert.equal(wynnFrame.imgW, 4096);
+    assert.equal(wynnFrame.imgH, 3593);
+    assert.ok(wynnFrame.mpuX > 0.33 && wynnFrame.mpuX < 0.35, String(wynnFrame.mpuX));
   });
 
   it("caps a large box at 2048 on the dev side and 1040 in production", () => {
