@@ -122,8 +122,8 @@ describe("export jobs", { concurrency: 1 }, () => {
     assert.equal(four[0].maxSide, 4096);
     assert.equal(four[0].metersPerPx, 0.15);
     const auto = backgroundImagerySteps(true, BOX);
-    assert.equal(auto[0].maxSide, 2048);
-    assert.equal(auto[0].metersPerPx, 0.5);
+    assert.equal(auto[0].maxSide, 4096);
+    assert.equal(auto[0].metersPerPx, 0.15);
     assert.equal(auto.some((step) => step.maxSide === 400), false);
     const wide = backgroundImagerySteps(true, {
       west: -115.22,
@@ -131,8 +131,8 @@ describe("export jobs", { concurrency: 1 }, () => {
       east: -115.12,
       north: 36.19,
     });
-    assert.equal(wide[0].maxSide, 1040);
-    assert.equal(wide.some((step) => step.maxSide === 2048), false);
+    assert.equal(wide[0].maxSide, 4096);
+    assert.equal(wide[0].metersPerPx, 0.15);
   });
 
   it("plans the full DEM lattice on the background path and keeps the short-path cap", async () => {

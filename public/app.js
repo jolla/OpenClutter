@@ -217,9 +217,11 @@ function exportHeadline(stats, warnings, foliageOn) {
   const trees = stats && +stats.treesKept;
   if (Number.isFinite(buildings)) bits.push(buildings + (buildings === 1 ? " building" : " buildings"));
   if (foliageOn && Number.isFinite(trees)) bits.push(trees + (trees === 1 ? " tree" : " trees"));
-  const mapLine = (warnings || []).find((w) => /^Map image /.test(String(w)));
+  const mapLine = (warnings || []).find((w) => /^Map (image|stepped) /.test(String(w)));
+  const stepped = mapLine && /stepped down to (\d+) px from (\d+) px/.exec(String(mapLine));
   const px = mapLine && String(mapLine).match(/(\d+) px/);
-  if (px) bits.push(px[1] + " px");
+  if (stepped) bits.push(stepped[1] + " px, down from " + stepped[2]);
+  else if (px) bits.push(px[1] + " px");
   if (!bits.length) return "Zip ready.";
   return "Zip ready. " + bits.join(", ") + ".";
 }

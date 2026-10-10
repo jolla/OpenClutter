@@ -132,7 +132,22 @@ function bboxLongSideM(bbox) {
 }
 
 /**
- * Dev map-quality choices. Auto is null and keeps the size-aware plan.
+ * Auto plate. 4K-class ground resolution (0.15 m), capped at 4096 px, so a
+ * small site stays under that cap and a long site is scaled to 4096 px.
+ * Sharp, High, and a coarse plate follow, and run only when the finer plate
+ * or its time budget misses.
+ */
+function autoImageryPlan() {
+  return [
+    { maxSide: 4096, metersPerPx: 0.15 },
+    { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.4 },
+    { maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX_DEV },
+    { maxSide: 400, metersPerPx: 2 },
+  ];
+}
+
+/**
+ * Dev map-quality choices. Auto is null and uses autoImageryPlan.
  * Low / Standard / High / Sharp / 4K are explicit plates. Each larger plate keeps a
  * smaller step so a slow Esri answer can still return a zip. The short export
  * path still asks for Sharp instead of 4K. The background export waits for 4K.
@@ -177,8 +192,8 @@ function imageryQualityPlan(quality) {
 /**
  * Export asks for an image that can finish inside the function clock.
  * Production stays at 1040 px / 1 m and ignores a quality choice.
- * Auto on a short dev draw starts at 0.5 m, capped at 1040 px, then 1 m.
- * Auto on a long dev draw stays at 400 px / 2 m, then 256 px.
+ * Auto on the dev host starts at the 4K-class plate, scaled to the site,
+ * then Sharp, High, and a coarse plate.
  * Low, Standard, High, Sharp, and 4K replace that plan on the dev host only.
  * Sharp is the 2048 px plate. 4K is 4096 px. The short path does not wait
  * for that plate; the background export does.
@@ -189,17 +204,7 @@ function imageryExportPlan(devHost, bbox, quality) {
   }
   const picked = imageryQualityPlan(quality);
   if (picked) return picked;
-  const long = bboxLongSideM(bbox);
-  if (long > 0 && long <= DEV_SHARP_DRAW_M) {
-    return [
-      { maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX_DEV },
-      { maxSide: 400, metersPerPx: IMAGERY_METERS_PER_PX },
-    ];
-  }
-  return [
-    { maxSide: 400, metersPerPx: 2 },
-    { maxSide: 256, metersPerPx: 2 },
-  ];
+  return autoImageryPlan();
 }
 
 function spanLimitLabel(maxSpan) {

@@ -1157,6 +1157,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.equal(/<details[^>]*\sopen/.test(html), false);
     assert.match(app, /function exportHeadline/);
     assert.match(app, /Zip ready\./);
+    assert.match(app, /px, down from /);
     assert.match(app, /more\.open = false/);
     assert.match(html, /id="clutter-options"/);
     assert.match(html, /<details id="advanced">\s*<summary>Advanced<\/summary>/);

@@ -1,6 +1,6 @@
 # OpenClutter
 
-**OpenClutter** turns a map box into clutter that lines up with the map in [Hamina Planner](https://hamina.com): one georeferenced [OpenIntent](https://github.com/google/openintent) zip. Import the zip for the map and **buildings**. The panel stays the address, Draw, Export, and the status line. Advanced, closed until you open it, holds foliage, water, parking, walls, poles, RVs, terrain, and map quality. Those start on, and the map starts on Auto. The page remembers whether Advanced is open. After export, Copy terrain pastes that mesh separately in Hamina. The zip is that OpenIntent JSON and the aerial.
+**OpenClutter** turns a map box into clutter that lines up with the map in [Hamina Planner](https://hamina.com): one georeferenced [OpenIntent](https://github.com/google/openintent) zip. Import the zip for the map and **buildings**. The panel stays the address, Draw, Export, and the status line. Advanced, closed until you open it, holds foliage, water, parking, walls, poles, RVs, terrain, and map quality. Those start on, and the map starts on Auto. Auto asks for a 4K-class plate first, scaled to the site, and steps down only when that plate or the time budget misses. The page remembers whether Advanced is open. After export, Copy terrain pastes that mesh separately in Hamina. The zip is that OpenIntent JSON and the aerial.
 
 **v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
 
@@ -8,7 +8,7 @@
 
 **v1.1.97** on `dev` — Sloped terrain is an adaptive mesh, not a fixed 20×20 grid. The paste spends its budget on the worst saddles, keeps a planar fit near half a meter, and merges a flat bench into one raised floor. Neighboring ramps share an edge height, and a coarse piece is split where it meets a finer one so the seam has no gap. A pure north-south or east-west grade stays one ramp per cell. The badge stays (`dev · v1.1.97`).
 
-**v1.1.114** on `dev` — Advanced sits at the bottom of the panel, closed until you open it. It holds foliage, water, parking, walls, poles, RVs, terrain, and map quality. They start on, and the map starts on Auto. The page remembers whether Advanced is open. The rest of the panel stays the address, Draw, Export, and the status line. The badge stays (`dev · v1.1.114`).
+**v1.1.114** on `dev` — Advanced sits at the bottom of the panel, closed until you open it. It holds foliage, water, parking, walls, poles, RVs, terrain, and map quality. They start on, and the map starts on Auto. Auto asks for a 4K-class plate first, scaled to the site, then Sharp and coarser plates only when that plate or the time budget misses. The status line says when the map stepped down. The page remembers whether Advanced is open. The rest of the panel stays the address, Draw, Export, and the status line. The badge stays (`dev · v1.1.114`).
 
 **v1.1.113** on `dev` — The dev panel is the title, the address, Draw, Export, one short hint, and the status line. Foliage, water, parking, walls, poles, and RVs stay on, with no checkboxes. Terrain stays on. Copy terrain shows after export, with a note to paste it separately in Hamina. The map stays Auto and steps down on its own. Details still folds the rest of the export note. The badge stays (`dev · v1.1.113`).
 
