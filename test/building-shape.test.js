@@ -854,3 +854,24 @@ describe("building outlines", () => {
     }
   });
 });
+
+describe("OSM buildings the footprint sources missed", () => {
+  it("adds a cabin the other sources missed and skips a roof they already drew", () => {
+    const covered = metersBox(-71.545, 44.467, 20, 12, { height: 5, heightSource: "overture" });
+    const cabin = metersBox(-71.548, 44.4662, 16, 12, {});
+    const shed = metersBox(-71.544, 44.4682, 3, 3, {});
+    const shaped = shapeBuildings([covered], {
+      buildings: [ringOf(covered), ringOf(cabin), ringOf(shed)],
+    });
+    assert.equal(shaped.stats.osmFilled, 1);
+    const added = shaped.features.filter((f) => f.properties && f.properties.geomSource === "osm-building");
+    assert.equal(added.length, 1);
+    assert.equal(added[0].properties.height, 4.5);
+    assert.equal(added[0].properties.heightSource, "osm");
+    const built = footprintsToClutter(shaped.features, geoFrame(
+      { west: -71.55, south: 44.464, east: -71.542, north: 44.47, name: "Cabins" },
+      { maxSide: 400, metersPerPx: 0.5 }
+    ));
+    assert.equal(built.stats.buildings, 2);
+  });
+});
