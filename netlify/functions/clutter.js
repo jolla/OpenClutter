@@ -128,7 +128,6 @@ const SYNC_LARGE_ROOFS = 240;
 // A background zip that still exceeds the download limit keeps the tallest
 // roofs, then steps the plate's companion JSON down.
 const BACKGROUND_ROOF_STEPS = [800, 500, 320, 200];
-const LARGE_PLATE_M = 4000;
 // Background exports are not on the ~10s gateway. Four minutes leaves room
 // to write an error before the platform's 15 minute kill.
 const BACKGROUND_ANSWER_MS = 4 * 60 * 1000;
@@ -266,6 +265,8 @@ function imageryRoomKind(quality) {
     .toLowerCase();
   if (q === "sharp" || q === "2048" || q === "2k" || fourKQuality(q)) return "sharp";
   if (q === "high" || q === "higher" || q === "1040") return "high";
+  // Auto asks for the 4K-class plate, then steps down. The short path still
+  // uses DEV_ANSWER_MS. The background job is what waits for that plate.
   return "";
 }
 
@@ -287,8 +288,8 @@ function fourKQuality(quality) {
 
 /**
  * The background clock can wait for the plate that was asked for.
- * Auto no longer starts at 400 px. Sharp and 4K are real long sides.
- * One smaller plate remains only when the first request fails.
+ * Auto starts at the 4K-class plate, scaled to the site. Sharp and 4K
+ * are real long sides. A smaller plate runs only when the first request fails.
  */
 function backgroundImagerySteps(devHost, bbox) {
   const quality = String((bbox && bbox.imageryQuality) || "")
@@ -314,18 +315,7 @@ function backgroundImagerySteps(devHost, bbox) {
       { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.25 },
     ];
   } else {
-    const long = bboxLongSideM(bbox);
-    if (long > LARGE_PLATE_M) {
-      plan = [
-        { maxSide: IMAGERY_MAX_SIDE, metersPerPx: 1 },
-        { maxSide: 640, metersPerPx: 2 },
-      ];
-    } else {
-      plan = [
-        { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.5 },
-        { maxSide: IMAGERY_MAX_SIDE, metersPerPx: 0.5 },
-      ];
-    }
+    plan = imageryExportPlan(true, bbox, "auto").filter((step) => step.maxSide >= IMAGERY_MAX_SIDE);
   }
   return plan.map((step, i) =>
     Object.assign({ attemptMs: i === 0 ? BACKGROUND_PLATE_MS : BACKGROUND_PLATE_FALLBACK_MS }, step)
@@ -344,7 +334,14 @@ function imagerySteps(devHost, bbox) {
   }
   let quality = devHost && bbox ? bbox.imageryQuality : undefined;
   if (devHost && fourKQuality(quality)) quality = "sharp";
-  const plan = imageryExportPlan(devHost, bbox, quality);
+  let plan = imageryExportPlan(devHost, bbox, quality);
+  // A 4096 plate does not return on the short clock. Drop it before the
+  // waits are assigned, so the Sharp plate that is actually fetched gets
+  // the first-plate budget. The background job keeps the 4K step.
+  if (devHost) {
+    const shortPlan = plan.filter((step) => step.maxSide <= IMAGERY_MAX_SIDE_DEV);
+    if (shortPlan.length) plan = shortPlan;
+  }
   const kind = devHost ? imageryRoomKind(quality) : "";
   if (!devHost) {
     return plan.map((step) => Object.assign({ attemptMs: IMAGERY_ATTEMPT_MS }, step));
@@ -357,7 +354,11 @@ function imagerySteps(devHost, bbox) {
     }
     return Object.assign({ attemptMs }, step);
   });
-  if (kind === "sharp" && bbox && sharpFrameHeavy(bbox)) {
+  const named = String(quality || "")
+    .trim()
+    .toLowerCase();
+  const namedSharp = named === "sharp" || named === "2048" || named === "2k" || fourKQuality(named);
+  if (namedSharp && bbox && sharpFrameHeavy(bbox)) {
     steps = steps.filter((step) => step.maxSide <= IMAGERY_MAX_SIDE);
     if (steps[0]) {
       steps[0] = Object.assign({}, steps[0], { attemptMs: SHARP_HEAVY_FIRST_MS, sharpCapped: true });
@@ -388,6 +389,7 @@ function imageryStepBudget(elapsed, attemptMs) {
 async function fetchImageryStepped(bbox, steps) {
   let last;
   const started = Date.now();
+  let askedSide = 0;
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     const elapsed = Date.now() - started;
@@ -399,13 +401,14 @@ async function fetchImageryStepped(bbox, steps) {
     }
     try {
       const plate = imageryFrame(bbox, step);
+      if (!askedSide) askedSide = Math.max(plate.imgW, plate.imgH);
       const buf = await fetchImageryJpeg(esriImageryUrl(plate), attemptMs);
       return {
         buf,
         stepped: i > 0,
         imgW: plate.imgW,
         imgH: plate.imgH,
-        askedSide: steps[0] && steps[0].maxSide,
+        askedSide: askedSide,
         sharpCapped: !!(steps[0] && steps[0].sharpCapped),
       };
     } catch (e) {
@@ -888,7 +891,7 @@ function mapImageNote(plate, frame, jpegBuf) {
   const capped = plate.sharpCapped ? " A 2048 px plate does not fit this draw." : "";
   if (plate.stepped) {
     const asked = plate.askedSide > 0 ? plate.askedSide : side;
-    return "Map image stepped down to " + side + " px" + mpp + ". The " + asked + " px plate was still out." + capped;
+    return "Map stepped down to " + side + " px from " + asked + " px." + capped;
   }
   return "Map image " + side + " px" + mpp + "." + capped;
 }

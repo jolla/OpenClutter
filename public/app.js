@@ -11,10 +11,25 @@ function devPage() {
 
 function syncDevPanel() {
   const dev = devPage();
-  const extras = document.getElementById("clutter-options");
   const sub = document.getElementById("panel-sub");
-  if (extras) extras.hidden = dev;
   if (sub) sub.hidden = dev;
+}
+
+function restoreAdvanced() {
+  const details = document.getElementById("advanced");
+  if (!details) return;
+  let open = false;
+  try {
+    open = localStorage.getItem("openclutter-advanced") === "1";
+  } catch (err) {
+    open = false;
+  }
+  details.open = open;
+  details.addEventListener("toggle", function () {
+    try {
+      localStorage.setItem("openclutter-advanced", details.open ? "1" : "0");
+    } catch (err) {}
+  });
 }
 
 function areaCapOverride() {
@@ -72,23 +87,29 @@ function lidarEnabled() {
 }
 
 function selectedImageryQuality() {
+  const sel = document.getElementById("map-quality");
+  const value = sel ? String(sel.value || "") : "";
+  if (value === "low" || value === "standard" || value === "high" || value === "sharp" || value === "4k") return value;
   return "auto";
 }
 
 function clutterChecked(id) {
-  if (devPage()) return true;
   const input = document.getElementById(id);
-  return !!(input && input.checked);
+  if (!input) return true;
+  return !!input.checked;
 }
 
 function terrainExportEnabled() {
-  return true;
+  const input = document.getElementById("include-terrain");
+  if (!input) return true;
+  return !!input.checked;
 }
 
 (function markDeployEnv() {
   const badge = document.getElementById("env-badge");
   if (badge && devPage()) badge.classList.add("on");
   syncDevPanel();
+  restoreAdvanced();
   const ver = document.getElementById("app-version");
   if (ver && window.OPENCLUTTER_VERSION) ver.textContent = "v" + window.OPENCLUTTER_VERSION;
 })();
@@ -196,9 +217,11 @@ function exportHeadline(stats, warnings, foliageOn) {
   const trees = stats && +stats.treesKept;
   if (Number.isFinite(buildings)) bits.push(buildings + (buildings === 1 ? " building" : " buildings"));
   if (foliageOn && Number.isFinite(trees)) bits.push(trees + (trees === 1 ? " tree" : " trees"));
-  const mapLine = (warnings || []).find((w) => /^Map image /.test(String(w)));
+  const mapLine = (warnings || []).find((w) => /^Map (image|stepped) /.test(String(w)));
+  const stepped = mapLine && /stepped down to (\d+) px from (\d+) px/.exec(String(mapLine));
   const px = mapLine && String(mapLine).match(/(\d+) px/);
-  if (px) bits.push(px[1] + " px");
+  if (stepped) bits.push(stepped[1] + " px, down from " + stepped[2]);
+  else if (px) bits.push(px[1] + " px");
   if (!bits.length) return "Zip ready.";
   return "Zip ready. " + bits.join(", ") + ".";
 }
@@ -298,6 +321,7 @@ function typingTarget(el) {
   if (el.isContentEditable) return true;
   const tag = el.tagName;
   if (tag === "TEXTAREA") return true;
+  if (tag === "SELECT") return true;
   if (tag !== "INPUT") return false;
   const type = String(el.type || "text").toLowerCase();
   return (
