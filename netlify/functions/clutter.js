@@ -200,6 +200,7 @@ function setFetchChmGridForTests(fn) {
   fetchChmGridImpl = typeof fn === "function" ? fn : fetchChmGrid;
 }
 const { gpsClipboard, stampGpsTiePoints } = require("../lib/hamina-clipboard");
+const { buildMapNotes, stampMapNotes } = require("../lib/map-notes");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
 const { surfaceMasksFromImage } = require("../lib/surface-mask");
@@ -954,6 +955,14 @@ function wantFoliage(event, body) {
   return raw === true || raw === 1 || raw === "1" || raw === "true";
 }
 
+/** Map notes stay on unless the body or query explicitly turns them off. */
+function wantMapNotes(event, body) {
+  const q = (event && event.queryStringParameters) || {};
+  const raw = body && body.mapNotes != null ? body.mapNotes : q.mapNotes;
+  if (raw == null || raw === "") return true;
+  return !(raw === false || raw === 0 || raw === "0" || raw === "false");
+}
+
 /** Terrain stays on unless the body or query explicitly turns it off. */
 function wantTerrain(event, body) {
   const q = (event && event.queryStringParameters) || {};
@@ -1625,6 +1634,12 @@ async function handleClutter(event) {
   }
   let guidewayFeatures = [];
   let bridgeFeatures = [];
+  let planningPlaces = [];
+  function takePlaces(pack) {
+    const spots = pack && pack.places;
+    if (!Array.isArray(spots)) return;
+    for (let i = 0; i < spots.length; i++) planningPlaces.push(spots[i]);
+  }
   if (detailJob) {
     const pack = await detailJob.work;
     if (pack && pack !== TIMED_OUT && Array.isArray(pack.notes)) {
@@ -1633,6 +1648,7 @@ async function handleClutter(event) {
       }
     }
     if (pack && pack !== TIMED_OUT && pack.ok !== false) {
+      takePlaces(pack);
       guidewayFeatures = pack.guideways || [];
       bridgeFeatures = pack.bridges || [];
       try {
@@ -1858,6 +1874,7 @@ async function handleClutter(event) {
     } else {
       outdoorFeatures = pack.features || [];
       outdoorNotes = pack.notes || [];
+      takePlaces(pack);
       const rest = [];
       const fromOutdoor = [];
       const fromBridges = [];
@@ -2063,6 +2080,17 @@ async function handleClutter(event) {
     // an OpenIntent field and they are not a DEM read.
     const gpsPaste = gpsClipboard(frame);
     if (terrainFields.terrainClipboard) stampGpsTiePoints(terrainFields.terrainClipboard, frame);
+    if (wantMapNotes(event, body)) {
+      const notes = buildMapNotes({
+        frame,
+        terrain,
+        places: planningPlaces,
+        features: exportFeatures,
+        trees: treePoints,
+      });
+      if (terrainFields.terrainClipboard) stampMapNotes(terrainFields.terrainClipboard, notes);
+      stampMapNotes(gpsPaste, notes);
+    }
     return json(200, cors, {
       ok: true,
       alignment: ALIGNMENT,

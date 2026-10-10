@@ -17,6 +17,7 @@
 const polygonClipping = require("polygon-clipping");
 const { guidewaysFromElements, guidewaysFromParsedWays, bridgesFromElements, bridgesFromParsedWays } = require("./outdoor-clutter");
 const { fetchOsmMaps, ringKey, bboxSpanM, TILE_SPAN_M } = require("./osm-tiles");
+const { placesFromElements } = require("./map-notes");
 
 const OVERPASS_URLS = [
   "https://overpass.kumi.systems/api/interpreter",
@@ -268,7 +269,7 @@ function parseBuildingDetail(payload, bbox) {
       }
     }
   }
-  return { parts, openings, buildings };
+  return { parts, openings, buildings, places: placesFromElements(elements) };
 }
 
 function ringHitsBox(ring, bbox) {
@@ -491,6 +492,7 @@ function mergeBuildingDetail(packs) {
   const guideways = [];
   const bridges = [];
   const roads = [];
+  const places = [];
   const seenP = new Set();
   const seenO = new Set();
   const seenBuildings = new Set();
@@ -542,8 +544,10 @@ function mergeBuildingDetail(packs) {
       if (key) seenB.add("road:" + key);
       roads.push(lines[i]);
     }
+    const spots = pack.places || [];
+    for (let i = 0; i < spots.length; i++) places.push(spots[i]);
   }
-  return { parts, openings, buildings, guideways, bridges, roads };
+  return { parts, openings, buildings, guideways, bridges, roads, places };
 }
 
 async function fetchBuildingDetail(bbox, opts) {
@@ -582,6 +586,7 @@ async function fetchBuildingDetail(bbox, opts) {
             guideways: guidewaysFromElements(maps.elements, bbox, deckCap),
             bridges: bridgesFromElements(maps.elements, bbox, deckCap),
             notes: maps.notes,
+            places: parsed.places || [],
           };
         }
         if (maps.xmls.length) {
@@ -597,6 +602,7 @@ async function fetchBuildingDetail(bbox, opts) {
             guideways: merged.guideways,
             bridges: merged.bridges,
             notes: maps.notes,
+            places: merged.places || [],
           };
         }
         if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
@@ -629,6 +635,7 @@ async function fetchBuildingDetail(bbox, opts) {
           roads: [],
           guideways: guidewaysFromElements(json.elements, bbox, deckCap),
           bridges: bridgesFromElements(json.elements, bbox, deckCap),
+          places: parsed.places || [],
         };
       } catch (e) {
         if (ctrl.signal.aborted) return empty;
