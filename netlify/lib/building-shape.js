@@ -2068,6 +2068,7 @@ function dropDiagonalNotches(features, osmRings) {
   for (let i = 0; i < hosts.length; i++) hostBoxes.push(ringBbox(hosts[i]));
   const out = [];
   let dropped = 0;
+  const restore = [];
   for (let i = 0; i < features.length; i++) {
     const rings = exteriorsOf(features[i]);
     if (rings.length !== 1 || !diagonalCut(rings[0])) {
@@ -2075,22 +2076,79 @@ function dropDiagonalNotches(features, osmRings) {
       continue;
     }
     const area = meterArea(rings[0]);
-    if (!(area <= 12000)) {
+    if (!(area <= 15000)) {
       out.push(features[i]);
       continue;
     }
     const box = ringBbox(rings[0]);
+    const ratio = ringTriRatio(rings[0]);
+    let hostAt = -1;
     let notch = false;
-    for (let h = 0; h < hosts.length && !notch; h++) {
+    for (let h = 0; h < hosts.length; h++) {
       if (!bboxHits(box, hostBoxes[h])) continue;
       const inter = intersectionArea(rings[0], hosts[h]);
-      if (inter / area < 0.5) notch = true;
+      // A slab in the notch, or a carve that is already a triangle over the ring.
+      if (inter / area < 0.5 || ratio >= 0.9) {
+        hostAt = h;
+        notch = true;
+        break;
+      }
     }
     if (!notch) {
       out.push(features[i]);
       continue;
     }
     dropped++;
+    if (hostAt >= 0 && restore.indexOf(hostAt) < 0) restore.push(hostAt);
+  }
+  // The street-map ring replaces the slab. Low-rise fragments of that ring
+  // would draw a second podium, so they come out with the slab.
+  for (let r = 0; r < restore.length; r++) {
+    const host = hosts[restore[r]];
+    const hostArea = meterArea(host);
+    const kept = [];
+    let template = null;
+    for (let i = 0; i < out.length; i++) {
+      const feature = out[i];
+      if (heightOf(feature) >= 30) {
+        kept.push(feature);
+        continue;
+      }
+      const rings = exteriorsOf(feature);
+      let inside = false;
+      for (let k = 0; k < rings.length && !inside; k++) {
+        const part = meterArea(rings[k]);
+        if (!(part > 0) || part > hostArea * 0.85) continue;
+        const inter = intersectionArea(rings[k], host);
+        if (inter / part >= 0.7) inside = true;
+      }
+      if (inside) {
+        if (!template) template = feature;
+        dropped++;
+        continue;
+      }
+      kept.push(feature);
+    }
+    let already = false;
+    for (let i = 0; i < kept.length && !already; i++) {
+      const rings = exteriorsOf(kept[i]);
+      for (let k = 0; k < rings.length && !already; k++) {
+        const part = meterArea(rings[k]);
+        if (part < hostArea * 0.7) continue;
+        const inter = intersectionArea(rings[k], host);
+        if (inter / hostArea >= 0.7) already = true;
+      }
+    }
+    if (!already) {
+      const base = template || {
+        type: "Feature",
+        properties: { height: 12, heightSource: "overture" },
+        geometry: { type: "Polygon", coordinates: [host] },
+      };
+      kept.push(seatLowRise(base, host, base.properties && base.properties.keepOut));
+    }
+    out.length = 0;
+    for (let i = 0; i < kept.length; i++) out.push(kept[i]);
   }
   return { features: out, dropped };
 }
