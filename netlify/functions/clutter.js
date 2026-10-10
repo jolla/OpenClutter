@@ -161,6 +161,7 @@ const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchSlopeForest } = require("../lib/slope-forest");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
+const { fetchUsgsLidar, applyLidarSample, lidarNote } = require("../lib/usgs-lidar");
 const exportJobs = require("../lib/export-jobs");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
 const { fetchMsGlobalFootprints, globalSkipWarning } = require("../lib/ms-global");
@@ -1676,6 +1677,35 @@ async function handleClutter(event) {
       treePoints = treePoints.concat(osm);
     } catch {
       // OSM is optional; canopy / imagery vegetation still applies.
+    }
+  }
+
+  const lidarOn =
+    devHost && (body.lidar === true || body.lidar === "true" || body.lidar === 1 || body.lidar === "1");
+  if (lidarOn) {
+    try {
+      const lidar = await fetchUsgsLidar(frame, { maxMs: background ? undefined : 8000 });
+      if (!lidar.skipped && lidar.grid) {
+        const applied = applyLidarSample(features, treePoints, lidar.grid);
+        features = applied.features;
+        treePoints = applied.trees;
+        lidar.heights = applied.heights;
+        lidar.added = applied.added;
+        lidar.canopy = applied.canopy;
+        footprintMeta.lidarHeights = applied.heights;
+        footprintMeta.lidarAdded = applied.added;
+        footprintMeta.lidarCanopy = applied.canopy;
+      }
+      footprintMeta.lidarProject = lidar.project || "";
+      footprintMeta.lidarCollected = lidar.collected || "";
+      footprintMeta.lidarPoints = lidar.points || 0;
+      footprintMeta.lidarBytes = lidar.bytes || 0;
+      footprintMeta.lidarSpacing = lidar.spacingM || 0;
+      footprintMeta.lidarMs = lidar.ms || 0;
+      const note = lidarNote(lidar);
+      if (note && warnings.indexOf(note) < 0) warnings.push(note);
+    } catch {
+      warnings.push("USGS lidar omitted: the point cloud could not be read. Building heights are unchanged.");
     }
   }
 
