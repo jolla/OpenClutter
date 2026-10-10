@@ -415,6 +415,7 @@ describe("outdoor clutter fetch", () => {
     const q = overpassQuery(BOX, { water: true, parking: true, walls: true, poles: true });
     assert.match(q, /45\.5,-73\.57,45\.5035,-73\.565/);
     assert.match(q, /natural"="water"/);
+    assert.match(q, /way\["amenity"="parking"\]\(/);
     assert.match(q, /parking"="multi-storey"/);
     assert.match(q, /building"="parking"/);
     assert.match(q, /barrier"/);
@@ -453,6 +454,58 @@ describe("outdoor clutter fetch", () => {
     assert.equal(partial.items.length, 2);
     assert.match(partial.notes.join(" "), /1 water area did not fit in the area budget \(2 kept\)/);
     assert.equal(/did not finish|timed out/i.test(OUTDOOR_MISS), false);
+  });
+
+  it("draws a surface lot as a short car layer and keeps a garage tall", () => {
+    const ringAt = (lat0) => [
+      { lon: BOX.west + 0.001, lat: lat0 },
+      { lon: BOX.east - 0.001, lat: lat0 },
+      { lon: BOX.east - 0.001, lat: lat0 + 0.0008 },
+      { lon: BOX.west + 0.001, lat: lat0 + 0.0008 },
+      { lon: BOX.west + 0.001, lat: lat0 },
+    ];
+    const parsed = parseOverpass(
+      {
+        elements: [
+          { type: "way", tags: { amenity: "parking" }, geometry: ringAt(BOX.south + 0.0004) },
+          { type: "way", tags: { amenity: "parking", parking: "multi-storey" }, geometry: ringAt(BOX.south + 0.0016) },
+          { type: "way", tags: { amenity: "parking", parking: "underground" }, geometry: ringAt(BOX.south + 0.0026) },
+        ],
+      },
+      { parking: true },
+      BOX
+    );
+    const lots = parsed.features.filter((f) => f.kind === "parking");
+    assert.equal(lots.length, 2);
+    const surface = lots.find((f) => f.structure === false);
+    const garage = lots.find((f) => f.structure === true);
+    assert.equal(surface.heightM, 2.1);
+    assert.equal(garage.heightM, 9);
+    const office = [
+      [BOX.west + 0.0014, BOX.south + 0.0006],
+      [BOX.west + 0.002, BOX.south + 0.0006],
+      [BOX.west + 0.002, BOX.south + 0.001],
+      [BOX.west + 0.0014, BOX.south + 0.001],
+      [BOX.west + 0.0014, BOX.south + 0.0006],
+    ];
+    const planned = planOutdoor({
+      features: [surface],
+      frame: frame(),
+      buildings: [
+        {
+          ring: office,
+          material: {
+            name: "Building - One Floor",
+            top_height: 4.5,
+            rf_properties: { attenuation_per_m: 5 },
+            display_color: "#C5CBD1",
+          },
+        },
+      ],
+    });
+    assert.equal(planned.reclass, 0);
+    assert.equal(planned.updates.length, 0);
+    assert.ok(planned.items.some((item) => item.kind === "parking" && item.material.name === "Parking 2.1"));
   });
 
   it("reads a map extract and closes a lake shore on the water side", () => {

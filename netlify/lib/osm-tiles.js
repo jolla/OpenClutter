@@ -131,6 +131,7 @@ function tileQuery(bbox) {
     'way["landuse"="reservoir"](' + box + ");" +
     'relation["building:part"](' + box + ");" +
     'relation["type"="multipolygon"]["building"](' + box + ");" +
+    'way["amenity"="parking"](' + box + ");" +
     'way["amenity"="parking"]["parking"="multi-storey"](' + box + ");" +
     'way["building"="parking"](' + box + ");" +
     'way["barrier"~"^(wall|fence|retaining_wall|hedge|city_wall)$"](' + box + ");" +
