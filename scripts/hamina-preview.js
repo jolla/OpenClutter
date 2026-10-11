@@ -23,7 +23,7 @@ const { execFileSync } = require("child_process");
 const ROOT = path.join(__dirname, "..");
 const { esriContentExtent, geoFrame, unifyFrameMpu } = require("../netlify/lib/geo-frame");
 const { fetchTerrainDem, terrainFromSamples } = require("../netlify/lib/terrain");
-const { isVegetationOiName } = require("../netlify/lib/materials");
+const { isTrunkOiName, isUnderstoryOiName, isVegetationOiName } = require("../netlify/lib/materials");
 
 function arg(name) {
   const i = process.argv.indexOf(name);
@@ -77,11 +77,18 @@ function frameFor(site, imgW, imgH, widthM, lengthM) {
 
 function kindOf(name) {
   if (isVegetationOiName(name)) return "tree";
-  if (/understory/i.test(name)) return "tree";
-  if (/tree trunk/i.test(name)) return "trunk";
+  if (isUnderstoryOiName(name) || /understory/i.test(name)) return "tree";
+  if (isTrunkOiName(name) || /tree trunk/i.test(name)) return "trunk";
   if (/^water/i.test(name)) return "water";
   if (/building/i.test(name)) return "building";
   return "other";
+}
+
+function roleOf(name) {
+  if (isUnderstoryOiName(name) || /understory/i.test(name)) return "understory";
+  if (isTrunkOiName(name) || /tree trunk/i.test(name)) return "trunk";
+  if (isVegetationOiName(name)) return "crown";
+  return "";
 }
 
 function hexColor(value) {
@@ -111,6 +118,7 @@ function sceneFrom(loaded, clipboard, name) {
     if (!(top > bottom)) top = bottom + 0.15;
     objects.push({
       kind: kindOf(nameM),
+      role: roleOf(nameM),
       color: hexColor(material.display_color),
       ring,
       bottom,
