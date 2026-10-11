@@ -2619,31 +2619,64 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
   };
 }
 
+function oiCoordArea(coords) {
+  if (!coords || coords.length < 3) return 0;
+  const pts = [];
+  for (let i = 0; i < coords.length; i++) {
+    const c = coords[i] && coords[i].coordinate_xyz;
+    if (!c) continue;
+    pts.push([c.x, c.y]);
+  }
+  return ringAreaPx(pts);
+}
+
+/**
+ * A 40-corner cap chords across a woods and leaves the stand outside the
+ * polygon. Cut that ring in half and keep both pieces instead.
+ */
+function emitCanopyCovered(t, ringPx, imgW, imgH, mpuX, depth, areas, kinds) {
+  const opts = { keepShape: true };
+  if (t.kind === "trunk") {
+    const b = ringBBox(ringPx);
+    const drawn = Math.min(b.w, b.h);
+    const hold = Math.max(drawn * 0.98, 0.05);
+    opts.minSpanPx = hold;
+    opts.spanFloorPx = Math.min(MIN_OI_SPAN_PX, Math.max(drawn * 0.5, 0.02));
+  }
+  const coords = ringToOi(ringPx, imgW, imgH, mpuX, opts);
+  const before = ringAreaPx(ringPx);
+  const after = oiCoordArea(coords);
+  // A taller ring is the small-tree span floor, not a missed stand. Only a
+  // ring that shrank under the corner cap gets cut in half.
+  const covers = coords && (!(before > 1) || after >= before * 0.95);
+  if (t.kind === "trunk" || covers || depth >= 6) {
+    const area = emitIfValid(makeOiArea(coords, t.material), imgW, imgH, opts.spanFloorPx);
+    return area ? pushTreeArea(areas, kinds, area, t.kind) : false;
+  }
+  const parts = splitRingHalf(ringPx);
+  if (parts.length < 2) {
+    const area = emitIfValid(makeOiArea(coords, t.material), imgW, imgH, opts.spanFloorPx);
+    return area ? pushTreeArea(areas, kinds, area, t.kind) : false;
+  }
+  let any = false;
+  for (let i = 0; i < parts.length; i++) {
+    if (emitCanopyCovered(t, parts[i], imgW, imgH, mpuX, depth + 1, areas, kinds)) any = true;
+  }
+  return any;
+}
+
+function pushTreeArea(areas, kinds, area, kind) {
+  areas.push(area);
+  kinds.push(kind === "trunk" ? "trunk" : kind === "layer" ? "layer" : kind === "slope" ? "slope" : "canopy");
+  return true;
+}
+
 function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
   const areas = [];
   const kinds = [];
   let droppedInvalid = 0;
   for (const t of oiTreeAreas || []) {
-    const opts = { keepShape: true };
-    if (t.kind === "trunk") {
-      // Hold the drawn ~1 m circle. The shared 3 m / 4 px floor used to
-      // stretch it, and a collapsed blob was replaced with a square.
-      const b = ringBBox(t.ringPx);
-      const drawn = Math.min(b.w, b.h);
-      const hold = Math.max(drawn * 0.98, 0.05);
-      opts.minSpanPx = hold;
-      opts.spanFloorPx = Math.min(MIN_OI_SPAN_PX, Math.max(drawn * 0.5, 0.02));
-    }
-    const coords = ringToOi(t.ringPx, imgW, imgH, mpuX, opts);
-    const area = emitIfValid(makeOiArea(coords, t.material), imgW, imgH, opts.spanFloorPx);
-    if (!area) {
-      droppedInvalid++;
-      continue;
-    }
-    areas.push(area);
-    kinds.push(
-      t.kind === "trunk" ? "trunk" : t.kind === "layer" ? "layer" : t.kind === "slope" ? "slope" : "canopy"
-    );
+    if (!emitCanopyCovered(t, t.ringPx, imgW, imgH, mpuX, 0, areas, kinds)) droppedInvalid++;
   }
   return { areas, kinds, droppedInvalid };
 }
@@ -3356,4 +3389,5 @@ module.exports = {
   minOiSpanPx,
   capOiRingPx,
   ringSpanClass,
+  treesToOi,
 };
