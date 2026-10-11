@@ -1351,8 +1351,12 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
       const up = Number(slopeTop(ll)) || 0;
       const down = Number(slopeTop.seat(ll)) || 0;
       if (up - down > 8) {
-        const simple = decimateClosed(ll, 24);
-        if (simple && simple.length >= 4 && simple.length < ll.length) {
+        // A 24-point outline can still lose the cut. Keep shortening until
+        // the pieces cover the stand. The quad that ships does split.
+        const caps = [32, 16, 8];
+        for (let c = 0; c < caps.length && (!split || split.length < 2); c++) {
+          const simple = decimateClosed(ll, caps[c]);
+          if (!simple || simple.length < 4 || simple.length >= ll.length) continue;
           const again = slopeTop.splitCanopy(simple);
           if (again && again.length >= 2) split = again;
         }
