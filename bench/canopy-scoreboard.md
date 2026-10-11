@@ -2,7 +2,7 @@
 
 Recall uses the Meta/WRI canopy height grid. A cell of at least 3 m is canopy. Where that grid measured no height, ESA WorldCover tree cover is also canopy. Roof pixels are ignored. Precision is the share of emitted canopy whose canopy-height sample is at least 3 m, sampled on the same uniform grid. Aerial green and a WorldCover tree label do not count as a hit. Open ground is the share of that emitted area the aerial reads as mown lawn, a dirt pitch, or a road. A site passes at 85% recall, 85% precision, and open ground at or under 8%.
 
-These rows are the local handler on `cursor/canopy-train-9872`, still version 1.1.124. They are not a shipped `/dev` export. Floating is a crown whose bottom is more than 3 m above the terrain under it, not counting a band sitting on the crown below.
+These rows are the local handler that shipped as 1.1.125. The two-layer stand does not change the horizontal crowns, so recall and precision are the same. They are not a later `/dev` export. Floating is a crown whose bottom is more than 3 m above the terrain under it, not counting a band sitting on the crown below.
 
 | Site | Recall | Precision (CHM ≥ 3 m) | Open ground | WorldCover recall | Height MAE | Crowns | Floating | Buried | Pass |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
