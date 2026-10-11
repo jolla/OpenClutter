@@ -3567,8 +3567,10 @@ function largestPieces(pieces, maxPieces, frame) {
  */
 function canopyPieceCap(terrain) {
   const cells = Math.max(0, (terrain && terrain.gridCols) | 0) * Math.max(0, (terrain && terrain.gridRows) | 0);
-  if (!(cells >= 4)) return 160;
-  return Math.min(280, Math.max(48, cells));
+  if (!(cells >= 4)) return 48;
+  // One stand stays a short run of seated pieces. A few hundred pieces for
+  // a single wood used the area budget, and the next stand was dropped.
+  return Math.min(72, Math.max(24, Math.round(Math.sqrt(cells) * 3)));
 }
 
 /**
@@ -3680,7 +3682,11 @@ function splitRingByFloor(terrain, ring, opts) {
   }
   let area = 0;
   for (let i = 0; i < pieces.length; i++) area += pieceClipboardArea(pieces[i], frame);
-  const minCover = keepPartial ? 0.35 : 0.7;
+  // A canopy split that keeps only the uphill pieces leaves a hole in the
+  // stand. A few percent dropped in the tail is enough to erase a forest
+  // wedge. Ship the whole ring instead of that hole. Buildings still accept
+  // a split that covers most of the footprint.
+  const minCover = keepPartial ? 0.98 : 0.7;
   if (area < hostArea * minCover) return [ring];
   return pieces;
 }
@@ -3689,8 +3695,12 @@ function slopeSampler(terrain) {
   const fn = (ring) => slopeTopUnderRing(terrain, ring);
   fn.seat = (ring) => slopeSeatUnderRing(terrain, ring);
   fn.split = (ring) => splitRingByFloor(terrain, ring);
-  fn.splitCanopy = (ring) =>
-    splitRingByFloor(terrain, ring, { maxPieces: canopyPieceCap(terrain), keepPartial: true });
+  fn.splitCanopy = (ring) => {
+    // Bands that cannot cover the stand are discarded by splitRingByFloor,
+    // which returns the whole ring. A ski hill still sits on its downhill
+    // ground. A woods is not replaced by the uphill slice.
+    return splitRingByFloor(terrain, ring, { maxPieces: canopyPieceCap(terrain), keepPartial: true });
+  };
   return fn;
 }
 

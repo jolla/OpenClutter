@@ -104,6 +104,13 @@ const IMAGERY_METERS_PER_PX = 1;
  */
 const IMAGERY_MAX_SIDE_DEV = 2048;
 const IMAGERY_METERS_PER_PX_DEV = 0.5;
+/**
+ * Esri World Imagery answers HTTP 500 ("Error: bytes") for a tall plate
+ * near 12 MP, such as 4096 by 3100 on a 700 m site. About 10 MP returns.
+ * The first request still asks for the plate. A rejection retries under
+ * this budget instead of stepping down to roughly 0.4 m.
+ */
+const ESRI_MAX_EXPORT_PIXELS = 10000000;
 
 function imageryMaxSide(devHost) {
   return devHost ? IMAGERY_MAX_SIDE_DEV : IMAGERY_MAX_SIDE;
@@ -285,6 +292,27 @@ const CLIPBOARD_ORIGIN =
   "x_clip = x_img * mpuX - widthM; y_clip = -y_img * mpuY. " +
   "Import this zip in Hamina (Projects → Import → OpenIntent); OpenIntent attenuation_areas are the objects. " +
   "Google Earth screenshots as maps are an anti-pattern (Hamina auto-scale ≠ photo meters).";
+
+/**
+ * Same extent, fewer pixels, when the asked plate is over the Esri limit.
+ * The frame is unchanged when it already fits.
+ */
+function capEsriExportFrame(frame) {
+  if (!frame || !(frame.imgW > 0) || !(frame.imgH > 0)) return frame;
+  if (frame.imgW * frame.imgH <= ESRI_MAX_EXPORT_PIXELS) return frame;
+  const k = Math.sqrt(ESRI_MAX_EXPORT_PIXELS / (frame.imgW * frame.imgH));
+  let imgW = Math.max(64, Math.floor(frame.imgW * k));
+  let imgH = Math.max(64, Math.floor(frame.imgH * k));
+  while (imgW * imgH > ESRI_MAX_EXPORT_PIXELS && imgW > 64 && imgH > 64) {
+    if (imgW >= imgH) imgW -= 1;
+    else imgH -= 1;
+  }
+  const padM = Math.max(frame.widthM || 0, frame.lengthM || 0, 2500) * 2.5;
+  return geoFrame(
+    { west: frame.west, south: frame.south, east: frame.east, north: frame.north },
+    { imgW, imgH, maxSpanM: padM, minSpanM: 1 }
+  );
+}
 
 function llToPx(lon, lat, frame) {
   const x = ((lon - frame.west) / (frame.east - frame.west)) * frame.imgW;
@@ -945,6 +973,7 @@ module.exports = {
   CLIPBOARD_ORIGIN,
   IMAGERY_MAX_SIDE,
   IMAGERY_MAX_SIDE_DEV,
+  ESRI_MAX_EXPORT_PIXELS,
   IMAGERY_METERS_PER_PX,
   IMAGERY_METERS_PER_PX_DEV,
   imageryMaxSide,
@@ -960,6 +989,7 @@ module.exports = {
   geodesicSpans,
   groundMeterPixelSize,
   geoFrame,
+  capEsriExportFrame,
   llToPx,
   pxToLl,
   llToImagePx,
