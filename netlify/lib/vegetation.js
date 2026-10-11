@@ -1170,6 +1170,30 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     opts && opts.maskPolygons,
     bufferM / Math.max(frame.mpuX || 1, 0.05)
   );
+  const keepOutPx = [];
+  if (clipSet && clipSet.buildings) {
+    for (let i = 0; i < clipSet.buildings.length; i++) {
+      const ring = clipSet.buildings[i].ring;
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (let k = 0; k < ring.length; k++) {
+        const p = ring[k];
+        if (p[0] < minX) minX = p[0];
+        if (p[1] < minY) minY = p[1];
+        if (p[0] > maxX) maxX = p[0];
+        if (p[1] > maxY) maxY = p[1];
+      }
+      const step = 4;
+      for (let y = minY + step * 0.5; y < maxY; y += step) {
+        for (let x = minX + step * 0.5; x < maxX; x += step) {
+          const c = [x, y];
+          if (pointInRing(c, ring)) keepOutPx.push(c);
+        }
+      }
+    }
+  }
   const pushCanopy = (ringPx, material, shape) => {
     const pieces = clipFoliageRing(ringPx, clipSet);
     for (const piece of pieces) {
@@ -1203,6 +1227,7 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     const material = materialForVegetation(heightM, "heavy");
     if (material && ringPx.length >= 4) polygons.push({ ringPx, material, kind: "canopy", shape: "polygon" });
   }
+  polygons.sort((a, b) => ringPxArea(b.ringPx) - ringPxArea(a.ringPx));
   for (const poly of polygons) pushCanopy(poly.ringPx, poly.material, "polygon");
   // Clip against roofs, water, and ski runs, then dissolve so two patches do
   // not paint green on green. Clipboard follows the dissolved rings.
@@ -1317,6 +1342,8 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
         material: part.material,
         kind: row.slopePiece && i === 0 ? "slope" : i === 0 ? "canopy" : "layer",
         shape: area.shape || "polygon",
+        keepOutPx,
+        keepOutRings: clipSet && clipSet.buildings ? clipSet.buildings.map((b) => b.ring) : [],
       });
       if (part.ringPx && !(part.scale < 0.999)) overlayRings.push(part.ringPx);
       if (part.material) materials.push(part.material);

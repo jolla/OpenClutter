@@ -724,7 +724,20 @@ function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH) {
   if (pixels.length >= 2 && heightM < 5 && pixels.length < 3 && area < CROWN_MIN_AREA_M2) return null;
   let ring = tracePixels(pixels);
   if (!ring) return null;
-  let open = simplifyContour(dropCollinearPx(ring), CROWN_MAX_VERTS);
+  // A large stand needs a longer edge. 32 vertices chord across a woods and
+  // leave the dark margin outside the polygon. Stop once the outline covers
+  // the cells, so a busy edge does not become a box.
+  const traced = dropCollinearPx(ring);
+  let maxVerts = CROWN_MAX_VERTS;
+  let open = simplifyContour(traced, maxVerts);
+  if (pixels.length > 80) {
+    while (maxVerts < 160 && Math.abs(polyArea(open)) < pixels.length * 0.9) {
+      maxVerts = Math.min(160, Math.round(maxVerts * 1.6));
+      const next = simplifyContour(traced, maxVerts);
+      if (next.length < 3) break;
+      open = next;
+    }
+  }
   if (open.length < 3) return null;
   const dLon = +grid.east - +grid.west;
   const dLat = +grid.north - +grid.south;

@@ -154,7 +154,7 @@ async function runBackgroundExport(event, onProgress) {
   if (ctx.tail) await ctx.tail;
   return result;
 }
-const { geoFrame, llToPx, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
+const { geoFrame, capEsriExportFrame, llToPx, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings, parseAreaCapOverride, parseJsonBudgetOverride, raisedDeckCap } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchSlopeForest } = require("../lib/slope-forest");
@@ -172,6 +172,8 @@ function setFetchOvertureForTests(fn) {
   fetchOvertureImpl = typeof fn === "function" ? fn : fetchOvertureFootprints;
 }
 const { fetchChmGrid, applyChmToTrees, sampleChmGrid } = require("../lib/canopy-height");
+const { fillCanopyGaps } = require("../lib/canopy-fill");
+const { fetchWorldCoverTrees } = require("../lib/worldcover");
 const {
   fetchTerrainDem,
   terrainFromSamples,
@@ -401,9 +403,18 @@ async function fetchImageryStepped(bbox, steps) {
       if (!(attemptMs >= 1500)) break;
     }
     try {
-      const plate = imageryFrame(bbox, step);
+      let plate = imageryFrame(bbox, step);
       if (!askedSide) askedSide = Math.max(plate.imgW, plate.imgH);
-      const buf = await fetchImageryJpeg(esriImageryUrl(plate), attemptMs);
+      let buf;
+      try {
+        buf = await fetchImageryJpeg(esriImageryUrl(plate), attemptMs);
+      } catch (err) {
+        const safe = capEsriExportFrame(plate);
+        const smaller = safe && (safe.imgW !== plate.imgW || safe.imgH !== plate.imgH);
+        if (!smaller) throw err;
+        plate = safe;
+        buf = await fetchImageryJpeg(esriImageryUrl(plate), Math.min(attemptMs, 45000));
+      }
       return {
         buf,
         stepped: i > 0,
@@ -1616,7 +1627,10 @@ async function handleClutter(event) {
   // Imagery roof fill walks every footprint. A campus that already has the
   // vector layers does not get that pass; Oak Creek (far fewer roofs) still does.
   const skipRoofFill = features.length > DENSE_FEATURES;
-  const decoded = needImage && !skipRoofFill ? decodeImagery(imgBuf) : null;
+  let decoded = needImage && !skipRoofFill ? decodeImagery(imgBuf) : null;
+  // A plate near 10 MP is past the 6 MP roof decode. Canopy color still
+  // needs those pixels, and the roof path already accepts that size.
+  if (!decoded && needImage && imgBuf && includeFoliage) decoded = decodeRoofImagery(imgBuf);
   if (skipRoofFill) {
     warnings.push("Imagery roof fill omitted: this draw already has a full set of building footprints.");
   }
@@ -1806,6 +1820,21 @@ async function handleClutter(event) {
       for (let i = 0; i < forestNotes.length; i++) {
         if (warnings.indexOf(forestNotes[i]) < 0) warnings.push(forestNotes[i]);
       }
+    }
+  }
+
+  if (includeFoliage && !chmTimedOut && decoded && frame) {
+    let cover = null;
+    try {
+      cover = await fetchWorldCoverTrees(frame, { signal: AbortSignal.timeout(8000) });
+    } catch {
+      cover = null;
+    }
+    try {
+      const filled = fillCanopyGaps(chmGrid, { frame, image: decoded, worldcover: cover });
+      if (filled && filled.values && filled.nonzero > 0) chmGrid = filled;
+    } catch {
+      // The measured grid still ships when the fill cannot be read.
     }
   }
 

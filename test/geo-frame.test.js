@@ -4,6 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   geoFrame,
+  capEsriExportFrame,
   llToPx,
   pxToLl,
   llToImagePx,
@@ -28,6 +29,7 @@ const {
   metersPerDeg,
   IMAGERY_MAX_SIDE,
   IMAGERY_MAX_SIDE_DEV,
+  ESRI_MAX_EXPORT_PIXELS,
   IMAGERY_METERS_PER_PX_DEV,
   imageryMaxSide,
   imageryMetersPerPx,
@@ -834,5 +836,22 @@ describe("MSBFP2 pagination", () => {
     const gj = await fetchMsFootprints(frame, fetchFn, { pageSize: 30, cap: 90, pad: false, budgetMs: 7000 });
     assert.equal(gj.features.length, 30);
     assert.equal(gj.partial, true);
+  });
+});
+
+describe("Esri plate pixel budget", () => {
+  it("retries a tall 4K plate under the size Esri rejects", () => {
+    const lancaster = {
+      west: -71.5495,
+      south: 44.46686,
+      east: -71.54245,
+      north: 44.4735,
+    };
+    const plate = geoFrame(lancaster, { maxSide: 4096, metersPerPx: 0.15 });
+    assert.ok(plate.imgW * plate.imgH > ESRI_MAX_EXPORT_PIXELS);
+    const safe = capEsriExportFrame(plate);
+    assert.ok(safe.imgW * safe.imgH <= ESRI_MAX_EXPORT_PIXELS, String(safe.imgW * safe.imgH));
+    assert.ok(Math.max(safe.imgW, safe.imgH) > 3000, safe.imgW + "x" + safe.imgH);
+    assert.equal(capEsriExportFrame(geoFrame(lancaster, { maxSide: 1040, metersPerPx: 1 })).imgW, geoFrame(lancaster, { maxSide: 1040, metersPerPx: 1 }).imgW);
   });
 });

@@ -60,7 +60,7 @@ describe("slope forest masks", () => {
       },
       bbox
     );
-    assert.equal(parsed.wood.length, 1);
+    assert.equal(parsed.wood.length, 2);
     assert.ok(parsed.wood[0].areaM2 > 100000, "wood area " + parsed.wood[0].areaM2);
     assert.equal(parsed.wood[0].heightM, 12);
     assert.equal(parsed.pistes.length, 2);
