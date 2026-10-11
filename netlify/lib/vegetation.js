@@ -1203,6 +1203,7 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     const material = materialForVegetation(heightM, "heavy");
     if (material && ringPx.length >= 4) polygons.push({ ringPx, material, kind: "canopy", shape: "polygon" });
   }
+  polygons.sort((a, b) => ringPxArea(b.ringPx) - ringPxArea(a.ringPx));
   for (const poly of polygons) pushCanopy(poly.ringPx, poly.material, "polygon");
   // Clip against roofs, water, and ski runs, then dissolve so two patches do
   // not paint green on green. Clipboard follows the dissolved rings.

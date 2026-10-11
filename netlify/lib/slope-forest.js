@@ -16,8 +16,9 @@ const OVERPASS_URLS = [
 ];
 
 const PISTE_HALF_M = 28;
-const WOOD_MIN_M2 = 800;
-const WOOD_CAP = 24;
+const WOOD_MIN_M2 = 40;
+/** Safety only. A mapped wood is simplified, not dropped, under this count. */
+const WOOD_CAP = 200;
 const PISTE_CAP = 80;
 const RESORT_FRACTION = 0.4;
 
@@ -166,6 +167,73 @@ function cutInners(outers, inners) {
   return out;
 }
 
+function perpDist(p, a, b) {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-9) return Math.hypot(p[0] - a[0], p[1] - a[1]);
+  return Math.abs(dy * p[0] - dx * p[1] + b[0] * a[1] - b[1] * a[0]) / len;
+}
+
+function douglas(points, eps) {
+  if (points.length < 3) return points.slice();
+  let maxD = 0;
+  let idx = 0;
+  const end = points.length - 1;
+  for (let i = 1; i < end; i++) {
+    const d = perpDist(points[i], points[0], points[end]);
+    if (d > maxD) {
+      maxD = d;
+      idx = i;
+    }
+  }
+  if (maxD <= eps) return [points[0], points[end]];
+  const left = douglas(points.slice(0, idx + 1), eps);
+  const right = douglas(points.slice(idx), eps);
+  return left.slice(0, -1).concat(right);
+}
+
+/** Keep the outline, with fewer corners on a large stand. */
+function simplifyRing(ring, maxVerts) {
+  if (!ring || ring.length < 4) return ring;
+  const closed = near(ring[0], ring[ring.length - 1]);
+  const open = closed ? ring.slice(0, -1) : ring.slice();
+  const limit = maxVerts > 3 ? maxVerts : 32;
+  if (open.length <= limit) {
+    const out = open.slice();
+    out.push(out[0].slice());
+    return out;
+  }
+  const lat = open[0][1];
+  const mLon = 111320 * Math.cos((lat * Math.PI) / 180);
+  const mLat = 110540;
+  const meters = open.map((p) => [p[0] * mLon, p[1] * mLat]);
+  let eps = 4;
+  let cur = meters;
+  while (eps < 80 && cur.length > limit) {
+    const next = douglas(cur.concat([cur[0]]), eps);
+    const opened = next.length > 1 ? next.slice(0, -1) : next;
+    if (opened.length < 3) break;
+    cur = opened;
+    eps *= 1.6;
+  }
+  if (cur.length > limit) {
+    const step = Math.ceil(cur.length / limit);
+    const thin = [];
+    for (let i = 0; i < cur.length && thin.length < limit; i += step) thin.push(cur[i]);
+    if (thin.length >= 3) cur = thin;
+  }
+  const ll = cur.map((p) => [p[0] / mLon, p[1] / mLat]);
+  ll.push(ll[0].slice());
+  return ll.length >= 4 ? ll : ring;
+}
+
+function vertsForArea(area) {
+  if (area >= 80000) return 24;
+  if (area >= 8000) return 36;
+  return 48;
+}
+
 function heightOf(tags) {
   const raw = tags && (tags.height || tags.est_height);
   const n = parseFloat(raw);
@@ -235,7 +303,12 @@ function forestFromElements(json, bbox) {
       for (let r = 0; r < outers.length; r++) {
         const area = ringAreaM2(outers[r]);
         if (area < WOOD_MIN_M2) continue;
-        wood.push({ ringLonLat: outers[r], heightM: heightOf(tags), areaM2: Math.round(area) });
+        const simple = simplifyRing(outers[r], vertsForArea(area));
+        wood.push({
+          ringLonLat: simple,
+          heightM: heightOf(tags),
+          areaM2: Math.round(ringAreaM2(simple) || area),
+        });
       }
       continue;
     }

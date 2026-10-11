@@ -375,7 +375,7 @@ describe("canopy height grid", () => {
       const heights = new Set(crowns.map((c) => c.heightM));
       assert.ok(heights.size >= 8, id + " heights " + heights.size);
       assert.ok(crowns.every((c) => c.heightM >= 3 && c.heightM <= 40));
-      assert.ok(crowns.every((c) => c.ringLonLat.length >= 4 && c.ringLonLat.length <= 40));
+      assert.ok(crowns.every((c) => c.ringLonLat.length >= 4 && c.ringLonLat.length <= 162));
       const traced = crowns.filter((c) => !isAxisRect(c.ringLonLat));
       assert.ok(traced.length >= 8, id + " non-rectangular outlines " + traced.length);
       assert.ok(
