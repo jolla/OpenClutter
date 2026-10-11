@@ -169,13 +169,10 @@ function fillCanopyGaps(grid, opts) {
       }
       if (values[i] >= 3) continue;
       const near = neighborHeight(values, w, h, x, y);
-      // A 10 m tree label around a crown the height model already measured
-      // is the lawn beside that crown. Seeding it merges the stand into a
-      // blob and the outline misses the trees. A mapped wood with no
-      // measured neighbor is still a gap.
-      // Color on shrub or bare ground is creosote and shadow, not a woods.
-      // Measured height is already in the grid. A spruce on grass still seeds.
-      const seed = (woody[i] === 2 && !bare[i]) || (cls === TREE && !(near >= 3));
+      // A mapped tree cell is a gap the height model missed, including the
+      // 10 m label around a measured crown. Color on shrub or bare ground
+      // is not. A spruce on grass still seeds through woody.
+      const seed = (woody[i] === 2 && !bare[i]) || cls === TREE;
       if (!seed) continue;
       const height = near >= 3 ? near : dark ? CONIFER_H : cls === SHRUB ? SHRUB_H : WOOD_H;
       values[i] = height;

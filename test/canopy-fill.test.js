@@ -119,7 +119,7 @@ describe("dark conifer canopy", () => {
     assert.equal(filled.values[3], 0, "bright field");
   });
 
-  it("does not spread a tree label into the lawn beside a measured crown", () => {
+  it("fills a WorldCover tree gap beside a measured crown", () => {
     const frame = { west: 0, south: 0, east: 1, north: 1 };
     const w = 24;
     const h = 24;
@@ -147,8 +147,14 @@ describe("dark conifer canopy", () => {
       worldcover: { sample: () => TREE },
     });
     assert.equal(filled.values[3 * 8 + 3], 16);
-    assert.equal(filled.values[3 * 8 + 4], 0);
-    assert.equal(filled.values[0], 0);
+    assert.ok(filled.values[0] >= 3, "mapped trees away from the crown");
+    const shrub = fillCanopyGaps(grid, {
+      frame,
+      image: { data, width: w, height: h },
+      worldcover: { sample: () => SHRUB },
+    });
+    assert.equal(shrub.values[3 * 8 + 3], 16);
+    assert.equal(shrub.values[0], 0, "shrub label does not fill the flat");
   });
 
   it("does not paint a shrub desert or a textured meadow", () => {
