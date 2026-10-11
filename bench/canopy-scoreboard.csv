@@ -1,13 +1,13 @@
-id,name,version,recall,precision,chmPrecision,openLeak,openLawn,openPitch,openRoad,worldcoverRecall,aerialOnRef,aerialOnPred,heightMae,heightMedian,heightN,refPx,predPx,foliage,buildings,pass
-lancaster-nh,Rogers campground,1.1.126,86,72.7,80.3,9.9,9.6,0.3,0,86.5,76.9,76.2,2.2,0.6,996,104385,100069,1500,73,false
-granite-peak,Granite Peak ski slope,1.1.126,80.7,65.8,72.2,8.7,8.7,0,0,80.7,78.8,83.8,3.4,1.6,1713,109108,92924,2780,139,false
-wynn-golf,Wynn golf course,1.1.126,80.4,45.8,49.6,7,2.2,4.8,0,77.6,32.1,41.5,3,2.6,654,16417,17897,1162,129,false
-montreal-suburb,Montreal suburb,1.1.126,89.4,58.5,60.5,4.3,2.9,1.3,0.1,90.7,62.4,68.7,3.7,2.6,669,39364,45905,1257,201,false
-oak-creek,Oak Creek residential,1.1.126,83.1,65,68.2,4,0.6,3.4,0,82,9,10.9,4.2,3.6,1130,28937,27148,1577,244,false
-pnw-conifer,Hoh rainforest edge,1.1.126,71,74.1,92.2,19.3,16.9,2.2,0.3,71,75.5,78.9,7.7,4.3,2730,133052,94512,3167,10,false
-florida-resort,Innisbrook resort,1.1.126,81.7,65.6,67.5,3.4,2.8,0.6,0,81.8,60.7,65.2,4.3,3.6,1251,50649,47066,2088,164,false
-arizona-desert,Saguaro west desert,1.1.126,0,,,,,,,,100,,,,0,10,0,0,0,false
-texas-live-oak,Brackenridge Park,1.1.126,91.7,70.1,74.1,5.5,2.3,3.2,0,92.6,64.6,68.2,3.3,2.5,1248,87849,89128,2206,193,false
-colorado-camp,Moraine Park campground,1.1.126,89.1,55.5,57,5,3.6,1.4,0,91.3,52.9,55.5,4,2.4,1106,51576,51750,2018,16,false
-chicago-streets,Lincoln Square street trees,1.1.126,78.5,60.6,64,4.8,1.5,3.2,0.1,81.6,40.3,47.5,5.4,4.6,1527,35938,38658,2239,1813,false
-manuel-antonio,Manuel Antonio,1.1.126,97.2,94.2,94.6,0.8,0.7,0,0,97.7,98.4,98.5,4.1,1.5,297,48844,48293,503,115,true
+id,name,version,recall,precision,chmPrecision,openLeak,openLawn,openPitch,openRoad,worldcoverRecall,aerialOnRef,aerialOnPred,heightMae,heightMedian,heightN,understoryGapMae,understoryN,floating,slabs,largestCrownM2,refPx,predPx,foliage,buildings,pass
+lancaster-nh,Rogers campground,1.1.127,86,72.7,80.3,9.9,9.6,0.3,0,86.5,76.9,76.2,1.2,0.4,862,0.2,71,3,0,2075,104385,100025,1440,73,false
+granite-peak,Granite Peak ski slope,1.1.127,80.7,65.8,72.2,8.7,8.7,0,0,80.7,78.8,83.8,2.6,1,1523,0,129,18,0,2404.3,109108,92893,2730,139,false
+wynn-golf,Wynn golf course,1.1.127,79.3,46.5,50.2,6.4,2.2,4.2,0,76.2,32.1,42,1.1,0,344,0,16,5,0,1361.9,16417,17528,1083,129,false
+montreal-suburb,Montreal suburb,1.1.127,89.3,58.5,60.5,4.3,2.9,1.3,0.1,90.6,62.4,68.7,2,1,439,0,26,7,0,1224.4,39364,45849,1139,201,false
+oak-creek,Oak Creek residential,1.1.127,83.3,66.2,68.3,2.5,0.3,2.3,0,82.2,8.8,10.6,1.8,1,516,0,42,15,0,1289,28990,27265,1398,243,false
+pnw-conifer,Hoh rainforest edge,1.1.127,70.7,74.3,92.2,19.2,16.8,2.2,0.3,70.7,75.5,78.9,5.6,3,1856,0,108,10,0,2887.9,133052,94197,2743,10,false
+florida-resort,Innisbrook resort,1.1.127,83,66.1,67.2,2.1,1.7,0.3,0,83,60.1,65,2.2,2,498,0,103,20,0,1719.3,49093,46413,1772,164,false
+arizona-desert,Saguaro west desert,1.1.127,0,,,,,,,,100,,,,0,,0,0,0,0,10,0,0,0,false
+texas-live-oak,Brackenridge Park,1.1.127,91.6,70.2,74.2,5.5,2.3,3.2,0,92.5,64.6,68.3,1.6,1,770,0,121,13,0,5189.9,87849,89012,1916,193,false
+colorado-camp,Moraine Park campground,1.1.127,89.1,55.5,57,5,3.6,1.4,0,91.3,52.9,55.6,2.1,1,764,0,74,1,0,2579.8,51576,51743,1969,16,false
+chicago-streets,Lincoln Square street trees,1.1.127,80.5,60.6,64,4.8,1.5,3.2,0.1,83.2,40.4,47.4,2.6,2,712,0,21,105,0,1214.4,35909,39650,2376,1821,false
+manuel-antonio,Manuel Antonio,1.1.127,98.2,94.1,94.5,0.8,0.8,0,0,98.7,98.4,98.4,1.4,0.6,1350,0.1,353,5,5,11062.7,48844,48807,1574,115,true
