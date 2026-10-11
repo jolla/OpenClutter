@@ -3695,13 +3695,9 @@ function slopeSampler(terrain) {
   fn.seat = (ring) => slopeSeatUnderRing(terrain, ring);
   fn.split = (ring) => splitRingByFloor(terrain, ring);
   fn.splitCanopy = (ring) => {
-    // A large stand cut into slope bands loses the part that does not fit
-    // the piece cap. Keep that stand whole. A small crown still sits on its
-    // own downhill ground.
-    const host = pieceClipboardArea(ring, terrain.frame);
-    // Above this, the bands no longer follow the stand. A ski-hill crown
-    // still splits. A woods the size of a campground does not.
-    if (host >= 100000) return [ring];
+    // Bands that cannot cover the stand are discarded by splitRingByFloor,
+    // which returns the whole ring. A ski hill still sits on its downhill
+    // ground. A woods is not replaced by the uphill slice.
     return splitRingByFloor(terrain, ring, { maxPieces: canopyPieceCap(terrain), keepPartial: true });
   };
   return fn;

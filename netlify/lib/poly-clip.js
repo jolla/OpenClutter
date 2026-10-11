@@ -15,7 +15,9 @@
 
 const polygonClipping = require("polygon-clipping");
 
-const BUILDING_BUFFER_M = 4;
+// One metre keeps foliage off the roof. Four metres was eating the tree row
+// beside a campground building and the conifers along a road.
+const BUILDING_BUFFER_M = 1;
 const MAX_FOLIAGE_VERTS = 36;
 const OVERLAP_DROP_PX2 = 1;
 
@@ -348,11 +350,68 @@ function usablePiece(ring, maxVerts) {
   return true;
 }
 
+function splitRingBox(ring) {
+  const open = openRing(ring);
+  if (open.length < 4) return [];
+  const bb = bounds(open);
+  if (!(bb.w > 1) || !(bb.h > 1)) return [];
+  const vertical = bb.w >= bb.h;
+  const mid = vertical ? (bb.minX + bb.maxX) / 2 : (bb.minY + bb.maxY) / 2;
+  const pad = Math.max(bb.w, bb.h) + 10;
+  const box = (low) => {
+    if (vertical) {
+      const x0 = low ? bb.minX - pad : mid;
+      const x1 = low ? mid : bb.maxX + pad;
+      return [
+        [x0, bb.minY - pad],
+        [x1, bb.minY - pad],
+        [x1, bb.maxY + pad],
+        [x0, bb.maxY + pad],
+        [x0, bb.minY - pad],
+      ];
+    }
+    const y0 = low ? bb.minY - pad : mid;
+    const y1 = low ? mid : bb.maxY + pad;
+    return [
+      [bb.minX - pad, y0],
+      [bb.maxX + pad, y0],
+      [bb.maxX + pad, y1],
+      [bb.minX - pad, y1],
+      [bb.minX - pad, y0],
+    ];
+  };
+  const subject = closeRing(open);
+  const take = (low) => {
+    try {
+      const hit = polygonClipping.intersection([[subject]], [[box(low)]]);
+      if (!hit || !hit.length) return null;
+      let best = null;
+      let bestA = 0;
+      for (let i = 0; i < hit.length; i++) {
+        const outer = hit[i] && hit[i][0];
+        if (!outer) continue;
+        const a = Math.abs(signedArea(outer));
+        if (a > bestA) {
+          bestA = a;
+          best = closeRing(outer);
+        }
+      }
+      return best;
+    } catch {
+      return null;
+    }
+  };
+  const a = take(true);
+  const b = take(false);
+  if (!a || !b) return [];
+  return [a, b];
+}
+
 function piecesUnderCap(ring, maxVerts, maxEps) {
   const out = [];
   const stack = [{ ring, depth: 0 }];
   let guard = 0;
-  while (stack.length && guard++ < 48) {
+  while (stack.length && guard++ < 512) {
     const item = stack.pop();
     const open = openRing(item.ring);
     if (open.length < 3) continue;
@@ -366,13 +425,20 @@ function piecesUnderCap(ring, maxVerts, maxEps) {
     const eps = Math.min(maxEps, 0.55 + item.depth * 0.35);
     const simplified = simplifyRingPx(item.ring, eps);
     if (simplified && usablePiece(simplified, maxVerts)) {
-      out.push(simplified);
-      continue;
+      const a0 = Math.abs(signedArea(open));
+      const a1 = Math.abs(signedArea(simplified));
+      // A short corner list that chords across a woods is not a simpler copy.
+      // Cut the ring instead of dropping the far side.
+      if (!(a0 > 8) || a1 >= a0 * 0.9) {
+        out.push(simplified);
+        continue;
+      }
     }
     if (item.depth < 8) {
-      const parts = splitRing(item.ring);
-      if (parts.length === 2) {
-        stack.push({ ring: parts[0], depth: item.depth + 1 }, { ring: parts[1], depth: item.depth + 1 });
+      const parts = splitRingBox(item.ring);
+      const halved = parts.length === 2 ? parts : splitRing(item.ring);
+      if (halved.length === 2) {
+        stack.push({ ring: halved[0], depth: item.depth + 1 }, { ring: halved[1], depth: item.depth + 1 });
         continue;
       }
     }
@@ -791,6 +857,14 @@ function clipFoliageRing(ring, clipSet) {
   }
   const raw = openHoles(diff);
   const maxEps = Math.max(1.1, Math.min(2.2, clipSet.bufferPx * 0.4));
+  const rawRings = [];
+  let rawArea = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const closed = closeRing(openRing(raw[i]));
+    if (closed.length < 4) continue;
+    rawRings.push(closed);
+    rawArea += Math.abs(signedArea(closed));
+  }
   const pieces = [];
   for (const s of raw) {
     for (const piece of piecesUnderCap(s, MAX_FOLIAGE_VERTS, maxEps)) {
@@ -811,6 +885,12 @@ function clipFoliageRing(ring, clipSet) {
       if (!blocked) pieces.push(piece);
     }
   }
+  let pieceArea = 0;
+  for (let i = 0; i < pieces.length; i++) pieceArea += Math.abs(signedArea(pieces[i]));
+  // The corner cap was keeping a slice of a woods and dropping the rest.
+  // The uncut difference still has the stand. The exporter cuts that ring
+  // without giving up the area.
+  if (rawArea > 8 && pieceArea < rawArea * 0.9) return rawRings;
   return pieces;
 }
 
