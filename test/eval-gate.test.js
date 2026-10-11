@@ -100,7 +100,7 @@ describe("eval gate (cached fixtures, no Hamina)", () => {
 
 describe("eval gate with Include foliage on", () => {
   it("emits canopy polygons only and keeps foliage overlap guards", () => {
-    const { isVegetationOiName, isTrunkOiName } = require("../netlify/lib/materials");
+    const { isVegetationOiName, isTrunkOiName, isUnderstoryOiName } = require("../netlify/lib/materials");
     for (const site of loadSitesIndex()) {
       const loaded = loadFixture(site);
       const next = runLoaded(loaded, { rgbPolicy: T.RGB_POLICY_PREFER_NLCD, includeFoliage: true });
@@ -120,7 +120,8 @@ describe("eval gate with Include foliage on", () => {
       const areas = next.built.openintent.floorplans[0].attenuation_areas;
       const veg = areas.filter((a) => isVegetationOiName(a.area_material && a.area_material.name));
       const trunks = areas.filter((a) => isTrunkOiName(a.area_material && a.area_material.name));
-      assert.equal(veg.length + trunks.length, next.exportStats.openIntentTrees.emitted);
+      const under = areas.filter((a) => isUnderstoryOiName(a.area_material && a.area_material.name));
+      assert.equal(veg.length + trunks.length + under.length, next.exportStats.openIntentTrees.emitted);
       assert.ok(veg.length >= 1, site.id);
       for (const trunk of trunks) {
         assert.equal(trunk.area_material.transparencyEnabled, true);

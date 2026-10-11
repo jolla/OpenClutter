@@ -2,12 +2,14 @@
 "use strict";
 
 /**
- * Canopy benchmark. Each site is a live-sized export. Recall and precision
- * are against the Meta/WRI canopy height grid (cells at least 3 m), with
- * ESA WorldCover tree cover used where that grid measured no height.
- * Building footprints are left out of both masks. Height error is the
- * canopy thickness (top minus bottom) against the canopy-height sample at
- * the polygon centroid. Aerial green is a spot check, not the reference.
+ * Canopy benchmark. Each site is a live-sized export. Recall is the share of
+ * reference canopy the export drew: a Meta/WRI cell of at least 3 m, or an
+ * ESA WorldCover tree cell where that grid measured no height. Precision is
+ * only the canopy-height grid: the share of emitted canopy area whose sample
+ * is at least 3 m, on a uniform grid over the whole draw. A green aerial
+ * pixel is not a hit. Open ground (mown lawn, dirt pitch, road) inside the
+ * emitted canopy is reported separately and fails the site when it is common.
+ * Building footprints are left out of both masks.
  */
 
 const fs = require("fs");
@@ -19,7 +21,7 @@ const { esriContentExtent, geoFrame, imagePxToLl, pxToLl } = require("../netlify
 const { fetchChmGrid } = require("../netlify/lib/canopy-height");
 const { fetchWorldCoverTrees, TREE } = require("../netlify/lib/worldcover");
 const { isVegetationOiName } = require("../netlify/lib/materials");
-const { coniferPixel } = require("../netlify/lib/surface-mask");
+const { coniferPixel, openGroundPixel, localStd } = require("../netlify/lib/surface-mask");
 
 const ROOT = path.join(__dirname, "..");
 const SITES = JSON.parse(fs.readFileSync(path.join(ROOT, "bench/canopy-sites.json"), "utf8"));
@@ -186,6 +188,8 @@ async function scoreSite(site, zipPath) {
   let fp = 0;
   let fpGreen = 0;
   let fpShort = 0;
+  let chmTp = 0;
+  let openN = 0;
   const w = fol.w;
   const h = fol.h;
   const paint = Buffer.alloc(w * h);
@@ -214,6 +218,7 @@ async function scoreSite(site, zipPath) {
       }
       if (isPred) {
         pred++;
+        if (hv >= 3) chmTp++;
         if (isRef) tp++;
         else {
           fp++;
@@ -221,6 +226,8 @@ async function scoreSite(site, zipPath) {
           if (hv >= 1 && hv < 3) fpShort++;
         }
         if (green) aerialOnPred++;
+        const std = localStd(raw.data, raw.width, raw.height, xx, yy);
+        if (openGroundPixel(raw.data[pix], raw.data[pix + 1], raw.data[pix + 2], std)) openN++;
       }
       paint[i] = isRef && isPred ? 1 : isRef ? 2 : isPred ? 3 : 0;
     }
@@ -235,7 +242,8 @@ async function scoreSite(site, zipPath) {
   const mae = errs.length ? errs.reduce((s, v) => s + v, 0) / errs.length : null;
   const med = errs.length ? errs[Math.floor(errs.length / 2)] : null;
   const recall = pct(hit, ref);
-  const precision = pct(tp, pred);
+  const precision = pct(chmTp, pred);
+  const openLeak = pct(openN, pred);
   const result = {
     id: site.id,
     name: site.name,
@@ -261,7 +269,8 @@ async function scoreSite(site, zipPath) {
     heightMedian: med == null ? null : Math.round(med * 10) / 10,
     heightN: errs.length,
     precisionSpot: pct(tp + fpGreen, pred),
-    pass: recall != null && precision != null && recall >= 85 && pct(tp + fpGreen, pred) >= 85,
+    openLeak,
+    pass: recall != null && precision != null && recall >= 85 && precision >= 85 && (openLeak == null || openLeak <= 8),
   };
   fs.mkdirSync(path.join(OUT, "results"), { recursive: true });
   fs.writeFileSync(path.join(OUT, "results", site.id + ".json"), JSON.stringify(result, null, 2));
@@ -374,6 +383,9 @@ async function exportSite(site) {
   if (!payload.zipBase64) throw new Error(site.id + " export failed: " + (payload.error || "no zip"));
   fs.mkdirSync(OUT, { recursive: true });
   fs.writeFileSync(zipPath, Buffer.from(payload.zipBase64, "base64"));
+  if (payload.terrainClipboard) {
+    fs.writeFileSync(path.join(OUT, site.id + ".terrain.json"), JSON.stringify(payload.terrainClipboard));
+  }
   const stats = payload.stats || {};
   fs.writeFileSync(
     path.join(OUT, site.id + "-stats.json"),
@@ -433,25 +445,29 @@ function writeBoard() {
   const lines = [
     "# Canopy scoreboard",
     "",
-    "Recall uses the Meta/WRI canopy height grid. A cell of at least 3 m is canopy. Where that grid measured no height, ESA WorldCover tree cover is also canopy. Roof pixels are ignored. Precision (spot) counts a drawn crown as correct when that reference agrees or the aerial pixel is green, because a dark stand the 10 m map missed is still a tree. Strict precision is the reference alone. Green on the overlay is reference canopy the export drew. Red is reference canopy still missing. Yellow is canopy the export drew that the reference does not call trees.",
+    "Recall uses the Meta/WRI canopy height grid. A cell of at least 3 m is canopy. Where that grid measured no height, ESA WorldCover tree cover is also canopy. Roof pixels are ignored. Precision is the share of emitted canopy whose canopy-height sample is at least 3 m, sampled on the same uniform grid. Aerial green and a WorldCover tree label do not count as a hit. Open ground is the share of that emitted area the aerial reads as mown lawn, a dirt pitch, or a road. A site passes at 85% recall, 85% precision, and open ground at or under 8%. Green on the overlay is reference canopy the export drew. Red is reference canopy still missing. Yellow is canopy the export drew that the reference does not call trees.",
     "",
     "Height error is metres of canopy thickness versus the canopy-height sample at the polygon centroid, for polygons that sit on a measured crown.",
     "",
-    "| Site | Recall | Precision (spot) | Precision (strict) | WorldCover recall | Height MAE | Crowns | Pass |",
+    "| Site | Recall | Precision (CHM ≥ 3 m) | Open ground | WorldCover recall | Height MAE | Crowns | Pass |",
     "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
   ];
   for (const r of rows) {
-    const spot = r.precisionSpot != null ? r.precisionSpot : spotPrecision(r);
-    const pass = r.recall != null && spot != null && r.recall >= 85 && spot >= 85;
+    const pass =
+      r.recall != null &&
+      r.precision != null &&
+      r.recall >= 85 &&
+      r.precision >= 85 &&
+      (r.openLeak == null || r.openLeak <= 8);
     lines.push(
       "| " +
         r.name +
         " | " +
         (r.recall == null ? "—" : r.recall + "%") +
         " | " +
-        (spot == null ? "—" : spot + "%") +
-        " | " +
         (r.precision == null ? "—" : r.precision + "%") +
+        " | " +
+        (r.openLeak == null ? "—" : r.openLeak + "%") +
         " | " +
         (r.worldcoverRecall == null ? "—" : r.worldcoverRecall + "%") +
         " | " +

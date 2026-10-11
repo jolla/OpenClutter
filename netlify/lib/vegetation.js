@@ -2,7 +2,15 @@
 
 const { llToPx, pxToLl, pxToClipboard, applyAffine } = require("./geo-frame");
 const { clipZone } = require("./hamina-clipboard");
-const { measuredFoliageMaterial, materialForVegetation, liftFoliagePair, individualTreeParts } = require("./materials");
+const {
+  measuredFoliageMaterial,
+  materialForVegetation,
+  liftFoliagePair,
+  individualTreeParts,
+  standUnderstoryM,
+  understoryClipPair,
+  isUnderstoryOiName,
+} = require("./materials");
 
 const { MAX_TREES, maxTreesForBbox, canopyHeightM } = require("./tree-source");
 const { crownsForExport } = require("./canopy-height");
@@ -422,6 +430,8 @@ const TRUNK_SIDES = 12;
  * drops whole trees once the Hamina area budget is full.
  */
 const CROWN_LAYER_BUDGET = 720;
+/** A woods this large gets an understory plus a raised crown. A smaller clump stays one mass. */
+const STAND_LAYER_M2 = 800;
 /** Each band stays thicker than 2 m, which is the custom-height floor. */
 const MIN_CROWN_BAND_M = 2.1;
 
@@ -587,8 +597,11 @@ function wantedCrownLayers(discrete, thickness, treeCount) {
 function domeAreaFractions(n, discrete) {
   if (!(n >= 2)) return [1];
   if (!discrete) {
-    if (n === 2) return [1, 0.36];
-    return [1, 0.68, 0.34];
+    // The full outline is only the skirt. The inset bands are the crown,
+    // so a woods reads as a rounded top instead of a flat slab.
+    if (n === 2) return [1, 0.42];
+    if (n === 3) return [1, 0.58, 0.28];
+    return [1, 0.72, 0.46, 0.24];
   }
   if (n === 2) return [1, 0.36];
   if (n === 3) return [0.66, 1, 0.36];
@@ -678,7 +691,7 @@ function pickBandMaterial(target, tier) {
  * opens a gap, or a band that no longer ends on the measured top, returns
  * null so the caller keeps the single footprint.
  */
-function buildCrownBands(material, n) {
+function buildCrownBands(material, n, skirt) {
   if (!material || !(n >= 2)) return null;
   const lifted = Number(material.bottom_height) >= 1;
   const bottom0 = lifted ? roundTenths(material.bottom_height) : 0;
@@ -693,6 +706,13 @@ function buildCrownBands(material, n) {
   for (let i = 0; i < n; i++) {
     const left = n - i;
     let target = left === 1 ? remain : roundTenths(remain / left);
+    // A merged woods keeps a short full-height skirt, then puts the measured
+    // top on the smaller bands so the edge rounds instead of a plateau.
+    if (skirt && i === 0 && left > 1) {
+      const minRest = (left - 1) * 2.2;
+      const skirtH = roundTenths(Math.min(2.6, Math.max(2.2, remain - minRest)));
+      if (skirtH > 2 && remain - skirtH >= minRest) target = skirtH;
+    }
     if (left > 1) {
       const minRest = (left - 1) * 2.1;
       if (target > remain - minRest) target = roundTenths(remain - minRest);
@@ -725,14 +745,166 @@ function buildCrownBands(material, n) {
   return bands.length === n ? bands : null;
 }
 
-function layerCounts(pending) {
+function bareCanopy(material, thickness) {
+  let name = String((material && material.name) || "");
+  const at = name.indexOf(" @ ");
+  if (at > 0) name = name.slice(0, at);
+  return {
+    name,
+    rf_properties: material && material.rf_properties,
+    top_height: roundTenths(thickness),
+    display_color: material && material.display_color,
+    transparencyEnabled: true,
+  };
+}
+
+/**
+ * Understory from local ground, then the foliage crown up to the measured top.
+ * Both use the traced outline. Null when the height cannot hold both layers.
+ */
+function standLayerParts(material) {
+  if (!material || isUnderstoryOiName(material.name) || !isVegetationName(material.name)) return null;
+  const lifted = Number(material.bottom_height) >= 1;
+  const seat = lifted ? roundTenths(material.bottom_height) : 0;
+  const top = Number(material.top_height);
+  const thickness = roundTenths(top - seat);
+  const tier = String(material.name).indexOf("Light") >= 0 ? "light" : "heavy";
+  const base = standUnderstoryM(thickness, tier);
+  if (!(base >= 2.5)) return null;
+  const crownH = roundTenths(thickness - base);
+  if (!(crownH >= 2.5)) return null;
+  const underPair = understoryClipPair(base, seat);
+  if (!underPair) return null;
+  let crownBase = materialForVegetation(crownH, tier);
+  if (!crownBase || Math.abs(Number(crownBase.top_height) - crownH) > 0.15) return null;
+  const crownBottom = roundTenths(seat + base);
+  let crownMat = crownBase;
+  let crownClip = clipboardForCanopy(crownBase);
+  if (crownBottom >= 1) {
+    const pair = liftFoliagePair(crownBase, crownBottom);
+    if (!pair || !pair.material) return null;
+    crownMat = pair.material;
+    crownClip = { typeId: pair.typeId, clipType: pair.clipType };
+  }
+  if (!crownClip) return null;
+  if (Math.abs(Number(crownMat.top_height) - top) > 0.15) return null;
+  const underTop = Number(underPair.material.top_height);
+  const crownBot = crownMat.bottom_height != null ? Number(crownMat.bottom_height) : 0;
+  if (Math.abs(underTop - (seat + base)) > 0.15) return null;
+  if (Math.abs(crownBot - crownBottom) > 0.15 && crownBottom >= 1) return null;
+  return [
+    {
+      material: underPair.material,
+      clip: { typeId: underPair.typeId, clipType: underPair.clipType },
+    },
+    { material: crownMat, clip: crownClip },
+  ];
+}
+
+function isVegetationName(name) {
+  const n = String(name || "");
+  if (n.indexOf("Foliage - Heavy") === 0 || n.indexOf("Foliage - Light") === 0) return true;
+  return false;
+}
+
+function reseatPart(part, newBottom) {
+  const mat = part.material;
+  if (!mat) return null;
+  const oldBottom = Number(mat.bottom_height) >= 1 ? Number(mat.bottom_height) : 0;
+  const thickness = roundTenths(Number(mat.top_height) - oldBottom);
+  if (!(thickness > 0.5)) return null;
+  if (isUnderstoryOiName(mat.name)) {
+    const pair = understoryClipPair(thickness, newBottom);
+    if (!pair) return null;
+    return {
+      material: pair.material,
+      clip: { typeId: pair.typeId, clipType: pair.clipType },
+    };
+  }
+  if (!(newBottom >= 1)) {
+    const bare = bareCanopy(mat, thickness);
+    return { material: bare, clip: clipboardForCanopy(bare) };
+  }
+  const lifted = liftFoliagePair(bareCanopy(mat, thickness), newBottom);
+  if (!lifted) return null;
+  return { material: lifted.material, clip: { typeId: lifted.typeId, clipType: lifted.clipType } };
+}
+
+/**
+ * An inset band used to keep the seat of the larger ring, so the piece hung
+ * above the hill under its own outline. Drop the whole stack onto the
+ * downhill ground of the lowest ring when that gap is more than 3 m.
+ */
+function dropStack(parts, slopeTop, frame) {
+  if (!slopeTop || typeof slopeTop.seat !== "function" || !parts || !parts.length) return parts;
+  const ring = parts[0] && parts[0].ringPx;
+  if (!ring || ring.length < 4) return parts;
+  const ll = [];
+  for (let i = 0; i < ring.length; i++) {
+    const q = pxToLl(ring[i][0], ring[i][1], frame);
+    if (!q || !Number.isFinite(q[0]) || !Number.isFinite(q[1])) continue;
+    ll.push(q);
+  }
+  if (ll.length < 3) return parts;
+  const down = Number(slopeTop.seat(ll)) || 0;
+  const mat0 = parts[0].material;
+  const bottom = mat0 && Number(mat0.bottom_height) >= 1 ? Number(mat0.bottom_height) : 0;
+  if (!(down >= 1) || !(bottom > down + 3)) return parts;
+  const drop = bottom - down;
+  const out = [];
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    const mat = part.material;
+    if (!mat) {
+      out.push(part);
+      continue;
+    }
+    const oldBottom = Number(mat.bottom_height) >= 1 ? Number(mat.bottom_height) : 0;
+    const newBottom = roundTenths(oldBottom - drop);
+    const seated = reseatPart(part, newBottom);
+    if (!seated) {
+      out.push(part);
+      continue;
+    }
+    out.push(Object.assign({}, part, seated));
+  }
+  return out;
+}
+
+/** Keep at most `maxPts` corners. A sawtooth edge makes the slope cut drop area and seat the whole stand on one sample. */
+function decimateClosed(ring, maxPts) {
+  if (!ring || ring.length < 4 || !(maxPts >= 4)) return ring;
+  const closed =
+    ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1];
+  const open = closed ? ring.slice(0, -1) : ring.slice();
+  if (open.length <= maxPts) return ring;
+  const step = Math.ceil(open.length / maxPts);
+  const out = [];
+  for (let i = 0; i < open.length; i += step) out.push(open[i]);
+  if (out.length < 3) return ring;
+  out.push([out[0][0], out[0][1]]);
+  return out;
+}
+
+function canopyAreaM2(ringPx, frame) {
+  const mpuX = (frame && (frame.mpuX || frame.mpu)) || 1;
+  const mpuY = (frame && (frame.mpuY || mpuX)) || mpuX;
+  return ringPxArea(ringPx) * mpuX * mpuY;
+}
+
+function layerCounts(pending, frame) {
   let treeCount = 0;
   for (let i = 0; i < pending.length; i++) if (pending[i].trunk) treeCount++;
   const plans = pending.map((row) => {
     const discrete = !!row.trunk;
     const thickness = crownThicknessM(row.area && row.area.material);
+    const areaM = canopyAreaM2(row.area && row.area.ringPx, frame);
+    const tier = String((row.area && row.area.material && row.area.material.name) || "").indexOf("Light") >= 0 ? "light" : "heavy";
+    const stand = !discrete && areaM >= STAND_LAYER_M2 && standUnderstoryM(thickness, tier) >= 2.5;
+    const wide = row.slopePiece && areaM >= 4000;
     return {
-      n: row.slopePiece ? 1 : wantedCrownLayers(discrete, thickness, treeCount),
+      n: stand ? 2 : row.slopePiece && !wide ? 1 : wantedCrownLayers(discrete, thickness, treeCount),
+      stand,
       discrete,
       area: ringPxArea(row.area && row.area.ringPx),
     };
@@ -754,9 +926,9 @@ function layerCounts(pending) {
     }
   };
   shrink((p) => p.discrete && p.n >= 4, () => 3);
-  shrink((p) => !p.discrete && p.n >= 3, () => 2);
+  shrink((p) => !p.discrete && !p.stand && p.n >= 3, () => 2);
   shrink((p) => p.discrete && p.n >= 3, () => 2);
-  return plans.map((p) => p.n);
+  return plans;
 }
 
 function openCrownRing(ring) {
@@ -1081,7 +1253,31 @@ function ringForFraction(ring, frame, fraction) {
       return pulled;
     }
   }
-  return clippedFraction(ring, frame, fraction);
+  const clipped = clippedFraction(ring, frame, fraction);
+  if (!clipped) return null;
+  if (insetStaysIn(clipped, ring)) return clipped;
+  // A shorter outline can chord across the outside of a notch and land in
+  // the next stand. Keep only the part that is still on this crown.
+  let brought = null;
+  try {
+    const inter = polygonClipping.intersection(
+      [closeCrownRing(openCrownRing(ring))],
+      [closeCrownRing(openCrownRing(clipped))]
+    );
+    brought = largestExterior(inter);
+  } catch {
+    brought = null;
+  }
+  if (
+    brought &&
+    ringClearsSpan(brought, floor) &&
+    insetStaysIn(brought, ring) &&
+    ringPxArea(brought) < ringPxArea(ring) * 0.96 &&
+    ringPxArea(brought) > ringPxArea(ring) * 0.12
+  ) {
+    return brought;
+  }
+  return null;
 }
 
 /**
@@ -1095,7 +1291,7 @@ function crownStack(row, frame, want) {
   for (let n = Math.min(want, 4); n >= 2; n--) {
     const fractions = domeAreaFractions(n, discrete);
     if (fractions.length !== n) continue;
-    const bands = buildCrownBands(row.area.material, n);
+    const bands = buildCrownBands(row.area.material, n, !discrete && row.skirt !== false);
     if (!bands || bands.length !== n) continue;
     const parts = [];
     let ok = true;
@@ -1242,8 +1438,28 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     const one = (ringPx, ground, slopePiece) => [{ ringPx, ground, slopePiece: !!slopePiece }];
     if (!slopeTop || !area.ringPx || area.ringPx.length < 4) return one(area.ringPx, 0, false);
     const ll = area.ringPx.map((p) => pxToLl(p[0], p[1], frame));
-    const split = typeof slopeTop.splitCanopy === "function" ? slopeTop.splitCanopy(ll) : null;
-    if (!split || split.length < 2) return one(area.ringPx, Number(slopeTop(ll)) || 0, false);
+    let split = typeof slopeTop.splitCanopy === "function" ? slopeTop.splitCanopy(ll) : null;
+    // A traced crown with a jagged edge loses area in the cut, so the whole
+    // ring comes back and sits on one sample. The outline that actually ships
+    // is shorter. Cut that one, and each piece meets the ground under it.
+    if ((!split || split.length < 2) && typeof slopeTop.splitCanopy === "function" && typeof slopeTop.seat === "function") {
+      const up = Number(slopeTop(ll)) || 0;
+      const down = Number(slopeTop.seat(ll)) || 0;
+      if (up - down > 8) {
+        // A 24-point outline can still lose the cut. Keep shortening until
+        // the pieces cover the stand. The quad that ships does split.
+        const caps = [32, 16, 8];
+        for (let c = 0; c < caps.length && (!split || split.length < 2); c++) {
+          const simple = decimateClosed(ll, caps[c]);
+          if (!simple || simple.length < 4 || simple.length >= ll.length) continue;
+          const again = slopeTop.splitCanopy(simple);
+          if (again && again.length >= 2) split = again;
+        }
+      }
+    }
+    // A long unsplit ring used to sit on the uphill sample, so the downhill
+    // side floated. Relief over 3 m uses the downhill ground instead.
+    if (!split || split.length < 2) return one(area.ringPx, groundOf(ll), false);
     const seats = [];
     for (let i = 0; i < split.length; i++) {
       const px = [];
@@ -1263,7 +1479,48 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
       const ground = typeof slopeTop.seat === "function" ? Number(slopeTop.seat(split[i])) || 0 : Number(slopeTop(split[i])) || 0;
       seats.push({ ringPx: px, ground, slopePiece: true, ll: split[i] });
     }
-    return seats.length >= 2 ? seats : one(area.ringPx, Number(slopeTop(ll)) || 0, false);
+    if (seats.length >= 2) return seats;
+    return one(area.ringPx, groundOf(ll), false);
+  };
+  const seatNear = (ll) => {
+    let lon = 0;
+    let lat = 0;
+    let n = 0;
+    const end = ll.length > 1 && ll[0][0] === ll[ll.length - 1][0] && ll[0][1] === ll[ll.length - 1][1] ? ll.length - 1 : ll.length;
+    for (let i = 0; i < end; i++) {
+      lon += +ll[i][0];
+      lat += +ll[i][1];
+      n++;
+    }
+    if (!n) return 0;
+    lon /= n;
+    lat /= n;
+    const d = 0.00004;
+    return (
+      Number(
+        slopeTop.seat([
+          [lon - d, lat - d],
+          [lon + d, lat - d],
+          [lon + d, lat + d],
+          [lon - d, lat + d],
+          [lon - d, lat - d],
+        ])
+      ) || 0
+    );
+  };
+  const groundOf = (ll) => {
+    const up = Number(slopeTop(ll)) || 0;
+    if (typeof slopeTop.seat !== "function") return up;
+    const down = Number(slopeTop.seat(ll)) || 0;
+    // A ring that climbs a whole hillside has a datum cell at the edge.
+    // Seating the stand on that cell buries the woods. The middle of the
+    // ring is the ground the canopy actually covers.
+    if (up - down > 12) {
+      const mid = seatNear(ll);
+      if (mid >= 1) return mid;
+    }
+    if (up - down > 3) return down;
+    return up;
   };
   for (const area of dissolved) {
     const seats = seatsFor(area);
@@ -1322,19 +1579,45 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     }
   }
   let canopyCount = 0;
-  const counts = layerCounts(pending);
+  const plans = layerCounts(pending, frame);
   for (let r = 0; r < pending.length; r++) {
     const row = pending[r];
     const area = row.area;
-    const stack = row.slopePiece ? null : crownStack(row, frame, counts[r]);
-    const parts = stack || [
-      {
+    const wideSlope = row.slopePiece && canopyAreaM2(area && area.ringPx, frame) >= 4000;
+    // A short skirt on a ring that climbs more than the skirt is a sheet
+    // through the hill. Keep the full bands until the stand is split.
+    let relief = 0;
+    if (slopeTop && typeof slopeTop.seat === "function" && area.ringPx && area.ringPx.length >= 4) {
+      const ll = [];
+      for (let i = 0; i < area.ringPx.length; i++) {
+        const q = pxToLl(area.ringPx[i][0], area.ringPx[i][1], frame);
+        if (q && Number.isFinite(q[0]) && Number.isFinite(q[1])) ll.push(q);
+      }
+      if (ll.length >= 3) relief = (Number(slopeTop(ll)) || 0) - (Number(slopeTop.seat(ll)) || 0);
+    }
+    row.skirt = !(relief > 8);
+    let stand = plans[r].stand ? standLayerParts(area.material) : null;
+    if (stand) {
+      stand = stand.map((p) => ({
         ringPx: area.ringPx,
-        material: area.material,
-        clip: row.clip || clipboardForCanopy(area.material),
+        material: p.material,
+        clip: p.clip,
         scale: 1,
-      },
-    ];
+      }));
+    }
+    const stack = stand || (row.slopePiece && !wideSlope ? null : crownStack(row, frame, plans[r].n));
+    const parts = dropStack(
+      stack || [
+        {
+          ringPx: area.ringPx,
+          material: area.material,
+          clip: row.clip || clipboardForCanopy(area.material),
+          scale: 1,
+        },
+      ],
+      slopeTop,
+      frame
+    );
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
       oiAreas.push({

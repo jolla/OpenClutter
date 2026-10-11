@@ -274,7 +274,7 @@ describe("an individual tree has a stem and a raised crown", () => {
     assert.ok(veg.some((a) => a.area_material.top_height === 12));
   });
 
-  it("insets a notched woods so the upper layers are narrower than the traced outline", () => {
+  it("puts a light understory under a notched woods and keeps the crown at the measured top", () => {
     const w = 48;
     const h = 48;
     const cell = 2.2;
@@ -316,22 +316,20 @@ describe("an individual tree has a stem and a raised crown", () => {
     });
     const areas = built.openintent.floorplans[0].attenuation_areas;
     const veg = areas.filter((a) => isVegetationOiName(a.area_material.name));
+    const under = areas.filter((a) => String(a.area_material.name).indexOf("Foliage - Understory") === 0);
     const trunks = areas.filter((a) => isTrunkOiName(a.area_material.name));
     assert.equal(trunks.length, 0, "a notched woods is not a discrete tree");
-    assert.ok(veg.length >= 3, "upper layers " + veg.length);
-    const ground = veg.filter((a) => !("bottom_height" in a.area_material));
+    assert.ok(under.length >= 1, "understory " + under.length);
+    assert.ok(veg.length >= 1, "crown " + veg.length);
+    const ground = under.filter((a) => !("bottom_height" in a.area_material));
     assert.equal(ground.length, 1);
+    assert.equal(ground[0].area_material.rf_properties.attenuation_per_m, 0.6);
+    assert.ok(ground[0].area_material.top_height <= 3.2);
     const top = veg.reduce((a, b) => (a.area_material.top_height >= b.area_material.top_height ? a : b));
     assert.equal(top.area_material.top_height, 18);
+    assert.ok(top.area_material.bottom_height >= 2.5, "crown is raised");
     const ratio = ringArea(oiRing(top)) / ringArea(oiRing(ground[0]));
-    assert.ok(ratio >= 0.18 && ratio <= 0.55, "notched top area ratio " + ratio);
-    const spanOf = (ring) => {
-      const xs = ring.map((p) => p[0]);
-      const ys = ring.map((p) => p[1]);
-      return Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
-    };
-    const spanRatio = spanOf(oiRing(top)) / spanOf(oiRing(ground[0]));
-    assert.ok(spanRatio <= 0.85, "notched top span ratio " + spanRatio);
+    assert.ok(ratio >= 0.9, "crown covers the stand " + ratio);
     assert.equal(top.area_material.transparencyEnabled, true);
     assert.equal(top.area_material.rf_properties.attenuation_per_m, 1.5);
   });

@@ -1031,8 +1031,17 @@ describe("foliage height from floor on a slope", () => {
     assert.ok(areas.length >= 2);
     const lifted = areas.filter((a) => "bottom_height" in a.area_material);
     assert.ok(lifted.length >= 2);
-    for (const area of lifted) {
-      assert.match(area.area_material.name, /^Foliage - Heavy /);
+    const under = lifted.filter((a) => String(a.area_material.name).indexOf("Foliage - Understory") === 0);
+    const crowns = lifted.filter((a) => String(a.area_material.name).indexOf("Foliage - Heavy") === 0);
+    assert.ok(under.length >= 1, "understory " + under.length);
+    assert.ok(crowns.length >= 1, "crown " + crowns.length);
+    for (const area of under) {
+      assert.equal(area.area_material.rf_properties.attenuation_per_m, 0.6);
+      const span = area.area_material.top_height - area.area_material.bottom_height;
+      assert.ok(span >= 2.5 && span <= 3.2, "understory " + span);
+      assert.equal(area.area_material.transparencyEnabled, true);
+    }
+    for (const area of crowns) {
       assert.equal(area.area_material.rf_properties.attenuation_per_m, 1.5);
       assert.equal(area.area_material.transparencyEnabled, true);
     }
@@ -1074,25 +1083,30 @@ describe("foliage height from floor on a slope", () => {
     assert.ok(terrain.reliefM >= LIFT_RELIEF_M);
     assert.equal(siteWarrantsLift(terrain), true);
     const areas = built.openintent.floorplans[0].attenuation_areas;
-    const valley = areas.filter((a) => a.area_material.name.indexOf("Foliage - Heavy") === 0 && !("bottom_height" in a.area_material));
-    const hill = areas.filter((a) => String(a.area_material.name).indexOf("Foliage - Light") === 0);
-    const thick = areas.filter((a) => String(a.area_material.name).indexOf("Foliage - Heavy") === 0 && a.area_material.bottom_height >= 50);
-    assert.ok(valley.length >= 1, "valley canopy stays on the floor");
+    const valley = areas.filter((a) => a.area_material.name.indexOf("Foliage - Understory") === 0 && !("bottom_height" in a.area_material));
+    const hill = areas.filter((a) => String(a.area_material.name).indexOf("Foliage - Light") === 0 || (String(a.area_material.name).indexOf("Foliage - Understory") === 0 && a.area_material.bottom_height >= 50 && a.area_material.top_height - a.area_material.bottom_height < 4));
+    const thick = areas.filter((a) => (String(a.area_material.name).indexOf("Foliage - Heavy") === 0 || String(a.area_material.name).indexOf("Foliage - Understory") === 0) && a.area_material.bottom_height >= 50 && !(String(a.area_material.name).indexOf("Light") === 0));
+    assert.ok(valley.length >= 1, "valley understory stays on the floor");
     assert.ok(hill.length >= 2, "uphill stock canopy is lifted");
     assert.ok(thick.length >= 2, "uphill measured canopy is lifted");
     for (const area of valley) {
       assert.equal("bottom_height" in area.area_material, false);
-      assert.ok(area.area_material.top_height < 14.2);
+      assert.equal(area.area_material.rf_properties.attenuation_per_m, 0.6);
+      assert.ok(area.area_material.top_height <= 3.2);
     }
+    const valleyCrown = areas.find((a) => String(a.area_material.name).indexOf("Foliage - Heavy") === 0 && a.area_material.bottom_height >= 2.5 && a.area_material.bottom_height < 20);
+    assert.ok(valleyCrown, "valley crown is raised");
+    assert.equal(valleyCrown.area_material.top_height, 14.2);
+    assert.equal(valleyCrown.area_material.rf_properties.attenuation_per_m, 1.5);
     const stockTop = 19.68 / 3.280839895;
     const hillBase = Math.min(...hill.map((a) => a.area_material.bottom_height));
     const hillHigh = Math.max(...hill.map((a) => a.area_material.bottom_height));
-    const hillMat = hill.find((a) => a.area_material.bottom_height === hillBase).area_material;
-    assert.ok(hillMat.bottom_height >= 50, "bottom " + hillMat.bottom_height);
-    for (const area of hill) {
-      const mat = area.area_material;
-      assert.equal(mat.top_height, Math.round((mat.bottom_height + stockTop) * 10) / 10);
-    }
+    const hillCrown = hill.find((a) => String(a.area_material.name).indexOf("Foliage - Light") === 0);
+    assert.ok(hillCrown, "raised light crown");
+    const hillMat = hillCrown.area_material;
+    assert.ok(hillBase >= 50, "bottom " + hillBase);
+    const hillReach = Math.max(...hill.map((a) => a.area_material.top_height)) - hillBase;
+    assert.ok(hillReach + 0.2 >= stockTop, "stock canopy reaches " + hillReach);
     if (hill.length > 2) assert.ok(hillHigh > hillBase + 1, "stock canopy follows the slope " + hillBase + ".." + hillHigh);
     assert.match(hillMat.name, /^Foliage - Light /);
     assert.equal(hillMat.transparencyEnabled, true);
@@ -1122,10 +1136,16 @@ describe("foliage height from floor on a slope", () => {
     assert.equal(stockLight, undefined);
     const thickBase = Math.min(...thick.map((a) => a.area_material.bottom_height));
     const thickHigh = Math.max(...thick.map((a) => a.area_material.bottom_height));
-    const thickMat = thick.find((a) => a.area_material.bottom_height === thickBase).area_material;
-    assert.ok(thickMat.bottom_height >= 50);
+    const thickCrown = thick.find((a) => String(a.area_material.name).indexOf("Foliage - Heavy") === 0);
+    assert.ok(thickCrown, "raised heavy crown");
+    const thickMat = thickCrown.area_material;
+    assert.ok(thickBase >= 50);
+    const thickReach = Math.max(...thick.map((a) => a.area_material.top_height)) - thickBase;
+    assert.ok(thickReach + 0.2 >= 14.2, "measured canopy reaches " + thickReach);
     for (const area of thick) {
-      assert.equal(area.area_material.top_height, Math.round((area.area_material.bottom_height + 14.2) * 10) / 10);
+      const mat = area.area_material;
+      assert.ok(mat.top_height > mat.bottom_height + 2);
+      assert.ok(mat.top_height <= Math.round((mat.bottom_height + 14.2) * 10) / 10 + 0.05);
     }
     if (thick.length > 2) assert.ok(thickHigh > thickBase + 1, "measured canopy follows the slope");
     assert.match(thickMat.name, /^Foliage - Heavy /);
@@ -1138,7 +1158,7 @@ describe("foliage height from floor on a slope", () => {
     assert.equal(thickType.bottomEdge, thickMat.bottom_height);
     assert.equal(thickType.topEdge, thickMat.top_height);
     const valleyMat = valley[0].area_material;
-    const valleyZone = built.clipboard.attenuatingZones.find((z) => z.typeId && String(z.typeId).indexOf("foliage-m-") === 0 && String(z.typeId).indexOf("-b") < 0);
+    const valleyZone = built.clipboard.attenuatingZones.find((z) => z.typeId && String(z.typeId).indexOf("understory-m-") === 0 && String(z.typeId).indexOf("-b") < 0);
     const valleyType = built.clipboard.attenuatingZoneTypes.find((t) => t.id === valleyZone.typeId);
     assert.equal(valleyType.topEdge, valleyMat.top_height);
     assert.equal(valleyType.transparencyEnabled, true);
@@ -1189,9 +1209,16 @@ describe("foliage height from floor on a slope", () => {
     assert.ok(hi > lo + 8, "bottoms " + lo + ".." + hi);
     for (const area of areas) {
       const mat = area.area_material;
-      assert.equal(mat.top_height, Math.round((mat.bottom_height + 14) * 10) / 10);
+      const bottom = mat.bottom_height || 0;
+      assert.ok(mat.top_height > bottom + 2, "band " + bottom + ".." + mat.top_height);
+      assert.ok(mat.top_height <= Math.round((bottom + 14) * 10) / 10 + 0.05);
       assert.equal(mat.transparencyEnabled, true);
     }
+    const reach = (list) => {
+      const bottom = Math.min.apply(null, list.map((a) => a.area_material.bottom_height || 0));
+      const top = Math.max.apply(null, list.map((a) => a.area_material.top_height));
+      return top - bottom;
+    };
     const probe = llToPx(frame.west + spanLon * 0.5, frame.south + span * 0.6, frame);
     const rings = areas.map((a) => a.area.coordinates.map((p) => [p.coordinate_xyz.x, p.coordinate_xyz.y]));
     const covered = rings.some((ring) => pointInRing(probe, ring));
@@ -1205,9 +1232,51 @@ describe("foliage height from floor on a slope", () => {
       return ys.reduce((s, y) => s + y, 0) / ys.length > frame.imgH * 0.7;
     });
     assert.ok(south.length && north.length, "south " + south.length + " north " + north.length);
+    assert.ok(reach(south) >= 12, "south crown " + reach(south));
+    assert.ok(reach(north) >= 12, "north crown " + reach(north));
     const southTop = Math.max(...south.map((a) => a.area_material.bottom_height));
     const northBot = Math.min(...north.map((a) => a.area_material.bottom_height));
     assert.ok(northBot > southTop, "uphill pieces sit higher " + southTop + " then " + northBot);
+  });
+
+  it("seats a jagged hillside crown on local ground", () => {
+    const span = frame.north - frame.south;
+    const spanLon = frame.east - frame.west;
+    const terrain = terrainFromSamples(
+      gridSamples(frame, (r, c, lon, lat) => 400 + ((lat - frame.south) / span) * 180),
+      frame
+    );
+    const wood = [];
+    const steps = 40;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const jitter = i % 2 ? 0.04 : -0.04;
+      wood.push([frame.west + spanLon * (0.2 + jitter), frame.south + span * (0.15 + 0.7 * t)]);
+    }
+    for (let i = steps; i >= 0; i--) {
+      const t = i / steps;
+      const jitter = i % 2 ? -0.04 : 0.04;
+      wood.push([frame.west + spanLon * (0.8 + jitter), frame.south + span * (0.15 + 0.7 * t)]);
+    }
+    wood.push(wood[0]);
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [] },
+      treePoints: [],
+      name: "Jagged hill",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain,
+      includeFoliage: true,
+      woodRings: [{ ringLonLat: wood, heightM: 14 }],
+    });
+    const areas = built.openintent.floorplans[0].attenuation_areas.filter((a) =>
+      String(a.area_material.name).indexOf("Foliage") === 0
+    );
+    const bottoms = areas.map((a) => a.area_material.bottom_height || 0);
+    const lo = Math.min(...bottoms);
+    const hi = Math.max(...bottoms);
+    assert.ok(areas.length >= 4, "pieces " + areas.length);
+    assert.ok(hi > lo + 8, "bottoms " + lo + ".." + hi);
   });
 });
 
@@ -2044,8 +2113,14 @@ describe("Copernicus GLO-30 when 3DEP misses", () => {
     assert.equal(hillType.topEdge, Math.round((expected + 6.4) * 10) / 10);
     assert.ok(hillType.topEdge > hillType.bottomEdge);
 
-    const foliage = areas.filter((a) => String(a.area_material.name).indexOf("Foliage - Heavy") === 0 && a.area_material.bottom_height >= 1);
-    const foliageFloor = areas.filter((a) => String(a.area_material.name).indexOf("Foliage - Heavy") === 0 && !("bottom_height" in a.area_material));
+    const foliage = areas.filter((a) => {
+      const n = String(a.area_material.name);
+      return (n.indexOf("Foliage - Heavy") === 0 || n.indexOf("Foliage - Understory") === 0) && a.area_material.bottom_height >= 1;
+    });
+    const foliageFloor = areas.filter((a) => {
+      const n = String(a.area_material.name);
+      return (n.indexOf("Foliage - Heavy") === 0 || n.indexOf("Foliage - Understory") === 0) && !("bottom_height" in a.area_material);
+    });
     assert.ok(foliage.length >= 1, "uphill canopy sits on the raised layer");
     if (southBottom < 1) assert.ok(foliageFloor.length >= 1, "valley canopy stays on the floor");
     const uphill = foliage.filter((a) => a.area_material.bottom_height + 0.05 >= expected);

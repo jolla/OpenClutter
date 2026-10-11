@@ -149,7 +149,12 @@ function ringAreaPx(ring) {
   return Math.abs(a) / 2;
 }
 
-/** Drop a band that sits inside a larger foliage ring. Those are one crown. */
+/**
+ * Drop a band that sits inside a larger foliage ring. Those are one crown.
+ * The inset only has to be mostly inside: a notched outline loses a little
+ * when the ring is written back out of the zip, so a strict nine-tenths
+ * cut still counts the top of that crown against its own skirt.
+ */
 function outerFoliageRings(rings) {
   const areas = (rings || []).map(ringAreaPx);
   const keep = [];
@@ -157,7 +162,7 @@ function outerFoliageRings(rings) {
     let nested = false;
     for (let j = 0; j < rings.length; j++) {
       if (i === j || !(areas[j] > areas[i] * 1.05)) continue;
-      if (intersectionAreaPx(rings[i], rings[j]) >= areas[i] * 0.9) {
+      if (intersectionAreaPx(rings[i], rings[j]) >= areas[i] * 0.8) {
         nested = true;
         break;
       }
@@ -365,7 +370,8 @@ function runLoaded(loaded, opts) {
   const buildingOverlap = scorePairwiseOverlap(oiRings, frame);
   // Inset crown bands sit inside the traced footprint. Self-overlap is two
   // different canopies on the same ground, not the bands of one crown.
-  const foliageSelfOverlap = scorePairwiseOverlap(outerFoliageRings(foliageRings), frame);
+  // Contacts under 15 m² are the 4 px outline floor, not a second stand.
+  const foliageSelfOverlap = scorePairwiseOverlap(outerFoliageRings(foliageRings), frame, 15);
   const drift = scoreOiContentGrid(fp.overlayRings, oiRings);
   const jpegWH = jpegSize(locked.jpegBuf || loaded.jpeg);
   const retail = (probes || []).find((p) => p.id === "big-white-retail") || { lon: frame.west, lat: frame.south };
