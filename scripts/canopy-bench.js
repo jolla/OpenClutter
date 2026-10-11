@@ -4,12 +4,12 @@
 /**
  * Canopy benchmark. Each site is a live-sized export. Recall is the share of
  * reference canopy the export drew: a Meta/WRI cell of at least 3 m, or an
- * ESA WorldCover tree cell where that grid measured no height. Precision is
- * only the canopy-height grid: the share of emitted canopy area whose sample
- * is at least 3 m, on a uniform grid over the whole draw. A green aerial
- * pixel is not a hit. Open ground (mown lawn, dirt pitch, road) inside the
- * emitted canopy is reported separately and fails the site when it is common.
- * Building footprints are left out of both masks.
+ * ESA WorldCover tree cell where that grid measured no height. Precision
+ * samples the emitted canopy on one uniform grid. A sample counts only when
+ * the canopy-height model is at least 3 m and the aerial is not an open
+ * lawn, mown field, RV pitch, or road. Those open surfaces drawn as canopy
+ * are false positives even when the height model says 3 m. A green aerial
+ * pixel is not a hit by itself. Building footprints are left out of both masks.
  */
 
 const fs = require("fs");
@@ -189,7 +189,11 @@ async function scoreSite(site, zipPath) {
   let fpGreen = 0;
   let fpShort = 0;
   let chmTp = 0;
+  let wholeTp = 0;
   let openN = 0;
+  let openLawn = 0;
+  let openPitch = 0;
+  let openRoad = 0;
   const w = fol.w;
   const h = fol.h;
   const paint = Buffer.alloc(w * h);
@@ -216,9 +220,19 @@ async function scoreSite(site, zipPath) {
         wcRef++;
         if (isPred) wcHit++;
       }
+      let openFp = false;
       if (isPred) {
         pred++;
+        const std = localStd(raw.data, raw.width, raw.height, xx, yy);
+        const ground = openGroundPixel(raw.data[pix], raw.data[pix + 1], raw.data[pix + 2], std);
+        // A mown field is the lawn class. A tan RV pitch or dirt infield is pitch.
+        openFp = ground === "lawn" || ground === "pitch" || ground === "road";
+        if (ground === "lawn") openLawn++;
+        else if (ground === "pitch") openPitch++;
+        else if (ground === "road") openRoad++;
+        if (openFp) openN++;
         if (hv >= 3) chmTp++;
+        if (hv >= 3 && !openFp) wholeTp++;
         if (isRef) tp++;
         else {
           fp++;
@@ -226,10 +240,9 @@ async function scoreSite(site, zipPath) {
           if (hv >= 1 && hv < 3) fpShort++;
         }
         if (green) aerialOnPred++;
-        const std = localStd(raw.data, raw.width, raw.height, xx, yy);
-        if (openGroundPixel(raw.data[pix], raw.data[pix + 1], raw.data[pix + 2], std)) openN++;
       }
-      paint[i] = isRef && isPred ? 1 : isRef ? 2 : isPred ? 3 : 0;
+      const precise = isPred && hv >= 3 && !openFp;
+      paint[i] = precise ? 1 : isRef && !isPred ? 2 : isPred ? 3 : 0;
     }
   }
   const errs = [];
@@ -242,7 +255,8 @@ async function scoreSite(site, zipPath) {
   const mae = errs.length ? errs.reduce((s, v) => s + v, 0) / errs.length : null;
   const med = errs.length ? errs[Math.floor(errs.length / 2)] : null;
   const recall = pct(hit, ref);
-  const precision = pct(chmTp, pred);
+  const chmPrecision = pct(chmTp, pred);
+  const precision = pct(wholeTp, pred);
   const openLeak = pct(openN, pred);
   const result = {
     id: site.id,
@@ -257,6 +271,7 @@ async function scoreSite(site, zipPath) {
     chmNonzero: chm && chm.nonzero,
     recall,
     precision,
+    chmPrecision,
     refPx: ref,
     predPx: pred,
     worldcoverRecall: pct(wcHit, wcRef),
@@ -270,7 +285,10 @@ async function scoreSite(site, zipPath) {
     heightN: errs.length,
     precisionSpot: pct(tp + fpGreen, pred),
     openLeak,
-    pass: recall != null && precision != null && recall >= 85 && precision >= 85 && (openLeak == null || openLeak <= 8),
+    openLawn: pct(openLawn, pred),
+    openPitch: pct(openPitch, pred),
+    openRoad: pct(openRoad, pred),
+    pass: recall != null && precision != null && recall >= 85 && precision >= 85,
   };
   fs.mkdirSync(path.join(OUT, "results"), { recursive: true });
   fs.writeFileSync(path.join(OUT, "results", site.id + ".json"), JSON.stringify(result, null, 2));
@@ -425,6 +443,11 @@ function writeBoard() {
     "version",
     "recall",
     "precision",
+    "chmPrecision",
+    "openLeak",
+    "openLawn",
+    "openPitch",
+    "openRoad",
     "worldcoverRecall",
     "aerialOnRef",
     "aerialOnPred",
@@ -445,20 +468,15 @@ function writeBoard() {
   const lines = [
     "# Canopy scoreboard",
     "",
-    "Recall uses the Meta/WRI canopy height grid. A cell of at least 3 m is canopy. Where that grid measured no height, ESA WorldCover tree cover is also canopy. Roof pixels are ignored. Precision is the share of emitted canopy whose canopy-height sample is at least 3 m, sampled on the same uniform grid. Aerial green and a WorldCover tree label do not count as a hit. Open ground is the share of that emitted area the aerial reads as mown lawn, a dirt pitch, or a road. A site passes at 85% recall, 85% precision, and open ground at or under 8%. Green on the overlay is reference canopy the export drew. Red is reference canopy still missing. Yellow is canopy the export drew that the reference does not call trees.",
+    "Recall uses the Meta/WRI canopy height grid. A cell of at least 3 m is canopy. Where that grid measured no height, ESA WorldCover tree cover is also canopy. Roof pixels are ignored. Precision samples every emitted canopy cell on that same grid. The cell counts only when the height model is at least 3 m and the aerial is not an open lawn, mown field, RV pitch, or road. A green aerial pixel is not a hit. A site passes at 85% recall and 85% precision. Green on the overlay is emitted canopy that passes that test. Red is reference canopy still missing. Yellow is emitted canopy that fails it.",
     "",
-    "Height error is metres of canopy thickness versus the canopy-height sample at the polygon centroid, for polygons that sit on a measured crown.",
+    "CHM ≥ 3 m is the height-model share alone, before the aerial open-ground rejection. Open ground is the share of emitted canopy the aerial reads as lawn or field, pitch, or road. Height error is metres of canopy thickness versus the canopy-height sample at the polygon centroid, for polygons that sit on a measured crown.",
     "",
-    "| Site | Recall | Precision (CHM ≥ 3 m) | Open ground | WorldCover recall | Height MAE | Crowns | Pass |",
+    "| Site | Recall | Precision | CHM ≥ 3 m | Open ground | Height MAE | Crowns | Pass |",
     "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
   ];
   for (const r of rows) {
-    const pass =
-      r.recall != null &&
-      r.precision != null &&
-      r.recall >= 85 &&
-      r.precision >= 85 &&
-      (r.openLeak == null || r.openLeak <= 8);
+    const pass = r.recall != null && r.precision != null && r.recall >= 85 && r.precision >= 85;
     lines.push(
       "| " +
         r.name +
@@ -467,9 +485,9 @@ function writeBoard() {
         " | " +
         (r.precision == null ? "—" : r.precision + "%") +
         " | " +
-        (r.openLeak == null ? "—" : r.openLeak + "%") +
+        (r.chmPrecision == null ? "—" : r.chmPrecision + "%") +
         " | " +
-        (r.worldcoverRecall == null ? "—" : r.worldcoverRecall + "%") +
+        (r.openLeak == null ? "—" : r.openLeak + "%") +
         " | " +
         (r.heightMae == null ? "—" : r.heightMae + " m") +
         " | " +
