@@ -3,8 +3,9 @@
 /**
  * Fill canopy cells the height model left empty.
  * A dark conifer pixel, or an ESA WorldCover tree cell, becomes a measured
- * top. Grass and cropland stay empty. A neighbor height is used when one
- * exists. Otherwise a stand is 14 m (conifer) or 12 m (mapped trees).
+ * top. Grass and cropland stay empty unless the pixel is spruce. Shrub on
+ * the 10 m map is not a crown by itself. A neighbor height is used when one
+ * exists. Otherwise a stand is 14 m (conifer), 10 m (a woody shrub), or 12 m.
  */
 
 const { gridSize } = require("./canopy-height");
@@ -143,7 +144,6 @@ function fillCanopyGaps(grid, opts) {
       const cls = cover && typeof cover.sample === "function" ? cover.sample(lon, lat) | 0 : 0;
       if (cls === WATER) continue;
       if (cls === GRASS || cls === CROP) open[i] = 1;
-      const mapped = cls === TREE || cls === SHRUB;
       let dark = false;
       let leaf = false;
       let rough = false;
@@ -155,16 +155,21 @@ function fillCanopyGaps(grid, opts) {
         // A spruce crown is often smoother than the variance gate used for a
         // broadleaf. A flat shadow (std under 3) can only grow from a neighbor.
         if (dark && std < 3) woody[i] = 1;
-        if ((dark && std >= 3) || (leaf && rough)) woody[i] = 2;
+        // Grass and crop hide dark stands, so a spruce still seeds there.
+        // A broadleaf color on that same field is a meadow, not a crown.
+        // Shrub cover without a woody pixel is creosote and bare ground.
+        if (dark && std >= 3) woody[i] = 2;
+        else if (leaf && rough && !open[i]) woody[i] = 2;
       }
       if (values[i] >= 3) continue;
-      // Grass and crop on the 10 m map still hide a dark stand. A textured
-      // crown fills anyway. A bright field matches neither color. A lighter
-      // broadleaf seed needs more variance than a spruce, so a lawn stays empty.
-      const seed = mapped || woody[i] === 2 || (leaf && rough);
-      if (!seed) continue;
       const near = neighborHeight(values, w, h, x, y);
-      const height = near >= 3 ? near : dark ? CONIFER_H : mapped && cls === SHRUB ? SHRUB_H : WOOD_H;
+      // A 10 m tree label around a crown the height model already measured
+      // is the lawn beside that crown. Seeding it merges the stand into a
+      // blob and the outline misses the trees. A mapped wood with no
+      // measured neighbor is still a gap.
+      const seed = woody[i] === 2 || (cls === TREE && !(near >= 3));
+      if (!seed) continue;
+      const height = near >= 3 ? near : dark ? CONIFER_H : cls === SHRUB ? SHRUB_H : WOOD_H;
       values[i] = height;
       filled++;
     }

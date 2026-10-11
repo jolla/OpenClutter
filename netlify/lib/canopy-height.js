@@ -702,6 +702,32 @@ function flood(w, h, seedX, seedY, accept) {
   return pixels;
 }
 
+function pointInOpen(open, x, y) {
+  let inside = false;
+  for (let i = 0, j = open.length - 1; i < open.length; j = i++) {
+    const yi = open[i][1];
+    const yj = open[j][1];
+    if ((yi > y) === (yj > y)) continue;
+    const xi = open[i][0];
+    const xj = open[j][0];
+    if (x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** Fraction of canopy cells whose centers sit inside the simplified outline. */
+function cellCoverage(open, pixels) {
+  if (!open || open.length < 3 || !pixels.length) return 0;
+  let hit = 0;
+  let seen = 0;
+  const step = pixels.length > 2500 ? 3 : pixels.length > 800 ? 2 : 1;
+  for (let i = 0; i < pixels.length; i += step) {
+    seen++;
+    if (pointInOpen(open, pixels[i][0] + 0.5, pixels[i][1] + 0.5)) hit++;
+  }
+  return seen ? hit / seen : 0;
+}
+
 function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH) {
   const area = pixels.length * mPerX * mPerY;
   let maxH = 0;
@@ -724,17 +750,26 @@ function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH) {
   if (pixels.length >= 2 && heightM < 5 && pixels.length < 3 && area < CROWN_MIN_AREA_M2) return null;
   let ring = tracePixels(pixels);
   if (!ring) return null;
-  // A large stand needs a longer edge. 32 vertices chord across a woods and
-  // leave the dark margin outside the polygon. Stop once the outline covers
-  // the cells, so a busy edge does not become a box.
+  // A large stand needs a longer edge. 32 vertices chord across a woods.
+  // Shoelace area can look full while the chord sits outside the cells and
+  // the bays are uncovered, so the test is the cells themselves.
   const traced = dropCollinearPx(ring);
   let maxVerts = CROWN_MAX_VERTS;
   let open = simplifyContour(traced, maxVerts);
-  if (pixels.length > 80) {
-    while (maxVerts < 160 && Math.abs(polyArea(open)) < pixels.length * 0.9) {
-      maxVerts = Math.min(160, Math.round(maxVerts * 1.6));
-      const next = simplifyContour(traced, maxVerts);
-      if (next.length < 3) break;
+  if (pixels.length > 24) {
+    let guard = 0;
+    while (guard++ < 5 && maxVerts < 160) {
+      const cover = cellCoverage(open, pixels);
+      const spill = Math.abs(polyArea(open)) / pixels.length;
+      if (cover >= 0.92 && spill <= 1.12) break;
+      const nextVerts = Math.min(160, Math.max(maxVerts + 8, Math.round(maxVerts * 1.5)));
+      if (nextVerts <= maxVerts) break;
+      const next = simplifyContour(traced, nextVerts);
+      if (!next || next.length < 3) break;
+      const nextCover = cellCoverage(next, pixels);
+      const nextSpill = Math.abs(polyArea(next)) / pixels.length;
+      if (nextCover + 0.004 < cover && nextSpill >= spill) break;
+      maxVerts = nextVerts;
       open = next;
     }
   }
