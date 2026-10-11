@@ -329,6 +329,69 @@ def sits_on_canopy(obj, trees):
     return False
 
 
+def _slab_stats(trees):
+    """A slab is one flat crown sheet, or a run of crowns at one top height.
+
+    An understory is the pale ground layer, not the sheet Jerry sees. A
+    single crown of at least 8,000 m² is a slab. So is a connected group
+    whose tops stay within 2 m and whose combined area is at least 12,000 m².
+    """
+    crowns = []
+    for obj in trees:
+        if obj.get("role") == "understory":
+            continue
+        ring = obj.get("ring") or []
+        if len(ring) < 3:
+            continue
+        area = _ring_area(ring)
+        if area < 1:
+            continue
+        cx, cy = _centroid(ring)
+        crowns.append((area, cx, cy, float(obj["top"])))
+    n = len(crowns)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for i in range(n):
+        area_i, cx, cy, top = crowns[i]
+        for j in range(i + 1, n):
+            area_j, ox, oy, other = crowns[j]
+            if abs(top - other) > 1.5:
+                continue
+            reach = max(20.0, 0.45 * math.sqrt(max(area_i, area_j)))
+            if (cx - ox) ** 2 + (cy - oy) ** 2 <= reach * reach:
+                union(i, j)
+    groups = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    slabs = 0
+    largest = 0.0
+    for idxs in groups.values():
+        area = 0.0
+        tops = []
+        single = 0.0
+        for i in idxs:
+            area += crowns[i][0]
+            tops.append(crowns[i][3])
+            if crowns[i][0] > single:
+                single = crowns[i][0]
+        if single > largest:
+            largest = single
+        if single >= 8000 or (area >= 12000 and max(tops) - min(tops) <= 2.0):
+            slabs += 1
+    return slabs, largest
+
+
 def diagnose(scene, floor_xyz):
     trees = [o for o in scene["objects"] if o["kind"] == "tree"]
     buildings = [o for o in scene["objects"] if o["kind"] == "building"]
@@ -357,6 +420,7 @@ def diagnose(scene, floor_xyz):
             if o["top"] < ground - 1.0:
                 buried += 1
     med = sorted(thick)[len(thick) // 2] if thick else None
+    slabs, largest = _slab_stats(trees)
     return {
         "trees": len(trees),
         "buildings": len(buildings),
@@ -365,6 +429,8 @@ def diagnose(scene, floor_xyz):
         "treeSamplesOnTerrain": checked,
         "floatingTrees": floating,
         "buriedTrees": buried,
+        "slabs": slabs,
+        "largestCrownM2": round(largest, 1),
         "floors": len(scene.get("floors") or []),
     }
 
@@ -413,12 +479,13 @@ def render(scene, out_path):
     label = (
         scene.get("name")
         or "preview"
-    ) + "   trees %d   buildings %d   median tree %.1f m   flat %d   floating %d" % (
+    ) + "   trees %d   buildings %d   median tree %.1f m   flat %d   floating %d   slabs %d" % (
         stats["trees"],
         stats["buildings"],
         stats["medianTreeM"] or 0,
         stats["flatTrees"],
         stats["floatingTrees"],
+        stats["slabs"],
     )
     bar.rectangle((0, 0, W, 28), fill=(0, 0, 0))
     bar.text((8, 8), label[:170], fill=(255, 255, 255))
@@ -470,6 +537,20 @@ def self_test():
                     "bottom": 2,
                     "top": 2.2,
                 },
+                {
+                    "kind": "tree",
+                    "role": "understory",
+                    "ring": [[-98, -98], [-3, -98], [-3, -3], [-98, -3]],
+                    "bottom": 0,
+                    "top": 3,
+                },
+                {
+                    "kind": "tree",
+                    "role": "crown",
+                    "ring": [[-98, -98], [-3, -98], [-3, -3], [-98, -3]],
+                    "bottom": 3,
+                    "top": 14,
+                },
             ],
         }
         (tmp / "scene.json").write_text(json.dumps(scene))
@@ -477,10 +558,13 @@ def self_test():
         im = np.asarray(Image.open(tmp / "out.png"))
         assert im.shape == (H, W, 3)
         assert int(im.mean()) > 20
-        assert stats["trees"] == 2
+        assert stats["trees"] == 4
         assert stats["flatTrees"] == 1
         assert stats["buildings"] == 1
         assert stats["floors"] == 1
+        assert stats["slabs"] == 1
+        assert stats["floatingTrees"] == 0
+        assert stats["largestCrownM2"] > 8000
         green = ((im[:, :, 1] > im[:, :, 0] + 15) & (im[:, :, 1] > 60)).sum()
         assert green > 30, green
         bay = [[0, 0], [10, 0], [10, 2], [2, 2], [2, 8], [10, 8], [10, 10], [0, 10]]
