@@ -402,6 +402,39 @@ describe("canopy height grid", () => {
     assert.ok(crowns[0].areaM2 > 200, "the whole band is kept, area " + crowns[0].areaM2);
   });
 
+  it("keeps the fingers of a comb-shaped stand inside the outline", () => {
+    const g = syntheticChm();
+    for (let x = 4; x <= 52; x++) {
+      g.values[30 * g.w + x] = 12;
+      g.values[31 * g.w + x] = 12;
+      g.values[32 * g.w + x] = 14;
+    }
+    for (let f = 0; f < 8; f++) {
+      const x0 = 6 + f * 6;
+      for (let y = 16; y < 30; y++) {
+        g.values[y * g.w + x0] = 11;
+        g.values[y * g.w + x0 + 1] = 13;
+      }
+    }
+    const crowns = crownsFromChm(g.grid);
+    assert.equal(crowns.length, 1);
+    const ring = crowns[0].ringLonLat.map(([lon, lat]) => [
+      ((lon - g.grid.west) / (g.grid.east - g.grid.west)) * g.w,
+      ((g.grid.north - lat) / (g.grid.north - g.grid.south)) * g.h,
+    ]);
+    let cells = 0;
+    let inside = 0;
+    for (let y = 0; y < g.h; y++) {
+      for (let x = 0; x < g.w; x++) {
+        if ((g.values[y * g.w + x] || 0) < 3) continue;
+        cells++;
+        if (pointInRing([x + 0.5, y + 0.5], ring)) inside++;
+      }
+    }
+    assert.ok(inside / cells >= 0.9, "covered " + inside + " of " + cells);
+    assert.ok(crowns[0].ringLonLat.length <= 162);
+  });
+
   it("keeps canopy in the notch of a building box when it is not on the roof", () => {
     const g = syntheticChm();
     paintPeak(g.values, g.w, 30, 20, 2.2, 1.6, 14);
