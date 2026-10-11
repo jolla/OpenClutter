@@ -1796,26 +1796,15 @@ async function handleClutter(event) {
   }
 
   let woodRings = [];
+  let openRuns = [];
   if (includeFoliage && forestJob) {
     const forest = await forestJob.work;
     if (forest && forest !== TIMED_OUT && forest.ok !== false) {
       woodRings = forest.wood || [];
-      const pisteRings = forest.pistes || [];
-      for (let i = 0; i < pisteRings.length; i++) {
-        const ll = pisteRings[i];
-        const px = [];
-        for (let k = 0; k < ll.length; k++) {
-          const p = llToPx(ll[k][0], ll[k][1], frame);
-          if (!Number.isFinite(p[0]) || !Number.isFinite(p[1])) continue;
-          px.push(p);
-        }
-        if (px.length >= 3) {
-          const a = px[0];
-          const b = px[px.length - 1];
-          if (a[0] !== b[0] || a[1] !== b[1]) px.push([a[0], a[1]]);
-        }
-        if (px.length >= 4) maskRings.push(px);
-      }
+      // A piste corridor is tens of metres wide and used to notch the
+      // measured woods out of the zip. The run stays empty where the height
+      // model has no crown. A tree the model already measured stays.
+      openRuns = forest.pistes || [];
       const forestNotes = forest.notes || [];
       for (let i = 0; i < forestNotes.length; i++) {
         if (warnings.indexOf(forestNotes[i]) < 0) warnings.push(forestNotes[i]);
@@ -1831,7 +1820,12 @@ async function handleClutter(event) {
       cover = null;
     }
     try {
-      const filled = fillCanopyGaps(chmGrid, { frame, image: decoded, worldcover: cover });
+      const filled = fillCanopyGaps(chmGrid, {
+        frame,
+        image: decoded,
+        worldcover: cover,
+        openRuns,
+      });
       if (filled && filled.values && filled.nonzero > 0) chmGrid = filled;
     } catch {
       // The measured grid still ships when the fill cannot be read.

@@ -71,6 +71,29 @@ function neighborHeight(values, w, h, x, y) {
   return acc[acc.length >> 1];
 }
 
+function pointInRing(ring, x, y) {
+  if (!ring || ring.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const yi = ring[i][1];
+    const yj = ring[j][1];
+    if (yi === yj) continue;
+    if ((yi > y) === (yj > y)) continue;
+    const xi = ring[i][0];
+    const xj = ring[j][0];
+    if (x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function onOpenRun(rings, lon, lat) {
+  if (!rings || !rings.length) return false;
+  for (let i = 0; i < rings.length; i++) {
+    if (pointInRing(rings[i], lon, lat)) return true;
+  }
+  return false;
+}
+
 function emptyGrid(frame) {
   const size = gridSize(frame);
   return {
@@ -135,6 +158,8 @@ function fillCanopyGaps(grid, opts) {
   const woody = new Uint8Array(w * h);
   const open = new Uint8Array(w * h);
   const bare = new Uint8Array(w * h);
+  const run = new Uint8Array(w * h);
+  const openRuns = opts && opts.openRuns;
   let filled = 0;
   for (let y = 0; y < h; y++) {
     const lat = +base.north - ((y + 0.5) / h) * dLat;
@@ -148,6 +173,9 @@ function fillCanopyGaps(grid, opts) {
       // Shrub and bare ground are not a place to grow a crown. Measured
       // height still stands. The sand and the creosote stay empty.
       if (cls === SHRUB || cls === 60) bare[i] = 1;
+      // A mapped ski run is wide enough to cover the woods beside it.
+      // Color does not grow a crown there. A height already measured stays.
+      if (onOpenRun(openRuns, lon, lat)) run[i] = 1;
       let dark = false;
       let leaf = false;
       let rough = false;
@@ -168,6 +196,7 @@ function fillCanopyGaps(grid, opts) {
         }
       }
       if (values[i] >= 3) continue;
+      if (run[i]) continue;
       const near = neighborHeight(values, w, h, x, y);
       // A mapped tree cell is a gap the height model missed, including the
       // 10 m label around a measured crown. Color on shrub or bare ground
@@ -186,7 +215,7 @@ function fillCanopyGaps(grid, opts) {
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const i = y * w + x;
-        if (values[i] >= 3 || !woody[i]) continue;
+        if (values[i] >= 3 || !woody[i] || run[i]) continue;
         let near = 0;
         let touch = 0;
         for (let dy = -1; dy <= 1; dy++) {
@@ -219,7 +248,7 @@ function fillCanopyGaps(grid, opts) {
   for (let y = 1; y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
       const i = y * w + x;
-      if (values[i] >= 3) continue;
+      if (values[i] >= 3 || run[i]) continue;
       let near = 0;
       let touch = 0;
       for (let dy = -1; dy <= 1; dy++) {
