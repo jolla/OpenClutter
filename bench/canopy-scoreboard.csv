@@ -1,13 +1,13 @@
 id,name,version,recall,precisionSpot,precisionStrict,heightMae,pass
-lancaster-nh,Rogers campground,1.1.123,99.1,98.6,77.5,2.5,yes
-granite-peak,Granite Peak ski slope,1.1.122,96.8,94.4,87.7,5.4,yes
-wynn-golf,Wynn golf course,1.1.123,96.2,85.1,56.4,3.7,yes
+lancaster-nh,Rogers campground,1.1.123,99.0,98.9,80.0,2.6,yes
+granite-peak,Granite Peak ski slope,1.1.124,84.3,97.9,90.3,4.1,no
+wynn-golf,Wynn golf course,1.1.123,96.1,85.4,56.1,2.3,yes
 montreal-suburb,Montreal suburb,1.1.123,92.3,89.9,69.1,4.3,yes
 oak-creek,Oak Creek residential,1.1.123,91.3,86.8,79.4,3.4,yes
-pnw-conifer,Hoh rainforest edge,1.1.122,98.4,99.3,99.0,10.4,yes
+pnw-conifer,Hoh rainforest edge,1.1.123,98.6,99.3,99.0,8.8,yes
 florida-resort,Innisbrook resort,1.1.123,84.1,92.3,80.0,3.5,no
 arizona-desert,Saguaro west desert,1.1.123,0,,,no
 texas-live-oak,Brackenridge Park,1.1.123,83.0,90.4,81.7,3.7,no
 colorado-camp,Moraine Park campground,1.1.123,96.9,87.7,70.4,5.2,yes
 chicago-streets,Lincoln Square street trees,1.1.123,92.2,81.9,63.6,3.9,no
-manuel-antonio,Manuel Antonio,1.1.122,99.0,99.4,95.5,4.8,yes
+manuel-antonio,Manuel Antonio,1.1.123,99.0,99.4,95.5,4.7,yes

@@ -219,6 +219,54 @@ describe("dark conifer canopy", () => {
     assert.equal(meadow.values[3], 0, "sand on grass");
   });
 
+  it("keeps a measured tree on a ski run and does not grow a crown there", () => {
+    const frame = { west: 0, south: 0, east: 1, north: 1 };
+    const w = 24;
+    const h = 24;
+    const data = Buffer.alloc(w * h * 4, 255);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        const n = (x * 3 + y * 5) % 7;
+        data[i] = 32 + n * 4;
+        data[i + 1] = 58 + n * 5;
+        data[i + 2] = 18 + n * 3;
+      }
+    }
+    const grid = {
+      west: 0,
+      south: 0,
+      east: 1,
+      north: 1,
+      width: 4,
+      height: 4,
+      values: new Uint8Array(16),
+      nonzero: 1,
+    };
+    grid.values[0] = 16;
+    const run = [
+      [0, 0],
+      [0.5, 0],
+      [0.5, 1],
+      [0, 1],
+      [0, 0],
+    ];
+    const filled = fillCanopyGaps(grid, {
+      frame,
+      image: { data, width: w, height: h },
+      worldcover: { sample: () => GRASS },
+      openRuns: [run],
+    });
+    assert.equal(filled.values[0], 16, "measured crown on the run stays");
+    assert.equal(filled.values[1], 0, "the run does not grow a new crown");
+    const woods = fillCanopyGaps(grid, {
+      frame,
+      image: { data, width: w, height: h },
+      worldcover: { sample: () => GRASS },
+    });
+    assert.ok(woods.values[1] >= 3 || woods.filled > 0, "spruce off the run still fills");
+  });
+
   it("names the Lancaster WorldCover tile", () => {
     assert.equal(worldcoverTile(44.47, -71.55), "N42W072");
   });
