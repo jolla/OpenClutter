@@ -43,9 +43,10 @@ describe("dark conifer canopy", () => {
         data[i + 2] = dark ? 18 + n * 3 : 120;
         data[i + 3] = 255;
         if (!dark && x > w * 0.6 && y < h * 0.4) {
-          data[i] = 36 + n * 4;
-          data[i + 1] = 78 + n * 5;
-          data[i + 2] = 28 + (n % 3) * 4;
+          // Dark enough that a mown-lawn check does not eat the stand.
+          data[i] = 28 + n * 4;
+          data[i + 1] = 54 + n * 4;
+          data[i + 2] = 16 + (n % 3) * 3;
         }
       }
     }

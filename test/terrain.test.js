@@ -1218,6 +1218,46 @@ describe("foliage height from floor on a slope", () => {
     const northBot = Math.min(...north.map((a) => a.area_material.bottom_height));
     assert.ok(northBot > southTop, "uphill pieces sit higher " + southTop + " then " + northBot);
   });
+
+  it("seats a jagged hillside crown on local ground", () => {
+    const span = frame.north - frame.south;
+    const spanLon = frame.east - frame.west;
+    const terrain = terrainFromSamples(
+      gridSamples(frame, (r, c, lon, lat) => 400 + ((lat - frame.south) / span) * 180),
+      frame
+    );
+    const wood = [];
+    const steps = 40;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const jitter = i % 2 ? 0.04 : -0.04;
+      wood.push([frame.west + spanLon * (0.2 + jitter), frame.south + span * (0.15 + 0.7 * t)]);
+    }
+    for (let i = steps; i >= 0; i--) {
+      const t = i / steps;
+      const jitter = i % 2 ? -0.04 : 0.04;
+      wood.push([frame.west + spanLon * (0.8 + jitter), frame.south + span * (0.15 + 0.7 * t)]);
+    }
+    wood.push(wood[0]);
+    const built = buildClutter({
+      frame,
+      footprintsGeojson: { features: [] },
+      treePoints: [],
+      name: "Jagged hill",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain,
+      includeFoliage: true,
+      woodRings: [{ ringLonLat: wood, heightM: 14 }],
+    });
+    const areas = built.openintent.floorplans[0].attenuation_areas.filter((a) =>
+      String(a.area_material.name).indexOf("Foliage") === 0
+    );
+    const bottoms = areas.map((a) => a.area_material.bottom_height || 0);
+    const lo = Math.min(...bottoms);
+    const hi = Math.max(...bottoms);
+    assert.ok(areas.length >= 4, "pieces " + areas.length);
+    assert.ok(hi > lo + 8, "bottoms " + lo + ".." + hi);
+  });
 });
 
 function metersBox(lat, widthM, lengthM, name, opts) {

@@ -432,6 +432,39 @@ describe("canopy height grid", () => {
     assert.ok(Math.max(...crowns.map((c) => c.heightM)) >= 16);
   });
 
+  it("keeps a noisy forest covered instead of dropping height specks", () => {
+    const g = syntheticChm();
+    for (let y = 1; y < g.h - 1; y++) {
+      for (let x = 1; x < g.w - 1; x++) {
+        g.values[y * g.w + x] = (x + y) % 2 ? 8 : 22;
+      }
+    }
+    const crowns = crownsFromChm(g.grid);
+    assert.ok(crowns.length >= 3, "local blocks " + crowns.length);
+    assert.ok(crowns.length < 120, "not a fragment per cell " + crowns.length);
+    let cells = 0;
+    let inside = 0;
+    for (let y = 0; y < g.h; y++) {
+      for (let x = 0; x < g.w; x++) {
+        if ((g.values[y * g.w + x] || 0) < 3) continue;
+        cells++;
+        const px = x + 0.5;
+        const py = y + 0.5;
+        for (let i = 0; i < crowns.length; i++) {
+          const ring = crowns[i].ringLonLat.map(([lon, lat]) => [
+            ((lon - g.grid.west) / (g.grid.east - g.grid.west)) * g.w,
+            ((g.grid.north - lat) / (g.grid.north - g.grid.south)) * g.h,
+          ]);
+          if (pointInRing([px, py], ring)) {
+            inside++;
+            break;
+          }
+        }
+      }
+    }
+    assert.ok(inside / cells >= 0.85, "covered " + inside + " of " + cells);
+  });
+
   it("keeps the fingers of a comb-shaped stand inside the outline", () => {
     const g = syntheticChm();
     for (let x = 4; x <= 52; x++) {

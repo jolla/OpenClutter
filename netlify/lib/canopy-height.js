@@ -751,13 +751,25 @@ function medianOf(list) {
 }
 
 /**
- * Cut a large stand into blocks about 40 m across. Each block keeps the
- * canopy height measured inside it, so a hillside is not one flat top.
- * Scraps smaller than a few cells join the nearest block.
+ * Block size for one stand. A kilometre of woods cut every 42 m is more
+ * outlines than the export keeps, and the outlines that do not fit are holes
+ * in the forest. Coarser blocks still carry a local height, and every block
+ * is emitted. A stand just over the tile floor stays near 42 m.
  */
-function tilePixels(pixels, mPerX, mPerY) {
-  const tileX = Math.max(8, Math.round(TILE_M / mPerX));
-  const tileY = Math.max(8, Math.round(TILE_M / mPerY));
+function tileMeters(areaM2) {
+  const side = Math.sqrt(Math.max(areaM2, 1) / 80);
+  return Math.max(TILE_M, Math.min(180, side));
+}
+
+/**
+ * Cut a large stand into blocks. Each block keeps the canopy height measured
+ * inside it, so a hillside is not one flat top. Scraps smaller than a few
+ * cells join the nearest block.
+ */
+function tilePixels(pixels, mPerX, mPerY, tileM) {
+  const span = tileM > 0 ? tileM : TILE_M;
+  const tileX = Math.max(8, Math.round(span / mPerX));
+  const tileY = Math.max(8, Math.round(span / mPerY));
   const buckets = new Map();
   for (let i = 0; i < pixels.length; i++) {
     const p = pixels[i];
@@ -846,7 +858,7 @@ function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH, medianTop
     while (guard++ < 5 && maxVerts < 160) {
       const cover = cellCoverage(open, pixels);
       const spill = Math.abs(polyArea(open)) / pixels.length;
-      if (cover >= 0.92 && spill <= 1.12) break;
+      if (cover >= 0.92 && spill <= 1.06) break;
       const nextVerts = Math.min(160, Math.max(maxVerts + 8, Math.round(maxVerts * 1.5)));
       if (nextVerts <= maxVerts) break;
       const next = simplifyContour(traced, nextVerts);
@@ -904,7 +916,15 @@ function crownsFromChm(grid) {
       for (let i = 0; i < pixels.length; i++) seen[pixels[i][1] * w + pixels[i][0]] = 1;
       const area = pixels.length * mPerX * mPerY;
       const groups = [];
-      if (area >= SUBSTAND_AREA_M2 && pixels.length >= 80) {
+      // A large stand is cut on a grid first. Splitting it by height cell
+      // before that turned a forest into thousands of specks, and the export
+      // cap then dropped most of them.
+      if (area >= TILE_AREA_M2) {
+        const blocks = tilePixels(pixels, mPerX, mPerY, tileMeters(area));
+        if (blocks) {
+          for (let b = 0; b < blocks.length; b++) groups.push(blocks[b]);
+        }
+      } else if (area >= SUBSTAND_AREA_M2 && pixels.length >= 80) {
         const bins = new Map();
         for (let i = 0; i < pixels.length; i++) {
           const p = pixels[i];
@@ -944,15 +964,7 @@ function crownsFromChm(grid) {
         }
       }
       if (!groups.length) groups.push(pixels);
-      const tiled = [];
-      for (let g = 0; g < groups.length; g++) {
-        const part = groups[g];
-        const partArea = part.length * mPerX * mPerY;
-        const blocks = partArea >= TILE_AREA_M2 ? tilePixels(part, mPerX, mPerY) : null;
-        if (blocks) {
-          for (let b = 0; b < blocks.length; b++) tiled.push(blocks[b]);
-        } else tiled.push(part);
-      }
+      const tiled = groups;
       const split = tiled.length > 1;
       for (let g = 0; g < tiled.length; g++) {
         const crown = crownFromPixels(tiled[g], values, w, grid, mPerX, mPerY, 0, split || area >= SUBSTAND_AREA_M2);

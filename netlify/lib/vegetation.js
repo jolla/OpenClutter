@@ -804,6 +804,21 @@ function dropStack(parts, slopeTop, frame) {
   return out;
 }
 
+/** Keep at most `maxPts` corners. A sawtooth edge makes the slope cut drop area and seat the whole stand on one sample. */
+function decimateClosed(ring, maxPts) {
+  if (!ring || ring.length < 4 || !(maxPts >= 4)) return ring;
+  const closed =
+    ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1];
+  const open = closed ? ring.slice(0, -1) : ring.slice();
+  if (open.length <= maxPts) return ring;
+  const step = Math.ceil(open.length / maxPts);
+  const out = [];
+  for (let i = 0; i < open.length; i += step) out.push(open[i]);
+  if (out.length < 3) return ring;
+  out.push([out[0][0], out[0][1]]);
+  return out;
+}
+
 function canopyAreaM2(ringPx, frame) {
   const mpuX = (frame && (frame.mpuX || frame.mpu)) || 1;
   const mpuY = (frame && (frame.mpuY || mpuX)) || mpuX;
@@ -1328,7 +1343,21 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     const one = (ringPx, ground, slopePiece) => [{ ringPx, ground, slopePiece: !!slopePiece }];
     if (!slopeTop || !area.ringPx || area.ringPx.length < 4) return one(area.ringPx, 0, false);
     const ll = area.ringPx.map((p) => pxToLl(p[0], p[1], frame));
-    const split = typeof slopeTop.splitCanopy === "function" ? slopeTop.splitCanopy(ll) : null;
+    let split = typeof slopeTop.splitCanopy === "function" ? slopeTop.splitCanopy(ll) : null;
+    // A traced crown with a jagged edge loses area in the cut, so the whole
+    // ring comes back and sits on one sample. The outline that actually ships
+    // is shorter. Cut that one, and each piece meets the ground under it.
+    if ((!split || split.length < 2) && typeof slopeTop.splitCanopy === "function" && typeof slopeTop.seat === "function") {
+      const up = Number(slopeTop(ll)) || 0;
+      const down = Number(slopeTop.seat(ll)) || 0;
+      if (up - down > 8) {
+        const simple = decimateClosed(ll, 24);
+        if (simple && simple.length >= 4 && simple.length < ll.length) {
+          const again = slopeTop.splitCanopy(simple);
+          if (again && again.length >= 2) split = again;
+        }
+      }
+    }
     // A long unsplit ring used to sit on the uphill sample, so the downhill
     // side floated. Relief over 3 m uses the downhill ground instead.
     if (!split || split.length < 2) return one(area.ringPx, groundOf(ll), false);

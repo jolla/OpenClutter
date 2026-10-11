@@ -9,7 +9,7 @@
  */
 
 const { gridSize } = require("./canopy-height");
-const { coniferPixel, luma, openGroundPixel, strictOpenPixel } = require("./surface-mask");
+const { coniferPixel, luma, openGroundPixel } = require("./surface-mask");
 const { TREE, SHRUB, GRASS, CROP, WATER } = require("./worldcover");
 
 const CONIFER_H = 14;
@@ -162,7 +162,6 @@ function fillCanopyGaps(grid, opts) {
   const run = new Uint8Array(w * h);
   const ground = new Uint8Array(w * h);
   const dark = new Uint8Array(w * h);
-  const field = new Uint8Array(w * h);
   const klass = new Uint8Array(w * h);
   const openRuns = opts && opts.openRuns;
   let filled = 0;
@@ -191,9 +190,6 @@ function fillCanopyGaps(grid, opts) {
         // A mown lawn, a dirt pitch, and a road stay open even when the
         // 10 m map calls them trees. A spruce pixel is not that ground.
         if (openGroundPixel(px.r, px.g, px.b, std)) ground[i] = 1;
-        // A measured spike on a smooth lawn, pitch, or road is mown ground.
-        // The height model sometimes marks that grass as a 3 m crown.
-        if (strictOpenPixel(px.r, px.g, px.b, std)) field[i] = 1;
         // A spruce crown is often smoother than the variance gate used for a
         // broadleaf. A flat shadow (std under 3) can only grow from a neighbor.
         // Grass and crop hide dark stands, so a spruce still seeds there.
@@ -207,11 +203,12 @@ function fillCanopyGaps(grid, opts) {
       }
     }
   }
-  // A smooth lawn, pitch, or road is not a crown, even when the height
-  // model left a spike there. Clearing it before the seed pass stops that
-  // spike from growing into the field.
+  // A lawn, a pitch, or a road is not a crown, even when the height model
+  // marked that grass. The aerial is the check: a spruce pixel is not ground,
+  // and a textured crown is not a mown field. Clearing it before the seed
+  // pass stops one spike from growing across the pitch.
   for (let i = 0; i < values.length; i++) {
-    if (field[i]) values[i] = 0;
+    if (ground[i]) values[i] = 0;
   }
   // Seeds read the measured grid only. Writing heights in the same pass used
   // to walk a WorldCover tree label across a whole field from one crown.

@@ -90,19 +90,6 @@ function openGroundPixel(r, g, b, std) {
   return "";
 }
 
-/**
- * Mown grass, a dirt pitch, or pavement smooth enough that a height spike
- * there is the lawn, not a crown. A textured or dark canopy pixel is not.
- * @returns {""|"lawn"|"pitch"|"road"}
- */
-function strictOpenPixel(r, g, b, std) {
-  if (coniferPixel(r, g, b) || !(std < 6)) return "";
-  const kind = openGroundPixel(r, g, b, std);
-  if (kind === "pitch" || kind === "road") return kind;
-  if (kind === "lawn" && luma(r, g, b) >= 108) return "lawn";
-  return "";
-}
-
 function classifyPixel(r, g, b, std) {
   const Y = luma(r, g, b);
   const maxc = Math.max(r, g, b);
@@ -434,7 +421,6 @@ module.exports = {
   classifyPixel,
   coniferPixel,
   openGroundPixel,
-  strictOpenPixel,
   localStd,
   luma,
 };
