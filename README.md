@@ -8,6 +8,8 @@
 
 **v1.1.97** on `dev` — Sloped terrain is an adaptive mesh, not a fixed 20×20 grid. The paste spends its budget on the worst saddles, keeps a planar fit near half a meter, and merges a flat bench into one raised floor. Neighboring ramps share an edge height, and a coarse piece is split where it meets a finer one so the seam has no gap. A pure north-south or east-west grade stays one ramp per cell. The badge stays (`dev · v1.1.97`).
 
+**v1.1.126** on `dev` — Canopy precision samples the whole draw. An emitted cell counts only when the canopy-height model is at least 3 m and the aerial is not an open lawn, mown field, RV pitch, or road. The badge stays (`dev · v1.1.126`).
+
 **v1.1.125** on `dev` — A large woods is two layers seated on the terrain: a light understory from the ground to about 3 m (30–40% of the height on a tall conifer) and a foliage crown from there to the measured top. A single tree stays a trunk and a raised crown. Pitches, lawns, and roads stay open, and a hillside stand sits on the ground under it instead of one sheet. The badge stays (`dev · v1.1.125`).
 
 **v1.1.124** on `dev` — A mapped ski run stays open where the height model has no crown. The run no longer cuts the measured woods beside it. The badge stays (`dev · v1.1.124`).
@@ -221,7 +223,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.125`). The panel is the title, address, Draw, Export, one short hint, and the status line. Advanced is a small link at the bottom, closed until you open it, and the page remembers that. Inside it: foliage, water, parking, walls, poles, RVs, terrain, lidar heights, map notes, and map quality. Map notes start on. Water and lidar heights start off. Foliage, parking, walls, poles, RVs, and terrain start on, and the map starts on Auto. Copy terrain shows after export and is pasted separately in Hamina. Space pans the map. The draw label shows area in m² and ft². After export, the panel shows one line; Details holds the rest. The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control.
+- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.126`). The panel is the title, address, Draw, Export, one short hint, and the status line. Advanced is a small link at the bottom, closed until you open it, and the page remembers that. Inside it: foliage, water, parking, walls, poles, RVs, terrain, lidar heights, map notes, and map quality. Map notes start on. Water and lidar heights start off. Foliage, parking, walls, poles, RVs, and terrain start on, and the map starts on Auto. Copy terrain shows after export and is pasted separately in Hamina. Space pans the map. The draw label shows area in m² and ft². After export, the panel shows one line; Details holds the rest. The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 
