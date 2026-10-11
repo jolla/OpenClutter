@@ -1189,9 +1189,16 @@ describe("foliage height from floor on a slope", () => {
     assert.ok(hi > lo + 8, "bottoms " + lo + ".." + hi);
     for (const area of areas) {
       const mat = area.area_material;
-      assert.equal(mat.top_height, Math.round((mat.bottom_height + 14) * 10) / 10);
+      const bottom = mat.bottom_height || 0;
+      assert.ok(mat.top_height > bottom + 2, "band " + bottom + ".." + mat.top_height);
+      assert.ok(mat.top_height <= Math.round((bottom + 14) * 10) / 10 + 0.05);
       assert.equal(mat.transparencyEnabled, true);
     }
+    const reach = (list) => {
+      const bottom = Math.min.apply(null, list.map((a) => a.area_material.bottom_height || 0));
+      const top = Math.max.apply(null, list.map((a) => a.area_material.top_height));
+      return top - bottom;
+    };
     const probe = llToPx(frame.west + spanLon * 0.5, frame.south + span * 0.6, frame);
     const rings = areas.map((a) => a.area.coordinates.map((p) => [p.coordinate_xyz.x, p.coordinate_xyz.y]));
     const covered = rings.some((ring) => pointInRing(probe, ring));
@@ -1205,6 +1212,8 @@ describe("foliage height from floor on a slope", () => {
       return ys.reduce((s, y) => s + y, 0) / ys.length > frame.imgH * 0.7;
     });
     assert.ok(south.length && north.length, "south " + south.length + " north " + north.length);
+    assert.ok(reach(south) >= 12, "south crown " + reach(south));
+    assert.ok(reach(north) >= 12, "north crown " + reach(north));
     const southTop = Math.max(...south.map((a) => a.area_material.bottom_height));
     const northBot = Math.min(...north.map((a) => a.area_material.bottom_height));
     assert.ok(northBot > southTop, "uphill pieces sit higher " + southTop + " then " + northBot);

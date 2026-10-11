@@ -587,8 +587,11 @@ function wantedCrownLayers(discrete, thickness, treeCount) {
 function domeAreaFractions(n, discrete) {
   if (!(n >= 2)) return [1];
   if (!discrete) {
-    if (n === 2) return [1, 0.36];
-    return [1, 0.68, 0.34];
+    // The full outline is only the skirt. The inset bands are the crown,
+    // so a woods reads as a rounded top instead of a flat slab.
+    if (n === 2) return [1, 0.42];
+    if (n === 3) return [1, 0.58, 0.28];
+    return [1, 0.72, 0.46, 0.24];
   }
   if (n === 2) return [1, 0.36];
   if (n === 3) return [0.66, 1, 0.36];
@@ -678,7 +681,7 @@ function pickBandMaterial(target, tier) {
  * opens a gap, or a band that no longer ends on the measured top, returns
  * null so the caller keeps the single footprint.
  */
-function buildCrownBands(material, n) {
+function buildCrownBands(material, n, skirt) {
   if (!material || !(n >= 2)) return null;
   const lifted = Number(material.bottom_height) >= 1;
   const bottom0 = lifted ? roundTenths(material.bottom_height) : 0;
@@ -693,6 +696,13 @@ function buildCrownBands(material, n) {
   for (let i = 0; i < n; i++) {
     const left = n - i;
     let target = left === 1 ? remain : roundTenths(remain / left);
+    // A merged woods keeps a short full-height skirt, then puts the measured
+    // top on the smaller bands so the edge rounds instead of a plateau.
+    if (skirt && i === 0 && left > 1) {
+      const minRest = (left - 1) * 2.2;
+      const skirtH = roundTenths(Math.min(2.6, Math.max(2.2, remain - minRest)));
+      if (skirtH > 2 && remain - skirtH >= minRest) target = skirtH;
+    }
     if (left > 1) {
       const minRest = (left - 1) * 2.1;
       if (target > remain - minRest) target = roundTenths(remain - minRest);
@@ -725,14 +735,90 @@ function buildCrownBands(material, n) {
   return bands.length === n ? bands : null;
 }
 
-function layerCounts(pending) {
+function bareCanopy(material, thickness) {
+  let name = String((material && material.name) || "");
+  const at = name.indexOf(" @ ");
+  if (at > 0) name = name.slice(0, at);
+  return {
+    name,
+    rf_properties: material && material.rf_properties,
+    top_height: roundTenths(thickness),
+    display_color: material && material.display_color,
+    transparencyEnabled: true,
+  };
+}
+
+/**
+ * An inset band used to keep the seat of the larger ring, so the piece hung
+ * above the hill under its own outline. Drop the whole stack onto the
+ * downhill ground of the lowest ring when that gap is more than 3 m.
+ */
+function dropStack(parts, slopeTop, frame) {
+  if (!slopeTop || typeof slopeTop.seat !== "function" || !parts || !parts.length) return parts;
+  const ring = parts[0] && parts[0].ringPx;
+  if (!ring || ring.length < 4) return parts;
+  const ll = [];
+  for (let i = 0; i < ring.length; i++) {
+    const q = pxToLl(ring[i][0], ring[i][1], frame);
+    if (!q || !Number.isFinite(q[0]) || !Number.isFinite(q[1])) continue;
+    ll.push(q);
+  }
+  if (ll.length < 3) return parts;
+  const down = Number(slopeTop.seat(ll)) || 0;
+  const mat0 = parts[0].material;
+  const bottom = mat0 && Number(mat0.bottom_height) >= 1 ? Number(mat0.bottom_height) : 0;
+  if (!(down >= 1) || !(bottom > down + 3)) return parts;
+  const drop = bottom - down;
+  const out = [];
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    const mat = part.material;
+    if (!mat) {
+      out.push(part);
+      continue;
+    }
+    const oldBottom = Number(mat.bottom_height) >= 1 ? Number(mat.bottom_height) : 0;
+    const thickness = Number(mat.top_height) - oldBottom;
+    const newBottom = roundTenths(oldBottom - drop);
+    if (!(thickness > 0.5)) {
+      out.push(part);
+      continue;
+    }
+    if (!(newBottom >= 1)) {
+      const bare = bareCanopy(mat, thickness);
+      out.push(Object.assign({}, part, { material: bare, clip: clipboardForCanopy(bare) }));
+      continue;
+    }
+    const lifted = liftFoliagePair(bareCanopy(mat, thickness), newBottom);
+    if (!lifted) {
+      out.push(part);
+      continue;
+    }
+    out.push(
+      Object.assign({}, part, {
+        material: lifted.material,
+        clip: { typeId: lifted.typeId, clipType: lifted.clipType },
+      })
+    );
+  }
+  return out;
+}
+
+function canopyAreaM2(ringPx, frame) {
+  const mpuX = (frame && (frame.mpuX || frame.mpu)) || 1;
+  const mpuY = (frame && (frame.mpuY || mpuX)) || mpuX;
+  return ringPxArea(ringPx) * mpuX * mpuY;
+}
+
+function layerCounts(pending, frame) {
   let treeCount = 0;
   for (let i = 0; i < pending.length; i++) if (pending[i].trunk) treeCount++;
   const plans = pending.map((row) => {
     const discrete = !!row.trunk;
     const thickness = crownThicknessM(row.area && row.area.material);
+    const wide = row.slopePiece && canopyAreaM2(row.area && row.area.ringPx, frame) >= 4000;
     return {
-      n: row.slopePiece ? 1 : wantedCrownLayers(discrete, thickness, treeCount),
+      n: row.slopePiece && !wide ? 1 : wantedCrownLayers(discrete, thickness, treeCount),
       discrete,
       area: ringPxArea(row.area && row.area.ringPx),
     };
@@ -1095,7 +1181,7 @@ function crownStack(row, frame, want) {
   for (let n = Math.min(want, 4); n >= 2; n--) {
     const fractions = domeAreaFractions(n, discrete);
     if (fractions.length !== n) continue;
-    const bands = buildCrownBands(row.area.material, n);
+    const bands = buildCrownBands(row.area.material, n, !discrete);
     if (!bands || bands.length !== n) continue;
     const parts = [];
     let ok = true;
@@ -1243,7 +1329,9 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     if (!slopeTop || !area.ringPx || area.ringPx.length < 4) return one(area.ringPx, 0, false);
     const ll = area.ringPx.map((p) => pxToLl(p[0], p[1], frame));
     const split = typeof slopeTop.splitCanopy === "function" ? slopeTop.splitCanopy(ll) : null;
-    if (!split || split.length < 2) return one(area.ringPx, Number(slopeTop(ll)) || 0, false);
+    // A long unsplit ring used to sit on the uphill sample, so the downhill
+    // side floated. Relief over 3 m uses the downhill ground instead.
+    if (!split || split.length < 2) return one(area.ringPx, groundOf(ll), false);
     const seats = [];
     for (let i = 0; i < split.length; i++) {
       const px = [];
@@ -1263,7 +1351,15 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
       const ground = typeof slopeTop.seat === "function" ? Number(slopeTop.seat(split[i])) || 0 : Number(slopeTop(split[i])) || 0;
       seats.push({ ringPx: px, ground, slopePiece: true, ll: split[i] });
     }
-    return seats.length >= 2 ? seats : one(area.ringPx, Number(slopeTop(ll)) || 0, false);
+    if (seats.length >= 2) return seats;
+    return one(area.ringPx, groundOf(ll), false);
+  };
+  const groundOf = (ll) => {
+    const up = Number(slopeTop(ll)) || 0;
+    if (typeof slopeTop.seat !== "function") return up;
+    const down = Number(slopeTop.seat(ll)) || 0;
+    if (up - down > 3) return down;
+    return up;
   };
   for (const area of dissolved) {
     const seats = seatsFor(area);
@@ -1322,19 +1418,24 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     }
   }
   let canopyCount = 0;
-  const counts = layerCounts(pending);
+  const counts = layerCounts(pending, frame);
   for (let r = 0; r < pending.length; r++) {
     const row = pending[r];
     const area = row.area;
-    const stack = row.slopePiece ? null : crownStack(row, frame, counts[r]);
-    const parts = stack || [
-      {
-        ringPx: area.ringPx,
-        material: area.material,
-        clip: row.clip || clipboardForCanopy(area.material),
-        scale: 1,
-      },
-    ];
+    const wideSlope = row.slopePiece && canopyAreaM2(area && area.ringPx, frame) >= 4000;
+    const stack = row.slopePiece && !wideSlope ? null : crownStack(row, frame, counts[r]);
+    const parts = dropStack(
+      stack || [
+        {
+          ringPx: area.ringPx,
+          material: area.material,
+          clip: row.clip || clipboardForCanopy(area.material),
+          scale: 1,
+        },
+      ],
+      slopeTop,
+      frame
+    );
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
       oiAreas.push({

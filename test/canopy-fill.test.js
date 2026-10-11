@@ -2,7 +2,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { classifyPixel, coniferPixel } = require("../netlify/lib/surface-mask");
+const { classifyPixel, coniferPixel, openGroundPixel } = require("../netlify/lib/surface-mask");
 const { fillCanopyGaps } = require("../netlify/lib/canopy-fill");
 const { worldcoverTile, TREE, GRASS, SHRUB } = require("../netlify/lib/worldcover");
 const { forestFromElements } = require("../netlify/lib/slope-forest");
@@ -37,14 +37,15 @@ describe("dark conifer canopy", () => {
       for (let x = 0; x < w; x++) {
         const i = (y * w + x) * 4;
         const dark = x < w * 0.35;
-        data[i] = dark ? 40 : 150;
-        data[i + 1] = dark ? 70 : 160;
-        data[i + 2] = dark ? 24 : 120;
+        const n = (x * 3 + y * 5) % 7;
+        data[i] = dark ? 32 + n * 4 : 176;
+        data[i + 1] = dark ? 58 + n * 5 : 198;
+        data[i + 2] = dark ? 18 + n * 3 : 120;
         data[i + 3] = 255;
-        if (dark && (x + y) % 3 === 0) {
-          data[i] = 28;
-          data[i + 1] = 52;
-          data[i + 2] = 16;
+        if (!dark && x > w * 0.6 && y < h * 0.4) {
+          data[i] = 36 + n * 4;
+          data[i + 1] = 78 + n * 5;
+          data[i + 2] = 28 + (n % 3) * 4;
         }
       }
     }
@@ -52,8 +53,8 @@ describe("dark conifer canopy", () => {
       sample(lon, lat) {
         const x = (lon - frame.west) / (frame.east - frame.west);
         const y = (frame.north - lat) / (frame.north - frame.south);
-        if (x > 0.7 && y > 0.7) return TREE;
-        if (x > 0.5 && x < 0.65) return GRASS;
+        if (x > 0.6 && y < 0.4) return TREE;
+        if (x > 0.5 && x < 0.65 && y >= 0.4) return GRASS;
         return 0;
       },
     };
@@ -67,6 +68,7 @@ describe("dark conifer canopy", () => {
       values: new Uint8Array(12 * 16),
       nonzero: 0,
     };
+    grid.values[0] = 14;
     grid.values[2 * 12 + 8] = 18;
     const filled = fillCanopyGaps(grid, { frame, image: { data, width: w, height: h }, worldcover: cover });
     assert.ok(filled.filled > 8, "filled " + filled.filled);
@@ -86,6 +88,49 @@ describe("dark conifer canopy", () => {
     assert.ok(eastTrees > 0, "worldcover trees");
     assert.equal(grass, 0);
     assert.equal(filled.values[2 * 12 + 8], 18);
+  });
+
+  it("leaves a lawn, a pitch, and a road open when the map calls them trees", () => {
+    assert.equal(openGroundPixel(176, 198, 120, 2), "lawn");
+    assert.equal(openGroundPixel(160, 130, 80, 3), "pitch");
+    assert.equal(openGroundPixel(140, 140, 138, 2), "road");
+    assert.equal(openGroundPixel(40, 70, 28, 2), "");
+    const frame = { west: 0, south: 0, east: 1, north: 1 };
+    const paints = [
+      [176, 198, 120],
+      [160, 130, 80],
+      [148, 148, 146],
+    ];
+    for (let p = 0; p < paints.length; p++) {
+      const w = 24;
+      const h = 24;
+      const data = Buffer.alloc(w * h * 4, 255);
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = paints[p][0];
+        data[i + 1] = paints[p][1];
+        data[i + 2] = paints[p][2];
+      }
+      const grid = {
+        west: 0,
+        south: 0,
+        east: 1,
+        north: 1,
+        width: 6,
+        height: 4,
+        values: new Uint8Array(24),
+        nonzero: 1,
+      };
+      grid.values[1 * 6 + 1] = 16;
+      const filled = fillCanopyGaps(grid, {
+        frame,
+        image: { data, width: w, height: h },
+        worldcover: { sample: () => TREE },
+      });
+      assert.equal(filled.values[1 * 6 + 1], 0, "a spike on smooth open ground is not a crown");
+      let grown = 0;
+      for (let i = 0; i < filled.values.length; i++) if (filled.values[i] >= 3) grown++;
+      assert.equal(grown, 0, "open ground " + p + " does not grow a crown");
+    }
   });
 
   it("fills a spruce stand that WorldCover calls grass", () => {
@@ -111,12 +156,77 @@ describe("dark conifer canopy", () => {
       width: 4,
       height: 4,
       values: new Uint8Array(16),
-      nonzero: 0,
+      nonzero: 1,
     };
+    grid.values[0] = 14;
     const cover = { sample: () => GRASS };
     const filled = fillCanopyGaps(grid, { frame, image: { data, width: w, height: h }, worldcover: cover });
-    assert.ok(filled.values[0] >= 3, "dark grass-class cell");
+    assert.equal(filled.values[0], 14, "measured spruce stays");
+    assert.ok(filled.values[1] >= 3, "spruce beside the measured crown");
     assert.equal(filled.values[3], 0, "bright field");
+  });
+
+  it("fills a dark stand the height model missed and leaves a speck empty", () => {
+    const frame = { west: 0, south: 0, east: 1, north: 1 };
+    const w = 48;
+    const h = 48;
+    const data = Buffer.alloc(w * h * 4, 255);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        const n = (x * 3 + y * 5) % 7;
+        data[i] = 30 + n * 4;
+        data[i + 1] = 62 + n * 5;
+        data[i + 2] = 20 + (n % 3) * 3;
+      }
+    }
+    const grid = {
+      west: 0,
+      south: 0,
+      east: 1,
+      north: 1,
+      width: 16,
+      height: 16,
+      values: new Uint8Array(256),
+      nonzero: 0,
+    };
+    const filled = fillCanopyGaps(grid, {
+      frame,
+      image: { data, width: w, height: h },
+      worldcover: { sample: () => 0 },
+    });
+    let trees = 0;
+    for (let i = 0; i < filled.values.length; i++) if (filled.values[i] >= 3) trees++;
+    assert.ok(trees > 80, "a dark woods is a crown, filled " + trees);
+    const speck = {
+      west: 0,
+      south: 0,
+      east: 1,
+      north: 1,
+      width: 8,
+      height: 8,
+      values: new Uint8Array(64),
+      nonzero: 0,
+    };
+    const speckImg = Buffer.alloc(32 * 32 * 4, 255);
+    for (let y = 0; y < 32; y++) {
+      for (let x = 0; x < 32; x++) {
+        const i = (y * 32 + x) * 4;
+        const dark = x < 6 && y < 6;
+        const n = (x * 3 + y * 5) % 7;
+        speckImg[i] = dark ? 30 + n * 4 : 176;
+        speckImg[i + 1] = dark ? 62 + n * 5 : 198;
+        speckImg[i + 2] = dark ? 20 : 120;
+      }
+    }
+    const missed = fillCanopyGaps(speck, {
+      frame,
+      image: { data: speckImg, width: 32, height: 32 },
+      worldcover: { sample: () => 0 },
+    });
+    let specks = 0;
+    for (let i = 0; i < missed.values.length; i++) if (missed.values[i] >= 3) specks++;
+    assert.equal(specks, 0, "a shadow speck is not a woods");
   });
 
   it("fills a WorldCover tree gap beside a measured crown", () => {
@@ -124,11 +234,22 @@ describe("dark conifer canopy", () => {
     const w = 24;
     const h = 24;
     const data = Buffer.alloc(w * h * 4);
-    for (let i = 0; i < data.length; i += 4) {
-      data[i] = 196;
-      data[i + 1] = 214;
-      data[i + 2] = 168;
-      data[i + 3] = 255;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        const lawn = x >= 18 && y >= 18;
+        const n = (x * 3 + y * 5) % 7;
+        if (lawn) {
+          data[i] = 176;
+          data[i + 1] = 198;
+          data[i + 2] = 120;
+        } else {
+          data[i] = 36 + n * 4;
+          data[i + 1] = 78 + n * 5;
+          data[i + 2] = 28 + (n % 3) * 4;
+        }
+        data[i + 3] = 255;
+      }
     }
     const grid = {
       west: 0,
@@ -147,7 +268,8 @@ describe("dark conifer canopy", () => {
       worldcover: { sample: () => TREE },
     });
     assert.equal(filled.values[3 * 8 + 3], 16);
-    assert.ok(filled.values[0] >= 3, "mapped trees away from the crown");
+    assert.ok(filled.values[0] >= 3, "mapped trees beside the crown");
+    assert.equal(filled.values[7 * 8 + 7], 0, "a smooth lawn the map calls trees stays open");
     const shrub = fillCanopyGaps(grid, {
       frame,
       image: { data, width: w, height: h },

@@ -54,6 +54,75 @@ def fan(ring):
     return tris
 
 
+def _signed_area(pts):
+    area = 0.0
+    n = len(pts)
+    for i in range(n):
+        x1, y1 = pts[i][0], pts[i][1]
+        x2, y2 = pts[(i + 1) % n][0], pts[(i + 1) % n][1]
+        area += x1 * y2 - x2 * y1
+    return area * 0.5
+
+
+def triangulate(ring):
+    """Ear-clip a ring so a concave bay stays open. A fan from vertex 0 fills that bay."""
+    pts = close_ring([p[:] if isinstance(p, list) else list(p) for p in ring])
+    if len(pts) < 3:
+        return []
+    if len(pts) == 3:
+        return [(pts[0], pts[1], pts[2])]
+    wind = 1.0 if _signed_area(pts) >= 0 else -1.0
+    idx = list(range(len(pts)))
+
+    def cross(i, j, k):
+        a, b, c = pts[i], pts[j], pts[k]
+        return (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])
+
+    def contains(i, j, k, p):
+        c0 = cross(i, j, p) * wind
+        c1 = cross(j, k, p) * wind
+        c2 = cross(k, i, p) * wind
+        return c0 >= -1e-8 and c1 >= -1e-8 and c2 >= -1e-8
+
+    tris = []
+    guard = 0
+    limit = len(pts) * len(pts) + 4
+    while len(idx) > 3 and guard < limit:
+        guard += 1
+        n = len(idx)
+        ear = None
+        for t in range(n):
+            i0 = idx[t]
+            i1 = idx[(t + 1) % n]
+            i2 = idx[(t + 2) % n]
+            if cross(i0, i1, i2) * wind <= 1e-8:
+                continue
+            blocked = False
+            for p in idx:
+                if p == i0 or p == i1 or p == i2:
+                    continue
+                if contains(i0, i1, i2, p):
+                    blocked = True
+                    break
+            if blocked:
+                continue
+            ear = t
+            break
+        if ear is None:
+            break
+        n = len(idx)
+        i0 = idx[ear]
+        i1 = idx[(ear + 1) % n]
+        i2 = idx[(ear + 2) % n]
+        tris.append((pts[i0], pts[i1], pts[i2]))
+        del idx[(ear + 1) % n]
+    if len(idx) == 3:
+        tris.append((pts[idx[0]], pts[idx[1]], pts[idx[2]]))
+    if len(tris) < len(pts) - 2:
+        return fan(ring)
+    return tris
+
+
 def prism(ring2, bottom, top, color):
     """Vertical extrusion. Top face plus a wall on each edge."""
     ring = close_ring([[p[0], p[1], bottom] for p in ring2])
@@ -62,7 +131,7 @@ def prism(ring2, bottom, top, color):
         return fan(top_ring), color
     top_pts = [[p[0], p[1], top] for p in ring]
     bot_pts = [[p[0], p[1], bottom] for p in ring]
-    tris = fan(top_pts)
+    tris = triangulate(top_pts)
     wall = color * 0.72
     walls = []
     n = len(ring)
@@ -85,7 +154,7 @@ def floor_tris(floors):
         else:
             ring = [[p[0], p[1], p[2] if len(p) > 2 else 0] for p in raw]
         ring = close_ring(ring)
-        parts = fan(ring)
+        parts = triangulate(ring)
         for a, b, c in parts:
             tris.append((a, b, c))
             uvs.append((a[:2], b[:2], c[:2]))
@@ -219,6 +288,47 @@ def point_z(tris, x, y):
     return best
 
 
+def _centroid(ring):
+    return sum(p[0] for p in ring) / len(ring), sum(p[1] for p in ring) / len(ring)
+
+
+def _ring_area(ring):
+    area = 0.0
+    n = len(ring)
+    for i in range(n):
+        x1, y1 = ring[i][0], ring[i][1]
+        x2, y2 = ring[(i + 1) % n][0], ring[(i + 1) % n][1]
+        area += x1 * y2 - x2 * y1
+    return abs(area) * 0.5
+
+
+def sits_on_canopy(obj, trees):
+    """An inset upper band rests on the band under it. A neighbor on the ground does not.
+
+    The inset of a concave woods can move the centroid by tens of metres, so
+    the match is the shared height plus a distance that scales with the stand.
+    """
+    ring = obj["ring"]
+    if not ring:
+        return False
+    cx, cy = _centroid(ring)
+    area = _ring_area(ring)
+    bottom = obj["bottom"]
+    for other in trees:
+        if other is obj or not other["ring"]:
+            continue
+        if abs(bottom - other["top"]) > 0.5:
+            continue
+        other_area = _ring_area(other["ring"])
+        if other_area < 8:
+            continue
+        ox, oy = _centroid(other["ring"])
+        reach = max(8.0, 0.55 * math.sqrt(max(area, other_area)))
+        if abs(cx - ox) <= reach and abs(cy - oy) <= reach:
+            return True
+    return False
+
+
 def diagnose(scene, floor_xyz):
     trees = [o for o in scene["objects"] if o["kind"] == "tree"]
     buildings = [o for o in scene["objects"] if o["kind"] == "building"]
@@ -230,10 +340,9 @@ def diagnose(scene, floor_xyz):
     if floor_xyz and trees:
         for o in trees:
             ring = o["ring"]
-            if not ring:
+            if not ring or sits_on_canopy(o, trees):
                 continue
-            cx = sum(p[0] for p in ring) / len(ring)
-            cy = sum(p[1] for p in ring) / len(ring)
+            cx, cy = _centroid(ring)
             samples = list(ring) + [[cx, cy]]
             zs = [point_z(floor_xyz, p[0], p[1]) for p in samples]
             zs = [z for z in zs if z is not None]
@@ -374,6 +483,16 @@ def self_test():
         assert stats["floors"] == 1
         green = ((im[:, :, 1] > im[:, :, 0] + 15) & (im[:, :, 1] > 60)).sum()
         assert green > 30, green
+        bay = [[0, 0], [10, 0], [10, 2], [2, 2], [2, 8], [10, 8], [10, 10], [0, 10]]
+        clipped = triangulate(bay)
+        area = 0.0
+        for a, b, c in clipped:
+            area += abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) * 0.5
+        assert abs(area - 52) < 1.0, area
+        fanned = 0.0
+        for a, b, c in fan(bay):
+            fanned += abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) * 0.5
+        assert fanned > area + 10, fanned
     print("self-test ok")
 
 

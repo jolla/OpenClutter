@@ -402,6 +402,36 @@ describe("canopy height grid", () => {
     assert.ok(crowns[0].areaM2 > 200, "the whole band is kept, area " + crowns[0].areaM2);
   });
 
+  it("splits a large stand into shorter and taller tops", () => {
+    const g = syntheticChm();
+    for (let y = 4; y < 40; y++) {
+      for (let x = 4; x < 50; x++) {
+        g.values[y * g.w + x] = x < 27 ? 8 : 22;
+      }
+    }
+    const crowns = crownsFromChm(g.grid);
+    const short = crowns.filter((c) => c.heightM <= 12);
+    const tall = crowns.filter((c) => c.heightM >= 18);
+    assert.ok(short.length >= 1, "short tops " + crowns.map((c) => c.heightM).join(","));
+    assert.ok(tall.length >= 1, "tall tops " + crowns.map((c) => c.heightM).join(","));
+    assert.ok(crowns.every((c) => c.heightM < 28), "one band does not inherit the other top");
+  });
+
+  it("breaks a wide even stand into local tops", () => {
+    const g = syntheticChm();
+    for (let y = 2; y < 36; y++) {
+      for (let x = 2; x < 48; x++) {
+        g.values[y * g.w + x] = 8 + Math.floor((x - 2) / 10) * 3;
+      }
+    }
+    const crowns = crownsFromChm(g.grid);
+    assert.ok(crowns.length >= 3, "local blocks " + crowns.length);
+    const heights = new Set(crowns.map((c) => c.heightM));
+    assert.ok(heights.size >= 2, "tops " + crowns.map((c) => c.heightM).join(","));
+    assert.ok(Math.min(...crowns.map((c) => c.heightM)) <= 11);
+    assert.ok(Math.max(...crowns.map((c) => c.heightM)) >= 16);
+  });
+
   it("keeps the fingers of a comb-shaped stand inside the outline", () => {
     const g = syntheticChm();
     for (let x = 4; x <= 52; x++) {

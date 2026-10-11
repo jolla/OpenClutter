@@ -728,20 +728,105 @@ function cellCoverage(open, pixels) {
   return seen ? hit / seen : 0;
 }
 
-function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH) {
+/** A woods this large is split when its canopy heights actually differ. */
+const SUBSTAND_AREA_M2 = 2500;
+/** Above this, one height is cut into local blocks so the top is not a slab. */
+const TILE_AREA_M2 = 12000;
+const TILE_M = 42;
+
+function heightBin(v) {
+  if (v < 8) return 0;
+  if (v < 12) return 1;
+  if (v < 16) return 2;
+  if (v < 20) return 3;
+  if (v < 26) return 4;
+  if (v < 32) return 5;
+  return 6;
+}
+
+function medianOf(list) {
+  if (!list.length) return 0;
+  const hs = list.slice().sort((a, b) => a - b);
+  return hs[hs.length >> 1];
+}
+
+/**
+ * Cut a large stand into blocks about 40 m across. Each block keeps the
+ * canopy height measured inside it, so a hillside is not one flat top.
+ * Scraps smaller than a few cells join the nearest block.
+ */
+function tilePixels(pixels, mPerX, mPerY) {
+  const tileX = Math.max(8, Math.round(TILE_M / mPerX));
+  const tileY = Math.max(8, Math.round(TILE_M / mPerY));
+  const buckets = new Map();
+  for (let i = 0; i < pixels.length; i++) {
+    const p = pixels[i];
+    const key = (Math.floor(p[0] / tileX) << 16) ^ (Math.floor(p[1] / tileY) & 0xffff);
+    let list = buckets.get(key);
+    if (!list) {
+      list = [];
+      buckets.set(key, list);
+    }
+    list.push(p);
+  }
+  const cellM = mPerX * mPerY;
+  const minCells = Math.max(6, Math.round(80 / Math.max(cellM, 0.25)));
+  const groups = [];
+  const small = [];
+  for (const list of buckets.values()) {
+    if (list.length >= minCells) groups.push(list);
+    else small.push(list);
+  }
+  if (groups.length < 2) return null;
+  for (let s = 0; s < small.length; s++) {
+    const list = small[s];
+    let sx = 0;
+    let sy = 0;
+    for (let i = 0; i < list.length; i++) {
+      sx += list[i][0];
+      sy += list[i][1];
+    }
+    sx /= list.length;
+    sy /= list.length;
+    let best = 0;
+    let bestD = Infinity;
+    for (let g = 0; g < groups.length; g++) {
+      const q = groups[g];
+      const mid = q[q.length >> 1];
+      const d = (mid[0] - sx) * (mid[0] - sx) + (mid[1] - sy) * (mid[1] - sy);
+      if (d < bestD) {
+        bestD = d;
+        best = g;
+      }
+    }
+    for (let i = 0; i < list.length; i++) groups[best].push(list[i]);
+  }
+  return groups;
+}
+
+function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH, medianTop) {
   const area = pixels.length * mPerX * mPerY;
   let maxH = 0;
   let px = pixels[0][0];
   let py = pixels[0][1];
+  const hs = [];
   for (let i = 0; i < pixels.length; i++) {
     const v = values[pixels[i][1] * w + pixels[i][0]] || 0;
+    if (v >= CROWN_MIN_H) hs.push(v);
     if (v > maxH) {
       maxH = v;
       px = pixels[i][0];
       py = pixels[i][1];
     }
   }
-  const heightM = Math.round(Math.max(maxH, hintH || 0) * 10) / 10;
+  let top = maxH;
+  // A small crown's top is its tallest cell. A large stand uses the middle
+  // of its own band, so one spike does not raise the whole woods.
+  if (medianTop && hs.length >= 12) {
+    hs.sort((a, b) => a - b);
+    top = hs[hs.length >> 1];
+  }
+  const heightM = Math.round(Math.max(top, hintH || 0) * 10) / 10;
   if (!(heightM >= CROWN_MIN_H) || heightM >= 80) return null;
   // A lone short pixel is CHM noise. A real small tree is taller, or wider.
   // The export grid is about 2 m, so a street tree is often one or two cells
@@ -817,8 +902,62 @@ function crownsFromChm(grid) {
       });
       if (!pixels) continue;
       for (let i = 0; i < pixels.length; i++) seen[pixels[i][1] * w + pixels[i][0]] = 1;
-      const crown = crownFromPixels(pixels, values, w, grid, mPerX, mPerY, 0);
-      if (crown) crowns.push(crown);
+      const area = pixels.length * mPerX * mPerY;
+      const groups = [];
+      if (area >= SUBSTAND_AREA_M2 && pixels.length >= 80) {
+        const bins = new Map();
+        for (let i = 0; i < pixels.length; i++) {
+          const p = pixels[i];
+          const b = heightBin(at(p[0], p[1]));
+          if (!bins.has(b)) bins.set(b, []);
+          bins.get(b).push(p);
+        }
+        let loMed = Infinity;
+        let hiMed = 0;
+        for (const group of bins.values()) {
+          const hs = [];
+          for (let i = 0; i < group.length; i++) hs.push(at(group[i][0], group[i][1]));
+          const med = medianOf(hs);
+          if (med < loMed) loMed = med;
+          if (med > hiMed) hiMed = med;
+        }
+        // A comb of nearly one height stays one outline. A short stand beside
+        // a tall stand does not share a top.
+        if (bins.size >= 2 && hiMed - loMed >= 5) {
+          for (const group of bins.values()) {
+            const local = new Uint8Array(w * h);
+            for (let i = 0; i < group.length; i++) local[group[i][1] * w + group[i][0]] = 1;
+            const used = new Uint8Array(w * h);
+            for (let i = 0; i < group.length; i++) {
+              const sx = group[i][0];
+              const sy = group[i][1];
+              if (used[sy * w + sx]) continue;
+              const part = flood(w, h, sx, sy, (px, py) => {
+                const id = py * w + px;
+                return local[id] && !used[id];
+              });
+              if (!part) continue;
+              for (let k = 0; k < part.length; k++) used[part[k][1] * w + part[k][0]] = 1;
+              groups.push(part);
+            }
+          }
+        }
+      }
+      if (!groups.length) groups.push(pixels);
+      const tiled = [];
+      for (let g = 0; g < groups.length; g++) {
+        const part = groups[g];
+        const partArea = part.length * mPerX * mPerY;
+        const blocks = partArea >= TILE_AREA_M2 ? tilePixels(part, mPerX, mPerY) : null;
+        if (blocks) {
+          for (let b = 0; b < blocks.length; b++) tiled.push(blocks[b]);
+        } else tiled.push(part);
+      }
+      const split = tiled.length > 1;
+      for (let g = 0; g < tiled.length; g++) {
+        const crown = crownFromPixels(tiled[g], values, w, grid, mPerX, mPerY, 0, split || area >= SUBSTAND_AREA_M2);
+        if (crown) crowns.push(crown);
+      }
     }
   }
   crowns.sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
