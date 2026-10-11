@@ -203,7 +203,7 @@ describe("dark conifer canopy", () => {
       image: { data, width: w, height: h },
       worldcover: { sample: () => SHRUB },
     });
-    assert.ok(spruce.values[0] >= 3, "spruce on shrub land");
+    assert.equal(spruce.values[0], 0, "spruce color on shrub land is not a woods");
     const meadow = fillCanopyGaps(grid, {
       frame,
       image: { data, width: w, height: h },

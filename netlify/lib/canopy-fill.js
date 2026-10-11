@@ -145,8 +145,8 @@ function fillCanopyGaps(grid, opts) {
       const cls = cover && typeof cover.sample === "function" ? cover.sample(lon, lat) | 0 : 0;
       if (cls === WATER) continue;
       if (cls === GRASS || cls === CROP) open[i] = 1;
-      // Shrub and bare ground are not a place to grow a crown. A textured
-      // bush still seeds itself. The sand between bushes stays empty.
+      // Shrub and bare ground are not a place to grow a crown. Measured
+      // height still stands. The sand and the creosote stay empty.
       if (cls === SHRUB || cls === 60) bare[i] = 1;
       let dark = false;
       let leaf = false;
@@ -158,12 +158,14 @@ function fillCanopyGaps(grid, opts) {
         rough = std >= 8;
         // A spruce crown is often smoother than the variance gate used for a
         // broadleaf. A flat shadow (std under 3) can only grow from a neighbor.
-        if (dark && std < 3) woody[i] = 1;
         // Grass and crop hide dark stands, so a spruce still seeds there.
         // A broadleaf color on that same field is a meadow, not a crown.
-        // Shrub cover without a woody pixel is creosote and bare ground.
-        if (dark && std >= 3) woody[i] = 2;
-        else if (leaf && rough && !open[i]) woody[i] = 2;
+        // Shrub and bare ground stay empty: dark creosote is not a spruce woods.
+        if (!bare[i]) {
+          if (dark && std < 3) woody[i] = 1;
+          if (dark && std >= 3) woody[i] = 2;
+          else if (leaf && rough && !open[i]) woody[i] = 2;
+        }
       }
       if (values[i] >= 3) continue;
       const near = neighborHeight(values, w, h, x, y);
@@ -171,9 +173,9 @@ function fillCanopyGaps(grid, opts) {
       // is the lawn beside that crown. Seeding it merges the stand into a
       // blob and the outline misses the trees. A mapped wood with no
       // measured neighbor is still a gap.
-      // Broadleaf color on shrub or bare ground is creosote, not a crown.
-      // A spruce pixel still fills. Measured height is already in the grid.
-      const seed = (woody[i] === 2 && (!bare[i] || dark)) || (cls === TREE && !(near >= 3));
+      // Color on shrub or bare ground is creosote and shadow, not a woods.
+      // Measured height is already in the grid. A spruce on grass still seeds.
+      const seed = (woody[i] === 2 && !bare[i]) || (cls === TREE && !(near >= 3));
       if (!seed) continue;
       const height = near >= 3 ? near : dark ? CONIFER_H : cls === SHRUB ? SHRUB_H : WOOD_H;
       values[i] = height;
