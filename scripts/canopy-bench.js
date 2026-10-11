@@ -116,6 +116,14 @@ function centroid(ring) {
 
 const STAND_LAYER_M2 = 800;
 
+function plateScale(floorplan) {
+  const dims = (floorplan && floorplan.dimensions) || [];
+  const px = dims.find((d) => d.unit === "pixels");
+  const meters = dims.find((d) => d.unit === "meters");
+  if (!px || !meters || !(px.width > 0) || !(px.length > 0) || !(meters.width > 0) || !(meters.length > 0)) return null;
+  return { mpuX: meters.width / px.width, mpuY: meters.length / px.length };
+}
+
 function materialSpan(material) {
   const top = Number(material && material.top_height);
   const bottom = Number(material && material.bottom_height);
@@ -289,7 +297,10 @@ async function scoreSite(site, zipPath) {
     if (name.indexOf("Building") === 0) buildings.push(ring);
     else if (isVegetationOiName(name)) foliage.push(ring);
   }
-  const shape = shapeOfAreas(areas, frame.mpuX, frame.mpuY);
+  // geoFrame's north-south metre length follows the geodesic span, which is
+  // longer than the square-pixel plate. Stand area uses the zip's own scale.
+  const scale = plateScale(loaded.json.floorplans[0]) || { mpuX: frame.mpuX, mpuY: frame.mpuX };
+  const shape = shapeOfAreas(areas, scale.mpuX, scale.mpuY);
   const step = Math.max(4, Math.ceil(Math.sqrt((raw.width * raw.height) / 160000)));
   const fol = rasterRings(foliage, raw.width, raw.height, step);
   const bld = rasterRings(buildings, raw.width, raw.height, step);
@@ -693,4 +704,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { shapeOfAreas };
+module.exports = { plateScale, shapeOfAreas };

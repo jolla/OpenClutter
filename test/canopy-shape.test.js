@@ -2,7 +2,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { shapeOfAreas } = require("../scripts/canopy-bench");
+const { plateScale, shapeOfAreas } = require("../scripts/canopy-bench");
 const { standUnderstoryM } = require("../netlify/lib/materials");
 
 function ring(w, h, x0, y0) {
@@ -55,6 +55,17 @@ describe("canopy shape score", () => {
     assert.equal(shape.gapErrs.length, 1);
     assert.equal(shape.gapErrs[0], 0);
     assert.ok(Math.abs(shape.heights[0].thick - 30) < 0.05);
+  });
+
+  it("reads the zip plate as square pixels", () => {
+    const scale = plateScale({
+      dimensions: [
+        { width: 3126, length: 4096, unit: "pixels" },
+        { width: 560.05, length: 733.83, unit: "meters" },
+      ],
+    });
+    assert.ok(Math.abs(scale.mpuX - scale.mpuY) < 0.001);
+    assert.ok(Math.abs(scale.mpuX - 0.1792) < 0.001);
   });
 
   it("does not score a small crown as a stand gap", () => {
