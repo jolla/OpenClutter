@@ -77,6 +77,7 @@ function frameFor(site, imgW, imgH, widthM, lengthM) {
 
 function kindOf(name) {
   if (isVegetationOiName(name)) return "tree";
+  if (/understory/i.test(name)) return "tree";
   if (/tree trunk/i.test(name)) return "trunk";
   if (/^water/i.test(name)) return "water";
   if (/building/i.test(name)) return "building";

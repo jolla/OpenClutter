@@ -90,7 +90,8 @@ const ZIP_README =
   "Materials are Foliage - Heavy / Foliage - Light, or Foliage - Heavy H.H /\n" +
   "Foliage - Light H.H at the measured height.\n" +
   "A compact measured crown is one tree: a stem under the crown, the crown bottom above the ground,\n" +
-  "and the crown top at the measured height. A continuous canopy stays one mass on the ground.\n" +
+  "and the crown top at the measured height. A large stand is an understory at about 0.6 dB/m\n" +
+  "from the ground to about 3 m (30–40% of height on a tall conifer) plus a crown at the foliage rate.\n" +
   "Tree points are not turned into trees. The names Tree Trunk and Foliage N.N m stay off OpenIntent.\n" +
   "Buildings use Hamina's outdoor Building - One/Two/Five/Ten Floor materials.\n" +
   "Canopy cells on building footprints and on pavement or roads are cleared, and rings are cut around footprints (0.25 m buffer) and water, so foliage does not cover roofs, parking, or ponds.\n" +
@@ -650,7 +651,7 @@ const ALIGNMENT = [
   "   Include foliage is off by default. Checked, it adds traced canopy polygons (CHM contours when the height model resolves them, otherwise NLCD polygons).",
   "   Buildings: Building - One / Two / Five / Ten Floor.",
   "   Canopy: Foliage - Heavy / Foliage - Light (19.68 ft). Measured heights use Foliage - Heavy H.H / Foliage - Light H.H.",
-  "   A compact measured crown is a stem under a raised crown. A continuous canopy stays one mass. Tree points are not trees.",
+  "   A compact measured crown is a stem under a raised crown. A large stand is an understory plus a raised crown. Tree points are not trees.",
   "2. The zip is the OpenIntent JSON and the aerial JPEG. Buildings are attenuation areas in that JSON.",
   "   Include foliage adds canopy polygons to the same file. Copy terrain is a separate paste.",
   "3. hamina-clipboard.json, terrain paste, and debug notes are not in the zip.",

@@ -22,8 +22,11 @@
  * the crown's bottom sits above the ground and its top stays the measured
  * height, with a stem ("Foliage - Trunk H.H") from the ground up to that
  * crown bottom. The stem is 3 dB/m. These are 5 GHz per-meter figures.
- * A continuous canopy stays a ground-level foliage mass. A measured or CHM
- * height that is not the stock height becomes "Foliage - Heavy 14.2" /
+ * A large stand is two layers on the same ground. "Foliage - Understory H.H"
+ * is the trunk zone at about 0.6 dB/m, from the ground to about 3 m, or
+ * 30–40% of the height on a tall conifer. The crown above it keeps the
+ * Heavy or Light dB/m and ends at the measured canopy height. A measured
+ * or CHM height that is not the stock height becomes "Foliage - Heavy 14.2" /
  * "Foliage - Light 7.5": same color and dB/m, real top_height. That is not
  * "Foliage 14.2 m".
  * Still off OpenIntent: the names Tree Trunk, Hotel podium, "Foliage N.N m",
@@ -580,6 +583,38 @@ const TRUNK_NAME = /^Foliage - Trunk (\d+\.\d)$/;
 const LIFTED_TRUNK_NAME = /^Foliage - Trunk (\d+\.\d) @ (\d+\.\d)$/;
 
 /**
+ * Light trunk zone under a stand. About 0.6 dB/m, between the 0.5 and 0.8
+ * outdoor range. Paler than the crown so the two layers read apart.
+ */
+const UNDERSTORY_COLOR = "#A4B56A";
+const UNDERSTORY_DB = 0.6;
+const UNDERSTORY_NAME = /^Foliage - Understory (\d+\.\d)$/;
+const LIFTED_UNDERSTORY_NAME = /^Foliage - Understory (\d+\.\d) @ (\d+\.\d)$/;
+
+/**
+ * Height of the light zone under a large stand, in metres above local ground.
+ * Deciduous and open woods (and a dense conifer) use about 3 m, so the crown
+ * is raised and a dense stand can start low. A tall conifer uses 30–40% of
+ * the canopy height. Too short a crown stays one mass.
+ */
+function standUnderstoryM(heightM, tier) {
+  const h = roundHeightM(heightM);
+  if (!(h >= 6)) return 0;
+  let base = 3;
+  if (tier === "heavy" && h >= 22) {
+    base = roundTenths(h * 0.35);
+    const lo = roundTenths(h * 0.3);
+    const hi = roundTenths(h * 0.4);
+    if (base < lo) base = lo;
+    if (base > hi) base = hi;
+  }
+  if (!(base >= 2.5)) return 0;
+  const crown = roundTenths(h - base);
+  if (!(crown >= 2.5)) return 0;
+  return roundTenths(base);
+}
+
+/**
  * Crown base for one measured tree, in metres above local ground.
  * About a third of the height, at least 2.5 m, and the crown itself stays
  * at least 2.5 m thick. Shorter vegetation stays a single ground-level mass.
@@ -652,6 +687,81 @@ function trunkClipPair(stemM, groundM) {
 
 function isTrunkOiName(name) {
   return TRUNK_NAME.test(name || "") || LIFTED_TRUNK_NAME.test(name || "");
+}
+
+function isUnderstoryOiName(name) {
+  return UNDERSTORY_NAME.test(name || "") || LIFTED_UNDERSTORY_NAME.test(name || "");
+}
+
+function understoryOiMaterial(heightM, groundM) {
+  const h = roundHeightM(heightM);
+  if (!h) return null;
+  const ground = roundTenths(groundM);
+  const name = "Foliage - Understory " + h.toFixed(1);
+  if (ground >= LIFT_LOCAL_M) {
+    return {
+      name: name + " @ " + ground.toFixed(1),
+      rf_properties: { attenuation_per_m: UNDERSTORY_DB },
+      top_height: roundTenths(ground + h),
+      bottom_height: ground,
+      display_color: UNDERSTORY_COLOR,
+      transparencyEnabled: true,
+    };
+  }
+  return {
+    name,
+    rf_properties: { attenuation_per_m: UNDERSTORY_DB },
+    top_height: h,
+    display_color: UNDERSTORY_COLOR,
+    transparencyEnabled: true,
+  };
+}
+
+function understoryClipPair(heightM, groundM) {
+  const mat = understoryOiMaterial(heightM, groundM);
+  if (!mat) return null;
+  const h = roundHeightM(heightM);
+  const ground = roundTenths(groundM);
+  const lifted = ground >= LIFT_LOCAL_M;
+  const id = idFor("understory-m-", h) + (lifted ? "-b" + ground.toFixed(1).replace(".", "_") : "");
+  return {
+    material: mat,
+    typeId: id,
+    clipType: {
+      id,
+      name: mat.name,
+      color: UNDERSTORY_COLOR,
+      shortcutKey: "",
+      topEdge: mat.top_height,
+      bottomEdge: lifted ? ground : null,
+      attenuationDbPerMeter: UNDERSTORY_DB,
+      ituRModelEnabled: true,
+      transparencyEnabled: true,
+    },
+  };
+}
+
+function canonicalUnderstory(material) {
+  if (!material || typeof material !== "object" || Array.isArray(material)) return null;
+  if ("itu_material_type" in material || material.transparencyEnabled !== true) return null;
+  const lifted = LIFTED_UNDERSTORY_NAME.exec(material.name || "");
+  if (lifted) {
+    if (!("bottom_height" in material)) return null;
+    const keys = Object.keys(material);
+    if (keys.length !== 6) return null;
+    if (!keys.every((k) => ["name", "rf_properties", "top_height", "bottom_height", "display_color", "transparencyEnabled"].includes(k))) return null;
+    const canon = understoryOiMaterial(Number(lifted[1]), Number(lifted[2]));
+    if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
+    return canon;
+  }
+  const plain = UNDERSTORY_NAME.exec(material.name || "");
+  if (!plain || "bottom_height" in material) return null;
+  const keys = Object.keys(material);
+  if (keys.length !== 5) return null;
+  if (!keys.every((k) => ["name", "rf_properties", "top_height", "display_color", "transparencyEnabled"].includes(k))) return null;
+  const canon = understoryOiMaterial(Number(plain[1]), 0);
+  if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
+  return canon;
 }
 
 /**
@@ -1032,6 +1142,7 @@ function canonicalLiftedOutdoor(material) {
 function canonicalAreaMaterial(material) {
   if (!material || typeof material !== "object" || Array.isArray(material)) return null;
   if ("itu_material_type" in material) return null;
+  if (isUnderstoryOiName(material.name)) return canonicalUnderstory(material);
   if (isTrunkOiName(material.name)) return canonicalTrunk(material);
   if (isLiftedPodiumName(material.name)) return canonicalLiftedPodium(material);
   if (isPodiumName(material.name)) return canonicalPodium(material);
@@ -1124,8 +1235,8 @@ function documentMaterials(areas) {
       } else if (!outdoor.has(canon.name)) outdoor.set(canon.name, canon);
       continue;
     }
-    if (isTrunkOiName(mat.name)) {
-      const canon = canonicalTrunk(mat);
+    if (isTrunkOiName(mat.name) || isUnderstoryOiName(mat.name)) {
+      const canon = isUnderstoryOiName(mat.name) ? canonicalUnderstory(mat) : canonicalTrunk(mat);
       if (!canon) continue;
       if ("bottom_height" in canon) {
         if (!lifted.has(canon.name)) lifted.set(canon.name, canon);
@@ -1198,6 +1309,11 @@ module.exports = {
   individualTreeParts,
   trunkOiMaterial,
   isTrunkOiName,
+  standUnderstoryM,
+  UNDERSTORY_DB,
+  understoryOiMaterial,
+  understoryClipPair,
+  isUnderstoryOiName,
   materialForBuilding,
   measuredOiBuildingMaterial,
   liftedMeasuredBuildingMaterial,

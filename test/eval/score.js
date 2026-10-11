@@ -17,6 +17,7 @@ const {
   isPodiumName,
   isLiftedPodiumName,
   isTrunkOiName,
+  isUnderstoryOiName,
   isOutdoorOiName,
   isLiftedOutdoorName,
   buildingCatalog,
@@ -640,6 +641,7 @@ function scoreMaterialCompatibility(openintent) {
   const allowedExtra = (name) =>
     isVegetationOiName(name) ||
     isTrunkOiName(name) ||
+    isUnderstoryOiName(name) ||
     isLiftedBuildingName(name) ||
     isLiftedMeasuredBuildingName(name) ||
     isMeasuredBuildingOiName(name) ||
@@ -800,14 +802,20 @@ function ringBBox(ring) {
   return { minX, minY, maxX, maxY };
 }
 
-/** Pairwise intersection of emitted rings, in square metres. */
-function scorePairwiseOverlap(rings, frame) {
+/**
+ * Pairwise intersection of emitted rings, in square metres.
+ * `minPairM2` leaves out contacts smaller than that. Foliage uses it so the
+ * 4 px crown floor, which rounds two nearby outlines onto the same pixels,
+ * does not add up to a false double canopy. A real shared stand still counts.
+ */
+function scorePairwiseOverlap(rings, frame, minPairM2) {
   const list = rings || [];
   const mpuX = frame && frame.mpuX ? frame.mpuX : 1;
   const mpuY = frame && frame.mpuY ? frame.mpuY : 1;
   const scale = mpuX * mpuY;
   const boxes = list.map(ringBBox);
   const areas = list.map((ring) => ringPxArea(ring) * scale);
+  const floor = Number(minPairM2) > 0 ? Number(minPairM2) : 0;
   let overlapM2 = 0;
   let pairs = 0;
   let heavyPairs = 0;
@@ -820,9 +828,10 @@ function scorePairwiseOverlap(rings, frame) {
       const px = intersectionAreaPx(list[i], list[j]);
       if (!(px > 0.5)) continue;
       const m2 = px * scale;
+      if (m2 > maxPairM2) maxPairM2 = m2;
+      if (m2 < floor) continue;
       overlapM2 += m2;
       pairs++;
-      if (m2 > maxPairM2) maxPairM2 = m2;
       const smaller = Math.min(areas[i], areas[j]);
       if (m2 >= 40 || (smaller > 1 && m2 / smaller >= 0.25 && m2 >= 15)) heavyPairs++;
     }

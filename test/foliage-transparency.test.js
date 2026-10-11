@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const jpeg = require("jpeg-js");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { buildClutter } = require("../netlify/lib/pipeline");
-const { isVegetationOiName, measuredTrunkMaterial } = require("../netlify/lib/materials");
+const { isVegetationOiName, isUnderstoryOiName, measuredTrunkMaterial } = require("../netlify/lib/materials");
 const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
 const { treesFromJpeg, CANOPY, TRUNK } = require("../netlify/functions/trees");
 const { canopyHitsGrid } = require("./canopy-grid");
@@ -30,7 +30,7 @@ function square(lon, lat, dLon, dLat, height) {
 function vegType(type) {
   const id = String((type && type.id) || "");
   const name = String((type && type.name) || "");
-  return id.indexOf("foliage") === 0 || id.indexOf("trunk") === 0 || /foliage|tree/i.test(name);
+  return id.indexOf("foliage") === 0 || id.indexOf("trunk") === 0 || id.indexOf("understory") === 0 || /foliage|tree|understory/i.test(name);
 }
 
 describe("foliage and trees are transparent in 3D", () => {
@@ -53,8 +53,8 @@ describe("foliage and trees are transparent in 3D", () => {
       heightSample: () => 14.2,
     });
     const areas = built.openintent.floorplans[0].attenuation_areas;
-    const veg = areas.filter((a) => isVegetationOiName(a.area_material.name));
-    const buildings = areas.filter((a) => !isVegetationOiName(a.area_material.name));
+    const veg = areas.filter((a) => isVegetationOiName(a.area_material.name) || isUnderstoryOiName(a.area_material.name));
+    const buildings = areas.filter((a) => !isVegetationOiName(a.area_material.name) && !isUnderstoryOiName(a.area_material.name));
     assert.ok(veg.length >= 1, "canopy area missing");
     assert.ok(buildings.length >= 1, "building area missing");
     for (const a of veg) {

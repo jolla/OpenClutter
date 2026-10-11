@@ -151,12 +151,13 @@ describe("canopy height grid", () => {
     const canopies = pairs.oiAreas.filter((a) => a.kind === "canopy");
     const layers = pairs.oiAreas.filter((a) => a.kind === "layer");
     assert.equal(canopies.length, 1);
-    assert.equal(layers.length, 2);
+    assert.equal(layers.length, 1);
     assert.equal(canopies[0].shape, "polygon");
-    const top = layers.reduce((a, b) => (a.material.top_height >= b.material.top_height ? a : b));
+    const top = layers[0];
     assert.equal(top.material.top_height, 14.2);
     assert.equal(top.material.rf_properties.attenuation_per_m, 1.5);
-    assert.equal(canopies[0].material.rf_properties.attenuation_per_m, 1.5);
+    assert.equal(canopies[0].material.rf_properties.attenuation_per_m, 0.6);
+    assert.ok(canopies[0].material.top_height <= 3.2);
     assert.ok(canopies[0].ringPx.length >= 5);
     assert.ok(canopies[0].ringPx.length <= 41);
     let minX = Infinity;
@@ -183,7 +184,7 @@ describe("canopy height grid", () => {
       maxLY = Math.max(maxLY, p[1]);
     }
     layerShort = Math.min(maxLX - minLX, maxLY - minLY);
-    assert.ok(layerShort < Math.min(maxX - minX, maxY - minY), "upper band steps in");
+    assert.ok(layerShort > Math.min(maxX - minX, maxY - minY) * 0.9, "crown covers the stand");
     assert.equal(pairs.oiAreas.some((a) => a.kind === "trunk"), false);
     assert.ok(pairs.clipTypes.some((t) => t.topEdge === 14.2));
   });
@@ -288,7 +289,7 @@ describe("canopy height grid", () => {
     const nlcd = treePairsFromPoints([], frame, [], null, { canopyHits: hits, heightSample: () => 14 });
     assert.equal(nlcd.foliageGeometry, "nlcd-polygon");
     assert.equal(nlcd.oiAreas.filter((a) => a.kind === "canopy").length, 1);
-    assert.equal(nlcd.oiAreas.length, 3);
+    assert.equal(nlcd.oiAreas.length, 2);
     const mLon = 111320 * Math.cos((42.9 * Math.PI) / 180);
     const w = 36;
     const h = 36;

@@ -2,7 +2,15 @@
 
 const { llToPx, pxToLl, pxToClipboard, applyAffine } = require("./geo-frame");
 const { clipZone } = require("./hamina-clipboard");
-const { measuredFoliageMaterial, materialForVegetation, liftFoliagePair, individualTreeParts } = require("./materials");
+const {
+  measuredFoliageMaterial,
+  materialForVegetation,
+  liftFoliagePair,
+  individualTreeParts,
+  standUnderstoryM,
+  understoryClipPair,
+  isUnderstoryOiName,
+} = require("./materials");
 
 const { MAX_TREES, maxTreesForBbox, canopyHeightM } = require("./tree-source");
 const { crownsForExport } = require("./canopy-height");
@@ -422,6 +430,8 @@ const TRUNK_SIDES = 12;
  * drops whole trees once the Hamina area budget is full.
  */
 const CROWN_LAYER_BUDGET = 720;
+/** A woods this large gets an understory plus a raised crown. A smaller clump stays one mass. */
+const STAND_LAYER_M2 = 800;
 /** Each band stays thicker than 2 m, which is the custom-height floor. */
 const MIN_CROWN_BAND_M = 2.1;
 
@@ -749,6 +759,78 @@ function bareCanopy(material, thickness) {
 }
 
 /**
+ * Understory from local ground, then the foliage crown up to the measured top.
+ * Both use the traced outline. Null when the height cannot hold both layers.
+ */
+function standLayerParts(material) {
+  if (!material || isUnderstoryOiName(material.name) || !isVegetationName(material.name)) return null;
+  const lifted = Number(material.bottom_height) >= 1;
+  const seat = lifted ? roundTenths(material.bottom_height) : 0;
+  const top = Number(material.top_height);
+  const thickness = roundTenths(top - seat);
+  const tier = String(material.name).indexOf("Light") >= 0 ? "light" : "heavy";
+  const base = standUnderstoryM(thickness, tier);
+  if (!(base >= 2.5)) return null;
+  const crownH = roundTenths(thickness - base);
+  if (!(crownH >= 2.5)) return null;
+  const underPair = understoryClipPair(base, seat);
+  if (!underPair) return null;
+  let crownBase = materialForVegetation(crownH, tier);
+  if (!crownBase || Math.abs(Number(crownBase.top_height) - crownH) > 0.15) return null;
+  const crownBottom = roundTenths(seat + base);
+  let crownMat = crownBase;
+  let crownClip = clipboardForCanopy(crownBase);
+  if (crownBottom >= 1) {
+    const pair = liftFoliagePair(crownBase, crownBottom);
+    if (!pair || !pair.material) return null;
+    crownMat = pair.material;
+    crownClip = { typeId: pair.typeId, clipType: pair.clipType };
+  }
+  if (!crownClip) return null;
+  if (Math.abs(Number(crownMat.top_height) - top) > 0.15) return null;
+  const underTop = Number(underPair.material.top_height);
+  const crownBot = crownMat.bottom_height != null ? Number(crownMat.bottom_height) : 0;
+  if (Math.abs(underTop - (seat + base)) > 0.15) return null;
+  if (Math.abs(crownBot - crownBottom) > 0.15 && crownBottom >= 1) return null;
+  return [
+    {
+      material: underPair.material,
+      clip: { typeId: underPair.typeId, clipType: underPair.clipType },
+    },
+    { material: crownMat, clip: crownClip },
+  ];
+}
+
+function isVegetationName(name) {
+  const n = String(name || "");
+  if (n.indexOf("Foliage - Heavy") === 0 || n.indexOf("Foliage - Light") === 0) return true;
+  return false;
+}
+
+function reseatPart(part, newBottom) {
+  const mat = part.material;
+  if (!mat) return null;
+  const oldBottom = Number(mat.bottom_height) >= 1 ? Number(mat.bottom_height) : 0;
+  const thickness = roundTenths(Number(mat.top_height) - oldBottom);
+  if (!(thickness > 0.5)) return null;
+  if (isUnderstoryOiName(mat.name)) {
+    const pair = understoryClipPair(thickness, newBottom);
+    if (!pair) return null;
+    return {
+      material: pair.material,
+      clip: { typeId: pair.typeId, clipType: pair.clipType },
+    };
+  }
+  if (!(newBottom >= 1)) {
+    const bare = bareCanopy(mat, thickness);
+    return { material: bare, clip: clipboardForCanopy(bare) };
+  }
+  const lifted = liftFoliagePair(bareCanopy(mat, thickness), newBottom);
+  if (!lifted) return null;
+  return { material: lifted.material, clip: { typeId: lifted.typeId, clipType: lifted.clipType } };
+}
+
+/**
  * An inset band used to keep the seat of the larger ring, so the piece hung
  * above the hill under its own outline. Drop the whole stack onto the
  * downhill ground of the lowest ring when that gap is more than 3 m.
@@ -778,28 +860,13 @@ function dropStack(parts, slopeTop, frame) {
       continue;
     }
     const oldBottom = Number(mat.bottom_height) >= 1 ? Number(mat.bottom_height) : 0;
-    const thickness = Number(mat.top_height) - oldBottom;
     const newBottom = roundTenths(oldBottom - drop);
-    if (!(thickness > 0.5)) {
+    const seated = reseatPart(part, newBottom);
+    if (!seated) {
       out.push(part);
       continue;
     }
-    if (!(newBottom >= 1)) {
-      const bare = bareCanopy(mat, thickness);
-      out.push(Object.assign({}, part, { material: bare, clip: clipboardForCanopy(bare) }));
-      continue;
-    }
-    const lifted = liftFoliagePair(bareCanopy(mat, thickness), newBottom);
-    if (!lifted) {
-      out.push(part);
-      continue;
-    }
-    out.push(
-      Object.assign({}, part, {
-        material: lifted.material,
-        clip: { typeId: lifted.typeId, clipType: lifted.clipType },
-      })
-    );
+    out.push(Object.assign({}, part, seated));
   }
   return out;
 }
@@ -831,9 +898,13 @@ function layerCounts(pending, frame) {
   const plans = pending.map((row) => {
     const discrete = !!row.trunk;
     const thickness = crownThicknessM(row.area && row.area.material);
-    const wide = row.slopePiece && canopyAreaM2(row.area && row.area.ringPx, frame) >= 4000;
+    const areaM = canopyAreaM2(row.area && row.area.ringPx, frame);
+    const tier = String((row.area && row.area.material && row.area.material.name) || "").indexOf("Light") >= 0 ? "light" : "heavy";
+    const stand = !discrete && areaM >= STAND_LAYER_M2 && standUnderstoryM(thickness, tier) >= 2.5;
+    const wide = row.slopePiece && areaM >= 4000;
     return {
-      n: row.slopePiece && !wide ? 1 : wantedCrownLayers(discrete, thickness, treeCount),
+      n: stand ? 2 : row.slopePiece && !wide ? 1 : wantedCrownLayers(discrete, thickness, treeCount),
+      stand,
       discrete,
       area: ringPxArea(row.area && row.area.ringPx),
     };
@@ -855,9 +926,9 @@ function layerCounts(pending, frame) {
     }
   };
   shrink((p) => p.discrete && p.n >= 4, () => 3);
-  shrink((p) => !p.discrete && p.n >= 3, () => 2);
+  shrink((p) => !p.discrete && !p.stand && p.n >= 3, () => 2);
   shrink((p) => p.discrete && p.n >= 3, () => 2);
-  return plans.map((p) => p.n);
+  return plans;
 }
 
 function openCrownRing(ring) {
@@ -1182,7 +1253,31 @@ function ringForFraction(ring, frame, fraction) {
       return pulled;
     }
   }
-  return clippedFraction(ring, frame, fraction);
+  const clipped = clippedFraction(ring, frame, fraction);
+  if (!clipped) return null;
+  if (insetStaysIn(clipped, ring)) return clipped;
+  // A shorter outline can chord across the outside of a notch and land in
+  // the next stand. Keep only the part that is still on this crown.
+  let brought = null;
+  try {
+    const inter = polygonClipping.intersection(
+      [closeCrownRing(openCrownRing(ring))],
+      [closeCrownRing(openCrownRing(clipped))]
+    );
+    brought = largestExterior(inter);
+  } catch {
+    brought = null;
+  }
+  if (
+    brought &&
+    ringClearsSpan(brought, floor) &&
+    insetStaysIn(brought, ring) &&
+    ringPxArea(brought) < ringPxArea(ring) * 0.96 &&
+    ringPxArea(brought) > ringPxArea(ring) * 0.12
+  ) {
+    return brought;
+  }
+  return null;
 }
 
 /**
@@ -1484,7 +1579,7 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     }
   }
   let canopyCount = 0;
-  const counts = layerCounts(pending, frame);
+  const plans = layerCounts(pending, frame);
   for (let r = 0; r < pending.length; r++) {
     const row = pending[r];
     const area = row.area;
@@ -1501,7 +1596,16 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
       if (ll.length >= 3) relief = (Number(slopeTop(ll)) || 0) - (Number(slopeTop.seat(ll)) || 0);
     }
     row.skirt = !(relief > 8);
-    const stack = row.slopePiece && !wideSlope ? null : crownStack(row, frame, counts[r]);
+    let stand = plans[r].stand ? standLayerParts(area.material) : null;
+    if (stand) {
+      stand = stand.map((p) => ({
+        ringPx: area.ringPx,
+        material: p.material,
+        clip: p.clip,
+        scale: 1,
+      }));
+    }
+    const stack = stand || (row.slopePiece && !wideSlope ? null : crownStack(row, frame, plans[r].n));
     const parts = dropStack(
       stack || [
         {

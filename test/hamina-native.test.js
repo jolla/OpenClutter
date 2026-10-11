@@ -6,7 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { buildClutter, expandOiCoordTriples, oiPixelCoords, validateOiCoords } = require("../netlify/lib/pipeline");
-const { buildingCatalog, OI_BUILDING_NAMES, isVegetationOiName, isPoisonedOiName } = require("../netlify/lib/materials");
+const { buildingCatalog, OI_BUILDING_NAMES, isVegetationOiName, isUnderstoryOiName, isPoisonedOiName } = require("../netlify/lib/materials");
 const { canopyHitsGrid } = require("./canopy-grid");
 
 const SAMPLE = JSON.parse(
@@ -102,9 +102,9 @@ describe("Hamina-native OpenIntent gold shape", () => {
     assert.deepEqual(built.openintent.area_materials.slice(0, 4), buildingCatalog());
     const extra = names.slice(4);
     assert.ok(extra.length >= 1);
-    for (const n of extra) assert.equal(isVegetationOiName(n), true, n);
+    for (const n of extra) assert.equal(isVegetationOiName(n) || isUnderstoryOiName(n), true, n);
     for (const mat of built.openintent.area_materials) {
-      if (isVegetationOiName(mat.name)) {
+      if (isVegetationOiName(mat.name) || isUnderstoryOiName(mat.name)) {
         assert.equal(mat.transparencyEnabled, true);
         const keys = ["name", "rf_properties", "top_height", "display_color", "transparencyEnabled"];
         if ("bottom_height" in mat) keys.splice(3, 0, "bottom_height");
@@ -120,8 +120,8 @@ describe("Hamina-native OpenIntent gold shape", () => {
     let vegetationAreas = 0;
     for (const a of fp.attenuation_areas) {
       const name = a.area_material.name;
-      assert.ok(GOLD_BUILDING_NAMES.includes(name) || isVegetationOiName(name), name);
-      if (isVegetationOiName(name)) vegetationAreas++;
+      assert.ok(GOLD_BUILDING_NAMES.includes(name) || isVegetationOiName(name) || isUnderstoryOiName(name), name);
+      if (isVegetationOiName(name) || isUnderstoryOiName(name)) vegetationAreas++;
       const coords = a.area.coordinates;
       assert.ok(coords.length >= 4);
       for (let i = 0; i < coords.length; i++) {
