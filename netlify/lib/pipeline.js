@@ -93,7 +93,7 @@ const ZIP_README =
   "and the crown top at the measured height. A continuous canopy stays one mass on the ground.\n" +
   "Tree points are not turned into trees. The names Tree Trunk and Foliage N.N m stay off OpenIntent.\n" +
   "Buildings use Hamina's outdoor Building - One/Two/Five/Ten Floor materials.\n" +
-  "Canopy cells on building footprints and on pavement or roads are cleared, and rings are cut around footprints (1 m buffer) and water, so foliage does not cover roofs, parking, or ponds.\n" +
+  "Canopy cells on building footprints and on pavement or roads are cleared, and rings are cut around footprints (0.25 m buffer) and water, so foliage does not cover roofs, parking, or ponds.\n" +
   "hamina-clipboard.json matches the toggle: buildings only when foliage is off, or the same canopy polygons when it is on.\n" +
   "Schema: OpenIntent 2.0.1, one in-bounds pixel vertex, isotropic meter/pixel aspect.\n" +
   "(Optional) Unzip and open alignment-overlay.svg next to images/ to check rooftops and, when foliage is on, canopy.\n";
@@ -2682,8 +2682,54 @@ function canopyRingFaithful(ringPx, coords, mpuX, keepOutPx) {
  * polygon, or fills the field the stand wraps. Cut that ring in half and
  * keep both pieces instead.
  */
+function notchCanopyRoofs(ringPx, roofs) {
+  let geom = [[ringPx]];
+  let area = ringAreaPx(ringPx);
+  let changed = false;
+  for (let i = 0; i < roofs.length; i++) {
+    let inter = 0;
+    try {
+      inter = intersectionAreaPx(ringPx, roofs[i]);
+    } catch {
+      continue;
+    }
+    if (inter <= 0.5) continue;
+    let next = null;
+    try {
+      next = polygonClipping.difference(geom, [[roofs[i]]]);
+    } catch {
+      next = null;
+    }
+    const nextArea = clipMultiArea(next);
+    if (!(nextArea > 0)) continue;
+    if (nextArea < area - inter - Math.max(40, area * 0.02)) continue;
+    geom = next;
+    area = nextArea;
+    changed = true;
+  }
+  if (!changed) return null;
+  const parts = [];
+  for (let i = 0; i < geom.length; i++) {
+    const poly = geom[i];
+    if (poly && poly[0] && poly[0].length >= 4) parts.push(poly[0]);
+  }
+  return parts.length ? parts : null;
+}
+
 function emitCanopyCovered(t, ringPx, imgW, imgH, mpuX, depth, areas, kinds) {
   const opts = { keepShape: true, noHull: t.kind !== "trunk", keepOutPx: t.keepOutPx || [] };
+  const roofsIn = t.keepOutRings || [];
+  if (t.kind !== "trunk" && !t.roofNotched && roofsIn.length) {
+    const notched = notchCanopyRoofs(ringPx, roofsIn);
+    if (notched) {
+      const next = Object.assign({}, t, { roofNotched: true });
+      let any = false;
+      for (let i = 0; i < notched.length; i++) {
+        if (emitCanopyCovered(next, notched[i], imgW, imgH, mpuX, depth, areas, kinds)) any = true;
+      }
+      if (any) return true;
+    }
+  }
   if (t.kind === "trunk") {
     const b = ringBBox(ringPx);
     const drawn = Math.min(b.w, b.h);
@@ -2703,11 +2749,11 @@ function emitCanopyCovered(t, ringPx, imgW, imgH, mpuX, depth, areas, kinds) {
       if (roofM2 > 0.5) break;
     }
   }
-  // A ring that already fits the corner cap is the outline. Cutting it again
-  // stacks pieces on the same crown. A longer ring is cut until the cap
-  // follows it and stays off the roof.
   const fits = ringVertexCount(ringPx) <= MAX_OI_RING_VERTS;
-  if (t.kind === "trunk" || (roofM2 <= 0.5 && (fits || faithful))) {
+  // A ring under the corner cap is emitted as-is. ringToOi still returns
+  // nothing when that outline crosses itself, and the old branch treated
+  // that as a failed tree and deleted the stand. Cut it instead.
+  if (t.kind === "trunk" || (coords && roofM2 <= 0.5 && (fits || faithful))) {
     const area = emitIfValid(makeOiArea(coords, t.material), imgW, imgH, opts.spanFloorPx);
     return area ? pushTreeArea(areas, kinds, area, t.kind) : false;
   }

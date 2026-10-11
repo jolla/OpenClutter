@@ -104,7 +104,7 @@ describe("foliage rings stay off buildings and water", () => {
     const emittedM2 = overlapM2(emitted, fp.overlayRings, frame);
     assert.ok(emittedM2 < 1, `emitted intersection ${emittedM2.toFixed(2)} m²`);
     assert.ok(built.stats.openIntentBuildingAreas >= 1);
-    assert.equal(BUILDING_BUFFER_M, 1);
+    assert.equal(BUILDING_BUFFER_M, 0.25);
   });
 
   it("does not cover a water ring that cuts a canopy patch", () => {
