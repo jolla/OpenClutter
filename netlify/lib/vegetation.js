@@ -1181,7 +1181,7 @@ function crownStack(row, frame, want) {
   for (let n = Math.min(want, 4); n >= 2; n--) {
     const fractions = domeAreaFractions(n, discrete);
     if (fractions.length !== n) continue;
-    const bands = buildCrownBands(row.area.material, n, !discrete);
+    const bands = buildCrownBands(row.area.material, n, !discrete && row.skirt !== false);
     if (!bands || bands.length !== n) continue;
     const parts = [];
     let ok = true;
@@ -1354,10 +1354,43 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     if (seats.length >= 2) return seats;
     return one(area.ringPx, groundOf(ll), false);
   };
+  const seatNear = (ll) => {
+    let lon = 0;
+    let lat = 0;
+    let n = 0;
+    const end = ll.length > 1 && ll[0][0] === ll[ll.length - 1][0] && ll[0][1] === ll[ll.length - 1][1] ? ll.length - 1 : ll.length;
+    for (let i = 0; i < end; i++) {
+      lon += +ll[i][0];
+      lat += +ll[i][1];
+      n++;
+    }
+    if (!n) return 0;
+    lon /= n;
+    lat /= n;
+    const d = 0.00004;
+    return (
+      Number(
+        slopeTop.seat([
+          [lon - d, lat - d],
+          [lon + d, lat - d],
+          [lon + d, lat + d],
+          [lon - d, lat + d],
+          [lon - d, lat - d],
+        ])
+      ) || 0
+    );
+  };
   const groundOf = (ll) => {
     const up = Number(slopeTop(ll)) || 0;
     if (typeof slopeTop.seat !== "function") return up;
     const down = Number(slopeTop.seat(ll)) || 0;
+    // A ring that climbs a whole hillside has a datum cell at the edge.
+    // Seating the stand on that cell buries the woods. The middle of the
+    // ring is the ground the canopy actually covers.
+    if (up - down > 12) {
+      const mid = seatNear(ll);
+      if (mid >= 1) return mid;
+    }
     if (up - down > 3) return down;
     return up;
   };
@@ -1423,6 +1456,18 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     const row = pending[r];
     const area = row.area;
     const wideSlope = row.slopePiece && canopyAreaM2(area && area.ringPx, frame) >= 4000;
+    // A short skirt on a ring that climbs more than the skirt is a sheet
+    // through the hill. Keep the full bands until the stand is split.
+    let relief = 0;
+    if (slopeTop && typeof slopeTop.seat === "function" && area.ringPx && area.ringPx.length >= 4) {
+      const ll = [];
+      for (let i = 0; i < area.ringPx.length; i++) {
+        const q = pxToLl(area.ringPx[i][0], area.ringPx[i][1], frame);
+        if (q && Number.isFinite(q[0]) && Number.isFinite(q[1])) ll.push(q);
+      }
+      if (ll.length >= 3) relief = (Number(slopeTop(ll)) || 0) - (Number(slopeTop.seat(ll)) || 0);
+    }
+    row.skirt = !(relief > 8);
     const stack = row.slopePiece && !wideSlope ? null : crownStack(row, frame, counts[r]);
     const parts = dropStack(
       stack || [
