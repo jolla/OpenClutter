@@ -10,6 +10,11 @@
  * lawn, mown field, RV pitch, or road. Those open surfaces drawn as canopy
  * are false positives even when the height model says 3 m. A green aerial
  * pixel is not a hit by itself. Building footprints are left out of both masks.
+ * Height error compares the canopy top above local ground with the height
+ * model. A crown on a trunk or understory counts the whole stack. The
+ * understory gap is that ground-to-crown distance against the intended gap
+ * for a stand of at least 800 m². The preview counts a floating piece and a
+ * flat slab on its own.
  */
 
 const fs = require("fs");
@@ -20,7 +25,7 @@ const jpeg = require("jpeg-js");
 const { esriContentExtent, geoFrame, imagePxToLl, pxToLl } = require("../netlify/lib/geo-frame");
 const { fetchChmGrid } = require("../netlify/lib/canopy-height");
 const { fetchWorldCoverTrees, TREE } = require("../netlify/lib/worldcover");
-const { isVegetationOiName } = require("../netlify/lib/materials");
+const { isTrunkOiName, isUnderstoryOiName, isVegetationOiName, standUnderstoryM } = require("../netlify/lib/materials");
 const { coniferPixel, openGroundPixel, localStd } = require("../netlify/lib/surface-mask");
 
 const ROOT = path.join(__dirname, "..");
@@ -93,16 +98,6 @@ function chmAt(grid, lon, lat) {
   return grid.values[y * grid.width + x] || 0;
 }
 
-function thicknessM(material) {
-  const name = (material && material.name) || "";
-  if (name.indexOf("Trunk") >= 0) return null;
-  const top = Number(material && material.top_height);
-  const bottom = Number(material && material.bottom_height);
-  if (Number.isFinite(bottom) && Number.isFinite(top) && top > bottom) return top - bottom;
-  if (Number.isFinite(top) && top > 0 && top < 80) return top;
-  return null;
-}
-
 function centroid(ring) {
   let x = 0;
   let y = 0;
@@ -117,6 +112,149 @@ function centroid(ring) {
   }
   if (!n) return null;
   return [x / n, y / n];
+}
+
+const STAND_LAYER_M2 = 800;
+
+function plateScale(floorplan) {
+  const dims = (floorplan && floorplan.dimensions) || [];
+  const px = dims.find((d) => d.unit === "pixels");
+  const meters = dims.find((d) => d.unit === "meters");
+  if (!px || !meters || !(px.width > 0) || !(px.length > 0) || !(meters.width > 0) || !(meters.length > 0)) return null;
+  return { mpuX: meters.width / px.width, mpuY: meters.length / px.length };
+}
+
+function materialSpan(material) {
+  const top = Number(material && material.top_height);
+  const bottom = Number(material && material.bottom_height);
+  if (Number.isFinite(bottom) && Number.isFinite(top) && top > bottom + 0.05) {
+    return { bottom, top, thick: top - bottom };
+  }
+  if (Number.isFinite(top) && top > 0 && top < 80) return { bottom: 0, top, thick: top };
+  return null;
+}
+
+function ringAreaM2(ring, mpuX, mpuY) {
+  let acc = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const p = ring[i];
+    const q = ring[(i + 1) % ring.length];
+    acc += p[0] * q[1] - q[0] * p[1];
+  }
+  return Math.abs(acc) * 0.5 * mpuX * mpuY;
+}
+
+function partKind(name) {
+  if (isUnderstoryOiName(name)) return "understory";
+  if (isTrunkOiName(name)) return "trunk";
+  if (isVegetationOiName(name)) return "crown";
+  return "";
+}
+
+function closePart(a, b, mpu) {
+  const dx = a.cx - b.cx;
+  const dy = a.cy - b.cy;
+  const reach = Math.max(30, (0.55 * Math.sqrt(Math.max(a.area, b.area))) / Math.max(mpu, 0.02));
+  return dx * dx + dy * dy <= reach * reach;
+}
+
+function supportUnder(part, parts, mpu) {
+  let best = null;
+  let bestD = Infinity;
+  for (let i = 0; i < parts.length; i++) {
+    const other = parts[i];
+    if (other === part || (other.kind !== "understory" && other.kind !== "trunk")) continue;
+    if (Math.abs(other.span.top - part.span.bottom) > 0.35) continue;
+    if (other.kind === "understory") {
+      const ratio = other.area / part.area;
+      if (ratio < 0.7 || ratio > 1.4) continue;
+    }
+    const dx = other.cx - part.cx;
+    const dy = other.cy - part.cy;
+    const d = dx * dx + dy * dy;
+    if (!closePart(part, other, mpu) || d >= bestD) continue;
+    best = other;
+    bestD = d;
+  }
+  return best;
+}
+
+function crownAbove(part, parts, mpu) {
+  for (let i = 0; i < parts.length; i++) {
+    const other = parts[i];
+    if (other === part || other.kind !== "crown") continue;
+    if (Math.abs(other.span.bottom - part.span.top) > 0.35) continue;
+    if (closePart(part, other, mpu)) return other;
+  }
+  return null;
+}
+
+function sitsOnCrown(part, parts, mpu) {
+  for (let i = 0; i < parts.length; i++) {
+    const other = parts[i];
+    if (other === part || other.kind !== "crown") continue;
+    if (Math.abs(other.span.top - part.span.bottom) > 0.35) continue;
+    if (closePart(part, other, mpu)) return true;
+  }
+  return false;
+}
+
+/**
+ * Full canopy height above local ground, and the understory gap under stands.
+ * Heights are one sample per stack (the lowest crown, through the top band).
+ * Gap error is |actual ground-to-crown minus the intended gap| for stands
+ * of at least 800 m² whose height calls for a raised crown.
+ */
+function shapeOfAreas(areas, mpuX, mpuY) {
+  const mpu = Math.max(mpuX || 0.2, mpuY || 0.2) * 0.5 + Math.min(mpuX || 0.2, mpuY || 0.2) * 0.5;
+  const parts = [];
+  for (const area of areas || []) {
+    const material = area.area_material || {};
+    const name = material.name || "";
+    const kind = partKind(name);
+    const coords = area.area && area.area.coordinates;
+    if (!kind || !coords || coords.length < 4) continue;
+    const span = materialSpan(material);
+    const ring = coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
+    const c = centroid(ring);
+    if (!span || !c) continue;
+    parts.push({
+      kind,
+      name,
+      tier: /heavy/i.test(name) ? "heavy" : "light",
+      span,
+      area: ringAreaM2(ring, mpuX, mpuY),
+      cx: c[0],
+      cy: c[1],
+    });
+  }
+  const heights = [];
+  const gapErrs = [];
+  let largestCrownM2 = 0;
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (part.kind !== "crown") continue;
+    if (part.area > largestCrownM2) largestCrownM2 = part.area;
+    if (sitsOnCrown(part, parts, mpu)) continue;
+    let top = part.span.top;
+    let guard = 0;
+    let above = crownAbove(part, parts, mpu);
+    while (above && guard++ < 6) {
+      top = above.span.top;
+      above = crownAbove(above, parts, mpu);
+    }
+    const support = supportUnder(part, parts, mpu);
+    const ground = support ? support.span.bottom : part.span.bottom;
+    const full = top - ground;
+    if (!(full > 0.5 && full < 80)) continue;
+    heights.push({ thick: full, x: part.cx, y: part.cy });
+    if (part.area < STAND_LAYER_M2) continue;
+    const expected = standUnderstoryM(full, part.tier);
+    if (!(expected >= 2.5)) continue;
+    const actual = support && support.kind === "understory" ? support.span.thick : 0;
+    gapErrs.push(Math.abs(actual - expected));
+  }
+  return { heights, gapErrs, largestCrownM2: Math.round(largestCrownM2) };
 }
 
 function pct(hit, tot) {
@@ -150,7 +288,6 @@ async function scoreSite(site, zipPath) {
   const areas = loaded.json.floorplans[0].attenuation_areas || [];
   const foliage = [];
   const buildings = [];
-  const heights = [];
   for (const a of areas) {
     const material = a.area_material || {};
     const name = material.name || "";
@@ -158,13 +295,12 @@ async function scoreSite(site, zipPath) {
     if (!coords || coords.length < 4) continue;
     const ring = coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
     if (name.indexOf("Building") === 0) buildings.push(ring);
-    else if (isVegetationOiName(name)) {
-      foliage.push(ring);
-      const thick = thicknessM(material);
-      const c = centroid(ring);
-      if (thick != null && c) heights.push({ thick, x: c[0], y: c[1] });
-    }
+    else if (isVegetationOiName(name)) foliage.push(ring);
   }
+  // geoFrame's north-south metre length follows the geodesic span, which is
+  // longer than the square-pixel plate. Stand area uses the zip's own scale.
+  const scale = plateScale(loaded.json.floorplans[0]) || { mpuX: frame.mpuX, mpuY: frame.mpuX };
+  const shape = shapeOfAreas(areas, scale.mpuX, scale.mpuY);
   const step = Math.max(4, Math.ceil(Math.sqrt((raw.width * raw.height) / 160000)));
   const fol = rasterRings(foliage, raw.width, raw.height, step);
   const bld = rasterRings(buildings, raw.width, raw.height, step);
@@ -246,10 +382,18 @@ async function scoreSite(site, zipPath) {
     }
   }
   const errs = [];
-  for (const row of heights) {
+  for (const row of shape.heights) {
     const [lon, lat] = pxToLl(row.x, row.y, frame);
     const hv = chmAt(chm, lon, lat);
     if (hv >= 2) errs.push(Math.abs(row.thick - hv));
+  }
+  const gapErrs = shape.gapErrs.slice().sort((a, b) => a - b);
+  const gapMae = gapErrs.length ? gapErrs.reduce((s, v) => s + v, 0) / gapErrs.length : null;
+  let preview = null;
+  try {
+    preview = previewStats(site, zipPath);
+  } catch (e) {
+    console.log(site.id, "preview", e && e.message);
   }
   errs.sort((a, b) => a - b);
   const mae = errs.length ? errs.reduce((s, v) => s + v, 0) / errs.length : null;
@@ -283,6 +427,11 @@ async function scoreSite(site, zipPath) {
     heightMae: mae == null ? null : Math.round(mae * 10) / 10,
     heightMedian: med == null ? null : Math.round(med * 10) / 10,
     heightN: errs.length,
+    understoryGapMae: gapMae == null ? null : Math.round(gapMae * 10) / 10,
+    understoryN: gapErrs.length,
+    floating: preview ? preview.floatingTrees : null,
+    slabs: preview ? preview.slabs : null,
+    largestCrownM2: preview ? preview.largestCrownM2 : shape.largestCrownM2,
     precisionSpot: pct(tp + fpGreen, pred),
     openLeak,
     openLawn: pct(openLawn, pred),
@@ -423,6 +572,32 @@ async function exportSite(site) {
   return zipPath;
 }
 
+function previewStats(site, zipPath) {
+  const terrainPath = path.join(OUT, site.id + ".terrain.json");
+  if (!fs.existsSync(terrainPath)) return null;
+  const outDir = path.join(ART, "hamina-preview");
+  fs.mkdirSync(outDir, { recursive: true });
+  const out = path.join(outDir, site.id + ".png");
+  execFileSync(
+    process.execPath,
+    [
+      path.join(ROOT, "scripts", "hamina-preview.js"),
+      "--zip",
+      zipPath,
+      "--terrain",
+      terrainPath,
+      "--site",
+      site.id,
+      "--out",
+      out,
+    ],
+    { stdio: "inherit", cwd: ROOT, env: Object.assign({}, process.env, { NODE_PATH: path.join(ROOT, "node_modules") }) }
+  );
+  const statsPath = out.replace(/\.png$/i, ".json");
+  if (!fs.existsSync(statsPath)) return null;
+  return JSON.parse(fs.readFileSync(statsPath, "utf8"));
+}
+
 function spotPrecision(r) {
   if (!r || r.precision == null || !(r.predPx > 0) || r.fpGreen == null) return r && r.precisionSpot != null ? r.precisionSpot : null;
   const tp = (r.precision / 100) * r.predPx;
@@ -454,6 +629,11 @@ function writeBoard() {
     "heightMae",
     "heightMedian",
     "heightN",
+    "understoryGapMae",
+    "understoryN",
+    "floating",
+    "slabs",
+    "largestCrownM2",
     "refPx",
     "predPx",
     "foliage",
@@ -470,10 +650,10 @@ function writeBoard() {
     "",
     "Recall uses the Meta/WRI canopy height grid. A cell of at least 3 m is canopy. Where that grid measured no height, ESA WorldCover tree cover is also canopy. Roof pixels are ignored. Precision samples every emitted canopy cell on that same grid. The cell counts only when the height model is at least 3 m and the aerial is not an open lawn, mown field, RV pitch, or road. A green aerial pixel is not a hit. A site passes at 85% recall and 85% precision. Green on the overlay is emitted canopy that passes that test. Red is reference canopy still missing. Yellow is emitted canopy that fails it.",
     "",
-    "CHM ≥ 3 m is the height-model share alone, before the aerial open-ground rejection. Open ground is the share of emitted canopy the aerial reads as lawn or field, pitch, or road. Height error is metres of canopy thickness versus the canopy-height sample at the polygon centroid, for polygons that sit on a measured crown.",
+    "CHM ≥ 3 m is the height-model share alone, before the aerial open-ground rejection. Open ground is the share of emitted canopy the aerial reads as lawn or field, pitch, or road. Height error is metres between the canopy top above local ground and the canopy-height sample at that stack. A crown seated on a trunk or understory uses the full stack. Gap is the ground-to-crown distance versus the intended gap (about 3 m, or 30–40% of height on a tall conifer) for stands of at least 800 m². Floating is a preview piece whose base is more than 3 m above the terrain and is not sitting on another canopy piece. A slab is one crown of at least 8,000 m², or a connected sheet of crowns whose tops stay within 2 m and whose area is at least 12,000 m².",
     "",
-    "| Site | Recall | Precision | CHM ≥ 3 m | Open ground | Height MAE | Crowns | Pass |",
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+    "| Site | Recall | Precision | CHM ≥ 3 m | Open ground | Height MAE | Gap MAE | Floating | Slabs | Pass |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
   ];
   for (const r of rows) {
     const pass = r.recall != null && r.precision != null && r.recall >= 85 && r.precision >= 85;
@@ -491,7 +671,11 @@ function writeBoard() {
         " | " +
         (r.heightMae == null ? "—" : r.heightMae + " m") +
         " | " +
-        r.foliage +
+        (r.understoryGapMae == null ? "—" : r.understoryGapMae + " m") +
+        " | " +
+        (r.floating == null ? "—" : String(r.floating)) +
+        " | " +
+        (r.slabs == null ? "—" : String(r.slabs)) +
         " | " +
         (pass ? "yes" : "no") +
         " |"
@@ -513,7 +697,11 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
+
+module.exports = { plateScale, shapeOfAreas };
