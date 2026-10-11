@@ -65,7 +65,29 @@ function coniferPixel(r, g, b) {
   const maxc = Math.max(r, g, b);
   const minc = Math.min(r, g, b);
   const sat = maxc ? (maxc - minc) / maxc : 0;
-  return Y >= 28 && Y <= 92 && g >= r + 6 && g >= b + 6 && exg >= 18 && sat >= 0.18 && b + 2 < g;
+  return Y >= 28 && Y <= 80 && g >= r + 6 && g >= b + 6 && exg >= 18 && sat >= 0.18 && b + 2 < g;
+}
+
+/**
+ * Smooth open ground: a mown lawn, a tan RV pitch or dirt track, or pavement.
+ * A dark conifer and a textured crown are not open ground. The caller passes
+ * the local luma spread so a rough canopy is not read as grass.
+ * @returns {""|"lawn"|"pitch"|"road"}
+ */
+function openGroundPixel(r, g, b, std) {
+  if (coniferPixel(r, g, b)) return "";
+  if (std >= 11) return "";
+  const Y = luma(r, g, b);
+  const exg = 2 * g - r - b;
+  const maxc = Math.max(r, g, b);
+  const minc = Math.min(r, g, b);
+  const sat = maxc ? (maxc - minc) / maxc : 0;
+  if (Y >= 108 && Y <= 198 && sat < 0.13 && exg < 7 && std < 10.5) return "road";
+  if (Y >= 70 && Y <= 190 && r + 10 >= g && g >= b + 8 && exg < 22 && sat >= 0.08 && sat <= 0.62 && r >= 70 && std < 11) {
+    return "pitch";
+  }
+  if (Y >= 78 && Y <= 220 && g >= r + 4 && g + 2 >= b && exg >= 14 && sat >= 0.06 && std < 9) return "lawn";
+  return "";
 }
 
 function classifyPixel(r, g, b, std) {
@@ -398,5 +420,7 @@ module.exports = {
   MIN_PAVEMENT_M2,
   classifyPixel,
   coniferPixel,
+  openGroundPixel,
+  localStd,
   luma,
 };

@@ -151,12 +151,13 @@ describe("canopy height grid", () => {
     const canopies = pairs.oiAreas.filter((a) => a.kind === "canopy");
     const layers = pairs.oiAreas.filter((a) => a.kind === "layer");
     assert.equal(canopies.length, 1);
-    assert.equal(layers.length, 2);
+    assert.equal(layers.length, 1);
     assert.equal(canopies[0].shape, "polygon");
-    const top = layers.reduce((a, b) => (a.material.top_height >= b.material.top_height ? a : b));
+    const top = layers[0];
     assert.equal(top.material.top_height, 14.2);
     assert.equal(top.material.rf_properties.attenuation_per_m, 1.5);
-    assert.equal(canopies[0].material.rf_properties.attenuation_per_m, 1.5);
+    assert.equal(canopies[0].material.rf_properties.attenuation_per_m, 0.6);
+    assert.ok(canopies[0].material.top_height <= 3.2);
     assert.ok(canopies[0].ringPx.length >= 5);
     assert.ok(canopies[0].ringPx.length <= 41);
     let minX = Infinity;
@@ -183,7 +184,7 @@ describe("canopy height grid", () => {
       maxLY = Math.max(maxLY, p[1]);
     }
     layerShort = Math.min(maxLX - minLX, maxLY - minLY);
-    assert.ok(layerShort < Math.min(maxX - minX, maxY - minY), "upper band steps in");
+    assert.ok(layerShort > Math.min(maxX - minX, maxY - minY) * 0.9, "crown covers the stand");
     assert.equal(pairs.oiAreas.some((a) => a.kind === "trunk"), false);
     assert.ok(pairs.clipTypes.some((t) => t.topEdge === 14.2));
   });
@@ -288,7 +289,7 @@ describe("canopy height grid", () => {
     const nlcd = treePairsFromPoints([], frame, [], null, { canopyHits: hits, heightSample: () => 14 });
     assert.equal(nlcd.foliageGeometry, "nlcd-polygon");
     assert.equal(nlcd.oiAreas.filter((a) => a.kind === "canopy").length, 1);
-    assert.equal(nlcd.oiAreas.length, 3);
+    assert.equal(nlcd.oiAreas.length, 2);
     const mLon = 111320 * Math.cos((42.9 * Math.PI) / 180);
     const w = 36;
     const h = 36;
@@ -400,6 +401,69 @@ describe("canopy height grid", () => {
     assert.equal(isAxisRect(crowns[0].ringLonLat), false);
     assert.ok(crowns[0].ringLonLat.length >= 6);
     assert.ok(crowns[0].areaM2 > 200, "the whole band is kept, area " + crowns[0].areaM2);
+  });
+
+  it("splits a large stand into shorter and taller tops", () => {
+    const g = syntheticChm();
+    for (let y = 4; y < 40; y++) {
+      for (let x = 4; x < 50; x++) {
+        g.values[y * g.w + x] = x < 27 ? 8 : 22;
+      }
+    }
+    const crowns = crownsFromChm(g.grid);
+    const short = crowns.filter((c) => c.heightM <= 12);
+    const tall = crowns.filter((c) => c.heightM >= 18);
+    assert.ok(short.length >= 1, "short tops " + crowns.map((c) => c.heightM).join(","));
+    assert.ok(tall.length >= 1, "tall tops " + crowns.map((c) => c.heightM).join(","));
+    assert.ok(crowns.every((c) => c.heightM < 28), "one band does not inherit the other top");
+  });
+
+  it("breaks a wide even stand into local tops", () => {
+    const g = syntheticChm();
+    for (let y = 2; y < 36; y++) {
+      for (let x = 2; x < 48; x++) {
+        g.values[y * g.w + x] = 8 + Math.floor((x - 2) / 10) * 3;
+      }
+    }
+    const crowns = crownsFromChm(g.grid);
+    assert.ok(crowns.length >= 3, "local blocks " + crowns.length);
+    const heights = new Set(crowns.map((c) => c.heightM));
+    assert.ok(heights.size >= 2, "tops " + crowns.map((c) => c.heightM).join(","));
+    assert.ok(Math.min(...crowns.map((c) => c.heightM)) <= 11);
+    assert.ok(Math.max(...crowns.map((c) => c.heightM)) >= 16);
+  });
+
+  it("keeps a noisy forest covered instead of dropping height specks", () => {
+    const g = syntheticChm();
+    for (let y = 1; y < g.h - 1; y++) {
+      for (let x = 1; x < g.w - 1; x++) {
+        g.values[y * g.w + x] = (x + y) % 2 ? 8 : 22;
+      }
+    }
+    const crowns = crownsFromChm(g.grid);
+    assert.ok(crowns.length >= 3, "local blocks " + crowns.length);
+    assert.ok(crowns.length < 120, "not a fragment per cell " + crowns.length);
+    let cells = 0;
+    let inside = 0;
+    for (let y = 0; y < g.h; y++) {
+      for (let x = 0; x < g.w; x++) {
+        if ((g.values[y * g.w + x] || 0) < 3) continue;
+        cells++;
+        const px = x + 0.5;
+        const py = y + 0.5;
+        for (let i = 0; i < crowns.length; i++) {
+          const ring = crowns[i].ringLonLat.map(([lon, lat]) => [
+            ((lon - g.grid.west) / (g.grid.east - g.grid.west)) * g.w,
+            ((g.grid.north - lat) / (g.grid.north - g.grid.south)) * g.h,
+          ]);
+          if (pointInRing([px, py], ring)) {
+            inside++;
+            break;
+          }
+        }
+      }
+    }
+    assert.ok(inside / cells >= 0.85, "covered " + inside + " of " + cells);
   });
 
   it("keeps the fingers of a comb-shaped stand inside the outline", () => {

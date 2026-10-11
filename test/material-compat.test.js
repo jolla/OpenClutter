@@ -18,6 +18,7 @@ const {
   buildingColor,
   stockFoliageMaterial,
   isVegetationOiName,
+  isUnderstoryOiName,
   isPoisonedOiName,
   BUILDING_NEUTRAL_COLOR,
   BUILDING_COLOR_SHORT,
@@ -168,7 +169,7 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.equal(bare.stats.openIntentTreeAreas, 0);
     assert.deepEqual(withTrees.openintent.area_materials.slice(0, 4), bare.openintent.area_materials);
     const extra = withTrees.openintent.area_materials.slice(4).map((m) => m.name);
-    assert.deepEqual(extra, ["Foliage - Heavy 4.8 @ 4.7", "Foliage - Heavy 4.7 @ 9.5", "Foliage - Heavy 4.7"]);
+    assert.deepEqual(extra, ["Foliage - Heavy 11.2 @ 3.0", "Foliage - Understory 3.0"]);
     const foliage = withTrees.openintent.floorplans[0].attenuation_areas.find(
       (a) => a.area_material.top_height === 14.2
     );
@@ -192,7 +193,7 @@ describe("Hamina OpenIntent material compatibility", () => {
       assert.equal("transparencyEnabled" in a.area_material, false);
     }
     for (const a of both.slice(bareAreas.length)) {
-      assert.equal(isVegetationOiName(a.area_material.name), true);
+      assert.equal(isVegetationOiName(a.area_material.name) || isUnderstoryOiName(a.area_material.name), true);
       assert.equal(a.area_material.transparencyEnabled, true);
       const keys = ["name", "rf_properties", "top_height", "display_color", "transparencyEnabled"];
       if ("bottom_height" in a.area_material) keys.splice(3, 0, "bottom_height");
@@ -235,18 +236,18 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.equal(extra.length, 2);
     const areas = withTrees.openintent.floorplans[0].attenuation_areas;
     const building = areas.find((a) => a.area_material.name === "Building - Two Floor");
-    const foliage = areas.filter((a) => isVegetationOiName(a.area_material.name));
+    const foliage = areas.filter((a) => isVegetationOiName(a.area_material.name) || isUnderstoryOiName(a.area_material.name));
     assert.ok(building);
     assert.deepEqual(building.area_material, bare.openintent.floorplans[0].attenuation_areas[0].area_material);
     assert.equal(foliage.length, 2);
-    const ground = foliage.find((a) => !("bottom_height" in a.area_material));
-    const raised = foliage.find((a) => "bottom_height" in a.area_material);
+    const ground = foliage.find((a) => isUnderstoryOiName(a.area_material.name));
+    const raised = foliage.find((a) => isVegetationOiName(a.area_material.name));
     assert.ok(ground);
     assert.ok(raised);
     assert.equal(raised.area_material.top_height, 6);
-    assert.equal(ground.area_material.rf_properties.attenuation_per_m, 1.5);
+    assert.equal(ground.area_material.rf_properties.attenuation_per_m, 0.6);
     assert.equal(raised.area_material.rf_properties.attenuation_per_m, 1.5);
-    assert.equal(ground.area_material.display_color, "#3F7D2A");
+    assert.equal(ground.area_material.display_color, "#A4B56A");
     assert.equal("itu_material_type" in ground.area_material, false);
     assert.equal("bottom_height" in ground.area_material, false);
     assert.ok(ground.area.coordinates.length / 3 <= 40);
@@ -294,17 +295,12 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.deepEqual(built.openintent.area_materials.slice(0, 4), catalogMaterials());
     const vegNames = names.slice(4);
     assert.deepEqual(vegNames, [
-      "Foliage - Light 2.5 @ 2.5",
-      "Foliage - Light 3.1 @ 3.0",
-      "Foliage - Heavy 4.8 @ 4.7",
-      "Foliage - Light 2.5 @ 5.0",
-      "Foliage - Light 3.0 @ 6.1",
-      "Foliage - Heavy 4.7 @ 9.5",
-      "Foliage - Heavy 4.7",
-      "Foliage - Light 2.5",
-      "Foliage - Light 3.0",
+      "Foliage - Heavy 11.2 @ 3.0",
+      "Foliage - Light 4.5 @ 3.0",
+      "Foliage - Light @ 3.0",
+      "Foliage - Understory 3.0",
     ]);
-    assert.ok(vegNames.every((n) => isVegetationOiName(n)));
+    assert.ok(vegNames.every((n) => isVegetationOiName(n) || isUnderstoryOiName(n)));
     for (let i = 0; i < OI_BUILDING_TYPES.length; i++) {
       assert.equal(built.openintent.area_materials[i].top_height, OI_BUILDING_TYPES[i].topEdge);
       assert.equal(
@@ -316,11 +312,11 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.equal(compat.mode, COMPATIBILITY_MODE);
     assert.equal(compat.stockOnly, true);
     assert.equal(compat.consistent, true);
-    assert.equal(compat.materials, 13);
-    assert.equal(compat.vegetationHeights, 9);
+    assert.equal(compat.materials, 8);
+    assert.equal(compat.vegetationHeights, 3);
     assert.equal(compat.vegetationAreas >= 3, true);
     assert.equal(built.stats.compatibilityMode, COMPATIBILITY_MODE);
-    assert.equal(built.stats.areaMaterials, 13);
+    assert.equal(built.stats.areaMaterials, 8);
     assert.ok(built.openintent.area_materials.every((m) => !isPoisonedOiName(m.name)));
     assert.ok(names.some((n) => n.indexOf("Foliage - Heavy") === 0));
     assert.ok(names.some((n) => n.indexOf("Foliage - Light") === 0));
@@ -336,7 +332,9 @@ describe("Hamina OpenIntent material compatibility", () => {
       if (id.indexOf("bldg") === 0) assert.equal(t.transparencyEnabled, false, id);
     }
     assert.ok(built.stats.exactBuildingHeights >= 3);
-    assert.ok(built.stats.exactFoliageHeights >= 3);
+    // 7.5 m and 14.2 m keep custom crowns. 9.1 m splits as a 3 m understory
+    // plus a crown on the stock 6 m light material, so only two foliage-m ids.
+    assert.ok(built.stats.exactFoliageHeights >= 2);
     // Buildings stay on the gold prefix. Tree rings use the custom vegetation objects.
     assert.equal(built.stats.openIntentBuildingAreas, 3);
     assert.ok(built.stats.openIntentTreeAreas >= 3);
@@ -380,7 +378,9 @@ describe("Hamina OpenIntent material compatibility", () => {
       assert.deepEqual(Object.keys(a).sort(), ["area", "area_material"]);
       const cat = built.openintent.area_materials.find((m) => m.name === a.area_material.name);
       assert.deepEqual(a.area_material, cat);
-      if (isVegetationOiName(a.area_material.name)) {
+      const foliage =
+        isVegetationOiName(a.area_material.name) || isUnderstoryOiName(a.area_material.name);
+      if (foliage) {
         assert.equal(a.area_material.transparencyEnabled, true);
         const keys = ["name", "rf_properties", "top_height", "display_color", "transparencyEnabled"];
         if ("bottom_height" in a.area_material) keys.splice(3, 0, "bottom_height");
@@ -391,7 +391,7 @@ describe("Hamina OpenIntent material compatibility", () => {
         assert.equal("bottom_height" in a.area_material, false);
       }
       assert.ok(
-        OI_BUILDING_NAMES.includes(a.area_material.name) || isVegetationOiName(a.area_material.name)
+        OI_BUILDING_NAMES.includes(a.area_material.name) || foliage
       );
       assert.equal("itu_material_type" in a.area_material, false);
       const coords = a.area.coordinates;

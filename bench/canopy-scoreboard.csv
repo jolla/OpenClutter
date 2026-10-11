@@ -1,13 +1,13 @@
-id,name,version,recall,precisionSpot,precisionStrict,heightMae,pass
-lancaster-nh,Rogers campground,1.1.123,99.0,98.9,80.0,2.6,yes
-granite-peak,Granite Peak ski slope,1.1.124,84.3,97.9,90.3,4.1,no
-wynn-golf,Wynn golf course,1.1.123,96.1,85.4,56.1,2.3,yes
-montreal-suburb,Montreal suburb,1.1.123,92.3,89.9,69.1,4.3,yes
-oak-creek,Oak Creek residential,1.1.123,91.3,86.8,79.4,3.4,yes
-pnw-conifer,Hoh rainforest edge,1.1.123,98.6,99.3,99.0,8.8,yes
-florida-resort,Innisbrook resort,1.1.123,84.1,92.3,80.0,3.5,no
-arizona-desert,Saguaro west desert,1.1.123,0,,,no
-texas-live-oak,Brackenridge Park,1.1.123,83.0,90.4,81.7,3.7,no
-colorado-camp,Moraine Park campground,1.1.123,96.9,87.7,70.4,5.2,yes
-chicago-streets,Lincoln Square street trees,1.1.123,92.2,81.9,63.6,3.9,no
-manuel-antonio,Manuel Antonio,1.1.123,99.0,99.4,95.5,4.7,yes
+id,name,version,recall,precision,openLeak,worldcoverRecall,heightMae,foliage,buildings,floating,buried,pass
+lancaster-nh,Rogers campground,1.1.124,86,80.3,9.9,86.5,2.2,1500,73,3,0,false
+granite-peak,Granite Peak ski slope,1.1.124,80.7,72.2,8.7,80.7,3.4,2780,139,18,0,false
+wynn-golf,Wynn golf course,1.1.124,80.4,49.6,7,77.6,3,1162,129,7,0,false
+montreal-suburb,Montreal suburb,1.1.124,89.4,60.5,4.3,90.7,3.7,1257,201,8,4,false
+oak-creek,Oak Creek residential,1.1.124,83.1,68.2,4,82,4.2,1577,244,12,0,false
+pnw-conifer,Hoh rainforest edge,1.1.124,71,92.2,19.3,71,7.7,3167,10,8,0,false
+florida-resort,Innisbrook resort,1.1.124,81.7,67.5,3.4,81.8,4.3,2088,164,31,0,false
+arizona-desert,Saguaro west desert,1.1.124,0,,,,,0,0,0,0,false
+texas-live-oak,Brackenridge Park,1.1.124,91.7,74.1,5.5,92.6,3.3,2206,193,16,1,false
+colorado-camp,Moraine Park campground,1.1.124,89.1,57,5,91.3,4,2018,16,3,0,false
+chicago-streets,Lincoln Square street trees,1.1.124,78.5,64,4.8,81.6,5.4,2239,1813,107,0,false
+manuel-antonio,Manuel Antonio,1.1.124,97.2,94.6,0.8,97.7,4.1,503,115,3,4,true

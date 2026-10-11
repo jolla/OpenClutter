@@ -12,7 +12,7 @@ const {
   pickBuildingTypeId,
 } = require("../netlify/lib/hamina-clipboard");
 const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS, capBuildingsAndTrees, dropNestedDuplicateRoofs, parseAreaCapOverride, parseJsonBudgetOverride, raisedAreaHolds, raisedDeckCap, coverageSummary, MAX_ATTENUATION_AREAS, OPENINTENT_JSON_BUDGET, JSON_BUDGET_MAX } = require("../netlify/lib/pipeline");
-const { OI_BUILDING_NAMES, isVegetationOiName, isPoisonedOiName } = require("../netlify/lib/materials");
+const { OI_BUILDING_NAMES, isVegetationOiName, isUnderstoryOiName, isPoisonedOiName } = require("../netlify/lib/materials");
 const { zipStore, unzipStore, zipUnderLimit } = require("../netlify/lib/zip-store");
 const { version: APP_VERSION } = require("../netlify/lib/version");
 const { canopyHitsGrid } = require("./canopy-grid");
@@ -220,7 +220,7 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(JSON.stringify(built.openintent).includes("Foliage - Light"), false);
     assert.equal(built.clipboard.attenuatingZones.length, built.stats.buildings);
     assert.equal(built.stats.areas, areas.length);
-    const allowed = (name) => OI_BUILDING_NAMES.includes(name) || isVegetationOiName(name);
+    const allowed = (name) => OI_BUILDING_NAMES.includes(name) || isVegetationOiName(name) || isUnderstoryOiName(name);
     assert.deepEqual(
       built.openintent.area_materials.map((m) => m.name).slice(0, 4),
       OI_BUILDING_NAMES
@@ -738,7 +738,7 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.ok(on.stats.openIntentTreeAreas >= 1);
     assert.equal(on.stats.treesSource, "nlcd-canopy");
     const areas = on.openintent.floorplans[0].attenuation_areas;
-    assert.ok(areas.every((a) => isVegetationOiName(a.area_material.name)));
+    assert.ok(areas.every((a) => isVegetationOiName(a.area_material.name) || isUnderstoryOiName(a.area_material.name)));
     assert.ok(areas.some((a) => a.area_material.top_height === 14.2 && a.area_material.rf_properties.attenuation_per_m === 1.5));
     assert.equal(areas.some((a) => a.area_material.name === "Tree Trunk"), false);
     assert.equal(

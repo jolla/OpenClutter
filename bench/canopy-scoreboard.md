@@ -1,43 +1,24 @@
 # Canopy scoreboard
 
-Recall uses the Meta/WRI canopy height grid. A cell of at least 3 m is canopy. Where that grid measured no height, ESA WorldCover tree cover is also canopy. Roof pixels are ignored. Spot precision counts a drawn crown as correct when that reference agrees or the aerial pixel is green, because a dark stand the 10 m map missed is still a tree. Strict precision is the reference alone.
+Recall uses the Meta/WRI canopy height grid. A cell of at least 3 m is canopy. Where that grid measured no height, ESA WorldCover tree cover is also canopy. Roof pixels are ignored. Precision is the share of emitted canopy whose canopy-height sample is at least 3 m, sampled on the same uniform grid. Aerial green and a WorldCover tree label do not count as a hit. Open ground is the share of that emitted area the aerial reads as mown lawn, a dirt pitch, or a road. A site passes at 85% recall, 85% precision, and open ground at or under 8%.
 
-Height error is metres of canopy thickness versus the canopy-height sample at the polygon centroid, for polygons that sit on a measured crown.
+These rows are the local handler that shipped as 1.1.125. The two-layer stand does not change the horizontal crowns, so recall and precision are the same. They are not a later `/dev` export. Floating is a crown whose bottom is more than 3 m above the terrain under it, not counting a band sitting on the crown below.
 
-The pass line is 85% recall and 85% spot precision. Scores are from a live `/dev` export of v1.1.123 except where the note says otherwise. Granite Peak is the v1.1.124 local handler, after the ski-run fix. Lincoln Square’s live export was still assembling buildings when the background job ran out of time, so that row is the local handler.
+| Site | Recall | Precision (CHM ≥ 3 m) | Open ground | WorldCover recall | Height MAE | Crowns | Floating | Buried | Pass |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Rogers campground | 86% | 80.3% | 9.9% | 86.5% | 2.2 m | 1500 | 3 | 0 | no |
+| Granite Peak ski slope | 80.7% | 72.2% | 8.7% | 80.7% | 3.4 m | 2780 | 18 | 0 | no |
+| Wynn golf course | 80.4% | 49.6% | 7% | 77.6% | 3 m | 1162 | 7 | 0 | no |
+| Montreal suburb | 89.4% | 60.5% | 4.3% | 90.7% | 3.7 m | 1257 | 8 | 4 | no |
+| Oak Creek residential | 83.1% | 68.2% | 4% | 82% | 4.2 m | 1577 | 12 | 0 | no |
+| Hoh rainforest edge | 71% | 92.2% | 19.3% | 71% | 7.7 m | 3167 | 8 | 0 | no |
+| Innisbrook resort | 81.7% | 67.5% | 3.4% | 81.8% | 4.3 m | 2088 | 31 | 0 | no |
+| Saguaro west desert | 0% | — | — | — | — | 0 | 0 | 0 | no |
+| Brackenridge Park | 91.7% | 74.1% | 5.5% | 92.6% | 3.3 m | 2206 | 16 | 1 | no |
+| Moraine Park campground | 89.1% | 57% | 5% | 91.3% | 4 m | 2018 | 3 | 0 | no |
+| Lincoln Square street trees | 78.5% | 64% | 4.8% | 81.6% | 5.4 m | 2239 | 107 | 0 | no |
+| Manuel Antonio | 97.2% | 94.6% | 0.8% | 97.7% | 4.1 m | 503 | 3 | 4 | yes |
 
-| Site | Version | Recall | Spot | Strict | Height MAE | Pass |
-| --- | --- | ---: | ---: | ---: | ---: | --- |
-| Rogers campground | 1.1.123 live | 99.0% | 98.9% | 80.0% | 2.6 m | yes |
-| Granite Peak ski slope | 1.1.124 | 84.3% | 97.9% | 90.3% | 4.1 m | no |
-| Wynn golf course | 1.1.123 live | 96.1% | 85.4% | 56.1% | 2.3 m | yes |
-| Montreal suburb | 1.1.123 live | 92.3% | 89.9% | 69.1% | 4.3 m | yes |
-| Oak Creek residential | 1.1.123 live | 91.3% | 86.8% | 79.4% | 3.4 m | yes |
-| Hoh rainforest edge | 1.1.123 live | 98.6% | 99.3% | 99.0% | 8.8 m | yes |
-| Innisbrook resort | 1.1.123 live | 84.1% | 92.3% | 80.0% | 3.5 m | no |
-| Saguaro west desert | 1.1.123 live | 0% | — | — | — | no |
-| Brackenridge Park | 1.1.123 live | 83.0% | 90.4% | 81.7% | 3.7 m | no |
-| Moraine Park campground | 1.1.123 live | 96.9% | 87.7% | 70.4% | 5.2 m | yes |
-| Lincoln Square street trees | 1.1.123 local | 92.2% | 81.9% | 63.6% | 3.9 m | no |
-| Manuel Antonio | 1.1.123 live | 99.0% | 99.4% | 95.5% | 4.7 m | yes |
+One site clears the line. The other rows do not. Saguaro west has no crown to score: the height grid there is a handful of 3 m cells, and those stay out.
 
-Seven sites clear the line. Five do not.
-
-## What changed
-
-v1.1.122 keeps dark conifer stands, fills gaps from canopy height and WorldCover, and notches roofs one at a time so the campground tree row stays.
-
-v1.1.123 keeps shrub flats and meadow lawns out of the canopy. A WorldCover tree cell still fills a gap beside a measured crown. Crown outlines add vertices until the measured cells sit inside the ring. That is what lifted Montreal, Oak Creek, the Wynn, Colorado, and Chicago recall. Saguaro west no longer paints the desert.
-
-v1.1.124 stops a mapped ski run from cutting the measured woods beside it. The live v1.1.123 Granite Peak export scored 18.8% recall because those corridors deleted the forest. A same-box export with no street-map answer had scored 96.8% on v1.1.122, which hid the cut. With the fix, recall is 84.3% and spot precision is 97.9%. A measured tree on the run stays. Color does not grow a new crown on the run.
-
-Lancaster’s four conifer regions on the v1.1.123 zip, against aerial conifer color: west 98.9%, north 99.7%, hedge 94.6%, southeast 95.5%. The open center of the field stays mostly open (8.6% of that window). Roof overlap is about 10 m².
-
-## Still short
-
-- Granite Peak recall is 84.3%, spot precision 97.9%. The remaining miss is measured canopy the outline does not cover inside the wide mapped runs. Painting those corridors from color was the 18.8% failure.
-- Innisbrook recall is 84.1% on the live plate (was 66.1% on a coarser one). Spot precision is 92.3%. The miss is measured palm and oak canopy the outline does not cover.
-- Brackenridge recall is 83.0%. Spot precision is 90.4%. Same edge gap on live oaks. The polygon cap was not what dropped them.
-- Lincoln Square recall is 92.2%, spot precision 81.9%. Half of the extra canopy is not green in that aerial, so strict precision is 63.6%. The live export did not finish: it was still on buildings when the background job ran out of time. The row above is the local handler on the same code.
-- Saguaro west has 14 canopy-height cells, all 3 m, and about 10 reference samples. A single export cell under 5 m is treated as noise, and coloring the shrub map painted the desert. The export draws nothing there.
-- Hoh height error is 8.8 m on the live zip (10.4 m on the earlier local zip). A large stand stores its tallest cell, and the score samples the centroid. Coverage there is 98.6% / 99.3%.
+Rogers campground floating is 3, down from the 150 on the preview that was reviewed. Granite Peak no longer has a woods buried in the hill (buried 0). Hoh recall is 71%, up from 35% when forest blocks were dropped to fit the outline cap. Precision on several sites is still under 85% because part of the drawn canopy is not a 3 m height cell.
