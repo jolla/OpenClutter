@@ -4,7 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const { classifyPixel, coniferPixel } = require("../netlify/lib/surface-mask");
 const { fillCanopyGaps } = require("../netlify/lib/canopy-fill");
-const { worldcoverTile, TREE, GRASS } = require("../netlify/lib/worldcover");
+const { worldcoverTile, TREE, GRASS, SHRUB } = require("../netlify/lib/worldcover");
 const { forestFromElements } = require("../netlify/lib/slope-forest");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 
@@ -117,6 +117,106 @@ describe("dark conifer canopy", () => {
     const filled = fillCanopyGaps(grid, { frame, image: { data, width: w, height: h }, worldcover: cover });
     assert.ok(filled.values[0] >= 3, "dark grass-class cell");
     assert.equal(filled.values[3], 0, "bright field");
+  });
+
+  it("fills a WorldCover tree gap beside a measured crown", () => {
+    const frame = { west: 0, south: 0, east: 1, north: 1 };
+    const w = 24;
+    const h = 24;
+    const data = Buffer.alloc(w * h * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 196;
+      data[i + 1] = 214;
+      data[i + 2] = 168;
+      data[i + 3] = 255;
+    }
+    const grid = {
+      west: 0,
+      south: 0,
+      east: 1,
+      north: 1,
+      width: 8,
+      height: 8,
+      values: new Uint8Array(64),
+      nonzero: 1,
+    };
+    grid.values[3 * 8 + 3] = 16;
+    const filled = fillCanopyGaps(grid, {
+      frame,
+      image: { data, width: w, height: h },
+      worldcover: { sample: () => TREE },
+    });
+    assert.equal(filled.values[3 * 8 + 3], 16);
+    assert.ok(filled.values[0] >= 3, "mapped trees away from the crown");
+    const shrub = fillCanopyGaps(grid, {
+      frame,
+      image: { data, width: w, height: h },
+      worldcover: { sample: () => SHRUB },
+    });
+    assert.equal(shrub.values[3 * 8 + 3], 16);
+    assert.equal(shrub.values[0], 0, "shrub label does not fill the flat");
+  });
+
+  it("does not paint a shrub desert or a textured meadow", () => {
+    const frame = { west: 0, south: 0, east: 1, north: 1 };
+    const w = 32;
+    const h = 32;
+    const data = Buffer.alloc(w * h * 4, 255);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        const n = (x * 5 + y * 3) % 9;
+        if (x < 16) {
+          data[i] = 70 + n * 6;
+          data[i + 1] = 118 + (n % 3) * 8;
+          data[i + 2] = 48 + n * 2;
+        } else {
+          data[i] = 186;
+          data[i + 1] = 164;
+          data[i + 2] = 120;
+        }
+      }
+    }
+    const grid = {
+      west: 0,
+      south: 0,
+      east: 1,
+      north: 1,
+      width: 4,
+      height: 4,
+      values: new Uint8Array(16),
+      nonzero: 0,
+    };
+    const shrub = fillCanopyGaps(grid, {
+      frame,
+      image: { data, width: w, height: h },
+      worldcover: { sample: () => SHRUB },
+    });
+    assert.equal(shrub.values[1], 0, "creosote is not a crown");
+    assert.equal(shrub.values[2], 0, "sand beside the bush");
+    assert.equal(shrub.values[3], 0, "bare shrub ground");
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < 8; x++) {
+        const i = (y * w + x) * 4;
+        const n = (x * 3 + y * 5) % 7;
+        data[i] = 32 + n * 4;
+        data[i + 1] = 58 + n * 5;
+        data[i + 2] = 18 + n * 3;
+      }
+    }
+    const spruce = fillCanopyGaps(grid, {
+      frame,
+      image: { data, width: w, height: h },
+      worldcover: { sample: () => SHRUB },
+    });
+    assert.equal(spruce.values[0], 0, "spruce color on shrub land is not a woods");
+    const meadow = fillCanopyGaps(grid, {
+      frame,
+      image: { data, width: w, height: h },
+      worldcover: { sample: () => GRASS },
+    });
+    assert.equal(meadow.values[1], 0, "broadleaf color on grass");
+    assert.equal(meadow.values[3], 0, "sand on grass");
   });
 
   it("names the Lancaster WorldCover tile", () => {

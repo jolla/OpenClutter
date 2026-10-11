@@ -3,8 +3,9 @@
 /**
  * Fill canopy cells the height model left empty.
  * A dark conifer pixel, or an ESA WorldCover tree cell, becomes a measured
- * top. Grass and cropland stay empty. A neighbor height is used when one
- * exists. Otherwise a stand is 14 m (conifer) or 12 m (mapped trees).
+ * top. Grass and cropland stay empty unless the pixel is spruce. Shrub on
+ * the 10 m map is not a crown by itself. A neighbor height is used when one
+ * exists. Otherwise a stand is 14 m (conifer), 10 m (a woody shrub), or 12 m.
  */
 
 const { gridSize } = require("./canopy-height");
@@ -133,6 +134,7 @@ function fillCanopyGaps(grid, opts) {
   const dLat = +base.north - +base.south || 1e-9;
   const woody = new Uint8Array(w * h);
   const open = new Uint8Array(w * h);
+  const bare = new Uint8Array(w * h);
   let filled = 0;
   for (let y = 0; y < h; y++) {
     const lat = +base.north - ((y + 0.5) / h) * dLat;
@@ -143,7 +145,9 @@ function fillCanopyGaps(grid, opts) {
       const cls = cover && typeof cover.sample === "function" ? cover.sample(lon, lat) | 0 : 0;
       if (cls === WATER) continue;
       if (cls === GRASS || cls === CROP) open[i] = 1;
-      const mapped = cls === TREE || cls === SHRUB;
+      // Shrub and bare ground are not a place to grow a crown. Measured
+      // height still stands. The sand and the creosote stay empty.
+      if (cls === SHRUB || cls === 60) bare[i] = 1;
       let dark = false;
       let leaf = false;
       let rough = false;
@@ -154,17 +158,23 @@ function fillCanopyGaps(grid, opts) {
         rough = std >= 8;
         // A spruce crown is often smoother than the variance gate used for a
         // broadleaf. A flat shadow (std under 3) can only grow from a neighbor.
-        if (dark && std < 3) woody[i] = 1;
-        if ((dark && std >= 3) || (leaf && rough)) woody[i] = 2;
+        // Grass and crop hide dark stands, so a spruce still seeds there.
+        // A broadleaf color on that same field is a meadow, not a crown.
+        // Shrub and bare ground stay empty: dark creosote is not a spruce woods.
+        if (!bare[i]) {
+          if (dark && std < 3) woody[i] = 1;
+          if (dark && std >= 3) woody[i] = 2;
+          else if (leaf && rough && !open[i]) woody[i] = 2;
+        }
       }
       if (values[i] >= 3) continue;
-      // Grass and crop on the 10 m map still hide a dark stand. A textured
-      // crown fills anyway. A bright field matches neither color. A lighter
-      // broadleaf seed needs more variance than a spruce, so a lawn stays empty.
-      const seed = mapped || woody[i] === 2 || (leaf && rough);
-      if (!seed) continue;
       const near = neighborHeight(values, w, h, x, y);
-      const height = near >= 3 ? near : dark ? CONIFER_H : mapped && cls === SHRUB ? SHRUB_H : WOOD_H;
+      // A mapped tree cell is a gap the height model missed, including the
+      // 10 m label around a measured crown. Color on shrub or bare ground
+      // is not. A spruce on grass still seeds through woody.
+      const seed = (woody[i] === 2 && !bare[i]) || cls === TREE;
+      if (!seed) continue;
+      const height = near >= 3 ? near : dark ? CONIFER_H : cls === SHRUB ? SHRUB_H : WOOD_H;
       values[i] = height;
       filled++;
     }
@@ -226,6 +236,7 @@ function fillCanopyGaps(grid, opts) {
       // A mapped field stays open. A grass cell that is actually spruce,
       // even just at the edge of the 2 m cell, is still the stand.
       if (open[i] && !woody[i] && !coniferInCell(image, frame, x, y, w, h, dLon, dLat)) continue;
+      if (bare[i] && !woody[i]) continue;
       halo.push([i, near]);
     }
   }
