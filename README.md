@@ -8,7 +8,9 @@
 
 **v1.1.97** on `dev` — Sloped terrain is an adaptive mesh, not a fixed 20×20 grid. The paste spends its budget on the worst saddles, keeps a planar fit near half a meter, and merges a flat bench into one raised floor. Neighboring ramps share an edge height, and a coarse piece is split where it meets a finer one so the seam has no gap. A pure north-south or east-west grade stays one ramp per cell. The badge stays (`dev · v1.1.97`).
 
-**v1.1.123** on `dev` — Canopy outlines follow the measured crowns. A shrub label or a green meadow is not a woods, and a tree label does not paint the lawn beside a crown the height model already measured. Dark conifer stands and unmapped woods still stay in the canopy. The badge stays (`dev · v1.1.123`).
+**v1.1.123** on `dev` — Canopy outlines follow the measured crowns. A shrub label or a green meadow is not a woods. A WorldCover tree cell still fills a gap, including beside a crown the height model already measured. Dark conifer stands and unmapped woods still stay in the canopy. The badge stays (`dev · v1.1.123`).
+
+**v1.1.122** on `dev` — Dark conifer stands and unmapped woods stay in the canopy. The mask treats dark green, including a shadowed crown, as trees, and a free canopy-height or WorldCover tree cell fills a stand the aerial color missed. A mapped wood or forest is kept and simplified instead of dropped when it is large. A small site no longer asks Esri for a plate it rejects, so the map stays sharper than the old step-down. The badge stays (`dev · v1.1.122`).
 
 **v1.1.121** on `dev` — A map note for a tall obstruction uses the canopy or building that shipped. A crown at least 15 m thick is marked, including one that only has a height once it is seated on the terrain. A one-floor or two-floor camp building is not marked as tall. The badge stays (`dev · v1.1.121`).
 
