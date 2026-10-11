@@ -54,19 +54,36 @@ function localStd(data, w, h, x, y) {
   return Math.sqrt(Math.max(0, sum2 / n - mean * mean));
 }
 
+/**
+ * Dark spruce and a shadowed conifer. Green stays above blue, so a pond
+ * that is actually blue does not match. A uniform dark crown still matches:
+ * texture is not required here.
+ */
+function coniferPixel(r, g, b) {
+  const Y = luma(r, g, b);
+  const exg = 2 * g - r - b;
+  const maxc = Math.max(r, g, b);
+  const minc = Math.min(r, g, b);
+  const sat = maxc ? (maxc - minc) / maxc : 0;
+  return Y >= 28 && Y <= 92 && g >= r + 6 && g >= b + 6 && exg >= 18 && sat >= 0.18 && b + 2 < g;
+}
+
 function classifyPixel(r, g, b, std) {
   const Y = luma(r, g, b);
   const maxc = Math.max(r, g, b);
   const minc = Math.min(r, g, b);
   const sat = maxc ? (maxc - minc) / maxc : 0;
   const exg = 2 * g - r - b;
+  // A dark green crown is canopy. It is not a pond and not a building shadow.
+  if (coniferPixel(r, g, b)) return 0;
+  if (g >= b && g > r + 4 && exg > 8 && std >= 8) return 0;
   const blue = b > r + 10 && b + 3 >= g && g + 8 >= r && Y > 22 && Y < 130 && sat > 0.1 && exg < 24;
   if (blue && std < 18) return 1;
   const darkPond =
     Y >= 24 &&
     Y <= 62 &&
     b > r + 8 &&
-    b + 1 >= g &&
+    b > g + 2 &&
     g + 4 >= r &&
     exg < 10 &&
     sat < 0.5 &&
@@ -380,5 +397,6 @@ module.exports = {
   MIN_WATER_M2,
   MIN_PAVEMENT_M2,
   classifyPixel,
+  coniferPixel,
   luma,
 };

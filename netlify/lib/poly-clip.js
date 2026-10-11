@@ -15,7 +15,9 @@
 
 const polygonClipping = require("polygon-clipping");
 
-const BUILDING_BUFFER_M = 4;
+// One metre keeps foliage off the roof. Four metres was eating the tree row
+// beside a campground building and the conifers along a road.
+const BUILDING_BUFFER_M = 0.25;
 const MAX_FOLIAGE_VERTS = 36;
 const OVERLAP_DROP_PX2 = 1;
 
@@ -348,11 +350,68 @@ function usablePiece(ring, maxVerts) {
   return true;
 }
 
+function splitRingBox(ring) {
+  const open = openRing(ring);
+  if (open.length < 4) return [];
+  const bb = bounds(open);
+  if (!(bb.w > 1) || !(bb.h > 1)) return [];
+  const vertical = bb.w >= bb.h;
+  const mid = vertical ? (bb.minX + bb.maxX) / 2 : (bb.minY + bb.maxY) / 2;
+  const pad = Math.max(bb.w, bb.h) + 10;
+  const box = (low) => {
+    if (vertical) {
+      const x0 = low ? bb.minX - pad : mid;
+      const x1 = low ? mid : bb.maxX + pad;
+      return [
+        [x0, bb.minY - pad],
+        [x1, bb.minY - pad],
+        [x1, bb.maxY + pad],
+        [x0, bb.maxY + pad],
+        [x0, bb.minY - pad],
+      ];
+    }
+    const y0 = low ? bb.minY - pad : mid;
+    const y1 = low ? mid : bb.maxY + pad;
+    return [
+      [bb.minX - pad, y0],
+      [bb.maxX + pad, y0],
+      [bb.maxX + pad, y1],
+      [bb.minX - pad, y1],
+      [bb.minX - pad, y0],
+    ];
+  };
+  const subject = closeRing(open);
+  const take = (low) => {
+    try {
+      const hit = polygonClipping.intersection([[subject]], [[box(low)]]);
+      if (!hit || !hit.length) return null;
+      let best = null;
+      let bestA = 0;
+      for (let i = 0; i < hit.length; i++) {
+        const outer = hit[i] && hit[i][0];
+        if (!outer) continue;
+        const a = Math.abs(signedArea(outer));
+        if (a > bestA) {
+          bestA = a;
+          best = closeRing(outer);
+        }
+      }
+      return best;
+    } catch {
+      return null;
+    }
+  };
+  const a = take(true);
+  const b = take(false);
+  if (!a || !b) return [];
+  return [a, b];
+}
+
 function piecesUnderCap(ring, maxVerts, maxEps) {
   const out = [];
   const stack = [{ ring, depth: 0 }];
   let guard = 0;
-  while (stack.length && guard++ < 48) {
+  while (stack.length && guard++ < 512) {
     const item = stack.pop();
     const open = openRing(item.ring);
     if (open.length < 3) continue;
@@ -366,13 +425,20 @@ function piecesUnderCap(ring, maxVerts, maxEps) {
     const eps = Math.min(maxEps, 0.55 + item.depth * 0.35);
     const simplified = simplifyRingPx(item.ring, eps);
     if (simplified && usablePiece(simplified, maxVerts)) {
-      out.push(simplified);
-      continue;
+      const a0 = Math.abs(signedArea(open));
+      const a1 = Math.abs(signedArea(simplified));
+      // A short corner list that chords across a woods is not a simpler copy.
+      // Cut the ring instead of dropping the far side.
+      if (!(a0 > 8) || a1 >= a0 * 0.9) {
+        out.push(simplified);
+        continue;
+      }
     }
     if (item.depth < 8) {
-      const parts = splitRing(item.ring);
-      if (parts.length === 2) {
-        stack.push({ ring: parts[0], depth: item.depth + 1 }, { ring: parts[1], depth: item.depth + 1 });
+      const parts = splitRingBox(item.ring);
+      const halved = parts.length === 2 ? parts : splitRing(item.ring);
+      if (halved.length === 2) {
+        stack.push({ ring: halved[0], depth: item.depth + 1 }, { ring: halved[1], depth: item.depth + 1 });
         continue;
       }
     }
@@ -459,6 +525,41 @@ function countHoles(polys) {
   return n;
 }
 
+function stitchHole(outer, hole, holes) {
+  const pair = closestBridge(outer, hole, holes);
+  if (!pair) return null;
+  const o = openRing(outer);
+  const h = openRing(hole);
+  if (o.length < 3 || h.length < 3) return null;
+  let oi = 0;
+  let hi = 0;
+  let bestO = Infinity;
+  let bestH = Infinity;
+  for (let i = 0; i < o.length; i++) {
+    const d = (o[i][0] - pair[1][0]) ** 2 + (o[i][1] - pair[1][1]) ** 2;
+    if (d < bestO) {
+      bestO = d;
+      oi = i;
+    }
+  }
+  for (let i = 0; i < h.length; i++) {
+    const d = (h[i][0] - pair[0][0]) ** 2 + (h[i][1] - pair[0][1]) ** 2;
+    if (d < bestH) {
+      bestH = d;
+      hi = i;
+    }
+  }
+  // A zero-width bridge. Cutting a corridor with a boolean was deleting the
+  // tree row that sat between the roof hole and the outside of the crown.
+  const stitched = [];
+  for (let i = 0; i <= oi; i++) stitched.push(o[i]);
+  for (let k = 0; k <= h.length; k++) stitched.push(h[(hi + k) % h.length]);
+  for (let i = oi; i < o.length; i++) stitched.push(o[i]);
+  const closed = closeRing(stitched);
+  if (closed.length < 4) return null;
+  return closed;
+}
+
 function openHoles(multi) {
   let polys = (multi || []).slice();
   const simples = [];
@@ -470,16 +571,34 @@ function openHoles(multi) {
       simples.push(poly[0]);
       continue;
     }
+    const stitched = stitchHole(poly[0], poly[1], poly.slice(1));
+    if (stitched) {
+      polys.push([stitched].concat(poly.slice(2)));
+      continue;
+    }
     const corridor = corridorQuad(poly[0], poly[1], poly.slice(1));
-    if (!corridor) continue;
+    if (!corridor) {
+      simples.push(poly[0]);
+      continue;
+    }
     let opened;
     try {
       opened = polygonClipping.difference([poly], [[corridor]]);
     } catch {
+      simples.push(poly[0]);
       continue;
     }
-    if (!opened || !opened.length) continue;
-    if (countHoles(opened) >= poly.length - 1) continue;
+    const before = multiAreaPx([poly]);
+    const after = multiAreaPx(opened);
+    const corridorArea = Math.abs(signedArea(corridor));
+    if (!opened || !opened.length || after < before - corridorArea - Math.max(40, corridorArea)) {
+      simples.push(poly[0]);
+      continue;
+    }
+    if (countHoles(opened) >= poly.length - 1) {
+      simples.push(poly[0]);
+      continue;
+    }
     for (const p of opened) polys.push(p);
   }
   return simples;
@@ -567,16 +686,30 @@ function multiAreaPx(multi) {
   return area > 0 ? area : 0;
 }
 
+function mostlyRoof(piece, ring) {
+  const area = Math.abs(signedArea(piece));
+  if (!(area > 1)) return overlapsRing(piece, ring, OVERLAP_DROP_PX2);
+  let inter = 0;
+  try {
+    inter = intersectionAreaPx(piece, ring);
+  } catch {
+    return true;
+  }
+  // A sliver on the eave is not the piece. Dropping the whole row because it
+  // grazes a roof is how the hedge disappeared.
+  return inter > OVERLAP_DROP_PX2 && inter >= area * 0.35;
+}
+
 function pieceBlocked(ring, clipSet) {
   if (!clipSet) return false;
   const bb = bounds(ring);
   for (const b of clipSet.buildings) {
     if (!bboxHit(bb, b.bbox, 0)) continue;
-    if (overlapsRing(ring, b.ring, OVERLAP_DROP_PX2)) return true;
+    if (mostlyRoof(ring, b.ring)) return true;
   }
   for (const extra of clipSet.extras) {
     if (!extra.ring || !bboxHit(bb, extra.bbox, 0)) continue;
-    if (overlapsRing(ring, extra.ring, OVERLAP_DROP_PX2)) return true;
+    if (mostlyRoof(ring, extra.ring)) return true;
   }
   return false;
 }
@@ -770,40 +903,99 @@ function clipFoliageRing(ring, clipSet) {
     if (extra.kind === "water") waterHits.push(extra);
   }
   if (!geoms.length) return [closed];
-  let mask;
-  try {
-    mask = unionAll(geoms);
-  } catch {
-    mask = null;
-  }
-  let diff = null;
-  if (mask && mask.length) {
-    try {
-      diff = polygonClipping.difference([[closed]], mask);
-    } catch {
-      diff = null;
+  // One roof at a time. Unioning every footprint first filled the gap between
+  // campground roofs and erased the tree row that sits there. A buffer that
+  // blows up is not allowed to remove more than the roof plus its rim.
+  const hits = buildingHits.concat(waterHits);
+  let geom = [[closed]];
+  let area = Math.abs(signedArea(closed));
+  for (let i = 0; i < geoms.length; i++) {
+    const mask = geoms[i];
+    const hit = hits[i];
+    if (!mask || !mask.length || !hit || !hit.ring) continue;
+    const roof = Math.abs(signedArea(hit.ring));
+    let peri = 0;
+    const open = openRing(hit.ring);
+    for (let k = 0; k < open.length; k++) {
+      const a = open[k];
+      const b = open[(k + 1) % open.length];
+      peri += Math.hypot(b[0] - a[0], b[1] - a[1]);
     }
+    const maskArea = multiAreaPx(mask);
+    const rim = roof + (clipSet.bufferPx || 0) * peri + 80;
+    // Budget against the whole mask accepts a boolean that deletes the stand
+    // whenever the mask is larger than that stand. The lost area has to match
+    // the overlap. A miter that runs away from the roof is cut as the
+    // footprint ring instead.
+    const sane = maskArea > 0 && maskArea < rim * 3;
+    const useMask = sane ? mask : [[hit.ring]];
+    let overlap = 0;
+    try {
+      overlap = multiAreaPx(polygonClipping.intersection(geom, useMask));
+    } catch {
+      overlap = 0;
+    }
+    if (!(overlap > 0.5)) continue;
+    const budget = overlap + Math.max(80, overlap * 0.08);
+    let next = null;
+    try {
+      next = polygonClipping.difference(geom, useMask);
+    } catch {
+      next = null;
+    }
+    let nextArea = multiAreaPx(next);
+    if (!(nextArea > 0) || nextArea < area - budget) {
+      let raw = null;
+      try {
+        raw = polygonClipping.difference(geom, [[hit.ring]]);
+      } catch {
+        raw = null;
+      }
+      let rawOverlap = roof;
+      try {
+        rawOverlap = multiAreaPx(polygonClipping.intersection(geom, [[hit.ring]]));
+      } catch {
+        rawOverlap = roof;
+      }
+      const rawArea = multiAreaPx(raw);
+      const rawBudget = Math.max(rawOverlap, 0) + Math.max(80, rawOverlap * 0.08);
+      if (!(rawArea > 0) || rawArea < area - rawBudget) {
+        if (roof >= area * 0.8) return [];
+        continue;
+      }
+      next = raw;
+      nextArea = rawArea;
+    }
+    geom = next;
+    area = nextArea;
   }
-  if (!diff) {
-    const hitsBuilding = buildingHits.some((b) => overlapsRing(closed, b.ring, OVERLAP_DROP_PX2));
-    const hitsWater = waterHits.some((w) => overlapsRing(closed, w.ring, OVERLAP_DROP_PX2));
-    return hitsBuilding || hitsWater ? [] : [closed];
-  }
+  const diff = area < Math.abs(signedArea(closed)) - 0.5 ? geom : null;
+  // A cut that would erase the stand is skipped above. Keeping the outline
+  // leaves a roof sliver for the exporter to trim, instead of deleting the row.
+  if (!diff) return [closed];
   const raw = openHoles(diff);
   const maxEps = Math.max(1.1, Math.min(2.2, clipSet.bufferPx * 0.4));
+  const rawRings = [];
+  let rawArea = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const closed = closeRing(openRing(raw[i]));
+    if (closed.length < 4) continue;
+    rawRings.push(closed);
+    rawArea += Math.abs(signedArea(closed));
+  }
   const pieces = [];
   for (const s of raw) {
     for (const piece of piecesUnderCap(s, MAX_FOLIAGE_VERTS, maxEps)) {
       let blocked = false;
       for (const b of buildingHits) {
-        if (overlapsRing(piece, b.ring, OVERLAP_DROP_PX2)) {
+        if (mostlyRoof(piece, b.ring)) {
           blocked = true;
           break;
         }
       }
       if (blocked) continue;
       for (const w of waterHits) {
-        if (overlapsRing(piece, w.ring, OVERLAP_DROP_PX2)) {
+        if (mostlyRoof(piece, w.ring)) {
           blocked = true;
           break;
         }
@@ -811,6 +1003,23 @@ function clipFoliageRing(ring, clipSet) {
       if (!blocked) pieces.push(piece);
     }
   }
+  let pieceArea = 0;
+  let covered = 0;
+  for (let i = 0; i < pieces.length; i++) {
+    pieceArea += Math.abs(signedArea(pieces[i]));
+    for (let k = 0; k < rawRings.length; k++) {
+      try {
+        covered += intersectionAreaPx(pieces[i], rawRings[k]);
+      } catch {
+        covered += 0;
+      }
+    }
+  }
+  // A thin tree row is a few percent of the crown it hangs off. Dropping that
+  // piece, or chording across it, still leaves most of the shoelace area, so
+  // the old 10% test kept the simplified slice and lost the row. The exporter
+  // splits the uncut difference.
+  if (rawArea > 8 && (pieceArea < rawArea * 0.98 || covered < rawArea * 0.98)) return rawRings;
   return pieces;
 }
 
