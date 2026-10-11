@@ -3683,9 +3683,10 @@ function splitRingByFloor(terrain, ring, opts) {
   let area = 0;
   for (let i = 0; i < pieces.length; i++) area += pieceClipboardArea(pieces[i], frame);
   // A canopy split that keeps only the uphill pieces leaves a hole in the
-  // stand. Ship the whole ring instead of that hole. Buildings still accept
+  // stand. A few percent dropped in the tail is enough to erase a forest
+  // wedge. Ship the whole ring instead of that hole. Buildings still accept
   // a split that covers most of the footprint.
-  const minCover = keepPartial ? 0.9 : 0.7;
+  const minCover = keepPartial ? 0.98 : 0.7;
   if (area < hostArea * minCover) return [ring];
   return pieces;
 }

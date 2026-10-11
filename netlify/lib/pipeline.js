@@ -2711,14 +2711,24 @@ function emitCanopyCovered(t, ringPx, imgW, imgH, mpuX, depth, areas, kinds) {
     const area = emitIfValid(makeOiArea(coords, t.material), imgW, imgH, opts.spanFloorPx);
     return area ? pushTreeArea(areas, kinds, area, t.kind) : false;
   }
-  if (depth < 8) {
+  if (depth < 10) {
     const parts = splitRingHalf(ringPx);
     if (parts.length >= 2) {
       let any = false;
       for (let i = 0; i < parts.length; i++) {
         if (emitCanopyCovered(t, parts[i], imgW, imgH, mpuX, depth + 1, areas, kinds)) any = true;
       }
-      return any;
+      if (any) return true;
+    }
+  }
+  // A cut that does not land is not a reason to delete the stand. Ship the
+  // simplified ring when it still covers the trees and stays off the roof.
+  if (coords && roofM2 <= 0.5) {
+    const before = ringAreaPx(ringPx);
+    const after = oiCoordArea(coords);
+    if (!(before > 1) || (after >= before * 0.85 && after <= before * 1.08)) {
+      const area = emitIfValid(makeOiArea(coords, t.material), imgW, imgH, opts.spanFloorPx);
+      return area ? pushTreeArea(areas, kinds, area, t.kind) : false;
     }
   }
   return false;
