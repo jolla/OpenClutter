@@ -33,11 +33,15 @@ v1.1.124 stops a mapped ski run from cutting the measured woods beside it. The l
 
 Lancaster’s four conifer regions on the v1.1.123 zip, against aerial conifer color: west 98.9%, north 99.7%, hedge 94.6%, southeast 95.5%. The open center of the field stays mostly open (8.6% of that window). Roof overlap is about 10 m².
 
+## Hamina preview
+
+`scripts/hamina-preview.js` reads an OpenIntent zip and the Copy terrain paste. `scripts/hamina_preview.py` draws an oblique view without WebGL: the aerial on the floors, buildings in gray, trees extruded from bottom height to top height. Flat means thickness under 1 m. On all twelve benchmark zips that count is 0. Median tree thickness is 6.5–19.4 m. Saguaro west draws the terrain and the aerial only.
+
 ## Still short
 
-- Granite Peak recall is 84.3%, spot precision 97.9%. The remaining miss is measured canopy the outline does not cover inside the wide mapped runs. Painting those corridors from color was the 18.8% failure.
-- Innisbrook recall is 84.1% on the live plate (was 66.1% on a coarser one). Spot precision is 92.3%. The miss is measured palm and oak canopy the outline does not cover.
-- Brackenridge recall is 83.0%. Spot precision is 90.4%. Same edge gap on live oaks. The polygon cap was not what dropped them.
+- Granite Peak recall is 84.3%, spot precision 97.9%. Of the canopy-height samples (3 m and taller), the zip covers 96.8%. The miss that keeps the site under 85% is WorldCover tree cells the height model measured as empty. Those cells sit on the mapped ski runs. Color does not grow a crown there. A traced crown grid with the gaps filled, before the exporter cuts the rings, scores 99.9% recall and 94.1% spot precision on the same box.
+- Innisbrook recall is 84.1% on the live plate (was 66.1% on a coarser one). Spot precision is 92.3%. The same filled crown grid, before export, scores 94.7% recall and 91.8% spot precision. The rings that leave `treesToOi` score 83%. Raising the canopy corner cap from 40 to 160, and unioning a self-intersecting ring before the half-split, left that emit score at 83%. Those two edits were not shipped.
+- Brackenridge recall is 83.0%. Spot precision is 90.4%. The filled crown grid scores 87.2% recall and 89.9% spot precision before export. The zip is the step that falls short. The polygon cap was not what dropped them.
 - Lincoln Square recall is 92.2%, spot precision 81.9%. Half of the extra canopy is not green in that aerial, so strict precision is 63.6%. The live export did not finish: it was still on buildings when the background job ran out of time. The row above is the local handler on the same code.
 - Saguaro west has 14 canopy-height cells, all 3 m, and about 10 reference samples. A single export cell under 5 m is treated as noise, and coloring the shrub map painted the desert. The export draws nothing there.
 - Hoh height error is 8.8 m on the live zip (10.4 m on the earlier local zip). A large stand stores its tallest cell, and the score samples the centroid. Coverage there is 98.6% / 99.3%.
