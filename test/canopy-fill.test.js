@@ -186,8 +186,24 @@ describe("dark conifer canopy", () => {
       image: { data, width: w, height: h },
       worldcover: { sample: () => SHRUB },
     });
-    assert.ok(shrub.values[1] >= 3, "textured shrub crown");
+    assert.equal(shrub.values[1], 0, "creosote is not a crown");
+    assert.equal(shrub.values[2], 0, "sand beside the bush");
     assert.equal(shrub.values[3], 0, "bare shrub ground");
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < 8; x++) {
+        const i = (y * w + x) * 4;
+        const n = (x * 3 + y * 5) % 7;
+        data[i] = 32 + n * 4;
+        data[i + 1] = 58 + n * 5;
+        data[i + 2] = 18 + n * 3;
+      }
+    }
+    const spruce = fillCanopyGaps(grid, {
+      frame,
+      image: { data, width: w, height: h },
+      worldcover: { sample: () => SHRUB },
+    });
+    assert.ok(spruce.values[0] >= 3, "spruce on shrub land");
     const meadow = fillCanopyGaps(grid, {
       frame,
       image: { data, width: w, height: h },

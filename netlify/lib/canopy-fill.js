@@ -134,6 +134,7 @@ function fillCanopyGaps(grid, opts) {
   const dLat = +base.north - +base.south || 1e-9;
   const woody = new Uint8Array(w * h);
   const open = new Uint8Array(w * h);
+  const bare = new Uint8Array(w * h);
   let filled = 0;
   for (let y = 0; y < h; y++) {
     const lat = +base.north - ((y + 0.5) / h) * dLat;
@@ -144,6 +145,9 @@ function fillCanopyGaps(grid, opts) {
       const cls = cover && typeof cover.sample === "function" ? cover.sample(lon, lat) | 0 : 0;
       if (cls === WATER) continue;
       if (cls === GRASS || cls === CROP) open[i] = 1;
+      // Shrub and bare ground are not a place to grow a crown. A textured
+      // bush still seeds itself. The sand between bushes stays empty.
+      if (cls === SHRUB || cls === 60) bare[i] = 1;
       let dark = false;
       let leaf = false;
       let rough = false;
@@ -167,7 +171,9 @@ function fillCanopyGaps(grid, opts) {
       // is the lawn beside that crown. Seeding it merges the stand into a
       // blob and the outline misses the trees. A mapped wood with no
       // measured neighbor is still a gap.
-      const seed = woody[i] === 2 || (cls === TREE && !(near >= 3));
+      // Broadleaf color on shrub or bare ground is creosote, not a crown.
+      // A spruce pixel still fills. Measured height is already in the grid.
+      const seed = (woody[i] === 2 && (!bare[i] || dark)) || (cls === TREE && !(near >= 3));
       if (!seed) continue;
       const height = near >= 3 ? near : dark ? CONIFER_H : cls === SHRUB ? SHRUB_H : WOOD_H;
       values[i] = height;
@@ -231,6 +237,7 @@ function fillCanopyGaps(grid, opts) {
       // A mapped field stays open. A grass cell that is actually spruce,
       // even just at the edge of the 2 m cell, is still the stand.
       if (open[i] && !woody[i] && !coniferInCell(image, frame, x, y, w, h, dLon, dLat)) continue;
+      if (bare[i] && !woody[i]) continue;
       halo.push([i, near]);
     }
   }
