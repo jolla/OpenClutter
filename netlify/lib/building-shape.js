@@ -2148,12 +2148,15 @@ function shapeBuildings(features, detail) {
  * with no overlapping roof is added at one floor. A ring that already sits
  * on an emitted roof stays out, so a motel wing is not drawn twice. A shed
  * under 25 m² and a complex over 2500 m² stay out. A multi-storey garage is
- * the exception: it is a building up to about 20,000 m², at 3 m per deck.
+ * the exception: one deck can pass 20,000 m², up to about 120,000 m², at
+ * 3 m per mapped level or 9 m when the level count is missing.
  */
 const OSM_FILL_MIN_M2 = 25;
 const OSM_FILL_MAX_M2 = 2500;
-const PARKING_STRUCTURE_MAX_M2 = 20000;
+const PARKING_STRUCTURE_MAX_M2 = 120000;
 const OSM_FILL_COVER = 0.12;
+/** Most of the garage has to be this footprint before its height is replaced. */
+const PARKING_HEIGHT_COVER = 0.45;
 
 function coveredByExisting(closed, area, existing) {
   for (let e = 0; e < existing.length; e++) {
@@ -2173,7 +2176,21 @@ function existingRings(features) {
   return existing;
 }
 
-/** Multi-storey garages the footprint sources missed or dropped as pavement. */
+function keptSourceHeight(props) {
+  if (!props) return false;
+  const h = Number(props.height);
+  if (!(h > 2 && h < 400)) return false;
+  const src = props.heightSource || "";
+  if (!src || src === "warehouse" || src === "nearby") return false;
+  return true;
+}
+
+/**
+ * Multi-storey garages the footprint sources missed or dropped as pavement.
+ * A footprint that already is the garage keeps a measured height. With no
+ * measured height it takes 3 m per deck, or 9 m when the count is missing,
+ * instead of the large-area floor bin.
+ */
 function fillParkingStructures(features, structures) {
   const list = features || [];
   const specs = structures || [];
@@ -2186,9 +2203,31 @@ function fillParkingStructures(features, structures) {
     const closed = closeRing(spec && spec.ring);
     if (!closed || closed.length < 4) continue;
     const area = meterArea(closed);
-    if (!(area >= OSM_FILL_MIN_M2 && area <= PARKING_STRUCTURE_MAX_M2)) continue;
-    if (coveredByExisting(closed, area, existing)) continue;
+    if (!(area >= OSM_FILL_MIN_M2)) continue;
     const heightM = spec.heightM >= 6 ? spec.heightM : 9;
+    let best = null;
+    let bestInter = 0;
+    for (let f = 0; f < out.length; f++) {
+      const ext = exteriorsOf(out[f]);
+      let inter = 0;
+      for (let k = 0; k < ext.length; k++) inter += intersectionArea(closed, ext[k]);
+      if (inter > bestInter) {
+        bestInter = inter;
+        best = out[f];
+      }
+    }
+    if (best && area > 0 && bestInter / area >= OSM_FILL_COVER) {
+      if (bestInter / area >= PARKING_HEIGHT_COVER) {
+        if (!best.properties) best.properties = {};
+        if (!keptSourceHeight(best.properties)) {
+          best.properties.height = heightM;
+          best.properties.heightSource = "osm";
+        }
+      }
+      continue;
+    }
+    if (area > PARKING_STRUCTURE_MAX_M2) continue;
+    if (coveredByExisting(closed, area, existing)) continue;
     out.push({
       type: "Feature",
       properties: { height: heightM, heightSource: "osm", geomSource: "osm-building" },

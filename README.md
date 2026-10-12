@@ -8,6 +8,8 @@
 
 **v1.1.97** on `dev` — Sloped terrain is an adaptive mesh, not a fixed 20×20 grid. The paste spends its budget on the worst saddles, keeps a planar fit near half a meter, and merges a flat bench into one raised floor. Neighboring ramps share an edge height, and a coarse piece is split where it meets a finer one so the seam has no gap. A pure north-south or east-west grade stays one ramp per cell. The badge stays (`dev · v1.1.97`).
 
+**v1.1.157** on `dev`. A mapped multi-storey garage stays a building at about 3 m per deck, or 9 m when the deck count is missing. A large roof with no measured height, from about 20,000 m² up to 400,000 m², stays seated at 12 m instead of the ten-floor area guess. Dock trailers still use the 16.2 by 2.6 m semi, 4.1 m tall, at 12 dB/m, and that scan follows the trailer size on a 1 m plate. Empty pavement stays empty. The badge stays (`dev · v1.1.157`).
+
 **v1.1.154** on `dev`. The Fly pool uses 4 workers on performance-4x when `OPENCLUTTER_CPU_COUNT` is set, and `fly logs` shows `os.cpus().length` plus one timing line per canopy tile. Canopy strips are read together and the height raster is cached for 14 days. The heartbeat still fires every 10 seconds. The badge stays (`dev · v1.1.154`).
 
 **v1.1.153** on `dev`. Trees, canopy outlines, and vehicle scans run on one worker thread per CPU, split by tile, so the export heartbeat keeps firing every 10 seconds during Trees. The Fly machine is performance-4x with 8 GB. Autostop stays off, and the process still exits after 5 minutes with no export. The badge stays (`dev · v1.1.153`).

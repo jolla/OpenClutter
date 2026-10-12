@@ -1843,9 +1843,13 @@ function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase
     exactMetres:
       heightSource === HEIGHT_SOURCE ||
       heightSource === LIDAR_HEIGHT ||
-      heightSource === "warehouse" ||
-      heightSource === "static-caravan" ||
-      heightSource === "mobile-home" ||
+    heightSource === "warehouse" ||
+    heightSource === "static-caravan" ||
+    heightSource === "mobile-home" ||
+    // A mapped deck is 3 m per level, or 9 m when the count is missing.
+    // A one-floor cabin stays on the stock floor. Taller street-map heights
+    // keep the metres instead of the large-area bin.
+    (heightSource === "osm" && thickness >= 6) ||
       base > 0 ||
       shapePart === true ||
       (measuredSource && measuredExceedsStock(thickness)),

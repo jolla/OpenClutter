@@ -1575,7 +1575,12 @@ function semisInLotWork(ring, frame, plate, holes) {
     }
     return true;
   }
-  const cell = 40;
+  // Pixel windows were tuned on a 0.4 m plate. Scale them so a 16 m trailer
+  // is the same physical size on a 1 m export.
+  const mpu = frame.mpuX > 0 ? frame.mpuX : 0.4;
+  const px = (meters) => Math.max(1, (meters / mpu));
+  const cell = Math.max(8, px(16));
+  const step = Math.max(1, px(0.8));
   const cols = Math.ceil(W / cell);
   const rows = Math.ceil(H / cell);
   const ori = new Float32Array(cols * rows);
@@ -1591,8 +1596,8 @@ function semisInLotWork(ring, frame, plate, holes) {
       const oy = cy * cell;
       let sum = 0;
       let bi = 0;
-      for (let y = oy + 2; y < oy + cell - 1 && y < H - 1; y += 2) {
-        for (let x = ox + 2; x < ox + cell - 1 && x < W - 1; x += 2) {
+      for (let y = oy + step; y < oy + cell - 1 && y < H - 1; y += step) {
+        for (let x = ox + step; x < ox + cell - 1 && x < W - 1; x += step) {
           if (!inLot(x, y)) continue;
           const gx = yAt(x + 1, y) - yAt(x - 1, y);
           const gy = yAt(x, y + 1) - yAt(x, y - 1);
@@ -1611,9 +1616,11 @@ function semisInLotWork(ring, frame, plate, holes) {
       strength[cy * cols + cx] = sum > 0 ? bins[bi] / sum : 0;
     }
   }
+  const margin = px(9.6);
+  const scan = Math.max(1, px(1.2));
   const hits = [];
-  for (let y = Math.max(24, yLo); y < Math.min(H - 24, yHi); y += 3) {
-    for (let x = Math.max(24, xLo); x < Math.min(W - 24, xHi); x += 3) {
+  for (let y = Math.max(margin, yLo); y < Math.min(H - margin, yHi); y += scan) {
+    for (let x = Math.max(margin, xLo); x < Math.min(W - margin, xHi); x += scan) {
       if (!inLot(x, y)) continue;
       const ci = ((y / cell) | 0) * cols + ((x / cell) | 0);
       if (strength[ci] < 0.16) continue;
@@ -1625,21 +1632,24 @@ function semisInLotWork(ring, frame, plate, holes) {
       let sum = 0;
       let n = 0;
       let hi = 0;
-      for (let t = -12; t <= 12; t += 2) {
+      const half = px(4.8);
+      const alongStep = Math.max(1, px(0.8));
+      for (let t = -half; t <= half + 0.01; t += alongStep) {
         const v = yAt(x + tx * t, y + ty * t);
         sum += v;
         n++;
         if (v > 175) hi++;
       }
       const body = sum / n;
-      if (hi < 6 || body < 175) continue;
-      const end1 = yAt(x - tx * 20, y - ty * 20);
-      const end2 = yAt(x + tx * 20, y + ty * 20);
+      if (hi < Math.max(3, Math.round(n * 0.45)) || body < 175) continue;
+      const endPx = px(8);
+      const end1 = yAt(x - tx * endPx, y - ty * endPx);
+      const end2 = yAt(x + tx * endPx, y + ty * endPx);
       if (body < end1 + 16 || body < end2 + 16) continue;
       let sh = 0;
       let sh2 = 0;
       for (let s = 0; s < 3; s++) {
-        const t = 5 + s * 2;
+        const t = px(2) + s * px(0.8);
         sh += yAt(x + nx * t, y + ny * t);
         sh2 += yAt(x - nx * t, y - ny * t);
       }
@@ -1648,14 +1658,15 @@ function semisInLotWork(ring, frame, plate, holes) {
       const usePos = sh <= sh2;
       const shadow = usePos ? sh : sh2;
       const other = usePos ? sh2 : sh;
-      if (shadow > 100 || body - shadow < 45) continue;
-      if (other < 120) continue;
-      const farS = usePos ? yAt(x + nx * 16, y + ny * 16) : yAt(x - nx * 16, y - ny * 16);
-      const farO = usePos ? yAt(x - nx * 16, y - ny * 16) : yAt(x + nx * 16, y + ny * 16);
+      if (shadow > 100 || body - shadow < 45 || other < 120) continue;
+      const farPx = px(6.4);
+      const farS = usePos ? yAt(x + nx * farPx, y + ny * farPx) : yAt(x - nx * farPx, y - ny * farPx);
+      const farO = usePos ? yAt(x - nx * farPx, y - ny * farPx) : yAt(x + nx * farPx, y + ny * farPx);
       if (farS > body - 15 && farO > body - 15) continue;
       let bestV = -1;
       let bestT = 0;
-      for (let t = -6; t <= 6; t++) {
+      const nudge = px(2.4);
+      for (let t = -nudge; t <= nudge + 0.01; t += Math.max(1, px(0.4))) {
         const v = yAt(x + nx * t, y + ny * t);
         if (v > bestV) {
           bestV = v;
@@ -1684,7 +1695,7 @@ function semisInLotWork(ring, frame, plate, holes) {
       const dy = h.y - prev.y;
       const along = Math.abs(dx * prev.tx + dy * prev.ty);
       const across = Math.abs(dx * prev.nx + dy * prev.ny);
-      if (along < 20 && across < 7) {
+      if (along < px(8) && across < px(2.8)) {
         clash = true;
         break;
       }
@@ -1703,7 +1714,12 @@ function semisInLotWork(ring, frame, plate, holes) {
       const dy = h.y - other.y;
       const along = Math.abs(dx * h.tx + dy * h.ty);
       const across = Math.abs(dx * h.nx + dy * h.ny);
-      if (across >= 6 && across <= 28 && along <= 22) {
+      // Side by side, the gap is across the trailer. On a 1 m plate the
+      // long edges are only a few pixels, so the row can be read as the
+      // long axis. Either arrangement is a dock row. A lone bright spot is not.
+      const sideBySide = across >= px(2.4) && across <= px(11.2) && along <= px(8.8);
+      const alongRow = along >= px(2.4) && along <= px(18) && across <= px(4);
+      if (sideBySide || alongRow) {
         neighbor = true;
         break;
       }

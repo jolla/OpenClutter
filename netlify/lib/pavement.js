@@ -32,7 +32,7 @@ const STRUCTURE_FLOOR_M = 6;
 const MEMBRANE_STD = 5;
 /** One roof, not a town-sized pad. Same band as the hotel mega cap. */
 const MEMBRANE_MAX_M2 = 400000;
-/** No source height on the Lebanon warehouse. The building next door is tagged 12 m. */
+/** A large roof with no measured height. Low industrial buildings sit near 12 m. */
 const WAREHOUSE_HEIGHT_M = 12;
 
 function countedStructure(heightM, heightSource) {
@@ -210,8 +210,8 @@ function pavementDespiteMembrane(e, heightM) {
 function evidenceIsPavement(e, heightM, heightSource) {
   if (!e || e.n < 20) return false;
   if (!(e.areaM2 >= MIN_PAVEMENT_AREA_M2)) return false;
-  // Oak Creek's parking deck is a 4-level Overture floor count. The roof is
-  // gray with cars, which is the same luma band as a surface lot.
+  // A floor count is the deck. Cars on that roof sit in the same luma band
+  // as a surface lot, and the deviation is not a reason to drop it.
   if (countedStructure(Number(heightM) || 0, heightSource)) return false;
   if (smoothMembrane(e, heightM)) return false;
   if (e.roofFrac >= MAX_ROOF_FRAC) return false;
@@ -232,6 +232,24 @@ function evidenceIsPavement(e, heightM, heightSource) {
 
 function isPavementFootprint(raw, ringImg, mpu, heightM, heightSource) {
   return evidenceIsPavement(pavementEvidence(raw, ringImg, mpu), heightM, heightSource);
+}
+
+function llAreaM2(ring) {
+  if (!ring || ring.length < 4) return 0;
+  let n = ring.length;
+  const a0 = ring[0];
+  const last = ring[n - 1];
+  if (Math.abs(a0[0] - last[0]) < 1e-12 && Math.abs(a0[1] - last[1]) < 1e-12) n--;
+  if (n < 3) return 0;
+  let lat = 0;
+  for (let i = 0; i < n; i++) lat += ring[i][1];
+  lat /= n;
+  const mLon = 111320 * Math.cos((lat * Math.PI) / 180);
+  let a = 0;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    a += ring[j][0] * mLon * ring[i][1] * 110540 - ring[i][0] * mLon * ring[j][1] * 110540;
+  }
+  return Math.abs(a) / 2;
 }
 
 function geometryFromRings(rings) {
@@ -262,9 +280,16 @@ function rejectPavementFootprints(raw, frame, features) {
     let heightM = Number(props0.height != null ? props0.height : props0.Height || props0.HEIGHT);
     let heightSource = props0.heightSource || "";
     const floors = Number(props0.numFloors);
+    let wroteFloors = false;
     if (floors >= 2 && floors <= 60) {
-      if (!(heightM >= STRUCTURE_FLOOR_M)) heightM = floors * 3;
-      if (!countedStructure(heightM, heightSource)) heightSource = "overture-floors";
+      if (!(heightM >= STRUCTURE_FLOOR_M)) {
+        heightM = floors * 3;
+        wroteFloors = true;
+      }
+      if (!countedStructure(heightM, heightSource)) {
+        heightSource = "overture-floors";
+        wroteFloors = true;
+      }
     }
     for (let r = 0; r < rings.length; r++) {
       const img = [];
@@ -275,18 +300,23 @@ function rejectPavementFootprints(raw, frame, features) {
       if (isPavementFootprint(raw, img, frame.mpuX, heightM, heightSource)) dropped++;
       else {
         keepRings.push(rings[r]);
-        if (
-          !(heightM > 2) &&
-          !countedStructure(heightM, heightSource) &&
-          smoothMembrane(evidence, 0) &&
-          pavementDespiteMembrane(evidence, heightM)
-        ) {
-          seatWarehouse = true;
-        }
+        const polyM2 = llAreaM2(rings[r]);
+        const unmeasured = !(heightM > 2) && !countedStructure(heightM, heightSource);
+        const grayMembrane =
+          unmeasured && smoothMembrane(evidence, 0) && pavementDespiteMembrane(evidence, heightM);
+        // A distribution roof with no source height is about 12 m. The area
+        // bin would call the same outline ten floors. A floor count wins.
+        const largeRoof = unmeasured && polyM2 >= 20000 && polyM2 < MEMBRANE_MAX_M2;
+        if (grayMembrane || largeRoof) seatWarehouse = true;
       }
     }
     if (!keepRings.length) continue;
     const props = f.properties ? Object.assign({}, f.properties) : {};
+    if (wroteFloors && !seatWarehouse) {
+      props.height = heightM;
+      props.heightSource = heightSource;
+      props.numFloors = floors;
+    }
     if (seatWarehouse) {
       props.height = WAREHOUSE_HEIGHT_M;
       props.heightSource = "warehouse";
