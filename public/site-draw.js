@@ -14,6 +14,7 @@
  * drops the open ring.
  *
  * Distances are container pixels. DRAG_PX is the click/drag split.
+ * Travel under DRAG_PX is a click, not a box.
  * CLOSE_PX is how near a click must be to the first corner to close.
  * Browser + Node. The export path still sends the axis-aligned box.
  */
@@ -25,7 +26,7 @@
   "use strict";
 
   /** Pointer travel at or above this many pixels is a box, not a vertex. */
-  const DRAG_PX = 6;
+  const DRAG_PX = 8;
   /**
    * Click inside this radius of the first corner to close a 3+ vertex ring.
    * Wide enough that a click returning near the start closes, including a
@@ -224,6 +225,22 @@
     }
   }
 
+  /**
+   * Trackpad scroll pans. A mouse wheel and a pinch still zoom.
+   * Pinch sets ctrlKey. A mouse wheel uses line mode or a large
+   * vertical step with no horizontal travel.
+   */
+  function wheelAction(ev) {
+    if (!ev || ev.ctrlKey || ev.metaKey) return "zoom";
+    const mode = ev.deltaMode == null ? 0 : +ev.deltaMode;
+    if (mode !== 0) return "zoom";
+    const dx = Math.abs(+ev.deltaX || 0);
+    const dy = Math.abs(+ev.deltaY || 0);
+    if (dx > 0.5) return "pan";
+    if (dy > 0 && dy < 50) return "pan";
+    return "zoom";
+  }
+
   function boundsOf(vertices) {
     if (!Array.isArray(vertices) || !vertices.length) return null;
     let west = Infinity;
@@ -257,6 +274,7 @@
     prepareExport: prepareExport,
     cancel: cancel,
     setVertexPixels: setVertexPixels,
+    wheelAction: wheelAction,
     boundsOf: boundsOf,
   };
 });

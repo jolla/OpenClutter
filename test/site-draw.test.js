@@ -15,6 +15,7 @@ const {
   prepareExport,
   cancel,
   setVertexPixels,
+  wheelAction,
   boundsOf,
 } = require("../public/site-draw");
 
@@ -26,7 +27,7 @@ function click(session, pt) {
 
 describe("site draw gestures", () => {
   it("treats a short press as a polygon vertex and a drag as a box", () => {
-    assert.equal(DRAG_PX, 6);
+    assert.equal(DRAG_PX, 8);
     const session = createSession();
     assert.equal(pointerDown(session, { x: 0, y: 0, lat: 36, lng: -115 }).type, "ignore");
 
@@ -305,7 +306,63 @@ describe("site draw gestures", () => {
     assert.equal(session.armed, false);
   });
 
-  it("arm drops an in-progress ring so Draw starts clean", () => {
+  it("a drag under 8 px is a click and does not commit a box", () => {
+    const session = createSession();
+    arm(session);
+    pointerDown(session, { x: 0, y: 0, lat: 1, lng: 1 });
+    const move = pointerMove(session, { x: 7, y: 0, lat: 1.01, lng: 1.01 });
+    assert.equal(move.type, "ignore");
+    const up = pointerUp(session, { x: 7, y: 0, lat: 1.01, lng: 1.01 });
+    assert.equal(up.type, "vertex");
+    assert.notEqual(up.type, "commit-box");
+    assert.equal(session.phase, "polygon");
+    assert.equal(session.vertices.length, 1);
+  });
+
+  it("a later drag commits a new box and drops the previous ring", () => {
+    const session = createSession();
+    arm(session);
+    pointerDown(session, { x: 0, y: 0, lat: 1, lng: 1 });
+    pointerMove(session, { x: 40, y: 30, lat: 2, lng: 2 });
+    const first = pointerUp(session, { x: 40, y: 30, lat: 2, lng: 2 });
+    assert.equal(first.type, "commit-box");
+    assert.deepEqual(first.start, { lat: 1, lng: 1 });
+    arm(session);
+    pointerDown(session, { x: 5, y: 5, lat: 3, lng: 3 });
+    pointerMove(session, { x: 50, y: 40, lat: 4, lng: 4 });
+    const second = pointerUp(session, { x: 50, y: 40, lat: 4, lng: 4 });
+    assert.equal(second.type, "commit-box");
+    assert.deepEqual(second.start, { lat: 3, lng: 3 });
+    assert.deepEqual(second.end, { lat: 4, lng: 4 });
+    assert.notDeepEqual(second.start, first.start);
+    assert.equal(session.vertices.length, 0);
+  });
+
+  it("escape cancel drops an open ring and does not commit a shape", () => {
+    const session = createSession();
+    arm(session);
+    click(session, { x: 0, y: 0, lat: 1, lng: 1 });
+    click(session, { x: 40, y: 0, lat: 1, lng: 2 });
+    click(session, { x: 40, y: 30, lat: 2, lng: 2 });
+    const aborted = cancel(session);
+    assert.equal(aborted.type, "cancel");
+    assert.equal(aborted.discarded, 3);
+    assert.notEqual(aborted.type, "commit-polygon");
+    assert.notEqual(aborted.type, "commit-box");
+    assert.equal(session.vertices.length, 0);
+    assert.equal(session.phase, "idle");
+    assert.equal(cancel(session).type, "ignore");
+  });
+
+  it("trackpad scroll pans and a mouse wheel or pinch still zooms", () => {
+    assert.equal(wheelAction({ deltaX: 0, deltaY: 12, deltaMode: 0 }), "pan");
+    assert.equal(wheelAction({ deltaX: 8, deltaY: 4, deltaMode: 0 }), "pan");
+    assert.equal(wheelAction({ deltaX: 0, deltaY: 100, deltaMode: 0 }), "zoom");
+    assert.equal(wheelAction({ deltaX: 0, deltaY: 3, deltaMode: 1 }), "zoom");
+    assert.equal(wheelAction({ deltaX: 4, deltaY: 4, deltaMode: 0, ctrlKey: true }), "zoom");
+  });
+
+  it("arm drops an in-progress ring so the next shape starts clean", () => {
     const session = createSession();
     arm(session);
     click(session, { x: 0, y: 0, lat: 1, lng: 2 });
