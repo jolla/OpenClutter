@@ -36,6 +36,7 @@ const { piecesForFeature } = require("./roof-form");
 const { zipUnderLimit } = require("./zip-store");
 const { demUnderFootprint, depressWaterBasins, normalizeTerrainResolution, steepestClipboardGrade, GLO30_CREDIT, LIFT_LOCAL_M } = require("./terrain");
 const { version: OPENCLUTTER_VERSION } = require("./version");
+const { ZIP_DOWNLOAD_MAX } = require("./export-jobs");
 const { applyNlsBuildingHeights, NLS_CREDIT, HEIGHT_SOURCE } = require("./nls-building-height");
 const { HEIGHT_SOURCE: LIDAR_HEIGHT } = require("./usgs-lidar");
 
@@ -59,19 +60,25 @@ const MIN_OI_SPAN_M = 3;
  * Foliage - Heavy / Light, or a measured-height custom of that shape.
  */
 const MAX_ATTENUATION_AREAS = 982;
-/** Same byte ceiling as export-jobs ZIP_DOWNLOAD_MAX. A stored zip past this is deflated. */
-const ZIP_DOWNLOAD_MAX = 4400000;
-const AREA_CAP_MAX = 5000;
-/** Default export stops on the 3.8 MB JSON budget. 5000 is only a sanity cap. */
+/**
+ * Sanity count, above the 7,359 areas that fit in a 4.95 MB JSON.
+ * The byte budget stops the export first. A dev page can set ?areaCap=
+ * from 982 through this cap. 8001 is ignored, not clamped.
+ */
+const AREA_CAP_MAX = 8000;
+/** Default export stops on the 4.9 MB JSON budget. 8000 is only a sanity cap. */
 const DEFAULT_AREA_CAP = AREA_CAP_MAX;
 /**
- * Hamina posts the OpenIntent JSON to /graphql. 982 areas at the old
- * triple encoding was 3,858,995 bytes and imported. 1500 areas was
- * 5,471,504 bytes and returned 413. Stay just under the known-good file.
- * A dev page may raise this up to JSON_BUDGET_MAX to probe the ceiling.
+ * Hamina posts the compact OpenIntent JSON to
+ * /graphql importOpenIntentProjectBatch. The aerial is a separate blob
+ * upload and does not count. 4.95 MB (7,359 areas) imported. 5.55 MB
+ * (8,260 areas) returned 413. The likely hard ceiling is 5 MiB
+ * (5,242,880). 4.9 MB stays under the file that imported. A dev page may
+ * raise this up to JSON_BUDGET_MAX to probe that ceiling. The budget is
+ * Buffer.byteLength of JSON.stringify, not the zip.
  */
-const OPENINTENT_JSON_BUDGET = 3800000;
-const JSON_BUDGET_MAX = 5000000;
+const OPENINTENT_JSON_BUDGET = 4900000;
+const JSON_BUDGET_MAX = 5242880;
 /** In-bounds pixel vertices. Two decimals is 0.01 px. Meters and feet are not repeated. */
 const OI_PIXEL_DECIMALS = 2;
 const OPENINTENT_VERSION = "2.0.1";
@@ -343,8 +350,8 @@ function coverageSummary(stats) {
 }
 
 /**
- * Dev-only JSON byte budget. An integer from 3,800,000 through 5,000,000
- * is kept. Anything else stays at the 3.8 MB default. The count cap is
+ * Dev-only JSON byte budget. An integer from 4,900,000 through 5,242,880
+ * is kept. Anything else stays at the 4.9 MB default. The count cap is
  * still an upper bound on top of this budget.
  */
 function parseJsonBudgetOverride(value) {
@@ -358,9 +365,9 @@ function parseJsonBudgetOverride(value) {
 
 /**
  * Dev-only area cap from the page query or the export body.
- * An integer from 982 through 5000 is kept. Anything else is ignored
- * so the export stays on the 3.8 MB byte budget and the 5000 sanity cap.
- * 6000 is not clamped down to 5000.
+ * An integer from 982 through 8000 is kept. Anything else is ignored
+ * so the export stays on the 4.9 MB byte budget and the 8000 sanity cap.
+ * 8001 is not clamped down to 8000.
  */
 function parseAreaCapOverride(value) {
   if (value == null || value === "" || typeof value === "boolean") return 0;

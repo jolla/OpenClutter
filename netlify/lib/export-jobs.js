@@ -12,9 +12,11 @@ const { markStage } = require("./export-progress");
 const STORE_NAME = "openclutter-exports";
 const TTL_MS = 60 * 60 * 1000;
 // Netlify rejects a function response above 6,291,556 bytes. The zip is
-// base64 in that response, so the stored file has to stay under this.
+// base64 in that response. This is the largest file whose base64 form,
+// plus a small envelope, still fits. It is not a Hamina import limit.
 const FUNCTION_RESPONSE_MAX = 6291556;
-const ZIP_DOWNLOAD_MAX = 4400000;
+const RESPONSE_ENVELOPE = 8192;
+const ZIP_DOWNLOAD_MAX = Math.floor((FUNCTION_RESPONSE_MAX - RESPONSE_ENVELOPE - 1) / 4) * 3;
 
 function zipDownloadFits(byteLength) {
   const n = byteLength | 0;
