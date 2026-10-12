@@ -2,7 +2,7 @@
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
-const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures, imageryAttemptMs, imageryStepBudget, IMAGERY_ATTEMPT_MS, IMAGERY_ATTEMPT_MS_DEV, IMAGERY_RETURN_MS, DEV_ANSWER_MS, lambdaPayloadBytes, EXPORT_PAYLOAD_BUDGET, LAMBDA_SYNC_PAYLOAD_MAX, terrainSettleMs, terrainRescueBudget, TERRAIN_RESERVE_MS, TERRAIN_HARD_MS, TERRAIN_FULL_MS, TERRAIN_COARSE_SAMPLES, setFetchTerrainDemForTests, setFetchChmGridForTests, setFetchOvertureForTests } = require("../netlify/functions/clutter");
+const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures, imageryAttemptMs, imageryStepBudget, IMAGERY_ATTEMPT_MS, IMAGERY_ATTEMPT_MS_DEV, IMAGERY_RETURN_MS, DEV_ANSWER_MS, lambdaPayloadBytes, EXPORT_PAYLOAD_BUDGET, LAMBDA_SYNC_PAYLOAD_MAX, terrainSettleMs, terrainRescueBudget, TERRAIN_RESERVE_MS, TERRAIN_HARD_MS, TERRAIN_FULL_MS, TERRAIN_COARSE_SAMPLES, setFetchTerrainDemForTests, setFetchChmGridForTests, setFetchOvertureForTests, runBackgroundExport, setFetchWorldCoverForTests, setSourceCapsForTests, BACKGROUND_ANSWER_MS, BACKGROUND_PLATFORM_MS, BACKGROUND_CHM_MS, sourceWait, chmJoinWait } = require("../netlify/functions/clutter");
 const { geoFrame, imageryExportPlan } = require("../netlify/lib/geo-frame");
 const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
 const { unzipStore } = require("../netlify/lib/zip-store");
@@ -3082,5 +3082,130 @@ describe("terrain aside from the zip clock", () => {
     assert.equal(body.terrainClipboard, null);
     assert.equal(body.terrainStatus, "Terrain did not return. Export again.");
     assert.equal(/export budget spent/.test(body.terrainStatus), false);
+  });
+});
+
+describe("background foliage sources", () => {
+  const orig = global.fetch;
+
+  function hang(signal) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve(null), 30000);
+      const abort = () => {
+        clearTimeout(timer);
+        const err = new Error("The operation was aborted due to timeout");
+        err.name = "AbortError";
+        reject(err);
+      };
+      if (signal && signal.aborted) abort();
+      else if (signal) signal.addEventListener("abort", abort, { once: true });
+    });
+  }
+
+  after(() => {
+    global.fetch = orig;
+    setFetchChmGridForTests(null);
+    setFetchWorldCoverForTests(null);
+    setFetchTerrainDemForTests(null);
+    setSourceCapsForTests(null);
+  });
+
+  it("stops canopy height and world cover on their own clocks and keeps the buildings", async () => {
+    assert.equal(BACKGROUND_PLATFORM_MS, 15 * 60 * 1000);
+    assert.equal(BACKGROUND_ANSWER_MS, 14 * 60 * 1000);
+    assert.ok(BACKGROUND_CHM_MS < BACKGROUND_ANSWER_MS);
+    const started = Date.now() - 5000;
+    const wait = chmJoinWait(started, true, BACKGROUND_ANSWER_MS);
+    assert.equal(wait.hardMs, BACKGROUND_CHM_MS);
+    assert.ok(wait.budgetMs < BACKGROUND_CHM_MS);
+    assert.ok(wait.budgetMs > BACKGROUND_CHM_MS - 8000);
+    const fresh = sourceWait(Date.now(), 600);
+    assert.equal(fresh.hardMs, 600);
+    assert.ok(fresh.budgetMs <= 600 && fresh.budgetMs >= 500);
+
+    setSourceCapsForTests({ chmMs: 700, coverMs: 700 });
+    setFetchChmGridForTests((_frame, opts) => hang(opts && opts.signal));
+    setFetchWorldCoverForTests((_frame, opts) => hang(opts && opts.signal));
+    setFetchTerrainDemForTests(async () => ({
+      samples: [
+        { lon: -115.17, lat: 36.122, z: 640 },
+        { lon: -115.169, lat: 36.122, z: 641 },
+        { lon: -115.17, lat: 36.123, z: 642 },
+        { lon: -115.169, lat: 36.123, z: 643 },
+      ],
+      kind: "bare-earth",
+      notes: [],
+    }));
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("World_Imagery")) {
+        if (u.includes("f=json")) {
+          return {
+            ok: true,
+            json: async () => ({
+              width: 64,
+              height: 64,
+              extent: {
+                xmin: WYNN.west,
+                ymin: WYNN.south,
+                xmax: WYNN.east,
+                ymax: WYNN.north,
+                spatialReference: { wkid: 4326 },
+              },
+            }),
+          };
+        }
+        return { ok: true, arrayBuffer: async () => jpeg };
+      }
+      if (u.includes("MSBFP2")) {
+        return {
+          ok: true,
+          json: async () => ({
+            features: [{
+              type: "Feature",
+              properties: {},
+              geometry: {
+                type: "Polygon",
+                coordinates: [[
+                  [-115.165, 36.126], [-115.164, 36.126], [-115.164, 36.127], [-115.165, 36.127], [-115.165, 36.126],
+                ]],
+              },
+            }],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ features: [] }), arrayBuffer: async () => new ArrayBuffer(0) };
+    };
+    const stages = [];
+    const t0 = Date.now();
+    const res = await runBackgroundExport(
+      {
+        httpMethod: "POST",
+        headers: { host: "dev--openclutter.netlify.app" },
+        body: JSON.stringify({
+          ...WYNN,
+          includeFoliage: true,
+          includeTerrain: true,
+          treesSource: "nlcd-canopy",
+          format: "bundle",
+        }),
+      },
+      (patch) => {
+        if (patch && patch.stage) stages.push(patch.stage);
+      }
+    );
+    const elapsed = Date.now() - t0;
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
+    assert.ok(elapsed < 8000, "elapsed " + elapsed);
+    const body = JSON.parse(res.body);
+    const text = (body.warnings || []).join("\n");
+    assert.match(text, /Canopy height omitted/);
+    assert.match(text, /World cover omitted/);
+    assert.match(text, /Foliage omitted: canopy height timed out/);
+    assert.match(text, /Buildings in this zip are unchanged/);
+    assert.ok(body.stats.openIntentBuildingAreas >= 1);
+    assert.equal(body.stats.openIntentTreeAreas, 0);
+    assert.ok(stages.indexOf("Canopy height") >= 0, stages.join(","));
+    assert.ok(stages.indexOf("World cover") >= 0 || stages.indexOf("Canopy height") >= 0);
   });
 });
