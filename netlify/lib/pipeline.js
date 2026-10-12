@@ -312,6 +312,7 @@ function coverageSummary(stats) {
     if (stats.includeRvs && stats.semiAreas) bits.push("Semis " + stats.semiAreas);
     if (stats.includeRvs && stats.boatAreas) bits.push("Boats " + stats.boatAreas);
     if (stats.carAreas) bits.push("Cars " + stats.carAreas);
+    if (stats.mobileHomeAreas) bits.push("Mobile homes " + stats.mobileHomeAreas);
     if (bits.length) line += " " + bits.join(". ") + ".";
   }
   if (stats && stats.includeGuideways) {
@@ -3050,6 +3051,7 @@ function buildClutter({
   let semiAreas = 0;
   let boatAreas = 0;
   let carAreas = 0;
+  let mobileHomeAreas = 0;
   const outdoorOn =
     includeWater === true ||
     includeParking === true ||
@@ -3272,6 +3274,7 @@ function buildClutter({
   semiAreas = 0;
   boatAreas = 0;
   carAreas = 0;
+  mobileHomeAreas = 0;
   for (let i = 0; i < fitted.chunks.length; i++) {
     const chunk = fitted.chunks[i];
     if (chunk.role === "building") buildingEmitted++;
@@ -3289,6 +3292,7 @@ function buildClutter({
     else if (chunk.kind === "trailer") trailerAreas++;
     else if (chunk.kind === "semi") semiAreas++;
     else if (chunk.kind === "boat") boatAreas++;
+    else if (chunk.kind === "mobile-home") mobileHomeAreas++;
     else wallAreas++;
   }
   if (planned) {
@@ -3406,6 +3410,7 @@ function buildClutter({
     semiAreas,
     boatAreas,
     carAreas,
+    mobileHomeAreas,
     areaCap,
     areaCapOverride: capIsOverride,
     openIntentJsonBytes: Buffer.byteLength(oiJson),
