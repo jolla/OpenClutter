@@ -932,4 +932,35 @@ describe("OSM buildings the footprint sources missed", () => {
     assert.equal(shaped.features.length, 1);
     assert.equal(shaped.features[0].properties.height, 12);
   });
+
+  it("keeps a garage above 20,000 m2 and replaces the ten-floor area guess", () => {
+    const garage = metersBox(-104.671, 39.849, 180, 200, {});
+    const parsed = parseBuildingDetail({
+      elements: [
+        {
+          type: "way",
+          tags: { building: "parking", parking: "multi-storey", "building:levels": "5" },
+          geometry: ringOf(garage).map(([lon, lat]) => ({ lon, lat })),
+        },
+      ],
+    });
+    assert.equal(parsed.structures[0].heightM, 15);
+    const added = shapeBuildings([], { structures: parsed.structures });
+    assert.equal(added.features.length, 1);
+    assert.equal(added.features[0].properties.height, 15);
+    const outline = metersBox(-104.671, 39.849, 180, 200, {});
+    const upgraded = shapeBuildings([outline], { structures: parsed.structures });
+    assert.equal(upgraded.features.length, 1);
+    assert.equal(upgraded.features[0].properties.height, 15);
+    assert.equal(upgraded.features[0].properties.heightSource, "osm");
+    const frame = geoFrame(
+      { west: -104.675, south: 39.846, east: -104.667, north: 39.852, name: "Airport deck" },
+      { maxSpanM: 20000, maxSide: 400 }
+    );
+    const built = footprintsToClutter(upgraded.features, frame, null);
+    assert.equal(built.stats.buildings, 1);
+    assert.equal(built.stats.droppedMega, 0);
+    assert.equal(built.oiAreas[0].area_material.name, "Building - 15.0");
+    assert.equal(built.oiAreas[0].area_material.top_height, 15);
+  });
 });

@@ -304,4 +304,45 @@ describe("pavement footprints", () => {
     assert.equal(out.features[0].properties.height, 12);
     assert.equal(out.features[0].properties.heightSource, "warehouse");
   });
+
+  it("seats a large bright roof with no height at 12 m", () => {
+    const frame = geoFrame(
+      { west: -83.322, south: 39.942, east: -83.314, north: 39.946, name: "Bright roof" },
+      { imgW: 200, imgH: 140, maxSpanM: 20000 }
+    );
+    const ring = [
+      [frame.west + (frame.east - frame.west) * 0.08, frame.south + (frame.north - frame.south) * 0.08],
+      [frame.east - (frame.east - frame.west) * 0.08, frame.south + (frame.north - frame.south) * 0.08],
+      [frame.east - (frame.east - frame.west) * 0.08, frame.north - (frame.north - frame.south) * 0.08],
+      [frame.west + (frame.east - frame.west) * 0.08, frame.north - (frame.north - frame.south) * 0.08],
+      [frame.west + (frame.east - frame.west) * 0.08, frame.south + (frame.north - frame.south) * 0.08],
+    ];
+    const imgRing = ring.map(([lon, lat]) => llToImagePx(lon, lat, frame));
+    const data = new Uint8Array(frame.imgW * frame.imgH * 4);
+    for (let y = 0; y < frame.imgH; y++) {
+      for (let x = 0; x < frame.imgW; x++) {
+        const i = (y * frame.imgW + x) * 4;
+        const on = pointInRing([x + 0.5, y + 0.5], imgRing);
+        data[i] = on ? 236 : 70;
+        data[i + 1] = on ? 236 : 110;
+        data[i + 2] = on ? 232 : 60;
+        data[i + 3] = 255;
+      }
+    }
+    const feature = {
+      type: "Feature",
+      properties: { geomSource: "overture" },
+      geometry: { type: "Polygon", coordinates: [ring] },
+    };
+    const out = rejectPavementFootprints({ data, width: frame.imgW, height: frame.imgH }, frame, [feature]);
+    assert.equal(out.dropped, 0);
+    assert.equal(out.features.length, 1);
+    assert.equal(out.features[0].properties.height, 12);
+    assert.equal(out.features[0].properties.heightSource, "warehouse");
+    const built = footprintsToClutter(out.features, frame, null);
+    assert.equal(built.stats.buildings, 1);
+    assert.equal(built.oiAreas[0].area_material.name, "Building - 12.0");
+    assert.equal(built.oiAreas[0].area_material.top_height, 12);
+    assert.equal(built.oiAreas[0].area_material.rf_properties.attenuation_per_m, 5);
+  });
 });
