@@ -18,3 +18,8 @@ Height ≥ 3 m is the reference share alone, before the aerial open-ground rejec
 | Moraine Park campground | 87.5% | 46.9% | 48.2% | 3.7% | 4.2 m | 0 m | 3 | 0 | lidar | no |
 | Lincoln Square street trees | 49.4% | 53.5% | 55.4% | 4.2% | 4.3 m | 0 m | 87 | 0 | lidar | no |
 | Manuel Antonio | 98.5% | 92.4% | 92.8% | 0.8% | 1.5 m | 0.1 m | 5 | 6 | chm | yes |
+| Syracuse leaf-off woods | 36.7% | 58.4% | 61.3% | 6.2% | 4.2 m | 0 m | 14 | 0 | lidar | no |
+| Sodus apple orchard | 88.2% | 55.5% | 59.4% | 8.3% | 5.2 m | 0 m | 4 | 0 | lidar | no |
+| Indio date grove | 36.6% | 29.1% | 30.1% | 3.2% | 2.9 m | 0 m | 5 | 0 | lidar | no |
+| Las Vegas tower shadow | 29.2% | 34.3% | 37.3% | 8.4% | 12.8 m | 0 m | 4 | 0 | lidar | no |
+| Palm Creek RV resort | 53.2% | 41% | 42.6% | 4.3% | 3 m | 0 m | 2 | 0 | lidar | no |
