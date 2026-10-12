@@ -45,7 +45,9 @@ const MOBILE_HOME_M = 4;
 
 /** A light roof on the pad, in square metres. Smaller is gravel. Larger is a building or a woods. */
 const OCCUPIED_LO = 6;
-const OCCUPIED_HI = 90;
+const OCCUPIED_HI = 180;
+/** A vehicle just off the pad, not a merged row of roofs. */
+const NEAR_BLOB_HI = 45;
 const CAR_MERGE_MIN = 8;
 const SEMI_CAP = 80;
 const BOAT_CAP = 200;
@@ -191,6 +193,23 @@ function vehicleBlobM2(ring, frame, plate) {
 
 function ringFraction(ring, frame, plate) {
   return vehicleBlobM2(ring, frame, plate);
+}
+
+/**
+ * A roof inside the pad counts first. A smaller roof just beside the pad
+ * counts when the pad itself is grass. A blob bigger than one vehicle and
+ * outside the pad is a row or a building, and it does not count.
+ */
+function pitchVehicle(ring, frame, plate) {
+  const inside = vehicleBlobM2(ring, frame, plate);
+  if (inside >= OCCUPIED_LO && inside <= OCCUPIED_HI) {
+    const c = centroidLL(ring);
+    if (!c) return { m2: inside, lon: null, lat: null };
+    return { m2: inside, lon: c[0], lat: c[1] };
+  }
+  const near = vehicleNear(ring, frame, plate, 8);
+  if (near && near.m2 >= OCCUPIED_LO && near.m2 <= NEAR_BLOB_HI) return near;
+  return { m2: inside || 0, lon: null, lat: null };
 }
 
 /**
@@ -754,6 +773,7 @@ module.exports = {
   ringFraction,
   vehicleBlobM2,
   vehicleNear,
+  pitchVehicle,
   recenterBox,
   occupiedCall,
   decidePitch,
