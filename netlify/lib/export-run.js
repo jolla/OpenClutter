@@ -24,6 +24,52 @@ function withWarning(list, warning) {
   return warnings;
 }
 
+function currentTiles() {
+  try {
+    return require("./cpu-pool").tileProgress();
+  } catch {
+    return null;
+  }
+}
+
+function withTiles(patch) {
+  const tiles = currentTiles();
+  if (!tiles || !(tiles.tilesTotal > 0)) return patch;
+  return Object.assign({}, patch || {}, {
+    tilesDone: tiles.tilesDone | 0,
+    tilesTotal: tiles.tilesTotal | 0,
+  });
+}
+
+/**
+ * Netlify has no Fly heartbeat. The same 10 second beat writes tile counts
+ * onto the job so the page can move the Trees slice on either path.
+ */
+function startTilePulse(jobId) {
+  try {
+    require("./cpu-pool").beginExportTiles();
+  } catch {
+    /* The export still runs. The button uses the stage weight. */
+  }
+  const beat = () => {
+    const tiles = currentTiles();
+    if (!tiles || !(tiles.tilesTotal > 0)) return;
+    jobs
+      .readJob(jobId)
+      .then((cur) => {
+        if (!cur || jobs.isTerminalState(cur.state)) return null;
+        return jobs.updateJob(jobId, {
+          tilesDone: tiles.tilesDone | 0,
+          tilesTotal: tiles.tilesTotal | 0,
+        });
+      })
+      .catch(() => {});
+  };
+  const timer = setInterval(beat, jobs.HEARTBEAT_MS);
+  if (typeof timer.unref === "function") timer.unref();
+  return () => clearInterval(timer);
+}
+
 /**
  * Returns { ok: true } when the job record was updated (done or error).
  * Returns { ok: false } when the job store could not be written, so the
@@ -40,9 +86,10 @@ async function completeExportJob(jobId, inner, opts) {
   } catch {
     return { ok: false, reason: "job-write-failed" };
   }
+  const stopTiles = startTilePulse(jobId);
   try {
     const result = await runBackgroundExport(inner, async (patch) => {
-      const updated = await jobs.updateJob(jobId, patch);
+      const updated = await jobs.updateJob(jobId, withTiles(patch));
       if (opts && typeof opts.onProgress === "function") {
         try {
           await opts.onProgress(patch);
@@ -98,6 +145,8 @@ async function completeExportJob(jobId, inner, opts) {
     if (warning) errPatch.warnings = withWarning([], warning);
     await jobs.updateJob(jobId, errPatch).catch(() => {});
     return { ok: true, finished: false };
+  } finally {
+    stopTiles();
   }
 }
 

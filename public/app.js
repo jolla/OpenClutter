@@ -877,78 +877,63 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
   }
 }
 
-let exportProgressTimer = null;
-let exportClockStart = 0;
-const exportProgressBand = { start: 0, ceiling: 0.14, at: 0, since: 0 };
-
-function formatExportElapsed(ms) {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return m + ":" + (s < 10 ? "0" : "") + s;
-}
+let exportLive = false;
+let exportPercentHeld = 0;
 
 function hideExportProgress() {
-  if (exportProgressTimer) {
-    clearInterval(exportProgressTimer);
-    exportProgressTimer = null;
+  if (exportLive) return;
+  exportPercentHeld = 0;
+  const fill = document.getElementById("export-fill");
+  const label = document.getElementById("export-label");
+  if (fill) fill.style.width = "0";
+  if (label) label.textContent = "Export";
+  if (exportBtn) {
+    exportBtn.classList.remove("exporting");
+    exportBtn.removeAttribute("role");
+    exportBtn.removeAttribute("aria-valuemin");
+    exportBtn.removeAttribute("aria-valuemax");
+    exportBtn.removeAttribute("aria-valuenow");
+    exportBtn.removeAttribute("aria-valuetext");
   }
-  const box = document.getElementById("export-progress");
-  const line = document.getElementById("status-line");
-  if (box) box.hidden = true;
-  if (line) line.hidden = false;
 }
 
-function paintExportProgress() {
-  const fill = document.getElementById("export-bar-fill");
-  const bar = document.querySelector("#export-progress .export-bar");
-  const elapsed = document.getElementById("export-elapsed");
-  const span = Math.max(0, exportProgressBand.ceiling - exportProgressBand.start);
-  const dt = Math.max(0, Date.now() - (exportProgressBand.since || Date.now()));
-  let at = exportProgressBand.start + span * 0.9 * (1 - Math.exp(-dt / 25000));
-  if (exportProgressBand.ceiling >= 1 && exportProgressBand.start >= 1) at = 1;
-  if (at < exportProgressBand.at) at = exportProgressBand.at;
-  exportProgressBand.at = at;
-  const pct = Math.max(0, Math.min(100, at * 100));
-  if (fill) fill.style.width = pct.toFixed(1) + "%";
-  if (bar) bar.setAttribute("aria-valuenow", String(Math.round(pct)));
-  if (elapsed && exportClockStart) elapsed.textContent = formatExportElapsed(Date.now() - exportClockStart);
+function endExportProgress() {
+  exportLive = false;
+  hideExportProgress();
 }
 
 function showExportProgress(job) {
-  const box = document.getElementById("export-progress");
-  const stage = document.getElementById("export-stage");
-  const line = document.getElementById("status-line");
-  if (!box || !stage) return;
-  const start = Number(job && job.progress);
-  const ceiling = Number(job && job.progressCeiling);
-  const floor = Number.isFinite(start) ? start : 0;
-  const top = Number.isFinite(ceiling) && ceiling > floor ? ceiling : Math.min(1, floor + 0.06);
-  if (floor !== exportProgressBand.start || top !== exportProgressBand.ceiling) {
-    exportProgressBand.start = floor;
-    exportProgressBand.ceiling = top;
-    exportProgressBand.since = Date.now();
-    if (exportProgressBand.at < floor) exportProgressBand.at = floor;
+  exportLive = true;
+  const pct = OpenClutterProgress.exportPercent(job, exportPercentHeld);
+  exportPercentHeld = pct;
+  const fill = document.getElementById("export-fill");
+  const label = document.getElementById("export-label");
+  if (fill) fill.style.width = pct + "%";
+  if (label) label.textContent = "Exporting " + pct + "%";
+  if (exportBtn) {
+    exportBtn.classList.add("exporting");
+    exportBtn.setAttribute("role", "progressbar");
+    exportBtn.setAttribute("aria-valuemin", "0");
+    exportBtn.setAttribute("aria-valuemax", "100");
+    exportBtn.setAttribute("aria-valuenow", String(pct));
+    exportBtn.setAttribute("aria-valuetext", "Exporting " + pct + "%");
   }
-  stage.textContent = (job && (job.stageLabel || job.stage)) || "Fetching map";
-  if (!exportClockStart) exportClockStart = (job && job.createdAt) || Date.now();
-  box.hidden = false;
-  if (line) line.hidden = true;
-  paintExportProgress();
-  if (!exportProgressTimer) exportProgressTimer = setInterval(paintExportProgress, 250);
+  const line = document.getElementById("status-line");
+  if (line) line.textContent = (job && (job.stageLabel || job.stage)) || "Fetching map";
+  if (statusEl) statusEl.className = "";
+  const more = document.getElementById("status-more");
+  if (more) {
+    more.hidden = true;
+    more.open = false;
+  }
 }
 
 function beginExportProgress() {
-  exportClockStart = Date.now();
-  exportProgressBand.start = -1;
-  exportProgressBand.ceiling = 0;
-  exportProgressBand.at = 0;
-  exportProgressBand.since = exportClockStart;
+  exportPercentHeld = 0;
   showExportProgress({
+    stage: "Fetching aerial",
     stageLabel: "Fetching map",
-    progress: 0,
-    progressCeiling: 0.14,
-    createdAt: exportClockStart,
+    state: "running",
   });
 }
 
@@ -1013,7 +998,7 @@ async function pollExport(jobId) {
       continue;
     }
     if (data.state === "error") {
-      hideExportProgress();
+      endExportProgress();
       throw new Error(data.error || "Export failed.");
     }
     showExportProgress(data);
@@ -1122,9 +1107,8 @@ document.getElementById("export").onclick = async () => {
   exportBtn.disabled = true;
   const includeFoliage = clutterChecked("include-foliage");
   const includeTerrain = terrainExportEnabled();
-  setStatus("Export is still working.");
-  beginExportProgress();
   try {
+    beginExportProgress();
     let trees = [];
     let treesSource = "none";
     let canopyHits = null;
@@ -1199,6 +1183,7 @@ document.getElementById("export").onclick = async () => {
   } catch (err) {
     setStatus(OpenClutterExport.idleStatus(err), true);
   } finally {
+    endExportProgress();
     exportBtn.disabled = false;
   }
 };

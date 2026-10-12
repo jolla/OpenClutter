@@ -7,8 +7,9 @@
  * Blobs have no server-side TTL, so the hour is checked on read.
  *
  * The Fly worker also writes a heartbeat on this same job while an export
- * runs. The heartbeat is the current stage name and a timestamp. Netlify
- * treats a gap of HEARTBEAT_STALE_MS as a stopped worker.
+ * runs. The heartbeat is the current stage name, a timestamp, and, when the
+ * Trees queue has started, tilesDone and tilesTotal. Netlify treats a gap of
+ * HEARTBEAT_STALE_MS as a stopped worker.
  */
 
 const { markStage } = require("./export-progress");
@@ -210,6 +211,20 @@ function mergeJobPatch(cur, patch) {
     delete incoming.heartbeatAt;
     delete incoming.heartbeatStage;
   }
+  if (incoming.tilesDone != null || incoming.tilesTotal != null) {
+    const total = +incoming.tilesTotal;
+    const done = +incoming.tilesDone;
+    const prevTotal = +cur.tilesTotal;
+    const prevDone = +cur.tilesDone;
+    const lower =
+      !(total > 0) ||
+      !Number.isFinite(done) ||
+      (prevTotal > 0 && Number.isFinite(prevDone) && done / total + 1e-9 < prevDone / prevTotal);
+    if (lower) {
+      delete incoming.tilesDone;
+      delete incoming.tilesTotal;
+    }
+  }
   const keys = Object.keys(incoming);
   if (!keys.length) return { unchanged: true, job: cur };
   const stages = Array.isArray(cur.stages) ? cur.stages.slice() : [];
@@ -269,11 +284,34 @@ async function deleteJob(id) {
 }
 
 /**
+ * Tile counts ride along with the stage. A beat that would lower the
+ * fraction is ignored, so a later queue cannot pull the bar backward.
+ * Missing counts leave the previous tiles on the job.
+ */
+function tilePatch(cur, extra) {
+  if (!extra) return null;
+  const total = +extra.tilesTotal;
+  const done = +extra.tilesDone;
+  if (!(total > 0) || !Number.isFinite(done)) return null;
+  const next = {
+    tilesDone: Math.max(0, Math.min(Math.floor(total), Math.floor(done))),
+    tilesTotal: Math.max(1, Math.floor(total)),
+  };
+  const prevTotal = +cur.tilesTotal;
+  const prevDone = +cur.tilesDone;
+  if (prevTotal > 0 && Number.isFinite(prevDone)) {
+    if (next.tilesDone / next.tilesTotal + 1e-9 < prevDone / prevTotal) return null;
+  }
+  return next;
+}
+
+/**
  * Stamp the job the worker is still running. A done or failed job is
  * terminal: a late beat refreshes nothing, including heartbeatAt.
  * The beat is written only while state is still queued or running.
+ * extra may carry tilesDone and tilesTotal for the Trees slice.
  */
-async function writeHeartbeat(id, stage) {
+async function writeHeartbeat(id, stage, extra) {
   if (!validJobId(id)) return null;
   const cur = await readJob(id);
   if (!cur) return null;
@@ -282,10 +320,16 @@ async function writeHeartbeat(id, stage) {
   const name = String(stage || cur.heartbeatStage || cur.stage || "")
     .replace(/\s+/g, " ")
     .trim();
-  return updateJob(id, {
+  const patch = {
     heartbeatAt: Date.now(),
     heartbeatStage: name,
-  });
+  };
+  const tiles = tilePatch(cur, extra);
+  if (tiles) {
+    patch.tilesDone = tiles.tilesDone;
+    patch.tilesTotal = tiles.tilesTotal;
+  }
+  return updateJob(id, patch);
 }
 
 module.exports = {

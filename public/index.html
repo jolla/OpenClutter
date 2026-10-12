@@ -59,32 +59,28 @@
     #advanced > summary::-webkit-details-marker { display: none; }
     .row { display: flex; gap: 8px; margin-top: 10px; }
     .row button { flex: 1; }
+    #export {
+      position: relative;
+      overflow: hidden;
+    }
+    #export-fill {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 0;
+      background: #3fb950;
+      pointer-events: none;
+      transition: width 0.45s linear;
+    }
+    #export-label { position: relative; z-index: 1; }
+    #export.exporting:disabled { opacity: 1; cursor: default; }
+    @media (prefers-reduced-motion: reduce) {
+      #export-fill { transition: none; }
+    }
     .hint { margin: 8px 0 0; font-size: 11px; line-height: 1.35; color: #6e7681; }
     #copy-note.err { color: #f85149; }
     #status { margin-top: 10px; font-size: 12px; color: #8b949e; min-height: 16px; }
-    #export-progress { margin-bottom: 8px; }
-    #export-progress[hidden] { display: none; }
-    .export-progress-top {
-      display: flex; justify-content: space-between; gap: 8px; align-items: baseline;
-      margin-bottom: 5px; font-size: 12px; line-height: 1.4; color: #8b949e;
-    }
-    #export-elapsed { font-variant-numeric: tabular-nums; color: #6e7681; }
-    .export-bar {
-      height: 3px; border-radius: 2px; background: #21262d; overflow: hidden;
-    }
-    #export-bar-fill {
-      height: 100%; width: 0%;
-      background: linear-gradient(90deg, #1f6f2c, #3fb950 45%, #7ee787 50%, #3fb950 55%, #1f6f2c);
-      background-size: 220% 100%;
-      animation: export-bar-sheen 1.6s linear infinite;
-    }
-    @keyframes export-bar-sheen {
-      from { background-position: 100% 0; }
-      to { background-position: -120% 0; }
-    }
-    @media (prefers-reduced-motion: reduce) {
-      #export-bar-fill { animation: none; }
-    }
     #status-line { margin: 0; line-height: 1.4; color: #c9d1d9; }
     #status-line[hidden] { display: none; }
     #status.err #status-line { color: #f85149; }
@@ -137,21 +133,15 @@
     </form>
     <div class="row">
       <button type="button" id="draw" class="secondary">Draw</button>
-      <button type="button" id="export" disabled>Export</button>
+      <button type="button" id="export" disabled>
+        <span id="export-fill"></span>
+        <span id="export-label">Export</span>
+      </button>
     </div>
     <p id="draw-hint" class="hint">Drag a box, or click corners and click the first to close.</p>
     <button type="button" id="copy-terrain" class="secondary" hidden>Copy terrain</button>
     <p id="copy-note" class="hint" hidden></p>
     <div id="status">
-      <div id="export-progress" hidden>
-        <div class="export-progress-top">
-          <span id="export-stage">Fetching map</span>
-          <span id="export-elapsed">0:00</span>
-        </div>
-        <div class="export-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Export progress">
-          <div id="export-bar-fill"></div>
-        </div>
-      </div>
       <p id="status-line">Click the map to draw the site.</p>
       <details id="status-more" hidden>
         <summary>Details</summary>
@@ -218,6 +208,7 @@
   <script src="/tree-detect.js"></script>
   <script src="/bbox-area.js"></script>
   <script src="/site-draw.js"></script>
+  <script src="/export-progress.js"></script>
   <script src="/export-client.js"></script>
   <script src="/version.js"></script>
   <script src="/app.js"></script>
