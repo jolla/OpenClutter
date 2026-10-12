@@ -1,9 +1,9 @@
 {
-  "note": "Roof probes must land inside an emitted building. big-white-retail and ne-white-roof are bright retail membranes Global ML covers and MSBFP2 misses. usa-nw-commercial is a FEMA USA Structures roof neither Microsoft layer contains. usa-center-large is a stale USA/Overture outline on the Oak Creek parking lot (aerial luma ~129, asphalt fraction >0.6, bright-roof fraction <0.06). role pavement must stay outside emitted rings. The bright roof ~44 px south of that point is a different building and stays covered.",
+  "note": "Roof probes must land inside an emitted building. big-white-retail and ne-white-roof are bright retail membranes Global ML covers and MSBFP2 misses. usa-nw-commercial is a FEMA USA Structures roof neither Microsoft layer contains. usa-center-large sits on the Oak Creek multi-level parking deck north of the tan roof (OSM Emerald Row, Overture 4 floors, about 12 m). The deck roof is gray with cars. A floor count keeps it as a building. A surface lot without a floor count stays out. The bright roof south of that point is a different building and stays covered.",
   "points": [
     { "id": "big-white-retail", "lon": -87.91482, "lat": 42.89849 },
     { "id": "ne-white-roof", "lon": -87.91572, "lat": 42.90066 },
     { "id": "usa-nw-commercial", "lon": -87.92041, "lat": 42.90074 },
-    { "id": "usa-center-large", "lon": -87.9198, "lat": 42.89908, "role": "pavement" }
+    { "id": "usa-center-large", "lon": -87.9198, "lat": 42.89908 }
   ]
 }
