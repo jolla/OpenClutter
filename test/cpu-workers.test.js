@@ -6,9 +6,18 @@ const os = require("node:os");
 const jobs = require("../netlify/lib/export-jobs");
 const { handler: statusHandler } = require("../netlify/functions/export-status");
 const { startHeartbeatTimer } = require("../fly/worker");
-const { runOne, closePool, threadCount } = require("../netlify/lib/cpu-pool");
+const {
+  runOne,
+  runTiles,
+  closePool,
+  threadCount,
+  poolSize,
+  cpuStartLine,
+  tileTimingLine,
+  setExportLog,
+} = require("../netlify/lib/cpu-pool");
 const { treePairsFromPoints } = require("../netlify/lib/vegetation");
-const { treePairsParallel } = require("../netlify/lib/detect-parallel");
+const { treePairsParallel, bandsForGrid } = require("../netlify/lib/detect-parallel");
 
 function memoryStore() {
   const map = new Map();
@@ -31,13 +40,90 @@ function memoryStore() {
 describe("cpu workers", () => {
   after(async () => {
     jobs.setExportStoreForTests(null);
+    delete process.env.OPENCLUTTER_CPU_COUNT;
+    delete process.env.FLY_MACHINE_CPUS;
+    setExportLog(null);
     await closePool();
   });
 
-  it("uses one thread per CPU", () => {
-    const n = os.cpus().length;
+  it("uses one thread per CPU when no CPU env is set", () => {
+    delete process.env.OPENCLUTTER_CPU_COUNT;
+    delete process.env.FLY_MACHINE_CPUS;
+    const avail = typeof os.availableParallelism === "function" ? os.availableParallelism() : 0;
+    const n = avail > 0 ? avail : os.cpus().length;
     assert.equal(threadCount(), n > 0 ? n : 1);
-    assert.ok(threadCount() >= 1);
+    assert.match(cpuStartLine(), new RegExp("os\\.cpus " + os.cpus().length));
+    assert.match(cpuStartLine(), /pool \d+/);
+  });
+
+  it("pool size follows the CPU env when set", async () => {
+    const want = os.cpus().length === 3 ? 5 : 3;
+    process.env.FLY_MACHINE_CPUS = "2";
+    process.env.OPENCLUTTER_CPU_COUNT = "7";
+    try {
+      assert.equal(threadCount(), 7);
+      delete process.env.OPENCLUTTER_CPU_COUNT;
+      process.env.FLY_MACHINE_CPUS = String(want);
+      assert.equal(threadCount(), want);
+      assert.notEqual(threadCount(), os.cpus().length);
+      await closePool();
+      await runOne("spin", { ms: 20 });
+      assert.equal(poolSize(), want);
+    } finally {
+      delete process.env.OPENCLUTTER_CPU_COUNT;
+      delete process.env.FLY_MACHINE_CPUS;
+      await closePool();
+    }
+  });
+
+  it("logs one timing line per tile and overlapping tiles", async () => {
+    delete process.env.OPENCLUTTER_CPU_COUNT;
+    delete process.env.FLY_MACHINE_CPUS;
+    await closePool();
+    const lines = [];
+    setExportLog("3f2a9c1e-4b7d-4e2a-9c11-8a0b6d5e4f21", (line) => lines.push(line));
+    assert.equal(
+      tileTimingLine("job", "canopy-0", 1, 41200, 12400),
+      "export job stage tile canopy-0 thread 1 start 41.2s duration 12.4s"
+    );
+    await runTiles("spin", [
+      { ms: 400, tileId: "canopy-0" },
+      { ms: 400, tileId: "canopy-1" },
+    ]);
+    assert.equal(lines.length, 2);
+    for (let i = 0; i < lines.length; i++) {
+      assert.match(
+        lines[i],
+        /^export 3f2a9c1e-4b7d-4e2a-9c11-8a0b6d5e4f21 stage tile canopy-\d thread \d+ start \d+\.\d+s duration \d+\.\ds$/
+      );
+    }
+    const span = (line) => {
+      const m = /start (\d+\.\d+)s duration (\d+\.\d+)s/.exec(line);
+      const start = Number(m[1]);
+      return [start, start + Number(m[2])];
+    };
+    const a = span(lines[0]);
+    const b = span(lines[1]);
+    const overlap = Math.min(a[1], b[1]) - Math.max(a[0], b[0]);
+    assert.ok(overlap > 0, lines.join(" | "));
+    setExportLog(null);
+  });
+
+  it("splits a dominant canopy band finer than the CPU count", () => {
+    const height = 622;
+    const width = 40;
+    const values = new Uint8Array(width * height);
+    for (let y = 0; y < 80; y++) {
+      for (let x = 0; x < width; x++) values[y * width + x] = 12;
+    }
+    const grid = { west: 0, south: 0, east: 1, north: 1, width, height, values, nonzero: 1 };
+    const bands = bandsForGrid(grid, 4);
+    assert.ok(bands.length > 4, "dominant bands " + bands.length);
+    assert.ok(bands.length <= 16);
+    const even = new Uint8Array(width * height);
+    even.fill(8);
+    const evenBands = bandsForGrid(Object.assign({}, grid, { values: even }), 4);
+    assert.equal(evenBands.length, 4);
   });
 
   it("fires the heartbeat while a worker thread is busy", async () => {

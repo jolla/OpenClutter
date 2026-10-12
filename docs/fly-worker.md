@@ -32,6 +32,15 @@ export 3f2a9c1e-4b7d-4e2a-9c11-8a0b6d5e4f21 stage start Trees elapsed 41.2s
 
 `elapsed` is from the start of that export. `duration` is that stage only.
 
+The process also logs the CPU count it can see, and one line per canopy or foliage tile:
+
+```text
+worker start os.cpus 4 availableParallelism 4 pool 4
+export 3f2a9c1e-4b7d-4e2a-9c11-8a0b6d5e4f21 stage tile canopy-3 thread 1 start 41.2s duration 12.4s
+```
+
+`os.cpus` is what Node reports in the guest. `pool` is the worker count actually used. Two tile lines overlap when one tile's start falls inside the other's start plus duration. A tile whose duration is most of the Trees stage is the band to split.
+
 Fly does not allow a secret name that starts with `FLY_`. On the Fly app the same secret value is `OPENCLUTTER_WORKER_SECRET`.
 
 ## Cost
@@ -66,6 +75,14 @@ The raw tile cache is not the cause. It stores the response bytes it fetched. Ca
 On this 4-core machine the real Wynn golf box, with the tile cache off, finished in 75 s with 369 buildings and 881 trees. The tree work, including turning outlines into OpenIntent rings, was 37.5 s on the worker threads. Vehicle scans were 8.5 s. A one-thread trace of a synthetic canopy the same size was 4.1 s (782 groups); the tiled path was 3.5 s cold and 3.0 s warm (790 groups). Netlify's earlier baseline for this box was about 115 s with 369 buildings and 794 trees. This machine is not a Fly performance-4x host, so this is not a 60 s proof on that size. The trace waits on the workers, so the 10 second heartbeat still runs.
 
 A profile of that Trees path spends most of its time in polygon clipping of the traced crowns (`polygon-clipping`), not in a different image size. Splitting the canopy grid into row tiles and clipping each tile on its own worker is what keeps the main thread free for the 10 second heartbeat.
+
+Fly's performance-4x guest is 4 dedicated vCPUs. Node's `os.cpus()` does not read that reservation. Inside a container it can report 1, or the host's CPU count, because it lists online CPUs rather than the cgroup quota ([Node issue 28762](https://github.com/nodejs/node/issues/28762), [Fly CPU performance](https://fly.io/docs/machines/cpu-performance/)). Fly does not set a CPU-count variable of its own. `fly.toml` sets `OPENCLUTTER_CPU_COUNT=4`. When that variable or `FLY_MACHINE_CPUS` is set, the pool uses it and does not use the machine it happens to be running on. When neither is set, the pool uses `os.availableParallelism()`, which reads the cgroup CPU quota, and only then `os.cpus()`. The worker logs `os.cpus().length` at process start and again on each export so `fly logs` shows what the guest reported.
+
+Canopy height is a COG on S3. Each window is an HTTP Range read, and those range reads skip the raw-byte cache, so a warm export used to fetch the height grid again. The reader now prefetches the strip windows together, four at a time, and stores the decoded height raster for the snapped draw. The cache key is the canopy source with the existing 14 day TTL. The bytes are the height samples (`CHM1` plus the grid), not crowns or OpenIntent polygons. The main thread is waiting on those reads, so the 10 second heartbeat still runs.
+
+The Trees grid starts as one row band per CPU. A band that holds more than about half of the canopy samples is split, down to 24 rows and at most four bands per CPU, so one latitude strip cannot own the stage. A band that still takes most of the time shows up as one long tile line.
+
+A local read of the Wynn golf canopy (west -115.16942, south 36.11944163, east -115.153863, north 36.13182737), on a machine that is not ord and not performance-4x, took 1.3 s. About 1.3 s of that had an HTTP range in flight: 70 range reads, 405 KB, at most 18 at once. Time with no range in flight was about 0.06 s. The same grid from the raster cache was 3 ms. `os.cpus()` on that machine was 4. Four bands held 24, 33, 27, and 15 percent of the canopy samples, so none was split further. What the Fly guest reports for `os.cpus()`, and whether the tile lines overlap, is only in `fly logs` after deploy.
 
 ## Before the commands
 

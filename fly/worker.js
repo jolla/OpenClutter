@@ -201,6 +201,9 @@ function setExportRunnerForTests(fn) {
 
 async function runAcceptedJob(jobId, inner) {
   enableAreaCache();
+  const { cpuStartLine, setExportLog } = require("../netlify/lib/cpu-pool");
+  setExportLog(jobId);
+  console.log("export " + jobId + " " + cpuStartLine());
   const session = createWorkerSession(jobId);
   const timer = startHeartbeatTimer(jobId, () => session.stageName());
   try {
