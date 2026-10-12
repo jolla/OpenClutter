@@ -1,3 +1,4 @@
 site,class,recall,precision,labels,predictions,source,merged,json_bytes,json_budget,pass
 Rogers campground,rv,90.0%,78.6%,10,14,manual image labels,no,37360,4900000,no
 Mesa RV resorts,rv,100.0%,75.0%,12,16,manual image labels,no,59772,4900000,no
+Wentworth marina,boat,58.3%,100.0%,24,20,manual image labels,no,41341,4900000,no

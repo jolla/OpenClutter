@@ -779,6 +779,140 @@ function nearLabel(pred, label, matchM) {
   return metersBetween(pc, lc) <= matchM;
 }
 
+/**
+ * White boats on dark water inside a marina outline. OSM moorings are not
+ * required. A shore roof with no water beside it is left out. Height is
+ * set by the caller at about 3.5 m.
+ */
+function boatsOnWater(ring, frame, plate) {
+  if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return [];
+  const poly = [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const xy = llToImagePx(ring[i][0], ring[i][1], frame);
+    if (!Number.isFinite(xy[0]) || !Number.isFinite(xy[1])) continue;
+    poly.push(xy);
+    if (xy[0] < minX) minX = xy[0];
+    if (xy[1] < minY) minY = xy[1];
+    if (xy[0] > maxX) maxX = xy[0];
+    if (xy[1] > maxY) maxY = xy[1];
+  }
+  if (poly.length < 3) return [];
+  const mpuX = frame.mpuX > 0 ? frame.mpuX : 0.3;
+  const mpuY = frame.mpuY > 0 ? frame.mpuY : 0.3;
+  const x0 = Math.max(0, Math.floor(minX));
+  const y0 = Math.max(0, Math.floor(minY));
+  const x1 = Math.min(plate.width - 1, Math.ceil(maxX));
+  const y1 = Math.min(plate.height - 1, Math.ceil(maxY));
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  if (bw < 4 || bh < 4 || bw * bh > 2000000) return [];
+  const water = new Uint8Array(bw * bh);
+  const boat = new Uint8Array(bw * bh);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      if (!pointInRing([x + 0.5, y + 0.5], poly)) continue;
+      const i = (y * plate.width + x) * 4;
+      const r = plate.data[i];
+      const g = plate.data[i + 1];
+      const b = plate.data[i + 2];
+      const yl = 0.299 * r + 0.587 * g + 0.114 * b;
+      const k = (y - y0) * bw + (x - x0);
+      if (yl < 90 && b + 15 >= r) water[k] = 1;
+      else if (yl >= 175 && yl <= 252 && Math.max(r, g, b) - Math.min(r, g, b) <= 40) boat[k] = 1;
+    }
+  }
+  const seen = new Uint8Array(bw * bh);
+  const stack = [];
+  const out = [];
+  const areaPx = mpuX * mpuY;
+  for (let i = 0; i < boat.length; i++) {
+    if (!boat[i] || seen[i]) continue;
+    const cells = [];
+    stack.push(i);
+    seen[i] = 1;
+    while (stack.length) {
+      const k = stack.pop();
+      cells.push(k);
+      const x = k % bw;
+      const y = (k / bw) | 0;
+      const nbrs = [
+        [x - 1, y],
+        [x + 1, y],
+        [x, y - 1],
+        [x, y + 1],
+      ];
+      for (let q = 0; q < nbrs.length; q++) {
+        const nx = nbrs[q][0];
+        const ny = nbrs[q][1];
+        if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
+        const j = ny * bw + nx;
+        if (!boat[j] || seen[j]) continue;
+        seen[j] = 1;
+        stack.push(j);
+      }
+    }
+    let wet = false;
+    for (let c = 0; c < cells.length && !wet; c++) {
+      const x = cells[c] % bw;
+      const y = (cells[c] / bw) | 0;
+      for (let dy = -2; dy <= 2 && !wet; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
+          if (water[ny * bw + nx]) wet = true;
+        }
+      }
+    }
+    const m2 = cells.length * areaPx;
+    if (!wet || m2 < 6 || m2 > 160) continue;
+    const copies = m2 <= 50 ? 1 : m2 <= 100 ? 2 : 3;
+    let sx = 0;
+    let sy = 0;
+    let minx = 1e9;
+    let miny = 1e9;
+    let maxx = -1e9;
+    let maxy = -1e9;
+    for (let c = 0; c < cells.length; c++) {
+      const x = x0 + (cells[c] % bw) + 0.5;
+      const y = y0 + ((cells[c] / bw) | 0) + 0.5;
+      sx += x;
+      sy += y;
+      if (x < minx) minx = x;
+      if (y < miny) miny = y;
+      if (x > maxx) maxx = x;
+      if (y > maxy) maxy = y;
+    }
+    const dx = (maxx - minx) * mpuX;
+    const dy = (maxy - miny) * mpuY;
+    const alongX = dx >= dy;
+    for (let n = 0; n < copies && out.length < 200; n++) {
+      const t = (n + 0.5) / copies;
+      const cx = alongX ? minx + (maxx - minx) * t : sx / cells.length;
+      const cy = alongX ? sy / cells.length : miny + (maxy - miny) * t;
+      const lon = frame.west + (cx / frame.imgW) * (frame.east - frame.west);
+      const lat = frame.north - (cy / frame.imgH) * (frame.north - frame.south);
+      const proj = projectAt(lat);
+      const heading = alongX ? { ux: 1, uy: 0 } : { ux: 0, uy: 1 };
+      const xy = proj.to(lon, lat);
+      out.push({
+        kind: "boat",
+        coords: orientedRing(proj, xy[0], xy[1], heading, BOX.boat.length, BOX.boat.width),
+        closed: true,
+        heightM: BOX.boat.height,
+        explicitHeight: true,
+        center: [lon, lat],
+        rank: 0,
+      });
+    }
+  }
+  return out;
+}
+
 function scoreClass(labels, preds, cls, matchM) {
   const dist = matchM > 0 ? matchM : 12;
   const lab = [];
@@ -879,6 +1013,7 @@ module.exports = {
   vehicleBlobM2,
   vehicleNear,
   pitchVehicle,
+  boatsOnWater,
   recenterBox,
   occupiedCall,
   decidePitch,

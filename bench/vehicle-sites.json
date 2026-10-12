@@ -22,5 +22,17 @@
     "north": 33.4228392,
     "fixture": "bench/fixtures/mesa-rv.json",
     "labels": "bench/vehicle-labels/mesa-rv.json"
+  },
+  {
+    "id": "wentworth-marina",
+    "name": "Wentworth marina",
+    "place": "New Castle, New Hampshire",
+    "kind": "marina",
+    "west": -70.7284,
+    "south": 43.0563,
+    "east": -70.7243,
+    "north": 43.0592,
+    "fixture": "bench/fixtures/wentworth-marina.json",
+    "labels": "bench/vehicle-labels/wentworth-marina.json"
   }
 ]

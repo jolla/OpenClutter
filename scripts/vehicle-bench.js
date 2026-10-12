@@ -58,14 +58,14 @@ function scoreSite(site, aerialBuf) {
   const frame = geoFrame(site, { imgW: plate.width, imgH: plate.height, maxSpanM: 8000, minSpanM: 1 });
   const parsed = parseOverpass(fixture, { rvs: true });
   const planned = planOutdoor({
-    features: parsed.features.filter((f) => f && (f.kind === "rv" || f.kind === "trailer-candidate" || f.kind === "trailer")),
+    features: parsed.features.filter((f) => f && (f.kind === "rv" || f.kind === "trailer-candidate" || f.kind === "trailer" || f.kind === "marina" || f.kind === "boat")),
     frame,
     vehiclePlate: plate,
   });
   const preds = [];
   for (let i = 0; i < planned.items.length; i++) {
     const item = planned.items[i];
-    if (!item || (item.kind !== "rv" && item.kind !== "trailer")) continue;
+    if (!item || (item.kind !== "rv" && item.kind !== "trailer" && item.kind !== "boat" && item.kind !== "semi" && item.kind !== "car")) continue;
     const ring = [];
     for (let k = 0; k < item.ringPx.length; k++) {
       const x = item.ringPx[k][0];
