@@ -118,5 +118,55 @@
     "south": 9.386,
     "east": -84.138,
     "north": 9.394
+  },
+  {
+    "id": "syracuse-leafoff",
+    "name": "Syracuse leaf-off woods",
+    "place": "Syracuse, New York",
+    "kind": "bare deciduous canopy",
+    "west": -76.155,
+    "south": 43.045,
+    "east": -76.146,
+    "north": 43.053
+  },
+  {
+    "id": "sodus-orchard",
+    "name": "Sodus apple orchard",
+    "place": "Sodus, New York",
+    "kind": "orchard rows",
+    "west": -77.07,
+    "south": 43.22,
+    "east": -77.061,
+    "north": 43.228
+  },
+  {
+    "id": "indio-palms",
+    "name": "Indio date grove",
+    "place": "Indio, California",
+    "kind": "date palms",
+    "west": -116.22,
+    "south": 33.712,
+    "east": -116.211,
+    "north": 33.72
+  },
+  {
+    "id": "vegas-tower-shadow",
+    "name": "Las Vegas tower shadow",
+    "place": "Las Vegas, Nevada",
+    "kind": "tall building shadow over trees",
+    "west": -115.172,
+    "south": 36.126,
+    "east": -115.164,
+    "north": 36.133
+  },
+  {
+    "id": "palm-creek-rv",
+    "name": "Palm Creek RV resort",
+    "place": "Casa Grande, Arizona",
+    "kind": "RV pads and shade trees",
+    "west": -111.756,
+    "south": 32.878,
+    "east": -111.747,
+    "north": 32.886
   }
 ]
