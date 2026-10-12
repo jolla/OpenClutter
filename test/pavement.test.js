@@ -7,7 +7,7 @@ const path = require("path");
 const jpeg = require("jpeg-js");
 const { geoFrame, applyImageryMeta, lockIsotropicImagery, jpegSize, llToImagePx } = require("../netlify/lib/geo-frame");
 const { conflateFootprints } = require("../netlify/lib/conflate");
-const { featureExteriorRings } = require("../netlify/lib/pipeline");
+const { featureExteriorRings, footprintsToClutter } = require("../netlify/lib/pipeline");
 const { rejectPavementFootprints, pavementEvidence, evidenceIsPavement } = require("../netlify/lib/pavement");
 const { pointInRing } = require("./eval/score");
 
@@ -67,19 +67,71 @@ describe("pavement footprints", () => {
       fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/roof-points.json"), "utf8")
     ).points;
     const lot = probes.find((p) => p.id === "usa-center-large");
-    assert.equal(lot.role, "pavement");
     const covers = (list) =>
       list.some((f) => featureExteriorRings(f.geometry).some((ring) => pointInRing([lot.lon, lot.lat], ring)));
-    assert.equal(covers(features), true, "stale lot outline is in the source");
-    assert.equal(covers(before.features), false, "pavement rejector removes the lot");
+    assert.equal(covers(features), true, "parking deck outline is in the source");
+    assert.equal(covers(before.features), true, "multi-level deck stays a building");
+    const deck = before.features.find(
+      (f) =>
+        f.properties &&
+        f.properties.heightSource === "overture-floors" &&
+        featureExteriorRings(f.geometry).some((ring) => pointInRing([lot.lon, lot.lat], ring))
+    );
+    assert.ok(deck, "Overture floor count still covers the deck");
+    assert.equal(deck.properties.height, 12);
     for (const f of again.features) {
       if (f.properties && f.properties.source === "imagery-roof") continue;
       const rings = featureExteriorRings(f.geometry);
+      const h = Number(f.properties && f.properties.height);
+      const src = f.properties && f.properties.heightSource;
       for (const ring of rings) {
         const img = ring.map(([lon, lat]) => llToImagePx(lon, lat, frame));
-        assert.equal(evidenceIsPavement(pavementEvidence(raw, img, frame.mpuX)), false);
+        assert.equal(evidenceIsPavement(pavementEvidence(raw, img, frame.mpuX), h, src), false);
       }
     }
+  });
+
+  it("keeps the Oak Creek parking deck as a multi-level building and drops a surface lot", () => {
+    const { frame, raw, features } = loadOak();
+    const deckPt = [-87.9198, 42.89908];
+    const kept = rejectPavementFootprints(raw, frame, features);
+    const deck = kept.features.find(
+      (f) =>
+        f.properties &&
+        f.properties.heightSource === "overture-floors" &&
+        Number(f.properties.height) === 12 &&
+        featureExteriorRings(f.geometry).some((ring) => pointInRing(deckPt, ring))
+    );
+    assert.ok(deck, "4-level deck was dropped as pavement");
+    const uncounted = kept.features.filter(
+      (f) =>
+        !(f.properties && f.properties.heightSource === "overture-floors") &&
+        featureExteriorRings(f.geometry).some((ring) => pointInRing(deckPt, ring))
+    );
+    assert.equal(uncounted.length, 0, "a no-height copy of the deck must not become a second building");
+    const built = footprintsToClutter(kept.features, frame);
+    const { llToPx } = require("../netlify/lib/geo-frame");
+    const px = llToPx(deckPt[0], deckPt[1], frame);
+    let height = 0;
+    let name = "";
+    for (let i = 0; i < built.overlayRings.length; i++) {
+      if (!pointInRing(px, built.overlayRings[i])) continue;
+      const area = built.oiAreas[i];
+      const mat = area && area.area_material;
+      if (!mat || !String(mat.name || "").startsWith("Building")) continue;
+      height = mat.top_height;
+      name = mat.name;
+    }
+    assert.equal(name, "Building - Five Floor");
+    assert.ok(height >= 11, "multi-level top " + height);
+    const lot = {
+      type: "Feature",
+      properties: { height: 6 },
+      geometry: features.find((f) => f.properties && f.properties.heightSource === "overture-floors" && Number(f.properties.height) === 12).geometry,
+    };
+    const droppedLot = rejectPavementFootprints(raw, frame, [lot]);
+    assert.equal(droppedLot.dropped, 1, "the same roof without a floor count stays a surface lot");
+    assert.equal(droppedLot.features.length, 0);
   });
 
   it("does not drop an imagery roof fill or a Wooded Lot house", () => {

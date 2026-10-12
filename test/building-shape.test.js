@@ -880,4 +880,56 @@ describe("OSM buildings the footprint sources missed", () => {
     ));
     assert.equal(built.stats.buildings, 2);
   });
+
+  it("adds a multi-storey garage past the cabin size cap and leaves a plain complex out", () => {
+    function wayGeom(feature) {
+      return ringOf(feature).map(([lon, lat]) => ({ lon, lat }));
+    }
+    const garage = metersBox(-87.9217, 42.9006, 40, 90, {});
+    const plain = metersBox(-87.916, 42.898, 80, 80, {});
+    const surface = metersBox(-87.918, 42.897, 60, 40, {});
+    const parsed = parseBuildingDetail({
+      elements: [
+        {
+          type: "way",
+          tags: { building: "parking", amenity: "parking", parking: "multi-storey" },
+          geometry: wayGeom(garage),
+        },
+        { type: "way", tags: { building: "yes" }, geometry: wayGeom(plain) },
+        { type: "way", tags: { amenity: "parking", parking: "surface" }, geometry: wayGeom(surface) },
+        {
+          type: "way",
+          tags: { building: "parking", parking: "underground" },
+          geometry: wayGeom(metersBox(-87.91, 42.896, 80, 80, {})),
+        },
+      ],
+    });
+    assert.equal(parsed.structures.length, 1);
+    assert.equal(parsed.structures[0].heightM, 9);
+    assert.equal(parsed.buildings.length, 3);
+    const shaped = shapeBuildings([], { buildings: parsed.buildings, structures: parsed.structures });
+    const added = shaped.features.filter((f) => f.properties && f.properties.geomSource === "osm-building");
+    assert.equal(added.length, 1);
+    assert.equal(added[0].properties.height, 9);
+    assert.equal(added[0].properties.heightSource, "osm");
+    assert.equal(pointInRingLL([-87.9217, 42.9006], added[0].geometry.coordinates[0]), true);
+    assert.equal(pointInRingLL([-87.916, 42.898], added[0].geometry.coordinates[0]), false);
+  });
+
+  it("uses about 3 m per deck when a garage lists its levels", () => {
+    const garage = metersBox(-87.9193, 42.8994, 70, 70, {});
+    const parsed = parseBuildingDetail({
+      elements: [
+        {
+          type: "way",
+          tags: { building: "parking", parking: "multi-storey", "building:levels": "4" },
+          geometry: ringOf(garage).map(([lon, lat]) => ({ lon, lat })),
+        },
+      ],
+    });
+    assert.equal(parsed.structures[0].heightM, 12);
+    const shaped = shapeBuildings([], { buildings: parsed.buildings, structures: parsed.structures });
+    assert.equal(shaped.features.length, 1);
+    assert.equal(shaped.features[0].properties.height, 12);
+  });
 });

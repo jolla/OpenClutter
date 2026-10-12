@@ -11,9 +11,10 @@
  *
  * Houses stay: they are under MIN_PAVEMENT_AREA_M2 or they are not asphalt.
  * A smooth gray membrane with a measured height stays too: that is a roof,
- * not a car-filled lot. Imagery roof fill (source imagery-roof) is never
- * dropped — those rings were cut from a smooth plane. This does not invent
- * a replacement outline.
+ * not a car-filled lot. A floor count of two or more stays as well. Cars on
+ * a parking deck are not a surface lot. Imagery roof fill (source imagery-roof)
+ * is never dropped. Those rings were cut from a smooth plane. This does not
+ * invent a replacement outline.
  */
 
 const { llToImagePx } = require("./geo-frame");
@@ -23,6 +24,13 @@ const MIN_PAVEMENT_AREA_M2 = 900;
 const MAX_ROOF_FRAC = 0.12;
 const MAX_GREEN_FRAC = 0.18;
 const DARK_ROOF_LUMA = 96;
+/** Two decks at about 3 m. A surface lot does not carry a floor count. */
+const STRUCTURE_FLOOR_M = 6;
+
+function countedStructure(heightM, heightSource) {
+  if (!(heightM >= STRUCTURE_FLOOR_M)) return false;
+  return heightSource === "overture-floors" || heightSource === "osm" || heightSource === "osm-part";
+}
 
 function luma(r, g, b) {
   return 0.299 * r + 0.587 * g + 0.114 * b;
@@ -169,9 +177,12 @@ function smoothMembrane(e, heightM) {
   return e.areaM2 < 1800 && e.medianStd < 5;
 }
 
-function evidenceIsPavement(e, heightM) {
+function evidenceIsPavement(e, heightM, heightSource) {
   if (!e || e.n < 20) return false;
   if (!(e.areaM2 >= MIN_PAVEMENT_AREA_M2)) return false;
+  // Oak Creek's parking deck is a 4-level Overture floor count. The roof is
+  // gray with cars, which is the same luma band as a surface lot.
+  if (countedStructure(Number(heightM) || 0, heightSource)) return false;
   if (smoothMembrane(e, heightM)) return false;
   if (e.roofFrac >= MAX_ROOF_FRAC) return false;
   if (e.greenFrac >= MAX_GREEN_FRAC) return false;
@@ -189,8 +200,8 @@ function evidenceIsPavement(e, heightM) {
   return false;
 }
 
-function isPavementFootprint(raw, ringImg, mpu, heightM) {
-  return evidenceIsPavement(pavementEvidence(raw, ringImg, mpu), heightM);
+function isPavementFootprint(raw, ringImg, mpu, heightM, heightSource) {
+  return evidenceIsPavement(pavementEvidence(raw, ringImg, mpu), heightM, heightSource);
 }
 
 function geometryFromRings(rings) {
@@ -221,10 +232,15 @@ function rejectPavementFootprints(raw, frame, features) {
       for (let k = 0; k < rings[r].length; k++) {
         img.push(llToImagePx(rings[r][k][0], rings[r][k][1], frame));
       }
-      const heightM = Number(
-        f.properties && (f.properties.height != null ? f.properties.height : f.properties.Height || f.properties.HEIGHT)
-      );
-      if (isPavementFootprint(raw, img, frame.mpuX, heightM)) dropped++;
+      const props = f.properties || {};
+      let heightM = Number(props.height != null ? props.height : props.Height || props.HEIGHT);
+      let heightSource = props.heightSource || "";
+      const floors = Number(props.numFloors);
+      if (floors >= 2 && floors <= 60) {
+        if (!(heightM >= STRUCTURE_FLOOR_M)) heightM = floors * 3;
+        if (!countedStructure(heightM, heightSource)) heightSource = "overture-floors";
+      }
+      if (isPavementFootprint(raw, img, frame.mpuX, heightM, heightSource)) dropped++;
       else keepRings.push(rings[r]);
     }
     if (!keepRings.length) continue;
@@ -243,8 +259,10 @@ function rejectPavementFootprints(raw, frame, features) {
 
 module.exports = {
   MIN_PAVEMENT_AREA_M2,
+  STRUCTURE_FLOOR_M,
   pavementEvidence,
   evidenceIsPavement,
+  countedStructure,
   smoothMembrane,
   isPavementFootprint,
   rejectPavementFootprints,
