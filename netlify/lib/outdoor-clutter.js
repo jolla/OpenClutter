@@ -10,11 +10,14 @@
  * carries class or subtype "parking" is recolored instead of drawn twice.
  *
  * An RV park (tourism=caravan_site or camp_site) gets one metal box per
- * mapped pitch. With no pitches, boxes sit on both sides of the internal
- * roads, about 12 m apart. A static caravan stays a building.
+ * mapped RV pad. A tent pad stays empty unless the aerial shows a light
+ * vehicle, and that vehicle is a travel trailer. With no pitches, boxes sit
+ * on both sides of the internal roads, about 12 m apart. A static caravan
+ * stays a building. A mobile home is a building at about 4 m.
  *
- * A surface parking lot is a 2.1 m car layer. A multi-storey garage or
- * building=parking stays about 9 m and can recolor a footprint that already
+ * A surface parking lot is one 1.5 m car layer, not one box per car.
+ * A truck lot is semi boxes. A marina slip is a boat. A multi-storey garage
+ * or building=parking stays about 9 m and can recolor a footprint that already
  * covers it. An underground lot is left out.
  *
  * Attenuation is 5 GHz dB/m, documented on the materials next to buildings.
@@ -28,6 +31,18 @@
  */
 
 const { llToPx, pxToLl } = require("./geo-frame");
+const {
+  BOX: VEHICLE_BOX,
+  pitchClass,
+  isTruckLotTags,
+  isMarinaTags,
+  isMooringTags,
+  vehicleBlobM2,
+  vehicleNear,
+  finalizeVehicles,
+  semiBoxes,
+  boatBoxes,
+} = require("./vehicle-track");
 const { fetchOsmMaps, ringKey, bboxSpanM, TILE_SPAN_M } = require("./osm-tiles");
 const { intersectionAreaPx, ringsMinus } = require("./poly-clip");
 const { LIFT_LOCAL_M } = require("./terrain");
@@ -118,6 +133,11 @@ function overpassQuery(bbox, want) {
     parts.push('node["tourism"="camp_pitch"](' + box + ");");
     parts.push('way["tourism"="camp_pitch"](' + box + ");");
     parts.push('way["highway"~"^(service|track|living_street|residential|unclassified)$"](' + box + ");");
+    parts.push('way["leisure"="marina"](' + box + ");");
+    parts.push('relation["leisure"="marina"](' + box + ");");
+    parts.push('node["mooring"](' + box + ");");
+    parts.push('way["mooring"](' + box + ");");
+    parts.push('node["seamark:type"="mooring"](' + box + ");");
   }
   parts.push('way["railway"~"^(monorail|light_rail|subway|rail|tram)$"](' + box + ");");
   parts.push('way["highway"]["bridge"~"^(yes|viaduct|covered)$"](' + box + ");");
@@ -827,9 +847,9 @@ function roadInsideSite(coords, site) {
   return inside >= 2 || (n > 0 && inside / n >= 0.6);
 }
 
-function rvRect(proj, x, y, ux, uy) {
-  const hl = RV_LENGTH_M / 2;
-  const hw = RV_WIDTH_M / 2;
+function rvRect(proj, x, y, ux, uy, lengthM, widthM) {
+  const hl = (lengthM > 0 ? lengthM : RV_LENGTH_M) / 2;
+  const hw = (widthM > 0 ? widthM : RV_WIDTH_M) / 2;
   const px = -uy;
   const py = ux;
   const corners = [
@@ -910,17 +930,20 @@ function tooNear(x, y, placed) {
   return false;
 }
 
-function pushRv(out, placed, proj, x, y, heading) {
+function pushRv(out, placed, proj, x, y, heading, extra) {
   if (out.length >= RV_CAP) return false;
   if (tooNear(x, y, placed)) return false;
-  const ring = rvRect(proj, x, y, heading.ux, heading.uy);
+  const spec = extra && extra.spec;
+  const ring = rvRect(proj, x, y, heading.ux, heading.uy, spec && spec.length, spec && spec.width);
   placed.push({ x, y });
   out.push({
-    kind: "rv",
+    kind: (extra && extra.kind) || "rv",
     coords: ring,
     closed: true,
-    heightM: RV_HEIGHT_M,
+    heightM: spec && spec.height ? spec.height : RV_HEIGHT_M,
     explicitHeight: true,
+    pitchUse: (extra && extra.pitchUse) || "road",
+    pad: extra && extra.pad,
     rank: 0,
   });
   return true;
@@ -983,6 +1006,7 @@ function rvBoxes(features) {
       usedPitch.add(p);
       insidePitches.push({ pitch, center });
     }
+    insidePitches.sort((a, b) => b.pitch.coords.length - a.pitch.coords.length);
     const siteRoads = [];
     for (let r = 0; r < roads.length; r++) {
       if (!roadInsideSite(roads[r].coords, site)) continue;
@@ -999,7 +1023,22 @@ function rvBoxes(features) {
         const xy = proj.to(item.center[0], item.center[1]);
         let heading = nearestRoadHeading(xy[0], xy[1], siteRoads);
         if (!heading) heading = pitchHeading(item.pitch.coords, proj);
-        pushRv(boxes, placed, proj, xy[0], xy[1], heading);
+        const use = pitchClass(item.pitch.name, item.pitch.tags);
+        if (use === "tent") {
+          pushRv(boxes, placed, proj, xy[0], xy[1], heading, {
+            kind: "trailer-candidate",
+            spec: VEHICLE_BOX.trailer,
+            pitchUse: "tent",
+            pad: item.pitch.coords,
+          });
+          continue;
+        }
+        pushRv(boxes, placed, proj, xy[0], xy[1], heading, {
+          kind: "rv",
+          spec: VEHICLE_BOX.rv,
+          pitchUse: use === "rv" ? "rv" : "pitch",
+          pad: item.pitch.coords,
+        });
       }
       continue;
     }
@@ -1017,7 +1056,11 @@ function rvBoxes(features) {
         for (let side = 0; side < sides.length && boxes.length < RV_CAP; side++) {
           const ll = proj.from(sides[side][0], sides[side][1]);
           if (!pointInSite(ll, site)) continue;
-          pushRv(boxes, placed, proj, sides[side][0], sides[side][1], heading);
+          pushRv(boxes, placed, proj, sides[side][0], sides[side][1], heading, {
+            kind: "rv",
+            spec: VEHICLE_BOX.rv,
+            pitchUse: "road",
+          });
         }
       }
     }
@@ -1053,6 +1096,15 @@ function parseOverpass(payload, want, bbox, deckCap) {
           explicitHeight: h.explicitHeight,
           rank: poleRank(tags),
         });
+      } else if (on.rvs && isMooringTags(tags)) {
+        features.push({
+          kind: "mooring",
+          coords: [[lon, lat]],
+          closed: false,
+          heightM: 0,
+          explicitHeight: false,
+          rank: 0,
+        });
       } else if (on.rvs && isRvPitchTags(tags)) {
         features.push({
           kind: "rv-pitch",
@@ -1060,6 +1112,8 @@ function parseOverpass(payload, want, bbox, deckCap) {
           closed: false,
           heightM: RV_HEIGHT_M,
           explicitHeight: true,
+          name: tags.name || tags.ref || "",
+          tags,
           rank: 0,
         });
       }
@@ -1102,14 +1156,39 @@ function parseOverpass(payload, want, bbox, deckCap) {
     railRecords.push({ tags, coords });
     if (on.parking && isParkingWay(tags)) {
       if (!isClosed(coords)) continue;
+      if (isTruckLotTags(tags)) {
+        features.push({
+          kind: "truck-lot",
+          coords,
+          closed: true,
+          heightM: 0,
+          explicitHeight: false,
+          rank: 0,
+        });
+        continue;
+      }
       const h = heightFor("parking", tags);
+      const structure = parkingStructure(tags);
+      if (!structure && !(h.explicitHeight && h.heightM > 2)) {
+        features.push({
+          kind: "car",
+          coords,
+          closed: true,
+          heightM: 1.5,
+          explicitHeight: true,
+          structure: false,
+          merged: true,
+          rank: 0,
+        });
+        continue;
+      }
       features.push({
         kind: "parking",
         coords,
         closed: true,
         heightM: h.heightM,
         explicitHeight: h.explicitHeight,
-        structure: parkingStructure(tags),
+        structure: true,
         rank: 0,
       });
       continue;
@@ -1163,6 +1242,28 @@ function parseOverpass(payload, want, bbox, deckCap) {
         closed: isClosed(coords),
         heightM: RV_HEIGHT_M,
         explicitHeight: true,
+        name: tags.name || tags.ref || "",
+        tags,
+        rank: 0,
+      });
+    }
+    if (on.rvs && isMarinaTags(tags) && isClosed(coords)) {
+      features.push({
+        kind: "marina",
+        coords,
+        closed: true,
+        heightM: 0,
+        explicitHeight: false,
+        rank: 0,
+      });
+    }
+    if (on.rvs && isMooringTags(tags)) {
+      features.push({
+        kind: "mooring",
+        coords,
+        closed: isClosed(coords),
+        heightM: 0,
+        explicitHeight: false,
         rank: 0,
       });
     }
@@ -1181,16 +1282,27 @@ function parseOverpass(payload, want, bbox, deckCap) {
     }
   }
   const boxes = on.rvs ? rvBoxes(features) : [];
+  const semis = semiBoxes(features.filter((f) => f && f.kind === "truck-lot"));
+  const boats = on.rvs ? boatBoxes(features) : [];
   const plain = [];
   for (let i = 0; i < features.length; i++) {
     const kind = features[i] && features[i].kind;
-    if (kind === "rv-site" || kind === "rv-pitch" || kind === "rv-road") continue;
+    if (
+      kind === "rv-site" ||
+      kind === "rv-pitch" ||
+      kind === "rv-road" ||
+      kind === "truck-lot" ||
+      kind === "marina" ||
+      kind === "mooring"
+    ) {
+      continue;
+    }
     plain.push(features[i]);
   }
   const guides = guidewayFeatures(railRecords, bbox, deckCap);
   const bridges = bridgeFeatures(railRecords, bbox, deckCap);
   return {
-    features: plain.concat(boxes, guides, bridges),
+    features: plain.concat(boxes, semis, boats, guides, bridges),
     openWater,
     places: placesFromElements(elements),
   };
@@ -1281,11 +1393,11 @@ function limitFeatures(features, bbox, deckCap) {
     const f = features[i];
     if (!f) continue;
     if (f.kind === "water") water.push(f);
-    else if (f.kind === "parking") parking.push(f);
+    else if (f.kind === "parking" || f.kind === "car") parking.push(f);
     else if (f.kind === "pole") poles.push(f);
     else if (f.kind === "guideway") guideways.push(f);
     else if (f.kind === "bridge") bridges.push(f);
-    else if (f.kind === "rv") rvs.push(f);
+    else if (f.kind === "rv" || f.kind === "trailer" || f.kind === "trailer-candidate" || f.kind === "semi" || f.kind === "boat") rvs.push(f);
     else if (LINE_KINDS[f.kind]) walls.push(f);
   }
   const w = keepLargest(water, WATER_CAP);
@@ -2050,7 +2162,14 @@ function pxRingToLonLat(ring, frame) {
  * A matched garage is not drawn a second time. Water is cut against those
  * same roofs so a pond or a mis-tagged panel block does not cover them.
  */
-function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segmentCaps }) {
+function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segmentCaps, vehiclePlate }) {
+  const fractionFor =
+    vehiclePlate && frame
+      ? function (ring) {
+          return vehicleNear(ring, frame, vehiclePlate, 8);
+        }
+      : null;
+  features = finalizeVehicles(features, fractionFor);
   const guideCap = segmentCaps && segmentCaps.guideway > 0 ? segmentCaps.guideway | 0 : GUIDEWAY_SEGMENT_CAP;
   const bridgeCap = segmentCaps && segmentCaps.bridge > 0 ? segmentCaps.bridge | 0 : BRIDGE_SEGMENT_CAP;
   const footCap = segmentCaps && segmentCaps.footbridge > 0 ? segmentCaps.footbridge | 0 : FOOTBRIDGE_SEGMENT_CAP;
@@ -2193,17 +2312,17 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       }
       continue;
     }
-    if (f.kind === "rv") {
+    if (f.kind === "rv" || f.kind === "trailer" || f.kind === "semi" || f.kind === "boat") {
       const ringPx = lonLatRingToPx(f.coords, frame);
-      const material = materialForKind("rv", f.heightM || RV_HEIGHT_M, f.coords, slopeTop, 0);
+      const material = materialForKind(f.kind, f.heightM || RV_HEIGHT_M, f.coords, slopeTop, 0);
       if (!material || ringPx.length < 4) continue;
-      items.push({ ringPx, material, kind: "rv", thin: true });
+      items.push({ ringPx, material, kind: f.kind, thin: true });
       continue;
     }
-    if (f.kind === "water" || f.kind === "parking") {
+    if (f.kind === "water" || f.kind === "parking" || f.kind === "car") {
       const parts = slopeAreaParts(slopeTop, f.coords);
       const cuts =
-        f.kind === "water" || (f.kind === "parking" && f.structure === false)
+        f.kind === "water" || f.kind === "car" || (f.kind === "parking" && f.structure === false)
           ? buildingRingsPx(buildings, frame)
           : null;
       for (let p = 0; p < parts.length; p++) {
@@ -2226,7 +2345,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
   return { items, updates, notes, reclass };
 }
 
-const BUDGET_ORDER = ["parking", "water", "guideway", "bridge", "rv", "wall", "retaining", "hedge", "fence", "footbridge", "pole"];
+const BUDGET_ORDER = ["parking", "car", "water", "guideway", "bridge", "rv", "trailer", "semi", "boat", "wall", "retaining", "hedge", "fence", "footbridge", "pole"];
 
 function budgetNote(kind, keptCount, skipped) {
   const label =
@@ -2244,7 +2363,15 @@ function budgetNote(kind, keptCount, skipped) {
       ? "footbridge"
       : kind === "rv"
         ? "RV"
-        : "wall";
+        : kind === "trailer"
+          ? "trailer"
+          : kind === "semi"
+            ? "semi"
+            : kind === "boat"
+              ? "boat"
+              : kind === "car"
+                ? "car layer"
+                : "wall";
   if (!(keptCount > 0)) {
     if (kind === "pole") return "Light poles left out to stay inside the area budget.";
     if (kind === "water") return "Water left out to stay inside the area budget.";
@@ -2253,6 +2380,10 @@ function budgetNote(kind, keptCount, skipped) {
     if (kind === "bridge") return "Bridges left out to stay inside the area budget.";
     if (kind === "footbridge") return "Footbridges left out to stay inside the area budget.";
     if (kind === "rv") return "RVs left out to stay inside the area budget.";
+    if (kind === "car") return "Car layers left out to stay inside the area budget.";
+    if (kind === "trailer") return "Trailers left out to stay inside the area budget.";
+    if (kind === "semi") return "Semis left out to stay inside the area budget.";
+    if (kind === "boat") return "Boats left out to stay inside the area budget.";
     return "Walls left out to stay inside the area budget.";
   }
   const noun = skipped === 1 ? label : label + "s";
@@ -2279,14 +2410,14 @@ function fitOutdoorBudget(items, kinds, room, opts) {
   for (let i = 0; i < BUDGET_ORDER.length; i++) {
     const kind = BUDGET_ORDER[i];
     const list = groups.get(kind) || [];
-    const capped = kind === "parking" || kind === "water" ? Math.min(left, frontLeft) : left;
+    const capped = kind === "parking" || kind === "car" || kind === "water" ? Math.min(left, frontLeft) : left;
     const take = list.slice(0, capped);
     for (let t = 0; t < take.length; t++) {
       kept.push(take[t]);
       keptKinds.push(kind);
     }
     left -= take.length;
-    if (kind === "parking" || kind === "water") frontLeft -= take.length;
+    if (kind === "parking" || kind === "car" || kind === "water") frontLeft -= take.length;
     if (list.length > take.length) {
       const note = budgetNote(kind, take.length, list.length - take.length);
       if (!noted.has(note)) {
