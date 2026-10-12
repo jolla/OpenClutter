@@ -2,9 +2,9 @@
 
 /**
  * Run canopy tracing, foliage clipping, and vehicle scans on the CPU
- * pool. The grid and the aerial are split into row tiles, one batch
- * per os.cpus() worker. The main thread waits, so the export heartbeat
- * keeps firing.
+ * pool. The grid is split into several row tiles per worker so one
+ * latitude band cannot own the stage. The main thread waits, so the
+ * export heartbeat keeps firing.
  *
  * A tile edge can split one connected crown into the pieces on each
  * side of that edge. Rings are still the traced canopy cells. Nothing
@@ -30,6 +30,64 @@ function valuesOf(grid) {
   if (!grid || grid.values == null) return null;
   if (typeof grid.values === "string") return Buffer.from(grid.values, "base64");
   return grid.values;
+}
+
+const BAND_MIN_ROWS = 24;
+
+function canopyRowMass(grid) {
+  const src = valuesOf(grid);
+  const w = grid.width | 0;
+  const h = grid.height | 0;
+  const rows = new Uint32Array(h);
+  if (!src) return rows;
+  for (let y = 0; y < h; y++) {
+    let n = 0;
+    const row = y * w;
+    for (let x = 0; x < w; x++) if ((src[row + x] || 0) >= 3) n++;
+    rows[y] = n;
+  }
+  return rows;
+}
+
+function massBetween(rows, y0, y1) {
+  let n = 0;
+  for (let y = y0; y < y1; y++) n += rows[y];
+  return n;
+}
+
+/**
+ * One band per CPU, then split a band that holds most of the canopy.
+ * A short band is left whole so a crown is not cut into scraps.
+ * The cap is four bands per CPU.
+ */
+function bandsForGrid(grid, threads) {
+  const h = grid && grid.height ? grid.height | 0 : 0;
+  const cores = Math.max(1, threads | 0);
+  if (h <= 1) return [{ y0: 0, y1: Math.max(h, 0) }];
+  let bands = splitRows(h, Math.min(cores, h));
+  const rows = canopyRowMass(grid);
+  let total = 0;
+  for (let i = 0; i < rows.length; i++) total += rows[i];
+  const cap = Math.min(h, cores * 4);
+  if (!(total > 0)) return bands;
+  for (let guard = 0; guard < cap && bands.length < cap; guard++) {
+    let heavy = 0;
+    let heavyMass = 0;
+    for (let i = 0; i < bands.length; i++) {
+      const mass = massBetween(rows, bands[i].y0, bands[i].y1);
+      if (mass > heavyMass) {
+        heavyMass = mass;
+        heavy = i;
+      }
+    }
+    const band = bands[heavy];
+    const rowsIn = band.y1 - band.y0;
+    if (heavyMass <= total * 0.45 || rowsIn < BAND_MIN_ROWS * 2) break;
+    const mid = band.y0 + (rowsIn >> 1);
+    if (mid <= band.y0 || mid >= band.y1) break;
+    bands.splice(heavy, 1, { y0: band.y0, y1: mid }, { y0: mid, y1: band.y1 });
+  }
+  return bands;
 }
 
 function splitRows(total, count) {
@@ -265,10 +323,11 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
       chmGrid: grid ? copyGrid(grid) : null,
     });
   }
-  const bands = splitRows(grid.height, threads);
+  const bands = bandsForGrid(grid, threads);
   const tilePayloads = [];
   for (let i = 0; i < bands.length; i++) {
     tilePayloads.push({
+      tileId: "canopy-" + i,
       grid: sliceGrid(grid, bands[i].y0, bands[i].y1),
       frame,
       buildingRings: opts.buildingRings || [],
@@ -306,7 +365,8 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
   const chmGrid = copyGrid(grid);
   const assembled = await runTiles(
     "foliage-assemble",
-    groups.map((group) => ({
+    groups.map((group, i) => ({
+      tileId: "foliage-" + i,
       polygons: group,
       frame,
       affine,
@@ -519,6 +579,7 @@ async function outdoorParallel(args) {
 
 module.exports = {
   threadCount,
+  bandsForGrid,
   fillInWorker,
   treePairsParallel,
   outdoorParallel,

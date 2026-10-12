@@ -41,6 +41,10 @@ const COMPACT_MIN_H = 5;
 const MIN_PEAK_SAMPLES = 2;
 /** Rows per canopy read. Short enough that an abort can stop the next strip. */
 const CHM_STRIP_ROWS = 256;
+/** In-flight canopy windows. The main thread stays free for the heartbeat. */
+const STRIP_CONCURRENCY = 4;
+const RASTER_MAGIC = "CHM1";
+const RASTER_HEADER = 44;
 /**
  * Long side of a full-site overview. Native strips walk north to south, so an
  * abort used to keep only the north band and leave the rest of a course empty.
@@ -184,28 +188,143 @@ function tileWindow(image, frame) {
  * that read was ignored. A strip that is still running stops when the export
  * aborts, and the event loop can finish the zip between strips.
  */
+function canopyRasterSpec(frame) {
+  const { tileId } = require("./area-cache");
+  return {
+    source: "canopy",
+    resolution: "1.2m",
+    tile: tileId({
+      west: +frame.west,
+      south: +frame.south,
+      east: +frame.east,
+      north: +frame.north,
+    }),
+  };
+}
+
+/** Decoded height window. Not a polygon, a ring, or an OpenIntent area. */
+function encodeCanopyRaster(grid) {
+  const values = Buffer.from(grid.values);
+  const header = Buffer.alloc(RASTER_HEADER);
+  header.write(RASTER_MAGIC, 0, 4, "ascii");
+  header.writeUInt32LE(grid.width | 0, 4);
+  header.writeUInt32LE(grid.height | 0, 8);
+  header.writeDoubleLE(+grid.west, 12);
+  header.writeDoubleLE(+grid.south, 20);
+  header.writeDoubleLE(+grid.east, 28);
+  header.writeDoubleLE(+grid.north, 36);
+  return Buffer.concat([header, values]);
+}
+
+function decodeCanopyRaster(body) {
+  const buf = Buffer.isBuffer(body) ? body : Buffer.from(body || []);
+  if (buf.length < RASTER_HEADER || buf.toString("ascii", 0, 4) !== RASTER_MAGIC) return null;
+  const width = buf.readUInt32LE(4);
+  const height = buf.readUInt32LE(8);
+  if (!(width > 1) || !(height > 1) || buf.length < RASTER_HEADER + width * height) return null;
+  const values = new Uint8Array(buf.subarray(RASTER_HEADER, RASTER_HEADER + width * height));
+  let nz = 0;
+  for (let i = 0; i < values.length; i++) if (values[i] >= CROWN_MIN_H) nz++;
+  if (!nz) return null;
+  return {
+    west: buf.readDoubleLE(12),
+    south: buf.readDoubleLE(20),
+    east: buf.readDoubleLE(28),
+    north: buf.readDoubleLE(36),
+    width,
+    height,
+    values,
+    nonzero: nz,
+  };
+}
+
+async function loadCanopyRaster(frame) {
+  const areaCache = require("./area-cache");
+  if (!areaCache.enabled() || !frame) return null;
+  const spec = canopyRasterSpec(frame);
+  const key = areaCache.cacheKey(spec.source, spec.resolution, spec.tile);
+  const hit = await areaCache.readRaw(null, key);
+  if (!hit || !hit.body) return null;
+  return decodeCanopyRaster(hit.body);
+}
+
+async function saveCanopyRaster(frame, grid) {
+  const areaCache = require("./area-cache");
+  if (!areaCache.enabled() || !frame || !grid || !grid.values) return false;
+  const body = encodeCanopyRaster(grid);
+  areaCache.assertRaw(body);
+  const spec = canopyRasterSpec(frame);
+  const key = areaCache.cacheKey(spec.source, spec.resolution, spec.tile);
+  await areaCache.writeRaw(null, key, body, {
+    source: "canopy",
+    resolution: spec.resolution,
+    tile: spec.tile,
+    contentType: "application/octet-stream",
+  });
+  return true;
+}
+
+/**
+ * Read every canopy window with a concurrency cap. Each read yields, so a
+ * 10 second heartbeat on the main thread still fires during the prefetch.
+ * A window that has not started does not start after abort.
+ */
+async function prefetchCanopyWindows(image, windows, opts) {
+  const list = windows || [];
+  const out = new Array(list.length);
+  if (!list.length || !image || typeof image.readRasters !== "function") return out;
+  const limit = opts && opts.concurrency > 0 ? opts.concurrency | 0 : STRIP_CONCURRENCY;
+  const signal = opts && opts.signal;
+  let cursor = 0;
+  const n = Math.max(1, Math.min(limit, list.length));
+  const stopped = (err) =>
+    (signal && signal.aborted) || /abort|timeout/i.test(String(err && err.message ? err.message : err));
+  async function worker() {
+    while (cursor < list.length) {
+      if (signal && signal.aborted) return;
+      const i = cursor++;
+      if (i >= list.length) return;
+      const win = list[i];
+      try {
+        out[i] = await image.readRasters({
+          window: [win.left, win.top, win.right, win.bottom],
+          interleave: true,
+          signal,
+        });
+      } catch (err) {
+        if (stopped(err)) return;
+        throw err;
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  }
+  await Promise.all(Array.from({ length: n }, () => worker()));
+  return out;
+}
+
 async function readPeakStrips(image, frame, dstW, dstH, max, count, signal) {
   const win = tileWindow(image, frame);
   if (!win) return false;
   const width = win.right - win.left;
+  const windows = [];
   for (let row = win.top; row < win.bottom; row += CHM_STRIP_ROWS) {
-    if (signal && signal.aborted) return false;
     const row1 = Math.min(win.bottom, row + CHM_STRIP_ROWS);
-    const ras = await image.readRasters({
-      window: [win.left, row, win.right, row1],
-      interleave: true,
-      signal,
-    });
-    const data = valuesOf(ras);
+    windows.push({ left: win.left, top: row, right: win.right, bottom: row1 });
+  }
+  const rasters = await prefetchCanopyWindows(image, windows, { signal, concurrency: STRIP_CONCURRENCY });
+  for (let i = 0; i < windows.length; i++) {
+    const ras = rasters[i];
+    if (!ras) continue;
+    const row = windows[i];
     accumulatePeaks(
       max,
       count,
       {
-        data,
+        data: valuesOf(ras),
         width,
-        height: row1 - row,
-        left: win.left,
-        top: row,
+        height: row.bottom - row.top,
+        left: row.left,
+        top: row.top,
         origin: win.origin,
         res: win.res,
       },
@@ -213,7 +332,6 @@ async function readPeakStrips(image, frame, dstW, dstH, max, count, signal) {
       dstW,
       dstH
     );
-    await new Promise((resolve) => setImmediate(resolve));
   }
   return !(signal && signal.aborted);
 }
@@ -422,6 +540,11 @@ async function fetchChmGrid(frame, opts) {
 async function fetchChmGridWork(frame, opts) {
   const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
   if (signal.aborted) return null;
+  const useCache = !(opts && opts.loader);
+  if (useCache) {
+    const cached = await loadCanopyRaster(frame);
+    if (cached) return cached;
+  }
   const keys = quadkeysForBbox(frame.west, frame.south, frame.east, frame.north, CHM_ZOOM);
   if (!keys.length || keys.length > MAX_TILES) return null;
   const geotiff = (opts && opts.loader) || require("geotiff");
@@ -440,28 +563,53 @@ async function fetchChmGridWork(frame, opts) {
     if (!surveyed) return false;
     return readPeakStrips(image, frame, width, height, max, count, signal);
   }
+  let complete = true;
   try {
-    for (const key of keys) {
-      if (signal.aborted) return pack();
-      let finished = false;
-      try {
-        finished = await readKey(key);
-      } catch (e) {
-        if (aborted(e)) return pack();
+    let cursor = 0;
+    const n = Math.max(1, Math.min(STRIP_CONCURRENCY, keys.length));
+    async function worker() {
+      while (cursor < keys.length) {
+        if (signal.aborted) {
+          complete = false;
+          return;
+        }
+        const key = keys[cursor++];
+        let finished = false;
         try {
           finished = await readKey(key);
-        } catch (e2) {
-          if (aborted(e2)) return pack();
-          throw e2;
+        } catch (e) {
+          if (aborted(e)) {
+            complete = false;
+            return;
+          }
+          try {
+            finished = await readKey(key);
+          } catch (e2) {
+            if (aborted(e2)) {
+              complete = false;
+              return;
+            }
+            throw e2;
+          }
+        }
+        if (!finished) {
+          complete = false;
+          return;
         }
       }
-      if (!finished) return pack();
     }
+    await Promise.all(Array.from({ length: n }, () => worker()));
   } catch (e) {
     if (aborted(e)) return pack();
     throw e;
   }
-  return pack();
+  const grid = pack();
+  if (useCache && complete && !(signal && signal.aborted) && grid) {
+    await saveCanopyRaster(frame, grid).catch((err) => {
+      if (err && err.code === "raw-only") return;
+    });
+  }
+  return grid;
 }
 
 function gridValues(grid) {
@@ -1173,6 +1321,13 @@ module.exports = {
   applyChmToTrees,
   gridToJson,
   fetchChmGrid,
+  STRIP_CONCURRENCY,
+  prefetchCanopyWindows,
+  encodeCanopyRaster,
+  decodeCanopyRaster,
+  loadCanopyRaster,
+  saveCanopyRaster,
+  canopyRasterSpec,
   gridSize,
   crownsFromChm,
   maskChmGrid,
