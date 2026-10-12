@@ -12,7 +12,11 @@ const areaCache = require("../netlify/lib/area-cache");
 const { completeExportJob } = require("../netlify/lib/export-run");
 
 const BODY_MAX = 2 * 1000 * 1000;
+// Fly autostop is off. Exit 0 after this long with no export so the
+// machine stops. on-failure does not restart a clean exit.
+const IDLE_EXIT_MS = 5 * 60 * 1000;
 let inFlight = null;
+let exportRunner = null;
 
 function header(headers, name) {
   if (!headers) return "";
@@ -191,12 +195,17 @@ function startHeartbeatTimer(jobId, getStage, intervalMs) {
   return timer;
 }
 
+function setExportRunnerForTests(fn) {
+  exportRunner = typeof fn === "function" ? fn : null;
+}
+
 async function runAcceptedJob(jobId, inner) {
   enableAreaCache();
   const session = createWorkerSession(jobId);
   const timer = startHeartbeatTimer(jobId, () => session.stageName());
   try {
-    return await completeExportJob(jobId, inner, {
+    const run = exportRunner || completeExportJob;
+    return await run(jobId, inner, {
       worker: "fly",
       onProgress: (patch) => session.onProgress(patch),
     });
@@ -208,6 +217,48 @@ async function runAcceptedJob(jobId, inner) {
   }
 }
 
+/**
+ * Exit only when no export is in flight and no request is still being
+ * read. A hold blocks the exit for that request and does not slide the
+ * idle clock, so a health check cannot keep the machine up. An in-flight
+ * export slides the clock, including after the client has dropped.
+ */
+function createIdleExit(opts) {
+  const idleMs = opts && opts.idleMs != null ? opts.idleMs : IDLE_EXIT_MS;
+  const nowFn = (opts && opts.now) || Date.now;
+  const exitFn = (opts && opts.exit) || (() => process.exit(0));
+  const inFlightFn = (opts && opts.inFlight) || jobInFlight;
+  let idleSince = nowFn();
+  let holds = 0;
+  let exited = false;
+  return {
+    hold() {
+      holds += 1;
+      let released = false;
+      return function release() {
+        if (released) return;
+        released = true;
+        if (holds > 0) holds -= 1;
+      };
+    },
+    check() {
+      if (exited) return false;
+      const now = nowFn();
+      if (inFlightFn()) {
+        idleSince = now;
+        return false;
+      }
+      if (holds > 0) return false;
+      if (now - idleSince >= idleMs) {
+        exited = true;
+        exitFn();
+        return true;
+      }
+      return false;
+    },
+  };
+}
+
 function jobInFlight() {
   return !!inFlight;
 }
@@ -215,6 +266,7 @@ function jobInFlight() {
 module.exports = {
   BODY_MAX,
   HEARTBEAT_MS,
+  IDLE_EXIT_MS,
   handleWorkerRequest,
   configureBlobsFromEnv,
   secretOk,
@@ -224,4 +276,6 @@ module.exports = {
   startHeartbeatTimer,
   stageStartLine,
   stageDoneLine,
+  createIdleExit,
+  setExportRunnerForTests,
 };
