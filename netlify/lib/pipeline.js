@@ -27,7 +27,7 @@ const {
   COMPATIBILITY_MODE,
 } = require("./materials");
 const { isParkingClass, planOutdoor, fitOutdoorBudget } = require("./outdoor-clutter");
-const { decodePlate, needsPitchImage } = require("./vehicle-track");
+const { decodePlate, needsPitchImage, roofWantsDocks } = require("./vehicle-track");
 const { treePairsFromPoints } = require("./vegetation");
 const { intersectionAreaPx } = require("./poly-clip");
 const { dedupeStackedFootprints } = require("./conflate");
@@ -159,9 +159,12 @@ const ZIP_TROUBLESHOOT =
  * Size is measured after clipping the ring to the imagery frame. Off-map MS
  * hulls (Wynn SE blob) become empty/tiny instead of “mega”.
  *
- * Coarse rings above MEGA_CAMPUS_M2 are still dropped. Detailed outlines
- * (USA Structures / high-vertex roofs) may reach HOTEL_MEGA_M2 so casino and
- * convention podiums (Wynn ~185k m²) are kept. Anything larger is always mega.
+ * Coarse rings above MEGA_CAMPUS_M2 are still dropped when they are a window
+ * onto a larger blob. Detailed outlines (USA Structures / high-vertex roofs)
+ * may reach HOTEL_MEGA_M2 so casino and convention podiums (Wynn ~185k m²)
+ * are kept. A coarse building that is mostly inside the draw and covers a
+ * large share of that draw is the subject of the export: clip it, do not
+ * drop it. Anything above HOTEL_MEGA_M2 is still a campus blob.
  */
 const MEGA_CAMPUS_M2 = 150000;
 const HOTEL_MEGA_M2 = 400000;
@@ -205,6 +208,29 @@ function isMegaCampus(areaM2, vertCount) {
   if (areaM2 > HOTEL_MEGA_M2) return true;
   const verts = vertCount == null ? 0 : +vertCount;
   return !(verts >= MEGA_MIN_DETAIL_VERTS);
+}
+
+/**
+ * A coarse outline above 150,000 m² that is mostly inside the draw and
+ * covers a large share of it is the building that was drawn. Clip the
+ * part outside the image. A city blob that only overlaps the draw stays mega.
+ */
+function isDrawSubject(clippedM2, totalM2, frameM2) {
+  if (!(clippedM2 > MEGA_CAMPUS_M2) || !(frameM2 > 0)) return false;
+  if (clippedM2 > HOTEL_MEGA_M2) return false;
+  const inside = totalM2 > 0 ? clippedM2 / totalM2 : 1;
+  const fill = clippedM2 / frameM2;
+  return inside >= 0.5 && fill >= 0.35;
+}
+
+function frameAreaM2(frame) {
+  if (!frame || !(frame.widthM > 0) || !(frame.lengthM > 0)) return 0;
+  return frame.widthM * frame.lengthM;
+}
+
+function dropAsMega(clippedM2, totalM2, frame, vertCount) {
+  if (isDrawSubject(clippedM2, totalM2, frameAreaM2(frame))) return false;
+  return isMegaCampus(clippedM2, vertCount);
 }
 
 function pxRingAreaM2(pts, mpuX, mpuY) {
@@ -310,6 +336,7 @@ function coverageSummary(stats) {
     if (stats.includeRvs) bits.push("RVs " + (stats.rvAreas || 0));
     if (stats.includeRvs && stats.trailerAreas) bits.push("Trailers " + stats.trailerAreas);
     if (stats.includeRvs && stats.semiAreas) bits.push("Semis " + stats.semiAreas);
+    if (stats.storageAreas) bits.push("Storage " + stats.storageAreas);
     if (stats.includeRvs && stats.boatAreas) bits.push("Boats " + stats.boatAreas);
     if (stats.carAreas) bits.push("Cars " + stats.carAreas);
     if (stats.mobileHomeAreas) bits.push("Mobile homes " + stats.mobileHomeAreas);
@@ -1816,6 +1843,7 @@ function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase
     exactMetres:
       heightSource === HEIGHT_SOURCE ||
       heightSource === LIDAR_HEIGHT ||
+      heightSource === "warehouse" ||
       heightSource === "static-caravan" ||
       heightSource === "mobile-home" ||
       base > 0 ||
@@ -2016,7 +2044,8 @@ function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSou
   // that misses the map is a clip, same as before.
   const tight = am > 80000 ? 1e-7 : am > 20000 ? 1e-6 : 2.5e-6;
   const detailed = dpDegRing(ring, tight) || ring;
-  if (isMegaCampus(am, ringVertexCount(detailed))) return "mega";
+  const totalM2 = ringAreaM2(ring, frame.mpd);
+  if (dropAsMega(am, totalM2, frame, ringVertexCount(detailed))) return "mega";
   const tol = 2 / Math.min(frame.mpd.lon, frame.mpd.lat);
   const pieces = ringsUnderVertexCap(ring, MAX_OI_RING_VERTS, tol, frame.mpd, 0);
   if (!pieces.length) return ringVertexCount(ring) > MAX_OI_RING_VERTS ? "verts" : "skip";
@@ -2108,7 +2137,8 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
   const clippedPts = clipRingToRect(pts, frame.imgW, frame.imgH);
   if (!clippedPts || clippedPts.length < 3) return "clip";
   const am = pxRingAreaM2(clippedPts, frame.mpuX, frame.mpuY);
-  if (isMegaCampus(am, detailVerts)) return "mega";
+  const totalM2 = ringAreaM2(ring, frame.mpd);
+  if (dropAsMega(am, totalM2, frame, detailVerts)) return "mega";
   // A static caravan is a real trailer, often narrower than the 3 m sliver floor.
   if (am < (keepThin ? 8 : MIN_AREA_M2)) return "tiny";
   const slopeRings = slopeRingsForEmit(ring, simple, clippedPts, frame);
@@ -3049,6 +3079,7 @@ function buildClutter({
   let rvAreas = 0;
   let trailerAreas = 0;
   let semiAreas = 0;
+  let storageAreas = 0;
   let boatAreas = 0;
   let carAreas = 0;
   let mobileHomeAreas = 0;
@@ -3070,12 +3101,16 @@ function buildClutter({
   const guides = explicitGuides.length ? explicitGuides : guideIn;
   const explicitBridges = Array.isArray(bridgeFeatures) ? bridgeFeatures : [];
   const bridges = explicitBridges;
+  const storageFeats = [];
+  for (let i = 0; i < outdoorRest.length; i++) {
+    if (outdoorRest[i] && outdoorRest[i].kind === "storage") storageFeats.push(outdoorRest[i]);
+  }
   let planned = null;
   let converted = null;
   const planGuides = guides.length > 0 || bridges.length > 0;
-  if ((outdoorOn && outdoorMiss !== true) || planGuides) {
+  if ((outdoorOn && outdoorMiss !== true) || planGuides || storageFeats.length) {
     const buildings = [];
-    if ((includeWater === true || includeParking === true) && outdoorOn && outdoorMiss !== true) {
+    if ((includeWater === true || includeParking === true || includeRvs === true) && outdoorOn && outdoorMiss !== true) {
       for (let i = 0; i < fp.oiAreas.length; i++) {
         buildings.push({
           index: i,
@@ -3084,9 +3119,16 @@ function buildClutter({
         });
       }
     }
-    const features = (outdoorOn && outdoorMiss !== true ? outdoorRest : []).concat(guides, bridges);
+    const liveOutdoor = outdoorOn && outdoorMiss !== true ? outdoorRest : storageFeats;
+    const features = liveOutdoor.concat(guides, bridges);
     let vehiclePlate = null;
-    if (includeRvs === true && needsPitchImage(features)) vehiclePlate = decodePlate(imgBuf);
+    const dockRings = [];
+    for (let i = 0; i < buildings.length; i++) {
+      if (buildings[i] && buildings[i].ringPx) dockRings.push(buildings[i].ringPx);
+    }
+    if (includeRvs === true && (needsPitchImage(features) || roofWantsDocks(dockRings, frame))) {
+      vehiclePlate = decodePlate(imgBuf);
+    }
     planned = planOutdoor({
       features,
       frame,
@@ -3112,7 +3154,7 @@ function buildClutter({
     const kind = outdoorKinds[i];
     if (kind === "water" || kind === "parking" || kind === "car") waterParking++;
     else if (kind === "guideway" || kind === "bridge") deckCount++;
-    else if (kind === "rv" || kind === "trailer" || kind === "semi" || kind === "boat") rvCount++;
+    else if (kind === "rv" || kind === "trailer" || kind === "semi" || kind === "boat" || kind === "storage") rvCount++;
   }
   // Trees used to take every slot the buildings left. A dense campus then
   // reported Guideways 0. Hold the rail and the road decks first, then water.
@@ -3174,7 +3216,7 @@ function buildClutter({
     const otherKinds = [];
     for (let i = 0; i < converted.kinds.length; i++) {
       const kind = converted.kinds[i];
-      if (kind === "rv" || kind === "trailer" || kind === "semi" || kind === "boat") {
+      if (kind === "rv" || kind === "trailer" || kind === "semi" || kind === "boat" || kind === "storage") {
         vehicleList.push({ area: converted.areas[i], kind });
       } else {
         otherAreas.push(converted.areas[i]);
@@ -3272,6 +3314,7 @@ function buildClutter({
   rvAreas = 0;
   trailerAreas = 0;
   semiAreas = 0;
+  storageAreas = 0;
   boatAreas = 0;
   carAreas = 0;
   mobileHomeAreas = 0;
@@ -3291,6 +3334,7 @@ function buildClutter({
     else if (chunk.kind === "rv") rvAreas++;
     else if (chunk.kind === "trailer") trailerAreas++;
     else if (chunk.kind === "semi") semiAreas++;
+    else if (chunk.kind === "storage") storageAreas++;
     else if (chunk.kind === "boat") boatAreas++;
     else if (chunk.kind === "mobile-home") mobileHomeAreas++;
     else wallAreas++;
@@ -3408,6 +3452,7 @@ function buildClutter({
     rvAreas,
     trailerAreas,
     semiAreas,
+    storageAreas,
     boatAreas,
     carAreas,
     mobileHomeAreas,
@@ -3519,6 +3564,8 @@ module.exports = {
   MAX_OI_RING_VERTS,
   megaCampusLimitM2,
   isMegaCampus,
+  isDrawSubject,
+  dropAsMega,
   ringVertexCount,
   pxRingAreaM2,
   coverageStats,

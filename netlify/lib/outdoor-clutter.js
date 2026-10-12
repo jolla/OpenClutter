@@ -19,6 +19,10 @@
  * sit, not one box per car. Empty stalls stay out of that layer.
  * A truck lot keeps a metal semi where the aerial shows a trailer, about
  * 16 by 2.6 m and 4.1 m tall, at 12 dB/m. Empty stalls stay empty.
+ * Dock doors on a large warehouse use that same box, only where the aerial
+ * shows a trailer. A stacked storage yard is a low block at the lidar
+ * height when that cloud is on. With no lidar height and no mapped yard,
+ * the yard is left out.
  * A marina slip is a boat. A multi-storey garage
  * or building=parking stays about 9 m and can recolor a footprint that already
  * covers it. An underground lot is left out.
@@ -44,6 +48,8 @@ const {
   boatsOnWater,
   mobileHomesInRing,
   semisInLot,
+  semisAtDocks,
+  roofWantsDocks,
   occupiedCarLayer,
   finalizeVehicles,
   boatBoxes,
@@ -2238,6 +2244,28 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
     reclass++;
   }
   const items = [];
+  if (vehiclePlate && frame && buildings && buildings.length) {
+    const holes = [];
+    const docks = [];
+    for (let b = 0; b < buildings.length; b++) {
+      const px = buildings[b] && buildings[b].ringPx;
+      if (!px || px.length < 3) continue;
+      const ll = pxRingToLonLat(px, frame);
+      if (!ll || ll.length < 4) continue;
+      const a = ll[0];
+      const b = ll[ll.length - 1];
+      if (a[0] !== b[0] || a[1] !== b[1]) ll.push([a[0], a[1]]);
+      holes.push(ll);
+      if (roofWantsDocks([px], frame)) docks.push(ll);
+    }
+    const found = semisAtDocks(docks, frame, vehiclePlate, holes);
+    for (let i = 0; i < found.length; i++) {
+      const ringPx = lonLatRingToPx(found[i].coords, frame);
+      const material = materialForKind("semi", found[i].heightM || 4.1, found[i].coords, slopeTop, 0);
+      if (!material || !ringPx || ringPx.length < 4) continue;
+      items.push({ ringPx, material, kind: "semi", thin: true });
+    }
+  }
   let shortWalls = 0;
   let guidewaySegs = 0;
   let bridgeSegs = 0;
@@ -2421,7 +2449,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
   return { items, updates, notes, reclass };
 }
 
-const BUDGET_ORDER = ["parking", "car", "water", "guideway", "bridge", "rv", "trailer", "semi", "boat", "mobile-home", "wall", "retaining", "hedge", "fence", "footbridge", "pole"];
+const BUDGET_ORDER = ["parking", "car", "water", "guideway", "bridge", "rv", "trailer", "semi", "storage", "boat", "mobile-home", "wall", "retaining", "hedge", "fence", "footbridge", "pole"];
 
 function budgetNote(kind, keptCount, skipped) {
   const label =
@@ -2443,7 +2471,9 @@ function budgetNote(kind, keptCount, skipped) {
           ? "trailer"
           : kind === "semi"
             ? "semi"
-            : kind === "boat"
+            : kind === "storage"
+              ? "storage yard"
+              : kind === "boat"
               ? "boat"
               : kind === "car"
                 ? "car layer"

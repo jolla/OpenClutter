@@ -10,11 +10,13 @@
  * is gray asphalt rather than a dark membrane or a house roof.
  *
  * Houses stay: they are under MIN_PAVEMENT_AREA_M2 or they are not asphalt.
- * A smooth gray membrane with a measured height stays too: that is a roof,
- * not a car-filled lot. A floor count of two or more stays as well. Cars on
- * a parking deck are not a surface lot. Imagery roof fill (source imagery-roof)
- * is never dropped. Those rings were cut from a smooth plane. This does not
- * invent a replacement outline.
+ * A smooth gray membrane stays too: that is a roof, not a car-filled lot.
+ * A distribution warehouse is that membrane at tens of thousands of square
+ * metres, often with no source height. Cars and stall paint raise the local
+ * deviation, so a textured lot still drops. A floor count of two or more
+ * stays as well. Cars on a parking deck are not a surface lot. Imagery roof
+ * fill (source imagery-roof) is never dropped. Those rings were cut from a
+ * smooth plane. This does not invent a replacement outline.
  */
 
 const { llToImagePx } = require("./geo-frame");
@@ -26,6 +28,12 @@ const MAX_GREEN_FRAC = 0.18;
 const DARK_ROOF_LUMA = 96;
 /** Two decks at about 3 m. A surface lot does not carry a floor count. */
 const STRUCTURE_FLOOR_M = 6;
+/** A warehouse membrane is smoother than a parked row. Above this it is a lot. */
+const MEMBRANE_STD = 5;
+/** One roof, not a town-sized pad. Same band as the hotel mega cap. */
+const MEMBRANE_MAX_M2 = 400000;
+/** No source height on the Lebanon warehouse. The building next door is tagged 12 m. */
+const WAREHOUSE_HEIGHT_M = 12;
 
 function countedStructure(heightM, heightSource) {
   if (!(heightM >= STRUCTURE_FLOOR_M)) return false;
@@ -171,10 +179,32 @@ function pavementEvidence(raw, ringImg, mpu) {
 function smoothMembrane(e, heightM) {
   if (!e || !(e.medianStd < 7.5)) return false;
   if (e.greenFrac >= MAX_GREEN_FRAC) return false;
+  // A distribution warehouse is a smooth gray plane well above 25,000 m².
+  // The deviation gate is what separates it from a car lot. A pad larger
+  // than one roof stays pavement.
+  if (e.medianStd < MEMBRANE_STD && e.areaM2 >= 20000 && e.areaM2 < MEMBRANE_MAX_M2) return true;
   // A measured height plus a smooth plane is a roof, including a large gray
   // hotel wing. The area cap keeps a town-sized smooth pad from coming back.
   if (heightM >= 3.5 && e.areaM2 < 25000) return true;
-  return e.areaM2 < 1800 && e.medianStd < 5;
+  return e.areaM2 < 1800 && e.medianStd < MEMBRANE_STD;
+}
+
+/**
+ * The asphalt rules, ignoring the membrane exception. A gray warehouse
+ * matches these and is kept only because the plane is smooth.
+ */
+function pavementDespiteMembrane(e, heightM) {
+  if (!e || e.n < 20) return false;
+  if (!(e.areaM2 >= MIN_PAVEMENT_AREA_M2)) return false;
+  if (e.roofFrac >= MAX_ROOF_FRAC) return false;
+  if (e.greenFrac >= MAX_GREEN_FRAC) return false;
+  if (heightM >= 3.5 && e.greenFrac >= 0.05 && e.medianStd >= 10) return false;
+  if (e.meanY < DARK_ROOF_LUMA && e.asphaltFrac < 0.45) return false;
+  if (e.asphaltFrac >= 0.38 && e.roofFrac < 0.1 && e.meanY >= 100 && e.meanY <= 150 && e.meanSat < 0.22) return true;
+  if (e.areaM2 >= 2500 && e.roofFrac < 0.08 && e.meanY >= 105 && e.meanY <= 145 && e.meanSat < 0.2 && e.greenFrac < 0.1) {
+    return true;
+  }
+  return false;
 }
 
 function evidenceIsPavement(e, heightM, heightSource) {
@@ -227,31 +257,45 @@ function rejectPavementFootprints(raw, frame, features) {
     const rings = featureExteriorRings(f.geometry);
     if (!rings.length) continue;
     const keepRings = [];
+    let seatWarehouse = false;
+    const props0 = f.properties || {};
+    let heightM = Number(props0.height != null ? props0.height : props0.Height || props0.HEIGHT);
+    let heightSource = props0.heightSource || "";
+    const floors = Number(props0.numFloors);
+    if (floors >= 2 && floors <= 60) {
+      if (!(heightM >= STRUCTURE_FLOOR_M)) heightM = floors * 3;
+      if (!countedStructure(heightM, heightSource)) heightSource = "overture-floors";
+    }
     for (let r = 0; r < rings.length; r++) {
       const img = [];
       for (let k = 0; k < rings[r].length; k++) {
         img.push(llToImagePx(rings[r][k][0], rings[r][k][1], frame));
       }
-      const props = f.properties || {};
-      let heightM = Number(props.height != null ? props.height : props.Height || props.HEIGHT);
-      let heightSource = props.heightSource || "";
-      const floors = Number(props.numFloors);
-      if (floors >= 2 && floors <= 60) {
-        if (!(heightM >= STRUCTURE_FLOOR_M)) heightM = floors * 3;
-        if (!countedStructure(heightM, heightSource)) heightSource = "overture-floors";
-      }
+      const evidence = pavementEvidence(raw, img, frame.mpuX);
       if (isPavementFootprint(raw, img, frame.mpuX, heightM, heightSource)) dropped++;
-      else keepRings.push(rings[r]);
+      else {
+        keepRings.push(rings[r]);
+        if (
+          !(heightM > 2) &&
+          !countedStructure(heightM, heightSource) &&
+          smoothMembrane(evidence, 0) &&
+          pavementDespiteMembrane(evidence, heightM)
+        ) {
+          seatWarehouse = true;
+        }
+      }
     }
     if (!keepRings.length) continue;
-    if (keepRings.length === rings.length) {
-      kept.push(f);
-      continue;
+    const props = f.properties ? Object.assign({}, f.properties) : {};
+    if (seatWarehouse) {
+      props.height = WAREHOUSE_HEIGHT_M;
+      props.heightSource = "warehouse";
     }
+    const sameGeom = keepRings.length === rings.length;
     kept.push({
       type: f.type || "Feature",
-      properties: f.properties ? Object.assign({}, f.properties) : {},
-      geometry: geometryFromRings(keepRings),
+      properties: props,
+      geometry: sameGeom ? f.geometry : geometryFromRings(keepRings),
     });
   }
   return { features: kept, dropped };
@@ -264,6 +308,8 @@ module.exports = {
   evidenceIsPavement,
   countedStructure,
   smoothMembrane,
+  pavementDespiteMembrane,
+  WAREHOUSE_HEIGHT_M,
   isPavementFootprint,
   rejectPavementFootprints,
 };

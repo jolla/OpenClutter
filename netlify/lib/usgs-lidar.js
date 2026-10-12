@@ -568,9 +568,138 @@ function componentHeight(grid, cells) {
   return h;
 }
 
+const YARD_BUFFER_M = 70;
+const YARD_MIN_H = 2.1;
+const YARD_MAX_H = 8;
+const YARD_MIN_M2 = 400;
+const YARD_MAX_M2 = 25000;
+const YARD_HOST_M2 = 8000;
+
+function distToSegM(p, a, b) {
+  const lat = (a[1] + b[1] + p[1]) / 3;
+  const mLon = 111320 * Math.cos((lat * Math.PI) / 180);
+  function xy(q) {
+    return [q[0] * mLon, q[1] * 110540];
+  }
+  const P = xy(p);
+  const A = xy(a);
+  const B = xy(b);
+  const dx = B[0] - A[0];
+  const dy = B[1] - A[1];
+  const len2 = dx * dx + dy * dy || 1;
+  let t = ((P[0] - A[0]) * dx + (P[1] - A[1]) * dy) / len2;
+  if (t < 0) t = 0;
+  if (t > 1) t = 1;
+  const x = A[0] + t * dx;
+  const y = A[1] + t * dy;
+  return Math.hypot(P[0] - x, P[1] - y);
+}
+
+function yardHeightM(grid, rec) {
+  const g = groundAt(grid, rec.ix, rec.iy);
+  if (g == null) return null;
+  if (rec.bc >= 2) return null;
+  if (rec.vc > 0) return null;
+  if (rec.uc < 3 || rec.uMax == null || rec.uMin == null) return null;
+  if (rec.uMax - rec.uMin > 6) return null;
+  const z = percentile(rec.u, 0.75);
+  if (z == null) return null;
+  const h = z - g;
+  if (h < YARD_MIN_H || h > YARD_MAX_H) return null;
+  return h;
+}
+
+function nearHost(ring, lon, lat) {
+  if (!ring || ring.length < 4) return false;
+  if (pointInRing(lon, lat, ring)) return false;
+  let best = Infinity;
+  for (let i = 0; i < ring.length - 1; i++) {
+    const d = distToSegM([lon, lat], ring[i], ring[i + 1]);
+    if (d < best) best = d;
+  }
+  return best <= YARD_BUFFER_M;
+}
+
+/**
+ * Stacked goods beside a large building. Height is the lidar return above
+ * ground. A cell on the roof, in vegetation, or with no cloud stays out.
+ * @returns {Array<{kind:string, coords:number[][], closed:boolean, heightM:number, explicitHeight:boolean}>}
+ */
+function storageYards(grid, rings) {
+  const hosts = [];
+  for (let i = 0; i < (rings || []).length; i++) {
+    if (ringAreaM2(rings[i]) >= YARD_HOST_M2) hosts.push(rings[i]);
+  }
+  if (!hosts.length || !grid || !grid.cells) return [];
+  const seeds = [];
+  for (const rec of grid.cells.values()) {
+    const h = yardHeightM(grid, rec);
+    if (h == null) continue;
+    const c = cellCenter(grid, rec);
+    if (ringCovers(rings, c[0], c[1])) continue;
+    let near = false;
+    for (let i = 0; i < hosts.length; i++) {
+      if (nearHost(hosts[i], c[0], c[1])) {
+        near = true;
+        break;
+      }
+    }
+    if (!near) continue;
+    rec.yardH = h;
+    seeds.push(rec);
+  }
+  const seen = new Set();
+  const out = [];
+  const cellArea = (grid.cellGroundM || grid.cell || 2) * (grid.cellGroundM || grid.cell || 2);
+  for (let i = 0; i < seeds.length; i++) {
+    const seed = seeds[i];
+    const sk = seed.ix + "," + seed.iy;
+    if (seen.has(sk)) continue;
+    const comp = [];
+    const stack = [seed];
+    seen.add(sk);
+    while (stack.length) {
+      const cur = stack.pop();
+      comp.push(cur);
+      const nbs = [
+        [cur.ix + 1, cur.iy],
+        [cur.ix - 1, cur.iy],
+        [cur.ix, cur.iy + 1],
+        [cur.ix, cur.iy - 1],
+      ];
+      for (let k = 0; k < nbs.length; k++) {
+        const key = nbs[k][0] + "," + nbs[k][1];
+        if (seen.has(key)) continue;
+        const nb = grid.cells.get(key);
+        if (!nb || !(nb.yardH > 0)) continue;
+        seen.add(key);
+        stack.push(nb);
+      }
+    }
+    const area = comp.length * cellArea;
+    if (area < YARD_MIN_M2 || area > YARD_MAX_M2) continue;
+    const ring = polygonForCells(grid, comp);
+    if (!ring) continue;
+    let sum = 0;
+    for (let c = 0; c < comp.length; c++) sum += comp[c].yardH;
+    const heightM = Math.round((sum / comp.length) * 10) / 10;
+    if (!(heightM >= YARD_MIN_H && heightM <= YARD_MAX_H)) continue;
+    for (let c = 0; c < comp.length; c++) comp[c].yardClaimed = true;
+    out.push({
+      kind: "storage",
+      coords: ring,
+      closed: true,
+      heightM,
+      explicitHeight: true,
+    });
+  }
+  return out;
+}
+
 function missingFootprints(grid, rings) {
   const seeds = [];
   for (const rec of grid.cells.values()) {
+    if (rec.yardClaimed) continue;
     const nd = cellNdsM(grid, rec);
     if (!nd) continue;
     if (nd.kind === "class6" && nd.h < CLASS6_MIN_M) continue;
@@ -661,6 +790,7 @@ function applyLidarSample(features, trees, grid) {
       })
     );
   }
+  const yards = storageYards(grid, rings);
   const added = missingFootprints(grid, rings);
   for (let i = 0; i < added.length; i++) next.push(added[i]);
   const treeList = Array.isArray(trees) ? trees : [];
@@ -698,7 +828,7 @@ function applyLidarSample(features, trees, grid) {
     canopy++;
     outTrees.push(tree);
   }
-  return { features: next, trees: outTrees, heights, added: added.length, canopy };
+  return { features: next, trees: outTrees, heights, added: added.length, canopy, yards };
 }
 
 function mb(bytes) {
@@ -1122,6 +1252,7 @@ module.exports = {
   canopyCellM,
   canopyRaster,
   applyLidarSample,
+  storageYards,
   lidarStatusLine,
   lidarNote,
   fetchUsgsLidar,

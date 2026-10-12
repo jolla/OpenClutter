@@ -12,6 +12,7 @@ const {
   canopyCellM,
   canopyRaster,
   applyLidarSample,
+  storageYards,
   lidarStatusLine,
   fetchUsgsLidar,
   mercator,
@@ -249,6 +250,33 @@ describe("USGS lidar", () => {
     assert.equal(applied.canopy, 1);
     assert.equal(applied.trees[0].heightSource, HEIGHT_SOURCE);
     assert.ok(applied.trees[0].heightM > 10);
+  });
+
+  it("reads a stacked yard beside a warehouse and leaves the roof alone", () => {
+    const points = [];
+    for (let ix = 0; ix <= 30; ix++) {
+      for (let iy = 0; iy <= 24; iy++) points.push(pt(ix, iy, 280, 2));
+    }
+    for (let ix = 8; ix <= 22; ix++) {
+      for (let iy = 0; iy <= 4; iy++) {
+        points.push(pt(ix, iy, 283.6, 1));
+        points.push(pt(ix, iy, 284.0, 1));
+        points.push(pt(ix, iy, 284.4, 1));
+      }
+    }
+    const grid = gridFromPoints(points, frame, { cellM: CELL, spacingM: 2 });
+    const host = {
+      type: "Feature",
+      properties: { height: 12, heightSource: "warehouse" },
+      geometry: { type: "Polygon", coordinates: [ringAround(4, 6, 28, 22)] },
+    };
+    const applied = applyLidarSample([host], [], grid);
+    assert.equal(applied.added, 0);
+    assert.ok(applied.yards && applied.yards.length >= 1, "yards " + (applied.yards && applied.yards.length));
+    const yard = applied.yards[0];
+    assert.equal(yard.kind, "storage");
+    assert.ok(yard.heightM >= 2.1 && yard.heightM <= 8, "height " + yard.heightM);
+    assert.equal(applied.features[0].properties.heightSource, "warehouse");
   });
 
   it("says whether lidar heights were used", () => {
