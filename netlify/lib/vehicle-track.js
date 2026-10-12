@@ -46,8 +46,9 @@ const MOBILE_HOME_M = 4;
 /** A light roof on the pad, in square metres. Smaller is gravel. Larger is a building or a woods. */
 const OCCUPIED_LO = 6;
 const OCCUPIED_HI = 180;
-/** A vehicle just off the pad, not a merged row of roofs. */
-const NEAR_BLOB_HI = 45;
+/** A white roof has to touch the pad. A few meters of grass is the next site. */
+const ROOF_TOUCH_M = 3;
+const ROOF_MIN_M2 = 1.4;
 const CAR_MERGE_MIN = 8;
 const SEMI_CAP = 80;
 const BOAT_CAP = 200;
@@ -195,21 +196,124 @@ function ringFraction(ring, frame, plate) {
   return vehicleBlobM2(ring, frame, plate);
 }
 
+function isWhiteRoofPixel(r, g, b) {
+  const y = 0.299 * r + 0.587 * g + 0.114 * b;
+  if (y < 165 || y > 252) return false;
+  if (g > r + 10 && g > b + 6) return false;
+  return Math.max(r, g, b) - Math.min(r, g, b) <= 50;
+}
+
 /**
- * A roof inside the pad counts first. A smaller roof just beside the pad
- * counts when the pad itself is grass. A blob bigger than one vehicle and
- * outside the pad is a row or a building, and it does not count.
+ * The white roof has to sit on the pad. A roof a few meters away, across
+ * grass, belongs to the next site and does not count.
  */
 function pitchVehicle(ring, frame, plate) {
-  const inside = vehicleBlobM2(ring, frame, plate);
-  if (inside >= OCCUPIED_LO && inside <= OCCUPIED_HI) {
-    const c = centroidLL(ring);
-    if (!c) return { m2: inside, lon: null, lat: null };
-    return { m2: inside, lon: c[0], lat: c[1] };
+  if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return null;
+  const poly = [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const xy = llToImagePx(ring[i][0], ring[i][1], frame);
+    if (!Number.isFinite(xy[0]) || !Number.isFinite(xy[1])) continue;
+    poly.push(xy);
+    if (xy[0] < minX) minX = xy[0];
+    if (xy[1] < minY) minY = xy[1];
+    if (xy[0] > maxX) maxX = xy[0];
+    if (xy[1] > maxY) maxY = xy[1];
   }
-  const near = vehicleNear(ring, frame, plate, 8);
-  if (near && near.m2 >= OCCUPIED_LO && near.m2 <= NEAR_BLOB_HI) return near;
-  return { m2: inside || 0, lon: null, lat: null };
+  if (poly.length < 3) return { m2: 0, lon: null, lat: null };
+  const mpu = Math.min(frame.mpuX || 1, frame.mpuY || 1);
+  const mpuX = frame.mpuX > 0 ? frame.mpuX : mpu;
+  const mpuY = frame.mpuY > 0 ? frame.mpuY : mpu;
+  const padPx = Math.max(2, Math.round(ROOF_TOUCH_M / Math.min(mpuX, mpuY)) + 2);
+  const x0 = Math.max(0, Math.floor(minX) - padPx);
+  const y0 = Math.max(0, Math.floor(minY) - padPx);
+  const x1 = Math.min(plate.width - 1, Math.ceil(maxX) + padPx);
+  const y1 = Math.min(plate.height - 1, Math.ceil(maxY) + padPx);
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  if (bw < 2 || bh < 2 || bw * bh > 400000) return { m2: 0, lon: null, lat: null };
+  function distM(px, py) {
+    if (pointInRing([px, py], poly)) return 0;
+    let d2 = 1e18;
+    for (let k = 0; k < poly.length; k++) {
+      const a = poly[k];
+      const b = poly[(k + 1) % poly.length];
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const len2 = dx * dx + dy * dy;
+      let t = len2 > 0 ? ((px - a[0]) * dx + (py - a[1]) * dy) / len2 : 0;
+      if (t < 0) t = 0;
+      else if (t > 1) t = 1;
+      const ex = px - (a[0] + t * dx);
+      const ey = py - (a[1] + t * dy);
+      d2 = Math.min(d2, ex * ex + ey * ey);
+    }
+    return Math.sqrt(d2) * Math.min(mpuX, mpuY);
+  }
+  const mask = new Uint8Array(bw * bh);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = (y * plate.width + x) * 4;
+      if (!isWhiteRoofPixel(plate.data[i], plate.data[i + 1], plate.data[i + 2])) continue;
+      if (distM(x + 0.5, y + 0.5) > ROOF_TOUCH_M + 0.5) continue;
+      mask[(y - y0) * bw + (x - x0)] = 1;
+    }
+  }
+  const seen = new Uint8Array(bw * bh);
+  const stack = [];
+  let best = null;
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i] || seen[i]) continue;
+    const cells = [];
+    stack.push(i);
+    seen[i] = 1;
+    while (stack.length) {
+      const k = stack.pop();
+      cells.push(k);
+      const x = k % bw;
+      const y = (k / bw) | 0;
+      const nbrs = [
+        [x - 1, y],
+        [x + 1, y],
+        [x, y - 1],
+        [x, y + 1],
+        [x - 1, y - 1],
+        [x + 1, y - 1],
+        [x - 1, y + 1],
+        [x + 1, y + 1],
+      ];
+      for (let q = 0; q < nbrs.length; q++) {
+        const nx = nbrs[q][0];
+        const ny = nbrs[q][1];
+        if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
+        const j = ny * bw + nx;
+        if (!mask[j] || seen[j]) continue;
+        seen[j] = 1;
+        stack.push(j);
+      }
+    }
+    const m2 = cells.length * mpuX * mpuY;
+    if (m2 < ROOF_MIN_M2) continue;
+    let dmin = 1e9;
+    let sx = 0;
+    let sy = 0;
+    for (let c = 0; c < cells.length; c++) {
+      const x = x0 + (cells[c] % bw) + 0.5;
+      const y = y0 + ((cells[c] / bw) | 0) + 0.5;
+      sx += x;
+      sy += y;
+      dmin = Math.min(dmin, distM(x, y));
+    }
+    if (dmin > ROOF_TOUCH_M) continue;
+    if (!best || m2 > best.m2) best = { m2, touch: dmin <= 0.4 };
+  }
+  if (!best) return { m2: 0, lon: null, lat: null };
+  const c = centroidLL(ring);
+  if (!c) return { m2: OCCUPIED_LO + 1, lon: null, lat: null, onPad: best.touch };
+  return { m2: OCCUPIED_LO + 1, lon: c[0], lat: c[1], onPad: best.touch };
 }
 
 /**
@@ -384,6 +488,7 @@ function finalizeVehicles(features, fractionFor) {
     }
     const cls = decidePitch(use, fraction);
     if (cls === "trailer" && f.kind === "trailer-candidate") {
+      if (!found || found.onPad !== true) continue;
       let next = Object.assign({}, f, { kind: "trailer" });
       if (found && Number.isFinite(found.lon)) next = recenterBox(next, found.lon, found.lat);
       out.push(next);
