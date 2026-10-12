@@ -38,6 +38,7 @@ const {
   isMarinaTags,
   isMooringTags,
   pitchVehicle,
+  boatsOnWater,
   finalizeVehicles,
   semiBoxes,
   boatBoxes,
@@ -1291,7 +1292,6 @@ function parseOverpass(payload, want, bbox, deckCap) {
       kind === "rv-pitch" ||
       kind === "rv-road" ||
       kind === "truck-lot" ||
-      kind === "marina" ||
       kind === "mooring"
     ) {
       continue;
@@ -1396,7 +1396,7 @@ function limitFeatures(features, bbox, deckCap) {
     else if (f.kind === "pole") poles.push(f);
     else if (f.kind === "guideway") guideways.push(f);
     else if (f.kind === "bridge") bridges.push(f);
-    else if (f.kind === "rv" || f.kind === "trailer" || f.kind === "trailer-candidate" || f.kind === "semi" || f.kind === "boat") rvs.push(f);
+    else if (f.kind === "rv" || f.kind === "trailer" || f.kind === "trailer-candidate" || f.kind === "semi" || f.kind === "boat" || f.kind === "marina") rvs.push(f);
     else if (LINE_KINDS[f.kind]) walls.push(f);
   }
   const w = keepLargest(water, WATER_CAP);
@@ -2308,6 +2308,17 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
         for (let r = 0; r < rings.length; r++) {
           items.push({ ringPx: rings[r], material, kind: f.kind, thin: true });
         }
+      }
+      continue;
+    }
+    if (f.kind === "marina") {
+      if (!vehiclePlate || !frame) continue;
+      const found = boatsOnWater(f.coords, frame, vehiclePlate);
+      for (let b = 0; b < found.length; b++) {
+        const ringPx = lonLatRingToPx(found[b].coords, frame);
+        const material = materialForKind("boat", found[b].heightM || 3.5, found[b].coords, slopeTop, 0);
+        if (!material || ringPx.length < 4) continue;
+        items.push({ ringPx, material, kind: "boat", thin: true });
       }
       continue;
     }
