@@ -3998,6 +3998,11 @@ function abortedDem() {
  * @returns {Promise<{samples:{lon:number,lat:number,z:number}[], kind:string, attribution:string}>}
  */
 async function fetchTerrainDem(frame, fetchFn, opts) {
+  const { timeSpan } = require("./stage-clock");
+  return timeSpan("dem", () => fetchTerrainDemWork(frame, fetchFn, opts));
+}
+
+async function fetchTerrainDemWork(frame, fetchFn, opts) {
   const allowSurface = !!(opts && opts.allowSurfaceFallback);
   const parent = opts && opts.signal;
   const surfaceEarly = beginParallelSurface(frame, opts);
