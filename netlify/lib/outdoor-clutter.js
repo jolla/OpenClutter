@@ -15,7 +15,8 @@
  * on both sides of the internal roads, about 12 m apart. A static caravan
  * stays a building. A mobile home is a building at about 4 m.
  *
- * A surface parking lot is one 1.5 m car layer, not one box per car.
+ * A surface parking lot is one 1.5 m car layer around the rows where cars
+ * sit, not one box per car. Empty stalls stay out of that layer.
  * A truck lot keeps a metal semi where the aerial shows a trailer, about
  * 16 by 2.6 m and 4.1 m tall, at 12 dB/m. Empty stalls stay empty.
  * A marina slip is a boat. A multi-storey garage
@@ -43,6 +44,7 @@ const {
   boatsOnWater,
   mobileHomesInRing,
   semisInLot,
+  occupiedCarLayer,
   finalizeVehicles,
   boatBoxes,
 } = require("./vehicle-track");
@@ -2386,7 +2388,14 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       continue;
     }
     if (f.kind === "water" || f.kind === "parking" || f.kind === "car") {
-      const parts = slopeAreaParts(slopeTop, f.coords);
+      let carRings = null;
+      if (f.kind === "car" && vehiclePlate && frame) {
+        const found = occupiedCarLayer(f.coords, frame, vehiclePlate);
+        if (found && found.length) carRings = found;
+      }
+      const bases = carRings || [f.coords];
+      for (let b = 0; b < bases.length; b++) {
+      const parts = slopeAreaParts(slopeTop, bases[b]);
       const cuts =
         f.kind === "water" || f.kind === "car" || (f.kind === "parking" && f.structure === false)
           ? buildingRingsPx(buildings, frame)
@@ -2403,6 +2412,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
           if (!material) continue;
           items.push({ ringPx, material, kind: f.kind, thin: false });
         }
+      }
       }
     }
   }

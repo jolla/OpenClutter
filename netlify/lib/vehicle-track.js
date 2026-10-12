@@ -521,7 +521,7 @@ function needsPitchImage(features) {
     const f = features[i];
     if (!f) continue;
     if (f.kind === "trailer-candidate") return true;
-    if (f.kind === "marina" || f.kind === "mobile-park" || f.kind === "truck-lot") return true;
+    if (f.kind === "marina" || f.kind === "mobile-park" || f.kind === "truck-lot" || f.kind === "car") return true;
     if (f.kind === "rv" && (f.pitchUse === "rv" || f.pitchUse === "tent" || f.pitchUse === "pitch")) return true;
   }
   return false;
@@ -757,6 +757,212 @@ function mergeDenseCars(lonlat) {
     });
   }
   return out;
+}
+
+/**
+ * Where cars sit in a row, grow one layer around that row.
+ * An empty stall with no car beside it stays out. Fewer than 8
+ * cars in rows keeps the caller on the full lot.
+ * @returns {Array<Array<[number, number]>>}
+ */
+function occupiedCarLayer(ring, frame, plate) {
+  if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return [];
+  const poly = [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const xy = llToImagePx(ring[i][0], ring[i][1], frame);
+    if (!Number.isFinite(xy[0]) || !Number.isFinite(xy[1])) continue;
+    poly.push(xy);
+    if (xy[0] < minX) minX = xy[0];
+    if (xy[1] < minY) minY = xy[1];
+    if (xy[0] > maxX) maxX = xy[0];
+    if (xy[1] > maxY) maxY = xy[1];
+  }
+  if (poly.length < 3) return [];
+  const W = plate.width;
+  const H = plate.height;
+  const data = plate.data;
+  if (W < 32 || H < 32) return [];
+  function yAt(x, y) {
+    x = x | 0;
+    y = y | 0;
+    if (x < 0 || y < 0 || x >= W || y >= H) return 180;
+    const i = (y * W + x) * 4;
+    return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+  }
+  function greenAt(x, y) {
+    x = x | 0;
+    y = y | 0;
+    if (x < 0 || y < 0 || x >= W || y >= H) return false;
+    const i = (y * W + x) * 4;
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    return g > r + 12 && g > b + 8;
+  }
+  const I = new Float64Array((W + 1) * (H + 1));
+  for (let y = 0; y < H; y++) {
+    let row = 0;
+    const stride = (y + 1) * (W + 1);
+    const prev = y * (W + 1);
+    for (let x = 0; x < W; x++) {
+      row += yAt(x, y);
+      I[stride + x + 1] = I[prev + x + 1] + row;
+    }
+  }
+  function mean(xa, ya, xb, yb) {
+    xa = Math.max(0, xa | 0);
+    ya = Math.max(0, ya | 0);
+    xb = Math.min(W, xb | 0);
+    yb = Math.min(H, yb | 0);
+    if (xb <= xa || yb <= ya) return 0;
+    const S = W + 1;
+    const s = I[yb * S + xb] - I[ya * S + xb] - I[yb * S + xa] + I[ya * S + xa];
+    return s / ((xb - xa) * (yb - ya));
+  }
+  const hits = [];
+  const yLo = Math.max(16, Math.floor(minY));
+  const yHi = Math.min(H - 16, Math.ceil(maxY));
+  const xLo = Math.max(16, Math.floor(minX));
+  const xHi = Math.min(W - 16, Math.ceil(maxX));
+  for (let y = yLo; y < yHi; y += 3) {
+    for (let x = xLo; x < xHi; x += 3) {
+      if (!pointInRing([x, y], poly) || greenAt(x, y)) continue;
+      let best = 0;
+      let vert = true;
+      const bodyV = mean(x - 3, y - 7, x + 3, y + 7);
+      const left = mean(x - 10, y - 7, x - 5, y + 7);
+      const right = mean(x + 5, y - 7, x + 10, y + 7);
+      const cV = Math.abs(bodyV - (left + right) / 2);
+      if (cV >= 20 && Math.abs(left - right) < 28) {
+        best = cV;
+        vert = true;
+      }
+      const bodyH = mean(x - 7, y - 3, x + 7, y + 3);
+      const up = mean(x - 7, y - 10, x + 7, y - 5);
+      const dn = mean(x - 7, y + 5, x + 7, y + 10);
+      const cH = Math.abs(bodyH - (up + dn) / 2);
+      if (cH > best && Math.abs(up - dn) < 28) {
+        best = cH;
+        vert = false;
+      }
+      if (best < 20) continue;
+      hits.push({ x, y, score: best, vert });
+    }
+  }
+  hits.sort((a, b) => b.score - a.score);
+  const nms = [];
+  for (let i = 0; i < hits.length; i++) {
+    const h = hits[i];
+    let clash = false;
+    for (let k = 0; k < nms.length; k++) {
+      const dx = h.x - nms[k].x;
+      const dy = h.y - nms[k].y;
+      if (dx * dx + dy * dy < 121) {
+        clash = true;
+        break;
+      }
+    }
+    if (!clash) nms.push(h);
+  }
+  const rowed = [];
+  for (let i = 0; i < nms.length; i++) {
+    const h = nms[i];
+    let n = 0;
+    for (let k = 0; k < nms.length; k++) {
+      if (k === i) continue;
+      const dx = Math.abs(nms[k].x - h.x);
+      const dy = Math.abs(nms[k].y - h.y);
+      if (h.vert) {
+        if (dy < 8 && dx >= 10 && dx <= 26) n++;
+      } else if (dx < 8 && dy >= 10 && dy <= 26) n++;
+      if (n >= 2) break;
+    }
+    if (n >= 2) rowed.push(h);
+  }
+  if (rowed.length < CAR_MERGE_MIN) return [];
+  const mpu = Math.min(frame.mpuX > 0 ? frame.mpuX : 0.4, frame.mpuY > 0 ? frame.mpuY : 0.4);
+  const rad = Math.max(4, Math.ceil(8 / mpu));
+  const x0 = Math.max(0, Math.floor(minX) - rad);
+  const y0 = Math.max(0, Math.floor(minY) - rad);
+  const x1 = Math.min(W - 1, Math.ceil(maxX) + rad);
+  const y1 = Math.min(H - 1, Math.ceil(maxY) + rad);
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  if (bw < 8 || bh < 8 || bw * bh > 2500000) return [];
+  const mask = new Uint8Array(bw * bh);
+  for (let i = 0; i < rowed.length; i++) {
+    const h = rowed[i];
+    for (let dy = -rad; dy <= rad; dy++) {
+      const yy = (h.y | 0) + dy;
+      if (yy < y0 || yy > y1) continue;
+      const lim = Math.sqrt(Math.max(0, rad * rad - dy * dy)) | 0;
+      for (let dx = -lim; dx <= lim; dx++) {
+        const xx = (h.x | 0) + dx;
+        if (xx < x0 || xx > x1) continue;
+        if (!pointInRing([xx, yy], poly)) continue;
+        mask[(yy - y0) * bw + (xx - x0)] = 1;
+      }
+    }
+  }
+  function hull(pts) {
+    pts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    function cross(o, a, b) {
+      return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    }
+    const lower = [];
+    for (let i = 0; i < pts.length; i++) {
+      while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], pts[i]) <= 0) lower.pop();
+      lower.push(pts[i]);
+    }
+    const upper = [];
+    for (let i = pts.length - 1; i >= 0; i--) {
+      while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], pts[i]) <= 0) upper.pop();
+      upper.push(pts[i]);
+    }
+    lower.pop();
+    upper.pop();
+    return lower.concat(upper);
+  }
+  const seen = new Uint8Array(bw * bh);
+  const stack = [];
+  const rings = [];
+  for (let i = 0; i < mask.length && rings.length < 24; i++) {
+    if (!mask[i] || seen[i]) continue;
+    stack.push(i);
+    seen[i] = 1;
+    const pts = [];
+    while (stack.length) {
+      const k = stack.pop();
+      const X = k % bw;
+      const Y = (k / bw) | 0;
+      if (X % 4 === 0 && Y % 4 === 0) pts.push([x0 + X, y0 + Y]);
+      for (let e = 0; e < 4; e++) {
+        const nx = X + (e === 0 ? -1 : e === 1 ? 1 : 0);
+        const ny = Y + (e === 2 ? -1 : e === 3 ? 1 : 0);
+        if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
+        const j = ny * bw + nx;
+        if (!mask[j] || seen[j]) continue;
+        seen[j] = 1;
+        stack.push(j);
+      }
+    }
+    if (pts.length < 3) continue;
+    const h = hull(pts);
+    if (h.length < 3) continue;
+    const ringLL = [];
+    for (let p = 0; p < h.length; p++) {
+      const lon = frame.west + (h[p][0] / frame.imgW) * (frame.east - frame.west);
+      const lat = frame.north - (h[p][1] / frame.imgH) * (frame.north - frame.south);
+      ringLL.push([lon, lat]);
+    }
+    ringLL.push(ringLL[0]);
+    rings.push(ringLL);
+  }
+  return rings;
 }
 
 function metersBetween(a, b) {
@@ -1453,6 +1659,7 @@ module.exports = {
   semisInLot,
   boatBoxes,
   mergeDenseCars,
+  occupiedCarLayer,
   scoreVehicles,
   scoreLayerOverlap,
 };
