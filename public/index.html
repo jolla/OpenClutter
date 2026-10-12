@@ -119,6 +119,17 @@
       color: #8b949e;
       font-weight: 500;
     }
+    .leaflet-tooltip.area-chip .area-clear {
+      pointer-events: auto;
+      margin: 0 0 0 6px;
+      padding: 0 2px;
+      border: 0;
+      background: transparent;
+      color: #8b949e;
+      font: 600 13px/1 ui-sans-serif, system-ui, sans-serif;
+      cursor: pointer;
+    }
+    .hint[hidden] { display: none; }
   </style>
 </head>
 <body>
@@ -129,18 +140,17 @@
     <form id="search">
       <input type="search" id="q" placeholder="Search address, press Enter" enterkeyhint="search" required />
     </form>
+    <p id="draw-hint" class="hint">Drag on the map to select an area</p>
     <div class="row">
-      <button type="button" id="draw" class="secondary">Draw</button>
       <button type="button" id="export" disabled>
         <span id="export-fill"></span>
         <span id="export-label">Export</span>
       </button>
     </div>
-    <p id="draw-hint" class="hint">Drag a box, or click corners and click the first to close.</p>
     <button type="button" id="copy-terrain" class="secondary" hidden>Copy terrain</button>
     <p id="copy-note" class="hint" hidden></p>
     <div id="status">
-      <p id="status-line">Click the map to draw the site.</p>
+      <p id="status-line"></p>
       <details id="status-more" hidden>
         <summary>Details</summary>
         <div id="status-body"></div>
@@ -200,7 +210,7 @@
           <option value="8k">8K · 8192 px</option>
         </select>
       </label>
-      <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.159</span></p>
+      <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.160</span></p>
     </details>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
