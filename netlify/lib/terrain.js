@@ -1138,6 +1138,34 @@ function planarSlopedRamp(ring) {
   return Math.abs(area) > 1e-4;
 }
 
+/**
+ * Steepest sloped-floor grade as rise/run. The first edge is the low z and
+ * the opposite edge is the high z. Run is the horizontal distance between
+ * those edges, in the same meters as the clipboard. Raised floors are flat,
+ * so a paste with only those returns 0. No floors returns null.
+ */
+function steepestClipboardGrade(clip) {
+  const floors = clip && clip.slopedFloors;
+  if (!Array.isArray(floors) || !floors.length) {
+    const raised = clip && clip.raisedFloorZones;
+    return Array.isArray(raised) && raised.length ? 0 : null;
+  }
+  let worst = 0;
+  for (let i = 0; i < floors.length; i++) {
+    const ring = floors[i] && floors[i].area && floors[i].area.coordinates && floors[i].area.coordinates[0];
+    if (!ring || ring.length < 4) continue;
+    const rise = +ring[2][2] - +ring[0][2];
+    if (!(rise > 0)) continue;
+    const run = Math.hypot(
+      (ring[2][0] + ring[3][0]) / 2 - (ring[0][0] + ring[1][0]) / 2,
+      (ring[2][1] + ring[3][1]) / 2 - (ring[0][1] + ring[1][1]) / 2
+    );
+    const grade = run > 0 ? rise / run : Infinity;
+    if (grade > worst) worst = grade;
+  }
+  return Number.isFinite(worst) ? worst : null;
+}
+
 /** Largest stored-z disagreement at one clipboard xy, in meters. */
 function slopeCornerGap(floors) {
   const at = new Map();
@@ -4091,6 +4119,7 @@ module.exports = {
   depressWaterBasins,
   pasteableQuad,
   planarSlopedRamp,
+  steepestClipboardGrade,
   slopeCornerGap,
   slopedRing,
   terrainGroundM,

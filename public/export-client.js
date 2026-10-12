@@ -133,6 +133,176 @@
     return { json: "", gpsOnly: false, status: status };
   }
 
+  const JSON_BUDGET_BYTES = 3800000;
+  const M_TO_FT = 3.280839895;
+
+  function finiteNum(value) {
+    const n = +value;
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function formatFt(meters) {
+    const ft = Math.round(meters * M_TO_FT);
+    const sign = ft < 0 ? "-" : "";
+    const abs = String(Math.abs(ft));
+    return sign + abs.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + " ft";
+  }
+
+  function formatMeters(meters) {
+    return (Math.round(meters * 10) / 10).toFixed(1) + " m";
+  }
+
+  function elevPair(meters) {
+    return formatMeters(meters) + " (" + formatFt(meters) + ")";
+  }
+
+  function formatBytes(bytes) {
+    const n = +bytes;
+    if (!(n > 0)) return "";
+    if (n >= 100000) return (n / 1e6).toFixed(2) + " MB";
+    return Math.max(1, Math.round(n / 1000)) + " KB";
+  }
+
+  function exportZipBytes(data) {
+    if (data && data.zipBytes > 0) return data.zipBytes | 0;
+    const b64 = data && data.zipBase64;
+    if (typeof b64 !== "string" || !b64) return 0;
+    let pad = 0;
+    if (b64.endsWith("==")) pad = 2;
+    else if (b64.endsWith("=")) pad = 1;
+    return Math.max(0, Math.floor((b64.length * 3) / 4) - pad);
+  }
+
+  function steepestGrade(clip) {
+    const floors = clip && clip.slopedFloors;
+    if (!Array.isArray(floors) || !floors.length) {
+      const raised = clip && clip.raisedFloorZones;
+      return Array.isArray(raised) && raised.length ? 0 : null;
+    }
+    let worst = 0;
+    for (let i = 0; i < floors.length; i++) {
+      const ring = floors[i] && floors[i].area && floors[i].area.coordinates && floors[i].area.coordinates[0];
+      if (!ring || ring.length < 4) continue;
+      const rise = +ring[2][2] - +ring[0][2];
+      if (!(rise > 0)) continue;
+      const run = Math.hypot(
+        (ring[2][0] + ring[3][0]) / 2 - (ring[0][0] + ring[1][0]) / 2,
+        (ring[2][1] + ring[3][1]) / 2 - (ring[0][1] + ring[1][1]) / 2
+      );
+      const grade = run > 0 ? rise / run : Infinity;
+      if (grade > worst) worst = grade;
+    }
+    return Number.isFinite(worst) ? worst : null;
+  }
+
+  function formatGrade(grade) {
+    if (!Number.isFinite(grade) || grade < 0) return "";
+    const pct = Math.round(grade * 1000) / 10;
+    if (pct === 0) return "0%";
+    const deg = Math.round((Math.atan(grade) * 180) / Math.PI);
+    const pctText = Number.isInteger(pct) ? String(pct) : pct.toFixed(1);
+    return pctText + "% (" + deg + "°)";
+  }
+
+  function mapResolutionLine(data) {
+    const warnings = data && Array.isArray(data.warnings) ? data.warnings : [];
+    const mapLine = warnings.find((w) => /^Map (image|stepped) /.test(String(w)));
+    if (mapLine) {
+      const text = String(mapLine);
+      const stepped = /stepped down to (\d+) px from (\d+) px/.exec(text);
+      const mpp = /([\d.]+) m per pixel/.exec(text);
+      const px = /(\d+) px/.exec(text);
+      if (stepped) return "Map " + stepped[1] + " px, down from " + stepped[2];
+      if (px && mpp) return "Map " + px[1] + " px, " + mpp[1] + " m per pixel";
+      if (px) return "Map " + px[1] + " px";
+    }
+    const frame = data && data.frame;
+    if (frame && (+frame.imgW > 0 || +frame.imgH > 0)) {
+      const side = Math.max(+frame.imgW || 0, +frame.imgH || 0);
+      let line = "Map " + side + " px";
+      if (+frame.mpuX > 0) {
+        const n = frame.mpuX >= 1 ? (+frame.mpuX).toFixed(1) : (+frame.mpuX).toFixed(2);
+        line += ", " + n + " m per pixel";
+      }
+      return line;
+    }
+    return "";
+  }
+
+  /**
+   * Compact rows for the closed Details block. Zeros stay off the list
+   * except buildings, and trees when foliage is on. Terrain elevations are
+   * absolute meters from the export stats. Clipboard z is meters above the
+   * lowest sample, so it is only used for slope and piece count.
+   */
+  function exportSummaryLines(data, opts) {
+    const options = opts || {};
+    const stats = (data && data.stats) || {};
+    const lines = [];
+    const buildings = finiteNum(stats.buildings);
+    const kept = finiteNum(stats.buildingsKept);
+    lines.push("Buildings " + (buildings != null ? buildings : kept != null ? kept : 0));
+    if (options.foliageOn) {
+      const groups = finiteNum(stats.trees);
+      const keptTrees = finiteNum(stats.treesKept);
+      const total = groups != null ? groups : keptTrees != null ? keptTrees : 0;
+      const stems = finiteNum(stats.discreteTrees) || 0;
+      const stands = Math.max(0, total - stems);
+      if (stems > 0 && stands > 0) lines.push("Trees " + stems + ", stands " + stands);
+      else if (stands > 0) lines.push("Stands " + stands);
+      else lines.push("Trees " + stems);
+    }
+    const bridges = (+stats.bridgeAreas || 0) + (+stats.guidewayAreas || 0);
+    const counts = [
+      ["RVs", stats.rvAreas],
+      ["Parking", stats.parkingAreas],
+      ["Walls and fences", stats.wallAreas],
+      ["Poles", stats.poleAreas],
+      ["Water", stats.waterAreas],
+      ["Bridges and rail", bridges],
+    ];
+    for (let i = 0; i < counts.length; i++) {
+      if (+counts[i][1] > 0) lines.push(counts[i][0] + " " + (+counts[i][1]));
+    }
+    if (options.terrainOn === false) {
+      lines.push("Terrain off");
+    } else {
+      const minM = finiteNum(stats.terrainMinM);
+      const maxM = finiteNum(stats.terrainMaxM);
+      let relief = finiteNum(stats.terrainReliefM);
+      if (relief == null && minM != null && maxM != null) relief = Math.round((maxM - minM) * 10) / 10;
+      if (minM != null) lines.push("Minimum " + elevPair(minM));
+      if (maxM != null) lines.push("Maximum " + elevPair(maxM));
+      if (relief != null) lines.push("Elevation change " + elevPair(relief));
+      const fromClip = steepestGrade(data && data.terrainClipboard);
+      const grade = fromClip != null ? fromClip : finiteNum(stats.terrainSteepest);
+      const gradeText = formatGrade(grade);
+      if (gradeText) lines.push("Steepest slope " + gradeText);
+      const clip = data && data.terrainClipboard;
+      let pieces = null;
+      if (clip && (Array.isArray(clip.raisedFloorZones) || Array.isArray(clip.slopedFloors))) {
+        pieces = pasteFloors(clip);
+      } else if (finiteNum(stats.terrainRaised) != null || finiteNum(stats.terrainSloped) != null) {
+        pieces = (+stats.terrainRaised || 0) + (+stats.terrainSloped || 0);
+      }
+      if (pieces != null) lines.push("Terrain pieces " + pieces);
+    }
+    const jsonBytes = +stats.openIntentJsonBytes || 0;
+    const budget = +stats.jsonBudget > 0 ? +stats.jsonBudget : JSON_BUDGET_BYTES;
+    const zipBytes = exportZipBytes(data);
+    const budgetText = (budget / 1e6).toFixed(2) + " MB";
+    if (zipBytes > 0 && jsonBytes > 0) {
+      lines.push("Zip " + formatBytes(zipBytes) + ", OpenIntent " + formatBytes(jsonBytes) + " of " + budgetText);
+    } else if (jsonBytes > 0) {
+      lines.push("OpenIntent " + formatBytes(jsonBytes) + " of " + budgetText);
+    } else if (zipBytes > 0) {
+      lines.push("Zip " + formatBytes(zipBytes) + " of " + budgetText);
+    }
+    const mapLine = mapResolutionLine(data);
+    if (mapLine) lines.push(mapLine);
+    return lines;
+  }
+
   return {
     WORKING_STATUS: WORKING_STATUS,
     EMPTY_502_STATUS: EMPTY_502_STATUS,
@@ -143,5 +313,7 @@
     pasteFloors: pasteFloors,
     terrainPasteLine: terrainPasteLine,
     chooseTerrainPaste: chooseTerrainPaste,
+    exportSummaryLines: exportSummaryLines,
+    steepestGrade: steepestGrade,
   };
 });
