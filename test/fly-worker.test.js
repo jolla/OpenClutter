@@ -22,12 +22,16 @@ const {
 const { handler: backgroundHandler } = require("../netlify/functions/clutter-export-background");
 const {
   HEARTBEAT_MS,
+  IDLE_EXIT_MS,
   handleWorkerRequest,
   createStageLogger,
   createWorkerSession,
   startHeartbeatTimer,
+  createIdleExit,
+  setExportRunnerForTests,
+  jobInFlight,
 } = require("../fly/worker");
-const { startServer } = require("../fly/server");
+const { startServer, useIdleExit } = require("../fly/server");
 
 const JOB = "11111111-1111-4111-8111-111111111111";
 const root = path.join(__dirname, "..");
@@ -555,19 +559,218 @@ describe("fly worker auth", { concurrency: 1 }, () => {
   });
 });
 
+function tomlInt(toml, key) {
+  const match = new RegExp("^\\s*" + key + "\\s*=\\s*(\\d+)\\s*$", "m").exec(toml);
+  assert.ok(match, key);
+  return Number(match[1]);
+}
+
 describe("fly worker config", () => {
-  it("stops when idle and uses one shared 2 GB machine", () => {
+  it("accepts more than one request and exits itself when idle", () => {
     const toml = fs.readFileSync(path.join(root, "fly.toml"), "utf8");
     const docker = fs.readFileSync(path.join(root, "Dockerfile"), "utf8");
-    assert.match(toml, /auto_stop_machines = "stop"/);
+    const docs = fs.readFileSync(path.join(root, "docs/fly-worker.md"), "utf8");
+    assert.match(toml, /auto_stop_machines = "off"/);
+    assert.equal(/auto_stop_machines = "stop"/.test(toml), false);
+    assert.equal(/auto_stop_machines = "suspend"/.test(toml), false);
+    assert.match(toml, /auto_start_machines = true/);
     assert.match(toml, /min_machines_running = 0/);
     assert.match(toml, /size = "shared-cpu-1x"/);
     assert.match(toml, /memory = "2gb"/);
     assert.match(toml, /internal_port = 8080/);
+    assert.match(toml, /type = "requests"/);
+    assert.match(toml, /policy = "on-failure"/);
+    const hard = tomlInt(toml, "hard_limit");
+    const soft = tomlInt(toml, "soft_limit");
+    assert.ok(hard > 1, "hard_limit " + hard);
+    assert.ok(soft > 1, "soft_limit " + soft);
+    assert.ok(hard > soft);
+    assert.equal(hard, 250);
+    assert.equal(soft, 200);
+    assert.equal(/hard_limit = 1/.test(toml), false);
+    assert.equal(/soft_limit = 1/.test(toml), false);
+    assert.equal(IDLE_EXIT_MS, 5 * 60 * 1000);
+    assert.match(docs, /fly deploy --depot=false/);
+    assert.match(docs, /auto_stop_machines = "off"/);
+    assert.match(docs, /5 minutes/);
     assert.equal(/performance-1x/.test(toml), false);
     assert.match(docker, /node:22\.14\.0-bookworm-slim/);
     assert.equal(/^\s*FROM\s+bun/im.test(docker), false);
     assert.equal(/["']bun["']/.test(docker), false);
     assert.match(docker, /fly\/server\.js/);
+    assert.equal(docs.includes("\u2014"), false);
+  });
+});
+
+describe("fly worker idle exit", () => {
+  it("exits after 5 minutes with no job and not while an export is running", () => {
+    let now = 1_000;
+    let exited = 0;
+    let flying = false;
+    const idle = createIdleExit({
+      now: () => now,
+      exit: () => {
+        exited += 1;
+      },
+      inFlight: () => flying,
+    });
+    now += IDLE_EXIT_MS - 1;
+    assert.equal(idle.check(), false);
+    assert.equal(exited, 0);
+    now += 1;
+    assert.equal(idle.check(), true);
+    assert.equal(exited, 1);
+    assert.equal(idle.check(), false);
+    assert.equal(exited, 1);
+
+    now = 5_000;
+    exited = 0;
+    flying = true;
+    const busy = createIdleExit({
+      now: () => now,
+      exit: () => {
+        exited += 1;
+      },
+      inFlight: () => flying,
+    });
+    now += 60 * 60 * 1000;
+    assert.equal(busy.check(), false);
+    assert.equal(exited, 0);
+    flying = false;
+    now += IDLE_EXIT_MS - 1;
+    assert.equal(busy.check(), false);
+    now += 1;
+    assert.equal(busy.check(), true);
+    assert.equal(exited, 1);
+  });
+
+  it("does not let a health check slide the idle clock", () => {
+    let now = 0;
+    let exited = 0;
+    const idle = createIdleExit({
+      now: () => now,
+      exit: () => {
+        exited += 1;
+      },
+      inFlight: () => false,
+    });
+    const release = idle.hold();
+    now += IDLE_EXIT_MS + 60 * 1000;
+    assert.equal(idle.check(), false);
+    assert.equal(exited, 0);
+    release();
+    assert.equal(idle.check(), true);
+    assert.equal(exited, 1);
+  });
+});
+
+describe("fly worker held request", { concurrency: 1 }, () => {
+  const prev = {};
+
+  afterEach(() => {
+    setExportRunnerForTests(null);
+    jobs.setExportStoreForTests(null);
+    useIdleExit(null);
+    for (const key of ["OPENCLUTTER_WORKER_SECRET", "NETLIFY_SITE_ID", "NETLIFY_AUTH_TOKEN"]) {
+      if (prev[key] == null) delete process.env[key];
+      else process.env[key] = prev[key];
+    }
+  });
+
+  it("keeps the export response open and still accepts another request", async () => {
+    for (const key of ["OPENCLUTTER_WORKER_SECRET", "NETLIFY_SITE_ID", "NETLIFY_AUTH_TOKEN"]) {
+      prev[key] = process.env[key];
+    }
+    process.env.OPENCLUTTER_WORKER_SECRET = "test-secret";
+    process.env.NETLIFY_SITE_ID = "site";
+    process.env.NETLIFY_AUTH_TOKEN = "token";
+    jobs.setExportStoreForTests(memoryStore());
+    await jobs.createJob(JOB);
+    let releaseJob = () => {};
+    const gate = new Promise((resolve) => {
+      releaseJob = resolve;
+    });
+    let started = false;
+    setExportRunnerForTests(async () => {
+      started = true;
+      await gate;
+      return { ok: true, done: true };
+    });
+    const server = await startServer(0);
+    const port = server.address().port;
+    const base = "http://127.0.0.1:" + port;
+    try {
+      const pending = fetch(base + "/export", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-secret",
+        },
+        body: JSON.stringify({ jobId: JOB, event: innerEvent() }),
+      });
+      const res = await pending;
+      assert.equal(res.status, 202);
+      assert.equal(started, true);
+      assert.equal(jobInFlight(), true);
+      let ended = false;
+      const bodyText = res.text().then((text) => {
+        ended = true;
+        return text;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      assert.equal(ended, false);
+
+      const health = await fetch(base + "/health");
+      assert.equal(health.status, 200);
+      const second = await fetch(base + "/export", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-secret",
+        },
+        body: JSON.stringify({ jobId: JOB, event: innerEvent() }),
+      });
+      assert.equal(second.status, 409);
+      const busy = await second.json();
+      assert.match(busy.error, /already running/);
+      assert.equal(ended, false);
+      assert.equal(jobInFlight(), true);
+
+      releaseJob();
+      const text = await bodyText;
+      assert.match(text, /"ok":true/);
+      assert.match(text, /"done":true/);
+      assert.equal(jobInFlight(), false);
+    } finally {
+      releaseJob();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("does not count a health check as an export that keeps the process up", async () => {
+    let now = 10_000;
+    let exited = 0;
+    const idle = createIdleExit({
+      idleMs: IDLE_EXIT_MS,
+      now: () => now,
+      exit: () => {
+        exited += 1;
+      },
+      inFlight: () => false,
+    });
+    useIdleExit(idle);
+    const server = await startServer(0);
+    const port = server.address().port;
+    try {
+      now += 4 * 60 * 1000;
+      assert.equal(idle.check(), false);
+      const health = await fetch("http://127.0.0.1:" + port + "/health");
+      assert.equal(health.status, 200);
+      now += 60 * 1000;
+      assert.equal(idle.check(), true);
+      assert.equal(exited, 1);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 });
