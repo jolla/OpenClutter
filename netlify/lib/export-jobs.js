@@ -65,7 +65,12 @@ async function openStore() {
   if (storeOverride) return storeOverride;
   const { getStore } = require("@netlify/blobs");
   // v1 function events do not include the uncached edge URL strong reads need.
-  return getStore({ name: STORE_NAME });
+  // NETLIFY_BLOBS_REGION is only for a worker outside Netlify. Leave it unset
+  // on the function. The lambda context already knows the store.
+  const opts = { name: STORE_NAME };
+  const region = String(process.env.NETLIFY_BLOBS_REGION || "").trim();
+  if (region) opts.region = region;
+  return getStore(opts);
 }
 
 function withStageMark(job, stage) {
