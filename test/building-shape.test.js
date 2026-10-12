@@ -782,6 +782,12 @@ describe("building outlines", () => {
     assert.equal(parsed.parts.length, 1);
     assert.equal(parsed.parts[0].properties.staticCaravan, true);
     assert.equal(parsed.parts[0].properties.height, 3.5);
+    const home = parseBuildingDetail({
+      elements: [{ type: "way", tags: { building: "mobile_home" }, geometry: ring }],
+    });
+    assert.equal(home.parts.length, 1);
+    assert.equal(home.parts[0].properties.height, 4);
+    assert.equal(home.parts[0].properties.heightSource, "mobile-home");
     const frame = geoFrame(
       { west: lon - 0.001, south: lat - 0.001, east: lon + 0.002, north: lat + 0.001, name: "Caravan" },
       { maxSide: 400, metersPerPx: 0.4 }

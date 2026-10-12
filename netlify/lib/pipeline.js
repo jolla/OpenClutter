@@ -27,6 +27,7 @@ const {
   COMPATIBILITY_MODE,
 } = require("./materials");
 const { isParkingClass, planOutdoor, fitOutdoorBudget } = require("./outdoor-clutter");
+const { decodePlate, needsPitchImage } = require("./vehicle-track");
 const { treePairsFromPoints } = require("./vegetation");
 const { intersectionAreaPx } = require("./poly-clip");
 const { dedupeStackedFootprints } = require("./conflate");
@@ -307,6 +308,10 @@ function coverageSummary(stats) {
     if (stats.includeWalls) bits.push("Walls " + (stats.wallAreas || 0));
     if (stats.includePoles) bits.push("Poles " + (stats.poleAreas || 0));
     if (stats.includeRvs) bits.push("RVs " + (stats.rvAreas || 0));
+    if (stats.includeRvs && stats.trailerAreas) bits.push("Trailers " + stats.trailerAreas);
+    if (stats.includeRvs && stats.semiAreas) bits.push("Semis " + stats.semiAreas);
+    if (stats.includeRvs && stats.boatAreas) bits.push("Boats " + stats.boatAreas);
+    if (stats.carAreas) bits.push("Cars " + stats.carAreas);
     if (bits.length) line += " " + bits.join(". ") + ".";
   }
   if (stats && stats.includeGuideways) {
@@ -1811,6 +1816,7 @@ function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase
       heightSource === HEIGHT_SOURCE ||
       heightSource === LIDAR_HEIGHT ||
       heightSource === "static-caravan" ||
+      heightSource === "mobile-home" ||
       base > 0 ||
       shapePart === true ||
       (measuredSource && measuredExceedsStock(thickness)),
@@ -3040,6 +3046,10 @@ function buildClutter({
   let guidewayAreas = 0;
   let bridgeAreas = 0;
   let rvAreas = 0;
+  let trailerAreas = 0;
+  let semiAreas = 0;
+  let boatAreas = 0;
+  let carAreas = 0;
   const outdoorOn =
     includeWater === true ||
     includeParking === true ||
@@ -3073,6 +3083,8 @@ function buildClutter({
       }
     }
     const features = (outdoorOn && outdoorMiss !== true ? outdoorRest : []).concat(guides, bridges);
+    let vehiclePlate = null;
+    if (includeRvs === true && needsPitchImage(features)) vehiclePlate = decodePlate(imgBuf);
     planned = planOutdoor({
       features,
       frame,
@@ -3083,6 +3095,7 @@ function buildClutter({
         deckCap > 0
           ? { guideway: deckCap, bridge: deckCap, footbridge: Math.max(12, Math.floor(deckCap / 5)) }
           : undefined,
+      vehiclePlate,
     });
     converted = outdoorToOi(planned.items, frame.imgW, frame.imgH, frame.mpuX);
   }
@@ -3095,9 +3108,9 @@ function buildClutter({
   const outdoorKinds = converted ? converted.kinds : [];
   for (let i = 0; i < outdoorKinds.length; i++) {
     const kind = outdoorKinds[i];
-    if (kind === "water" || kind === "parking") waterParking++;
+    if (kind === "water" || kind === "parking" || kind === "car") waterParking++;
     else if (kind === "guideway" || kind === "bridge") deckCount++;
-    else if (kind === "rv") rvCount++;
+    else if (kind === "rv" || kind === "trailer" || kind === "semi" || kind === "boat") rvCount++;
   }
   // Trees used to take every slot the buildings left. A dense campus then
   // reported Guideways 0. Hold the rail and the road decks first, then water.
@@ -3154,30 +3167,34 @@ function buildClutter({
       if (u.index < buildingsBeforeBytes && areas[u.index]) areas[u.index].area_material = u.material;
     }
     const room = Math.max(0, areaCap - areas.length);
-    const rvList = [];
+    const vehicleList = [];
     const otherAreas = [];
     const otherKinds = [];
     for (let i = 0; i < converted.kinds.length; i++) {
-      if (converted.kinds[i] === "rv") rvList.push(converted.areas[i]);
-      else {
+      const kind = converted.kinds[i];
+      if (kind === "rv" || kind === "trailer" || kind === "semi" || kind === "boat") {
+        vehicleList.push({ area: converted.areas[i], kind });
+      } else {
         otherAreas.push(converted.areas[i]);
-        otherKinds.push(converted.kinds[i]);
+        otherKinds.push(kind);
       }
     }
     // Decks and water keep the slots already held for them. RVs take the
     // rest of that room before walls, and trees were already held back.
     const protectedOutdoor = Math.min(room, deckHold + waterHold);
-    const rvRoom = Math.min(rvList.length, Math.max(0, room - protectedOutdoor));
-    const rvTake = rvList.slice(0, rvRoom);
+    const vehicleRoom = Math.min(vehicleList.length, Math.max(0, room - protectedOutdoor));
+    const vehicleTake = vehicleList.slice(0, vehicleRoom);
     const fit = fitOutdoorBudget(
       otherAreas,
       otherKinds,
-      room - rvTake.length,
+      room - vehicleTake.length,
       outdoorFront == null ? undefined : { front: outdoorFront }
     );
-    outdoorKeptKinds = fit.kinds.concat(rvTake.map(function () { return "rv"; }));
-    outdoorLeft = converted.areas.length - fit.items.length - rvTake.length;
-    areas = areas.concat(fit.items, rvTake);
+    outdoorKeptKinds = fit.kinds.concat(vehicleTake.map(function (item) { return item.kind; }));
+    outdoorLeft = converted.areas.length - fit.items.length - vehicleTake.length;
+    const vehicleAreas = [];
+    for (let i = 0; i < vehicleTake.length; i++) vehicleAreas.push(vehicleTake[i].area);
+    areas = areas.concat(fit.items, vehicleAreas);
     const drop = converted.droppedByKind || {};
     const wallDrop =
       (drop.wall || 0) + (drop.fence || 0) + (drop.retaining || 0) + (drop.hedge || 0);
@@ -3227,8 +3244,8 @@ function buildClutter({
     const piece = { role: "outdoor", kind, areas: [areas[cursor]] };
     cursor++;
     if (kind === "guideway" || kind === "bridge" || kind === "footbridge") deckPieces.push(piece);
-    else if (kind === "water" || kind === "parking") waterPieces.push(piece);
-    else if (kind === "rv") rvPieces.push(piece);
+    else if (kind === "water" || kind === "parking" || kind === "car") waterPieces.push(piece);
+    else if (kind === "rv" || kind === "trailer" || kind === "semi" || kind === "boat") rvPieces.push(piece);
     else latePieces.push(piece);
   }
   // Buildings, then water and parking, then the rail and road decks, then RVs.
@@ -3251,6 +3268,10 @@ function buildClutter({
   guidewayAreas = 0;
   bridgeAreas = 0;
   rvAreas = 0;
+  trailerAreas = 0;
+  semiAreas = 0;
+  boatAreas = 0;
+  carAreas = 0;
   for (let i = 0; i < fitted.chunks.length; i++) {
     const chunk = fitted.chunks[i];
     if (chunk.role === "building") buildingEmitted++;
@@ -3260,10 +3281,14 @@ function buildClutter({
       if (chunk.discrete) discreteKept++;
     } else if (chunk.kind === "water") waterAreas++;
     else if (chunk.kind === "parking") parkingAreas++;
+    else if (chunk.kind === "car") carAreas++;
     else if (chunk.kind === "pole") poleAreas++;
     else if (chunk.kind === "guideway") guidewayAreas++;
     else if (chunk.kind === "bridge" || chunk.kind === "footbridge") bridgeAreas++;
     else if (chunk.kind === "rv") rvAreas++;
+    else if (chunk.kind === "trailer") trailerAreas++;
+    else if (chunk.kind === "semi") semiAreas++;
+    else if (chunk.kind === "boat") boatAreas++;
     else wallAreas++;
   }
   if (planned) {
@@ -3377,6 +3402,10 @@ function buildClutter({
     guidewayAreas,
     bridgeAreas,
     rvAreas,
+    trailerAreas,
+    semiAreas,
+    boatAreas,
+    carAreas,
     areaCap,
     areaCapOverride: capIsOverride,
     openIntentJsonBytes: Buffer.byteLength(oiJson),

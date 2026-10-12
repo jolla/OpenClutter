@@ -99,7 +99,11 @@ describe("outdoor clutter materials", () => {
       ["water", 0, "Water 0.1", 0.1, "#3D7EA6", false],
       ["guideway", 4.5, "Guideway 4.5", 9, "#6A6560", false],
       ["bridge", 2.1, "Bridge 2.1", 9, "#736E68", false],
-      ["rv", 3.5, "RV 3.5", 18, "#8A9098", false],
+      ["rv", 3.5, "RV 3.5", 12, "#8A9098", false],
+      ["trailer", 3.2, "Trailer 3.2", 12, "#A39888", false],
+      ["semi", 4.1, "Semi 4.1", 12, "#5E656C", false],
+      ["boat", 3.5, "Boat 3.5", 6, "#3E6A86", false],
+      ["car", 1.5, "Car 1.5", 6, "#9AA0A6", false],
     ];
     for (let i = 0; i < samples.length; i++) {
       const [kind, height, name, db, color, transparent] = samples[i];
@@ -475,11 +479,14 @@ describe("outdoor clutter fetch", () => {
       { parking: true },
       BOX
     );
-    const lots = parsed.features.filter((f) => f.kind === "parking");
-    assert.equal(lots.length, 2);
-    const surface = lots.find((f) => f.structure === false);
-    const garage = lots.find((f) => f.structure === true);
-    assert.equal(surface.heightM, 2.1);
+    const garages = parsed.features.filter((f) => f.kind === "parking");
+    const cars = parsed.features.filter((f) => f.kind === "car");
+    assert.equal(garages.length, 1);
+    assert.equal(cars.length, 1);
+    const surface = cars[0];
+    const garage = garages[0];
+    assert.equal(surface.heightM, 1.5);
+    assert.equal(surface.merged, true);
     assert.equal(garage.heightM, 9);
     const office = [
       [BOX.west + 0.0014, BOX.south + 0.0006],
@@ -505,7 +512,8 @@ describe("outdoor clutter fetch", () => {
     });
     assert.equal(planned.reclass, 0);
     assert.equal(planned.updates.length, 0);
-    assert.ok(planned.items.some((item) => item.kind === "parking" && item.material.name === "Parking 2.1"));
+    assert.ok(planned.items.some((item) => item.kind === "car" && item.material.name === "Car 1.5"));
+    assert.equal(planned.items[0].material.rf_properties.attenuation_per_m, 6);
   });
 
   it("reads a map extract and closes a lake shore on the water side", () => {
@@ -1196,6 +1204,7 @@ describe("RV pitches and service-road rows", () => {
     assert.match(on, /tourism"="caravan_site"/);
     assert.match(on, /tourism"="camp_site"/);
     assert.match(on, /tourism"="camp_pitch"/);
+    assert.match(on, /leisure"="marina"/);
     assert.match(on, /highway/);
     const off = overpassQuery(BOX, { water: true });
     assert.equal(/camp_pitch/.test(off), false);
@@ -1261,7 +1270,7 @@ describe("RV pitches and service-road rows", () => {
     });
     assert.equal(planned.items.length, 1);
     assert.equal(planned.items[0].material.name, "RV 3.5");
-    assert.equal(planned.items[0].material.rf_properties.attenuation_per_m, 18);
+    assert.equal(planned.items[0].material.rf_properties.attenuation_per_m, 12);
     assert.equal(planned.items[0].thin, true);
   });
 
@@ -1300,5 +1309,32 @@ describe("RV pitches and service-road rows", () => {
     const south = ys.filter((y) => y < lat + 40 / m.mLat).length;
     assert.equal(north, south);
     assert.ok(north >= 8);
+  });
+
+  it("keeps an RV pad and holds a tent pad until the aerial shows a vehicle", () => {
+    const m = metersAt(lat);
+    const rvPad = [[lon + 40 / m.mLon, lat + 48 / m.mLat]];
+    const tentPad = [[lon + 80 / m.mLon, lat + 48 / m.mLat]];
+    const parsed = parseOverpass(
+      {
+        elements: [
+          {
+            type: "way",
+            tags: { tourism: "caravan_site", name: "Oasis" },
+            geometry: site.map((p) => ({ lon: p[0], lat: p[1] })),
+          },
+          { type: "node", lon: rvPad[0][0], lat: rvPad[0][1], tags: { tourism: "camp_pitch", name: "RV 12" } },
+          { type: "node", lon: tentPad[0][0], lat: tentPad[0][1], tags: { tourism: "camp_pitch", name: "TS 4" } },
+        ],
+      },
+      { rvs: true }
+    );
+    const rvs = parsed.features.filter((f) => f.kind === "rv");
+    const tents = parsed.features.filter((f) => f.kind === "trailer-candidate");
+    assert.equal(rvs.length, 1);
+    assert.equal(rvs[0].pitchUse, "rv");
+    assert.equal(tents.length, 1);
+    const dropped = planOutdoor({ features: tents, frame: frame(), buildings: [] });
+    assert.equal(dropped.items.length, 0);
   });
 });

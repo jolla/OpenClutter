@@ -245,6 +245,10 @@
     const bridges = (+stats.bridgeAreas || 0) + (+stats.guidewayAreas || 0);
     const counts = [
       ["RVs", stats.rvAreas],
+      ["Trailers", stats.trailerAreas],
+      ["Semis", stats.semiAreas],
+      ["Boats", stats.boatAreas],
+      ["Cars", stats.carAreas],
       ["Parking", stats.parkingAreas],
       ["Walls and fences", stats.wallAreas],
       ["Poles", stats.poleAreas],

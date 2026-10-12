@@ -1,0 +1,14 @@
+[
+  {
+    "id": "rogers-campground",
+    "name": "Rogers campground",
+    "place": "Lancaster, New Hampshire",
+    "kind": "campground",
+    "west": -71.5506429,
+    "south": 44.463992,
+    "east": -71.543438,
+    "north": 44.4697113,
+    "fixture": "bench/fixtures/rogers-pitches.json",
+    "labels": "bench/vehicle-labels/rogers-campground.json"
+  }
+]

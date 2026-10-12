@@ -1015,14 +1015,21 @@ const OUTDOOR_SPECS = {
   water: { label: "Water", db: 0.1, color: "#3D7EA6", transparent: false },
   guideway: { label: "Guideway", db: 9, color: "#6A6560", transparent: false },
   bridge: { label: "Bridge", db: 9, color: "#736E68", transparent: false },
-  rv: { label: "RV", db: 18, color: "#8A9098", transparent: false },
+  rv: { label: "RV", db: 12, color: "#8A9098", transparent: false },
+  trailer: { label: "Trailer", db: 12, color: "#A39888", transparent: false },
+  semi: { label: "Semi", db: 12, color: "#5E656C", transparent: false },
+  boat: { label: "Boat", db: 6, color: "#3E6A86", transparent: false },
+  car: { label: "Car", db: 6, color: "#9AA0A6", transparent: false },
 };
 
 /** OpenIntent 2.0.1 material heights are minimum 0. A 0.1 m sheet is the thin water top. */
 const WATER_SHEET_M = 0.1;
+/** A car layer is 1.5 m. A usual custom at or under 2 m does not import, same exception as water. */
+const CAR_LAYER_M = 1.5;
 
-const OUTDOOR_NAME = /^(Parking|Retaining wall|Light pole|Guideway|Bridge|Wall|Fence|Hedge|Water|RV) (\d+\.\d)$/;
-const LIFTED_OUTDOOR_NAME = /^(Parking|Retaining wall|Light pole|Guideway|Bridge|Wall|Fence|Hedge|Water|RV) (\d+\.\d) @ (\d+\.\d)$/;
+const OUTDOOR_LABELS = "Parking|Retaining wall|Light pole|Guideway|Bridge|Trailer|Wall|Fence|Hedge|Water|Semi|Boat|Car|RV";
+const OUTDOOR_NAME = new RegExp("^(" + OUTDOOR_LABELS + ") (\\d+\\.\\d)$");
+const LIFTED_OUTDOOR_NAME = new RegExp("^(" + OUTDOOR_LABELS + ") (\\d+\\.\\d) @ (\\d+\\.\\d)$");
 
 function outdoorKindFromLabel(label) {
   if (label === "Parking") return "parking";
@@ -1035,6 +1042,10 @@ function outdoorKindFromLabel(label) {
   if (label === "Guideway") return "guideway";
   if (label === "Bridge") return "bridge";
   if (label === "RV") return "rv";
+  if (label === "Trailer") return "trailer";
+  if (label === "Semi") return "semi";
+  if (label === "Boat") return "boat";
+  if (label === "Car") return "car";
   return "";
 }
 
@@ -1051,10 +1062,12 @@ function isLiftedOutdoorName(name) {
  * negative height, and bottom_height 0 does not import. A pole keeps a
  * tagged height only inside 8–12 m; otherwise it is 9 m. A fence tagged
  * 1.8 m falls back to 2.1 m because roundHeightM rejects a custom at or
- * under 2 m. Water is the exception, a sheet rather than an obstacle.
+ * under 2 m. Water is a 0.1 m sheet, and a car lot is a 1.5 m layer.
+ * Those two are the exceptions. A fence still rises to 2.1 m.
  */
 function outdoorHeight(kind, heightM) {
   if (kind === "water") return WATER_SHEET_M;
+  if (kind === "car") return CAR_LAYER_M;
   const round = kind === "parking" ? roundBuildingHeightM : roundHeightM;
   const h = round(heightM);
   if (kind === "pole") {
@@ -1069,6 +1082,9 @@ function outdoorHeight(kind, heightM) {
   if (kind === "guideway") return 4.5;
   if (kind === "bridge") return 2.1;
   if (kind === "rv") return 3.5;
+  if (kind === "trailer") return 3.2;
+  if (kind === "semi") return 4.1;
+  if (kind === "boat") return 3.5;
   return 0;
 }
 
@@ -1078,6 +1094,8 @@ function outdoorMaterial(kind, heightM) {
   const h = outdoorHeight(kind, heightM);
   if (kind === "water") {
     if (h !== WATER_SHEET_M) return null;
+  } else if (kind === "car") {
+    if (h !== CAR_LAYER_M) return null;
   } else if (!(h > 2)) return null;
   const name = spec.label + " " + h.toFixed(1);
   if (isPoisonedOiName(name) || !isOutdoorOiName(name)) return null;
@@ -1094,6 +1112,8 @@ function liftedOutdoorMaterial(base, bottomM) {
   const kind = parsed ? outdoorKindFromLabel(parsed[1]) : "";
   if (kind === "water") {
     if (Number(parsed[2]) !== WATER_SHEET_M) return null;
+  } else if (kind === "car") {
+    if (Number(parsed[2]) !== CAR_LAYER_M) return null;
   } else if (!(thickness > 2)) return null;
   const top = roundTenths(bottom + thickness);
   const mat = {
@@ -1335,6 +1355,7 @@ module.exports = {
   liftedOutdoorMaterial,
   outdoorHeight,
   WATER_SHEET_M,
+  CAR_LAYER_M,
   isOutdoorOiName,
   isLiftedOutdoorName,
   OUTDOOR_SPECS,

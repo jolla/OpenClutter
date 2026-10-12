@@ -153,9 +153,15 @@ function caravanFeature(rings, tags) {
   const feature = partFeature(rings, tags);
   if (!feature) return null;
   feature.properties.staticCaravan = true;
+  const building = String((tags && tags.building) || "").toLowerCase();
   if (!(Number(feature.properties.height) > 2)) {
-    feature.properties.height = 3.5;
-    feature.properties.heightSource = "static-caravan";
+    if (building === "mobile_home") {
+      feature.properties.height = 4;
+      feature.properties.heightSource = "mobile-home";
+    } else {
+      feature.properties.height = 3.5;
+      feature.properties.heightSource = "static-caravan";
+    }
   }
   return feature;
 }
