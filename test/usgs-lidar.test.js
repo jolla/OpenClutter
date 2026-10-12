@@ -9,6 +9,8 @@ const {
   rankProjects,
   gpsDay,
   gridFromPoints,
+  canopyCellM,
+  canopyRaster,
   applyLidarSample,
   lidarStatusLine,
   fetchUsgsLidar,
@@ -105,6 +107,33 @@ describe("USGS lidar", () => {
     assert.equal(sample.skipped, "outside-3dep");
     assert.match(sample.warning, /Quebec open lidar/);
     assert.ok(km2Of(sample.frame) > 0);
+  });
+
+  it("builds canopy height from first returns minus ground and leaves a roof out", () => {
+    const points = [];
+    for (let ix = 2; ix <= 6; ix++) {
+      for (let iy = 2; iy <= 6; iy++) {
+        points.push(pt(ix, iy, 5, 2));
+        points.push(pt(ix, iy, 5.2, 2));
+        points.push(pt(ix, iy, 18, 5));
+        points.push(pt(ix, iy, 16, 4));
+      }
+    }
+    points.push(pt(8, 8, 5, 2), pt(8, 8, 5.1, 2), pt(8, 8, 30, 6), pt(8, 8, 29, 6));
+    const grid = gridFromPoints(points, frame, { cellM: CELL, spacingM: 2 });
+    let crown = null;
+    for (const rec of grid.cells.values()) {
+      if (rec.ix === 4 && rec.iy === 4) crown = canopyCellM(grid, rec);
+      if (rec.ix === 8 && rec.iy === 8) assert.equal(canopyCellM(grid, rec), null);
+    }
+    assert.ok(crown > 12 && crown < 14, crown);
+    const lone = gridFromPoints([pt(1, 1, 5, 2), pt(1, 1, 5, 2), pt(1, 1, 22, 5)], frame, { cellM: CELL, spacingM: 2 });
+    for (const rec of lone.cells.values()) {
+      if (rec.fc) assert.equal(canopyCellM(lone, rec), null);
+    }
+    const raster = canopyRaster(grid);
+    assert.equal(raster.source, "lidar");
+    assert.ok(raster.nonzero >= 20);
   });
 
   it("sets a footprint height from the 90th percentile of class 6 minus ground", () => {

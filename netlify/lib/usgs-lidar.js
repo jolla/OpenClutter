@@ -189,6 +189,12 @@ function ingestPoint(grid, x, y, z, cls, ret, nret, maxX, maxY) {
     grid.cells.set(key, rec);
   }
   rec.n++;
+  // Canopy height is the highest first return above ground. Building class
+  // stays out so a roof is not a crown. Ground is the class-2 minimum.
+  if (cls !== 2 && cls !== 6 && ret === 1) {
+    rec.fc++;
+    if (rec.fMax == null || z > rec.fMax) rec.fMax = z;
+  }
   if (cls === 2) {
     if (rec.g == null || z < rec.g) rec.g = z;
     return;
@@ -212,7 +218,62 @@ function ingestPoint(grid, x, y, z, cls, ret, nret, maxX, maxY) {
 }
 
 function emptyCell() {
-  return { g: null, b: [], bc: 0, u: [], uc: 0, uMin: null, uMax: null, v: [], vc: 0, n: 0 };
+  return { g: null, b: [], bc: 0, u: [], uc: 0, uMin: null, uMax: null, v: [], vc: 0, n: 0, fc: 0, fMax: null };
+}
+
+/**
+ * Metres of first-return canopy above ground in one cell.
+ * One return is not enough. No ground sample means no height.
+ */
+function canopyCellM(grid, rec) {
+  if (!rec || rec.fc < 2 || rec.fMax == null) return null;
+  const g = groundAt(grid, rec.ix, rec.iy);
+  if (g == null) return null;
+  const h = rec.fMax - g;
+  if (!(h >= 0)) return null;
+  return h;
+}
+
+/**
+ * North-up height raster for the bench. Row 0 is the north edge.
+ * Cells with no first returns stay 0.
+ */
+function canopyRaster(grid) {
+  if (!grid || !grid.frame || !grid.cells || !grid.cells.size) return null;
+  const frame = grid.frame;
+  const southWest = mercator(+frame.west, +frame.south);
+  const northEast = mercator(+frame.east, +frame.north);
+  const maxX = Math.max(southWest[0], northEast[0]);
+  const maxY = Math.max(southWest[1], northEast[1]);
+  const fullW = Math.max(1, Math.ceil((maxX - grid.originX) / grid.cell));
+  const fullH = Math.max(1, Math.ceil((maxY - grid.originY) / grid.cell));
+  let step = 1;
+  while (Math.ceil(fullW / step) > 720 || Math.ceil(fullH / step) > 720) step++;
+  const width = Math.ceil(fullW / step);
+  const height = Math.ceil(fullH / step);
+  const values = new Float32Array(width * height);
+  let nonzero = 0;
+  for (const rec of grid.cells.values()) {
+    const h = canopyCellM(grid, rec);
+    if (!(h >= 0.5)) continue;
+    const ix = Math.floor(rec.ix / step);
+    const iy = Math.floor(rec.iy / step);
+    if (ix < 0 || iy < 0 || ix >= width || iy >= height) continue;
+    const idx = (height - 1 - iy) * width + ix;
+    if (h > values[idx]) values[idx] = h;
+  }
+  for (let i = 0; i < values.length; i++) if (values[i] >= 3) nonzero++;
+  return {
+    west: +frame.west,
+    south: +frame.south,
+    east: +frame.east,
+    north: +frame.north,
+    width,
+    height,
+    values,
+    nonzero,
+    source: "lidar",
+  };
 }
 
 /**
@@ -1058,6 +1119,8 @@ module.exports = {
   inQuebec,
   outsideNote,
   gridFromPoints,
+  canopyCellM,
+  canopyRaster,
   applyLidarSample,
   lidarStatusLine,
   lidarNote,
