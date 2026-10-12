@@ -46,13 +46,17 @@ Prices below are Fly.io public list rates for Ashburn (`iad`) from [Fly.io resou
 
 The 2 GB shared price is the 256 MB machine at $2.19 plus 1.75 GB of extra RAM at $6 per GB. Per hour that is $12.69 / 720 = about $0.0176. This app uses that shape: `shared-cpu-1x` and `memory = "2gb"`. A 2 GB machine is the size the Wynn export needs. `performance-1x` is not required.
 
-`auto_stop_machines = "stop"` and `min_machines_running = 0`. An idle app does not keep a machine running.
+`auto_stop_machines = "off"` and `min_machines_running = 0`. Fly Proxy does not stop the machine. A stopped machine stays stopped. The worker process exits on its own after 5 minutes with no export running. That exit code is 0. The restart policy is `on-failure`, so a clean exit is not started again. `auto_start_machines = true` starts the machine on the next export.
 
-- Idle compute is $0. A stopped machine still pays for its root disk at $0.15 per GB per month. There is no volume. A shared IPv4 address is free. Expect well under $1 in a quiet month, mostly that stopped disk.
+Fly autostop is off because it stops a machine when it sees no open HTTP connection. That is the "excess capacity" stop that killed a live export at 17:29:30Z on 2026-10-12 while the job was still in memory. Suspend is not used. Suspend freezes the process, and a long export cannot rely on that.
+
+The export POST stays open until the job finishes. A newline every 20 seconds keeps that one connection up. Concurrency is `type = "requests"`, `soft_limit = 200`, `hard_limit = 250`. One open export is a single request, so the same machine still accepts a health check or another POST. A hard limit of 1 made Fly Proxy refuse that second request with "could not find a good candidate within 40 attempts at load balancing". The app still runs one export at a time and answers 409 when a second export arrives.
+
+- Idle compute is $0 once the process has exited and the machine has stopped. A stopped machine still pays for its root disk at $0.15 per GB per month. There is no volume. A shared IPv4 address is free. Expect well under $1 in a quiet month, mostly that stopped disk.
 - One warm Wynn export is about 115 seconds. 115 / 3600 * $0.0176 is about $0.00056.
 - A few dozen of those, 40 exports, is about $0.02 of compute.
 - Outbound data from the machine (source tiles and the blob upload) is $0.02 per GB in North America. Inbound data is free. That is cents even for a busy month, not a second machine bill.
-- A machine left on all month would be about $12.69. Auto-stop is what avoids that.
+- A machine left on all month would be about $12.69. The 5 minute idle exit is what avoids that. Fly autostop stays off so it cannot kill a job that is still in memory.
 
 ## Before the commands
 
@@ -72,7 +76,7 @@ fly auth login
 fly launch --ha=false --no-deploy --copy-config --yes --name openclutter-export --region iad
 ```
 
-`fly launch` creates the app and does not deploy it. `--ha=false` keeps it to one machine. If launch rewrites `fly.toml`, restore this repo's file before the deploy so the 2 GB shared machine and auto-stop stay as written.
+`fly launch` creates the app and does not deploy it. `--ha=false` keeps it to one machine. If launch rewrites `fly.toml`, restore this repo's file before the deploy so the 2 GB shared machine, the concurrency limits, autostop off, and the idle exit stay as written.
 
 Create a secret locally. Do not commit it, and do not paste it into the repo:
 
@@ -88,11 +92,11 @@ fly secrets set \
   NETLIFY_SITE_ID='paste-the-project-id' \
   NETLIFY_AUTH_TOKEN='paste-the-personal-access-token'
 
-fly deploy
+fly deploy --depot=false
 fly scale count 1
 ```
 
-`fly scale count 1` is the whole pool. Fly will not create a second machine. The one machine stops after it has been idle for several minutes and starts again on the next export. There is no periodic health check, so a quiet app can stop. `GET /health` is only for a manual check.
+`fly scale count 1` is the whole pool. Fly will not create a second machine. The process exits after 5 minutes with no export, which stops the machine. The next export starts it. Fly autostop is off, so it does not stop a machine that still has a job in memory. There is no periodic health check. `GET /health` is only for a manual check. `--depot=false` builds on the machine running the deploy, not on Fly's remote builder.
 
 On Netlify, set the URL and the same secret for production and for the `dev` branch. A context that is missing either value keeps the current background export.
 
@@ -111,10 +115,12 @@ No map API key is required for the current sources. The Finland laser grid is al
 
 ## Update the live worker
 
-The app is already `openclutter-export`. From the repo root, this ships the heartbeat and the stage lines:
+The app is already `openclutter-export`. From the repo root, deploy this commit so the live machine gets heartbeats, the concurrency limits (soft 200, hard 250), and the 5 minute idle exit. The machine that is already running does not have those until this deploy.
 
 ```bash
-fly deploy
+fly deploy --depot=false
 ```
 
-Until that deploy, the machine that is already running does not write a heartbeat. Netlify then runs the export itself after 45 seconds. After the deploy, a fresh heartbeat keeps the job on the worker.
+`--depot=false` builds without Fly's remote builder. Run that from the repo root.
+
+Until that deploy, the live worker does not write a heartbeat, still has a concurrency hard limit of 1, and Fly can still stop it for excess capacity while a job is in memory. Netlify then runs the export itself after 45 seconds of silence, or fails the job when under 2 minutes remain. After the deploy, a fresh heartbeat keeps the job on the worker, a busy machine still accepts a status check, and the process exits on its own after 5 minutes with no export.

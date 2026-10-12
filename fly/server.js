@@ -1,17 +1,23 @@
 "use strict";
 
 /**
- * HTTP entry for the Fly machine. One export keeps the response open so
- * Fly Proxy still sees a request and does not stop the machine mid-job.
- * A newline every 20s only keeps that proxy connection open. The job
- * heartbeat is a stage name and a timestamp on the export blob. The last
- * line of this response is the result.
+ * HTTP entry for the Fly machine. One export keeps this response open
+ * until the job finishes, including the newline every 20s. Returning 202
+ * and then working with no connection is what Fly autostop killed. Autostop
+ * is off in fly.toml. This process exits itself after IDLE_EXIT_MS with no
+ * export, which stops the machine. The last line of the response is the result.
  */
 
 const http = require("node:http");
-const { BODY_MAX, handleWorkerRequest } = require("./worker");
+const { BODY_MAX, handleWorkerRequest, jobInFlight, createIdleExit } = require("./worker");
 
+const IDLE_TICK_MS = 30 * 1000;
 let stopRequested = false;
+let idleExit = createIdleExit({ inFlight: jobInFlight });
+
+function useIdleExit(ctrl) {
+  idleExit = ctrl || createIdleExit({ inFlight: jobInFlight });
+}
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -43,49 +49,55 @@ function sendJson(res, statusCode, body) {
 }
 
 async function onRequest(req, res) {
-  let body = "";
+  const release = idleExit.hold();
   try {
-    if (req.method === "POST") body = await readBody(req);
-  } catch (err) {
-    const status = err && err.statusCode === 413 ? 413 : 400;
-    sendJson(res, status, { error: status === 413 ? "Request is too large." : "invalid json" });
-    return;
-  }
-  let result;
-  try {
-    result = await handleWorkerRequest({
-      method: req.method,
-      url: req.url,
-      headers: req.headers,
-      body,
-    });
-  } catch {
-    sendJson(res, 500, { error: "Export failed." });
-    return;
-  }
-  if (!result.job) {
-    sendJson(res, result.statusCode, result.body);
-    return;
-  }
-  res.writeHead(result.statusCode, { "content-type": "application/x-ndjson" });
-  const beat = setInterval(() => {
+    let body = "";
     try {
-      if (!res.writableEnded) res.write("\n");
-    } catch {
-      /* The export keeps running after the client leaves. */
+      if (req.method === "POST") body = await readBody(req);
+    } catch (err) {
+      const status = err && err.statusCode === 413 ? 413 : 400;
+      sendJson(res, status, { error: status === 413 ? "Request is too large." : "invalid json" });
+      return;
     }
-  }, 20000);
-  if (typeof beat.unref === "function") beat.unref();
-  let outcome = { ok: false, reason: "export-failed" };
-  try {
-    outcome = (await result.job) || outcome;
-  } catch {
-    outcome = { ok: false, reason: "export-failed" };
+    let result;
+    try {
+      result = await handleWorkerRequest({
+        method: req.method,
+        url: req.url,
+        headers: req.headers,
+        body,
+      });
+    } catch {
+      sendJson(res, 500, { error: "Export failed." });
+      return;
+    }
+    if (!result.job) {
+      sendJson(res, result.statusCode, result.body);
+      return;
+    }
+    res.writeHead(result.statusCode, { "content-type": "application/x-ndjson" });
+    if (typeof res.flushHeaders === "function") res.flushHeaders();
+    const beat = setInterval(() => {
+      try {
+        if (!res.writableEnded) res.write("\n");
+      } catch {
+        /* The export keeps running after the client leaves. */
+      }
+    }, 20000);
+    if (typeof beat.unref === "function") beat.unref();
+    let outcome = { ok: false, reason: "export-failed" };
+    try {
+      outcome = (await result.job) || outcome;
+    } catch {
+      outcome = { ok: false, reason: "export-failed" };
+    } finally {
+      clearInterval(beat);
+    }
+    if (!res.writableEnded) res.end(JSON.stringify(outcome) + "\n");
+    if (stopRequested) process.exit(0);
   } finally {
-    clearInterval(beat);
+    release();
   }
-  if (!res.writableEnded) res.end(JSON.stringify(outcome) + "\n");
-  if (stopRequested) process.exit(0);
 }
 
 function startServer(port) {
@@ -102,9 +114,12 @@ function requestStop() {
 }
 
 if (require.main === module) {
+  const idle = createIdleExit({ inFlight: jobInFlight });
+  useIdleExit(idle);
+  const idleTimer = setInterval(() => idle.check(), IDLE_TICK_MS);
+  if (typeof idleTimer.unref === "function") idleTimer.unref();
   process.on("SIGTERM", () => {
     requestStop();
-    const { jobInFlight } = require("./worker");
     if (!jobInFlight()) process.exit(0);
   });
   startServer()
@@ -118,4 +133,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { startServer, requestStop };
+module.exports = { startServer, requestStop, useIdleExit, IDLE_TICK_MS };

@@ -14,19 +14,28 @@ primary_region = "iad"
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"
+  # Off so Fly Proxy does not stop the machine for "excess capacity".
+  # That stop killed a live export when no HTTP connection was open.
+  # The process exits itself after 5 minutes with no export (fly/server.js).
+  # A clean exit is not restarted. The next request starts the machine.
+  # min_machines_running = 0 so a stopped machine stays stopped.
+  auto_stop_machines = "off"
   auto_start_machines = true
   min_machines_running = 0
   processes = ["app"]
 
+  # One export holds its POST open. soft_limit 1 made Fly look for another
+  # machine, and hard_limit 1 refused the request that was already here:
+  # "could not find a good candidate within 40 attempts at load balancing".
+  # These are Fly's current http_service example values, well above 1.
   [http_service.concurrency]
     type = "requests"
-    soft_limit = 1
-    hard_limit = 1
+    soft_limit = 200
+    hard_limit = 250
 
   # 15 minutes. The export also writes a newline every 20 seconds.
-  # No periodic health check: a check on a timer can count as traffic and
-  # keep an idle machine from stopping.
+  # No periodic health check. The process exits from idle jobs, not from
+  # Fly seeing a quiet proxy.
   [http_service.http_options]
     idle_timeout = 900
 
@@ -37,7 +46,13 @@ primary_region = "iad"
   size = "shared-cpu-1x"
   memory = "2gb"
 
-# Fly waits at most 300 seconds after SIGTERM. The open export request is
-# what keeps the machine up for a long job. This limit covers the tail.
+# A clean idle exit uses the default on-failure policy: exit 0 does not
+# restart, so the 2 GB machine does not stay up all month ($12.69).
+# A crash still restarts. Fly waits at most 300 seconds after SIGTERM.
+[[restart]]
+  policy = "on-failure"
+  retries = 10
+  processes = ["app"]
+
 kill_signal = "SIGTERM"
 kill_timeout = 300
