@@ -1018,6 +1018,7 @@ const OUTDOOR_SPECS = {
   rv: { label: "RV", db: 12, color: "#8A9098", transparent: false },
   trailer: { label: "Trailer", db: 12, color: "#A39888", transparent: false },
   semi: { label: "Semi", db: 12, color: "#5E656C", transparent: false },
+  storage: { label: "Storage", db: 3, color: "#8C8478", transparent: false },
   boat: { label: "Boat", db: 6, color: "#3E6A86", transparent: false },
   car: { label: "Car", db: 6, color: "#9AA0A6", transparent: false },
 };
@@ -1027,7 +1028,7 @@ const WATER_SHEET_M = 0.1;
 /** A car layer is 1.5 m. A usual custom at or under 2 m does not import, same exception as water. */
 const CAR_LAYER_M = 1.5;
 
-const OUTDOOR_LABELS = "Parking|Retaining wall|Light pole|Guideway|Bridge|Trailer|Wall|Fence|Hedge|Water|Semi|Boat|Car|RV";
+const OUTDOOR_LABELS = "Parking|Retaining wall|Light pole|Guideway|Bridge|Trailer|Storage|Wall|Fence|Hedge|Water|Semi|Boat|Car|RV";
 const OUTDOOR_NAME = new RegExp("^(" + OUTDOOR_LABELS + ") (\\d+\\.\\d)$");
 const LIFTED_OUTDOOR_NAME = new RegExp("^(" + OUTDOOR_LABELS + ") (\\d+\\.\\d) @ (\\d+\\.\\d)$");
 
@@ -1044,6 +1045,7 @@ function outdoorKindFromLabel(label) {
   if (label === "RV") return "rv";
   if (label === "Trailer") return "trailer";
   if (label === "Semi") return "semi";
+  if (label === "Storage") return "storage";
   if (label === "Boat") return "boat";
   if (label === "Car") return "car";
   return "";
@@ -1084,6 +1086,7 @@ function outdoorHeight(kind, heightM) {
   if (kind === "rv") return 3.5;
   if (kind === "trailer") return 3.2;
   if (kind === "semi") return 4.1;
+  if (kind === "storage") return 0;
   if (kind === "boat") return 3.5;
   return 0;
 }

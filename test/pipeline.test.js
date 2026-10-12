@@ -11,7 +11,7 @@ const {
   CLIPBOARD_COLLECTION_KEYS,
   pickBuildingTypeId,
 } = require("../netlify/lib/hamina-clipboard");
-const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS, capBuildingsAndTrees, dropNestedDuplicateRoofs, parseAreaCapOverride, parseJsonBudgetOverride, raisedAreaHolds, raisedDeckCap, coverageSummary, MAX_ATTENUATION_AREAS, OPENINTENT_JSON_BUDGET, JSON_BUDGET_MAX } = require("../netlify/lib/pipeline");
+const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, isDrawSubject, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS, capBuildingsAndTrees, dropNestedDuplicateRoofs, parseAreaCapOverride, parseJsonBudgetOverride, raisedAreaHolds, raisedDeckCap, coverageSummary, MAX_ATTENUATION_AREAS, OPENINTENT_JSON_BUDGET, JSON_BUDGET_MAX } = require("../netlify/lib/pipeline");
 const { OI_BUILDING_NAMES, isVegetationOiName, isUnderstoryOiName, isPoisonedOiName } = require("../netlify/lib/materials");
 const { zipStore, unzipStore, zipUnderLimit } = require("../netlify/lib/zip-store");
 const { version: APP_VERSION } = require("../netlify/lib/version");
@@ -285,6 +285,76 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(built.stats.attenuationAreasEmitted, areas.length);
     assert.equal(built.stats.openintentVersion, "2.0.1");
     assert.equal(built.stats.openclutterVersion, APP_VERSION);
+  });
+
+  it("keeps the Lebanon IN warehouse clipped to the draw at 12 m", () => {
+    // OSM/Overture way 500812108. The draw cuts the south end, the way the
+    // green box sits on the yard. The roof is the subject, not a campus blob.
+    const ring = [
+      [-86.4886752, 40.0322261],
+      [-86.4887536, 40.0275373],
+      [-86.486848, 40.0275186],
+      [-86.4867695, 40.0322074],
+      [-86.4881324, 40.0322208],
+      [-86.4886752, 40.0322261],
+    ];
+    const frame = geoFrame(
+      {
+        west: -86.4904,
+        south: 40.028,
+        east: -86.48512,
+        north: 40.03327,
+        name: "Lebanon IN",
+      },
+      { maxSpanM: 20000 }
+    );
+    const mapArea = frame.widthM * frame.lengthM;
+    assert.ok(mapArea > 200000 && mapArea < 340000, "draw " + Math.round(mapArea));
+    const feature = {
+      type: "Feature",
+      properties: { height: 12, heightSource: "warehouse", geomSource: "overture" },
+      geometry: { type: "Polygon", coordinates: [ring] },
+    };
+    const built = footprintsToClutter([feature], frame, null);
+    assert.equal(built.stats.buildings, 1);
+    assert.equal(built.stats.droppedMega, 0);
+    assert.equal(built.stats.droppedClip, 0);
+    const mat = built.oiAreas[0].area_material;
+    assert.equal(mat.name, "Building - 12.0");
+    assert.equal(mat.top_height, 12);
+    assert.equal(mat.rf_properties.attenuation_per_m, 5);
+    const overlay = built.overlayRings[0];
+    let minY = Infinity;
+    for (let i = 0; i < overlay.length; i++) if (overlay[i][1] < minY) minY = overlay[i][1];
+    assert.ok(minY >= -0.2, "south end was dropped instead of clipped, y " + minY);
+    assert.ok(minY < 8, "south end was not cut to the draw, y " + minY);
+  });
+
+  it("keeps a coarse warehouse that fills the draw and still drops a campus blob", () => {
+    const frame = geoFrame(
+      { west: -86.5, south: 40.02, east: -86.49414, north: 40.02452, name: "Tight warehouse" },
+      { maxSpanM: 20000 }
+    );
+    const mapArea = frame.widthM * frame.lengthM;
+    assert.ok(mapArea > 180000 && mapArea < 320000, "draw " + Math.round(mapArea));
+    const warehouse = squareFeature(
+      frame.west + (frame.east - frame.west) * 0.08,
+      frame.south + (frame.north - frame.south) * 0.08,
+      frame.east - (frame.east - frame.west) * 0.08,
+      frame.north - (frame.north - frame.south) * 0.08
+    );
+    const area = ringAreaM2(warehouse.geometry.coordinates[0], frame.mpd);
+    assert.ok(area > MEGA_CAMPUS_M2 && area < HOTEL_MEGA_M2, "warehouse " + area);
+    assert.equal(isMegaCampus(area, 4), true);
+    assert.equal(isDrawSubject(area, area, mapArea), true);
+    const kept = footprintsToClutter([warehouse], frame, null);
+    assert.equal(kept.stats.buildings, 1);
+    assert.equal(kept.stats.droppedMega, 0);
+    const blob = squareFeature(WYNN.west, WYNN.south, WYNN.east, WYNN.north);
+    const wynn = geoFrame(WYNN);
+    const dropped = footprintsToClutter([blob], wynn, null);
+    assert.equal(dropped.stats.buildings, 0);
+    assert.ok(dropped.stats.droppedMega >= 1);
   });
 
   it("drops campus mega-polygons and tiny sheds", () => {

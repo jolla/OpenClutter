@@ -7,6 +7,8 @@
  * The aerial says whether a light vehicle is sitting on a camp pad.
  * A metal RV or travel trailer is a solid box at 12 dB/m.
  * Cars in a dense lot are one 1.5 m layer, not one area per car.
+ * A truck lot, and the dock apron of a large warehouse, keep a metal semi
+ * where the aerial shows a trailer. Empty pavement stays empty.
  * A boat is about 3.5 m. A mobile home is a building at about 4 m
  * and is emitted on the building path, not here.
  *
@@ -51,6 +53,10 @@ const ROOF_TOUCH_M = 3;
 const ROOF_MIN_M2 = 1.4;
 const CAR_MERGE_MIN = 8;
 const SEMI_CAP = 80;
+/** A parked semi sits about this far out from the dock wall. */
+const DOCK_DEPTH_M = 46;
+const DOCK_MIN_EDGE_M = 28;
+const DOCK_MIN_ROOF_M2 = 8000;
 const BOAT_CAP = 200;
 
 const BOX = {
@@ -1660,6 +1666,105 @@ function semisInLot(ring, frame, plate, holes) {
   return out;
 }
 
+function pxAreaM2(ring, frame) {
+  if (!ring || ring.length < 3 || !frame) return 0;
+  let a = 0;
+  const n = ring.length;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    a += ring[i][0] * ring[j][1] - ring[j][0] * ring[i][1];
+  }
+  const mx = frame.mpuX > 0 ? frame.mpuX : 1;
+  const my = frame.mpuY > 0 ? frame.mpuY : mx;
+  return (Math.abs(a) / 2) * mx * my;
+}
+
+/** A large roof can have trailers at the doors even when OSM has no truck lot. */
+function roofWantsDocks(ringsPx, frame) {
+  for (let i = 0; i < (ringsPx || []).length; i++) {
+    if (pxAreaM2(ringsPx[i], frame) >= DOCK_MIN_ROOF_M2) return true;
+  }
+  return false;
+}
+
+/**
+ * Strips outside each long wall. The building centroid stays out of the strip,
+ * so the roof itself is not a trailer.
+ */
+function dockAprons(ring, depthM) {
+  const depth = depthM > 0 ? depthM : DOCK_DEPTH_M;
+  if (!ring || ring.length < 4) return [];
+  let n = ring.length;
+  const a0 = ring[0];
+  const last = ring[n - 1];
+  if (Math.abs(a0[0] - last[0]) < 1e-12 && Math.abs(a0[1] - last[1]) < 1e-12) n--;
+  if (n < 3) return [];
+  const open = ring.slice(0, n);
+  const c = centroidLL(open);
+  if (!c) return [];
+  const proj = projectAt(c[1]);
+  const pts = [];
+  for (let i = 0; i < open.length; i++) pts.push(proj.to(open[i][0], open[i][1]));
+  const cxy = proj.to(c[0], c[1]);
+  const aprons = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len = Math.hypot(dx, dy);
+    if (len < DOCK_MIN_EDGE_M) continue;
+    let nx = -dy / len;
+    let ny = dx / len;
+    const mx = (a[0] + b[0]) / 2;
+    const my = (a[1] + b[1]) / 2;
+    if (nx * (mx - cxy[0]) + ny * (my - cxy[1]) < 0) {
+      nx = -nx;
+      ny = -ny;
+    }
+    const corners = [
+      a,
+      b,
+      [b[0] + nx * depth, b[1] + ny * depth],
+      [a[0] + nx * depth, a[1] + ny * depth],
+    ];
+    const ll = [];
+    for (let k = 0; k < corners.length; k++) ll.push(proj.from(corners[k][0], corners[k][1]));
+    ll.push(ll[0]);
+    aprons.push(ll);
+  }
+  return aprons;
+}
+
+function semisAtDocks(rings, frame, plate, holes) {
+  const out = [];
+  const used = [];
+  for (let r = 0; r < (rings || []).length; r++) {
+    const aprons = dockAprons(rings[r], DOCK_DEPTH_M);
+    for (let a = 0; a < aprons.length; a++) {
+      const found = semisInLot(aprons[a], frame, plate, holes);
+      for (let i = 0; i < found.length; i++) {
+        const c = found[i].center;
+        if (!c) continue;
+        let clash = false;
+        for (let u = 0; u < used.length; u++) {
+          const dlon = (c[0] - used[u][0]) * 111320 * Math.cos((c[1] * Math.PI) / 180);
+          const dlat = (c[1] - used[u][1]) * 110540;
+          if (dlon * dlon + dlat * dlat < 64) {
+            clash = true;
+            break;
+          }
+        }
+        if (clash) continue;
+        used.push(c);
+        out.push(found[i]);
+        if (out.length >= SEMI_CAP) return out;
+      }
+    }
+  }
+  return out;
+}
+
 function scoreClass(labels, preds, cls, matchM) {
   const dist = matchM > 0 ? matchM : 12;
   const lab = [];
@@ -1874,6 +1979,11 @@ module.exports = {
   orientedRing,
   semiBoxes,
   semisInLot,
+  DOCK_DEPTH_M,
+  DOCK_MIN_ROOF_M2,
+  roofWantsDocks,
+  dockAprons,
+  semisAtDocks,
   boatBoxes,
   mergeDenseCars,
   occupiedCarLayer,
