@@ -111,7 +111,7 @@ function writeBoard(results) {
   lines.push("# Vehicle scoreboard");
   lines.push("");
   lines.push(
-    "Recall and precision use the hand-checked pads only. A pad that was not reviewed is not in the score. The label source is on each row. A detector output is not a label. A site passes a class at 85% recall and 85% precision. Dense car lots are one 1.5 m layer. Rogers has mapped pads, so each kept vehicle is its own box. JSON bytes are the OpenIntent document for those vehicle boxes on this plate, foliage off, against the 4.9 MB budget."
+    "Recall and precision use the hand-checked pads only. A pad that was not reviewed is not in the score. The label source is on each row. A detector output is not a label. A white roof has to sit on that pad. A roof a few meters away is the next site. A site passes a class at 85% recall and 85% precision. Dense car lots are one 1.5 m layer. Mapped RV pads stay one box each. JSON bytes are the OpenIntent document for those vehicle boxes on this plate, foliage off, against the 4.9 MB budget."
   );
   lines.push("");
   lines.push("| Site | Class | Recall | Precision | Labels | Predictions | Source | Merged | JSON | Pass |");
@@ -130,6 +130,7 @@ function writeBoard(results) {
     }
     for (let r = 0; r < result.rows.length; r++) {
       const row = result.rows[r];
+      if (!(row.labels > 0)) continue;
       const pass = row.recall >= 0.85 && row.precision >= 0.85 ? "yes" : "no";
       lines.push(
         "| " +
