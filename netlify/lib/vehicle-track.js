@@ -206,8 +206,97 @@ function isWhiteRoofPixel(r, g, b) {
 
 /**
  * The white roof has to sit on the pad. A roof a few meters away, across
- * grass, belongs to the next site and does not count.
+ * grass, belongs to the next site and does not count. A neighbor roof that
+ * only clips the pad is kept out when it is a wide sheet mostly outside the
+ * pad, or a short blob that is not elongated like an RV. A real roof can
+ * sit about 3 m off the spur and still count when it is long and narrow.
  */
+function roofExtent(cells, x0, y0, bw, frame) {
+  const lat0 = ((+frame.south || 0) + (+frame.north || 0)) / 2;
+  const mLon = 111320 * Math.cos((lat0 * Math.PI) / 180);
+  const pts = [];
+  for (let i = 0; i < cells.length; i++) {
+    const x = x0 + (cells[i] % bw) + 0.5;
+    const y = y0 + ((cells[i] / bw) | 0) + 0.5;
+    const lon = frame.west + (x / frame.imgW) * (frame.east - frame.west);
+    const lat = frame.north - (y / frame.imgH) * (frame.north - frame.south);
+    pts.push([lon * mLon, lat * 110540]);
+  }
+  let sx = 0;
+  let sy = 0;
+  for (let i = 0; i < pts.length; i++) {
+    sx += pts[i][0];
+    sy += pts[i][1];
+  }
+  sx /= pts.length;
+  sy /= pts.length;
+  let xx = 0;
+  let xy = 0;
+  let yy = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const dx = pts[i][0] - sx;
+    const dy = pts[i][1] - sy;
+    xx += dx * dx;
+    xy += dx * dy;
+    yy += dy * dy;
+  }
+  const tr = xx + yy;
+  const det = xx * yy - xy * xy;
+  const disc = Math.sqrt(Math.max(0, (tr * tr) / 4 - det));
+  const major = tr / 2 + disc;
+  const ang = Math.abs(xy) + Math.abs(major - xx) < 1e-6 ? 0 : Math.atan2(major - xx, xy);
+  const ux = Math.cos(ang);
+  const uy = Math.sin(ang);
+  const vx = -uy;
+  const vy = ux;
+  let minU = Infinity;
+  let maxU = -Infinity;
+  let minV = Infinity;
+  let maxV = -Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const dx = pts[i][0] - sx;
+    const dy = pts[i][1] - sy;
+    const u = dx * ux + dy * uy;
+    const v = dx * vx + dy * vy;
+    if (u < minU) minU = u;
+    if (u > maxU) maxU = u;
+    if (v < minV) minV = v;
+    if (v > maxV) maxV = v;
+  }
+  return { len: maxU - minU, wid: maxV - minV, ux, uy, cx: sx, cy: sy, mLon };
+}
+
+/** Degrees between the roof's long axis and the nearest pad edge. */
+function edgeAngleDeg(extent, ring) {
+  let bestD = 1e18;
+  let eux = 1;
+  let euy = 0;
+  for (let k = 0; k < ring.length - 1; k++) {
+    const ax = ring[k][0] * extent.mLon;
+    const ay = ring[k][1] * 110540;
+    const bx = ring[k + 1][0] * extent.mLon;
+    const by = ring[k + 1][1] * 110540;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 4) continue;
+    let t = ((extent.cx - ax) * dx + (extent.cy - ay) * dy) / len2;
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+    const ex = extent.cx - (ax + t * dx);
+    const ey = extent.cy - (ay + t * dy);
+    const d = ex * ex + ey * ey;
+    if (d < bestD) {
+      bestD = d;
+      const len = Math.sqrt(len2);
+      eux = dx / len;
+      euy = dy / len;
+    }
+  }
+  const dot = Math.abs(extent.ux * eux + extent.uy * euy);
+  return (Math.acos(Math.min(1, dot)) * 180) / Math.PI;
+}
+
 function pitchVehicle(ring, frame, plate) {
   if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return null;
   const poly = [];
@@ -299,16 +388,24 @@ function pitchVehicle(ring, frame, plate) {
     const m2 = cells.length * mpuX * mpuY;
     if (m2 < ROOF_MIN_M2) continue;
     let dmin = 1e9;
-    let sx = 0;
-    let sy = 0;
+    let inside = 0;
     for (let c = 0; c < cells.length; c++) {
       const x = x0 + (cells[c] % bw) + 0.5;
       const y = y0 + ((cells[c] / bw) | 0) + 0.5;
-      sx += x;
-      sy += y;
-      dmin = Math.min(dmin, distM(x, y));
+      const d = distM(x, y);
+      if (d < dmin) dmin = d;
+      if (d <= 0) inside++;
     }
     if (dmin > ROOF_TOUCH_M) continue;
+    const extent = roofExtent(cells, x0, y0, bw, frame);
+    const aspect = extent.wid > 0.25 ? extent.len / extent.wid : 99;
+    const inFrac = inside / cells.length;
+    // A wide sheet that mostly belongs to the next roof is not this pad.
+    if (extent.wid >= 10 && inFrac < 0.35) continue;
+    // A short blob that is not stretched along the roof is gravel or a corner.
+    if (aspect < 1.7 && m2 < 12 && inFrac < 0.4) continue;
+    // A small roof has to run along the pad edge, not across it.
+    if (m2 < 8 && edgeAngleDeg(extent, ring) > 35) continue;
     if (!best || m2 > best.m2) best = { m2, touch: dmin <= 0.4 };
   }
   if (!best) return { m2: 0, lon: null, lat: null };
