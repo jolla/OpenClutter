@@ -3744,6 +3744,13 @@ function slopeSampler(terrain) {
  * more than SPLIT_FLOOR_M. fn.splitCanopy does the same for a woods, with
  * one piece per terrain cell, each seated on fn.seat (the local downhill).
  */
+function restoreElevation(terrain) {
+  if (!terrain || typeof terrain.elevationAt === "function") return terrain;
+  if (!terrain.samples || !terrain.samples.length) return terrain;
+  terrain.elevationAt = buildElevation(terrain.samples);
+  return terrain;
+}
+
 function demUnderFootprint(terrain) {
   if (!terrain) return null;
   const zones = (terrain.raised || 0) + (terrain.sloped || 0);
@@ -4135,6 +4142,7 @@ module.exports = {
   SPLIT_MAX_PIECES,
   siteWarrantsLift,
   demUnderFootprint,
+  restoreElevation,
   terrainBundleFields,
   noteMissingTerrain,
   parseDemSamples,

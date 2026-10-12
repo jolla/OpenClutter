@@ -145,6 +145,24 @@ function broadleafPixel(r, g, b) {
  * @param {object|null} grid CHM window, or null to start from the aerial
  * @param {{frame:object, image:object, worldcover?:{sample:Function}}} opts
  */
+function coverClasses(grid, cover) {
+  if (!grid || !cover || typeof cover.sample !== "function") return null;
+  const w = grid.width | 0;
+  const h = grid.height | 0;
+  if (w < 2 || h < 2) return null;
+  const out = new Uint8Array(w * h);
+  const dLon = +grid.east - +grid.west || 1e-9;
+  const dLat = +grid.north - +grid.south || 1e-9;
+  for (let y = 0; y < h; y++) {
+    const lat = +grid.north - ((y + 0.5) / h) * dLat;
+    for (let x = 0; x < w; x++) {
+      const lon = +grid.west + ((x + 0.5) / w) * dLon;
+      out[y * w + x] = cover.sample(lon, lat) | 0;
+    }
+  }
+  return out;
+}
+
 function fillCanopyGaps(grid, opts) {
   const frame = opts && opts.frame;
   const image = opts && opts.image;
@@ -171,7 +189,7 @@ function fillCanopyGaps(grid, opts) {
       const i = y * w + x;
       const lon = +base.west + ((x + 0.5) / w) * dLon;
       const px = sampleRgb(image, frame, lon, lat);
-      const cls = cover && typeof cover.sample === "function" ? cover.sample(lon, lat) | 0 : 0;
+      const cls = opts && opts.classes ? opts.classes[i] | 0 : cover && typeof cover.sample === "function" ? cover.sample(lon, lat) | 0 : 0;
       klass[i] = cls;
       if (cls === WATER) continue;
       if (cls === GRASS || cls === CROP) open[i] = 1;
@@ -379,4 +397,5 @@ module.exports = {
   CONIFER_H,
   WOOD_H,
   fillCanopyGaps,
+  coverClasses,
 };

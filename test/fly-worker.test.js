@@ -575,8 +575,8 @@ describe("fly worker config", () => {
     assert.equal(/auto_stop_machines = "suspend"/.test(toml), false);
     assert.match(toml, /auto_start_machines = true/);
     assert.match(toml, /min_machines_running = 0/);
-    assert.match(toml, /size = "shared-cpu-1x"/);
-    assert.match(toml, /memory = "2gb"/);
+    assert.match(toml, /size = "performance-4x"/);
+    assert.match(toml, /memory = "8192mb"/);
     assert.match(toml, /internal_port = 8080/);
     assert.match(toml, /type = "requests"/);
     assert.match(toml, /policy = "on-failure"/);
@@ -590,10 +590,11 @@ describe("fly worker config", () => {
     assert.equal(/hard_limit = 1/.test(toml), false);
     assert.equal(/soft_limit = 1/.test(toml), false);
     assert.equal(IDLE_EXIT_MS, 5 * 60 * 1000);
-    assert.match(docs, /fly deploy --depot=false/);
+    assert.match(docs, /flyctl deploy --local-only/);
     assert.match(docs, /auto_stop_machines = "off"/);
     assert.match(docs, /5 minutes/);
     assert.equal(/performance-1x/.test(toml), false);
+    assert.match(toml, /max-old-space-size=6144/);
     assert.match(docker, /node:22\.14\.0-bookworm-slim/);
     assert.equal(/^\s*FROM\s+bun/im.test(docker), false);
     assert.equal(/["']bun["']/.test(docker), false);
