@@ -34,7 +34,7 @@ const { footprintRings } = require("./building-shape");
 const polygonClipping = require("polygon-clipping");
 const { piecesForFeature } = require("./roof-form");
 const { zipUnderLimit } = require("./zip-store");
-const { demUnderFootprint, depressWaterBasins, normalizeTerrainResolution, GLO30_CREDIT, LIFT_LOCAL_M } = require("./terrain");
+const { demUnderFootprint, depressWaterBasins, normalizeTerrainResolution, steepestClipboardGrade, GLO30_CREDIT, LIFT_LOCAL_M } = require("./terrain");
 const { version: OPENCLUTTER_VERSION } = require("./version");
 const { applyNlsBuildingHeights, NLS_CREDIT, HEIGHT_SOURCE } = require("./nls-building-height");
 const { HEIGHT_SOURCE: LIDAR_HEIGHT } = require("./usgs-lidar");
@@ -3398,6 +3398,10 @@ function buildClutter({
     chmTrees: footprintMeta && footprintMeta.chmTrees ? footprintMeta.chmTrees : 0,
     terrainRaised: terrain && terrain.raised ? terrain.raised : 0,
     terrainSloped: terrain && terrain.sloped ? terrain.sloped : 0,
+    terrainMinM: terrain && Number.isFinite(+terrain.minZ) ? +terrain.minZ : null,
+    terrainMaxM: terrain && Number.isFinite(+terrain.maxZ) ? +terrain.maxZ : null,
+    terrainReliefM: terrain && Number.isFinite(+terrain.reliefM) ? +terrain.reliefM : null,
+    terrainSteepest: terrain ? steepestClipboardGrade(terrain.clipboard) : null,
     demKind: terrain && terrain.kind === "surface" ? "surface" : terrain && terrain.kind ? "bare-earth" : "",
     terrainResolution: normalizeTerrainResolution(
       terrainResolution || (terrain && terrain.terrainResolution)
