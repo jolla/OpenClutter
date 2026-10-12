@@ -199,7 +199,11 @@ function hideAreaChip() {
   if (el && el.parentNode) el.parentNode.removeChild(el);
 }
 
-function showAreaChip(bounds, label) {
+function clearButtonHtml() {
+  return ' <button type="button" class="area-clear" aria-label="Clear">x</button>';
+}
+
+function showAreaChip(bounds, label, withClear) {
   const line = label == null ? OpenClutterArea.bboxReadout(chipBbox(bounds)) : label;
   const text = line && line.text;
   if (!text) {
@@ -215,7 +219,8 @@ function showAreaChip(bounds, label) {
       interactive: false,
     });
   }
-  areaChip.setLatLng(bounds.getCenter()).setContent(line.html || text);
+  const body = line.html || text;
+  areaChip.setLatLng(bounds.getCenter()).setContent(withClear ? body + clearButtonHtml() : body);
   if (!map.hasLayer(areaChip)) areaChip.addTo(map);
 }
 
@@ -304,27 +309,22 @@ function restoreCommitted() {
   clearRubber();
   if (!map.hasLayer(drawn)) map.addLayer(drawn);
   sketchHidden = false;
-  if (committedBounds) showAreaChip(committedBounds, committedLabel);
+  if (committedBounds) showAreaChip(committedBounds, committedLabel, true);
   else hideAreaChip();
 }
 
 function syncDrawMode() {
   const container = map.getContainer();
+  map.dragging.disable();
+  if (map.doubleClickZoom) map.doubleClickZoom.disable();
+  if (map.touchZoom && !map.touchZoom.enabled()) map.touchZoom.enable();
+  if (map.scrollWheelZoom && !map.scrollWheelZoom.enabled()) map.scrollWheelZoom.enable();
+  container.style.touchAction = "none";
   if (panPointer != null) {
-    map.dragging.disable();
     container.style.cursor = "grabbing";
     return;
   }
-  if (drawSession.armed) {
-    map.dragging.disable();
-    if (map.doubleClickZoom) map.doubleClickZoom.disable();
-    container.style.cursor = spacePan ? "grab" : "crosshair";
-  } else {
-    map.dragging.enable();
-    if (map.doubleClickZoom) map.doubleClickZoom.enable();
-    container.style.cursor = spacePan ? "grab" : "";
-    activePointer = null;
-  }
+  container.style.cursor = spacePan ? "grab" : "crosshair";
 }
 
 function typingTarget(el) {
@@ -365,12 +365,14 @@ function committedExportBlocked() {
   return w > 10000 || h > 10000 || w < 40 || h < 40;
 }
 
+function syncDrawHint() {
+  const hint = document.getElementById("draw-hint");
+  if (!hint) return;
+  const open = (drawSession.phase === "polygon" && drawSession.vertices.length > 0) || !!drawSession.dragged;
+  hint.hidden = !!(bbox || open);
+}
+
 function syncExportReady() {
-  const n = drawSession.phase === "polygon" ? drawSession.vertices.length : 0;
-  if (n > 0) {
-    exportBtn.disabled = false;
-    return;
-  }
   exportBtn.disabled = committedExportBlocked();
 }
 
@@ -382,6 +384,7 @@ function enterDrawMode(message) {
   restoreCommitted();
   syncDrawMode();
   syncExportReady();
+  syncDrawHint();
   if (message) setStatus(message);
 }
 
@@ -390,16 +393,32 @@ function resumeDrawMode() {
   if (!drawSession.armed) OpenClutterDraw.arm(drawSession);
   syncDrawMode();
   syncExportReady();
+  syncDrawHint();
 }
 
 function applyExtent(bounds, label) {
   committedBounds = bounds;
   committedLabel = label == null ? null : label;
   bbox = chipBbox(bounds);
-  showAreaChip(bounds, committedLabel);
+  showAreaChip(bounds, committedLabel, true);
   syncExportReady();
+  syncDrawHint();
   if (exportBtn.disabled) setStatus("Area must be between 40 m and 10 km on a side.", true);
   else setStatus("Ready to export.");
+}
+
+function clearFinishedShape() {
+  drawn.clearLayers();
+  if (!map.hasLayer(drawn)) map.addLayer(drawn);
+  committedBounds = null;
+  committedLabel = null;
+  bbox = null;
+  sketchHidden = false;
+  clearRubber();
+  hideAreaChip();
+  syncExportReady();
+  syncDrawHint();
+  if (!(drawSession.phase === "polygon" && drawSession.vertices.length)) setStatus("");
 }
 
 function commitBox(start, end) {
@@ -478,18 +497,21 @@ function handleDraw(result) {
   if (!result || result.type === "ignore" || result.type === "down" || result.type === "abort-press") return;
   if (result.type === "drag") {
     showDragPreview(result.start, result.end);
+    syncDrawHint();
     return;
   }
   if (result.type === "vertex") {
     showVertexPreview(result.vertices);
     const n = result.vertices.length;
     syncExportReady();
+    syncDrawHint();
     if (n < 3) setStatus("Corner " + n + ". Click the next corner. Esc cancels.");
     else setStatus("Corner " + n + ". Click the first corner to close. Double-click also finishes. Esc cancels.");
     return;
   }
   if (result.type === "short") {
     setStatus("Add another corner, then click the first corner to close. Esc cancels.");
+    syncDrawHint();
     return;
   }
   if (result.type === "commit-box") {
@@ -513,7 +535,9 @@ function handleDraw(result) {
   if (result.type === "cancel") {
     restoreCommitted();
     resumeDrawMode();
-    if (!bbox) setStatus("Click the map to draw the site.");
+    syncDrawHint();
+    if (!result.discarded) return;
+    if (!bbox) setStatus("");
     else if (exportBtn.disabled) setStatus("Area must be between 40 m and 10 km on a side.", true);
     else setStatus("Ready to export.");
   }
@@ -550,6 +574,7 @@ function releaseDrawPress() {
   activePointer = null;
   if (drawSession.vertices.length) showVertexPreview(drawSession.vertices.map((v) => ({ lat: v.lat, lng: v.lng })));
   else restoreCommitted();
+  syncDrawHint();
 }
 
 function beginPan(ev) {
@@ -580,10 +605,62 @@ function endPan() {
 }
 
 const mapEl = map.getContainer();
+const touchIds = new Set();
+let pinchGesture = false;
+const ARROW_PAN = {
+  ArrowLeft: [-80, 0],
+  ArrowRight: [80, 0],
+  ArrowUp: [0, -80],
+  ArrowDown: [0, 80],
+};
+
+function noteTouch(ev) {
+  if (ev.pointerType === "touch") touchIds.add(ev.pointerId);
+}
+
+function forgetTouch(ev) {
+  if (ev.pointerType === "touch") touchIds.delete(ev.pointerId);
+}
+
+function focusMapForKeys() {
+  const container = map.getContainer();
+  if (!container || document.activeElement === container) return;
+  try {
+    container.focus({ preventScroll: true });
+  } catch (e) {
+    container.focus();
+  }
+}
+
+function abortDrawForPinch() {
+  if (activePointer != null) {
+    try {
+      mapEl.releasePointerCapture(activePointer);
+    } catch (e) {
+      /* already released */
+    }
+    OpenClutterDraw.abortPress(drawSession);
+    activePointer = null;
+  }
+  if (drawSession.vertices.length) showVertexPreview(drawSession.vertices.map((v) => ({ lat: v.lat, lng: v.lng })));
+  else restoreCommitted();
+  syncDrawHint();
+}
+
 mapEl.addEventListener(
   "pointerdown",
   (ev) => {
+    noteTouch(ev);
     if (ev.target.closest && ev.target.closest(".leaflet-control")) return;
+    if (ev.target.closest && ev.target.closest(".area-clear")) return;
+    if (ev.pointerType === "touch" && touchIds.size >= 2) {
+      pinchGesture = true;
+      abortDrawForPinch();
+      if (panPointer != null) endPan();
+      return;
+    }
+    if (pinchGesture) return;
+    focusMapForKeys();
     if (panGesture(ev)) {
       if (panPointer != null) return;
       releaseDrawPress();
@@ -613,6 +690,7 @@ mapEl.addEventListener(
 mapEl.addEventListener(
   "pointermove",
   (ev) => {
+    if (pinchGesture) return;
     if (ev.pointerId === panPointer) {
       ev.preventDefault();
       movePan(ev);
@@ -636,7 +714,25 @@ function holdMapDblClick() {
   }, 400);
 }
 
+function endPinchPointer(ev) {
+  forgetTouch(ev);
+  if (!pinchGesture) return false;
+  if (ev.pointerId === panPointer) endPan();
+  if (ev.pointerId === activePointer) {
+    OpenClutterDraw.abortPress(drawSession);
+    activePointer = null;
+  }
+  if (touchIds.size === 0) {
+    pinchGesture = false;
+    if (drawSession.vertices.length) showVertexPreview(drawSession.vertices.map((v) => ({ lat: v.lat, lng: v.lng })));
+    else restoreCommitted();
+    syncDrawHint();
+  }
+  return true;
+}
+
 mapEl.addEventListener("pointerup", (ev) => {
+  if (endPinchPointer(ev)) return;
   if (ev.pointerId === panPointer) {
     endPan();
     return;
@@ -650,6 +746,7 @@ mapEl.addEventListener("pointerup", (ev) => {
 });
 
 mapEl.addEventListener("pointercancel", (ev) => {
+  if (endPinchPointer(ev)) return;
   if (ev.pointerId === panPointer) {
     endPan();
     return;
@@ -659,7 +756,30 @@ mapEl.addEventListener("pointercancel", (ev) => {
   OpenClutterDraw.abortPress(drawSession);
   if (drawSession.vertices.length) showVertexPreview(drawSession.vertices.map((v) => ({ lat: v.lat, lng: v.lng })));
   else restoreCommitted();
+  syncDrawHint();
 });
+
+mapEl.addEventListener("click", (ev) => {
+  const btn = ev.target.closest && ev.target.closest(".area-clear");
+  if (!btn) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  clearFinishedShape();
+});
+
+mapEl.addEventListener(
+  "wheel",
+  (ev) => {
+    if (OpenClutterDraw.wheelAction(ev) !== "pan") return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const dx = +ev.deltaX || 0;
+    const dy = +ev.deltaY || 0;
+    if (!dx && !dy) return;
+    map.panBy(L.point(dx, dy), { animate: false });
+  },
+  { capture: true, passive: false }
+);
 
 mapEl.addEventListener(
   "contextmenu",
@@ -692,6 +812,11 @@ window.addEventListener("keydown", (ev) => {
     if (panPointer == null) releaseDrawPress();
     syncDrawMode();
   }
+  const arrow = ARROW_PAN[ev.key];
+  if (arrow && !typingTarget(ev.target) && !(ev.target && ev.target.closest && ev.target.closest("#map"))) {
+    ev.preventDefault();
+    map.panBy(L.point(arrow[0], arrow[1]), { animate: false });
+  }
   if (ev.key !== "Escape") return;
   const result = OpenClutterDraw.cancel(drawSession);
   if (result.type !== "cancel") return;
@@ -709,10 +834,6 @@ window.addEventListener("keyup", (ev) => {
 
 map.on("zoomend moveend", refreshVertexPixels);
 
-document.getElementById("draw").onclick = () => {
-  enterDrawMode("Click the map to draw the site.");
-};
-
 enterDrawMode();
 
 document.getElementById("search").onsubmit = async (e) => {
@@ -726,7 +847,9 @@ document.getElementById("search").onsubmit = async (e) => {
     if (!hits.length) throw new Error("No results. Try the street address.");
     const hit = hits[0];
     map.setView([+hit.lat, +hit.lon], 16);
-    setStatus("Click the map to trace the site.");
+    if (!bbox) setStatus("");
+    else if (exportBtn.disabled) setStatus("Area must be between 40 m and 10 km on a side.", true);
+    else setStatus("Ready to export.");
   } catch (err) {
     setStatus(err.message, true);
   }
