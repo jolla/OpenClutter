@@ -1879,6 +1879,12 @@ async function handleClutter(event) {
     }
   }
 
+  let warehouseMembranes = 0;
+  for (let i = 0; i < features.length; i++) {
+    const src = features[i] && features[i].properties && features[i].properties.heightSource;
+    if (src === "warehouse") warehouseMembranes++;
+  }
+  let lidarYards = [];
   if (lidarOn) {
     try {
       if (!lidarSettled) {
@@ -1899,6 +1905,7 @@ async function handleClutter(event) {
           footprintMeta.lidarHeights = applied.heights;
           footprintMeta.lidarAdded = applied.added;
           footprintMeta.lidarCanopy = applied.canopy;
+          if (applied.yards && applied.yards.length) lidarYards = applied.yards;
         }
         footprintMeta.lidarProject = lidar.project || "";
         footprintMeta.lidarCollected = lidar.collected || "";
@@ -2092,6 +2099,14 @@ async function handleClutter(event) {
       if (!guidewayFeatures.length && fromOutdoor.length) guidewayFeatures = fromOutdoor;
       if (!bridgeFeatures.length && fromBridges.length) bridgeFeatures = fromBridges;
     }
+  }
+
+  if (lidarYards.length) outdoorFeatures = outdoorFeatures.concat(lidarYards);
+  if (warehouseMembranes && !lidarYards.length) {
+    const storageNote = lidarOn
+      ? "Stacked storage was left out. Lidar did not show a yard."
+      : "Stacked storage was left out. Lidar heights are off, and the street map has no yard.";
+    if (warnings.indexOf(storageNote) < 0) warnings.push(storageNote);
   }
 
   let exportFeatures = features;

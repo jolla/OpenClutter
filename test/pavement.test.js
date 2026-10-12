@@ -260,4 +260,48 @@ describe("pavement footprints", () => {
     assert.equal(out.features.length, 1);
     assert.equal(out.features[0].properties.height, 9.9);
   });
+
+  it("keeps the Lebanon warehouse membrane and seats it at 12 m", () => {
+    const frame = geoFrame(
+      { west: -86.491, south: 40.026, east: -86.484, north: 40.034, name: "Lebanon membrane" },
+      { imgW: 320, imgH: 560, maxSpanM: 20000 }
+    );
+    const ring = [
+      [-86.4892, 40.0326],
+      [-86.4893, 40.0274],
+      [-86.4862, 40.0274],
+      [-86.4861, 40.0326],
+      [-86.4892, 40.0326],
+    ];
+    const imgRing = ring.map(([lon, lat]) => llToImagePx(lon, lat, frame));
+    const data = new Uint8Array(frame.imgW * frame.imgH * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 40;
+      data[i + 1] = 90;
+      data[i + 2] = 45;
+      data[i + 3] = 255;
+    }
+    for (let y = 0; y < frame.imgH; y++) {
+      for (let x = 0; x < frame.imgW; x++) {
+        if (!pointInRing([x + 0.5, y + 0.5], imgRing)) continue;
+        const i = (y * frame.imgW + x) * 4;
+        data[i] = 142;
+        data[i + 1] = 140;
+        data[i + 2] = 138;
+      }
+    }
+    const feature = {
+      type: "Feature",
+      properties: { geomSource: "overture" },
+      geometry: { type: "Polygon", coordinates: [ring] },
+    };
+    const evidence = pavementEvidence({ data, width: frame.imgW, height: frame.imgH }, imgRing, frame.mpuX);
+    assert.ok(evidence.areaM2 > 20000 && evidence.areaM2 < 400000, "area " + evidence.areaM2);
+    assert.ok(evidence.medianStd < 5, "std " + evidence.medianStd);
+    const out = rejectPavementFootprints({ data, width: frame.imgW, height: frame.imgH }, frame, [feature]);
+    assert.equal(out.dropped, 0);
+    assert.equal(out.features.length, 1);
+    assert.equal(out.features[0].properties.height, 12);
+    assert.equal(out.features[0].properties.heightSource, "warehouse");
+  });
 });

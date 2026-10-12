@@ -73,6 +73,42 @@ describe("vehicle track", () => {
     assert.equal(few[0].merged, false);
   });
 
+  it("puts dock aprons outside the warehouse and not on the roof", () => {
+    const { dockAprons, roofWantsDocks } = require("../netlify/lib/vehicle-track");
+    const ring = [
+      [-86.4888, 40.0322],
+      [-86.4888, 40.0275],
+      [-86.4868, 40.0275],
+      [-86.4868, 40.0322],
+      [-86.4888, 40.0322],
+    ];
+    const aprons = dockAprons(ring, 46);
+    assert.ok(aprons.length >= 2, "aprons " + aprons.length);
+    const center = [-86.4878, 40.02985];
+    for (let i = 0; i < aprons.length; i++) {
+      let inside = false;
+      const poly = aprons[i];
+      for (let a = 0, b = poly.length - 1; a < poly.length; b = a++) {
+        const yi = poly[a][1];
+        const yj = poly[b][1];
+        if (yi > center[1] === yj > center[1]) continue;
+        const x = ((poly[b][0] - poly[a][0]) * (center[1] - yi)) / (yj - yi || 1e-20) + poly[a][0];
+        if (center[0] < x) inside = !inside;
+      }
+      assert.equal(inside, false, "apron " + i + " covers the roof");
+    }
+    const frame = { mpuX: 0.5, mpuY: 0.5 };
+    const big = [
+      [0, 0],
+      [200, 0],
+      [200, 220],
+      [0, 220],
+      [0, 0],
+    ];
+    assert.equal(roofWantsDocks([big], frame), true);
+    assert.equal(roofWantsDocks([[[0, 0], [20, 0], [20, 20], [0, 20]]], frame), false);
+  });
+
   it("treats a truck stop name as a truck lot", () => {
     assert.equal(isTruckLotTags({ parking: "truck" }), true);
     assert.equal(isTruckLotTags({ name: "Iowa 80 Truckstop" }), true);

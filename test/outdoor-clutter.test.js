@@ -102,6 +102,7 @@ describe("outdoor clutter materials", () => {
       ["rv", 3.5, "RV 3.5", 12, "#8A9098", false],
       ["trailer", 3.2, "Trailer 3.2", 12, "#A39888", false],
       ["semi", 4.1, "Semi 4.1", 12, "#5E656C", false],
+      ["storage", 4.2, "Storage 4.2", 3, "#8C8478", false],
       ["boat", 3.5, "Boat 3.5", 6, "#3E6A86", false],
       ["car", 1.5, "Car 1.5", 6, "#9AA0A6", false],
     ];
