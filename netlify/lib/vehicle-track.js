@@ -1030,7 +1030,7 @@ function boatsOnWater(ring, frame, plate) {
       const yl = 0.299 * r + 0.587 * g + 0.114 * b;
       const k = (y - y0) * bw + (x - x0);
       if (yl < 90 && b + 15 >= r) water[k] = 1;
-      else if (yl >= 175 && yl <= 252 && Math.max(r, g, b) - Math.min(r, g, b) <= 40) boat[k] = 1;
+      else if (yl >= 175 && Math.max(r, g, b) - Math.min(r, g, b) <= 40) boat[k] = 1;
     }
   }
   const seen = new Uint8Array(bw * bh);
@@ -1067,8 +1067,8 @@ function boatsOnWater(ring, frame, plate) {
     for (let c = 0; c < cells.length && !wet; c++) {
       const x = cells[c] % bw;
       const y = (cells[c] / bw) | 0;
-      for (let dy = -2; dy <= 2 && !wet; dy++) {
-        for (let dx = -2; dx <= 2; dx++) {
+      for (let dy = -3; dy <= 3 && !wet; dy++) {
+        for (let dx = -3; dx <= 3; dx++) {
           const nx = x + dx;
           const ny = y + dy;
           if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
