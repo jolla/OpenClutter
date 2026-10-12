@@ -73,6 +73,7 @@ function isTruckLotTags(tags) {
   if (!tags) return false;
   if (tags.parking === "truck" || tags.parking === "hgv") return true;
   if (tags.hgv === "yes" || tags.hgv === "designated") return true;
+  if (/truck/i.test(String(tags.name || ""))) return true;
   return false;
 }
 
@@ -520,7 +521,7 @@ function needsPitchImage(features) {
     const f = features[i];
     if (!f) continue;
     if (f.kind === "trailer-candidate") return true;
-    if (f.kind === "marina" || f.kind === "mobile-park") return true;
+    if (f.kind === "marina" || f.kind === "mobile-park" || f.kind === "truck-lot") return true;
     if (f.kind === "rv" && (f.pitchUse === "rv" || f.pitchUse === "tent" || f.pitchUse === "pitch")) return true;
   }
   return false;
@@ -1027,6 +1028,215 @@ function mobileHomesInRing(ring, frame, plate) {
   return out;
 }
 
+/**
+ * A parked semi is a bright body about one trailer long, with a dark
+ * shadow on one flank. A building roof is wide on both sides, so it is
+ * left out. Each kept trailer is one oriented metal box.
+ */
+function semisInLot(ring, frame, plate, holes) {
+  if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return [];
+  const poly = [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const xy = llToImagePx(ring[i][0], ring[i][1], frame);
+    if (!Number.isFinite(xy[0]) || !Number.isFinite(xy[1])) continue;
+    poly.push(xy);
+    if (xy[0] < minX) minX = xy[0];
+    if (xy[1] < minY) minY = xy[1];
+    if (xy[0] > maxX) maxX = xy[0];
+    if (xy[1] > maxY) maxY = xy[1];
+  }
+  if (poly.length < 3) return [];
+  const holePolys = [];
+  for (let h = 0; h < (holes || []).length; h++) {
+    const hp = [];
+    const hole = holes[h];
+    for (let i = 0; i < hole.length; i++) {
+      const xy = llToImagePx(hole[i][0], hole[i][1], frame);
+      if (Number.isFinite(xy[0]) && Number.isFinite(xy[1])) hp.push(xy);
+    }
+    if (hp.length >= 3) holePolys.push(hp);
+  }
+  const W = plate.width;
+  const H = plate.height;
+  const data = plate.data;
+  function yAt(x, y) {
+    x = x | 0;
+    y = y | 0;
+    if (x < 1 || y < 1 || x >= W - 1 || y >= H - 1) return 0;
+    const i = (y * W + x) * 4;
+    return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+  }
+  function inLot(x, y) {
+    if (!pointInRing([x, y], poly)) return false;
+    for (let h = 0; h < holePolys.length; h++) {
+      if (pointInRing([x, y], holePolys[h])) return false;
+    }
+    return true;
+  }
+  const cell = 40;
+  const cols = Math.ceil(W / cell);
+  const rows = Math.ceil(H / cell);
+  const ori = new Float32Array(cols * rows);
+  const strength = new Float32Array(cols * rows);
+  const xLo = Math.max(2, Math.floor(minX));
+  const yLo = Math.max(2, Math.floor(minY));
+  const xHi = Math.min(W - 3, Math.ceil(maxX));
+  const yHi = Math.min(H - 3, Math.ceil(maxY));
+  for (let cy = (yLo / cell) | 0; cy <= (yHi / cell) && cy < rows; cy++) {
+    for (let cx = (xLo / cell) | 0; cx <= (xHi / cell) && cx < cols; cx++) {
+      const bins = new Float64Array(18);
+      const ox = cx * cell;
+      const oy = cy * cell;
+      let sum = 0;
+      let bi = 0;
+      for (let y = oy + 2; y < oy + cell - 1 && y < H - 1; y += 2) {
+        for (let x = ox + 2; x < ox + cell - 1 && x < W - 1; x += 2) {
+          if (!inLot(x, y)) continue;
+          const gx = yAt(x + 1, y) - yAt(x - 1, y);
+          const gy = yAt(x, y + 1) - yAt(x, y - 1);
+          const mag = gx * gx + gy * gy;
+          if (mag < 600) continue;
+          let a = Math.atan2(gy, gx);
+          if (a < 0) a += Math.PI;
+          const b = Math.min(17, (a / Math.PI * 18) | 0);
+          const w = Math.sqrt(mag);
+          bins[b] += w;
+          sum += w;
+          if (bins[b] > bins[bi]) bi = b;
+        }
+      }
+      ori[cy * cols + cx] = ((bi + 0.5) / 18) * Math.PI;
+      strength[cy * cols + cx] = sum > 0 ? bins[bi] / sum : 0;
+    }
+  }
+  const hits = [];
+  for (let y = Math.max(24, yLo); y < Math.min(H - 24, yHi); y += 3) {
+    for (let x = Math.max(24, xLo); x < Math.min(W - 24, xHi); x += 3) {
+      if (!inLot(x, y)) continue;
+      const ci = ((y / cell) | 0) * cols + ((x / cell) | 0);
+      if (strength[ci] < 0.16) continue;
+      const ang = ori[ci];
+      const nx = Math.cos(ang);
+      const ny = Math.sin(ang);
+      const tx = -ny;
+      const ty = nx;
+      let sum = 0;
+      let n = 0;
+      let hi = 0;
+      for (let t = -12; t <= 12; t += 2) {
+        const v = yAt(x + tx * t, y + ty * t);
+        sum += v;
+        n++;
+        if (v > 175) hi++;
+      }
+      const body = sum / n;
+      if (hi < 6 || body < 175) continue;
+      const end1 = yAt(x - tx * 20, y - ty * 20);
+      const end2 = yAt(x + tx * 20, y + ty * 20);
+      if (body < end1 + 16 || body < end2 + 16) continue;
+      let sh = 0;
+      let sh2 = 0;
+      for (let s = 0; s < 3; s++) {
+        const t = 5 + s * 2;
+        sh += yAt(x + nx * t, y + ny * t);
+        sh2 += yAt(x - nx * t, y - ny * t);
+      }
+      sh /= 3;
+      sh2 /= 3;
+      const usePos = sh <= sh2;
+      const shadow = usePos ? sh : sh2;
+      const other = usePos ? sh2 : sh;
+      if (shadow > 100 || body - shadow < 45) continue;
+      if (other < 120) continue;
+      const farS = usePos ? yAt(x + nx * 16, y + ny * 16) : yAt(x - nx * 16, y - ny * 16);
+      const farO = usePos ? yAt(x - nx * 16, y - ny * 16) : yAt(x + nx * 16, y + ny * 16);
+      if (farS > body - 15 && farO > body - 15) continue;
+      let bestV = -1;
+      let bestT = 0;
+      for (let t = -6; t <= 6; t++) {
+        const v = yAt(x + nx * t, y + ny * t);
+        if (v > bestV) {
+          bestV = v;
+          bestT = t;
+        }
+      }
+      hits.push({
+        x: x + nx * bestT,
+        y: y + ny * bestT,
+        score: body - shadow,
+        tx,
+        ty,
+        nx,
+        ny,
+      });
+    }
+  }
+  hits.sort((a, b) => b.score - a.score);
+  const kept = [];
+  for (let i = 0; i < hits.length; i++) {
+    const h = hits[i];
+    let clash = false;
+    for (let k = 0; k < kept.length; k++) {
+      const prev = kept[k];
+      const dx = h.x - prev.x;
+      const dy = h.y - prev.y;
+      const along = Math.abs(dx * prev.tx + dy * prev.ty);
+      const across = Math.abs(dx * prev.nx + dy * prev.ny);
+      if (along < 20 && across < 7) {
+        clash = true;
+        break;
+      }
+    }
+    if (!clash) kept.push(h);
+    if (kept.length >= 220) break;
+  }
+  const rowed = [];
+  for (let i = 0; i < kept.length; i++) {
+    const h = kept[i];
+    let neighbor = false;
+    for (let k = 0; k < kept.length; k++) {
+      if (k === i) continue;
+      const other = kept[k];
+      const dx = h.x - other.x;
+      const dy = h.y - other.y;
+      const along = Math.abs(dx * h.tx + dy * h.ty);
+      const across = Math.abs(dx * h.nx + dy * h.ny);
+      if (across >= 6 && across <= 28 && along <= 22) {
+        neighbor = true;
+        break;
+      }
+    }
+    if (neighbor) rowed.push(h);
+  }
+  const mpuX = frame.mpuX > 0 ? frame.mpuX : 0.4;
+  const mpuY = frame.mpuY > 0 ? frame.mpuY : 0.4;
+  const out = [];
+  for (let i = 0; i < rowed.length; i++) {
+    const h = rowed[i];
+    const lon = frame.west + (h.x / frame.imgW) * (frame.east - frame.west);
+    const lat = frame.north - (h.y / frame.imgH) * (frame.north - frame.south);
+    const mx = h.tx * mpuX;
+    const my = -h.ty * mpuY;
+    const len = Math.hypot(mx, my) || 1;
+    const proj = projectAt(lat);
+    const xy = proj.to(lon, lat);
+    out.push({
+      kind: "semi",
+      coords: orientedRing(proj, xy[0], xy[1], { ux: mx / len, uy: my / len }, BOX.semi.length, BOX.semi.width),
+      closed: true,
+      heightM: BOX.semi.height,
+      explicitHeight: true,
+      center: [lon, lat],
+      rank: 0,
+    });
+  }
+  return out;
+}
+
 function scoreClass(labels, preds, cls, matchM) {
   const dist = matchM > 0 ? matchM : 12;
   const lab = [];
@@ -1139,6 +1349,7 @@ module.exports = {
   centroidLL,
   orientedRing,
   semiBoxes,
+  semisInLot,
   boatBoxes,
   mergeDenseCars,
   scoreVehicles,
