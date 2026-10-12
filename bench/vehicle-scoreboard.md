@@ -9,3 +9,4 @@ Recall and precision use the hand-checked pads only. A pad that was not reviewed
 | Wentworth marina | boat | 58.3% | 100.0% | 24 | 20 | manual image labels | no | 41341 / 4900000 | no |
 | Citrus Gardens | mobile-home | 70.8% | 100.0% | 24 | 22 | manual image labels | no | 90478 / 4900000 | no |
 | Iowa 80 truck stop | semi | 80.0% | 90.5% | 15 | 21 | manual image labels | no | 19783 / 4900000 | no |
+| Walmart Davenport lot | car | 100.0% | 50.3% | 1 | 1 | manual image labels | yes | 2312 / 4900000 | no |

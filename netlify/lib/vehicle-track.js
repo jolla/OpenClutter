@@ -1301,6 +1301,107 @@ function scoreVehicles(labels, preds, matchM) {
   return rows;
 }
 
+/**
+ * Area score for one merged car layer.
+ * Recall is how much of the checked parked area the layer covers.
+ * Precision is how much of the layer that lands on a checked label
+ * is parked cars rather than empty pavement or a building.
+ * Checked ground the layer misses does not count. Unreviewed ground
+ * does not count.
+ */
+function scoreLayerOverlap(labels, predRings, cellM) {
+  const cell = cellM > 0 ? cellM : 2;
+  const parked = [];
+  const checked = [];
+  for (let i = 0; i < (labels || []).length; i++) {
+    const item = labels[i];
+    if (!item || !item.ring || item.ring.length < 3) continue;
+    checked.push(item);
+    if (item.class === "car") parked.push(item);
+  }
+  const preds = predRings || [];
+  if (!parked.length) {
+    return { class: "car", labels: 0, predictions: preds.length, matched: 0, recall: null, precision: null, buildingCovered: null };
+  }
+  let origin = null;
+  for (let i = 0; i < checked.length && !origin; i++) origin = checked[i].ring[0];
+  const mLon = 111320 * Math.cos((origin[1] * Math.PI) / 180);
+  function xy(lon, lat) {
+    return [(lon - origin[0]) * mLon, (lat - origin[1]) * 110540];
+  }
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const parkedM = [];
+  const checkedM = [];
+  const predM = [];
+  function stash(ring, bucket) {
+    const pts = [];
+    for (let i = 0; i < ring.length; i++) {
+      const p = xy(ring[i][0], ring[i][1]);
+      pts.push(p);
+      if (p[0] < minX) minX = p[0];
+      if (p[1] < minY) minY = p[1];
+      if (p[0] > maxX) maxX = p[0];
+      if (p[1] > maxY) maxY = p[1];
+    }
+    bucket.push(pts);
+  }
+  for (let i = 0; i < parked.length; i++) stash(parked[i].ring, parkedM);
+  for (let i = 0; i < checked.length; i++) stash(checked[i].ring, checkedM);
+  for (let i = 0; i < preds.length; i++) stash(preds[i], predM);
+  let parkedCells = 0;
+  let parkedHit = 0;
+  let coveredChecked = 0;
+  let coveredCar = 0;
+  let buildingCells = 0;
+  let buildingHit = 0;
+  for (let y = minY + cell / 2; y <= maxY; y += cell) {
+    for (let x = minX + cell / 2; x <= maxX; x += cell) {
+      const lon = origin[0] + x / mLon;
+      const lat = origin[1] + y / 110540;
+      const pt = [lon, lat];
+      let onParked = false;
+      for (let i = 0; i < parked.length; i++) {
+        if (pointInRing(pt, parked[i].ring)) onParked = true;
+      }
+      let onBuilding = false;
+      let onChecked = false;
+      for (let i = 0; i < checked.length; i++) {
+        if (!pointInRing(pt, checked[i].ring)) continue;
+        onChecked = true;
+        if (checked[i].class === "building") onBuilding = true;
+      }
+      let covered = false;
+      for (let i = 0; i < preds.length; i++) {
+        if (pointInRing(pt, preds[i])) covered = true;
+      }
+      if (onParked) {
+        parkedCells++;
+        if (covered) parkedHit++;
+      }
+      if (onBuilding) {
+        buildingCells++;
+        if (covered) buildingHit++;
+      }
+      if (covered && onChecked) {
+        coveredChecked++;
+        if (onParked) coveredCar++;
+      }
+    }
+  }
+  return {
+    class: "car",
+    labels: parked.length,
+    predictions: preds.length,
+    matched: parkedHit,
+    recall: parkedCells ? parkedHit / parkedCells : null,
+    precision: coveredChecked ? coveredCar / coveredChecked : null,
+    buildingCovered: buildingCells ? buildingHit / buildingCells : null,
+  };
+}
+
 module.exports = {
   RV_LENGTH_M,
   RV_WIDTH_M,
@@ -1353,4 +1454,5 @@ module.exports = {
   boatBoxes,
   mergeDenseCars,
   scoreVehicles,
+  scoreLayerOverlap,
 };

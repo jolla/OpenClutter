@@ -58,5 +58,17 @@
     "north": 41.6202658,
     "fixture": "bench/fixtures/iowa-80.json",
     "labels": "bench/vehicle-labels/iowa-80.json"
+  },
+  {
+    "id": "walmart-davenport",
+    "name": "Walmart Davenport lot",
+    "place": "Davenport, Iowa",
+    "kind": "surface lot",
+    "west": -90.5276,
+    "south": 41.5786,
+    "east": -90.523,
+    "north": 41.5823,
+    "fixture": "bench/fixtures/walmart-davenport.json",
+    "labels": "bench/vehicle-labels/walmart-davenport.json"
   }
 ]
