@@ -37,7 +37,7 @@ function pct(n) {
 
 function loadAerial(site) {
   const given = arg("--aerial");
-  if (given && fs.existsSync(given)) return fs.readFileSync(given);
+  if (given && fs.existsSync(given) && SITES.length === 1) return fs.readFileSync(given);
   const cached = path.join(os.tmpdir(), "vehicle-aerial-" + site.id + ".jpg");
   if (fs.existsSync(cached) && fs.statSync(cached).size > 1000) return fs.readFileSync(cached);
   const url =
@@ -170,9 +170,9 @@ function writeBoard(results) {
 }
 
 function main() {
-  const aerialBuf = loadAerial(SITES[0]);
   const results = [];
   for (let i = 0; i < SITES.length; i++) {
+    const aerialBuf = loadAerial(SITES[i]);
     const result = scoreSite(SITES[i], aerialBuf);
     results.push(result);
     console.log(SITES[i].name, "preds", result.preds, "json", result.jsonBytes);

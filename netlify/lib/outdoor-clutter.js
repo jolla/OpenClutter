@@ -37,8 +37,7 @@ const {
   isTruckLotTags,
   isMarinaTags,
   isMooringTags,
-  vehicleBlobM2,
-  vehicleNear,
+  pitchVehicle,
   finalizeVehicles,
   semiBoxes,
   boatBoxes,
@@ -2166,7 +2165,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
   const fractionFor =
     vehiclePlate && frame
       ? function (ring) {
-          return vehicleNear(ring, frame, vehiclePlate, 8);
+          return pitchVehicle(ring, frame, vehiclePlate);
         }
       : null;
   features = finalizeVehicles(features, fractionFor);
