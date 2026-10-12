@@ -520,6 +520,7 @@ function needsPitchImage(features) {
     const f = features[i];
     if (!f) continue;
     if (f.kind === "trailer-candidate") return true;
+    if (f.kind === "marina" || f.kind === "mobile-park") return true;
     if (f.kind === "rv" && (f.pitchUse === "rv" || f.pitchUse === "tent" || f.pitchUse === "pitch")) return true;
   }
   return false;
@@ -913,6 +914,119 @@ function boatsOnWater(ring, frame, plate) {
   return out;
 }
 
+/**
+ * White manufactured-home roofs inside a park outline. OSM may call the
+ * park residential or a caravan site. Each roof is the building footprint.
+ * The caller sets the height at about 4 m.
+ */
+function mobileHomesInRing(ring, frame, plate) {
+  if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return [];
+  const poly = [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const xy = llToImagePx(ring[i][0], ring[i][1], frame);
+    if (!Number.isFinite(xy[0]) || !Number.isFinite(xy[1])) continue;
+    poly.push(xy);
+    if (xy[0] < minX) minX = xy[0];
+    if (xy[1] < minY) minY = xy[1];
+    if (xy[0] > maxX) maxX = xy[0];
+    if (xy[1] > maxY) maxY = xy[1];
+  }
+  if (poly.length < 3) return [];
+  const mpuX = frame.mpuX > 0 ? frame.mpuX : 0.4;
+  const mpuY = frame.mpuY > 0 ? frame.mpuY : 0.4;
+  const x0 = Math.max(0, Math.floor(minX));
+  const y0 = Math.max(0, Math.floor(minY));
+  const x1 = Math.min(plate.width - 1, Math.ceil(maxX));
+  const y1 = Math.min(plate.height - 1, Math.ceil(maxY));
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  if (bw < 4 || bh < 4 || bw * bh > 2000000) return [];
+  const mask = new Uint8Array(bw * bh);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      if (!pointInRing([x + 0.5, y + 0.5], poly)) continue;
+      const i = (y * plate.width + x) * 4;
+      const r = plate.data[i];
+      const g = plate.data[i + 1];
+      const b = plate.data[i + 2];
+      const yl = 0.299 * r + 0.587 * g + 0.114 * b;
+      if (yl < 175 || yl > 250) continue;
+      if (Math.max(r, g, b) - Math.min(r, g, b) > 35) continue;
+      mask[(y - y0) * bw + (x - x0)] = 1;
+    }
+  }
+  const seen = new Uint8Array(bw * bh);
+  const stack = [];
+  const out = [];
+  const areaPx = mpuX * mpuY;
+  for (let i = 0; i < mask.length && out.length < 400; i++) {
+    if (!mask[i] || seen[i]) continue;
+    const cells = [];
+    stack.push(i);
+    seen[i] = 1;
+    while (stack.length) {
+      const k = stack.pop();
+      cells.push(k);
+      const x = k % bw;
+      const y = (k / bw) | 0;
+      for (const [nx, ny] of [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]]) {
+        if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
+        const j = ny * bw + nx;
+        if (!mask[j] || seen[j]) continue;
+        seen[j] = 1;
+        stack.push(j);
+      }
+    }
+    const m2 = cells.length * areaPx;
+    if (m2 < 40 || m2 > 130) continue;
+    let minx = 1e9;
+    let miny = 1e9;
+    let maxx = -1e9;
+    let maxy = -1e9;
+    let sx = 0;
+    let sy = 0;
+    for (let c = 0; c < cells.length; c++) {
+      const x = x0 + (cells[c] % bw);
+      const y = y0 + ((cells[c] / bw) | 0);
+      sx += x;
+      sy += y;
+      if (x < minx) minx = x;
+      if (y < miny) miny = y;
+      if (x > maxx) maxx = x;
+      if (y > maxy) maxy = y;
+    }
+    const corners = [
+      [minx, miny],
+      [maxx, miny],
+      [maxx, maxy],
+      [minx, maxy],
+    ];
+    const coords = [];
+    for (let c = 0; c < corners.length; c++) {
+      const lon = frame.west + (corners[c][0] / frame.imgW) * (frame.east - frame.west);
+      const lat = frame.north - (corners[c][1] / frame.imgH) * (frame.north - frame.south);
+      coords.push([lon, lat]);
+    }
+    coords.push(coords[0]);
+    const lon = frame.west + (sx / cells.length / frame.imgW) * (frame.east - frame.west);
+    const lat = frame.north - (sy / cells.length / frame.imgH) * (frame.north - frame.south);
+    out.push({
+      kind: "mobile-home",
+      coords,
+      closed: true,
+      heightM: 4,
+      explicitHeight: true,
+      center: [lon, lat],
+      rank: 0,
+    });
+  }
+  return out;
+}
+
 function scoreClass(labels, preds, cls, matchM) {
   const dist = matchM > 0 ? matchM : 12;
   const lab = [];
@@ -1014,6 +1128,7 @@ module.exports = {
   vehicleNear,
   pitchVehicle,
   boatsOnWater,
+  mobileHomesInRing,
   recenterBox,
   occupiedCall,
   decidePitch,
