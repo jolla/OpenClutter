@@ -8,6 +8,8 @@
 
 **v1.1.97** on `dev` — Sloped terrain is an adaptive mesh, not a fixed 20×20 grid. The paste spends its budget on the worst saddles, keeps a planar fit near half a meter, and merges a flat bench into one raised floor. Neighboring ramps share an edge height, and a coarse piece is split where it meets a finer one so the seam has no gap. A pure north-south or east-west grade stays one ramp per cell. The badge stays (`dev · v1.1.97`).
 
+**v1.1.159** on `dev`. The address box is full width and searches on Enter. The version label sits at the bottom of Advanced and hides when Advanced is closed. Map notes keep obstructions and key structures. They no longer suggest an AP or a gateway, and they no longer state GPS coordinates. The two GPS tie points stay. The badge stays (`dev · v1.1.159`).
+
 **v1.1.158** on `dev`. The Export button fills from left to right while an export runs. The label reads Exporting with the real percent. Trees moves by tiles finished, and the bar reaches 100% when the zip is ready. The stage name stays on the status line. Copy terrain and the finished summary stay as they are. The badge stays (`dev · v1.1.158`).
 
 **v1.1.157** on `dev`. A mapped multi-storey garage stays a building at about 3 m per deck, or 9 m when the deck count is missing. A large roof with no measured height, from about 20,000 m² up to 400,000 m², stays seated at 12 m instead of the ten-floor area guess. Dock trailers still use the 16.2 by 2.6 m semi, 4.1 m tall, at 12 dB/m, and that scan follows the trailer size on a 1 m plate. Empty pavement stays empty. The badge stays (`dev · v1.1.157`).

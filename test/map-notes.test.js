@@ -74,15 +74,13 @@ describe("Hamina map notes", () => {
       },
     });
     const text = notes.map((n) => n.text).join("\n");
-    assert.match(text, /Suggested gateway, Office/);
-    assert.match(text, /Suggested AP, bathhouse/);
-    assert.match(text, /Suggested AP, Pavillion/);
-    assert.match(text, /Suggested AP, entrance parking/);
-    assert.match(text, /Suggested AP$/m);
+    assert.match(text, /^Office$/m);
+    assert.match(text, /^Bathhouse$/m);
+    assert.match(text, /^Pavillion$/m);
+    assert.equal(/Suggested gateway|Suggested AP|AFC GPS/.test(text), false);
+    assert.equal(/\d+\.\d{4,}/.test(text), false);
     assert.match(text, /Tall obstruction, 22 m, Lookout/);
     assert.match(text, /Terrain high point, 368 m/);
-    assert.match(text, new RegExp("AFC GPS SW " + frame.south.toFixed(5) + ", " + frame.west.toFixed(5)));
-    assert.match(text, new RegExp("AFC GPS NE " + frame.north.toFixed(5) + ", " + frame.east.toFixed(5)));
     for (let i = 0; i < notes.length; i++) {
       assert.deepEqual(Object.keys(notes[i]).sort(), ["color", "icon", "text", "x", "y"]);
       assert.equal(notes[i].color, MAP_NOTE_COLOR);
@@ -159,8 +157,6 @@ describe("Hamina map notes", () => {
     assert.match(clutter, /function wantMapNotes/);
     assert.match(clutter, /stampMapNotes/);
     const off = buildMapNotes({ frame, places: [], features: [], terrain: null });
-    assert.equal(off.length, 2);
-    assert.match(off[0].text, /AFC GPS SW/);
-    assert.match(off[1].text, /AFC GPS NE/);
+    assert.deepEqual(off, []);
   });
 });

@@ -1290,7 +1290,13 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.equal(/>Finest</.test(html), false);
     assert.equal(/past 20×20/.test(html), false);
     assert.equal(/Ski hills only/i.test(html), false);
+    assert.match(html, /placeholder="Search address, press Enter"/);
+    assert.match(html, /enterkeyhint="search"/);
+    assert.equal(/type="submit"|>Go</.test(html), false);
     assert.match(html, /class="build"/);
+    const advancedAt = html.indexOf('<details id="advanced">');
+    const buildAt = html.indexOf('class="build"');
+    assert.ok(advancedAt > 0 && buildAt > advancedAt);
     assert.equal(/<h1>[^<]*id="app-version"/.test(html), false);
     assert.equal(/\bterrainRes\b/.test(app), false);
     assert.equal(/selectedTerrainResolution/.test(app), false);
