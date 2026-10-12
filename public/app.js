@@ -879,7 +879,7 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
 
 let exportProgressTimer = null;
 let exportClockStart = 0;
-const exportProgressBand = { start: 0, ceiling: 0.18, at: 0, since: 0 };
+const exportProgressBand = { start: 0, ceiling: 0.14, at: 0, since: 0 };
 
 function formatExportElapsed(ms) {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -947,7 +947,7 @@ function beginExportProgress() {
   showExportProgress({
     stageLabel: "Fetching map",
     progress: 0,
-    progressCeiling: 0.18,
+    progressCeiling: 0.14,
     createdAt: exportClockStart,
   });
 }
@@ -995,7 +995,7 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
 
 async function pollExport(jobId) {
   const started = Date.now();
-  const ceiling = 5 * 60 * 1000;
+  const ceiling = 15 * 60 * 1000;
   let misses = 0;
   while (Date.now() - started < ceiling) {
     let data = null;
@@ -1020,7 +1020,7 @@ async function pollExport(jobId) {
     if (data.state === "done") return data;
     await sleep(1500);
   }
-  throw new Error("Export timed out after 5 minutes. Draw a smaller area and try again.");
+  throw new Error("Export timed out after 15 minutes. Draw a smaller area and try again.");
 }
 
 function downloadFailure(status, data) {

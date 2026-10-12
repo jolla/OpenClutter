@@ -121,9 +121,17 @@ const DENSE_FEATURES = 1500;
 // smaller plate. The background job covers the full draw.
 const SYNC_LARGE_DRAW_M = 2500;
 const SYNC_LARGE_ROOFS = 240;
-// Background exports are not on the ~10s gateway. Four minutes leaves room
-// to write an error before the platform's 15 minute kill.
-const BACKGROUND_ANSWER_MS = 4 * 60 * 1000;
+// Background exports are not on the ~10s gateway. Netlify kills the
+// function at 15 minutes. Stop one minute early so the zip or an error
+// is written. The page polls for that same 15 minutes.
+const BACKGROUND_PLATFORM_MS = 15 * 60 * 1000;
+const BACKGROUND_ANSWER_MS = BACKGROUND_PLATFORM_MS - 60 * 1000;
+// Canopy height, world cover, and lidar start with the map. Each stops on
+// its own clock. A miss keeps the buildings. They do not run one after
+// another until the page gives up.
+const BACKGROUND_CHM_MS = 180 * 1000;
+const BACKGROUND_COVER_MS = 60 * 1000;
+const BACKGROUND_LIDAR_MS = 45 * 1000;
 const BACKGROUND_PLATE_MS = 90000;
 const BACKGROUND_PLATE_FALLBACK_MS = 45000;
 const { AsyncLocalStorage } = require("node:async_hooks");
@@ -198,6 +206,14 @@ function setFetchTerrainDemForTests(fn) {
 let fetchChmGridImpl = fetchChmGrid;
 function setFetchChmGridForTests(fn) {
   fetchChmGridImpl = typeof fn === "function" ? fn : fetchChmGrid;
+}
+let fetchWorldCoverImpl = fetchWorldCoverTrees;
+function setFetchWorldCoverForTests(fn) {
+  fetchWorldCoverImpl = typeof fn === "function" ? fn : fetchWorldCoverTrees;
+}
+let sourceCapsOverride = null;
+function setSourceCapsForTests(caps) {
+  sourceCapsOverride = caps || null;
 }
 const { gpsClipboard, stampGpsTiePoints } = require("../lib/hamina-clipboard");
 const { buildMapNotes, stampMapNotes } = require("../lib/map-notes");
@@ -888,6 +904,64 @@ function devChmWait(started, answerMs) {
 }
 
 /**
+ * A slow source stops on its own clock, measured from the export start.
+ * The background answer clock is longer. One source must not spend it and
+ * then leave the next source to run after the page has given up.
+ */
+function sourceWait(started, capMs) {
+  const cap = capMs > 0 ? capMs : 0;
+  const left = cap - (Date.now() - started);
+  const budget = Math.max(0, left);
+  return { graceMs: budget, hardMs: cap, budgetMs: budget, flushMs: 80 };
+}
+
+function cappedMs(background, key, backgroundMs, syncMs) {
+  const over = sourceCapsOverride && sourceCapsOverride[key];
+  if (over > 0) return over;
+  return background ? backgroundMs : syncMs;
+}
+
+function chmJoinWait(started, background, answerMs) {
+  if (background) return sourceWait(started, cappedMs(true, "chmMs", BACKGROUND_CHM_MS, BACKGROUND_CHM_MS));
+  return devChmWait(started, answerMs);
+}
+
+function coverJoinWait(started, background) {
+  return sourceWait(started, cappedMs(background, "coverMs", BACKGROUND_COVER_MS, 8000));
+}
+
+function lidarCapMs(background) {
+  return cappedMs(background, "lidarMs", BACKGROUND_LIDAR_MS, 8000);
+}
+
+async function joinQuiet(job, started, opts) {
+  const ignored = [];
+  return joinOptional(ignored, started, "World cover", job, opts);
+}
+
+/** Name the slow read that is still open so the progress bar matches the work. */
+function watchSlowStages(rows) {
+  let shown = "";
+  const tick = () => {
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row.open()) continue;
+      if (row.label === shown) return;
+      shown = row.label;
+      reportProgress({ stage: row.label });
+      return;
+    }
+  };
+  const timer = setInterval(tick, 400);
+  return {
+    tick,
+    stop() {
+      clearInterval(timer);
+    },
+  };
+}
+
+/**
  * In-flight DEM on the dev host. The read starts with the map, so this wait
  * is only the slice still inside the answer clock. keepOpen means a grid
  * that resolves in that slice is kept; it is not aborted just because the
@@ -1233,6 +1307,8 @@ async function handleClutter(event) {
   const terrainStyle = terrainStyleFromRequest(event, body);
   const imgMetaUrl = esriImageryMetaUrl(frame);
   const includeFoliage = wantFoliage(event, body);
+  const lidarOn =
+    devHost && (body.lidar === true || body.lidar === "true" || body.lidar === 1 || body.lidar === "1");
   const includeWater = wantOutdoorFlag(event, body, "includeWater");
   const includeParking = wantOutdoorFlag(event, body, "includeParking");
   const includeWalls = wantOutdoorFlag(event, body, "includeWalls");
@@ -1270,6 +1346,11 @@ async function handleClutter(event) {
   let overturePack = { features: [] };
   let demSamples = null;
   let chmGrid = null;
+  let coverJob = null;
+  let coverPromise = null;
+  let lidarPromise = null;
+  let lidarSettled = true;
+  let worldCover = null;
   const warnings = [];
   const started = Date.now();
   const sharpRoom = devHost && imageryRoomKind(body.imageryQuality) !== "";
@@ -1339,8 +1420,10 @@ async function handleClutter(event) {
         })
       );
     }
+    let imagerySettled = !needImage;
     const imageryJob = needImage
       ? fetchImageryStepped(requestBbox, steps).then((got) => {
+          imagerySettled = true;
           imageryPlate = got;
           return got && got.buf;
         })
@@ -1406,6 +1489,33 @@ async function handleClutter(event) {
     )
       .catch(() => ({ features: [] }))
       .finally(() => clearTimeout(usaTimer));
+    if (includeFoliage && !coverJob) {
+      const coverFrame = {
+        west: requestBbox.west,
+        south: requestBbox.south,
+        east: requestBbox.east,
+        north: requestBbox.north,
+      };
+      coverJob = beginOptional((signal) => fetchWorldCoverImpl(coverFrame, { signal }));
+    }
+    if (lidarOn && !lidarPromise) {
+      lidarSettled = false;
+      const lidarBox = {
+        west: requestBbox.west,
+        south: requestBbox.south,
+        east: requestBbox.east,
+        north: requestBbox.north,
+      };
+      lidarPromise = fetchUsgsLidar(lidarBox, { maxMs: lidarCapMs(background) })
+        .then((value) => {
+          lidarSettled = true;
+          return value;
+        })
+        .catch(() => {
+          lidarSettled = true;
+          return null;
+        });
+    }
     if (includeFoliage && needImage && !chmJob) {
       const chmFrame = {
         west: frame.west,
@@ -1420,7 +1530,13 @@ async function handleClutter(event) {
       includeFoliage && !clientHitsEarly.length && !devHost
         ? fetchCanopyTrees(frame, (url) => fetchOk(url, "canopy"), { maxTrees: maxTreesForBbox(frame) }).catch(() => null)
         : null;
-    reportProgress({ stage: "Fetching footprints" });
+    const coreWatch = watchSlowStages([
+      { label: "Fetching aerial", open: () => needImage && !imagerySettled },
+      { label: "Canopy height", open: () => !!(chmJob && !chmJob.isSettled()) },
+      { label: "World cover", open: () => !!(coverJob && !coverJob.isSettled()) },
+      { label: "Fetching footprints", open: () => true },
+    ]);
+    coreWatch.tick();
     const core = Promise.all([
       fetchMsFootprints(frame, (url) => fetchOk(url, "footprints", coreBudget), { pad: false, budgetMs: coreBudget }),
       globalJob,
@@ -1444,9 +1560,14 @@ async function handleClutter(event) {
         fetched = await Promise.race([core, wall]);
       } finally {
         clearTimeout(wallTimer);
+        coreWatch.stop();
       }
     } else {
-      fetched = await core;
+      try {
+        fetched = await core;
+      } finally {
+        coreWatch.stop();
+      }
     }
     if (devHost && metaDone && metaReady) {
       imgMeta = metaReady;
@@ -1490,6 +1611,7 @@ async function handleClutter(event) {
     if (overtureJob) overtureJob.ctrl.abort();
     if (terrainJob) terrainJob.ctrl.abort();
     if (chmJob) chmJob.ctrl.abort();
+    if (coverJob) coverJob.ctrl.abort();
     if (outdoorJob) outdoorJob.ctrl.abort();
     if (forestJob) forestJob.ctrl.abort();
     if (detailJob) detailJob.ctrl.abort();
@@ -1518,6 +1640,19 @@ async function handleClutter(event) {
           backgroundDem: background,
           skip3depProbe: !frameHas3dep(frame),
         })
+      );
+    }
+    if (includeFoliage && !coverJob) {
+      coverJob = beginOptional((signal) =>
+        fetchWorldCoverImpl(
+          {
+            west: frame.west,
+            south: frame.south,
+            east: frame.east,
+            north: frame.north,
+          },
+          { signal }
+        )
       );
     }
     if (includeFoliage && !chmJob) {
@@ -1552,13 +1687,22 @@ async function handleClutter(event) {
         started,
         "Canopy height",
         chmJob,
-        devHost
-          ? devChmWait(started, background || sharpRoom ? answerMs : undefined)
-          : {
-              graceMs: 8000,
-              hardMs: EXPORT_ANSWER_MS,
-            }
+        background
+          ? chmJoinWait(started, true, answerMs)
+          : devHost
+            ? devChmWait(started, sharpRoom ? answerMs : undefined)
+            : {
+                graceMs: 8000,
+                hardMs: EXPORT_ANSWER_MS,
+              }
       )
+    : Promise.resolve(null);
+  // World cover starts with the map. The join clock is already running, so
+  // buildings are not held for it. The fill step reads whatever came back.
+  coverPromise = coverJob
+    ? background
+      ? joinOptional(warnings, started, "World cover", coverJob, coverJoinWait(started, true))
+      : joinQuiet(coverJob, started, coverJoinWait(started, false))
     : Promise.resolve(null);
   const terrainFollow =
     !includeTerrain || devHost
@@ -1576,7 +1720,18 @@ async function handleClutter(event) {
         )
       : Promise.resolve(null);
   if (readTerrain) reportProgress({ stage: "Reading terrain" });
-  const optional = await Promise.all([overturePromise, demPromise, chmPromise]);
+  const slowWatch = watchSlowStages([
+    { label: "Canopy height", open: () => !!(chmJob && !chmJob.isSettled()) },
+    { label: "World cover", open: () => !!(coverJob && !coverJob.isSettled()) },
+    { label: "Lidar heights", open: () => lidarOn && !lidarSettled },
+  ]);
+  slowWatch.tick();
+  let optional;
+  try {
+    optional = await Promise.all([overturePromise, demPromise, chmPromise]);
+  } finally {
+    slowWatch.stop();
+  }
   overturePack = optional[0] || { features: [] };
   const demPack = optional[1];
   let demKind = null;
@@ -1600,6 +1755,7 @@ async function handleClutter(event) {
     warnings.some((w) => /Canopy height omitted:/.test(String(w)) && /timed out|export budget/i.test(String(w)));
   if (chmTimedOut) {
     warnings.push("Foliage omitted: canopy height timed out. Buildings in this zip are unchanged.");
+    if (coverJob && !coverJob.isSettled()) coverJob.ctrl.abort();
   }
 
   treesSource = normalizeTreesSource(treesSource, treePoints.length);
@@ -1723,33 +1879,39 @@ async function handleClutter(event) {
     }
   }
 
-  const lidarOn =
-    devHost && (body.lidar === true || body.lidar === "true" || body.lidar === 1 || body.lidar === "1");
   if (lidarOn) {
     try {
-      const lidar = await fetchUsgsLidar(frame, { maxMs: background ? undefined : 8000 });
-      if (!lidar.skipped && lidar.grid) {
-        const applied = applyLidarSample(features, treePoints, lidar.grid);
-        features = applied.features;
-        treePoints = applied.trees;
-        lidar.heights = applied.heights;
-        lidar.added = applied.added;
-        lidar.canopy = applied.canopy;
-        footprintMeta.lidarHeights = applied.heights;
-        footprintMeta.lidarAdded = applied.added;
-        footprintMeta.lidarCanopy = applied.canopy;
+      if (!lidarSettled) {
+        reportProgress({ stage: "Lidar heights" });
+        await flushProgress();
       }
-      footprintMeta.lidarProject = lidar.project || "";
-      footprintMeta.lidarCollected = lidar.collected || "";
-      footprintMeta.lidarPoints = lidar.points || 0;
-      footprintMeta.lidarBytes = lidar.bytes || 0;
-      footprintMeta.lidarSpacing = lidar.spacingM || 0;
-      footprintMeta.lidarMs = lidar.ms || 0;
-      const status = lidarStatusLine(lidar);
-      if (warnings.indexOf(status) < 0) warnings.push(status);
-      const used = status === "Lidar heights used.";
-      const note = used ? lidarNote(lidar) : "";
-      if (note && warnings.indexOf(note) < 0) warnings.push(note);
+      const lidar = await lidarPromise;
+      if (!lidar) {
+        warnings.push("Lidar heights not used.");
+      } else {
+        if (!lidar.skipped && lidar.grid) {
+          const applied = applyLidarSample(features, treePoints, lidar.grid);
+          features = applied.features;
+          treePoints = applied.trees;
+          lidar.heights = applied.heights;
+          lidar.added = applied.added;
+          lidar.canopy = applied.canopy;
+          footprintMeta.lidarHeights = applied.heights;
+          footprintMeta.lidarAdded = applied.added;
+          footprintMeta.lidarCanopy = applied.canopy;
+        }
+        footprintMeta.lidarProject = lidar.project || "";
+        footprintMeta.lidarCollected = lidar.collected || "";
+        footprintMeta.lidarPoints = lidar.points || 0;
+        footprintMeta.lidarBytes = lidar.bytes || 0;
+        footprintMeta.lidarSpacing = lidar.spacingM || 0;
+        footprintMeta.lidarMs = lidar.ms || 0;
+        const status = lidarStatusLine(lidar);
+        if (warnings.indexOf(status) < 0) warnings.push(status);
+        const used = status === "Lidar heights used.";
+        const note = used ? lidarNote(lidar) : "";
+        if (note && warnings.indexOf(note) < 0) warnings.push(note);
+      }
     } catch {
       warnings.push("Lidar heights not used.");
     }
@@ -1822,23 +1984,28 @@ async function handleClutter(event) {
     }
   }
 
+  if (includeFoliage && !chmTimedOut && coverJob && !coverJob.isSettled()) {
+    reportProgress({ stage: "World cover" });
+    await flushProgress();
+  }
+  if (coverPromise) {
+    try {
+      worldCover = await coverPromise;
+    } catch {
+      worldCover = null;
+    }
+  }
   if (includeFoliage && !chmTimedOut) {
     reportProgress({ stage: "Trees" });
     await flushProgress();
   }
 
   if (includeFoliage && !chmTimedOut && decoded && frame) {
-    let cover = null;
-    try {
-      cover = await fetchWorldCoverTrees(frame, { signal: AbortSignal.timeout(8000) });
-    } catch {
-      cover = null;
-    }
     try {
       const filled = fillCanopyGaps(chmGrid, {
         frame,
         image: decoded,
-        worldcover: cover,
+        worldcover: worldCover,
         openRuns,
       });
       if (filled && filled.values && filled.nonzero > 0) chmGrid = filled;
@@ -2125,7 +2292,15 @@ exports.handleClutter = handleClutter;
 exports.runBackgroundExport = runBackgroundExport;
 exports.backgroundImagerySteps = backgroundImagerySteps;
 exports.isBackgroundExport = isBackgroundExport;
+exports.BACKGROUND_PLATFORM_MS = BACKGROUND_PLATFORM_MS;
 exports.BACKGROUND_ANSWER_MS = BACKGROUND_ANSWER_MS;
+exports.BACKGROUND_CHM_MS = BACKGROUND_CHM_MS;
+exports.BACKGROUND_COVER_MS = BACKGROUND_COVER_MS;
+exports.BACKGROUND_LIDAR_MS = BACKGROUND_LIDAR_MS;
+exports.sourceWait = sourceWait;
+exports.chmJoinWait = chmJoinWait;
+exports.setFetchWorldCoverForTests = setFetchWorldCoverForTests;
+exports.setSourceCapsForTests = setSourceCapsForTests;
 
 exports.handler = async (event, context) => {
   // An image or footprint socket that is still open must not hold the zip.

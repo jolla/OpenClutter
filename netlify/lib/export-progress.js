@@ -2,17 +2,20 @@
 
 /**
  * Stage weights for a background export. The shares follow the work, not a
- * clock: the aerial plate, the footprint read, terrain, buildings, canopy,
- * then the zip. A stage that the export skips is simply never written, and
- * the bar moves to the next stage that is.
+ * clock: the aerial plate, the footprint read, canopy height, world cover,
+ * lidar, terrain, buildings, trees, then the zip. A stage that the export
+ * skips is simply never written, and the bar moves to the next stage that is.
  */
 
 const STAGES = [
-  { id: "map", label: "Fetching map", weight: 18, test: /^Fetching (aerial|map)\b/i },
-  { id: "footprints", label: "Fetching footprints", weight: 16, test: /^Fetching footprints\b/i },
-  { id: "terrain", label: "Terrain", weight: 14, test: /^(Reading terrain|Terrain)\b/i },
-  { id: "buildings", label: "", weight: 20, test: /^Buildings\b/i },
-  { id: "trees", label: "", weight: 26, test: /^Trees\b/i },
+  { id: "map", label: "Fetching map", weight: 14, test: /^Fetching (aerial|map)\b/i },
+  { id: "footprints", label: "Fetching footprints", weight: 12, test: /^Fetching footprints\b/i },
+  { id: "canopy", label: "Canopy height", weight: 12, test: /^Canopy height\b/i },
+  { id: "cover", label: "World cover", weight: 8, test: /^World cover\b/i },
+  { id: "lidar", label: "Lidar heights", weight: 6, test: /^Lidar heights\b/i },
+  { id: "terrain", label: "Terrain", weight: 12, test: /^(Reading terrain|Terrain)\b/i },
+  { id: "buildings", label: "", weight: 16, test: /^Buildings\b/i },
+  { id: "trees", label: "", weight: 14, test: /^Trees\b/i },
   { id: "zip", label: "Building zip", weight: 6, test: /^(Packing zip|Building zip)\b/i },
 ];
 
