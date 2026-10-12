@@ -10,5 +10,17 @@
     "north": 44.4697113,
     "fixture": "bench/fixtures/rogers-pitches.json",
     "labels": "bench/vehicle-labels/rogers-campground.json"
+  },
+  {
+    "id": "mesa-rv",
+    "name": "Mesa RV resorts",
+    "place": "Mesa, Arizona",
+    "kind": "rv resort",
+    "west": -111.7698238,
+    "south": 33.417469,
+    "east": -111.7612268,
+    "north": 33.4228392,
+    "fixture": "bench/fixtures/mesa-rv.json",
+    "labels": "bench/vehicle-labels/mesa-rv.json"
   }
 ]

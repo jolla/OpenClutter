@@ -4,4 +4,5 @@ Recall and precision use the hand-checked pads only. A pad that was not reviewed
 
 | Site | Class | Recall | Precision | Labels | Predictions | Source | Merged | JSON | Pass |
 | --- | --- | ---: | ---: | ---: | ---: | --- | --- | ---: | --- |
-| Rogers campground | rv | 50.0% | 50.0% | 10 | 28 | manual image labels | no | 72159 / 4900000 | no |
+| Rogers campground | rv | 90.0% | 51.5% | 10 | 33 | manual image labels | no | 75307 / 4900000 | no |
+| Mesa RV resorts | rv | 91.7% | 78.6% | 12 | 14 | manual image labels | no | 54035 / 4900000 | no |
