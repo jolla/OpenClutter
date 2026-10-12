@@ -17,7 +17,7 @@ const {
   setExportLog,
 } = require("../netlify/lib/cpu-pool");
 const { treePairsFromPoints } = require("../netlify/lib/vegetation");
-const { treePairsParallel, bandsForGrid } = require("../netlify/lib/detect-parallel");
+const { treePairsParallel, bandsForGrid, TILE_MIN, TILE_MAX, OVERLAP_M } = require("../netlify/lib/detect-parallel");
 
 function memoryStore() {
   const map = new Map();
@@ -109,21 +109,25 @@ describe("cpu workers", () => {
     setExportLog(null);
   });
 
-  it("splits a dominant canopy band finer than the CPU count", () => {
+  it("queues 16 to 32 canopy tiles with overlap on a tall grid", () => {
     const height = 622;
     const width = 40;
     const values = new Uint8Array(width * height);
-    for (let y = 0; y < 80; y++) {
-      for (let x = 0; x < width; x++) values[y * width + x] = 12;
-    }
-    const grid = { west: 0, south: 0, east: 1, north: 1, width, height, values, nonzero: 1 };
+    values.fill(8);
+    const grid = { west: -115.17, south: 36.12, east: -115.15, north: 36.13, width, height, values, nonzero: 1 };
     const bands = bandsForGrid(grid, 4);
-    assert.ok(bands.length > 4, "dominant bands " + bands.length);
-    assert.ok(bands.length <= 16);
-    const even = new Uint8Array(width * height);
-    even.fill(8);
-    const evenBands = bandsForGrid(Object.assign({}, grid, { values: even }), 4);
-    assert.equal(evenBands.length, 4);
+    assert.ok(bands.length >= TILE_MIN, "tiles " + bands.length);
+    assert.ok(bands.length <= TILE_MAX, "tiles " + bands.length);
+    assert.ok(bands[0].overlap >= 4, "overlap rows " + bands[0].overlap);
+    assert.equal(OVERLAP_M, 48);
+    let covered = 0;
+    for (let i = 0; i < bands.length; i++) {
+      if (i > 0) assert.equal(bands[i].y0, bands[i - 1].y1);
+      covered += bands[i].y1 - bands[i].y0;
+    }
+    assert.equal(bands[0].y0, 0);
+    assert.equal(bands[bands.length - 1].y1, height);
+    assert.equal(covered, height);
   });
 
   it("fires the heartbeat while a worker thread is busy", async () => {
@@ -148,6 +152,41 @@ describe("cpu workers", () => {
       clearInterval(timer);
       jobs.writeHeartbeat = orig;
     }
+  });
+
+  it("traces a crown that crosses a tile boundary once", async () => {
+    const width = 60;
+    const height = 180;
+    const values = new Uint8Array(width * height);
+    for (let y = 84; y < 104; y++) {
+      for (let x = 20; x < 40; x++) values[y * width + x] = 14;
+    }
+    const frame = {
+      west: -115.17,
+      south: 36.12,
+      east: -115.155,
+      north: 36.13,
+      imgW: 400,
+      imgH: 400,
+      mpuX: 1,
+      mpuY: 1,
+    };
+    const grid = {
+      west: frame.west,
+      south: frame.south,
+      east: frame.east,
+      north: frame.north,
+      width,
+      height,
+      values,
+      nonzero: 1,
+    };
+    const opts = { chmGrid: grid, buildingRings: [], maxPolygons: 720 };
+    const serial = treePairsFromPoints([], frame, [], null, opts);
+    const parallel = await treePairsParallel([], frame, [], null, opts);
+    assert.ok(serial.count > 0, "serial crown");
+    assert.equal(parallel.count, serial.count);
+    assert.equal(parallel.polygons, serial.polygons);
   });
 
   it("keeps tree counts in the same band when crowns are split by tile", async () => {

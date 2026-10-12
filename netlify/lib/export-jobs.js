@@ -131,15 +131,95 @@ async function readJob(id) {
   return job;
 }
 
-async function updateJob(id, patch) {
-  const store = await openStore();
-  const cur = (await store.get(jobKey(id), { type: "json" })) || freshJob(id);
+function isTerminalState(state) {
+  return state === "done" || state === "error" || state === "failed";
+}
+
+const jobLocks = new Map();
+
+function withJobLock(id, fn) {
+  const key = String(id);
+  const prev = jobLocks.get(key) || Promise.resolve();
+  const run = prev.then(fn, fn);
+  const tail = run.then(
+    () => {
+      if (jobLocks.get(key) === tail) jobLocks.delete(key);
+    },
+    () => {
+      if (jobLocks.get(key) === tail) jobLocks.delete(key);
+    }
+  );
+  jobLocks.set(key, tail);
+  return run;
+}
+
+async function loadJobRecord(store, id) {
+  const key = jobKey(id);
+  if (store && typeof store.getWithMetadata === "function") {
+    const row = await store.getWithMetadata(key, { type: "json", consistency: "strong" });
+    if (!row) return { job: null, etag: null };
+    return { job: row.data || null, etag: row.etag || null };
+  }
+  const job = await store.get(key, { type: "json" });
+  return { job: job || null, etag: null };
+}
+
+async function saveJobRecord(store, id, job, etag) {
+  const key = jobKey(id);
+  if (etag) {
+    const result = await store.setJSON(key, job, { onlyIfMatch: etag });
+    if (result && result.modified === false) return false;
+    return true;
+  }
+  if (typeof store.getWithMetadata === "function") {
+    const result = await store.setJSON(key, job, { onlyIfNew: true });
+    if (result && result.modified === false) return false;
+    return true;
+  }
+  await store.setJSON(key, job);
+  return true;
+}
+
+/**
+ * A done or failed job is terminal. A later heartbeat, stage note, or
+ * requeue must not change state, error, or the zip pointer. Heartbeat
+ * fields apply only while the job is still queued or running.
+ * A patch that tries to leave a terminal state is ignored entirely.
+ */
+function mergeJobPatch(cur, patch) {
+  const incoming = Object.assign({}, patch || {});
+  if (isTerminalState(cur.state)) {
+    if (patch && patch.state && patch.state !== cur.state) return { unchanged: true, job: cur };
+    delete incoming.state;
+    delete incoming.error;
+    delete incoming.zipFilename;
+    delete incoming.zipBytes;
+    delete incoming.heartbeatAt;
+    delete incoming.heartbeatStage;
+  }
+  const keys = Object.keys(incoming);
+  if (!keys.length) return { unchanged: true, job: cur };
   const stages = Array.isArray(cur.stages) ? cur.stages.slice() : [];
-  if (patch && patch.stage && stages[stages.length - 1] !== patch.stage) stages.push(patch.stage);
-  const next = Object.assign({}, cur, patch || {}, { stages, updatedAt: Date.now() });
-  if (patch && patch.stage) withStageMark(next, patch.stage);
-  await store.setJSON(jobKey(id), next);
-  return next;
+  if (incoming.stage && stages[stages.length - 1] !== incoming.stage) stages.push(incoming.stage);
+  const next = Object.assign({}, cur, incoming, { stages, updatedAt: Date.now() });
+  if (incoming.stage) withStageMark(next, incoming.stage);
+  return { unchanged: false, job: next };
+}
+
+async function updateJob(id, patch) {
+  return withJobLock(id, async () => {
+    const store = await openStore();
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const loaded = await loadJobRecord(store, id);
+      const cur = loaded.job || freshJob(id);
+      const merged = mergeJobPatch(cur, patch);
+      if (merged.unchanged) return cur;
+      const wrote = await saveJobRecord(store, id, merged.job, loaded.etag);
+      if (wrote) return merged.job;
+    }
+    const last = await loadJobRecord(store, id);
+    return last.job || freshJob(id);
+  });
 }
 
 async function saveZip(id, buf) {
@@ -176,15 +256,16 @@ async function deleteJob(id) {
 }
 
 /**
- * Stamp the job the worker is still running. A finished job is left as it
- * is, so a late beat cannot turn a done export back into a running one.
- * The patch is only the beat, so a stage update is not rolled back.
+ * Stamp the job the worker is still running. A done or failed job is
+ * terminal: a late beat refreshes nothing, including heartbeatAt.
+ * The beat is written only while state is still queued or running.
  */
 async function writeHeartbeat(id, stage) {
   if (!validJobId(id)) return null;
   const cur = await readJob(id);
   if (!cur) return null;
-  if (cur.state === "done" || cur.state === "error") return cur;
+  if (isTerminalState(cur.state)) return cur;
+  if (cur.state !== "running" && cur.state !== "queued") return cur;
   const name = String(stage || cur.heartbeatStage || cur.stage || "")
     .replace(/\s+/g, " ")
     .trim();
@@ -214,4 +295,6 @@ module.exports = {
   deleteJob,
   freshJob,
   writeHeartbeat,
+  isTerminalState,
+  mergeJobPatch,
 };

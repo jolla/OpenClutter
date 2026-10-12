@@ -45,18 +45,52 @@ function spin(payload) {
   return { spun: ms };
 }
 
-function canopyTile(payload) {
+function gridFromPayload(payload) {
+  const buffer = payload && (payload.buffer || payload.chmBuffer);
+  if (!buffer || !(payload.width > 1) || !(payload.height > 1)) return payload && payload.grid;
+  return {
+    west: +payload.west,
+    south: +payload.south,
+    east: +payload.east,
+    north: +payload.north,
+    width: payload.width | 0,
+    height: payload.height | 0,
+    values: new Uint8Array(buffer),
+    nonzero: payload.nonzero > 0 ? payload.nonzero | 0 : 1,
+  };
+}
+
+function canopyMask(payload) {
   const { blockerFromRings } = require("./vegetation");
-  const { crownsForExport } = require("./canopy-height");
+  const { maskChmGrid } = require("./canopy-height");
   const frame = payload.frame;
   const ringBlock = blockerFromRings(frame, payload.buildingRings, payload.maskRings, payload.maskPolygons);
   const blocked = ringBlock ? (lon, lat) => ringBlock(lon, lat) : null;
-  const packed = crownsForExport(payload.grid, {
-    blocked,
-    hits: payload.hits || [],
-    maxPolygons: 1000000,
+  const prepared = maskChmGrid(payload.grid, { blocked, hits: payload.hits || [] });
+  if (!prepared || !prepared.values) return null;
+  return {
+    west: +prepared.west,
+    south: +prepared.south,
+    east: +prepared.east,
+    north: +prepared.north,
+    width: prepared.width | 0,
+    height: prepared.height | 0,
+    values: Buffer.from(prepared.values),
+    nonzero: prepared.nonzero | 0,
+  };
+}
+
+function canopyTile(payload) {
+  const { crownsFromChm } = require("./canopy-height");
+  const grid = gridFromPayload(payload);
+  if (!grid) return { crowns: [] };
+  const crowns = crownsFromChm(grid, {
+    seedY0: payload.seedY0,
+    seedY1: payload.seedY1,
+    halo: payload.overlap,
+    noCap: true,
   });
-  return { crowns: (packed && packed.crowns) || [] };
+  return { crowns: crowns || [] };
 }
 
 function foliageAssemble(payload) {
@@ -65,7 +99,7 @@ function foliageAssemble(payload) {
   const { sampleChmGrid } = require("./canopy-height");
   const terrain = payload.terrain ? restoreElevation(payload.terrain) : null;
   const slopeTop = terrain ? demUnderFootprint(terrain) : null;
-  const grid = payload.chmGrid;
+  const grid = payload.chmBuffer ? gridFromPayload(payload) : payload.chmGrid;
   const opts = {
     buildingRings: payload.buildingRings,
     maskRings: payload.maskRings,
@@ -144,6 +178,7 @@ function runTask(task, payload) {
   if (task === "trees-to-oi") return treesToOiTask(payload);
   if (task === "spin") return spin(payload);
   if (task === "tree-pairs") return treePairsTask(payload);
+  if (task === "canopy-mask") return canopyMask(payload);
   if (task === "canopy-tile") return canopyTile(payload);
   if (task === "foliage-assemble") return foliageAssemble(payload);
   if (task === "fill-canopy") return fillCanopy(payload);
