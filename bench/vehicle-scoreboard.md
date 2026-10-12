@@ -4,8 +4,8 @@ Recall and precision use the hand-checked pads only. A pad that was not reviewed
 
 | Site | Class | Recall | Precision | Labels | Predictions | Source | Merged | JSON | Pass |
 | --- | --- | ---: | ---: | ---: | ---: | --- | --- | ---: | --- |
-| Rogers campground | rv | 90.0% | 78.6% | 10 | 14 | manual image labels | no | 37360 / 4900000 | no |
-| Mesa RV resorts | rv | 100.0% | 75.0% | 12 | 16 | manual image labels | no | 59772 / 4900000 | no |
+| Rogers campground | rv | 90.0% | 84.6% | 10 | 13 | manual image labels | no | 33393 / 4900000 | no |
+| Mesa RV resorts | rv | 100.0% | 85.7% | 12 | 14 | manual image labels | no | 56244 / 4900000 | yes |
 | Wentworth marina | boat | 70.8% | 100.0% | 24 | 25 | manual image labels | no | 52767 / 4900000 | no |
 | Citrus Gardens | mobile-home | 100.0% | 100.0% | 24 | 36 | manual image labels | no | 132458 / 4900000 | yes |
 | Iowa 80 truck stop | semi | 80.0% | 90.5% | 15 | 21 | manual image labels | no | 19783 / 4900000 | no |
