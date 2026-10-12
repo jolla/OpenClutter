@@ -211,11 +211,32 @@ function partFeature(rings, tags) {
  * footprint only when no emitted roof already covers it, so a cabin or a
  * bathhouse the other sources missed still appears.
  */
+/**
+ * A multi-storey garage. About 3 m per mapped deck, or 9 m (three decks)
+ * when the source does not say how many. An underground lot stays out.
+ */
+function parkingStructureHeight(tags) {
+  if (!tags) return 0;
+  if (tags.parking === "underground" || tags.location === "underground") return 0;
+  const building = String(tags.building || "");
+  if (!(tags.parking === "multi-storey" || building === "parking")) return 0;
+  const levels = Number(tags["building:levels"] || tags.levels || tags["parking:levels"]);
+  if (levels >= 2 && levels <= 40) return levels * 3;
+  return 9;
+}
+
+function pushOutlinedBuilding(buildings, structures, ring, tags) {
+  buildings.push(ring);
+  const heightM = parkingStructureHeight(tags);
+  if (heightM > 0) structures.push({ ring, heightM });
+}
+
 function parseBuildingDetail(payload, bbox) {
   const elements = (payload && payload.elements) || [];
   const parts = [];
   const openings = [];
   const buildings = [];
+  const structures = [];
   for (let i = 0; i < elements.length; i++) {
     const el = elements[i];
     const tags = (el && el.tags) || {};
@@ -240,7 +261,7 @@ function parseBuildingDetail(payload, bbox) {
         openings.push(ring);
         continue;
       }
-      if (tags.building) buildings.push(ring);
+      if (tags.building) pushOutlinedBuilding(buildings, structures, ring, tags);
       continue;
     }
     if (el.type !== "relation") continue;
@@ -268,14 +289,14 @@ function parseBuildingDetail(payload, bbox) {
     }
     if (tags.building && !tags["building:part"]) {
       for (let o = 0; o < outers.length; o++) {
-        if (!bbox || ringHitsBox(outers[o], bbox)) buildings.push(outers[o]);
+        if (!bbox || ringHitsBox(outers[o], bbox)) pushOutlinedBuilding(buildings, structures, outers[o], tags);
       }
       for (let n = 0; n < inners.length; n++) {
         if (!bbox || ringHitsBox(inners[n], bbox)) openings.push(inners[n]);
       }
     }
   }
-  return { parts, openings, buildings, places: placesFromElements(elements) };
+  return { parts, openings, buildings, structures, places: placesFromElements(elements) };
 }
 
 function ringHitsBox(ring, bbox) {
@@ -495,6 +516,7 @@ function mergeBuildingDetail(packs) {
   const parts = [];
   const openings = [];
   const buildings = [];
+  const structures = [];
   const guideways = [];
   const bridges = [];
   const roads = [];
@@ -529,6 +551,14 @@ function mergeBuildingDetail(packs) {
       if (key) seenBuildings.add(key);
       buildings.push(outlines[i]);
     }
+    const garages = pack.structures || [];
+    for (let i = 0; i < garages.length; i++) {
+      const ring = garages[i] && garages[i].ring;
+      const key = ringKey(ring);
+      if (key && seenBuildings.has("struct:" + key)) continue;
+      if (key) seenBuildings.add("struct:" + key);
+      structures.push(garages[i]);
+    }
     const guides = pack.guideways || [];
     for (let i = 0; i < guides.length; i++) {
       const key = ringKey(guides[i] && guides[i].coords);
@@ -553,11 +583,11 @@ function mergeBuildingDetail(packs) {
     const spots = pack.places || [];
     for (let i = 0; i < spots.length; i++) places.push(spots[i]);
   }
-  return { parts, openings, buildings, guideways, bridges, roads, places };
+  return { parts, openings, buildings, structures, guideways, bridges, roads, places };
 }
 
 async function fetchBuildingDetail(bbox, opts) {
-  const empty = { ok: false, parts: [], openings: [], buildings: [], roads: [], guideways: [], bridges: [] };
+  const empty = { ok: false, parts: [], openings: [], buildings: [], structures: [], roads: [], guideways: [], bridges: [] };
   if (!bbox) return empty;
   const timeoutMs = (opts && opts.timeoutMs) || 4500;
   const ctrl = new AbortController();
@@ -588,6 +618,7 @@ async function fetchBuildingDetail(bbox, opts) {
             parts: parsed.parts,
             openings: parsed.openings,
             buildings: parsed.buildings || [],
+            structures: parsed.structures || [],
             roads: [],
             guideways: guidewaysFromElements(maps.elements, bbox, deckCap),
             bridges: bridgesFromElements(maps.elements, bbox, deckCap),
@@ -604,6 +635,7 @@ async function fetchBuildingDetail(bbox, opts) {
             parts: merged.parts,
             openings: merged.openings,
             buildings: merged.buildings || [],
+            structures: merged.structures || [],
             roads: merged.roads || [],
             guideways: merged.guideways,
             bridges: merged.bridges,
@@ -612,14 +644,14 @@ async function fetchBuildingDetail(bbox, opts) {
           };
         }
         if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
-          return { ok: true, parts: [], openings: [], buildings: [], roads: [], guideways: [], bridges: [], notes: maps.notes };
+          return { ok: true, parts: [], openings: [], buildings: [], structures: [], roads: [], guideways: [], bridges: [], notes: maps.notes };
         }
       } catch (e) {
         if (ctrl.signal.aborted) return empty;
       }
     }
     if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
-      return { ok: true, parts: [], openings: [], buildings: [], roads: [], guideways: [], bridges: [], notes: [] };
+      return { ok: true, parts: [], openings: [], buildings: [], structures: [], roads: [], guideways: [], bridges: [], notes: [] };
     }
     for (let u = 0; u < OVERPASS_URLS.length; u++) {
       if (ctrl.signal.aborted) return empty;
@@ -638,6 +670,7 @@ async function fetchBuildingDetail(bbox, opts) {
           parts: parsed.parts,
           openings: parsed.openings,
           buildings: parsed.buildings || [],
+          structures: parsed.structures || [],
           roads: [],
           guideways: guidewaysFromElements(json.elements, bbox, deckCap),
           bridges: bridgesFromElements(json.elements, bbox, deckCap),
@@ -2090,7 +2123,8 @@ function shapeBuildings(features, detail) {
   const dropped = dropParentsOverOpenings(cut, openings, largeDrops);
   const trimmed = trimTaperedFootprints(dropped.features);
   const notches = dropDiagonalNotches(trimmed.features, osmRings);
-  const filled = fillMissingOsmFootprints(notches.features, osmRings);
+  const garages = fillParkingStructures(notches.features, detail && detail.structures);
+  const filled = fillMissingOsmFootprints(garages.features, osmRings);
   return {
     features: filled.features,
     stats: {
@@ -2103,7 +2137,7 @@ function shapeBuildings(features, detail) {
       coresCarved: carved.carved,
       tapersCut: trimmed.cut,
       pieces: filled.features.length,
-      osmFilled: filled.added,
+      osmFilled: filled.added + garages.added,
       largeDrops: largeDrops,
     },
   };
@@ -2113,21 +2147,64 @@ function shapeBuildings(features, detail) {
  * Street-map buildings the footprint sources missed. A cabin or a bathhouse
  * with no overlapping roof is added at one floor. A ring that already sits
  * on an emitted roof stays out, so a motel wing is not drawn twice. A shed
- * under 25 m² and a complex over 2500 m² stay out.
+ * under 25 m² and a complex over 2500 m² stay out. A multi-storey garage is
+ * the exception: it is a building up to about 20,000 m², at 3 m per deck.
  */
 const OSM_FILL_MIN_M2 = 25;
 const OSM_FILL_MAX_M2 = 2500;
+const PARKING_STRUCTURE_MAX_M2 = 20000;
 const OSM_FILL_COVER = 0.12;
+
+function coveredByExisting(closed, area, existing) {
+  for (let e = 0; e < existing.length; e++) {
+    const inter = intersectionArea(closed, existing[e]);
+    if (area > 0 && inter / area >= OSM_FILL_COVER) return true;
+  }
+  return false;
+}
+
+function existingRings(features) {
+  const existing = [];
+  const list = features || [];
+  for (let i = 0; i < list.length; i++) {
+    const ext = exteriorsOf(list[i]);
+    for (let k = 0; k < ext.length; k++) existing.push(ext[k]);
+  }
+  return existing;
+}
+
+/** Multi-storey garages the footprint sources missed or dropped as pavement. */
+function fillParkingStructures(features, structures) {
+  const list = features || [];
+  const specs = structures || [];
+  if (!specs.length) return { features: list, added: 0 };
+  const existing = existingRings(list);
+  const out = list.slice();
+  let added = 0;
+  for (let i = 0; i < specs.length; i++) {
+    const spec = specs[i];
+    const closed = closeRing(spec && spec.ring);
+    if (!closed || closed.length < 4) continue;
+    const area = meterArea(closed);
+    if (!(area >= OSM_FILL_MIN_M2 && area <= PARKING_STRUCTURE_MAX_M2)) continue;
+    if (coveredByExisting(closed, area, existing)) continue;
+    const heightM = spec.heightM >= 6 ? spec.heightM : 9;
+    out.push({
+      type: "Feature",
+      properties: { height: heightM, heightSource: "osm", geomSource: "osm-building" },
+      geometry: { type: "Polygon", coordinates: [closed] },
+    });
+    existing.push(closed);
+    added++;
+  }
+  return { features: out, added };
+}
 
 function fillMissingOsmFootprints(features, osmRings) {
   const list = features || [];
   const rings = osmRings || [];
   if (!rings.length) return { features: list, added: 0 };
-  const existing = [];
-  for (let i = 0; i < list.length; i++) {
-    const ext = exteriorsOf(list[i]);
-    for (let k = 0; k < ext.length; k++) existing.push(ext[k]);
-  }
+  const existing = existingRings(list);
   const out = list.slice();
   let added = 0;
   for (let i = 0; i < rings.length; i++) {
@@ -2135,12 +2212,7 @@ function fillMissingOsmFootprints(features, osmRings) {
     if (!closed || closed.length < 4) continue;
     const area = meterArea(closed);
     if (!(area >= OSM_FILL_MIN_M2 && area <= OSM_FILL_MAX_M2)) continue;
-    let covered = false;
-    for (let e = 0; e < existing.length && !covered; e++) {
-      const inter = intersectionArea(closed, existing[e]);
-      if (area > 0 && inter / area >= OSM_FILL_COVER) covered = true;
-    }
-    if (covered) continue;
+    if (coveredByExisting(closed, area, existing)) continue;
     out.push({
       type: "Feature",
       properties: { height: 4.5, heightSource: "osm", geomSource: "osm-building" },
