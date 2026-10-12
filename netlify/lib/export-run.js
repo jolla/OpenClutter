@@ -41,7 +41,17 @@ async function completeExportJob(jobId, inner, opts) {
     return { ok: false, reason: "job-write-failed" };
   }
   try {
-    const result = await runBackgroundExport(inner, (patch) => jobs.updateJob(jobId, patch));
+    const result = await runBackgroundExport(inner, async (patch) => {
+      const updated = await jobs.updateJob(jobId, patch);
+      if (opts && typeof opts.onProgress === "function") {
+        try {
+          await opts.onProgress(patch);
+        } catch {
+          /* A stage note must not fail the export. */
+        }
+      }
+      return updated;
+    });
     const status = result && result.statusCode;
     let data = {};
     try {
