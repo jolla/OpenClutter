@@ -876,7 +876,7 @@ function occupiedCarLayer(ring, frame, plate) {
   return require("./stage-clock").timeSpanSync("vehicle", () => occupiedCarLayerWork(ring, frame, plate));
 }
 
-function occupiedCarLayerWork(ring, frame, plate) {
+function occupiedCarLayerWork(ring, frame, plate, hitsOnlyYs) {
   if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return [];
   const poly = [];
   let minX = Infinity;
@@ -939,7 +939,14 @@ function occupiedCarLayerWork(ring, frame, plate) {
   const yHi = Math.min(H - 16, Math.ceil(maxY));
   const xLo = Math.max(16, Math.floor(minX));
   const xHi = Math.min(W - 16, Math.ceil(maxX));
-  for (let y = yLo; y < yHi; y += 3) {
+  const rowList = [];
+  if (hitsOnlyYs) {
+    for (let i = 0; i < hitsOnlyYs.length; i++) rowList.push(hitsOnlyYs[i]);
+  } else {
+    for (let y = yLo; y < yHi; y += 3) rowList.push(y);
+  }
+  for (let yi = 0; yi < rowList.length; yi++) {
+    const y = rowList[yi];
     for (let x = xLo; x < xHi; x += 3) {
       if (!pointInRing([x, y], poly) || greenAt(x, y)) continue;
       let best = 0;
@@ -964,6 +971,48 @@ function occupiedCarLayerWork(ring, frame, plate) {
       hits.push({ x, y, score: best, vert });
     }
   }
+  if (hitsOnlyYs) return hits;
+  return finishCarLayer(hits, frame, { poly, minX, minY, maxX, maxY, W, H });
+}
+
+function carHitRows(ring, frame, plate) {
+  if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return null;
+  const poly = [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const xy = llToImagePx(ring[i][0], ring[i][1], frame);
+    if (!Number.isFinite(xy[0]) || !Number.isFinite(xy[1])) continue;
+    poly.push(xy);
+    if (xy[0] < minX) minX = xy[0];
+    if (xy[1] < minY) minY = xy[1];
+    if (xy[0] > maxX) maxX = xy[0];
+    if (xy[1] > maxY) maxY = xy[1];
+  }
+  if (poly.length < 3) return null;
+  const W = plate.width;
+  const H = plate.height;
+  if (W < 32 || H < 32 || !plate.data) return null;
+  const yLo = Math.max(16, Math.floor(minY));
+  const yHi = Math.min(H - 16, Math.ceil(maxY));
+  const xLo = Math.max(16, Math.floor(minX));
+  const xHi = Math.min(W - 16, Math.ceil(maxX));
+  const ys = [];
+  for (let y = yLo; y < yHi; y += 3) ys.push(y);
+  return { ys, poly, minX, minY, maxX, maxY, W, H, xLo, xHi };
+}
+
+function finishCarLayer(hitsIn, frame, box) {
+  const hits = (hitsIn || []).slice();
+  const poly = box.poly;
+  const minX = box.minX;
+  const minY = box.minY;
+  const maxX = box.maxX;
+  const maxY = box.maxY;
+  const W = box.W;
+  const H = box.H;
   hits.sort((a, b) => b.score - a.score);
   const nms = [];
   for (let i = 0; i < hits.length; i++) {
@@ -1990,6 +2039,13 @@ module.exports = {
   vehicleBlobM2,
   vehicleNear,
   pitchVehicle,
+  occupiedCarLayerWork,
+  carHitRows,
+  finishCarLayer,
+  boatsOnWaterWork,
+  mobileHomesInRingWork,
+  semisInLotWork,
+  semisAtDocksWork,
   boatsOnWater,
   mobileHomesInRing,
   recenterBox,

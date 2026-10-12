@@ -161,7 +161,7 @@ async function runBackgroundExport(event, onProgress) {
   return result;
 }
 const { geoFrame, capEsriExportFrame, llToPx, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
-const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings, parseAreaCapOverride, parseJsonBudgetOverride, raisedDeckCap } = require("../lib/pipeline");
+const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings, parseAreaCapOverride, parseJsonBudgetOverride, raisedDeckCap, MAX_BUILDINGS, MAX_ATTENUATION_AREAS, DEFAULT_AREA_CAP } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchSlopeForest } = require("../lib/slope-forest");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
@@ -179,6 +179,7 @@ let fetchOvertureImpl = fetchOvertureFootprints;
 function setFetchOvertureForTests(fn) {
   fetchOvertureImpl = typeof fn === "function" ? fn : fetchOvertureFootprints;
 }
+const detectParallel = require("../lib/detect-parallel");
 const { fetchChmGrid, applyChmToTrees, sampleChmGrid } = require("../lib/canopy-height");
 const { fillCanopyGaps } = require("../lib/canopy-fill");
 const { fetchWorldCoverTrees } = require("../lib/worldcover");
@@ -199,6 +200,7 @@ const {
   estimateBundlePayload,
   lambdaPayloadBytes,
   maxPasteJsonForCompanion,
+  demUnderFootprint,
 } = require("../lib/terrain");
 
 let fetchTerrainDemImpl = fetchTerrainDem;
@@ -2031,15 +2033,32 @@ async function handleClutter(event) {
 
   if (includeFoliage && !chmTimedOut && decoded && frame) {
     try {
-      const filled = fillCanopyGaps(chmGrid, {
-        frame,
-        image: decoded,
-        worldcover: worldCover,
-        openRuns,
-      });
+      const filled = background
+        ? await detectParallel.fillInWorker(chmGrid, {
+            frame,
+            image: decoded,
+            worldcover: worldCover,
+            openRuns,
+          })
+        : fillCanopyGaps(chmGrid, {
+            frame,
+            image: decoded,
+            worldcover: worldCover,
+            openRuns,
+          });
       if (filled && filled.values && filled.nonzero > 0) chmGrid = filled;
     } catch {
-      // The measured grid still ships when the fill cannot be read.
+      try {
+        const filled = fillCanopyGaps(chmGrid, {
+          frame,
+          image: decoded,
+          worldcover: worldCover,
+          openRuns,
+        });
+        if (filled && filled.values && filled.nonzero > 0) chmGrid = filled;
+      } catch {
+        // The measured grid still ships when the fill cannot be read.
+      }
     }
   }
 
@@ -2047,7 +2066,90 @@ async function handleClutter(event) {
   // The OpenIntent JSON budget is what drops the rest. The zip size is not.
   const foliageCap = 720;
 
-  function emitClutter(list, extraWarnings) {
+  async function emitClutter(list, extraWarnings) {
+    const slopeTop = demUnderFootprint(terrain);
+    const areaCap = areaCapOverride > 0 ? areaCapOverride | 0 : DEFAULT_AREA_CAP;
+    const buildingCeiling =
+      areaCap > MAX_ATTENUATION_AREAS ? Math.max(MAX_BUILDINGS, areaCap) : MAX_BUILDINGS;
+    let foliagePack = null;
+    let outdoorPlan = null;
+    let preview = null;
+    const wantParallel =
+      background &&
+      ((includeFoliage && !chmTimedOut) ||
+        outdoorFeatures.length ||
+        guidewayFeatures.length ||
+        bridgeFeatures.length);
+    if (wantParallel) {
+      preview = footprintsToClutter(list, frame, affine, slopeTop, { buildingCeiling });
+    }
+    if (background && includeFoliage && !chmTimedOut) {
+      if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage trees-parallel\n");
+      try {
+        foliagePack = await stageClock.timeSpan("tree", () =>
+          detectParallel.treePairsParallel(treePoints, frame, preview.aabbs, affine, {
+            canopyHits: placeHits,
+            chmGrid,
+            buildingRings: preview.overlayRings,
+            maskRings,
+            maskPolygons,
+            woodRings,
+            terrain,
+            omitFoliage: false,
+            chmRequired: true,
+            maxPolygons: foliageCap,
+          })
+        );
+      } catch (err) {
+        if (process.env.OPENCLUTTER_STAGE_LOG) {
+          process.stderr.write("stage trees-parallel-fail " + (err && err.message ? err.message : err) + "\n");
+        }
+        foliagePack = null;
+      }
+    }
+    if (background && (outdoorFeatures.length || guidewayFeatures.length || bridgeFeatures.length)) {
+      if (process.env.OPENCLUTTER_STAGE_LOG) {
+        process.stderr.write("stage outdoor-parallel " + outdoorFeatures.length + "\n");
+      }
+      try {
+        const buildings = [];
+        if ((includeWater === true || includeParking === true || includeRvs === true) && outdoorOn && outdoorMiss !== true) {
+          for (let i = 0; i < preview.oiAreas.length; i++) {
+            buildings.push({
+              index: i,
+              ringPx: preview.overlayRings[i],
+              material: preview.oiAreas[i] && preview.oiAreas[i].area_material,
+            });
+          }
+        }
+        const liveOutdoor =
+          outdoorOn && outdoorMiss !== true
+            ? outdoorFeatures
+            : outdoorFeatures.filter((feat) => feat && feat.kind === "storage");
+        const deckCapNow = raisedDeckCap(areaCapOverride);
+        outdoorPlan = await stageClock.timeSpan("vehicle", () =>
+          detectParallel.outdoorParallel({
+            features: liveOutdoor.concat(guidewayFeatures, bridgeFeatures),
+            frame,
+            buildings,
+            parkingRings:
+              includeParking === true && outdoorOn && outdoorMiss !== true ? preview.parkingRings || [] : [],
+            segmentCaps:
+              deckCapNow > 0
+                ? { guideway: deckCapNow, bridge: deckCapNow, footbridge: Math.max(12, Math.floor(deckCapNow / 5)) }
+                : undefined,
+            terrain,
+            imgBuf,
+          })
+        );
+      } catch (err) {
+        if (process.env.OPENCLUTTER_STAGE_LOG) {
+          process.stderr.write("stage outdoor-parallel-fail " + (err && err.message ? err.message : err) + "\n");
+        }
+        outdoorPlan = null;
+      }
+    }
+    if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage build-clutter\n");
     return buildClutter({
       frame,
       footprintsGeojson: { type: "FeatureCollection", features: list },
@@ -2087,6 +2189,8 @@ async function handleClutter(event) {
       maxAttenuationAreas: areaCapOverride || undefined,
       areaCapOverride: areaCapOverride > 0,
       jsonBudget: jsonBudgetOverride || undefined,
+      foliagePack,
+      outdoorPlan,
     });
   }
 
@@ -2144,7 +2248,7 @@ async function handleClutter(event) {
     }
   }
   if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage emit " + (Date.now() - started) + "\n");
-  let built = emitClutter(exportFeatures);
+  let built = await emitClutter(exportFeatures);
   if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage emitted " + (Date.now() - started) + "\n");
   // The image does not count toward Hamina's JSON limit. Compress it only
   // when the zip itself cannot fit in Netlify's function response.
@@ -2154,7 +2258,7 @@ async function handleClutter(event) {
     if (smaller && smaller.length < imgBuf.length) {
       imgBuf = smaller;
       warnings.push("Map image was compressed so the zip can download.");
-      built = emitClutter(exportFeatures);
+      built = await emitClutter(exportFeatures);
     }
   }
   if (shrinkNote && warnings.indexOf(shrinkNote) < 0) warnings.push(shrinkNote);
@@ -2194,7 +2298,7 @@ async function handleClutter(event) {
     for (let i = 0; i < notes.length; i++) warnings.push(notes[i]);
   }
 
-  function rebuildWithPasteCap(pasteJsonMax) {
+  async function rebuildWithPasteCap(pasteJsonMax) {
     const before = terrainClipJson(terrain).length;
     let next = null;
     try {
@@ -2212,15 +2316,15 @@ async function handleClutter(event) {
     if (!next) return false;
     terrain = next;
     refreshTerrainNotes();
-    built = emitClutter(exportFeatures);
+    built = await emitClutter(exportFeatures);
     return terrainClipJson(terrain).length < before;
   }
 
-  function dropTerrainPaste() {
+  async function dropTerrainPaste() {
     if (!terrain || !terrain.clipboard) return;
     terrain = Object.assign({}, terrain, { clipboard: null, pasteOmitted: true });
     refreshTerrainNotes();
-    built = emitClutter(exportFeatures);
+    built = await emitClutter(exportFeatures);
   }
 
   // Copy terrain is the bundle JSON, not a second copy inside the zip. The
@@ -2239,11 +2343,11 @@ async function handleClutter(event) {
       let nextMax = maxPasteJsonForCompanion(companion);
       if (!(nextMax < clipJson.length)) nextMax = Math.floor(clipJson.length * 0.7);
       if (!(nextMax >= 8000)) {
-        dropTerrainPaste();
+        await dropTerrainPaste();
         break;
       }
-      if (!rebuildWithPasteCap(nextMax)) {
-        dropTerrainPaste();
+      if (!(await rebuildWithPasteCap(nextMax))) {
+        await dropTerrainPaste();
         break;
       }
       guard += 1;
@@ -2319,9 +2423,9 @@ async function handleClutter(event) {
     const clipJson = terrainClipJson(terrain);
     const scale = EXPORT_PAYLOAD_BUDGET / Math.max(1, lambdaPayloadBytes(result));
     const nextMax = Math.floor(clipJson.length * scale * 0.85);
-    if (nextMax >= 8000 && rebuildWithPasteCap(nextMax)) result = bundleResult();
+    if (nextMax >= 8000 && (await rebuildWithPasteCap(nextMax))) result = bundleResult();
     if (lambdaPayloadBytes(result) > EXPORT_PAYLOAD_BUDGET && terrain && terrain.clipboard) {
-      dropTerrainPaste();
+      await dropTerrainPaste();
       result = bundleResult();
     }
   }

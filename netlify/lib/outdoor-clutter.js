@@ -2193,10 +2193,15 @@ function pxRingToLonLat(ring, frame) {
  * A matched garage is not drawn a second time. Water is cut against those
  * same roofs so a pond or a mis-tagged panel block does not cover them.
  */
-function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segmentCaps, vehiclePlate }) {
+function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segmentCaps, vehiclePlate, scanned }) {
+  const pitchMap = scanned && scanned.pitch;
   const fractionFor =
     vehiclePlate && frame
       ? function (ring) {
+          if (pitchMap) {
+            const key = ringKey(ring);
+            if (Object.prototype.hasOwnProperty.call(pitchMap, key)) return pitchMap[key];
+          }
           return pitchVehicle(ring, frame, vehiclePlate);
         }
       : null;
@@ -2260,7 +2265,8 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       holes.push(ll);
       if (roofWantsDocks([px], frame)) docks.push(ll);
     }
-    const found = semisAtDocks(docks, frame, vehiclePlate, holes);
+    const found =
+      scanned && scanned.docksReady ? scanned.docks || [] : semisAtDocks(docks, frame, vehiclePlate, holes);
     for (let i = 0; i < found.length; i++) {
       const ringPx = lonLatRingToPx(found[i].coords, frame);
       const material = materialForKind("semi", found[i].heightM || 4.1, found[i].coords, slopeTop, 0);
@@ -2373,7 +2379,10 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
     }
     if (f.kind === "mobile-park") {
       if (!vehiclePlate || !frame) continue;
-      const homes = mobileHomesInRing(f.coords, frame, vehiclePlate);
+      const homes =
+        scanned && scanned.homes && Object.prototype.hasOwnProperty.call(scanned.homes, ringKey(f.coords))
+          ? scanned.homes[ringKey(f.coords)] || []
+          : mobileHomesInRing(f.coords, frame, vehiclePlate);
       const mat = measuredOiBuildingMaterial(4);
       if (!mat) continue;
       for (let b = 0; b < homes.length; b++) {
@@ -2389,7 +2398,10 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       for (let h = 0; h < list.length; h++) {
         if (list[h] && list[h].kind === "building-hole" && list[h].coords) holes.push(list[h].coords);
       }
-      const found = semisInLot(f.coords, frame, vehiclePlate, holes);
+      const found =
+        scanned && scanned.semis && Object.prototype.hasOwnProperty.call(scanned.semis, ringKey(f.coords))
+          ? scanned.semis[ringKey(f.coords)] || []
+          : semisInLot(f.coords, frame, vehiclePlate, holes);
       for (let b = 0; b < found.length; b++) {
         const ringPx = lonLatRingToPx(found[b].coords, frame);
         const material = materialForKind("semi", found[b].heightM || 4.1, found[b].coords, slopeTop, 0);
@@ -2401,7 +2413,10 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
     if (f.kind === "building-hole") continue;
     if (f.kind === "marina") {
       if (!vehiclePlate || !frame) continue;
-      const found = boatsOnWater(f.coords, frame, vehiclePlate);
+      const found =
+        scanned && scanned.boats && Object.prototype.hasOwnProperty.call(scanned.boats, ringKey(f.coords))
+          ? scanned.boats[ringKey(f.coords)] || []
+          : boatsOnWater(f.coords, frame, vehiclePlate);
       for (let b = 0; b < found.length; b++) {
         const ringPx = lonLatRingToPx(found[b].coords, frame);
         const material = materialForKind("boat", found[b].heightM || 3.5, found[b].coords, slopeTop, 0);
@@ -2420,7 +2435,11 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
     if (f.kind === "water" || f.kind === "parking" || f.kind === "car") {
       let carRings = null;
       if (f.kind === "car" && vehiclePlate && frame) {
-        const found = occupiedCarLayer(f.coords, frame, vehiclePlate);
+        const carKey = ringKey(f.coords);
+        const found =
+          scanned && scanned.cars && Object.prototype.hasOwnProperty.call(scanned.cars, carKey)
+            ? scanned.cars[carKey]
+            : occupiedCarLayer(f.coords, frame, vehiclePlate);
         if (found && found.length) carRings = found;
       }
       const bases = carRings || [f.coords];

@@ -8,8 +8,8 @@ primary_region = "iad"
 
 [env]
   NODE_ENV = "production"
-  # Leave room in a 2 GB machine for the JPEG buffers outside this cap.
-  NODE_OPTIONS = "--max-old-space-size=1536"
+  # Leave room in an 8 GB machine for image buffers outside this cap.
+  NODE_OPTIONS = "--max-old-space-size=6144"
 
 [http_service]
   internal_port = 8080
@@ -43,11 +43,11 @@ primary_region = "iad"
   app = "node fly/server.js"
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "2gb"
+  size = "performance-4x"
+  memory = "8192mb"
 
 # A clean idle exit uses the default on-failure policy: exit 0 does not
-# restart, so the 2 GB machine does not stay up all month ($12.69).
+# restart, so the 8 GB machine does not stay up all month.
 # A crash still restarts. Fly waits at most 300 seconds after SIGTERM.
 [[restart]]
   policy = "on-failure"

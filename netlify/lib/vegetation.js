@@ -344,11 +344,18 @@ function chmCrownPolygons(grid, frame, buildingAabbs, hits, opts) {
     hits,
     maxPolygons: opts && opts.maxPolygons,
   });
-  const crowns = packed.crowns;
-  const coarsened = packed.coarsened;
+  const polygons = polygonsFromCrowns(packed.crowns, frame);
+  polygons.coarsened = !!packed.coarsened;
+  polygons.dropped = packed.dropped | 0;
+  return polygons;
+}
+
+function polygonsFromCrowns(crowns, frame) {
   const polygons = [];
-  for (let i = 0; i < crowns.length; i++) {
-    const c = crowns[i];
+  const list = crowns || [];
+  for (let i = 0; i < list.length; i++) {
+    const c = list[i];
+    if (!c || !c.ringLonLat) continue;
     const ringPx = c.ringLonLat.map(([lon, lat]) => llToPx(lon, lat, frame));
     if (ringPx.length < 4) continue;
     const tier = c.heightM >= 12 ? "heavy" : "light";
@@ -362,8 +369,6 @@ function chmCrownPolygons(grid, frame, buildingAabbs, hits, opts) {
       shape: "polygon",
     });
   }
-  polygons.coarsened = !!coarsened;
-  polygons.dropped = packed.dropped | 0;
   return polygons;
 }
 
@@ -1326,17 +1331,16 @@ function pushFoliageClip(clip, ringPx, frame, affine, seenClip, clipTypes, clipZ
 
 function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
   void treePoints;
-  const oiAreas = [];
-  const clipZones = [];
-  const clipTypes = [];
-  const materials = [];
-  const overlayRings = [];
-  const seenClip = new Set();
   let foliageGeometry = "none";
   let polygons = [];
   let coarsened = false;
   let foliageDropped = 0;
-  if (opts && opts.omitFoliage) {
+  if (opts && opts.preparedPolygons) {
+    polygons = opts.preparedPolygons;
+    coarsened = !!opts.foliageCoarsened;
+    foliageDropped = opts.foliageDropped | 0;
+    foliageGeometry = opts.foliageGeometry || (polygons.length ? "chm-contour" : "none");
+  } else if (opts && opts.omitFoliage) {
     foliageGeometry = "omitted";
   } else if (opts && opts.chmGrid) {
     polygons = chmCrownPolygons(opts.chmGrid, frame, buildingAabbs, opts && opts.canopyHits, opts);
@@ -1359,6 +1363,25 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     );
     if (polygons.length) foliageGeometry = "nlcd-polygon";
   }
+  return assembleFoliage(polygons, frame, buildingAabbs, affine, opts, {
+    coarsened,
+    foliageDropped,
+    foliageGeometry,
+  });
+}
+
+function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
+  void buildingAabbs;
+  const oiAreas = [];
+  const clipZones = [];
+  const clipTypes = [];
+  const materials = [];
+  const overlayRings = [];
+  const seenClip = new Set();
+  let polygons = (polygonsIn || []).slice();
+  const coarsened = !!(meta && meta.coarsened);
+  const foliageDropped = meta && meta.foliageDropped ? meta.foliageDropped | 0 : 0;
+  const foliageGeometry = (meta && meta.foliageGeometry) || "none";
   const bufferM = opts && opts.buildingBufferM > 0 ? opts.buildingBufferM : BUILDING_BUFFER_M;
   const clipSet = createClipSet(
     opts && opts.buildingRings,
@@ -1403,7 +1426,7 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
       if (material) materials.push(material);
     }
   };
-  const woodRings = opts && opts.omitFoliage ? [] : (opts && opts.woodRings) || [];
+  const woodRings = opts && (opts.omitFoliage || opts.skipWood) ? [] : (opts && opts.woodRings) || [];
   for (let w = 0; w < woodRings.length; w++) {
     const wood = woodRings[w];
     const ll = wood && (wood.ringLonLat || wood.ring || wood);
@@ -1663,4 +1686,7 @@ module.exports = {
   normalizeTreePoints,
   treePairsFromPoints,
   canopyPolygonsFromHits,
+  blockerFromRings,
+  polygonsFromCrowns,
+  assembleFoliage,
 };
