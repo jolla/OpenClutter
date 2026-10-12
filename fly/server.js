@@ -114,6 +114,7 @@ function requestStop() {
 }
 
 if (require.main === module) {
+  console.log(require("../netlify/lib/cpu-pool").cpuStartLine());
   const idle = createIdleExit({ inFlight: jobInFlight });
   useIdleExit(idle);
   const idleTimer = setInterval(() => idle.check(), IDLE_TICK_MS);

@@ -1,10 +1,28 @@
 "use strict";
 
-const { describe, it } = require("node:test");
+const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { sampleChmGrid, applyChmToTrees, chmUrl, CHM_ZOOM, crownsFromChm, peakPool, selectCrownsForExport, mercator, lonLatFromMercator, fetchChmGrid } = require("../netlify/lib/canopy-height");
+const {
+  sampleChmGrid,
+  applyChmToTrees,
+  chmUrl,
+  CHM_ZOOM,
+  crownsFromChm,
+  peakPool,
+  selectCrownsForExport,
+  mercator,
+  lonLatFromMercator,
+  fetchChmGrid,
+  STRIP_CONCURRENCY,
+  prefetchCanopyWindows,
+  encodeCanopyRaster,
+  decodeCanopyRaster,
+  saveCanopyRaster,
+  loadCanopyRaster,
+} = require("../netlify/lib/canopy-height");
+const areaCache = require("../netlify/lib/area-cache");
 const { quadkeysForBbox } = require("../netlify/lib/ms-global");
 const { treePairsFromPoints } = require("../netlify/lib/vegetation");
 const { geoFrame, llToPx } = require("../netlify/lib/geo-frame");
@@ -1025,6 +1043,44 @@ describe("canopy height replaces the color guess", () => {
     assert.ok(crowns[0].ringLonLat.length >= 6, "ring verts " + crowns[0].ringLonLat.length);
   });
 
+  it("prefetches canopy windows without blocking the heartbeat", async () => {
+    const beats = [];
+    const timer = setInterval(() => beats.push(Date.now()), 15);
+    const image = {
+      async readRasters() {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        return new Uint8Array(4);
+      },
+    };
+    const windows = [];
+    for (let i = 0; i < 8; i++) windows.push({ left: 0, top: i, right: 2, bottom: i + 1 });
+    const t0 = Date.now();
+    const got = await prefetchCanopyWindows(image, windows, { concurrency: STRIP_CONCURRENCY });
+    clearInterval(timer);
+    const wall = Date.now() - t0;
+    assert.equal(got.length, 8);
+    assert.ok(wall < 8 * 40, "windows ran together, wall " + wall);
+    assert.ok(beats.length >= 2, "heartbeat ticks during prefetch " + beats.length);
+  });
+
+  it("does not start a canopy window past the cap after abort", async () => {
+    const ctrl = new AbortController();
+    let started = 0;
+    const image = {
+      async readRasters() {
+        started++;
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        if (started >= STRIP_CONCURRENCY) ctrl.abort();
+        return new Uint8Array(1);
+      },
+    };
+    const windows = [];
+    for (let i = 0; i < STRIP_CONCURRENCY + 3; i++) windows.push({ left: 0, top: i, right: 1, bottom: i + 1 });
+    await prefetchCanopyWindows(image, windows, { concurrency: STRIP_CONCURRENCY, signal: ctrl.signal });
+    assert.ok(started >= STRIP_CONCURRENCY, "in flight " + started);
+    assert.ok(started < windows.length, "stopped later windows " + started);
+  });
+
   it("keeps a fairway-sized crown when the largest masses fill the first 480", () => {
     const traced = [[0, 0], [3, 0], [3.4, 1], [1, 2], [0, 1.2]];
     const crowns = [];
@@ -1032,5 +1088,71 @@ describe("canopy height replaces the color guess", () => {
     crowns.push({ areaM2: 120, heightM: 16, ringLonLat: traced });
     const kept = selectCrownsForExport(crowns, 720);
     assert.ok(kept.some((c) => c.areaM2 === 120 && c.heightM === 16));
+  });
+});
+
+function memoryStore() {
+  const map = new Map();
+  return {
+    async setJSON(key, value) {
+      map.set(key, JSON.parse(JSON.stringify(value)));
+    },
+    async set(key, value) {
+      map.set(key, Buffer.from(value));
+    },
+    async get(key, opts) {
+      if (!map.has(key)) return null;
+      const value = map.get(key);
+      if (opts && opts.type === "arrayBuffer") {
+        const buf = Buffer.isBuffer(value) ? value : Buffer.from(value);
+        return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+      }
+      if (opts && opts.type === "json" && typeof value === "string") return JSON.parse(value);
+      return value;
+    },
+  };
+}
+
+describe("canopy raster cache", () => {
+  after(() => {
+    areaCache.disable();
+  });
+
+  it("stores raw canopy rasters, not polygons, for the canopy TTL", async () => {
+    const frame = { west: -115.16942, south: 36.11944, east: -115.15386, north: 36.13183 };
+    const values = new Uint8Array([0, 5, 0, 8, 9, 0, 4, 0, 0, 0, 7, 0]);
+    const grid = {
+      west: frame.west,
+      south: frame.south,
+      east: frame.east,
+      north: frame.north,
+      width: 4,
+      height: 3,
+      values,
+      nonzero: 5,
+    };
+    const raw = encodeCanopyRaster(grid);
+    assert.equal(raw.toString("ascii", 0, 4), "CHM1");
+    assert.equal(areaCache.looksLikeFinalGeometry(raw), false);
+    assert.throws(() => areaCache.assertRaw('{"type":"FeatureCollection","features":[]}'), /raw source/);
+    const back = decodeCanopyRaster(raw);
+    assert.deepEqual(Array.from(back.values), Array.from(values));
+    assert.equal(back.width, 4);
+    assert.equal("ringPx" in back, false);
+    assert.equal("areas" in back, false);
+
+    areaCache.enable(memoryStore());
+    assert.equal(await saveCanopyRaster(frame, grid), true);
+    const loaded = await loadCanopyRaster(frame);
+    assert.ok(loaded);
+    assert.deepEqual(Array.from(loaded.values), Array.from(values));
+    const spec = require("../netlify/lib/canopy-height").canopyRasterSpec(frame);
+    const key = areaCache.cacheKey(spec.source, spec.resolution, spec.tile);
+    const fresh = await areaCache.readRaw(null, key, Date.now());
+    assert.equal(fresh.meta.source, "canopy");
+    assert.equal(areaCache.ttlFor("canopy"), 14 * 24 * 60 * 60 * 1000);
+    const stale = await areaCache.readRaw(null, key, fresh.meta.savedAt + areaCache.ttlFor("canopy") + 1);
+    assert.equal(stale, null);
+    assert.equal(areaCache.looksLikeFinalGeometry(fresh.body), false);
   });
 });

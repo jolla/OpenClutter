@@ -11,10 +11,94 @@ const os = require("node:os");
 const path = require("node:path");
 const { Worker } = require("node:worker_threads");
 
-function threadCount() {
+function reportedCpuCount() {
   const list = os.cpus();
   const n = list && list.length;
-  return n > 0 ? n : 1;
+  return n > 0 ? n : 0;
+}
+
+/**
+ * performance-4x is 4 dedicated vCPUs. os.cpus() inside the guest can
+ * still report 1 or the host count. When OPENCLUTTER_CPU_COUNT or
+ * FLY_MACHINE_CPUS is set, that number is the pool. The host count is
+ * not used.
+ */
+function configuredCpuCount() {
+  const raw = process.env.OPENCLUTTER_CPU_COUNT || process.env.FLY_MACHINE_CPUS || "";
+  const n = Number(String(raw).trim());
+  if (!Number.isFinite(n) || n < 1) return 0;
+  return Math.floor(n);
+}
+
+function threadCount() {
+  const configured = configuredCpuCount();
+  if (configured > 0) return configured;
+  if (typeof os.availableParallelism === "function") {
+    const n = os.availableParallelism();
+    if (n > 0) return n;
+  }
+  const reported = reportedCpuCount();
+  return reported > 0 ? reported : 1;
+}
+
+function cpuStartLine() {
+  const avail = typeof os.availableParallelism === "function" ? os.availableParallelism() : 0;
+  return (
+    "worker start os.cpus " +
+    reportedCpuCount() +
+    " availableParallelism " +
+    avail +
+    " pool " +
+    threadCount()
+  );
+}
+
+function tileTimingLine(jobId, tileId, threadId, startMs, durationMs) {
+  const start = (Math.max(0, startMs) / 1000).toFixed(1);
+  const duration = (Math.max(0, durationMs) / 1000).toFixed(1);
+  return (
+    "export " +
+    jobId +
+    " stage tile " +
+    tileId +
+    " thread " +
+    threadId +
+    " start " +
+    start +
+    "s duration " +
+    duration +
+    "s"
+  );
+}
+
+const logState = {
+  jobId: "",
+  t0: 0,
+  log: () => {},
+};
+
+function setExportLog(jobId, log) {
+  if (!jobId) {
+    logState.jobId = "";
+    logState.t0 = 0;
+    logState.log = () => {};
+    return;
+  }
+  logState.jobId = String(jobId);
+  logState.t0 = Date.now();
+  logState.log = typeof log === "function" ? log : (line) => console.log(line);
+}
+
+function noteTile(tileId, info) {
+  if (!logState.jobId || !info) return;
+  const line = tileTimingLine(
+    logState.jobId,
+    tileId,
+    info.threadId,
+    info.startedAt - logState.t0,
+    info.finishedAt - info.startedAt
+  );
+  logState.log(line);
 }
 
 function workerFile() {
@@ -31,8 +115,16 @@ function onMessage(msg) {
   const slot = pending.get(msg.id);
   if (!slot) return;
   pending.delete(msg.id);
-  if (msg.ok) slot.resolve(msg.result);
-  else slot.reject(new Error(msg.error || "worker failed"));
+  if (msg.ok) {
+    if (msg.startedAt && slot.onTime) {
+      slot.onTime({
+        threadId: msg.threadId,
+        startedAt: msg.startedAt,
+        finishedAt: msg.finishedAt || msg.startedAt,
+      });
+    }
+    slot.resolve(msg.result);
+  } else slot.reject(new Error(msg.error || "worker failed"));
 }
 
 function ensurePool() {
@@ -45,7 +137,7 @@ function ensurePool() {
   const n = threadCount();
   workers = [];
   for (let i = 0; i < n; i++) {
-    const worker = new Worker(workerFile());
+    const worker = new Worker(workerFile(), { workerData: { index: i } });
     if (typeof worker.unref === "function") worker.unref();
     worker.on("message", onMessage);
     worker.on("error", (err) => {
@@ -62,13 +154,21 @@ function runInline(task, payload) {
   return require("./cpu-tasks").runTask(task, payload);
 }
 
-function runOne(task, payload) {
+function runOne(task, payload, hooks) {
   const pool = ensurePool();
-  if (!pool) return Promise.resolve().then(() => runInline(task, payload));
+  const onTime = hooks && hooks.onTime;
+  if (!pool) {
+    return Promise.resolve().then(() => {
+      const startedAt = Date.now();
+      const result = runInline(task, payload);
+      if (onTime) onTime({ threadId: "main", startedAt, finishedAt: Date.now() });
+      return result;
+    });
+  }
   const id = seq++;
   const worker = pool[(id - 1) % pool.length];
   return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
+    pending.set(id, { resolve, reject, onTime });
     try {
       worker.postMessage({ id, task, payload });
     } catch (err) {
@@ -84,10 +184,19 @@ async function runTiles(task, payloads) {
   const out = new Array(list.length);
   await Promise.all(
     list.map(async (payload, i) => {
-      out[i] = await runOne(task, payload);
+      const tileId = payload && payload.tileId != null ? payload.tileId : task + "-" + i;
+      out[i] = await runOne(task, payload, {
+        onTime(info) {
+          noteTile(tileId, info);
+        },
+      });
     })
   );
   return out;
+}
+
+function poolSize() {
+  return workers ? workers.length : 0;
 }
 
 async function closePool() {
@@ -100,8 +209,12 @@ async function closePool() {
 
 module.exports = {
   threadCount,
+  cpuStartLine,
+  tileTimingLine,
+  setExportLog,
   workerFile,
   runOne,
   runTiles,
+  poolSize,
   closePool,
 };

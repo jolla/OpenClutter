@@ -10,6 +10,9 @@ primary_region = "iad"
   NODE_ENV = "production"
   # Leave room in an 8 GB machine for image buffers outside this cap.
   NODE_OPTIONS = "--max-old-space-size=6144"
+  # performance-4x is 4 dedicated vCPUs. os.cpus() in the guest can
+  # report 1 or the host count. The pool uses this number, not os.cpus().
+  OPENCLUTTER_CPU_COUNT = "4"
 
 [http_service]
   internal_port = 8080

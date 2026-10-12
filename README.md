@@ -8,6 +8,8 @@
 
 **v1.1.97** on `dev` — Sloped terrain is an adaptive mesh, not a fixed 20×20 grid. The paste spends its budget on the worst saddles, keeps a planar fit near half a meter, and merges a flat bench into one raised floor. Neighboring ramps share an edge height, and a coarse piece is split where it meets a finer one so the seam has no gap. A pure north-south or east-west grade stays one ramp per cell. The badge stays (`dev · v1.1.97`).
 
+**v1.1.154** on `dev`. The Fly pool uses 4 workers on performance-4x when `OPENCLUTTER_CPU_COUNT` is set, and `fly logs` shows `os.cpus().length` plus one timing line per canopy tile. Canopy strips are read together and the height raster is cached for 14 days. The heartbeat still fires every 10 seconds. The badge stays (`dev · v1.1.154`).
+
 **v1.1.153** on `dev`. Trees, canopy outlines, and vehicle scans run on one worker thread per CPU, split by tile, so the export heartbeat keeps firing every 10 seconds during Trees. The Fly machine is performance-4x with 8 GB. Autostop stays off, and the process still exits after 5 minutes with no export. The badge stays (`dev · v1.1.153`).
 
 **v1.1.152** on `dev`. A busy Fly export machine still accepts another request. The concurrency soft limit is 200 and the hard limit is 250, so one open export does not block a status check. Fly autostop is off, so it does not stop the machine for excess capacity while a job is in memory. The worker exits on its own after 5 minutes with no export running, and the next export starts it again. The badge stays (`dev · v1.1.152`).
