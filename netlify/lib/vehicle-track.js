@@ -569,6 +569,10 @@ function decidePitch(use, fraction) {
 }
 
 function finalizeVehicles(features, fractionFor) {
+  return require("./stage-clock").timeSpanSync("vehicle", () => finalizeVehiclesWork(features, fractionFor));
+}
+
+function finalizeVehiclesWork(features, fractionFor) {
   const out = [];
   const list = features || [];
   for (let i = 0; i < list.length; i++) {
@@ -869,6 +873,10 @@ function mergeDenseCars(lonlat) {
  * @returns {Array<Array<[number, number]>>}
  */
 function occupiedCarLayer(ring, frame, plate) {
+  return require("./stage-clock").timeSpanSync("vehicle", () => occupiedCarLayerWork(ring, frame, plate));
+}
+
+function occupiedCarLayerWork(ring, frame, plate) {
   if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return [];
   const poly = [];
   let minX = Infinity;
@@ -1096,6 +1104,10 @@ function nearLabel(pred, label, matchM) {
  * set by the caller at about 3.5 m.
  */
 function boatsOnWater(ring, frame, plate) {
+  return require("./stage-clock").timeSpanSync("vehicle", () => boatsOnWaterWork(ring, frame, plate));
+}
+
+function boatsOnWaterWork(ring, frame, plate) {
   if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return [];
   const poly = [];
   let minX = Infinity;
@@ -1230,6 +1242,10 @@ function boatsOnWater(ring, frame, plate) {
  * The caller sets the height at about 4 m.
  */
 function mobileHomesInRing(ring, frame, plate) {
+  return require("./stage-clock").timeSpanSync("vehicle", () => mobileHomesInRingWork(ring, frame, plate));
+}
+
+function mobileHomesInRingWork(ring, frame, plate) {
   if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return [];
   const poly = [];
   let minX = Infinity;
@@ -1463,6 +1479,10 @@ function mobileHomesInRing(ring, frame, plate) {
  * left out. Each kept trailer is one oriented metal box.
  */
 function semisInLot(ring, frame, plate, holes) {
+  return require("./stage-clock").timeSpanSync("vehicle", () => semisInLotWork(ring, frame, plate, holes));
+}
+
+function semisInLotWork(ring, frame, plate, holes) {
   if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return [];
   const poly = [];
   let minX = Infinity;
@@ -1737,6 +1757,10 @@ function dockAprons(ring, depthM) {
 }
 
 function semisAtDocks(rings, frame, plate, holes) {
+  return require("./stage-clock").timeSpanSync("vehicle", () => semisAtDocksWork(rings, frame, plate, holes));
+}
+
+function semisAtDocksWork(rings, frame, plate, holes) {
   const out = [];
   const used = [];
   for (let r = 0; r < (rings || []).length; r++) {

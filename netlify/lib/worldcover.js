@@ -44,6 +44,11 @@ function valuesOf(raster) {
  * sample returns the WorldCover class, or 0 outside the window.
  */
 async function fetchWorldCoverTrees(frame, opts) {
+  const { timeSpan } = require("./stage-clock");
+  return timeSpan("worldcover", () => fetchWorldCoverTreesWork(frame, opts));
+}
+
+async function fetchWorldCoverTreesWork(frame, opts) {
   if (!frame) return null;
   const signal = (opts && opts.signal) || AbortSignal.timeout(8000);
   if (signal.aborted) return null;

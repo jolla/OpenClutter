@@ -288,6 +288,8 @@
     if (jsonBytes > 0) lines.push("OpenIntent " + formatBytes(jsonBytes) + " of " + budgetText);
     const mapLine = mapResolutionLine(data);
     if (mapLine) lines.push(mapLine);
+    const cached = stats.cachedSources;
+    if (Array.isArray(cached) && cached.length) lines.push("Cached " + cached.join(", ") + ".");
     return lines;
   }
 

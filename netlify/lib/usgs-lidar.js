@@ -1108,6 +1108,11 @@ async function readProject(name, frame, caps, fetchImpl) {
 }
 
 async function fetchUsgsLidar(frame, opts) {
+  const { timeSpan } = require("./stage-clock");
+  return timeSpan("lidar", () => fetchUsgsLidarWork(frame, opts));
+}
+
+async function fetchUsgsLidarWork(frame, opts) {
   const opt = opts || {};
   const fetchImpl = opt.fetchImpl || fetch;
   const started = Date.now();

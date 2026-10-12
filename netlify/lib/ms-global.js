@@ -322,6 +322,11 @@ async function releaseBody(res) {
 }
 
 async function fetchMsGlobalFootprints(frame, fetchFn) {
+  const { timeSpan } = require("./stage-clock");
+  return timeSpan("microsoft", () => fetchMsGlobalFootprintsWork(frame, fetchFn));
+}
+
+async function fetchMsGlobalFootprintsWork(frame, fetchFn) {
   const { keys, urls } = urlsForBbox(frame.west, frame.south, frame.east, frame.north);
   const bbox = {
     west: +frame.west,

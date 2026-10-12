@@ -168,6 +168,8 @@ const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
 const { fetchUsgsLidar, applyLidarSample, lidarNote, lidarStatusLine } = require("../lib/usgs-lidar");
 const exportJobs = require("../lib/export-jobs");
+const stageClock = require("../lib/stage-clock");
+const areaCache = require("../lib/area-cache");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
 const { fetchMsGlobalFootprints, globalSkipWarning } = require("../lib/ms-global");
 const { fetchUsaStructures } = require("../lib/usa-structures");
@@ -481,6 +483,10 @@ function imageryDeadline(ms, ctrl) {
 }
 
 async function fetchImageryJpeg(url, attemptMs) {
+  return stageClock.timeSpan("aerialFetch", () => fetchImageryJpegBody(url, attemptMs));
+}
+
+async function fetchImageryJpegBody(url, attemptMs) {
   const ceiling = attemptMs > 0 ? attemptMs : IMAGERY_ATTEMPT_MS;
   let last = "aerial imagery failed";
   let timedOut = false;
@@ -1353,6 +1359,7 @@ async function handleClutter(event) {
   let worldCover = null;
   const warnings = [];
   const started = Date.now();
+  stageClock.enter(stageClock.createClock());
   const sharpRoom = devHost && imageryRoomKind(body.imageryQuality) !== "";
   const answerMs = background ? BACKGROUND_ANSWER_MS : sharpRoom ? DEV_SHARP_ANSWER_MS : DEV_ANSWER_MS;
   let overtureJob = null;
@@ -1377,6 +1384,12 @@ async function handleClutter(event) {
       east: frame.east,
       north: frame.north,
     };
+    if (areaCache.enabled() && background) {
+      const work = areaCache.planSourceTiles(requestBbox);
+      areaCache
+        .fanOut(work, { parentId: "export", invokeUrl: backgroundInvokeUrl(event) })
+        .catch(() => {});
+    }
     if (outdoorOn) {
       outdoorJob = beginOptional((signal) =>
         fetchOutdoorClutter(requestBbox, {
@@ -1592,7 +1605,9 @@ async function handleClutter(event) {
     imgBuf = fetched[3];
     if (imgBuf) {
       frame = applyImageryMeta(frame, imgMeta, jpegSize(imgBuf), { requestBbox });
-      const locked = lockIsotropicImagery(frame, imgBuf, { maxSide });
+      const locked = stageClock.timeSpanSync("aerialStitch", () =>
+        lockIsotropicImagery(frame, imgBuf, { maxSide })
+      );
       frame = locked.frame;
       imgBuf = locked.jpegBuf;
       if (devHost && imageryPlate) warnings.push(mapImageNote(imageryPlate, frame, imgBuf));
@@ -1608,6 +1623,9 @@ async function handleClutter(event) {
       treesSource = "nlcd-canopy";
     }
   } catch (e) {
+    if (process.env.OPENCLUTTER_STAGE_LOG) {
+      process.stderr.write("stage core-fail " + (Date.now() - started) + "\n");
+    }
     if (overtureJob) overtureJob.ctrl.abort();
     if (terrainJob) terrainJob.ctrl.abort();
     if (chmJob) chmJob.ctrl.abort();
@@ -1774,6 +1792,7 @@ async function handleClutter(event) {
     usa: capSource(usaFeatures),
   });
   let features = assembled.features;
+  if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage buildings " + (Date.now() - started) + "\n");
   reportProgress({ stage: "Buildings " + features.length });
   const sources = assembled.heightSources || {};
   const footprintMeta = {
@@ -1821,7 +1840,9 @@ async function handleClutter(event) {
     for (let i = 0; i < spots.length; i++) planningPlaces.push(spots[i]);
   }
   if (detailJob) {
+    if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage detail " + (Date.now() - started) + "\n");
     const pack = await detailJob.work;
+    if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage shaped " + (Date.now() - started) + "\n");
     if (pack && pack !== TIMED_OUT && Array.isArray(pack.notes)) {
       for (let i = 0; i < pack.notes.length; i++) {
         if (pack.notes[i] && warnings.indexOf(pack.notes[i]) < 0) warnings.push(pack.notes[i]);
@@ -1954,6 +1975,7 @@ async function handleClutter(event) {
     }
   }
   if (readTerrain && needImage) noteMissingTerrain(terrain, warnings);
+  if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage terrain " + (Date.now() - started) + "\n");
 
   let maskRings = [];
   let maskPolygons = [];
@@ -2121,7 +2143,9 @@ async function handleClutter(event) {
       noteShrink(before, exportFeatures.length);
     }
   }
+  if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage emit " + (Date.now() - started) + "\n");
   let built = emitClutter(exportFeatures);
+  if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage emitted " + (Date.now() - started) + "\n");
   // The image does not count toward Hamina's JSON limit. Compress it only
   // when the zip itself cannot fit in Netlify's function response.
   if (background && built.zip && !exportJobs.zipDownloadFits(built.zip.length) && imgBuf) {
@@ -2269,11 +2293,17 @@ async function handleClutter(event) {
       if (terrainFields.terrainClipboard) stampMapNotes(terrainFields.terrainClipboard, notes);
       stampMapNotes(gpsPaste, notes);
     }
+    const timings = stageClock.snapshot({
+      areaM2: frame && frame.widthM && frame.lengthM ? frame.widthM * frame.lengthM : 0,
+    });
+    if (built.stats && timings.cached.length) built.stats.cachedSources = timings.cached;
+    reportProgress({ timings });
     return json(200, cors, {
       ok: true,
       alignment: ALIGNMENT,
       frame: built.frame,
       stats: built.stats,
+      timings,
       zipFilename: `${built.slug}-openintent.zip`,
       zipBase64: built.zip.toString("base64"),
       terrainFilename: terrainFields.terrainFilename,

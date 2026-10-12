@@ -840,6 +840,11 @@ async function readFootprintPage(frame, fetchFn, offset, want) {
  * that page with partial set.
  */
 async function fetchMsFootprints(frame, fetchFn, opts = {}) {
+  const { timeSpan } = require("./stage-clock");
+  return timeSpan("microsoft", () => fetchMsFootprintsWork(frame, fetchFn, opts));
+}
+
+async function fetchMsFootprintsWork(frame, fetchFn, opts = {}) {
   const pageSize = opts.pageSize || FP_PAGE_SIZE;
   const cap = opts.cap || FP_CAP;
   const budgetMs = opts.budgetMs == null ? 7000 : opts.budgetMs;

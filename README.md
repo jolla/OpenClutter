@@ -8,6 +8,8 @@
 
 **v1.1.97** on `dev` — Sloped terrain is an adaptive mesh, not a fixed 20×20 grid. The paste spends its budget on the worst saddles, keeps a planar fit near half a meter, and merges a flat bench into one raised floor. Neighboring ramps share an edge height, and a coarse piece is split where it meets a finer one so the seam has no gap. A pure north-south or east-west grade stays one ramp per cell. The badge stays (`dev · v1.1.97`).
 
+**v1.1.149** on `dev`. An export records how long each stage took and stores those times on the job. Raw map tiles are cached by source, resolution, and snapped tile. Each source expires on its own clock. Final geometry is not cached, so a later detector change cannot replay an old roof or tree. Missing tiles are fetched at most 4 at a time, and a background export can split that work across up to 3 background functions. A repeat of the same draw can say which sources were cached. The badge stays (`dev · v1.1.149`).
+
 **v1.1.148** on `dev`. The canopy scoreboard adds RF error for fifty random links at 4 m, 40 to 100 m long. Predicted loss follows the exported foliage. Reference loss is 1.5 dB/m where the canopy reference is at least 4 m. The new columns are the median and the 90th percentile of the absolute error in dB. Manuel Antonio stays the only site at 85% recall and 85% precision. The badge stays (`dev · v1.1.148`).
 
 **v1.1.147** on `dev`. The canopy scoreboard adds a leaf-off woods, an apple orchard, a date grove, a tower shadow, and an RV resort. Each one is scored the same way as the earlier sites, against USGS lidar. None of them passes 85% recall and 85% precision. Manuel Antonio stays the only pass. The badge stays (`dev · v1.1.147`).
