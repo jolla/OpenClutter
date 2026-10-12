@@ -3,7 +3,9 @@
 /**
  * HTTP entry for the Fly machine. One export keeps the response open so
  * Fly Proxy still sees a request and does not stop the machine mid-job.
- * A newline every 20s is only a heartbeat. The last line is the result.
+ * A newline every 20s only keeps that proxy connection open. The job
+ * heartbeat is a stage name and a timestamp on the export blob. The last
+ * line of this response is the result.
  */
 
 const http = require("node:http");

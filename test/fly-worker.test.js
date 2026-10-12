@@ -5,9 +5,28 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const jobs = require("../netlify/lib/export-jobs");
-const { FALLBACK_NOTE, handOffExport } = require("../netlify/lib/fly-handoff");
+const { BACKGROUND_PLATFORM_MS, BACKGROUND_ANSWER_MS } = require("../netlify/functions/clutter");
+const {
+  FALLBACK_NOTE,
+  RERUN_NOTE,
+  RERUN_MIN_MS,
+  PAGE_MS,
+  FUNCTION_ANSWER_MS,
+  HEARTBEAT_STALE_MS,
+  handOffExport,
+  setHandoffDepsForTests,
+  workerStoppedMessage,
+  heartbeatIsStale,
+  rerunHasRoom,
+} = require("../netlify/lib/fly-handoff");
 const { handler: backgroundHandler } = require("../netlify/functions/clutter-export-background");
-const { handleWorkerRequest } = require("../fly/worker");
+const {
+  HEARTBEAT_MS,
+  handleWorkerRequest,
+  createStageLogger,
+  createWorkerSession,
+  startHeartbeatTimer,
+} = require("../fly/worker");
 const { startServer } = require("../fly/server");
 
 const JOB = "11111111-1111-4111-8111-111111111111";
@@ -50,6 +69,7 @@ describe("fly worker handoff", { concurrency: 1 }, () => {
 
   afterEach(() => {
     jobs.setExportStoreForTests(null);
+    setHandoffDepsForTests(null);
     for (const key of ["FLY_WORKER_URL", "FLY_WORKER_SECRET", "OPENCLUTTER_WORKER_SECRET", "NETLIFY_SITE_ID", "NETLIFY_AUTH_TOKEN"]) {
       if (prev[key] == null) delete process.env[key];
       else process.env[key] = prev[key];
@@ -154,6 +174,331 @@ describe("fly worker handoff", { concurrency: 1 }, () => {
     } finally {
       global.fetch = prevFetch;
     }
+  });
+
+  function postJob() {
+    return backgroundHandler({
+      httpMethod: "POST",
+      headers: { host: "dev--openclutter.netlify.app" },
+      body: JSON.stringify({ jobId: JOB, event: innerEvent() }),
+    });
+  }
+
+  it("keeps a fresh heartbeat on the worker", async () => {
+    saveEnv();
+    process.env.FLY_WORKER_URL = "https://openclutter-export.fly.dev";
+    process.env.FLY_WORKER_SECRET = "local-secret";
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    await jobs.createJob(JOB);
+    const t0 = Date.now();
+    let now = t0;
+    await jobs.updateJob(JOB, {
+      state: "running",
+      worker: "fly",
+      stage: "Trees",
+      heartbeatAt: t0,
+      heartbeatStage: "Trees",
+    });
+    let polls = 0;
+    let fetched = false;
+    let dropBody = function () {};
+    const body = new Promise((resolve, reject) => {
+      dropBody = reject;
+    });
+    const prevFetch = global.fetch;
+    global.fetch = async () => {
+      fetched = true;
+      return { status: 202, text: () => body };
+    };
+    setHandoffDepsForTests({
+      now: () => now,
+      pollMs: 1,
+      sleep: async () => {
+        polls += 1;
+        now += 10 * 1000;
+        if (polls === 1) {
+          await jobs.updateJob(JOB, {
+            state: "running",
+            worker: "fly",
+            stage: "Trees",
+            heartbeatAt: now,
+            heartbeatStage: "Trees",
+          });
+          dropBody(new Error("socket hang up"));
+          return;
+        }
+        await jobs.updateJob(JOB, {
+          state: "done",
+          stage: "Zip ready",
+          worker: "fly",
+          heartbeatAt: now,
+          heartbeatStage: "Trees",
+          error: null,
+        });
+      },
+    });
+    try {
+      const res = await postJob();
+      assert.equal(res.statusCode, 202);
+      assert.equal(fetched, true);
+      assert.ok(polls >= 2);
+      const job = await jobs.readJob(JOB);
+      assert.equal(job.state, "done");
+      assert.equal(job.stage, "Zip ready");
+      assert.equal(job.error, null);
+      assert.equal((job.warnings || []).indexOf(RERUN_NOTE), -1);
+      assert.equal((job.warnings || []).indexOf(FALLBACK_NOTE), -1);
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it("re-runs on Netlify when the heartbeat is older than 45 seconds", async () => {
+    saveEnv();
+    process.env.FLY_WORKER_URL = "https://openclutter-export.fly.dev";
+    process.env.FLY_WORKER_SECRET = "local-secret";
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    await jobs.createJob(JOB);
+    await jobs.updateJob(JOB, {
+      state: "running",
+      worker: "fly",
+      stage: "Trees",
+      heartbeatAt: Date.now() - 46 * 1000,
+      heartbeatStage: "Trees",
+    });
+    let fetched = false;
+    const prevFetch = global.fetch;
+    global.fetch = async () => {
+      fetched = true;
+      return { status: 202, text: () => new Promise(() => {}) };
+    };
+    try {
+      const res = await postJob();
+      assert.equal(res.statusCode, 202);
+      assert.equal(fetched, true);
+      const job = await jobs.readJob(JOB);
+      assert.equal(job.state, "error");
+      assert.match(job.error, /invalid json/);
+      assert.ok(job.warnings.indexOf(RERUN_NOTE) >= 0);
+      assert.equal(job.warnings.indexOf(FALLBACK_NOTE), -1);
+      assert.equal(RERUN_NOTE, "The export worker stopped. The job was run here instead.");
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it("fails the job when a dead worker has no time left to re-run", async () => {
+    saveEnv();
+    process.env.FLY_WORKER_URL = "https://openclutter-export.fly.dev";
+    process.env.FLY_WORKER_SECRET = "local-secret";
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    await jobs.createJob(JOB);
+    const now = Date.now();
+    await jobs.updateJob(JOB, {
+      state: "running",
+      worker: "fly",
+      stage: "Trees",
+      heartbeatStage: "Trees",
+      heartbeatAt: now - 50 * 1000,
+      createdAt: now - (PAGE_MS - 30 * 1000),
+    });
+    const prevFetch = global.fetch;
+    global.fetch = async () => ({ status: 202, text: () => new Promise(() => {}) });
+    try {
+      const res = await postJob();
+      assert.equal(res.statusCode, 202);
+      const job = await jobs.readJob(JOB);
+      assert.equal(job.state, "error");
+      assert.equal(job.error, "The export worker stopped during Trees. Export again.");
+      assert.equal(job.error, workerStoppedMessage("Trees"));
+      assert.equal((job.warnings || []).indexOf(RERUN_NOTE), -1);
+      assert.equal(job.error.includes("invalid json"), false);
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it("falls back after 45 seconds when the worker never writes a heartbeat", async () => {
+    saveEnv();
+    process.env.FLY_WORKER_URL = "https://openclutter-export.fly.dev";
+    process.env.FLY_WORKER_SECRET = "local-secret";
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    await jobs.createJob(JOB);
+    let now = Date.now();
+    let fetchedAt = 0;
+    setHandoffDepsForTests({
+      now: () => now,
+      pollMs: 1,
+      sleep: async () => {
+        now += HEARTBEAT_STALE_MS;
+      },
+    });
+    const prevFetch = global.fetch;
+    global.fetch = async () => {
+      const job = await jobs.readJob(JOB);
+      assert.equal(job.heartbeatAt, undefined);
+      fetchedAt = now;
+      return { status: 202, text: () => new Promise(() => {}) };
+    };
+    try {
+      const res = await postJob();
+      assert.equal(res.statusCode, 202);
+      assert.ok(fetchedAt > 0);
+      const job = await jobs.readJob(JOB);
+      assert.equal(job.state, "error");
+      assert.ok(job.warnings.indexOf(RERUN_NOTE) >= 0);
+      assert.equal(job.warnings.indexOf(FALLBACK_NOTE), -1);
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it("keeps the current path when the worker URL or secret is missing", async () => {
+    saveEnv();
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    await jobs.createJob(JOB);
+    await jobs.updateJob(JOB, {
+      state: "running",
+      worker: "fly",
+      stage: "Trees",
+      heartbeatAt: Date.now() - 60 * 1000,
+      heartbeatStage: "Trees",
+    });
+    let called = false;
+    const prevFetch = global.fetch;
+    global.fetch = async () => {
+      called = true;
+      throw new Error("fetch should not run");
+    };
+    try {
+      delete process.env.FLY_WORKER_URL;
+      process.env.FLY_WORKER_SECRET = "local-secret";
+      let res = await postJob();
+      assert.equal(res.statusCode, 202);
+      assert.equal(called, false);
+      let job = await jobs.readJob(JOB);
+      assert.equal(job.state, "error");
+      assert.match(job.error, /invalid json/);
+      assert.equal((job.warnings || []).indexOf(RERUN_NOTE), -1);
+      assert.equal((job.warnings || []).indexOf(FALLBACK_NOTE), -1);
+
+      await jobs.createJob(JOB);
+      await jobs.updateJob(JOB, {
+        state: "running",
+        worker: "fly",
+        stage: "Trees",
+        heartbeatAt: Date.now() - 60 * 1000,
+        heartbeatStage: "Trees",
+      });
+      process.env.FLY_WORKER_URL = "https://openclutter-export.fly.dev";
+      delete process.env.FLY_WORKER_SECRET;
+      res = await postJob();
+      assert.equal(res.statusCode, 202);
+      assert.equal(called, false);
+      job = await jobs.readJob(JOB);
+      assert.equal(job.state, "error");
+      assert.match(job.error, /invalid json/);
+      assert.equal((job.warnings || []).indexOf(RERUN_NOTE), -1);
+      assert.equal((job.warnings || []).indexOf(FALLBACK_NOTE), -1);
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it("treats a heartbeat as stale at 45 seconds and leaves room for a re-run", () => {
+    assert.equal(PAGE_MS, BACKGROUND_PLATFORM_MS);
+    assert.equal(FUNCTION_ANSWER_MS, BACKGROUND_ANSWER_MS);
+    assert.equal(HEARTBEAT_STALE_MS, 45 * 1000);
+    assert.equal(RERUN_MIN_MS, 2 * 60 * 1000);
+    const started = 1_000_000;
+    assert.equal(heartbeatIsStale(started, started + 44_999, started), false);
+    assert.equal(heartbeatIsStale(started, started + 45_000, started), true);
+    assert.equal(heartbeatIsStale(null, started + 44_999, started), false);
+    assert.equal(heartbeatIsStale(null, started + 45_000, started), true);
+    assert.equal(rerunHasRoom({ createdAt: started }, started + 45_000, started), true);
+    assert.equal(rerunHasRoom({ createdAt: started }, started + 12 * 60 * 1000, started), true);
+    assert.equal(rerunHasRoom({ createdAt: started }, started + 12 * 60 * 1000 + 1, started), false);
+    const pageEdge = started + PAGE_MS - RERUN_MIN_MS;
+    assert.equal(rerunHasRoom({ createdAt: started }, pageEdge, pageEdge), true);
+    assert.equal(rerunHasRoom({ createdAt: started }, pageEdge + 1, pageEdge + 1), false);
+    assert.equal(workerStoppedMessage(""), "The export worker stopped. Export again.");
+    assert.equal(workerStoppedMessage("Trees"), "The export worker stopped during Trees. Export again.");
+    assert.equal(RERUN_NOTE.includes("\u2014"), false);
+    assert.equal(workerStoppedMessage("Trees").includes("\u2014"), false);
+  });
+
+  it("logs a stage start and finish with elapsed and duration", async () => {
+    let t = 5_000;
+    const lines = [];
+    const logger = createStageLogger(JOB, {
+      now: () => t,
+      log: (line) => lines.push(line),
+    });
+    logger.note("Fetching aerial");
+    t = 8_200;
+    logger.note("Buildings 112");
+    t = 16_600;
+    logger.note("Trees");
+    t = 21_100;
+    logger.finish();
+    assert.deepEqual(lines, [
+      "export " + JOB + " stage start Fetching aerial elapsed 0.0s",
+      "export " + JOB + " stage done Fetching aerial duration 3.2s",
+      "export " + JOB + " stage start Buildings 112 elapsed 3.2s",
+      "export " + JOB + " stage done Buildings 112 duration 8.4s",
+      "export " + JOB + " stage start Trees elapsed 11.6s",
+      "export " + JOB + " stage done Trees duration 4.5s",
+    ]);
+
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    await jobs.createJob(JOB);
+    const sessionLines = [];
+    let stageTime = 1_000;
+    const session = createWorkerSession(JOB, {
+      now: () => stageTime,
+      log: (line) => sessionLines.push(line),
+    });
+    assert.equal(session.stageName(), "Fetching aerial");
+    stageTime = 2_000;
+    await session.onProgress({ stage: "Trees" });
+    const job = await jobs.readJob(JOB);
+    assert.equal(job.heartbeatStage, "Trees");
+    assert.equal(typeof job.heartbeatAt, "number");
+    assert.equal(job.state, "queued");
+    session.finish();
+    assert.match(sessionLines.join("\n"), /stage start Fetching aerial elapsed 0\.0s/);
+    assert.match(sessionLines.join("\n"), /stage done Fetching aerial duration 1\.0s/);
+    assert.match(sessionLines.join("\n"), /stage start Trees elapsed 1\.0s/);
+    assert.match(sessionLines.join("\n"), /stage done Trees duration 0\.0s/);
+
+    await jobs.updateJob(JOB, { state: "queued", stage: "Fetching aerial" });
+    const timer = startHeartbeatTimer(JOB, () => "Packing zip", 60_000);
+    let beating;
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      beating = await jobs.readJob(JOB);
+    } finally {
+      clearInterval(timer);
+    }
+    assert.equal(beating.state, "queued");
+    assert.equal(beating.heartbeatStage, "Packing zip");
+    assert.equal(typeof beating.heartbeatAt, "number");
+    assert.equal(HEARTBEAT_MS, 10 * 1000);
+    assert.equal(jobs.HEARTBEAT_MS, HEARTBEAT_MS);
+
+    await jobs.updateJob(JOB, { state: "done", stage: "Zip ready" });
+    const frozen = await jobs.readJob(JOB);
+    const returned = await jobs.writeHeartbeat(JOB, "Trees");
+    assert.equal(returned.state, "done");
+    assert.equal(returned.heartbeatStage, frozen.heartbeatStage);
+    assert.equal(returned.heartbeatAt, frozen.heartbeatAt);
   });
 });
 

@@ -15,6 +15,23 @@ The Netlify background function calls the worker only when both of these are set
 
 If either one is missing, the export stays on the current Netlify background path. If the worker does not accept the job, that same path runs it, and the job warning is: "Fly worker did not accept this export. It is running on the Netlify background path."
 
+The handoff is attempted even when the job has no heartbeat yet. While the export runs, the worker writes a heartbeat on that same job about every 10 seconds. The heartbeat is the current stage name and a timestamp.
+
+If no heartbeat arrives for 45 seconds, Netlify runs the job on its own background path. The job warning is: "The export worker stopped. The job was run here instead."
+
+If the page or the function has under 2 minutes left, Netlify does not start that second run. The job fails with: "The export worker stopped during Trees. Export again." The stage name is the last one on the heartbeat, or the last stage on the job.
+
+A worker that has not been deployed with this heartbeat yet never writes one. Netlify still attempts the handoff, then runs the job itself after 45 seconds. After `fly deploy`, heartbeats keep the job on the worker.
+
+The worker logs each stage for `fly logs`, when it starts and when it finishes:
+
+```text
+export 3f2a9c1e-4b7d-4e2a-9c11-8a0b6d5e4f21 stage done Buildings duration 8.4s
+export 3f2a9c1e-4b7d-4e2a-9c11-8a0b6d5e4f21 stage start Trees elapsed 41.2s
+```
+
+`elapsed` is from the start of that export. `duration` is that stage only.
+
 Fly does not allow a secret name that starts with `FLY_`. On the Fly app the same secret value is `OPENCLUTTER_WORKER_SECRET`.
 
 ## Cost
@@ -91,3 +108,13 @@ The same four values can be entered in the Netlify UI under Site configuration >
 Optional, only if blob writes from the worker cannot find the store: on Fly, `fly secrets set NETLIFY_BLOBS_REGION='us-east-2'`. Leave it unset unless a job fails to store. Do not set it on Netlify. The function already has its own blob context.
 
 No map API key is required for the current sources. The Finland laser grid is already in the image. Leave `NLS_API_KEY` unset unless you later have a real key to put there. Do not put a placeholder in the repo or in Fly.
+
+## Update the live worker
+
+The app is already `openclutter-export`. From the repo root, this ships the heartbeat and the stage lines:
+
+```bash
+fly deploy
+```
+
+Until that deploy, the machine that is already running does not write a heartbeat. Netlify then runs the export itself after 45 seconds. After the deploy, a fresh heartbeat keeps the job on the worker.
