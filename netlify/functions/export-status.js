@@ -37,6 +37,8 @@ exports.handler = async (event) => {
     stageLabel: job.stageLabel || job.stage,
     progress: job.progress == null ? 0 : job.progress,
     progressCeiling: job.progressCeiling == null ? 0 : job.progressCeiling,
+    tilesDone: Number.isFinite(+job.tilesDone) ? job.tilesDone : null,
+    tilesTotal: Number.isFinite(+job.tilesTotal) ? job.tilesTotal : null,
     createdAt: job.createdAt || null,
     stages: job.stages || [],
     error: job.error || null,

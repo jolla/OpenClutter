@@ -77,7 +77,63 @@ const logState = {
   log: () => {},
 };
 
+const treeTiles = {
+  done: 0,
+  total: 0,
+  highDone: 0,
+  highTotal: 0,
+};
+
+function beginExportTiles() {
+  treeTiles.done = 0;
+  treeTiles.total = 0;
+  treeTiles.highDone = 0;
+  treeTiles.highTotal = 0;
+}
+
+function treeTask(task) {
+  return task === "canopy-tile" || task === "foliage-assemble";
+}
+
+/**
+ * Trees tiles are the canopy queue, then the foliage queue. A later queue
+ * must not publish a lower fraction than the tiles already finished.
+ */
+function openTreeTiles(task, count) {
+  if (!treeTask(task)) return;
+  const n = count | 0;
+  if (!(n > 0)) return;
+  treeTiles.done = 0;
+  treeTiles.total = n;
+}
+
+function completeTreeTile(task) {
+  if (!treeTask(task)) return;
+  if (treeTiles.total > 0 && treeTiles.done < treeTiles.total) treeTiles.done += 1;
+  const total = treeTiles.total;
+  const done = treeTiles.done;
+  if (!(total > 0)) return;
+  const now = done / total;
+  const prev = treeTiles.highTotal > 0 ? treeTiles.highDone / treeTiles.highTotal : -1;
+  if (now >= prev) {
+    treeTiles.highDone = done;
+    treeTiles.highTotal = total;
+  }
+}
+
+function tileProgress() {
+  const liveTotal = treeTiles.total | 0;
+  const liveDone = treeTiles.done | 0;
+  const highTotal = treeTiles.highTotal | 0;
+  const highDone = treeTiles.highDone | 0;
+  const liveFrac = liveTotal > 0 ? liveDone / liveTotal : -1;
+  const highFrac = highTotal > 0 ? highDone / highTotal : -1;
+  if (highFrac > liveFrac) return { tilesDone: highDone, tilesTotal: highTotal };
+  return { tilesDone: liveDone, tilesTotal: liveTotal };
+}
+
 function setExportLog(jobId, log) {
+  beginExportTiles();
   if (!jobId) {
     logState.jobId = "";
     logState.t0 = 0;
@@ -191,6 +247,7 @@ async function runQueue(task, payloads) {
   const list = payloads || [];
   const out = new Array(list.length);
   if (!list.length) return out;
+  openTreeTiles(task, list.length);
   const pool = ensurePool();
   let cursor = 0;
   const pull = async (workerIndex) => {
@@ -202,6 +259,7 @@ async function runQueue(task, payloads) {
       out[i] = await runOn(workerIndex, task, payload, {
         onTime(info) {
           noteTile(tileId, info);
+          completeTreeTile(task);
         },
       });
     }
@@ -232,6 +290,10 @@ module.exports = {
   cpuStartLine,
   tileTimingLine,
   setExportLog,
+  beginExportTiles,
+  tileProgress,
+  openTreeTiles,
+  completeTreeTile,
   workerFile,
   runOne,
   runTiles,

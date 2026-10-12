@@ -174,7 +174,7 @@ function createWorkerSession(jobId, opts) {
       if (!patch || !patch.stage) return;
       stage = String(patch.stage);
       logger.note(stage);
-      await jobs.writeHeartbeat(jobId, stage);
+      await jobs.writeHeartbeat(jobId, stage, heartbeatTiles());
     },
     finish() {
       logger.finish();
@@ -182,11 +182,21 @@ function createWorkerSession(jobId, opts) {
   };
 }
 
+function heartbeatTiles() {
+  try {
+    return require("../netlify/lib/cpu-pool").tileProgress();
+  } catch {
+    return null;
+  }
+}
+
 function startHeartbeatTimer(jobId, getStage, intervalMs) {
   const ms = intervalMs == null ? HEARTBEAT_MS : intervalMs;
   const beat = () => {
     Promise.resolve()
-      .then(() => jobs.writeHeartbeat(jobId, typeof getStage === "function" ? getStage() : getStage))
+      .then(() =>
+        jobs.writeHeartbeat(jobId, typeof getStage === "function" ? getStage() : getStage, heartbeatTiles())
+      )
       .catch(() => {});
   };
   beat();

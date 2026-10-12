@@ -9,6 +9,7 @@ const { EXPORT_PAYLOAD_BUDGET, TERRAIN_PASTE_MAX_BYTES, TERRAIN_PASTE_MAX_FLOORS
 const { handleClutter, backgroundImagerySteps, runBackgroundExport, setFetchTerrainDemForTests, setFetchOvertureForTests } = require("../netlify/functions/clutter");
 const { handler: backgroundHandler } = require("../netlify/functions/clutter-export-background");
 const { handler: fileHandler } = require("../netlify/functions/export-file");
+const { handler: statusHandler } = require("../netlify/functions/export-status");
 const jpeg = require("jpeg-js");
 const { compressJpegToMax, jpegSize } = require("../netlify/lib/geo-frame");
 
@@ -105,12 +106,46 @@ describe("export jobs", { concurrency: 1 }, () => {
     assert.deepEqual(job.stages, ["Fetching aerial", "Buildings 112", "Trees 55"]);
     assert.equal(job.stage, "Trees 55");
     assert.equal(job.stageLabel, "Trees 55");
-    assert.equal(job.progress, 0.8);
-    assert.equal(job.progressCeiling, 0.94);
+    assert.equal(job.progress, 0.2);
+    assert.equal(job.progressCeiling, 0.98);
     job.expiresAt = Date.now() - 1000;
     await store.setJSON("job/" + id, job);
     assert.equal(await jobs.readJob(id), null);
     assert.equal(store.has("job/" + id), false);
+  });
+
+  it("puts tree tile counts on the heartbeat and the status payload", async () => {
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    const id = "33333333-3333-4333-8333-333333333333";
+    await jobs.createJob(id);
+    await jobs.updateJob(id, { state: "running", stage: "Trees" });
+    const beat = await jobs.writeHeartbeat(id, "Trees", { tilesDone: 4, tilesTotal: 16 });
+    assert.equal(beat.tilesDone, 4);
+    assert.equal(beat.tilesTotal, 16);
+    assert.equal(beat.heartbeatStage, "Trees");
+    const held = await jobs.writeHeartbeat(id, "Trees");
+    assert.equal(held.tilesDone, 4);
+    assert.equal(held.tilesTotal, 16);
+    const lower = await jobs.writeHeartbeat(id, "Trees", { tilesDone: 1, tilesTotal: 16 });
+    assert.equal(lower.tilesDone, 4);
+    const res = await statusHandler({
+      httpMethod: "GET",
+      queryStringParameters: { job: id },
+    });
+    const body = JSON.parse(res.body);
+    assert.equal(body.tilesDone, 4);
+    assert.equal(body.tilesTotal, 16);
+    assert.equal(body.stage, "Trees");
+    const fresh = "88888888-8888-4888-8888-888888888888";
+    await jobs.createJob(fresh);
+    const empty = await statusHandler({
+      httpMethod: "GET",
+      queryStringParameters: { job: fresh },
+    });
+    const emptyBody = JSON.parse(empty.body);
+    assert.equal(emptyBody.tilesDone, null);
+    assert.equal(emptyBody.tilesTotal, null);
   });
 
   it("returns the zip once, then says it was already downloaded", async () => {
