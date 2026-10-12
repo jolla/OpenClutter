@@ -62,7 +62,31 @@
     .hint { margin: 8px 0 0; font-size: 11px; line-height: 1.35; color: #6e7681; }
     #copy-note.err { color: #f85149; }
     #status { margin-top: 10px; font-size: 12px; color: #8b949e; min-height: 16px; }
+    #export-progress { margin-bottom: 8px; }
+    #export-progress[hidden] { display: none; }
+    .export-progress-top {
+      display: flex; justify-content: space-between; gap: 8px; align-items: baseline;
+      margin-bottom: 5px; font-size: 12px; line-height: 1.4; color: #8b949e;
+    }
+    #export-elapsed { font-variant-numeric: tabular-nums; color: #6e7681; }
+    .export-bar {
+      height: 3px; border-radius: 2px; background: #21262d; overflow: hidden;
+    }
+    #export-bar-fill {
+      height: 100%; width: 0%;
+      background: linear-gradient(90deg, #1f6f2c, #3fb950 45%, #7ee787 50%, #3fb950 55%, #1f6f2c);
+      background-size: 220% 100%;
+      animation: export-bar-sheen 1.6s linear infinite;
+    }
+    @keyframes export-bar-sheen {
+      from { background-position: 100% 0; }
+      to { background-position: -120% 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #export-bar-fill { animation: none; }
+    }
     #status-line { margin: 0; line-height: 1.4; }
+    #status-line[hidden] { display: none; }
     #status.err #status-line { color: #f85149; }
     #status-more { margin-top: 6px; }
     #status-more[hidden] { display: none; }
@@ -104,7 +128,7 @@
 <body>
   <div id="map"></div>
   <div class="panel">
-    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.128</span></p>
+    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.129</span></p>
     <h1>OpenClutter</h1>
     <div class="sub" id="panel-sub">Export a zip. Import it in Hamina for the aerial map and buildings.</div>
     <form id="search">
@@ -119,6 +143,15 @@
     <button type="button" id="copy-terrain" class="secondary" hidden>Copy terrain</button>
     <p id="copy-note" class="hint" hidden></p>
     <div id="status">
+      <div id="export-progress" hidden>
+        <div class="export-progress-top">
+          <span id="export-stage">Fetching map</span>
+          <span id="export-elapsed">0:00</span>
+        </div>
+        <div class="export-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Export progress">
+          <div id="export-bar-fill"></div>
+        </div>
+      </div>
       <p id="status-line">Click the map to draw the site.</p>
       <details id="status-more" hidden>
         <summary>Details</summary>
