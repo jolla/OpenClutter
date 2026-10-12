@@ -58,7 +58,7 @@ function scoreSite(site, aerialBuf) {
   const frame = geoFrame(site, { imgW: plate.width, imgH: plate.height, maxSpanM: 8000, minSpanM: 1 });
   const parsed = parseOverpass(fixture, { rvs: true });
   const planned = planOutdoor({
-    features: parsed.features.filter((f) => f && (f.kind === "rv" || f.kind === "trailer-candidate" || f.kind === "trailer" || f.kind === "marina" || f.kind === "boat" || f.kind === "mobile-park" || f.kind === "mobile-home")),
+    features: parsed.features.filter((f) => f && (f.kind === "rv" || f.kind === "trailer-candidate" || f.kind === "trailer" || f.kind === "marina" || f.kind === "boat" || f.kind === "mobile-park" || f.kind === "mobile-home" || f.kind === "truck-lot" || f.kind === "building-hole")),
     frame,
     vehiclePlate: plate,
   });
@@ -81,7 +81,7 @@ function scoreSite(site, aerialBuf) {
   const exportFeatures = preds.map((p) => ({
     kind: p.class,
     coords: p.ring,
-    heightM: p.class === "mobile-home" ? 4 : p.class === "trailer" ? 3.2 : p.class === "boat" ? 3.5 : 3.5,
+    heightM: p.class === "mobile-home" ? 4 : p.class === "trailer" ? 3.2 : p.class === "boat" ? 3.5 : p.class === "semi" ? 4.1 : p.class === "car" ? 1.5 : 3.5,
     explicitHeight: true,
   }));
   const built = buildClutter({

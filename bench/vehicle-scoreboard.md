@@ -8,3 +8,4 @@ Recall and precision use the hand-checked pads only. A pad that was not reviewed
 | Mesa RV resorts | rv | 100.0% | 75.0% | 12 | 16 | manual image labels | no | 59772 / 4900000 | no |
 | Wentworth marina | boat | 58.3% | 100.0% | 24 | 20 | manual image labels | no | 41341 / 4900000 | no |
 | Citrus Gardens | mobile-home | 70.8% | 100.0% | 24 | 22 | manual image labels | no | 90478 / 4900000 | no |
+| Iowa 80 truck stop | semi | 80.0% | 90.5% | 15 | 21 | manual image labels | no | 19783 / 4900000 | no |
