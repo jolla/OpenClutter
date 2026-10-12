@@ -13,7 +13,10 @@ const {
   runExportAttempts,
   chooseTerrainPaste,
   terrainPasteLine,
+  exportSummaryLines,
+  steepestGrade,
 } = require("../public/export-client");
+const { steepestClipboardGrade } = require("../netlify/lib/terrain");
 
 describe("export gateway timeout", () => {
   it("returns one zip and does not leave the working line up after a 504", async () => {
@@ -220,6 +223,66 @@ describe("Copy terrain after a background result", () => {
     assert.equal(terrainPasteLine({ slopedFloors: [], raisedFloorZones: [] }), "");
     const client = fs.readFileSync(path.join(__dirname, "../public/export-client.js"), "utf8");
     assert.match(client, /Terrain paste: " \+ floors \+ " floors, " \+ kb \+ " KB"/);
+  });
+
+  it("lists a compact finished-export summary", () => {
+    const ramp = {
+      area: {
+        coordinates: [[[0, 0, 0], [10, 0, 0], [10, 20, 10], [0, 20, 10]]],
+      },
+    };
+    const data = {
+      zipBytes: 3410000,
+      warnings: ["Map image 4096 px, 0.19 m per pixel.", "Lidar heights used."],
+      terrainClipboard: { slopedFloors: [ramp], raisedFloorZones: [{}, {}] },
+      stats: {
+        buildings: 129,
+        trees: 593,
+        discreteTrees: 410,
+        rvAreas: 2,
+        parkingAreas: 4,
+        wallAreas: 0,
+        poleAreas: 1,
+        waterAreas: 0,
+        bridgeAreas: 1,
+        guidewayAreas: 2,
+        terrainMinM: 612.4,
+        terrainMaxM: 891.2,
+        terrainReliefM: 278.8,
+        openIntentJsonBytes: 2100000,
+        jsonBudget: 3800000,
+      },
+    };
+    const lines = exportSummaryLines(data, { foliageOn: true, terrainOn: true });
+    assert.deepEqual(lines, [
+      "Buildings 129",
+      "Trees 410, stands 183",
+      "RVs 2",
+      "Parking 4",
+      "Poles 1",
+      "Bridges and rail 3",
+      "Minimum 612.4 m (2,009 ft)",
+      "Maximum 891.2 m (2,924 ft)",
+      "Elevation change 278.8 m (915 ft)",
+      "Steepest slope 50% (27°)",
+      "Terrain pieces 3",
+      "Zip 3.41 MB, OpenIntent 2.10 MB of 3.80 MB",
+      "Map 4096 px, 0.19 m per pixel",
+    ]);
+    assert.equal(lines.some((line) => /Walls and fences|Water /.test(line)), false);
+    assert.equal(/\u2014/.test(lines.join("\n")), false);
+    assert.equal(steepestGrade(data.terrainClipboard), steepestClipboardGrade(data.terrainClipboard));
+    const off = exportSummaryLines(
+      { stats: { buildings: 0, trees: 4, openIntentJsonBytes: 80000 } },
+      { foliageOn: false, terrainOn: false }
+    );
+    assert.deepEqual(off, ["Buildings 0", "Terrain off", "OpenIntent 80 KB of 3.80 MB"]);
+    const stands = exportSummaryLines(
+      { stats: { buildings: 1, trees: 12, discreteTrees: 0 }, frame: { imgW: 2048, imgH: 1800, mpuX: 0.4 } },
+      { foliageOn: true, terrainOn: true }
+    );
+    assert.equal(stands[1], "Stands 12");
+    assert.equal(stands[stands.length - 1], "Map 2048 px, 0.40 m per pixel");
   });
 
   it("still copies GPS points when Terrain is off", () => {
