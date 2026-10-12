@@ -16,7 +16,9 @@
  * stays a building. A mobile home is a building at about 4 m.
  *
  * A surface parking lot is one 1.5 m car layer, not one box per car.
- * A truck lot is semi boxes. A marina slip is a boat. A multi-storey garage
+ * A truck lot keeps a metal semi where the aerial shows a trailer, about
+ * 16 by 2.6 m and 4.1 m tall, at 12 dB/m. Empty stalls stay empty.
+ * A marina slip is a boat. A multi-storey garage
  * or building=parking stays about 9 m and can recolor a footprint that already
  * covers it. An underground lot is left out.
  *
@@ -40,8 +42,8 @@ const {
   pitchVehicle,
   boatsOnWater,
   mobileHomesInRing,
+  semisInLot,
   finalizeVehicles,
-  semiBoxes,
   boatBoxes,
 } = require("./vehicle-track");
 const { fetchOsmMaps, ringKey, bboxSpanM, TILE_SPAN_M } = require("./osm-tiles");
@@ -1156,19 +1158,19 @@ function parseOverpass(payload, want, bbox, deckCap) {
     if (coords.length < 2) continue;
     if (bbox && !anyInBox(coords, bbox)) continue;
     railRecords.push({ tags, coords });
+    if ((on.parking || on.rvs) && isParkingWay(tags) && isClosed(coords) && isTruckLotTags(tags)) {
+      features.push({
+        kind: "truck-lot",
+        coords,
+        closed: true,
+        heightM: 0,
+        explicitHeight: false,
+        rank: 0,
+      });
+      continue;
+    }
     if (on.parking && isParkingWay(tags)) {
       if (!isClosed(coords)) continue;
-      if (isTruckLotTags(tags)) {
-        features.push({
-          kind: "truck-lot",
-          coords,
-          closed: true,
-          heightM: 0,
-          explicitHeight: false,
-          rank: 0,
-        });
-        continue;
-      }
       const h = heightFor("parking", tags);
       const structure = parkingStructure(tags);
       if (!structure && !(h.explicitHeight && h.heightM > 2)) {
@@ -1259,6 +1261,16 @@ function parseOverpass(payload, want, bbox, deckCap) {
         rank: 0,
       });
     }
+    if (on.rvs && tags.building && isClosed(coords) && !isParkingWay(tags)) {
+      features.push({
+        kind: "building-hole",
+        coords,
+        closed: true,
+        heightM: 0,
+        explicitHeight: false,
+        rank: 0,
+      });
+    }
     if (on.rvs && isMarinaTags(tags) && isClosed(coords)) {
       features.push({
         kind: "marina",
@@ -1294,7 +1306,6 @@ function parseOverpass(payload, want, bbox, deckCap) {
     }
   }
   const boxes = on.rvs ? rvBoxes(features) : [];
-  const semis = semiBoxes(features.filter((f) => f && f.kind === "truck-lot"));
   const boats = on.rvs ? boatBoxes(features) : [];
   const plain = [];
   for (let i = 0; i < features.length; i++) {
@@ -1303,7 +1314,6 @@ function parseOverpass(payload, want, bbox, deckCap) {
       kind === "rv-site" ||
       kind === "rv-pitch" ||
       kind === "rv-road" ||
-      kind === "truck-lot" ||
       kind === "mooring"
     ) {
       continue;
@@ -1313,7 +1323,7 @@ function parseOverpass(payload, want, bbox, deckCap) {
   const guides = guidewayFeatures(railRecords, bbox, deckCap);
   const bridges = bridgeFeatures(railRecords, bbox, deckCap);
   return {
-    features: plain.concat(boxes, semis, boats, guides, bridges),
+    features: plain.concat(boxes, boats, guides, bridges),
     openWater,
     places: placesFromElements(elements),
   };
@@ -1408,7 +1418,7 @@ function limitFeatures(features, bbox, deckCap) {
     else if (f.kind === "pole") poles.push(f);
     else if (f.kind === "guideway") guideways.push(f);
     else if (f.kind === "bridge") bridges.push(f);
-    else if (f.kind === "rv" || f.kind === "trailer" || f.kind === "trailer-candidate" || f.kind === "semi" || f.kind === "boat" || f.kind === "marina" || f.kind === "mobile-park") rvs.push(f);
+    else if (f.kind === "rv" || f.kind === "trailer" || f.kind === "trailer-candidate" || f.kind === "semi" || f.kind === "boat" || f.kind === "marina" || f.kind === "mobile-park" || f.kind === "truck-lot" || f.kind === "building-hole") rvs.push(f);
     else if (LINE_KINDS[f.kind]) walls.push(f);
   }
   const w = keepLargest(water, WATER_CAP);
@@ -2341,6 +2351,22 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       }
       continue;
     }
+    if (f.kind === "truck-lot") {
+      if (!vehiclePlate || !frame) continue;
+      const holes = [];
+      for (let h = 0; h < list.length; h++) {
+        if (list[h] && list[h].kind === "building-hole" && list[h].coords) holes.push(list[h].coords);
+      }
+      const found = semisInLot(f.coords, frame, vehiclePlate, holes);
+      for (let b = 0; b < found.length; b++) {
+        const ringPx = lonLatRingToPx(found[b].coords, frame);
+        const material = materialForKind("semi", found[b].heightM || 4.1, found[b].coords, slopeTop, 0);
+        if (!material || ringPx.length < 4) continue;
+        items.push({ ringPx, material, kind: "semi", thin: true });
+      }
+      continue;
+    }
+    if (f.kind === "building-hole") continue;
     if (f.kind === "marina") {
       if (!vehiclePlate || !frame) continue;
       const found = boatsOnWater(f.coords, frame, vehiclePlate);

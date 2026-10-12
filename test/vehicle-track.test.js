@@ -4,6 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   pitchClass,
+  isTruckLotTags,
   decidePitch,
   vehiclePixel,
   mergeDenseCars,
@@ -69,6 +70,12 @@ describe("vehicle track", () => {
     const few = mergeDenseCars(points.slice(0, 3));
     assert.equal(few.length, 3);
     assert.equal(few[0].merged, false);
+  });
+
+  it("treats a truck stop name as a truck lot", () => {
+    assert.equal(isTruckLotTags({ parking: "truck" }), true);
+    assert.equal(isTruckLotTags({ name: "Iowa 80 Truckstop" }), true);
+    assert.equal(isTruckLotTags({ parking: "surface", name: "Main lot" }), false);
   });
 
   it("places semi boxes on a truck lot and boats on slips", () => {

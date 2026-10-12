@@ -46,5 +46,17 @@
     "north": 33.4212,
     "fixture": "bench/fixtures/citrus-gardens.json",
     "labels": "bench/vehicle-labels/citrus-gardens.json"
+  },
+  {
+    "id": "iowa-80",
+    "name": "Iowa 80 truck stop",
+    "place": "Walcott, Iowa",
+    "kind": "truck stop",
+    "west": -90.7832965,
+    "south": 41.6153174,
+    "east": -90.7755229,
+    "north": 41.6202658,
+    "fixture": "bench/fixtures/iowa-80.json",
+    "labels": "bench/vehicle-labels/iowa-80.json"
   }
 ]
