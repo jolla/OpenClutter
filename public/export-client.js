@@ -133,7 +133,7 @@
     return { json: "", gpsOnly: false, status: status };
   }
 
-  const JSON_BUDGET_BYTES = 3800000;
+  const JSON_BUDGET_BYTES = 4900000;
   const M_TO_FT = 3.280839895;
 
   function finiteNum(value) {
@@ -161,16 +161,6 @@
     if (!(n > 0)) return "";
     if (n >= 100000) return (n / 1e6).toFixed(2) + " MB";
     return Math.max(1, Math.round(n / 1000)) + " KB";
-  }
-
-  function exportZipBytes(data) {
-    if (data && data.zipBytes > 0) return data.zipBytes | 0;
-    const b64 = data && data.zipBase64;
-    if (typeof b64 !== "string" || !b64) return 0;
-    let pad = 0;
-    if (b64.endsWith("==")) pad = 2;
-    else if (b64.endsWith("=")) pad = 1;
-    return Math.max(0, Math.floor((b64.length * 3) / 4) - pad);
   }
 
   function steepestGrade(clip) {
@@ -289,15 +279,8 @@
     }
     const jsonBytes = +stats.openIntentJsonBytes || 0;
     const budget = +stats.jsonBudget > 0 ? +stats.jsonBudget : JSON_BUDGET_BYTES;
-    const zipBytes = exportZipBytes(data);
     const budgetText = (budget / 1e6).toFixed(2) + " MB";
-    if (zipBytes > 0 && jsonBytes > 0) {
-      lines.push("Zip " + formatBytes(zipBytes) + ", OpenIntent " + formatBytes(jsonBytes) + " of " + budgetText);
-    } else if (jsonBytes > 0) {
-      lines.push("OpenIntent " + formatBytes(jsonBytes) + " of " + budgetText);
-    } else if (zipBytes > 0) {
-      lines.push("Zip " + formatBytes(zipBytes) + " of " + budgetText);
-    }
+    if (jsonBytes > 0) lines.push("OpenIntent " + formatBytes(jsonBytes) + " of " + budgetText);
     const mapLine = mapResolutionLine(data);
     if (mapLine) lines.push(mapLine);
     return lines;

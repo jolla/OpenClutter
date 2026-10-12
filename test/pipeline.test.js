@@ -1206,6 +1206,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(html, /value="high">High · 1040 px</);
     assert.match(html, /value="sharp">Sharp · 2048 px</);
     assert.match(html, /value="4k">4K · 4096 px</);
+    assert.match(html, /value="8k">8K · 8192 px</);
     assert.equal(/id="terrain-hint"/.test(html), false);
     assert.equal(/id="map-quality-hint"/.test(html), false);
     assert.equal(/4K does not return/.test(html), false);
@@ -1248,6 +1249,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /terrainStyle: terrain \? "sloped" : undefined/);
     assert.match(app, /function selectedImageryQuality/);
     assert.match(app, /getElementById\("map-quality"\)/);
+    assert.match(app, /value === "8k"/);
     assert.match(app, /return "auto";/);
     assert.match(app, /imageryQuality: devPage\(\) \? selectedImageryQuality\(\) : undefined/);
     assert.match(app, /function areaCapOverride\(\)/);
@@ -1419,15 +1421,15 @@ describe("attenuation cap keeps discrete trees", () => {
 });
 
 describe("dev area cap override", () => {
-  it("accepts 982 through 5000 and ignores anything else", () => {
+  it("accepts 982 through 8000 and ignores anything else", () => {
     assert.equal(parseAreaCapOverride(982), 982);
     assert.equal(parseAreaCapOverride(1500), 1500);
-    assert.equal(parseAreaCapOverride(5000), 5000);
+    assert.equal(parseAreaCapOverride(8000), 8000);
     assert.equal(parseAreaCapOverride("3000"), 3000);
     assert.equal(parseAreaCapOverride(" 1500 "), 1500);
     assert.equal(parseAreaCapOverride(981), 0);
-    assert.equal(parseAreaCapOverride(5001), 0);
-    assert.equal(parseAreaCapOverride(6000), 0);
+    assert.equal(parseAreaCapOverride(8001), 0);
+    assert.equal(parseAreaCapOverride(9000), 0);
     assert.equal(parseAreaCapOverride(1500.5), 0);
     assert.equal(parseAreaCapOverride("1500.5"), 0);
     assert.equal(parseAreaCapOverride("foo"), 0);
@@ -1440,7 +1442,7 @@ describe("dev area cap override", () => {
 
   it("names the active cap, and the override, in the details line", () => {
     const base = { buildingsKept: 1, fetched: 1, attenuationAreasEmitted: 1, includeFoliage: false, treesKept: 0, treesSource: "none" };
-    assert.match(coverageSummary(base), /Byte budget 3\.80 MB\. Sanity cap 5000\.$/);
+    assert.match(coverageSummary(base), /Byte budget 4\.90 MB\. Sanity cap 8000\.$/);
     const named = coverageSummary(Object.assign({}, base, {
       largeDropNotes: ["Dropped building 1200 m2: triangular outline covered open ground."],
     }));
@@ -1468,15 +1470,15 @@ describe("dev area cap override", () => {
     assert.equal(/\u2014/.test(budgeted), false);
   });
 
-  it("accepts a dev JSON budget from 3.8 MB through 5 MB", () => {
-    assert.equal(OPENINTENT_JSON_BUDGET, 3800000);
-    assert.equal(JSON_BUDGET_MAX, 5000000);
-    assert.equal(parseJsonBudgetOverride(3800000), 3800000);
-    assert.equal(parseJsonBudgetOverride(4500000), 4500000);
-    assert.equal(parseJsonBudgetOverride("4500000"), 4500000);
+  it("accepts a dev JSON budget from 4.9 MB through 5 MiB", () => {
+    assert.equal(OPENINTENT_JSON_BUDGET, 4900000);
+    assert.equal(JSON_BUDGET_MAX, 5242880);
+    assert.equal(parseJsonBudgetOverride(4900000), 4900000);
     assert.equal(parseJsonBudgetOverride(5000000), 5000000);
-    assert.equal(parseJsonBudgetOverride(3799999), 0);
-    assert.equal(parseJsonBudgetOverride(5000001), 0);
+    assert.equal(parseJsonBudgetOverride("5000000"), 5000000);
+    assert.equal(parseJsonBudgetOverride(5242880), 5242880);
+    assert.equal(parseJsonBudgetOverride(4899999), 0);
+    assert.equal(parseJsonBudgetOverride(5242881), 0);
     assert.equal(parseJsonBudgetOverride(4500000.5), 0);
     assert.equal(parseJsonBudgetOverride("4.5e6"), 0);
     assert.equal(parseJsonBudgetOverride(""), 0);

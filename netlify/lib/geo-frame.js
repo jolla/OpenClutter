@@ -139,13 +139,14 @@ function bboxLongSideM(bbox) {
 }
 
 /**
- * Auto plate. 4K-class ground resolution (0.15 m), capped at 4096 px, so a
- * small site stays under that cap and a long site is scaled to 4096 px.
- * Sharp, High, and a coarse plate follow, and run only when the finer plate
- * or its time budget misses.
+ * Auto plate. The aerial does not count toward Hamina's JSON limit, so the
+ * first request is an 8192 px plate at 0.075 m. A long site is scaled to
+ * that side, then to Esri's pixel budget. 4K, Sharp, High, and a coarse
+ * plate follow, and run only when the finer plate or its time budget misses.
  */
 function autoImageryPlan() {
   return [
+    { maxSide: 8192, metersPerPx: 0.075 },
     { maxSide: 4096, metersPerPx: 0.15 },
     { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.4 },
     { maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX_DEV },
@@ -187,6 +188,12 @@ function imageryQualityPlan(quality) {
       { maxSide: 400, metersPerPx: 2 },
     ];
   }
+  if (q === "8k" || q === "8192" || q === "max") {
+    return [
+      { maxSide: 8192, metersPerPx: 0.075 },
+      { maxSide: 4096, metersPerPx: 0.15 },
+    ];
+  }
   if (q === "4k" || q === "4096" || q === "ultra") {
     return [
       { maxSide: 4096, metersPerPx: 0.15 },
@@ -199,11 +206,11 @@ function imageryQualityPlan(quality) {
 /**
  * Export asks for an image that can finish inside the function clock.
  * Production stays at 1040 px / 1 m and ignores a quality choice.
- * Auto on the dev host starts at the 4K-class plate, scaled to the site,
- * then Sharp, High, and a coarse plate.
- * Low, Standard, High, Sharp, and 4K replace that plan on the dev host only.
- * Sharp is the 2048 px plate. 4K is 4096 px. The short path does not wait
- * for that plate; the background export does.
+ * Auto on the dev host starts at the 8192 px plate, scaled to the site,
+ * then 4K, Sharp, High, and a coarse plate.
+ * Low, Standard, High, Sharp, 4K, and 8K replace that plan on the dev host only.
+ * Sharp is the 2048 px plate. 4K is 4096 px. 8K is 8192 px. The short path
+ * does not wait for 4K or 8K; the background export does.
  */
 function imageryExportPlan(devHost, bbox, quality) {
   if (!devHost) {

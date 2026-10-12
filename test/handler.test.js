@@ -1578,7 +1578,7 @@ describe("dev-host Esri long side", () => {
 
   it("asks a short dev draw for a half-meter aerial", async () => {
     const small = { west: -115.166, south: 36.126, east: -115.161, north: 36.13, name: "Corner" };
-    const step = imageryExportPlan(true, small)[1];
+    const step = imageryExportPlan(true, small).find((item) => item.maxSide <= 2048);
     const frame = geoFrame(small, { maxSide: step.maxSide, metersPerPx: step.metersPerPx });
     const expectSide = Math.max(frame.imgW, frame.imgH);
     assert.ok(expectSide >= 600, expectSide);

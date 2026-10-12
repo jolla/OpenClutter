@@ -42,8 +42,8 @@ function areaCapOverride() {
   }
   if (raw == null || !/^\d+$/.test(raw)) return undefined;
   const n = Number(raw);
-  // Optional upper bound. Omitting it leaves the 3.8 MB byte budget and the 5000 sanity cap.
-  if (n < 982 || n > 5000) return undefined;
+  // Optional upper bound. Omitting it leaves the 4.9 MB byte budget and the 8000 sanity cap.
+  if (n < 982 || n > 8000) return undefined;
   return n;
 }
 
@@ -71,7 +71,7 @@ function jsonBudgetOverride() {
   }
   if (raw == null || !/^\d+$/.test(raw)) return undefined;
   const n = Number(raw);
-  if (n < 3800000 || n > 5000000) return undefined;
+  if (n < 4900000 || n > 5242880) return undefined;
   return n;
 }
 
@@ -95,7 +95,7 @@ function lidarEnabled() {
 function selectedImageryQuality() {
   const sel = document.getElementById("map-quality");
   const value = sel ? String(sel.value || "") : "";
-  if (value === "low" || value === "standard" || value === "high" || value === "sharp" || value === "4k") return value;
+  if (value === "low" || value === "standard" || value === "high" || value === "sharp" || value === "4k" || value === "8k") return value;
   return "auto";
 }
 
