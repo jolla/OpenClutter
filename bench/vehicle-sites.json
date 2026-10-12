@@ -34,5 +34,17 @@
     "north": 43.0592,
     "fixture": "bench/fixtures/wentworth-marina.json",
     "labels": "bench/vehicle-labels/wentworth-marina.json"
+  },
+  {
+    "id": "citrus-gardens",
+    "name": "Citrus Gardens",
+    "place": "Mesa, Arizona",
+    "kind": "mobile home park",
+    "west": -111.7465,
+    "south": 33.4178,
+    "east": -111.741,
+    "north": 33.4212,
+    "fixture": "bench/fixtures/citrus-gardens.json",
+    "labels": "bench/vehicle-labels/citrus-gardens.json"
   }
 ]

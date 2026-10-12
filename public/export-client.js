@@ -249,6 +249,7 @@
       ["Semis", stats.semiAreas],
       ["Boats", stats.boatAreas],
       ["Cars", stats.carAreas],
+      ["Mobile homes", stats.mobileHomeAreas],
       ["Parking", stats.parkingAreas],
       ["Walls and fences", stats.wallAreas],
       ["Poles", stats.poleAreas],

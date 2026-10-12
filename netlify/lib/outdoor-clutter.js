@@ -39,6 +39,7 @@ const {
   isMooringTags,
   pitchVehicle,
   boatsOnWater,
+  mobileHomesInRing,
   finalizeVehicles,
   semiBoxes,
   boatBoxes,
@@ -46,7 +47,7 @@ const {
 const { fetchOsmMaps, ringKey, bboxSpanM, TILE_SPAN_M } = require("./osm-tiles");
 const { intersectionAreaPx, ringsMinus } = require("./poly-clip");
 const { LIFT_LOCAL_M } = require("./terrain");
-const { outdoorMaterial, liftedOutdoorMaterial } = require("./materials");
+const { outdoorMaterial, liftedOutdoorMaterial, measuredOiBuildingMaterial } = require("./materials");
 const { placesFromElements } = require("./map-notes");
 
 const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
@@ -138,6 +139,7 @@ function overpassQuery(bbox, want) {
     parts.push('node["mooring"](' + box + ");");
     parts.push('way["mooring"](' + box + ");");
     parts.push('node["seamark:type"="mooring"](' + box + ");");
+    parts.push('way["residential"="mobile_home"](' + box + ");");
   }
   parts.push('way["railway"~"^(monorail|light_rail|subway|rail|tram)$"](' + box + ");");
   parts.push('way["highway"]["bridge"~"^(yes|viaduct|covered)$"](' + box + ");");
@@ -1247,6 +1249,16 @@ function parseOverpass(payload, want, bbox, deckCap) {
         rank: 0,
       });
     }
+    if (on.rvs && tags.residential === "mobile_home" && isClosed(coords)) {
+      features.push({
+        kind: "mobile-park",
+        coords,
+        closed: true,
+        heightM: 0,
+        explicitHeight: false,
+        rank: 0,
+      });
+    }
     if (on.rvs && isMarinaTags(tags) && isClosed(coords)) {
       features.push({
         kind: "marina",
@@ -1396,7 +1408,7 @@ function limitFeatures(features, bbox, deckCap) {
     else if (f.kind === "pole") poles.push(f);
     else if (f.kind === "guideway") guideways.push(f);
     else if (f.kind === "bridge") bridges.push(f);
-    else if (f.kind === "rv" || f.kind === "trailer" || f.kind === "trailer-candidate" || f.kind === "semi" || f.kind === "boat" || f.kind === "marina") rvs.push(f);
+    else if (f.kind === "rv" || f.kind === "trailer" || f.kind === "trailer-candidate" || f.kind === "semi" || f.kind === "boat" || f.kind === "marina" || f.kind === "mobile-park") rvs.push(f);
     else if (LINE_KINDS[f.kind]) walls.push(f);
   }
   const w = keepLargest(water, WATER_CAP);
@@ -2311,6 +2323,24 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       }
       continue;
     }
+    if (f.kind === "mobile-home") {
+      const ringPx = lonLatRingToPx(f.coords, frame);
+      const mat = measuredOiBuildingMaterial(f.heightM || 4);
+      if (mat && ringPx.length >= 4) items.push({ ringPx, material: mat, kind: "mobile-home", thin: false });
+      continue;
+    }
+    if (f.kind === "mobile-park") {
+      if (!vehiclePlate || !frame) continue;
+      const homes = mobileHomesInRing(f.coords, frame, vehiclePlate);
+      const mat = measuredOiBuildingMaterial(4);
+      if (!mat) continue;
+      for (let b = 0; b < homes.length; b++) {
+        const ringPx = lonLatRingToPx(homes[b].coords, frame);
+        if (!ringPx || ringPx.length < 4) continue;
+        items.push({ ringPx, material: mat, kind: "mobile-home", thin: false });
+      }
+      continue;
+    }
     if (f.kind === "marina") {
       if (!vehiclePlate || !frame) continue;
       const found = boatsOnWater(f.coords, frame, vehiclePlate);
@@ -2355,7 +2385,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
   return { items, updates, notes, reclass };
 }
 
-const BUDGET_ORDER = ["parking", "car", "water", "guideway", "bridge", "rv", "trailer", "semi", "boat", "wall", "retaining", "hedge", "fence", "footbridge", "pole"];
+const BUDGET_ORDER = ["parking", "car", "water", "guideway", "bridge", "rv", "trailer", "semi", "boat", "mobile-home", "wall", "retaining", "hedge", "fence", "footbridge", "pole"];
 
 function budgetNote(kind, keptCount, skipped) {
   const label =
