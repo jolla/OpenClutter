@@ -20,9 +20,9 @@
     }
     h1 { font-size: 16px; margin: 0 0 4px; font-weight: 650; }
     .sub { color: #8b949e; font-size: 12px; margin-bottom: 12px; }
-    form { display: flex; gap: 8px; }
+    form { display: block; }
     input[type=search] {
-      flex: 1; background: #0d1117; color: #e8eaed; border: 1px solid #30363d; border-radius: 8px;
+      background: #0d1117; color: #e8eaed; border: 1px solid #30363d; border-radius: 8px;
       padding: 8px 10px; font: inherit; width: 100%;
     }
     button {
@@ -91,7 +91,7 @@
     }
     #status-body p { margin: 1px 0 0; line-height: 1.35; font-variant-numeric: tabular-nums; }
     .build {
-      float: right; margin: 3px 0 0 12px;
+      margin: 14px 0 0;
       font-size: 10px; line-height: 1.2; font-weight: 500; color: #6e7681;
     }
     #env-badge { display: none; }
@@ -124,12 +124,10 @@
 <body>
   <div id="map"></div>
   <div class="panel">
-    <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.158</span></p>
     <h1>OpenClutter</h1>
     <div class="sub" id="panel-sub">Export a zip. Import it in Hamina for the aerial map and buildings.</div>
     <form id="search">
-      <input type="search" id="q" placeholder="Address" required />
-      <button type="submit">Go</button>
+      <input type="search" id="q" placeholder="Search address, press Enter" enterkeyhint="search" required />
     </form>
     <div class="row">
       <button type="button" id="draw" class="secondary">Draw</button>
@@ -202,6 +200,7 @@
           <option value="8k">8K · 8192 px</option>
         </select>
       </label>
+      <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.159</span></p>
     </details>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

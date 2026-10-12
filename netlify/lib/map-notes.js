@@ -155,8 +155,8 @@ function isTallKind(tags) {
 }
 
 /**
- * Planning places from one OSM payload. Pitches and the camp site are kept
- * so coverage notes can be placed. They are not one note per pitch.
+ * Planning places from one OSM payload. Pitches stay on the place list for
+ * the rest of the export. Map notes do not suggest an AP or a gateway.
  */
 function placesFromElements(elements) {
   const list = Array.isArray(elements) ? elements : [];
@@ -238,21 +238,6 @@ function featureCentroid(feature) {
   return centroid(ring);
 }
 
-function extentOf(points) {
-  let minLon = Infinity;
-  let maxLon = -Infinity;
-  let minLat = Infinity;
-  let maxLat = -Infinity;
-  for (let i = 0; i < points.length; i++) {
-    minLon = Math.min(minLon, points[i].lon);
-    maxLon = Math.max(maxLon, points[i].lon);
-    minLat = Math.min(minLat, points[i].lat);
-    maxLat = Math.max(maxLat, points[i].lat);
-  }
-  if (!Number.isFinite(minLon)) return null;
-  return { minLon, maxLon, minLat, maxLat };
-}
-
 function separatePeaks(rows, sepM, cap) {
   const ranked = rows.slice().sort((a, b) => (b.heightM || 0) - (a.heightM || 0));
   const kept = [];
@@ -328,58 +313,20 @@ function buildMapNotes(opts) {
   const placed = [];
   const offices = places.filter((p) => p.role === "office");
   const landmarks = places.filter((p) => p.role === "landmark");
-  const parking = places.filter((p) => p.role === "parking");
-  const pitches = places.filter((p) => p.role === "pitch");
 
-  if (offices.length) {
-    const gate = offices[0];
-    const label = gate.clubhouse ? "clubhouse" : gate.name || "office";
-    pushNote(out, placed, gate.lon, gate.lat, frame, "Suggested gateway, " + label, 8);
-    for (let i = 1; i < offices.length && i < 4; i++) {
-      const extra = offices[i];
-      const extraLabel = extra.clubhouse ? "Clubhouse" : extra.name || "Office";
-      pushNote(out, placed, extra.lon, extra.lat, frame, extraLabel, 12);
-    }
+  for (let i = 0; i < offices.length && i < 4; i++) {
+    const extra = offices[i];
+    const extraLabel = extra.clubhouse ? "Clubhouse" : extra.name || "Office";
+    pushNote(out, placed, extra.lon, extra.lat, frame, extraLabel, 12);
   }
 
   for (let i = 0; i < landmarks.length && out.length < 10; i++) {
     const mark = landmarks[i];
-    let text = "Suggested AP";
-    if (mark.kind === "bathhouse") text = mark.name ? "Suggested AP, " + mark.name : "Suggested AP, bathhouse";
-    else if (mark.name) text = "Suggested AP, " + mark.name;
+    let text = mark.name || "";
+    if (mark.kind === "bathhouse") text = mark.name || "Bathhouse";
+    else if (mark.kind === "hall" && !text) text = "Hall";
+    if (!text) continue;
     pushNote(out, placed, mark.lon, mark.lat, frame, text, 12);
-  }
-
-  if (parking.length) {
-    let door = parking[0];
-    for (let i = 1; i < parking.length; i++) {
-      if (parking[i].lat < door.lat) door = parking[i];
-    }
-    const midLat = (frame.south + frame.north) / 2;
-    if (door.lat <= midLat) {
-      pushNote(out, placed, door.lon, door.lat, frame, "Suggested AP, entrance parking", 20);
-    }
-  }
-
-  if (pitches.length >= 8) {
-    const box = extentOf(pitches);
-    const cellW = (box.maxLon - box.minLon) / 2;
-    const cellH = (box.maxLat - box.minLat) / 2;
-    if (cellW > 0 && cellH > 0) {
-      for (let r = 0; r < 2; r++) {
-        for (let c = 0; c < 2; c++) {
-          const c0 = box.minLon + c * cellW;
-          const r0 = box.minLat + r * cellH;
-          let n = 0;
-          for (let i = 0; i < pitches.length; i++) {
-            const p = pitches[i];
-            if (p.lon >= c0 && p.lon <= c0 + cellW && p.lat >= r0 && p.lat <= r0 + cellH) n++;
-          }
-          if (n < 4) continue;
-          pushNote(out, placed, c0 + cellW / 2, r0 + cellH / 2, frame, "Suggested AP", 45);
-        }
-      }
-    }
   }
 
   const talls = [];
@@ -478,25 +425,6 @@ function buildMapNotes(opts) {
       );
     }
   }
-
-  pushNote(
-    out,
-    placed,
-    frame.west,
-    frame.south,
-    frame,
-    "AFC GPS SW " + frame.south.toFixed(5) + ", " + frame.west.toFixed(5),
-    1
-  );
-  pushNote(
-    out,
-    placed,
-    frame.east,
-    frame.north,
-    frame,
-    "AFC GPS NE " + frame.north.toFixed(5) + ", " + frame.east.toFixed(5),
-    1
-  );
 
   return out.slice(0, 24);
 }
