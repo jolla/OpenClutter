@@ -850,14 +850,21 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
     (line) => !terrainOff || !/terrain/i.test(line)
   );
   const lines = [exportHeadline(data.stats, warnLines, includeFoliage)];
+  const detail = OpenClutterExport.exportSummaryLines(data, {
+    foliageOn: includeFoliage,
+    terrainOn: !terrainOff,
+  });
+  for (let i = 0; i < detail.length; i++) lines.push(detail[i]);
   lines.push("Import this zip in Hamina (Projects → Import → OpenIntent).");
   if (fallbackNote) lines.push(fallbackNote);
-  if (terrainNote) lines.push(terrainNote);
-  if (pasteLine) lines.push(pasteLine);
+  const coveredTerrain = detail.some((line) => line.indexOf("Terrain") === 0 || line.indexOf("Minimum ") === 0);
+  if (terrainNote && !coveredTerrain) lines.push(terrainNote);
+  if (pasteLine && !detail.some((line) => line.indexOf("Terrain pieces ") === 0)) lines.push(pasteLine);
   if (gpsNote) lines.push(gpsNote);
-  if (summary) lines.push(summary);
+  if (summary && !detail.length) lines.push(summary);
   for (let i = 0; i < warnLines.length; i++) {
     if (/^Lidar heights (used|not used)\.$/.test(warnLines[i])) continue;
+    if (/^Map (image|stepped) /.test(warnLines[i])) continue;
     lines.push(warnLines[i]);
   }
   setStatus(lines.join("\n"));
