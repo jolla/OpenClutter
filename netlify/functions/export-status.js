@@ -47,5 +47,6 @@ exports.handler = async (event) => {
     terrainClipboard: job.terrainClipboard || null,
     terrainStatus: job.terrainStatus || "",
     gpsClipboard: job.gpsClipboard || null,
+    worker: job.worker || job.heartbeatStage || null,
   });
 };

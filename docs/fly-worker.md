@@ -36,15 +36,14 @@ Fly does not allow a secret name that starts with `FLY_`. On the Fly app the sam
 
 ## Cost
 
-Prices below are Fly.io public list rates for Ashburn (`iad`) from [Fly.io resource pricing](https://fly.io/docs/about/pricing/), checked October 2026. No tax, no committed-use discount.
+Prices below are Fly.io public list rates for Ashburn (`iad`) from [Fly.io resource pricing](https://fly.io/docs/about/pricing/), checked October 2026. No tax, no committed-use discount. The public table lists `performance-1x` with 2 GB at $33.00 per month and `performance-2x` with 4 GB at $66.00 per month. It does not list `performance-4x` on its own row. That pair is $33 per performance CPU with 2 GB included, so four CPUs with 8 GB included is $132 per month if the machine is left running. Extra RAM beyond the preset is $6 per GB per month and is not added here.
 
-| Machine | If left on for 30 days |
-| --- | --- |
-| shared-cpu-1x, 256 MB | $2.19 |
-| shared-cpu-1x with RAM raised to 2 GB | $12.69 |
-| performance-1x, 2 GB | $33.00 |
+| Machine | If left on for 30 days | Per hour (720 hours) |
+| --- | --- | --- |
+| performance-1x, 2 GB | $33.00 | about $0.0458 |
+| performance-4x, 8 GB | $132.00 | about $0.183 |
 
-The 2 GB shared price is the 256 MB machine at $2.19 plus 1.75 GB of extra RAM at $6 per GB. Per hour that is $12.69 / 720 = about $0.0176. This app uses that shape: `shared-cpu-1x` and `memory = "2gb"`. A 2 GB machine is the size the Wynn export needs. `performance-1x` is not required.
+This app uses `performance-4x` and `memory = "8192mb"`. Four full cores are what the Trees pass needs. A shared CPU is not used. Fly's shared vCPU is allowed 5 ms of every 80 ms (6.25 percent) after its burst balance is gone, and a Trees pass is much longer than that burst.
 
 `auto_stop_machines = "off"` and `min_machines_running = 0`. Fly Proxy does not stop the machine. A stopped machine stays stopped. The worker process exits on its own after 5 minutes with no export running. That exit code is 0. The restart policy is `on-failure`, so a clean exit is not started again. `auto_start_machines = true` starts the machine on the next export.
 
@@ -53,10 +52,20 @@ Fly autostop is off because it stops a machine when it sees no open HTTP connect
 The export POST stays open until the job finishes. A newline every 20 seconds keeps that one connection up. Concurrency is `type = "requests"`, `soft_limit = 200`, `hard_limit = 250`. One open export is a single request, so the same machine still accepts a health check or another POST. A hard limit of 1 made Fly Proxy refuse that second request with "could not find a good candidate within 40 attempts at load balancing". The app still runs one export at a time and answers 409 when a second export arrives.
 
 - Idle compute is $0 once the process has exited and the machine has stopped. A stopped machine still pays for its root disk at $0.15 per GB per month. There is no volume. A shared IPv4 address is free. Expect well under $1 in a quiet month, mostly that stopped disk.
-- One warm Wynn export is about 115 seconds. 115 / 3600 * $0.0176 is about $0.00056.
-- A few dozen of those, 40 exports, is about $0.02 of compute.
+- One Wynn export that hits the 60 second target is 60 / 3600 * $0.183, about $0.0031.
+- A few dozen of those, 40 exports, is about $0.12 of compute.
 - Outbound data from the machine (source tiles and the blob upload) is $0.02 per GB in North America. Inbound data is free. That is cents even for a busy month, not a second machine bill.
-- A machine left on all month would be about $12.69. The 5 minute idle exit is what avoids that. Fly autostop stays off so it cannot kill a job that is still in memory.
+- A machine left on all month would be about $132. The 5 minute idle exit is what avoids that. Fly autostop stays off so it cannot kill a job that is still in memory.
+
+## Why Trees was slow
+
+Trees, the canopy trace, and the vehicle scans ran as one synchronous JavaScript thread. The code never read `os.cpus()`, so a second core did nothing, and `setInterval` could not fire a heartbeat while that thread was busy. Netlify then treated the silence as a dead worker and started the job again.
+
+The raw tile cache is not the cause. It stores the response bytes it fetched. Canopy COG reads are HTTP Range requests and skip the cache, so the height grid is the same window the Netlify path reads. Aerial keys include metres per pixel, so a cached JPEG is the same export size as a live one. The cache does not add polygons.
+
+On this 4-core machine the real Wynn golf box, with the tile cache off, finished in 75 s with 369 buildings and 881 trees. The tree work, including turning outlines into OpenIntent rings, was 37.5 s on the worker threads. Vehicle scans were 8.5 s. A one-thread trace of a synthetic canopy the same size was 4.1 s (782 groups); the tiled path was 3.5 s cold and 3.0 s warm (790 groups). Netlify's earlier baseline for this box was about 115 s with 369 buildings and 794 trees. This machine is not a Fly performance-4x host, so this is not a 60 s proof on that size. The trace waits on the workers, so the 10 second heartbeat still runs.
+
+A profile of that Trees path spends most of its time in polygon clipping of the traced crowns (`polygon-clipping`), not in a different image size. Splitting the canopy grid into row tiles and clipping each tile on its own worker is what keeps the main thread free for the 10 second heartbeat.
 
 ## Before the commands
 
@@ -76,7 +85,7 @@ fly auth login
 fly launch --ha=false --no-deploy --copy-config --yes --name openclutter-export --region iad
 ```
 
-`fly launch` creates the app and does not deploy it. `--ha=false` keeps it to one machine. If launch rewrites `fly.toml`, restore this repo's file before the deploy so the 2 GB shared machine, the concurrency limits, autostop off, and the idle exit stay as written.
+`fly launch` creates the app and does not deploy it. `--ha=false` keeps it to one machine. If launch rewrites `fly.toml`, restore this repo's file before the deploy so the performance-4x 8 GB machine, the concurrency limits, autostop off, and the idle exit stay as written.
 
 Create a secret locally. Do not commit it, and do not paste it into the repo:
 
@@ -92,11 +101,11 @@ fly secrets set \
   NETLIFY_SITE_ID='paste-the-project-id' \
   NETLIFY_AUTH_TOKEN='paste-the-personal-access-token'
 
-fly deploy --depot=false
+flyctl deploy --local-only
 fly scale count 1
 ```
 
-`fly scale count 1` is the whole pool. Fly will not create a second machine. The process exits after 5 minutes with no export, which stops the machine. The next export starts it. Fly autostop is off, so it does not stop a machine that still has a job in memory. There is no periodic health check. `GET /health` is only for a manual check. `--depot=false` builds on the machine running the deploy, not on Fly's remote builder.
+`fly scale count 1` is the whole pool. Fly will not create a second machine. The process exits after 5 minutes with no export, which stops the machine. The next export starts it. Fly autostop is off, so it does not stop a machine that still has a job in memory. There is no periodic health check. `GET /health` is only for a manual check. `flyctl deploy --local-only` builds on the machine running the deploy, not on Fly's remote builder.
 
 On Netlify, set the URL and the same secret for production and for the `dev` branch. A context that is missing either value keeps the current background export.
 
@@ -115,12 +124,12 @@ No map API key is required for the current sources. The Finland laser grid is al
 
 ## Update the live worker
 
-The app is already `openclutter-export`. From the repo root, deploy this commit so the live machine gets heartbeats, the concurrency limits (soft 200, hard 250), and the 5 minute idle exit. The machine that is already running does not have those until this deploy.
+The app is already `openclutter-export`. From the repo root, on Jerry's machine, deploy this commit so the live machine gets performance-4x with 8 GB, worker threads for Trees, heartbeats, the concurrency limits (soft 200, hard 250), and the 5 minute idle exit. Do not run this from CI.
 
 ```bash
-fly deploy --depot=false
+flyctl deploy --local-only
 ```
 
-`--depot=false` builds without Fly's remote builder. Run that from the repo root.
+`--local-only` builds on Jerry's machine. The machine that is already running does not pick up the new size or the threaded Trees path until that deploy.
 
 Until that deploy, the live worker does not write a heartbeat, still has a concurrency hard limit of 1, and Fly can still stop it for excess capacity while a job is in memory. Netlify then runs the export itself after 45 seconds of silence, or fails the job when under 2 minutes remain. After the deploy, a fresh heartbeat keeps the job on the worker, a busy machine still accepts a status check, and the process exits on its own after 5 minutes with no export.

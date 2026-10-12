@@ -2990,6 +2990,8 @@ function buildClutter({
   maxAttenuationAreas,
   areaCapOverride,
   jsonBudget,
+  foliagePack,
+  outdoorPlan,
 }) {
   const featureList = footprintsGeojson?.features || [];
   if (Array.isArray(warnings)) {
@@ -3027,23 +3029,27 @@ function buildClutter({
   const capIsOverride = areaCapOverride === true;
   const buildingCeiling =
     areaCap > MAX_ATTENUATION_AREAS ? Math.max(MAX_BUILDINGS, areaCap) : MAX_BUILDINGS;
+  if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage footprints\n");
   const fp = footprintsToClutter(featureList, frame, affine, slopeTop, { buildingCeiling });
+  if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage footprints-done\n");
   const foliageOn = includeFoliage === true;
-  const veg = foliageOn
-    ? require("./stage-clock").timeSpanSync("tree", () => treePairsFromPoints(treePoints || [], frame, fp.aabbs, affine, {
-        canopyHits,
-        heightSample,
-        chmGrid,
-        buildingRings: fp.overlayRings,
-        maskRings,
-        maskPolygons,
-        slopeTop,
-        omitFoliage: omitFoliage === true,
-        chmRequired: chmRequired === true,
-        maxPolygons: maxFoliagePolygons,
-        woodRings,
-      }))
-    : {
+  const veg = foliagePack
+    ? foliagePack
+    : foliageOn
+      ? require("./stage-clock").timeSpanSync("tree", () => treePairsFromPoints(treePoints || [], frame, fp.aabbs, affine, {
+          canopyHits,
+          heightSample,
+          chmGrid,
+          buildingRings: fp.overlayRings,
+          maskRings,
+          maskPolygons,
+          slopeTop,
+          omitFoliage: omitFoliage === true,
+          chmRequired: chmRequired === true,
+          maxPolygons: maxFoliagePolygons,
+          woodRings,
+        }))
+      : {
         oiAreas: [],
         clipZones: [],
         clipTypes: [],
@@ -3068,7 +3074,9 @@ function buildClutter({
   }
   // A poisoned or drifted vegetation material fails makeOiArea and that ring
   // is omitted, so it cannot empty the buildings.
-  const treeOi = treesToOi(veg.oiAreas, frame.imgW, frame.imgH, frame.mpuX);
+  const treeOi = foliagePack && foliagePack.treeOi
+    ? foliagePack.treeOi
+    : treesToOi(veg.oiAreas, frame.imgW, frame.imgH, frame.mpuX);
   const deckCap = raisedDeckCap(areaCap);
   let waterAreas = 0;
   let parkingAreas = 0;
@@ -3108,7 +3116,13 @@ function buildClutter({
   let planned = null;
   let converted = null;
   const planGuides = guides.length > 0 || bridges.length > 0;
-  if ((outdoorOn && outdoorMiss !== true) || planGuides || storageFeats.length) {
+  if (outdoorPlan && outdoorPlan.converted) {
+    planned = outdoorPlan.planned;
+    converted = outdoorPlan.converted;
+  } else if (outdoorPlan) {
+    planned = outdoorPlan;
+    converted = outdoorToOi(planned.items, frame.imgW, frame.imgH, frame.mpuX);
+  } else if ((outdoorOn && outdoorMiss !== true) || planGuides || storageFeats.length) {
     const buildings = [];
     if ((includeWater === true || includeParking === true || includeRvs === true) && outdoorOn && outdoorMiss !== true) {
       for (let i = 0; i < fp.oiAreas.length; i++) {
@@ -3143,6 +3157,7 @@ function buildClutter({
     });
     converted = outdoorToOi(planned.items, frame.imgW, frame.imgH, frame.mpuX);
   }
+  if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage outdoor-done\n");
   // Water, the rail, and road decks are held before crowns fill the 982
   // cap. Poles and walls are not, so they drop before a tree does. The
   // rail stays ahead of a road deck, and both stay ahead of light poles.
@@ -3597,6 +3612,8 @@ module.exports = {
   expandOiCoordTriples,
   emitPixelVertex,
   fitChunksToJsonBudget,
+  treesToOi,
+  outdoorToOi,
   emitIfValid,
   capAttenuationAreas,
   capBuildingsAndTrees,
