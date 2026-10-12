@@ -148,6 +148,11 @@ function reportProgress(patch) {
   ctx.tail = (ctx.tail || Promise.resolve()).then(run, run);
 }
 
+async function flushProgress() {
+  const ctx = exportAls.getStore();
+  if (ctx && ctx.tail) await ctx.tail;
+}
+
 async function runBackgroundExport(event, onProgress) {
   const ctx = { background: true, onProgress, tail: Promise.resolve() };
   const result = await exportAls.run(ctx, () => handleClutter(event));
@@ -1810,6 +1815,11 @@ async function handleClutter(event) {
         if (warnings.indexOf(forestNotes[i]) < 0) warnings.push(forestNotes[i]);
       }
     }
+  }
+
+  if (includeFoliage && !chmTimedOut) {
+    reportProgress({ stage: "Trees" });
+    await flushProgress();
   }
 
   if (includeFoliage && !chmTimedOut && decoded && frame) {

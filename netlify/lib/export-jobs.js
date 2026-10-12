@@ -7,6 +7,8 @@
  * Blobs have no server-side TTL, so the hour is checked on read.
  */
 
+const { markStage } = require("./export-progress");
+
 const STORE_NAME = "openclutter-exports";
 const TTL_MS = 60 * 60 * 1000;
 // Netlify rejects a function response above 6,291,556 bytes. The zip is
@@ -64,9 +66,17 @@ async function openStore() {
   return getStore({ name: STORE_NAME });
 }
 
+function withStageMark(job, stage) {
+  const mark = markStage(stage);
+  job.stageLabel = mark.label;
+  job.progress = mark.progress;
+  job.progressCeiling = mark.ceiling;
+  return job;
+}
+
 function freshJob(id) {
   const now = Date.now();
-  return {
+  const job = {
     id,
     state: "queued",
     stage: "Fetching aerial",
@@ -83,6 +93,7 @@ function freshJob(id) {
     expiresAt: now + TTL_MS,
     updatedAt: now,
   };
+  return withStageMark(job, job.stage);
 }
 
 async function createJob(id) {
@@ -111,6 +122,7 @@ async function updateJob(id, patch) {
   const stages = Array.isArray(cur.stages) ? cur.stages.slice() : [];
   if (patch && patch.stage && stages[stages.length - 1] !== patch.stage) stages.push(patch.stage);
   const next = Object.assign({}, cur, patch || {}, { stages, updatedAt: Date.now() });
+  if (patch && patch.stage) withStageMark(next, patch.stage);
   await store.setJSON(jobKey(id), next);
   return next;
 }
