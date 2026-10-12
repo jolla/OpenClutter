@@ -24,6 +24,7 @@ const { execFileSync } = require("child_process");
 const jpeg = require("jpeg-js");
 const { esriContentExtent, geoFrame, imagePxToLl, pxToLl } = require("../netlify/lib/geo-frame");
 const { fetchChmGrid } = require("../netlify/lib/canopy-height");
+const { canopyRaster, fetchUsgsLidar, rankProjects } = require("../netlify/lib/usgs-lidar");
 const { fetchWorldCoverTrees, TREE } = require("../netlify/lib/worldcover");
 const { isTrunkOiName, isUnderstoryOiName, isVegetationOiName, standUnderstoryM } = require("../netlify/lib/materials");
 const { coniferPixel, openGroundPixel, localStd } = require("../netlify/lib/surface-mask");
@@ -306,6 +307,20 @@ async function scoreSite(site, zipPath) {
   const bld = rasterRings(buildings, raw.width, raw.height, step);
   console.log(site.id, "fetch chm", frame.west.toFixed(5), frame.south.toFixed(5), frame.east.toFixed(5), frame.north.toFixed(5));
   const chm = await fetchChmGrid(frame, { signal: AbortSignal.timeout(180000) });
+  let refGrid = chm;
+  let refSource = "chm";
+  try {
+    const lidar = await lidarReference(frame);
+    if (lidar) {
+      refGrid = lidar.raster;
+      refSource = "lidar";
+      console.log(site.id, "lidar", lidar.project, "cells", lidar.raster.nonzero, "spacing", lidar.spacingM);
+    } else {
+      console.log(site.id, "lidar skip");
+    }
+  } catch (e) {
+    console.log(site.id, "lidar", e && e.message);
+  }
   let cover = null;
   try {
     cover = await fetchWorldCoverTrees(frame, { signal: AbortSignal.timeout(60000) });
@@ -340,9 +355,9 @@ async function scoreSite(site, zipPath) {
       if (bld.mask[i]) continue;
       const xx = Math.min(raw.width - 1, x * step + (step >> 1));
       const [lon, lat] = imagePxToLl(xx, yy, frame);
-      const hv = chmAt(chm, lon, lat);
+      const hv = chmAt(refGrid, lon, lat);
       const wc = cover ? cover.sample(lon, lat) === TREE : false;
-      const isRef = hv >= 3 || (hv < 1 && wc);
+      const isRef = refSource === "lidar" ? hv >= 3 : hv >= 3 || (hv < 1 && wc);
       const isPred = fol.mask[i] === 1;
       const pix = (yy * raw.width + xx) * 4;
       const green = aerialGreen(raw.data[pix], raw.data[pix + 1], raw.data[pix + 2]);
@@ -384,7 +399,7 @@ async function scoreSite(site, zipPath) {
   const errs = [];
   for (const row of shape.heights) {
     const [lon, lat] = pxToLl(row.x, row.y, frame);
-    const hv = chmAt(chm, lon, lat);
+    const hv = chmAt(refGrid, lon, lat);
     if (hv >= 2) errs.push(Math.abs(row.thick - hv));
   }
   const gapErrs = shape.gapErrs.slice().sort((a, b) => a - b);
@@ -413,6 +428,8 @@ async function scoreSite(site, zipPath) {
     foliage: foliage.length,
     buildings: buildings.length,
     chmNonzero: chm && chm.nonzero,
+    refSource,
+    lidarCells: refSource === "lidar" ? refGrid.nonzero : 0,
     recall,
     precision,
     chmPrecision,
@@ -572,6 +589,19 @@ async function exportSite(site) {
   return zipPath;
 }
 
+async function lidarReference(frame) {
+  const ranked = rankProjects(frame).slice(0, 4);
+  for (let i = 0; i < ranked.length; i++) {
+    const lidar = await fetchUsgsLidar(frame, { maxMs: 45000, index: [ranked[i]] });
+    const kept = lidar && lidar.grid ? lidar.grid.kept : 0;
+    const raster = lidar && !lidar.skipped && kept > 500 ? canopyRaster(lidar.grid) : null;
+    if (raster && raster.nonzero >= 40) {
+      return { raster, project: lidar.project, spacingM: lidar.spacingM };
+    }
+  }
+  return null;
+}
+
 function previewStats(site, zipPath) {
   const terrainPath = path.join(OUT, site.id + ".terrain.json");
   if (!fs.existsSync(terrainPath)) return null;
@@ -634,6 +664,8 @@ function writeBoard() {
     "floating",
     "slabs",
     "largestCrownM2",
+    "refSource",
+    "lidarCells",
     "refPx",
     "predPx",
     "foliage",
@@ -648,12 +680,12 @@ function writeBoard() {
   const lines = [
     "# Canopy scoreboard",
     "",
-    "Recall uses the Meta/WRI canopy height grid. A cell of at least 3 m is canopy. Where that grid measured no height, ESA WorldCover tree cover is also canopy. Roof pixels are ignored. Precision samples every emitted canopy cell on that same grid. The cell counts only when the height model is at least 3 m and the aerial is not an open lawn, mown field, RV pitch, or road. A green aerial pixel is not a hit. A site passes at 85% recall and 85% precision. Green on the overlay is emitted canopy that passes that test. Red is reference canopy still missing. Yellow is emitted canopy that fails it.",
+    "Where USGS 3DEP covers the draw, recall uses lidar: first returns minus ground, and a cell of at least 3 m is canopy. Elsewhere recall uses the Meta/WRI canopy height grid the same way, plus ESA WorldCover tree cover where that grid measured no height. Roof pixels are ignored. Precision samples every emitted canopy cell. The cell counts only when that reference is at least 3 m and the aerial is not an open lawn, mown field, RV pitch, or road. A green aerial pixel is not a hit. A site passes at 85% recall and 85% precision. Green on the overlay is emitted canopy that passes that test. Red is reference canopy still missing. Yellow is emitted canopy that fails it.",
     "",
-    "CHM ≥ 3 m is the height-model share alone, before the aerial open-ground rejection. Open ground is the share of emitted canopy the aerial reads as lawn or field, pitch, or road. Height error is metres between the canopy top above local ground and the canopy-height sample at that stack. A crown seated on a trunk or understory uses the full stack. Gap is the ground-to-crown distance versus the intended gap (about 3 m, or 30–40% of height on a tall conifer) for stands of at least 800 m². Floating is a preview piece whose base is more than 3 m above the terrain and is not sitting on another canopy piece. A slab is one crown of at least 8,000 m², or a connected sheet of crowns whose tops stay within 2 m and whose area is at least 12,000 m².",
+    "Height ≥ 3 m is the reference share alone, before the aerial open-ground rejection. Open ground is the share of emitted canopy the aerial reads as lawn or field, pitch, or road. Height error is metres between the canopy top above local ground and the canopy-height sample at that stack. A crown seated on a trunk or understory uses the full stack. Gap is the ground-to-crown distance versus the intended gap (about 3 m, or 30–40% of height on a tall conifer) for stands of at least 800 m². Floating is a preview piece whose base is more than 3 m above the terrain and is not sitting on another canopy piece. A slab is one crown of at least 8,000 m², or a connected sheet of crowns whose tops stay within 2 m and whose area is at least 12,000 m². Where USGS 3DEP covers the draw, recall, precision, and height error use first returns minus ground. A cell counts at 3 m. A site outside that coverage keeps the canopy-height model.",
     "",
-    "| Site | Recall | Precision | CHM ≥ 3 m | Open ground | Height MAE | Gap MAE | Floating | Slabs | Pass |",
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+    "| Site | Recall | Precision | Height ≥ 3 m | Open ground | Height MAE | Gap MAE | Floating | Slabs | Ref | Pass |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
   ];
   for (const r of rows) {
     const pass = r.recall != null && r.precision != null && r.recall >= 85 && r.precision >= 85;
@@ -676,6 +708,8 @@ function writeBoard() {
         (r.floating == null ? "—" : String(r.floating)) +
         " | " +
         (r.slabs == null ? "—" : String(r.slabs)) +
+        " | " +
+        (r.refSource || "chm") +
         " | " +
         (pass ? "yes" : "no") +
         " |"
@@ -704,4 +738,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { plateScale, shapeOfAreas };
+module.exports = { plateScale, shapeOfAreas, writeBoard };
