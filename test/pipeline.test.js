@@ -1180,7 +1180,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.equal(/The zip was not ready/.test(app), false);
     assert.match(app, /function setCopyNote/);
     assert.match(app, /function clearCopyNote/);
-    assert.match(app, /function setStatus\(msg, err\) \{\n  clearCopyNote\(\);/);
+    assert.match(app, /function setStatus\(msg, err\) \{\n  hideExportProgress\(\);\n  clearCopyNote\(\);/);
     assert.match(html, /id="copy-note"[^>]*hidden/);
     const copyHandler = app.split("copyTerrainBtn.onclick")[1].split("function exportError")[0];
     assert.match(copyHandler, /setCopyNote\(/);
