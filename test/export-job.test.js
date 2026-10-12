@@ -54,6 +54,45 @@ describe("export jobs", { concurrency: 1 }, () => {
     setEnvironmentContext({ siteID: "", token: "" });
   });
 
+  it("a late heartbeat after done leaves state done", async () => {
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    const id = "77777777-7777-4777-8777-777777777777";
+    await jobs.createJob(id);
+    await jobs.updateJob(id, { state: "running", stage: "Packing zip" });
+    await jobs.updateJob(id, {
+      state: "done",
+      stage: "Zip ready",
+      error: null,
+      zipFilename: "wynn-openintent.zip",
+      zipBytes: 1200,
+    });
+    const before = await jobs.readJob(id);
+    const returned = await jobs.writeHeartbeat(id, "Packing zip");
+    assert.equal(returned.state, "done");
+    assert.equal(returned.zipFilename, "wynn-openintent.zip");
+    assert.equal(returned.error, null);
+    const after = await jobs.readJob(id);
+    assert.equal(after.state, "done");
+    assert.equal(after.error, null);
+    assert.equal(after.zipFilename, "wynn-openintent.zip");
+    assert.equal(after.zipBytes, 1200);
+    assert.equal(after.heartbeatAt, before.heartbeatAt);
+    await jobs.updateJob(id, {
+      state: "queued",
+      stage: "Fetching aerial",
+      error: "The export worker stopped.",
+      zipFilename: null,
+      zipBytes: 0,
+    });
+    const again = await jobs.readJob(id);
+    assert.equal(again.state, "done");
+    assert.equal(again.error, null);
+    assert.equal(again.zipFilename, "wynn-openintent.zip");
+    assert.equal(again.zipBytes, 1200);
+    assert.equal(again.stage, "Zip ready");
+  });
+
   it("keeps stages and drops a job after an hour", async () => {
     const store = memoryStore();
     jobs.setExportStoreForTests(store);

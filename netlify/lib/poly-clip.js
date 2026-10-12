@@ -764,6 +764,7 @@ function dissolveFoliageRings(areas, clipSet) {
       material: item.area.material,
       kind: item.area.kind || "canopy",
       shape: touched ? "polygon" : item.area.shape || "polygon",
+      context: !!(item.area && item.area.context),
     });
   };
   for (const item of ranked) {
@@ -831,6 +832,7 @@ function dissolveFoliageRings(areas, clipSet) {
     material: k.material,
     kind: k.kind,
     shape: k.shape,
+    context: k.context === true,
   }));
 }
 

@@ -2,18 +2,25 @@
 
 /**
  * Run canopy tracing, foliage clipping, and vehicle scans on the CPU
- * pool. The grid is split into several row tiles per worker so one
- * latitude band cannot own the stage. The main thread waits, so the
+ * pool. Canopy and foliage are many small tiles on a pull queue: a
+ * free thread takes the next tile. The main thread waits, so the
  * export heartbeat keeps firing.
  *
- * A tile edge can split one connected crown into the pieces on each
- * side of that edge. Rings are still the traced canopy cells. Nothing
- * is invented. The export cap is applied once to the combined list.
+ * Each canopy tile owns a row band and also reads an overlap past that
+ * band. A crown that crosses the band is traced whole by the tile that
+ * owns its top row. A crown taller than the overlap is traced from the
+ * full grid instead of being cut. Rings are still the traced canopy
+ * cells. Nothing is invented. The export cap is applied once to the
+ * combined list.
+ *
+ * Foliage tiles own a band of those crowns and include the neighboring
+ * crowns inside the same overlap, so a shared edge is clipped once and
+ * only the owner emits the piece.
  */
 
-const { threadCount, runOne, runTiles } = require("./cpu-pool");
+const { threadCount, runOne, runQueue } = require("./cpu-pool");
 const { polygonsFromCrowns, treePairsFromPoints } = require("./vegetation");
-const { selectCrownsForExport } = require("./canopy-height");
+const { selectCrownsForExport, CROWN_CAP } = require("./canopy-height");
 const { coverClasses } = require("./canopy-fill");
 const { materialForVegetation } = require("./materials");
 const { llToPx, pxToLl } = require("./geo-frame");
@@ -32,62 +39,41 @@ function valuesOf(grid) {
   return grid.values;
 }
 
-const BAND_MIN_ROWS = 24;
+const TILE_MIN = 16;
+const TILE_MAX = 32;
+/** Metres of canopy past a tile edge. A crown inside this stays one outline. */
+const OVERLAP_M = 48;
 
-function canopyRowMass(grid) {
-  const src = valuesOf(grid);
-  const w = grid.width | 0;
-  const h = grid.height | 0;
-  const rows = new Uint32Array(h);
-  if (!src) return rows;
-  for (let y = 0; y < h; y++) {
-    let n = 0;
-    const row = y * w;
-    for (let x = 0; x < w; x++) if ((src[row + x] || 0) >= 3) n++;
-    rows[y] = n;
-  }
-  return rows;
-}
-
-function massBetween(rows, y0, y1) {
-  let n = 0;
-  for (let y = y0; y < y1; y++) n += rows[y];
-  return n;
+function overlapRowsFor(grid) {
+  const h = grid && grid.height ? grid.height | 0 : 0;
+  if (h < 2) return 0;
+  const mPerY = (Math.abs(+grid.north - +grid.south) * 110540) / h;
+  if (!(mPerY > 0)) return 8;
+  return Math.max(4, Math.min(64, Math.round(OVERLAP_M / mPerY)));
 }
 
 /**
- * One band per CPU, then split a band that holds most of the canopy.
- * A short band is left whole so a crown is not cut into scraps.
- * The cap is four bands per CPU.
+ * 16 to 32 row tiles on a tall grid, fewer only when the grid is short.
+ * The count does not stop at one band per CPU. Threads pull from this list.
  */
 function bandsForGrid(grid, threads) {
   const h = grid && grid.height ? grid.height | 0 : 0;
+  const overlap = overlapRowsFor(grid);
+  if (h <= 1) return [{ y0: 0, y1: Math.max(h, 0), overlap: 0 }];
   const cores = Math.max(1, threads | 0);
-  if (h <= 1) return [{ y0: 0, y1: Math.max(h, 0) }];
-  let bands = splitRows(h, Math.min(cores, h));
-  const rows = canopyRowMass(grid);
-  let total = 0;
-  for (let i = 0; i < rows.length; i++) total += rows[i];
-  const cap = Math.min(h, cores * 4);
-  if (!(total > 0)) return bands;
-  for (let guard = 0; guard < cap && bands.length < cap; guard++) {
-    let heavy = 0;
-    let heavyMass = 0;
-    for (let i = 0; i < bands.length; i++) {
-      const mass = massBetween(rows, bands[i].y0, bands[i].y1);
-      if (mass > heavyMass) {
-        heavyMass = mass;
-        heavy = i;
-      }
-    }
-    const band = bands[heavy];
-    const rowsIn = band.y1 - band.y0;
-    if (heavyMass <= total * 0.45 || rowsIn < BAND_MIN_ROWS * 2) break;
-    const mid = band.y0 + (rowsIn >> 1);
-    if (mid <= band.y0 || mid >= band.y1) break;
-    bands.splice(heavy, 1, { y0: band.y0, y1: mid }, { y0: mid, y1: band.y1 });
-  }
-  return bands;
+  let n = Math.min(TILE_MAX, Math.max(TILE_MIN, cores * 6));
+  if (h < n * 6) n = Math.max(1, Math.floor(h / 6));
+  n = Math.max(1, Math.min(n, h));
+  return splitRows(h, n).map((band) => ({ y0: band.y0, y1: band.y1, overlap }));
+}
+
+function tileCountFor(itemCount, threads) {
+  const nItems = itemCount | 0;
+  if (nItems <= 1) return Math.max(nItems, 0);
+  const cores = Math.max(1, threads | 0);
+  let n = Math.min(TILE_MAX, Math.max(TILE_MIN, cores * 6));
+  if (nItems < n) n = nItems;
+  return n;
 }
 
 function splitRows(total, count) {
@@ -112,31 +98,6 @@ function splitList(list, count) {
   const groups = [];
   for (let i = 0; i < items.length; i += size) groups.push(items.slice(i, i + size));
   return groups;
-}
-
-function sliceGrid(grid, y0, y1) {
-  const src = valuesOf(grid);
-  const w = grid.width | 0;
-  const fullH = grid.height | 0;
-  const h = y1 - y0;
-  const values = new Uint8Array(w * h);
-  if (src) {
-    for (let y = 0; y < h; y++) {
-      const row = (y0 + y) * w;
-      for (let x = 0; x < w; x++) values[y * w + x] = src[row + x] || 0;
-    }
-  }
-  const span = +grid.north - +grid.south;
-  return {
-    west: +grid.west,
-    east: +grid.east,
-    north: +grid.north - (y0 / fullH) * span,
-    south: +grid.north - (y1 / fullH) * span,
-    width: w,
-    height: h,
-    values,
-    nonzero: 1,
-  };
 }
 
 function plainData(value) {
@@ -223,19 +184,6 @@ function centroidY(poly) {
   return n ? y / n : 0;
 }
 
-function tilePolygons(polygons, n) {
-  const scored = (polygons || []).map((poly) => ({ poly, y: centroidY(poly) }));
-  scored.sort((a, b) => a.y - b.y);
-  const groups = [];
-  const size = Math.max(1, Math.ceil(scored.length / Math.max(1, n)));
-  for (let i = 0; i < scored.length; i += size) {
-    const group = [];
-    for (let k = i; k < i + size && k < scored.length; k++) group.push(scored[k].poly);
-    if (group.length) groups.push(group);
-  }
-  return groups;
-}
-
 function mergeFoliage(parts, meta) {
   const oiAreas = [];
   const clipZones = [];
@@ -309,6 +257,61 @@ async function fillInWorker(grid, opts) {
   });
 }
 
+function shareValues(grid) {
+  const src = valuesOf(grid);
+  const w = grid.width | 0;
+  const h = grid.height | 0;
+  const shared = new SharedArrayBuffer(w * h);
+  const dest = new Uint8Array(shared);
+  if (src) {
+    const n = Math.min(dest.length, src.length);
+    for (let i = 0; i < n; i++) dest[i] = src[i] || 0;
+  }
+  return shared;
+}
+
+function foliageGroups(polygons, threads, frame) {
+  const list = polygons || [];
+  const n = tileCountFor(list.length, threads);
+  if (n <= 1) return list.length ? [list] : [];
+  const scored = [];
+  for (let i = 0; i < list.length; i++) {
+    scored.push({ poly: list[i], index: i, y: centroidY(list[i]) });
+  }
+  scored.sort((a, b) => a.y - b.y || a.index - b.index);
+  const size = Math.ceil(scored.length / n);
+  const bands = [];
+  for (let i = 0; i < scored.length; i += size) {
+    const slice = scored.slice(i, Math.min(scored.length, i + size));
+    const ids = new Set();
+    for (let k = 0; k < slice.length; k++) ids.add(slice[k].index);
+    bands.push({
+      ids,
+      y0: slice[0].y,
+      y1: slice[slice.length - 1].y,
+      owned: slice,
+    });
+  }
+  const mpu = frame && frame.mpuX > 0 ? frame.mpuX : 1;
+  const overlapPx = OVERLAP_M / mpu;
+  const groups = [];
+  for (let b = 0; b < bands.length; b++) {
+    const band = bands[b];
+    const polys = [];
+    for (let k = 0; k < band.owned.length; k++) polys.push(band.owned[k].poly);
+    const y0 = band.y0 - overlapPx;
+    const y1 = band.y1 + overlapPx;
+    for (let s = 0; s < scored.length; s++) {
+      const item = scored[s];
+      if (band.ids.has(item.index)) continue;
+      if (item.y < y0 || item.y > y1) continue;
+      polys.push(Object.assign({}, item.poly, { context: true }));
+    }
+    if (polys.length) groups.push(polys);
+  }
+  return groups;
+}
+
 async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts) {
   const grid = opts && opts.chmGrid;
   const threads = threadCount();
@@ -323,25 +326,44 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
       chmGrid: grid ? copyGrid(grid) : null,
     });
   }
+  const masked = await runOne("canopy-mask", {
+    grid: copyGrid(grid),
+    frame,
+    buildingRings: (opts && opts.buildingRings) || [],
+    maskRings: (opts && opts.maskRings) || [],
+    maskPolygons: (opts && opts.maskPolygons) || [],
+    hits: (opts && opts.canopyHits) || [],
+  });
   const bands = bandsForGrid(grid, threads);
   const tilePayloads = [];
-  for (let i = 0; i < bands.length; i++) {
-    tilePayloads.push({
-      tileId: "canopy-" + i,
-      grid: sliceGrid(grid, bands[i].y0, bands[i].y1),
-      frame,
-      buildingRings: opts.buildingRings || [],
-      maskRings: opts.maskRings || [],
-      maskPolygons: opts.maskPolygons || [],
-      hits: opts.canopyHits || [],
-    });
+  if (masked && masked.values && masked.nonzero > 0 && masked.width > 1) {
+    const bytes = Buffer.isBuffer(masked.values) ? masked.values : Buffer.from(masked.values);
+    const shared = new SharedArrayBuffer(bytes.length);
+    new Uint8Array(shared).set(bytes);
+    for (let i = 0; i < bands.length; i++) {
+      tilePayloads.push({
+        tileId: "canopy-" + i,
+        buffer: shared,
+        west: +masked.west,
+        south: +masked.south,
+        east: +masked.east,
+        north: +masked.north,
+        width: masked.width | 0,
+        height: masked.height | 0,
+        nonzero: masked.nonzero | 0,
+        seedY0: bands[i].y0,
+        seedY1: bands[i].y1,
+        overlap: bands[i].overlap,
+      });
+    }
   }
-  const traced = await runTiles("canopy-tile", tilePayloads);
+  const traced = tilePayloads.length ? await runQueue("canopy-tile", tilePayloads) : [];
   let crowns = [];
   for (let i = 0; i < traced.length; i++) {
     const part = traced[i] && traced[i].crowns;
     if (part && part.length) crowns = crowns.concat(part);
   }
+  if (crowns.length > CROWN_CAP) crowns = selectCrownsForExport(crowns, CROWN_CAP);
   const max = opts.maxPolygons > 0 ? opts.maxPolygons | 0 : 720;
   const before = crowns.length;
   if (crowns.length > max) crowns = selectCrownsForExport(crowns, max);
@@ -360,13 +382,14 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
       foliageGeometry: meta.foliageGeometry,
     }));
   }
-  const groups = tilePolygons(polygons, threads);
+  const groups = foliageGroups(polygons, threads, frame);
   const terrain = plainData(opts.terrain);
-  const chmGrid = copyGrid(grid);
-  const assembled = await runTiles(
+  const chmShared = shareValues(grid);
+  const foliageBase = tilePayloads.length;
+  const assembled = await runQueue(
     "foliage-assemble",
     groups.map((group, i) => ({
-      tileId: "foliage-" + i,
+      tileId: "canopy-" + (foliageBase + i),
       polygons: group,
       frame,
       affine,
@@ -375,7 +398,14 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
       maskPolygons: opts.maskPolygons || [],
       buildingBufferM: opts.buildingBufferM,
       terrain,
-      chmGrid,
+      chmBuffer: chmShared,
+      west: +grid.west,
+      south: +grid.south,
+      east: +grid.east,
+      north: +grid.north,
+      width: grid.width | 0,
+      height: grid.height | 0,
+      nonzero: grid.nonzero | 0,
     }))
   );
   const merged = mergeFoliage(assembled, meta);
@@ -493,7 +523,7 @@ async function scanVehicles(features, frame, buildings, imgBuf) {
       height: shared.height,
     });
   }
-  const results = jobs.length ? await runTiles("vehicle-job", jobs) : [];
+  const results = jobs.length ? await runQueue("vehicle-job", jobs) : [];
   for (let i = 0; i < jobs.length; i++) {
     const job = jobs[i];
     const value = results[i] && results[i].value;
@@ -579,6 +609,10 @@ async function outdoorParallel(args) {
 
 module.exports = {
   threadCount,
+  TILE_MIN,
+  TILE_MAX,
+  OVERLAP_M,
+  overlapRowsFor,
   bandsForGrid,
   fillInWorker,
   treePairsParallel,

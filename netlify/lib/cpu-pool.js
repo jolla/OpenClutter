@@ -154,7 +154,7 @@ function runInline(task, payload) {
   return require("./cpu-tasks").runTask(task, payload);
 }
 
-function runOne(task, payload, hooks) {
+function runOn(workerIndex, task, payload, hooks) {
   const pool = ensurePool();
   const onTime = hooks && hooks.onTime;
   if (!pool) {
@@ -166,7 +166,7 @@ function runOne(task, payload, hooks) {
     });
   }
   const id = seq++;
-  const worker = pool[(id - 1) % pool.length];
+  const worker = pool[Math.abs(workerIndex | 0) % pool.length];
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject, onTime });
     try {
@@ -178,21 +178,41 @@ function runOne(task, payload, hooks) {
   });
 }
 
-async function runTiles(task, payloads) {
+function runOne(task, payload, hooks) {
+  return runOn(seq, task, payload, hooks);
+}
+
+/**
+ * Threads pull the next payload when they finish. One task is in flight
+ * per thread, so a short tile does not sit behind a long one on the same
+ * worker. The main thread only waits, and the 10 second heartbeat still fires.
+ */
+async function runQueue(task, payloads) {
   const list = payloads || [];
-  if (!list.length) return [];
   const out = new Array(list.length);
-  await Promise.all(
-    list.map(async (payload, i) => {
+  if (!list.length) return out;
+  const pool = ensurePool();
+  let cursor = 0;
+  const pull = async (workerIndex) => {
+    for (;;) {
+      const i = cursor++;
+      if (i >= list.length) return;
+      const payload = list[i];
       const tileId = payload && payload.tileId != null ? payload.tileId : task + "-" + i;
-      out[i] = await runOne(task, payload, {
+      out[i] = await runOn(workerIndex, task, payload, {
         onTime(info) {
           noteTile(tileId, info);
         },
       });
-    })
-  );
+    }
+  };
+  const n = pool ? Math.min(pool.length, list.length) : 1;
+  await Promise.all(Array.from({ length: n }, (_, workerIndex) => pull(workerIndex)));
   return out;
+}
+
+async function runTiles(task, payloads) {
+  return runQueue(task, payloads);
 }
 
 function poolSize() {
@@ -215,6 +235,7 @@ module.exports = {
   workerFile,
   runOne,
   runTiles,
+  runQueue,
   poolSize,
   closePool,
 };

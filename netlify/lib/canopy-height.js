@@ -1047,26 +1047,55 @@ function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH, medianTop
  * tree line. Height is the measured top inside that outline.
  * @returns {{ringLonLat:number[][], heightM:number, peakLon:number, peakLat:number, areaM2:number}[]}
  */
-function crownsFromChm(grid) {
+function componentTouchesClip(pixels, clipY0, clipY1, gridH) {
+  const northCut = clipY0 > 0;
+  const southCut = clipY1 < gridH;
+  if (!northCut && !southCut) return false;
+  for (let i = 0; i < pixels.length; i++) {
+    const y = pixels[i][1];
+    if (northCut && y === clipY0) return true;
+    if (southCut && y === clipY1 - 1) return true;
+  }
+  return false;
+}
+
+function crownsFromChm(grid, opts) {
   const values = gridValues(grid);
   if (!values) return [];
   const w = grid.width | 0;
   const h = grid.height | 0;
   const { mPerX, mPerY } = gridMeters(grid);
   if (!(mPerX >= 0.5) || !(mPerY >= 0.5) || mPerX > 30 || mPerY > 30) return [];
+  const opt = opts || {};
+  const seedY0 = opt.seedY0 > 0 ? Math.min(h, opt.seedY0 | 0) : 0;
+  const seedY1 = opt.seedY1 > 0 ? Math.min(h, opt.seedY1 | 0) : h;
+  const halo = opt.halo > 0 ? opt.halo | 0 : 0;
+  const clipY0 = halo ? Math.max(0, seedY0 - halo) : 0;
+  const clipY1 = halo ? Math.min(h, seedY1 + halo) : h;
   const at = (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? 0 : values[y * w + x] || 0);
   const seen = new Uint8Array(w * h);
   const crowns = [];
-  for (let y = 0; y < h; y++) {
+  const acceptRows = (y0, y1) => (px, py) => {
+    if (py < y0 || py >= y1) return false;
+    const id = py * w + px;
+    return !seen[id] && at(px, py) >= CROWN_MIN_H;
+  };
+  for (let y = seedY0; y < seedY1; y++) {
     for (let x = 0; x < w; x++) {
       const idx = y * w + x;
       if (seen[idx] || at(x, y) < CROWN_MIN_H) continue;
-      const pixels = flood(w, h, x, y, (px, py) => {
-        const id = py * w + px;
-        return !seen[id] && at(px, py) >= CROWN_MIN_H;
-      });
+      let pixels = null;
+      const clipped = halo > 0 && (clipY0 > 0 || clipY1 < h);
+      if (clipped) {
+        pixels = flood(w, h, x, y, acceptRows(clipY0, clipY1));
+        if (pixels && componentTouchesClip(pixels, clipY0, clipY1, h)) pixels = null;
+      }
+      if (!pixels) pixels = flood(w, h, x, y, acceptRows(0, h));
       if (!pixels) continue;
+      let top = pixels[0][1];
+      for (let i = 1; i < pixels.length; i++) if (pixels[i][1] < top) top = pixels[i][1];
       for (let i = 0; i < pixels.length; i++) seen[pixels[i][1] * w + pixels[i][0]] = 1;
+      if (top < seedY0 || top >= seedY1) continue;
       const area = pixels.length * mPerX * mPerY;
       const groups = [];
       // A large stand is cut on a grid first. Splitting it by height cell
@@ -1126,6 +1155,7 @@ function crownsFromChm(grid) {
     }
   }
   crowns.sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
+  if (opt.noCap) return crowns;
   return crowns.length > CROWN_CAP ? selectCrownsForExport(crowns, CROWN_CAP) : crowns;
 }
 
@@ -1329,6 +1359,7 @@ module.exports = {
   saveCanopyRaster,
   canopyRasterSpec,
   gridSize,
+  CROWN_CAP,
   crownsFromChm,
   maskChmGrid,
   poolChmGrid,

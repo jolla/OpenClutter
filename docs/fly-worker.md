@@ -80,9 +80,15 @@ Fly's performance-4x guest is 4 dedicated vCPUs. Node's `os.cpus()` does not rea
 
 Canopy height is a COG on S3. Each window is an HTTP Range read, and those range reads skip the raw-byte cache, so a warm export used to fetch the height grid again. The reader now prefetches the strip windows together, four at a time, and stores the decoded height raster for the snapped draw. The cache key is the canopy source with the existing 14 day TTL. The bytes are the height samples (`CHM1` plus the grid), not crowns or OpenIntent polygons. The main thread is waiting on those reads, so the 10 second heartbeat still runs.
 
-The Trees grid starts as one row band per CPU. A band that holds more than about half of the canopy samples is split, down to 24 rows and at most four bands per CPU, so one latitude strip cannot own the stage. A band that still takes most of the time shows up as one long tile line.
+The Trees grid is a pull queue of 16 to 32 row tiles, 24 on a 4-core pool. A thread takes the next tile when it finishes, so a short tile does not sit behind a long one. Each tile owns a band of rows and also reads 48 m past that band (about 22 rows on the Wynn grid, where a cell is about 2.2 m). A crown that crosses the band is traced whole by the tile that owns its top row. A crown taller than that overlap is traced from the full grid, so the outline is not cut. The same queue then clips foliage in 16 to 32 groups. Each group includes neighboring crowns within 48 m so a shared edge is clipped, and only the owner emits the piece. Tile lines stay `canopy-N` and keep going as the queue drains. `fly logs` shows one line per tile.
 
-A local read of the Wynn golf canopy (west -115.16942, south 36.11944163, east -115.153863, north 36.13182737), on a machine that is not ord and not performance-4x, took 1.3 s. About 1.3 s of that had an HTTP range in flight: 70 range reads, 405 KB, at most 18 at once. Time with no range in flight was about 0.06 s. The same grid from the raster cache was 3 ms. `os.cpus()` on that machine was 4. Four bands held 24, 33, 27, and 15 percent of the canopy samples, so none was split further. What the Fly guest reports for `os.cpus()`, and whether the tile lines overlap, is only in `fly logs` after deploy.
+On the v1.1.154 worker the four foliage tiles ran 27.9, 41.8, 50.2, and 72.5 s, so the longest tile held the Trees stage at about 70 s while the stage itself was 92 to 96 s. The other roughly 20 s was work that did not overlap that long tile: the canopy trace ran as its own phase before clipping, the canopy gap fill ran on one thread before the tiles, and the vehicle scan ran after the tiles while the stage was still Trees. Gap fill now starts before the footprint preview and overlaps it. The vehicle scan starts as soon as those footprints are ready and overlaps the tile queue. The main thread still only waits, so the 10 second heartbeat still fires.
+
+On this 4-core machine, which is not ord and not a Fly performance-4x host, the same Wynn box with the tile cache off finished in 68 s with 369 buildings and 837 trees. The 24 trace tiles took 1.2 s on the wall clock. The next 24 tiles, the foliage clip, took 123 s of thread time and 36.7 s on the wall clock. The longest clip tile was 14.7 s, and the queue kept going on the other threads. The vehicle scan ran in that same window (11.7 s of thread time) instead of after the trees. The earlier run on this machine was 75 s with 881 trees, 37.5 s of trees, then 8.5 s of vehicles. This is not a 60 s proof on the ord host.
+
+A done or failed job is terminal. A later heartbeat, stage update, or requeue does not change `state`, `error`, or the zip pointer. A heartbeat refreshes `heartbeatAt` only while the job is still queued or running.
+
+A local read of the Wynn golf canopy (west -115.16942, south 36.11944163, east -115.153863, north 36.13182737), on a machine that is not ord and not performance-4x, took 1.3 s. About 1.3 s of that had an HTTP range in flight: 70 range reads, 405 KB, at most 18 at once. Time with no range in flight was about 0.06 s. The same grid from the raster cache was 3 ms. `os.cpus()` on that machine was 4. What the Fly guest reports for `os.cpus()`, and whether the tile lines overlap, is only in `fly logs` after deploy.
 
 ## Before the commands
 
@@ -141,12 +147,12 @@ No map API key is required for the current sources. The Finland laser grid is al
 
 ## Update the live worker
 
-The app is already `openclutter-export`. From the repo root, on Jerry's machine, deploy this commit so the live machine gets performance-4x with 8 GB, worker threads for Trees, heartbeats, the concurrency limits (soft 200, hard 250), and the 5 minute idle exit. Do not run this from CI.
+The app is already `openclutter-export`. From the repo root, on Jerry's machine, deploy this commit so the live machine gets the 16 to 32 tile queue, the terminal done and failed job write, performance-4x with 8 GB, worker threads for Trees, heartbeats, the concurrency limits (soft 200, hard 250), and the 5 minute idle exit. Do not run this from CI.
 
 ```bash
 flyctl deploy --local-only
 ```
 
-`--local-only` builds on Jerry's machine. The machine that is already running does not pick up the new size or the threaded Trees path until that deploy.
+`--local-only` builds on Jerry's machine. The machine that is already running does not pick up the tile queue until that deploy.
 
-Until that deploy, the live worker does not write a heartbeat, still has a concurrency hard limit of 1, and Fly can still stop it for excess capacity while a job is in memory. Netlify then runs the export itself after 45 seconds of silence, or fails the job when under 2 minutes remain. After the deploy, a fresh heartbeat keeps the job on the worker, a busy machine still accepts a status check, and the process exits on its own after 5 minutes with no export.
+Until that deploy, Trees still waits on the longest of four bands, and a late heartbeat can leave a finished job queued. After the deploy, threads pull the next small tile, a finished job stays done or failed, a fresh heartbeat keeps a running job on the worker, a busy machine still accepts a status check, and the process exits on its own after 5 minutes with no export.
