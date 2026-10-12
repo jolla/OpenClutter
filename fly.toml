@@ -1,0 +1,43 @@
+# Placeholder name. Change it before fly launch if it is already taken.
+# The public URL is https://<app-name>.fly.dev
+app = "openclutter-export"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  # Leave room in a 2 GB machine for the JPEG buffers outside this cap.
+  NODE_OPTIONS = "--max-old-space-size=1536"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 1
+    hard_limit = 1
+
+  # 15 minutes. The export also writes a newline every 20 seconds.
+  # No periodic health check: a check on a timer can count as traffic and
+  # keep an idle machine from stopping.
+  [http_service.http_options]
+    idle_timeout = 900
+
+[processes]
+  app = "node fly/server.js"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "2gb"
+
+# Fly waits at most 300 seconds after SIGTERM. The open export request is
+# what keeps the machine up for a long job. This limit covers the tail.
+kill_signal = "SIGTERM"
+kill_timeout = 300

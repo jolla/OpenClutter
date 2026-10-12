@@ -1,0 +1,10 @@
+.git
+.github
+node_modules
+test
+bench
+scripts
+docs
+*.md
+HANDOFF.md
+RELEASE_NOTES.md
