@@ -22,7 +22,7 @@ const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
 const jpeg = require("jpeg-js");
-const { esriContentExtent, geoFrame, imagePxToLl, pxToLl } = require("../netlify/lib/geo-frame");
+const { esriContentExtent, geoFrame, imagePxToLl, llToPx, pxToLl } = require("../netlify/lib/geo-frame");
 const { fetchChmGrid } = require("../netlify/lib/canopy-height");
 const { canopyRaster, fetchUsgsLidar, rankProjects } = require("../netlify/lib/usgs-lidar");
 const { fetchWorldCoverTrees, TREE } = require("../netlify/lib/worldcover");
@@ -263,6 +263,112 @@ function pct(hit, tot) {
   return Math.round((1000 * hit) / tot) / 10;
 }
 
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function hashSeed(text) {
+  let h = 2166136261;
+  const s = String(text || "");
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+
+function pointInPxRing(pt, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const yi = ring[i][1];
+    const yj = ring[j][1];
+    const xi = ring[i][0];
+    const xj = ring[j][0];
+    const hit = yi > pt[1] !== yj > pt[1] && pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi || 1e-20) + xi;
+    if (hit) inside = !inside;
+  }
+  return inside;
+}
+
+const RF_LINKS = 50;
+const RF_Z_M = 4;
+const RF_REF_DB = 1.5;
+
+function foliageSlabs(areas) {
+  const slabs = [];
+  for (const area of areas || []) {
+    const material = area.area_material || {};
+    const name = material.name || "";
+    if (!isVegetationOiName(name) && !isUnderstoryOiName(name) && !isTrunkOiName(name)) continue;
+    const coords = area.area && area.area.coordinates;
+    if (!coords || coords.length < 4) continue;
+    const span = materialSpan(material);
+    if (!span) continue;
+    const db = material.rf_properties && Number(material.rf_properties.attenuation_per_m);
+    if (!(db > 0)) continue;
+    slabs.push({
+      ring: coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]),
+      bottom: span.bottom,
+      top: span.top,
+      db,
+    });
+  }
+  return slabs;
+}
+
+/**
+ * Fifty links at 4 m. Predicted loss uses the exported foliage dB/m.
+ * Reference loss is 1.5 dB/m wherever the canopy-height reference is at least 4 m.
+ * The result is the absolute error in dB.
+ */
+function rfLinkErrors(siteId, frame, slabs, refGrid) {
+  const rand = mulberry32(hashSeed(siteId) || 1);
+  const midLat = ((+frame.south || 0) + (+frame.north || 0)) / 2;
+  const mLon = 111320 * Math.cos((midLat * Math.PI) / 180);
+  const errs = [];
+  let guard = 0;
+  while (errs.length < RF_LINKS && guard < RF_LINKS * 30) {
+    guard++;
+    const lon1 = frame.west + rand() * (frame.east - frame.west);
+    const lat1 = frame.south + rand() * (frame.north - frame.south);
+    const heading = rand() * Math.PI * 2;
+    const len = 40 + rand() * 60;
+    const lon2 = lon1 + (Math.cos(heading) * len) / mLon;
+    const lat2 = lat1 + (Math.sin(heading) * len) / 110540;
+    if (lon2 <= frame.west || lon2 >= frame.east || lat2 <= frame.south || lat2 >= frame.north) continue;
+    const steps = Math.max(4, Math.round(len / 4));
+    let pred = 0;
+    let ref = 0;
+    for (let s = 0; s < steps; s++) {
+      const t = (s + 0.5) / steps;
+      const lon = lon1 + (lon2 - lon1) * t;
+      const lat = lat1 + (lat2 - lat1) * t;
+      const ds = len / steps;
+      if (chmAt(refGrid, lon, lat) >= RF_Z_M) ref += RF_REF_DB * ds;
+      const px = llToPx(lon, lat, frame);
+      let db = 0;
+      for (let i = 0; i < slabs.length; i++) {
+        const slab = slabs[i];
+        if (RF_Z_M <= slab.bottom || RF_Z_M > slab.top) continue;
+        if (!pointInPxRing(px, slab.ring)) continue;
+        if (slab.db > db) db = slab.db;
+      }
+      pred += db * ds;
+    }
+    errs.push(Math.abs(pred - ref));
+  }
+  errs.sort((a, b) => a - b);
+  if (!errs.length) return { median: null, p90: null, n: 0 };
+  return {
+    median: Math.round(errs[Math.floor(errs.length / 2)] * 10) / 10,
+    p90: Math.round(errs[Math.min(errs.length - 1, Math.ceil(errs.length * 0.9) - 1)] * 10) / 10,
+    n: errs.length,
+  };
+}
+
 function loadZip(zipPath, dir) {
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
@@ -416,6 +522,7 @@ async function scoreSite(site, zipPath) {
   const recall = pct(hit, ref);
   const chmPrecision = pct(chmTp, pred);
   const precision = pct(wholeTp, pred);
+  const rf = rfLinkErrors(site.id, frame, foliageSlabs(areas), refGrid);
   const openLeak = pct(openN, pred);
   const result = {
     id: site.id,
@@ -454,6 +561,9 @@ async function scoreSite(site, zipPath) {
     openLawn: pct(openLawn, pred),
     openPitch: pct(openPitch, pred),
     openRoad: pct(openRoad, pred),
+    rfMedianDb: rf.median,
+    rfP90Db: rf.p90,
+    rfLinks: rf.n,
     pass: recall != null && precision != null && recall >= 85 && precision >= 85,
   };
   fs.mkdirSync(path.join(OUT, "results"), { recursive: true });
@@ -653,6 +763,9 @@ function writeBoard() {
     "openLawn",
     "openPitch",
     "openRoad",
+    "rfMedianDb",
+    "rfP90Db",
+    "rfLinks",
     "worldcoverRecall",
     "aerialOnRef",
     "aerialOnPred",
@@ -682,10 +795,10 @@ function writeBoard() {
     "",
     "Where USGS 3DEP covers the draw, recall uses lidar: first returns minus ground, and a cell of at least 3 m is canopy. Elsewhere recall uses the Meta/WRI canopy height grid the same way, plus ESA WorldCover tree cover where that grid measured no height. Roof pixels are ignored. Precision samples every emitted canopy cell. The cell counts only when that reference is at least 3 m and the aerial is not an open lawn, mown field, RV pitch, or road. A green aerial pixel is not a hit. A site passes at 85% recall and 85% precision. Green on the overlay is emitted canopy that passes that test. Red is reference canopy still missing. Yellow is emitted canopy that fails it.",
     "",
-    "Height ≥ 3 m is the reference share alone, before the aerial open-ground rejection. Open ground is the share of emitted canopy the aerial reads as lawn or field, pitch, or road. Height error is metres between the canopy top above local ground and the canopy-height sample at that stack. A crown seated on a trunk or understory uses the full stack. Gap is the ground-to-crown distance versus the intended gap (about 3 m, or 30–40% of height on a tall conifer) for stands of at least 800 m². Floating is a preview piece whose base is more than 3 m above the terrain and is not sitting on another canopy piece. A slab is one crown of at least 8,000 m², or a connected sheet of crowns whose tops stay within 2 m and whose area is at least 12,000 m². Where USGS 3DEP covers the draw, recall, precision, and height error use first returns minus ground. A cell counts at 3 m. A site outside that coverage keeps the canopy-height model.",
+    "Height ≥ 3 m is the reference share alone, before the aerial open-ground rejection. Open ground is the share of emitted canopy the aerial reads as lawn or field, pitch, or road. Height error is metres between the canopy top above local ground and the canopy-height sample at that stack. A crown seated on a trunk or understory uses the full stack. Gap is the ground-to-crown distance versus the intended gap (about 3 m, or 30–40% of height on a tall conifer) for stands of at least 800 m². Floating is a preview piece whose base is more than 3 m above the terrain and is not sitting on another canopy piece. A slab is one crown of at least 8,000 m², or a connected sheet of crowns whose tops stay within 2 m and whose area is at least 12,000 m². Where USGS 3DEP covers the draw, recall, precision, and height error use first returns minus ground. A cell counts at 3 m. A site outside that coverage keeps the canopy-height model. RF error compares fifty random 40 to 100 m links at 4 m above the ground. Predicted loss follows the exported foliage. Reference loss is 1.5 dB/m where that reference canopy is at least 4 m. The columns are the median and the 90th percentile of the absolute error.",
     "",
-    "| Site | Recall | Precision | Height ≥ 3 m | Open ground | Height MAE | Gap MAE | Floating | Slabs | Ref | Pass |",
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+    "| Site | Recall | Precision | Height ≥ 3 m | Open ground | Height MAE | Gap MAE | Floating | Slabs | Ref | RF median | RF p90 | Pass |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- |",
   ];
   for (const r of rows) {
     const pass = r.recall != null && r.precision != null && r.recall >= 85 && r.precision >= 85;
@@ -710,6 +823,10 @@ function writeBoard() {
         (r.slabs == null ? "—" : String(r.slabs)) +
         " | " +
         (r.refSource || "chm") +
+        " | " +
+        (r.rfMedianDb == null ? "n/a" : r.rfMedianDb + " dB") +
+        " | " +
+        (r.rfP90Db == null ? "n/a" : r.rfP90Db + " dB") +
         " | " +
         (pass ? "yes" : "no") +
         " |"
@@ -738,4 +855,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { plateScale, shapeOfAreas, writeBoard };
+module.exports = { plateScale, shapeOfAreas, writeBoard, rfLinkErrors };
