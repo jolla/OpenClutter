@@ -1194,8 +1194,39 @@ function mobileHomesInRing(ring, frame, plate) {
     let miny = 1e9;
     let maxx = -1e9;
     let maxy = -1e9;
+    for (let c = 0; c < cells.length; c++) {
+      const x = x0 + (cells[c] % bw);
+      const y = y0 + ((cells[c] / bw) | 0);
+      if (x < minx) minx = x;
+      if (y < miny) miny = y;
+      if (x > maxx) maxx = x;
+      if (y > maxy) maxy = y;
+    }
+    const pad = 8;
+    const extra = [];
+    for (let y = Math.max(y0, miny - pad); y <= Math.min(y1, maxy + pad); y++) {
+      for (let x = Math.max(x0, minx - pad); x <= Math.min(x1, maxx + pad); x++) {
+        const j = (y - y0) * bw + (x - x0);
+        if (mask[j]) continue;
+        const pi = (y * plate.width + x) * 4;
+        const r = plate.data[pi];
+        const g = plate.data[pi + 1];
+        const b = plate.data[pi + 2];
+        const yl = 0.299 * r + 0.587 * g + 0.114 * b;
+        if (yl < 248) continue;
+        if (Math.max(r, g, b) - Math.min(r, g, b) > 20) continue;
+        extra.push(j);
+      }
+    }
+    if ((cells.length + extra.length) * areaPx <= 150) {
+      for (let e = 0; e < extra.length; e++) cells.push(extra[e]);
+    }
     let sx = 0;
     let sy = 0;
+    minx = 1e9;
+    miny = 1e9;
+    maxx = -1e9;
+    maxy = -1e9;
     for (let c = 0; c < cells.length; c++) {
       const x = x0 + (cells[c] % bw);
       const y = y0 + ((cells[c] / bw) | 0);
@@ -1221,6 +1252,95 @@ function mobileHomesInRing(ring, frame, plate) {
     coords.push(coords[0]);
     const lon = frame.west + (sx / cells.length / frame.imgW) * (frame.east - frame.west);
     const lat = frame.north - (sy / cells.length / frame.imgH) * (frame.north - frame.south);
+    out.push({
+      kind: "mobile-home",
+      coords,
+      closed: true,
+      heightM: 4,
+      explicitHeight: true,
+      center: [lon, lat],
+      rank: 0,
+    });
+  }
+  const seenBright = new Uint8Array(bw * bh);
+  for (let i = 0; i < mask.length && out.length < 400; i++) {
+    const x = x0 + (i % bw);
+    const y = y0 + ((i / bw) | 0);
+    const pi = (y * plate.width + x) * 4;
+    const r = plate.data[pi];
+    const g = plate.data[pi + 1];
+    const b = plate.data[pi + 2];
+    const yl = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (yl < 248 || Math.max(r, g, b) - Math.min(r, g, b) > 18) continue;
+    if (!pointInRing([x + 0.5, y + 0.5], poly)) continue;
+    if (seenBright[i] || mask[i]) continue;
+    const cells = [];
+    stack.push(i);
+    seenBright[i] = 1;
+    while (stack.length) {
+      const k = stack.pop();
+      cells.push(k);
+      const X = k % bw;
+      const Y = (k / bw) | 0;
+      for (const [nx, ny] of [[X - 1, Y], [X + 1, Y], [X, Y - 1], [X, Y + 1]]) {
+        if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
+        const j = ny * bw + nx;
+        if (seenBright[j]) continue;
+        const xx = x0 + nx;
+        const yy = y0 + ny;
+        const qi = (yy * plate.width + xx) * 4;
+        const rr = plate.data[qi];
+        const gg = plate.data[qi + 1];
+        const bb = plate.data[qi + 2];
+        const y2 = 0.299 * rr + 0.587 * gg + 0.114 * bb;
+        if (y2 < 248 || Math.max(rr, gg, bb) - Math.min(rr, gg, bb) > 18) continue;
+        seenBright[j] = 1;
+        stack.push(j);
+      }
+    }
+    const brightM2 = cells.length * areaPx;
+    if (brightM2 < 25 || brightM2 > 110) continue;
+    let sx = 0;
+    let sy = 0;
+    let minx = 1e9;
+    let miny = 1e9;
+    let maxx = -1e9;
+    let maxy = -1e9;
+    for (let c = 0; c < cells.length; c++) {
+      const xx = x0 + (cells[c] % bw);
+      const yy = y0 + ((cells[c] / bw) | 0);
+      sx += xx;
+      sy += yy;
+      if (xx < minx) minx = xx;
+      if (yy < miny) miny = yy;
+      if (xx > maxx) maxx = xx;
+      if (yy > maxy) maxy = yy;
+    }
+    const lon = frame.west + (sx / cells.length / frame.imgW) * (frame.east - frame.west);
+    const lat = frame.north - (sy / cells.length / frame.imgH) * (frame.north - frame.south);
+    let dup = false;
+    for (let u = 0; u < out.length; u++) {
+      const c = out[u].center;
+      const mid = (((c[1] + lat) / 2) * Math.PI) / 180;
+      const dx = (c[0] - lon) * 111320 * Math.cos(mid);
+      const dy = (c[1] - lat) * 110540;
+      if (dx * dx + dy * dy < 64) dup = true;
+    }
+    if (dup) continue;
+    const corners = [
+      [minx, miny],
+      [maxx, miny],
+      [maxx, maxy],
+      [minx, maxy],
+    ];
+    const coords = [];
+    for (let c = 0; c < corners.length; c++) {
+      coords.push([
+        frame.west + (corners[c][0] / frame.imgW) * (frame.east - frame.west),
+        frame.north - (corners[c][1] / frame.imgH) * (frame.north - frame.south),
+      ]);
+    }
+    coords.push(coords[0]);
     out.push({
       kind: "mobile-home",
       coords,
