@@ -19,7 +19,7 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { parseOverpass, planOutdoor } = require("../netlify/lib/outdoor-clutter");
-const { decodePlate, centroidLL, scoreVehicles } = require("../netlify/lib/vehicle-track");
+const { decodePlate, centroidLL, scoreVehicles, scoreLayerOverlap } = require("../netlify/lib/vehicle-track");
 const { buildClutter, OPENINTENT_JSON_BUDGET } = require("../netlify/lib/pipeline");
 
 const ROOT = path.join(__dirname, "..");
@@ -56,9 +56,9 @@ function scoreSite(site, aerialBuf) {
   const plate = decodePlate(aerialBuf);
   if (!plate) throw new Error(site.id + " aerial did not decode");
   const frame = geoFrame(site, { imgW: plate.width, imgH: plate.height, maxSpanM: 8000, minSpanM: 1 });
-  const parsed = parseOverpass(fixture, { rvs: true });
+  const parsed = parseOverpass(fixture, { rvs: true, parking: true });
   const planned = planOutdoor({
-    features: parsed.features.filter((f) => f && (f.kind === "rv" || f.kind === "trailer-candidate" || f.kind === "trailer" || f.kind === "marina" || f.kind === "boat" || f.kind === "mobile-park" || f.kind === "mobile-home" || f.kind === "truck-lot" || f.kind === "building-hole")),
+    features: parsed.features.filter((f) => f && (f.kind === "rv" || f.kind === "trailer-candidate" || f.kind === "trailer" || f.kind === "marina" || f.kind === "boat" || f.kind === "mobile-park" || f.kind === "mobile-home" || f.kind === "truck-lot" || f.kind === "building-hole" || f.kind === "car")),
     frame,
     vehiclePlate: plate,
   });
@@ -77,7 +77,21 @@ function scoreSite(site, aerialBuf) {
     }
     preds.push({ class: item.kind, ring, center: centroidLL(ring) });
   }
-  const rows = scoreVehicles(labelsDoc.labels, preds, labelsDoc.matchM || 12);
+  let rows = scoreVehicles(labelsDoc.labels, preds, labelsDoc.matchM || 12);
+  let layerMerged = false;
+  if (labelsDoc.layer === "car") {
+    const carRings = [];
+    for (let i = 0; i < preds.length; i++) {
+      if (preds[i].class === "car") carRings.push(preds[i].ring);
+    }
+    const layer = scoreLayerOverlap(labelsDoc.labels, carRings, 2);
+    rows = rows.filter((row) => row.class !== "car");
+    if (layer.labels) rows.push(layer);
+    layerMerged = carRings.length > 0;
+    if (layer.buildingCovered != null) {
+      console.log("  building covered", (Math.round(layer.buildingCovered * 1000) / 10).toFixed(1) + "%");
+    }
+  }
   const exportFeatures = preds.map((p) => ({
     kind: p.class,
     coords: p.ring,
@@ -102,7 +116,7 @@ function scoreSite(site, aerialBuf) {
     preds: preds.length,
     jsonBytes,
     zip: built.zip,
-    merged: false,
+    merged: layerMerged,
   };
 }
 

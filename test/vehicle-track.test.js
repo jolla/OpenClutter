@@ -11,6 +11,7 @@ const {
   semiBoxes,
   boatBoxes,
   scoreVehicles,
+  scoreLayerOverlap,
   SEMI_LENGTH_M,
   SEMI_WIDTH_M,
   BOAT_LENGTH_M,
@@ -108,6 +109,40 @@ describe("vehicle track", () => {
     assert.equal(boats.length, 1);
     assert.equal(boats[0].heightM, 3.5);
     assert.ok(BOAT_LENGTH_M >= 6 && SEMI_LENGTH_M > SEMI_WIDTH_M);
+  });
+
+  it("scores a merged car layer by covered area", () => {
+    const parked = [
+      [0, 0],
+      [0.001, 0],
+      [0.001, 0.0004],
+      [0, 0.0004],
+      [0, 0],
+    ];
+    const empty = [
+      [0, 0.0005],
+      [0.001, 0.0005],
+      [0.001, 0.0009],
+      [0, 0.0009],
+      [0, 0.0005],
+    ];
+    const layer = [
+      [0, 0],
+      [0.001, 0],
+      [0.001, 0.0009],
+      [0, 0.0009],
+      [0, 0],
+    ];
+    const row = scoreLayerOverlap(
+      [
+        { class: "car", ring: parked },
+        { class: "empty", ring: empty },
+      ],
+      [layer],
+      8
+    );
+    assert.ok(row.recall > 0.9, "recall " + row.recall);
+    assert.ok(row.precision > 0.3 && row.precision < 0.7, "precision " + row.precision);
   });
 
   it("scores a class only against pads that were labeled", () => {
