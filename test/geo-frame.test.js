@@ -98,6 +98,7 @@ describe("shared geo frame", () => {
     assert.deepEqual(
       plan.map((step) => [step.maxSide, step.metersPerPx]),
       [
+        [8192, 0.075],
         [4096, 0.15],
         [2048, 0.4],
         [1040, 0.5],
@@ -115,6 +116,7 @@ describe("shared geo frame", () => {
     assert.deepEqual(
       sharp.map((step) => [step.maxSide, step.metersPerPx]),
       [
+        [8192, 0.075],
         [4096, 0.15],
         [2048, 0.4],
         [1040, 0.5],
@@ -122,9 +124,9 @@ describe("shared geo frame", () => {
       ]
     );
     const sharpFrame = geoFrame(pointeClaire, { maxSide: sharp[0].maxSide, metersPerPx: sharp[0].metersPerPx });
-    assert.ok(Math.max(sharpFrame.imgW, sharpFrame.imgH) < 4096);
-    assert.ok(sharpFrame.mpuX <= 0.16, String(sharpFrame.mpuX));
-    assert.ok(sharpFrame.mpuX >= 0.14, String(sharpFrame.mpuX));
+    assert.ok(Math.max(sharpFrame.imgW, sharpFrame.imgH) < 8192);
+    assert.ok(sharpFrame.mpuX <= 0.08, String(sharpFrame.mpuX));
+    assert.ok(sharpFrame.mpuX >= 0.07, String(sharpFrame.mpuX));
     const prod = geoFrame(oak);
     const dev = geoFrame(oak, { maxSide: imageryMaxSide(true), metersPerPx: imageryMetersPerPx(true) });
     assert.ok(Math.max(prod.imgW, prod.imgH) <= 1040);
@@ -146,6 +148,7 @@ describe("shared geo frame", () => {
     assert.deepEqual(
       imageryExportPlan(true, wico).map((step) => [step.maxSide, step.metersPerPx]),
       [
+        [8192, 0.075],
         [4096, 0.15],
         [2048, 0.4],
         [1040, 0.5],
@@ -155,6 +158,7 @@ describe("shared geo frame", () => {
     assert.deepEqual(
       imageryExportPlan(true, wico, "auto").map((step) => [step.maxSide, step.metersPerPx]),
       [
+        [8192, 0.075],
         [4096, 0.15],
         [2048, 0.4],
         [1040, 0.5],
@@ -217,13 +221,13 @@ describe("shared geo frame", () => {
     };
     const smallStep = imageryExportPlan(true, small, "auto")[0];
     const smallFrame = geoFrame(small, smallStep);
-    assert.equal(Math.max(smallFrame.imgW, smallFrame.imgH), 2432);
-    assert.ok(Math.abs(smallFrame.mpuX - 0.15) < 0.005, String(smallFrame.mpuX));
+    assert.equal(Math.max(smallFrame.imgW, smallFrame.imgH), 4864);
+    assert.ok(Math.abs(smallFrame.mpuX - 0.075) < 0.005, String(smallFrame.mpuX));
     const wynnStep = imageryExportPlan(true, wynn, "auto")[0];
     const wynnFrame = geoFrame(wynn, wynnStep);
-    assert.equal(wynnFrame.imgW, 4096);
-    assert.equal(wynnFrame.imgH, 3593);
-    assert.ok(wynnFrame.mpuX > 0.33 && wynnFrame.mpuX < 0.35, String(wynnFrame.mpuX));
+    assert.equal(wynnFrame.imgW, 8192);
+    assert.equal(wynnFrame.imgH, 7186);
+    assert.ok(wynnFrame.mpuX > 0.16 && wynnFrame.mpuX < 0.18, String(wynnFrame.mpuX));
   });
 
   it("caps a large box at 2048 on the dev side and 1040 in production", () => {

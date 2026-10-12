@@ -114,20 +114,13 @@ const TERRAIN_RESCUE_MIN_MS = 800;
 // Roof fill scans every footprint. On a dense draw that already spent 10s
 // fetching, skip it and emit the vector buildings.
 const DENSE_FEATURES = 1500;
-// OpenIntent triples for every roof on a campus blow past the response
-// limit (Hollywood at 982 areas was ~6.5 MB). Stay under it so the zip
-// actually downloads. Copy terrain is only in the bundle JSON, and a fine
-// paste is fitted again against the synchronous payload budget before the
-// response is returned.
-const ZIP_FIT_BYTES = 4200000;
-const ZIP_SHRINK_STEPS = [640, 400, 240];
+// Copy terrain is only in the bundle JSON, and a fine paste is fitted
+// again against the synchronous payload budget before the response is
+// returned. Hamina's import limit is the OpenIntent JSON, not this zip.
 // A draw over 2.5 km still exports on the short path, with fewer roofs and a
 // smaller plate. The background job covers the full draw.
 const SYNC_LARGE_DRAW_M = 2500;
 const SYNC_LARGE_ROOFS = 240;
-// A background zip that still exceeds the download limit keeps the tallest
-// roofs, then steps the plate's companion JSON down.
-const BACKGROUND_ROOF_STEPS = [800, 500, 320, 200];
 // Background exports are not on the ~10s gateway. Four minutes leaves room
 // to write an error before the platform's 15 minute kill.
 const BACKGROUND_ANSWER_MS = 4 * 60 * 1000;
@@ -294,9 +287,16 @@ function fourKQuality(quality) {
   return q === "4k" || q === "4096" || q === "ultra";
 }
 
+function eightKQuality(quality) {
+  const q = String(quality || "")
+    .trim()
+    .toLowerCase();
+  return q === "8k" || q === "8192" || q === "max";
+}
+
 /**
  * The background clock can wait for the plate that was asked for.
- * Auto starts at the 4K-class plate, scaled to the site. Sharp and 4K
+ * Auto starts at the 8192 px plate, scaled to the site. Sharp, 4K, and 8K
  * are real long sides. A smaller plate runs only when the first request fails.
  */
 function backgroundImagerySteps(devHost, bbox) {
@@ -322,6 +322,11 @@ function backgroundImagerySteps(devHost, bbox) {
       { maxSide: 4096, metersPerPx: 0.15 },
       { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.25 },
     ];
+  } else if (eightKQuality(quality)) {
+    plan = [
+      { maxSide: 8192, metersPerPx: 0.075 },
+      { maxSide: 4096, metersPerPx: 0.15 },
+    ];
   } else {
     plan = imageryExportPlan(true, bbox, "auto").filter((step) => step.maxSide >= IMAGERY_MAX_SIDE);
   }
@@ -341,11 +346,11 @@ function imagerySteps(devHost, bbox) {
     ];
   }
   let quality = devHost && bbox ? bbox.imageryQuality : undefined;
-  if (devHost && fourKQuality(quality)) quality = "sharp";
+  if (devHost && (fourKQuality(quality) || eightKQuality(quality))) quality = "sharp";
   let plan = imageryExportPlan(devHost, bbox, quality);
-  // A 4096 plate does not return on the short clock. Drop it before the
+  // 4K and 8K plates do not return on the short clock. Drop them before the
   // waits are assigned, so the Sharp plate that is actually fetched gets
-  // the first-plate budget. The background job keeps the 4K step.
+  // the first-plate budget. The background job keeps the finer steps.
   if (devHost) {
     const shortPlan = plan.filter((step) => step.maxSide <= IMAGERY_MAX_SIDE_DEV);
     if (shortPlan.length) plan = shortPlan;
@@ -436,7 +441,7 @@ async function fetchImageryStepped(bbox, steps) {
 }
 
 function imageryFrame(bbox, step) {
-  return geoFrame(bbox, { maxSide: step.maxSide, metersPerPx: step.metersPerPx });
+  return capEsriExportFrame(geoFrame(bbox, { maxSide: step.maxSide, metersPerPx: step.metersPerPx }));
 }
 
 /**
@@ -1842,10 +1847,9 @@ async function handleClutter(event) {
     }
   }
 
-  // 720 keeps today's 480 largest canopies and fills the rest with compact
-  // crowns. A zip that does not fit steps back to 480 before it drops to 160.
-  const FOLIAGE_CAPS = [720, 480, 160, 48, 12];
-  let foliageCap = FOLIAGE_CAPS[0];
+  // 720 keeps the largest canopies and fills the rest with compact crowns.
+  // The OpenIntent JSON budget is what drops the rest. The zip size is not.
+  const foliageCap = 720;
 
   function emitClutter(list, extraWarnings) {
     return buildClutter({
@@ -1934,21 +1938,10 @@ async function handleClutter(event) {
       exportFeatures = largestFeatures(exportFeatures, SYNC_LARGE_ROOFS, frame.mpd);
       noteShrink(before, exportFeatures.length);
     }
-  } else if (!background && exportFeatures.length > ZIP_SHRINK_STEPS[0]) {
-    // 640 / 4.2 MB are the synchronous download. The pipeline stops at the
-    // 3.8 MB OpenIntent byte budget, with a 5000 area sanity cap. A background zip is trimmed
-    // only when the download itself would be rejected.
-    const before = exportFeatures.length;
-    exportFeatures = largestFeatures(exportFeatures, ZIP_SHRINK_STEPS[0], frame.mpd);
-    noteShrink(before, exportFeatures.length);
   }
   let built = emitClutter(exportFeatures);
-  if (!background && includeFoliage && !chmTimedOut && built.zip && built.zip.length > ZIP_FIT_BYTES) {
-    for (let i = 1; i < FOLIAGE_CAPS.length && built.zip && built.zip.length > ZIP_FIT_BYTES; i++) {
-      foliageCap = FOLIAGE_CAPS[i];
-      built = emitClutter(exportFeatures);
-    }
-  }
+  // The image does not count toward Hamina's JSON limit. Compress it only
+  // when the zip itself cannot fit in Netlify's function response.
   if (background && built.zip && !exportJobs.zipDownloadFits(built.zip.length) && imgBuf) {
     const room = exportJobs.ZIP_DOWNLOAD_MAX - (built.zip.length - imgBuf.length);
     const smaller = compressJpegToMax(imgBuf, Math.max(180000, room));
@@ -1956,37 +1949,6 @@ async function handleClutter(event) {
       imgBuf = smaller;
       warnings.push("Map image was compressed so the zip can download.");
       built = emitClutter(exportFeatures);
-    }
-  }
-  if (background && built.zip && !exportJobs.zipDownloadFits(built.zip.length)) {
-    for (let i = 0; i < BACKGROUND_ROOF_STEPS.length; i++) {
-      if (exportJobs.zipDownloadFits(built.zip.length)) break;
-      const before = exportFeatures.length;
-      if (!(before > BACKGROUND_ROOF_STEPS[i])) continue;
-      exportFeatures = largestFeatures(features, BACKGROUND_ROOF_STEPS[i], frame.mpd);
-      noteShrink(before, exportFeatures.length);
-      built = emitClutter(exportFeatures);
-    }
-  }
-  if (
-    background &&
-    includeFoliage &&
-    !chmTimedOut &&
-    built.zip &&
-    !exportJobs.zipDownloadFits(built.zip.length)
-  ) {
-    for (let i = 1; i < FOLIAGE_CAPS.length && built.zip && !exportJobs.zipDownloadFits(built.zip.length); i++) {
-      foliageCap = FOLIAGE_CAPS[i];
-      built = emitClutter(exportFeatures);
-    }
-  }
-  if (!background && built.zip && built.zip.length > ZIP_FIT_BYTES) {
-    for (let i = 1; i < ZIP_SHRINK_STEPS.length; i++) {
-      const before = features.length;
-      exportFeatures = largestFeatures(features, ZIP_SHRINK_STEPS[i], frame.mpd);
-      noteShrink(before, exportFeatures.length);
-      built = emitClutter(exportFeatures);
-      if (built.zip && built.zip.length <= ZIP_FIT_BYTES) break;
     }
   }
   if (shrinkNote && warnings.indexOf(shrinkNote) < 0) warnings.push(shrinkNote);
@@ -2064,7 +2026,7 @@ async function handleClutter(event) {
     let guard = 0;
     while (guard < 6 && terrain && terrain.clipboard && built.zip) {
       const clipJson = terrainClipJson(terrain);
-      const zipTooBig = built.zip.length > 4500000;
+      const zipTooBig = !exportJobs.zipDownloadFits(built.zip.length);
       const payloadTooBig = estimateBundlePayload(built.zip.length, clipJson) > EXPORT_PAYLOAD_BUDGET;
       if (!zipTooBig && !payloadTooBig) break;
       const companion = built.zip.length;
@@ -2083,7 +2045,7 @@ async function handleClutter(event) {
   }
 
   if (!built.zip) return json(500, cors, { error: "zip missing" });
-  if (!background && built.zip.length > 4500000) {
+  if (!background && !exportJobs.zipDownloadFits(built.zip.length)) {
     return json(413, cors, {
       error: "This area is too large to export in one zip. Draw a smaller area and try again.",
     });
@@ -2198,7 +2160,6 @@ exports.LARGE_DRAW_SIDE_M = LARGE_DRAW_SIDE_M;
 exports.OVERTURE_HARD_MS = OVERTURE_HARD_MS;
 exports.overtureWait = overtureWait;
 exports.largestFeatures = largestFeatures;
-exports.ZIP_FIT_BYTES = ZIP_FIT_BYTES;
 exports.EXPORT_PAYLOAD_BUDGET = EXPORT_PAYLOAD_BUDGET;
 exports.LAMBDA_SYNC_PAYLOAD_MAX = LAMBDA_SYNC_PAYLOAD_MAX;
 exports.lambdaPayloadBytes = lambdaPayloadBytes;

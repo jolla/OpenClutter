@@ -250,7 +250,7 @@ describe("Copy terrain after a background result", () => {
         terrainMaxM: 891.2,
         terrainReliefM: 278.8,
         openIntentJsonBytes: 2100000,
-        jsonBudget: 3800000,
+        jsonBudget: 4900000,
       },
     };
     const lines = exportSummaryLines(data, { foliageOn: true, terrainOn: true });
@@ -266,7 +266,7 @@ describe("Copy terrain after a background result", () => {
       "Elevation change 278.8 m (915 ft)",
       "Steepest slope 50% (27°)",
       "Terrain pieces 3",
-      "Zip 3.41 MB, OpenIntent 2.10 MB of 3.80 MB",
+      "OpenIntent 2.10 MB of 4.90 MB",
       "Map 4096 px, 0.19 m per pixel",
     ]);
     assert.equal(lines.some((line) => /Walls and fences|Water /.test(line)), false);
@@ -276,7 +276,7 @@ describe("Copy terrain after a background result", () => {
       { stats: { buildings: 0, trees: 4, openIntentJsonBytes: 80000 } },
       { foliageOn: false, terrainOn: false }
     );
-    assert.deepEqual(off, ["Buildings 0", "Terrain off", "OpenIntent 80 KB of 3.80 MB"]);
+    assert.deepEqual(off, ["Buildings 0", "Terrain off", "OpenIntent 80 KB of 4.90 MB"]);
     const stands = exportSummaryLines(
       { stats: { buildings: 1, trees: 12, discreteTrees: 0 }, frame: { imgW: 2048, imgH: 1800, mpuX: 0.4 } },
       { foliageOn: true, terrainOn: true }
