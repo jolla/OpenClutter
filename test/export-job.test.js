@@ -65,6 +65,9 @@ describe("export jobs", { concurrency: 1 }, () => {
     const job = await jobs.readJob(id);
     assert.deepEqual(job.stages, ["Fetching aerial", "Buildings 112", "Trees 55"]);
     assert.equal(job.stage, "Trees 55");
+    assert.equal(job.stageLabel, "Trees 55");
+    assert.equal(job.progress, 0.68);
+    assert.equal(job.progressCeiling, 0.94);
     job.expiresAt = Date.now() - 1000;
     await store.setJSON("job/" + id, job);
     assert.equal(await jobs.readJob(id), null);
