@@ -8,6 +8,8 @@
 
 **v1.1.97** on `dev` — Sloped terrain is an adaptive mesh, not a fixed 20×20 grid. The paste spends its budget on the worst saddles, keeps a planar fit near half a meter, and merges a flat bench into one raised floor. Neighboring ramps share an edge height, and a coarse piece is split where it meets a finer one so the seam has no gap. A pure north-south or east-west grade stays one ramp per cell. The badge stays (`dev · v1.1.97`).
 
+**v1.1.144** on `dev`. An RV stays when its white roof is long and narrow and runs along the pad, including a roof about 2.5 m off the spur. A wide sheet from the next roof, or a short blob that cuts across the pad, no longer lights an empty pad. Metal RV boxes stay about 12 by 2.6 m and 3.5 m tall at 12 dB/m. Rogers campground stays at 90% recall. Mesa RV resorts stay at 100% recall. The badge stays (`dev · v1.1.144`).
+
 **v1.1.143** on `dev`. The Oak Creek parking deck west of S Howell Ave stays a building. Overture counts 4 floors, about 12 m, so it ships as Building - Five Floor. Cars on that roof no longer make it a surface lot. A lot without a floor count stays a lot. A mapped multi-storey garage uses about 3 m per deck. The badge stays (`dev · v1.1.143`).
 
 **v1.1.142** on `dev` — Citrus Gardens also keeps a manufactured home when the roof clips to pure white. Dirt and the roads stay empty. The badge stays (`dev · v1.1.142`).
@@ -257,7 +259,7 @@ Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/de
 | Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
 
 - Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.143`). The panel is the title, address, Draw, Export, one short hint, and the status line. Advanced is a small link at the bottom, closed until you open it, and the page remembers that. Inside it: foliage, water, parking, walls, poles, RVs, terrain, lidar heights, map notes, and map quality. Map notes start on. Water and lidar heights start off. Foliage, parking, walls, poles, RVs, and terrain start on, and the map starts on Auto. Copy terrain shows after export and is pasted separately in Hamina. Space pans the map. The draw label shows area in m² and ft². After export, the panel shows one line; Details holds the rest. The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control.
+- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.144`). The panel is the title, address, Draw, Export, one short hint, and the status line. Advanced is a small link at the bottom, closed until you open it, and the page remembers that. Inside it: foliage, water, parking, walls, poles, RVs, terrain, lidar heights, map notes, and map quality. Map notes start on. Water and lidar heights start off. Foliage, parking, walls, poles, RVs, and terrain start on, and the map starts on Auto. Copy terrain shows after export and is pasted separately in Hamina. Space pans the map. The draw label shows area in m² and ft². After export, the panel shows one line; Details holds the rest. The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control.
 - Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
 
 
