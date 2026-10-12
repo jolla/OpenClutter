@@ -15,6 +15,10 @@ const {
   cpuStartLine,
   tileTimingLine,
   setExportLog,
+  beginExportTiles,
+  tileProgress,
+  openTreeTiles,
+  completeTreeTile,
 } = require("../netlify/lib/cpu-pool");
 const { treePairsFromPoints } = require("../netlify/lib/vegetation");
 const { treePairsParallel, bandsForGrid, TILE_MIN, TILE_MAX, OVERLAP_M } = require("../netlify/lib/detect-parallel");
@@ -128,6 +132,26 @@ describe("cpu workers", () => {
     assert.equal(bands[0].y0, 0);
     assert.equal(bands[bands.length - 1].y1, height);
     assert.equal(covered, height);
+  });
+
+  it("advances the Trees tile count and does not drop it for another queue", () => {
+    beginExportTiles();
+    openTreeTiles("canopy-tile", 4);
+    assert.deepEqual(tileProgress(), { tilesDone: 0, tilesTotal: 4 });
+    completeTreeTile("canopy-tile");
+    completeTreeTile("canopy-tile");
+    assert.deepEqual(tileProgress(), { tilesDone: 2, tilesTotal: 4 });
+    openTreeTiles("vehicle-job", 10);
+    completeTreeTile("vehicle-job");
+    assert.deepEqual(tileProgress(), { tilesDone: 2, tilesTotal: 4 });
+    openTreeTiles("foliage-assemble", 4);
+    assert.deepEqual(tileProgress(), { tilesDone: 2, tilesTotal: 4 });
+    completeTreeTile("foliage-assemble");
+    completeTreeTile("foliage-assemble");
+    completeTreeTile("foliage-assemble");
+    completeTreeTile("foliage-assemble");
+    assert.deepEqual(tileProgress(), { tilesDone: 4, tilesTotal: 4 });
+    beginExportTiles();
   });
 
   it("fires the heartbeat while a worker thread is busy", async () => {
