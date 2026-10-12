@@ -2031,33 +2031,24 @@ async function handleClutter(event) {
     await flushProgress();
   }
 
+  // Gap fill runs on a worker while the rest of this stage prepares
+  // footprints. It used to sit on the Trees clock before any tile started.
+  let fillPromise = null;
   if (includeFoliage && !chmTimedOut && decoded && frame) {
-    try {
-      const filled = background
-        ? await detectParallel.fillInWorker(chmGrid, {
-            frame,
-            image: decoded,
-            worldcover: worldCover,
-            openRuns,
-          })
-        : fillCanopyGaps(chmGrid, {
-            frame,
-            image: decoded,
-            worldcover: worldCover,
-            openRuns,
-          });
-      if (filled && filled.values && filled.nonzero > 0) chmGrid = filled;
-    } catch {
+    const fillOpts = { frame, image: decoded, worldcover: worldCover, openRuns };
+    if (background) {
+      fillPromise = detectParallel.fillInWorker(chmGrid, fillOpts).catch(() => {
+        try {
+          return fillCanopyGaps(chmGrid, fillOpts);
+        } catch {
+          return null;
+        }
+      });
+    } else {
       try {
-        const filled = fillCanopyGaps(chmGrid, {
-          frame,
-          image: decoded,
-          worldcover: worldCover,
-          openRuns,
-        });
-        if (filled && filled.values && filled.nonzero > 0) chmGrid = filled;
+        fillPromise = Promise.resolve(fillCanopyGaps(chmGrid, fillOpts));
       } catch {
-        // The measured grid still ships when the fill cannot be read.
+        fillPromise = null;
       }
     }
   }
@@ -2083,72 +2074,92 @@ async function handleClutter(event) {
     if (wantParallel) {
       preview = footprintsToClutter(list, frame, affine, slopeTop, { buildingCeiling });
     }
-    if (background && includeFoliage && !chmTimedOut) {
-      if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage trees-parallel\n");
-      try {
-        foliagePack = await stageClock.timeSpan("tree", () =>
-          detectParallel.treePairsParallel(treePoints, frame, preview.aabbs, affine, {
-            canopyHits: placeHits,
-            chmGrid,
-            buildingRings: preview.overlayRings,
-            maskRings,
-            maskPolygons,
-            woodRings,
-            terrain,
-            omitFoliage: false,
-            chmRequired: true,
-            maxPolygons: foliageCap,
-          })
-        );
-      } catch (err) {
-        if (process.env.OPENCLUTTER_STAGE_LOG) {
-          process.stderr.write("stage trees-parallel-fail " + (err && err.message ? err.message : err) + "\n");
-        }
-        foliagePack = null;
-      }
-    }
+    const parallelTasks = [];
     if (background && (outdoorFeatures.length || guidewayFeatures.length || bridgeFeatures.length)) {
       if (process.env.OPENCLUTTER_STAGE_LOG) {
         process.stderr.write("stage outdoor-parallel " + outdoorFeatures.length + "\n");
       }
-      try {
-        const buildings = [];
-        if ((includeWater === true || includeParking === true || includeRvs === true) && outdoorOn && outdoorMiss !== true) {
-          for (let i = 0; i < preview.oiAreas.length; i++) {
-            buildings.push({
-              index: i,
-              ringPx: preview.overlayRings[i],
-              material: preview.oiAreas[i] && preview.oiAreas[i].area_material,
-            });
-          }
+      const buildings = [];
+      if ((includeWater === true || includeParking === true || includeRvs === true) && outdoorOn && outdoorMiss !== true) {
+        for (let i = 0; i < preview.oiAreas.length; i++) {
+          buildings.push({
+            index: i,
+            ringPx: preview.overlayRings[i],
+            material: preview.oiAreas[i] && preview.oiAreas[i].area_material,
+          });
         }
-        const liveOutdoor =
-          outdoorOn && outdoorMiss !== true
-            ? outdoorFeatures
-            : outdoorFeatures.filter((feat) => feat && feat.kind === "storage");
-        const deckCapNow = raisedDeckCap(areaCapOverride);
-        outdoorPlan = await stageClock.timeSpan("vehicle", () =>
-          detectParallel.outdoorParallel({
-            features: liveOutdoor.concat(guidewayFeatures, bridgeFeatures),
-            frame,
-            buildings,
-            parkingRings:
-              includeParking === true && outdoorOn && outdoorMiss !== true ? preview.parkingRings || [] : [],
-            segmentCaps:
-              deckCapNow > 0
-                ? { guideway: deckCapNow, bridge: deckCapNow, footbridge: Math.max(12, Math.floor(deckCapNow / 5)) }
-                : undefined,
-            terrain,
-            imgBuf,
+      }
+      const liveOutdoor =
+        outdoorOn && outdoorMiss !== true
+          ? outdoorFeatures
+          : outdoorFeatures.filter((feat) => feat && feat.kind === "storage");
+      const deckCapNow = raisedDeckCap(areaCapOverride);
+      parallelTasks.push(
+        stageClock
+          .timeSpan("vehicle", () =>
+            detectParallel.outdoorParallel({
+              features: liveOutdoor.concat(guidewayFeatures, bridgeFeatures),
+              frame,
+              buildings,
+              parkingRings:
+                includeParking === true && outdoorOn && outdoorMiss !== true ? preview.parkingRings || [] : [],
+              segmentCaps:
+                deckCapNow > 0
+                  ? { guideway: deckCapNow, bridge: deckCapNow, footbridge: Math.max(12, Math.floor(deckCapNow / 5)) }
+                  : undefined,
+              terrain,
+              imgBuf,
+            })
+          )
+          .then((plan) => {
+            outdoorPlan = plan;
           })
-        );
-      } catch (err) {
-        if (process.env.OPENCLUTTER_STAGE_LOG) {
-          process.stderr.write("stage outdoor-parallel-fail " + (err && err.message ? err.message : err) + "\n");
-        }
-        outdoorPlan = null;
+          .catch((err) => {
+            if (process.env.OPENCLUTTER_STAGE_LOG) {
+              process.stderr.write("stage outdoor-parallel-fail " + (err && err.message ? err.message : err) + "\n");
+            }
+            outdoorPlan = null;
+          })
+      );
+    }
+    if (fillPromise) {
+      try {
+        const filled = await fillPromise;
+        if (filled && filled.values && filled.nonzero > 0) chmGrid = filled;
+      } catch {
+        // The measured grid still ships when the fill cannot be read.
       }
     }
+    if (background && includeFoliage && !chmTimedOut) {
+      if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage trees-parallel\n");
+      parallelTasks.push(
+        stageClock
+          .timeSpan("tree", () =>
+            detectParallel.treePairsParallel(treePoints, frame, preview.aabbs, affine, {
+              canopyHits: placeHits,
+              chmGrid,
+              buildingRings: preview.overlayRings,
+              maskRings,
+              maskPolygons,
+              woodRings,
+              terrain,
+              omitFoliage: false,
+              chmRequired: true,
+              maxPolygons: foliageCap,
+            })
+          )
+          .then((pack) => {
+            foliagePack = pack;
+          })
+          .catch((err) => {
+            if (process.env.OPENCLUTTER_STAGE_LOG) {
+              process.stderr.write("stage trees-parallel-fail " + (err && err.message ? err.message : err) + "\n");
+            }
+            foliagePack = null;
+          })
+      );
+    }
+    if (parallelTasks.length) await Promise.all(parallelTasks);
     if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage build-clutter\n");
     return buildClutter({
       frame,

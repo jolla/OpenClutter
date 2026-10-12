@@ -1413,7 +1413,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       }
     }
   }
-  const pushCanopy = (ringPx, material, shape) => {
+  const pushCanopy = (ringPx, material, shape, context) => {
     const pieces = clipFoliageRing(ringPx, clipSet);
     for (const piece of pieces) {
       oiAreas.push({
@@ -1421,9 +1421,10 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
         material,
         kind: "canopy",
         shape: piece.length === ringPx.length ? shape : "polygon",
+        context: context === true,
       });
-      overlayRings.push(piece);
-      if (material) materials.push(material);
+      if (!context) overlayRings.push(piece);
+      if (material && !context) materials.push(material);
     }
   };
   const woodRings = opts && (opts.omitFoliage || opts.skipWood) ? [] : (opts && opts.woodRings) || [];
@@ -1447,7 +1448,10 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     if (material && ringPx.length >= 4) polygons.push({ ringPx, material, kind: "canopy", shape: "polygon" });
   }
   polygons.sort((a, b) => ringPxArea(b.ringPx) - ringPxArea(a.ringPx));
-  for (const poly of polygons) pushCanopy(poly.ringPx, poly.material, "polygon");
+  let ownedPolygons = 0;
+  for (let i = 0; i < polygons.length; i++) if (!polygons[i].context) ownedPolygons++;
+  for (const poly of polygons) pushCanopy(poly.ringPx, poly.material, "polygon", poly.context);
+
   // Clip against roofs, water, and ski runs, then dissolve so two patches do
   // not paint green on green. Clipboard follows the dissolved rings.
   const dissolved = dissolveFoliageRings(oiAreas, clipSet);
@@ -1546,6 +1550,9 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     return up;
   };
   for (const area of dissolved) {
+    // A neighbor crown is here so a shared edge is cut the same way. Its
+    // pieces belong to the tile that owns that crown.
+    if (area.context) continue;
     const seats = seatsFor(area);
     for (let s = 0; s < seats.length; s++) {
       const seat = seats[s];
@@ -1672,7 +1679,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     foliageGeometry,
     foliageCoarsened: coarsened,
     foliageDropped,
-    polygons: polygons.length,
+    polygons: ownedPolygons,
     overlayPoints: [],
     overlayRings,
   };
