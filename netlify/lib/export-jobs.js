@@ -153,10 +153,23 @@ function withJobLock(id, fn) {
   return run;
 }
 
+let strongReadsOk = true;
+
 async function loadJobRecord(store, id) {
   const key = jobKey(id);
   if (store && typeof store.getWithMetadata === "function") {
-    const row = await store.getWithMetadata(key, { type: "json", consistency: "strong" });
+    let row;
+    try {
+      row = strongReadsOk
+        ? await store.getWithMetadata(key, { type: "json", consistency: "strong" })
+        : await store.getWithMetadata(key, { type: "json" });
+    } catch (err) {
+      // v1 functions and the Fly worker lack uncachedEdgeURL. Fall back to an
+      // eventual read; the etag + onlyIfMatch write still guards conflicts.
+      if (!/uncachedEdgeURL|strong consistency/i.test(String(err && err.message))) throw err;
+      strongReadsOk = false;
+      row = await store.getWithMetadata(key, { type: "json" });
+    }
     if (!row) return { job: null, etag: null };
     return { job: row.data || null, etag: row.etag || null };
   }
