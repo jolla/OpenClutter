@@ -100,6 +100,11 @@ function ringKey(ring) {
 }
 
 async function fetchOne(bbox, opts) {
+  const { timeSpan } = require("./stage-clock");
+  return timeSpan("osm", () => fetchOneWork(bbox, opts));
+}
+
+async function fetchOneWork(bbox, opts) {
   const fetchImpl = (opts && opts.fetchImpl) || fetch;
   const r = await fetchImpl(mapUrl(bbox), {
     headers: { "user-agent": (opts && opts.ua) || "openclutter", accept: "application/xml,text/xml,*/*" },
@@ -162,6 +167,11 @@ async function readJson(r) {
 }
 
 async function fetchOverpassTile(bbox, opts) {
+  const { timeSpan } = require("./stage-clock");
+  return timeSpan("overpass", () => fetchOverpassTileWork(bbox, opts));
+}
+
+async function fetchOverpassTileWork(bbox, opts) {
   const fetchImpl = (opts && opts.fetchImpl) || fetch;
   const body = "data=" + encodeURIComponent(tileQuery(bbox));
   const headers = {

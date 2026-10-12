@@ -1893,12 +1893,14 @@ async function fetchOutdoorClutter(bbox, want, opts) {
     }
     if (ctrl.signal.aborted) return { ok: false, features: [], notes: [] };
     const q = overpassQuery(bbox, want);
-    const r = await fetch(OVERPASS_URL, {
-      method: "POST",
-      headers: { "user-agent": ua, "content-type": "application/x-www-form-urlencoded" },
-      body: "data=" + encodeURIComponent(q),
-      signal: ctrl.signal,
-    });
+    const r = await require("./stage-clock").timeSpan("overpass", () =>
+      fetch(OVERPASS_URL, {
+        method: "POST",
+        headers: { "user-agent": ua, "content-type": "application/x-www-form-urlencoded" },
+        body: "data=" + encodeURIComponent(q),
+        signal: ctrl.signal,
+      })
+    );
     if (!r.ok) return { ok: false, features: [], notes: [] };
     const json = await r.json();
     const parsed = parseOverpass(json, want, bbox, deckCap);
@@ -2253,8 +2255,8 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       const ll = pxRingToLonLat(px, frame);
       if (!ll || ll.length < 4) continue;
       const a = ll[0];
-      const b = ll[ll.length - 1];
-      if (a[0] !== b[0] || a[1] !== b[1]) ll.push([a[0], a[1]]);
+      const end = ll[ll.length - 1];
+      if (a[0] !== end[0] || a[1] !== end[1]) ll.push([a[0], a[1]]);
       holes.push(ll);
       if (roofWantsDocks([px], frame)) docks.push(ll);
     }

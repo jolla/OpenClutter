@@ -415,6 +415,11 @@ function packPeakGrid(frame, width, height, max, count) {
 }
 
 async function fetchChmGrid(frame, opts) {
+  const { timeSpan } = require("./stage-clock");
+  return timeSpan("canopy", () => fetchChmGridWork(frame, opts));
+}
+
+async function fetchChmGridWork(frame, opts) {
   const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
   if (signal.aborted) return null;
   const keys = quadkeysForBbox(frame.west, frame.south, frame.east, frame.north, CHM_ZOOM);

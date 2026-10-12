@@ -2,6 +2,7 @@
 
 const { runBackgroundExport } = require("./clutter");
 const jobs = require("../lib/export-jobs");
+const areaCache = require("../lib/area-cache");
 
 function publicError(err) {
   const msg = err && err.message ? String(err.message) : "Export failed.";
@@ -17,10 +18,28 @@ function publicError(err) {
  */
 exports.handler = async (event) => {
   jobs.bindBlobs(event);
+  if (event && event.blobs && process.env.OPENCLUTTER_AREA_CACHE !== "0") {
+    try {
+      const { getStore } = require("@netlify/blobs");
+      areaCache.enable(getStore({ name: "openclutter-exports" }));
+    } catch {
+      /* A missing blob context leaves the cache off. The export still runs. */
+    }
+  }
   let payload = {};
   try {
     payload = JSON.parse(event.body || "{}");
   } catch {
+    return { statusCode: 202, body: "" };
+  }
+  if (payload.mode === "source-tiles") {
+    try {
+      const { getStore } = require("@netlify/blobs");
+      areaCache.enable(getStore({ name: "openclutter-exports" }));
+      await areaCache.runTileBatch(payload);
+    } catch {
+      /* The parent export fetches a tile itself when a partial is missing. */
+    }
     return { statusCode: 202, body: "" };
   }
   const jobId = payload.jobId;
@@ -64,6 +83,7 @@ exports.handler = async (event) => {
       terrainClipboard: data.terrainClipboard || null,
       terrainStatus: data.terrainStatus || "",
       gpsClipboard: data.gpsClipboard || null,
+      timings: data.timings || null,
     });
   } catch (err) {
     await jobs.updateJob(jobId, {

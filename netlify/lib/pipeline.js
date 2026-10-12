@@ -3030,7 +3030,7 @@ function buildClutter({
   const fp = footprintsToClutter(featureList, frame, affine, slopeTop, { buildingCeiling });
   const foliageOn = includeFoliage === true;
   const veg = foliageOn
-    ? treePairsFromPoints(treePoints || [], frame, fp.aabbs, affine, {
+    ? require("./stage-clock").timeSpanSync("tree", () => treePairsFromPoints(treePoints || [], frame, fp.aabbs, affine, {
         canopyHits,
         heightSample,
         chmGrid,
@@ -3042,7 +3042,7 @@ function buildClutter({
         chmRequired: chmRequired === true,
         maxPolygons: maxFoliagePolygons,
         woodRings,
-      })
+      }))
     : {
         oiAreas: [],
         clipZones: [],
@@ -3299,7 +3299,9 @@ function buildClutter({
   for (let i = 0; i < rvPieces.length; i++) chunks.push(rvPieces[i]);
   for (let i = 0; i < treePieces.length; i++) chunks.push(treePieces[i]);
   for (let i = 0; i < latePieces.length; i++) chunks.push(latePieces[i]);
-  const fitted = fitChunksToJsonBudget(frame, name, imgName, chunks, jsonByteBudget);
+  const fitted = require("./stage-clock").timeSpanSync("jsonBuild", () =>
+    fitChunksToJsonBudget(frame, name, imgName, chunks, jsonByteBudget)
+  );
   areas = fitted.areas;
   let buildingEmitted = 0;
   let treeEmitted = 0;
@@ -3404,8 +3406,12 @@ function buildClutter({
     if (t.id && String(t.id).indexOf("bldg-m-") === 0) exactBuildingHeights++;
     if (t.id && String(t.id).indexOf("foliage-m-") === 0) exactFoliageHeights++;
   }
-  const oi = buildOpenIntent(frame, name, imgName, areas, materials);
-  const oiJson = JSON.stringify(oi);
+  const packed = require("./stage-clock").timeSpanSync("jsonBuild", () => {
+    const oi = buildOpenIntent(frame, name, imgName, areas, materials);
+    return { oi, oiJson: JSON.stringify(oi) };
+  });
+  const oi = packed.oi;
+  const oiJson = packed.oiJson;
   const stats = {
     ...fp.stats,
     trees: treeGroupsKept,
@@ -3512,12 +3518,14 @@ function buildClutter({
   if (imgBuf) {
     // Hamina OpenIntent import reads the JSON and the aerial. Clipboard JSON,
     // the terrain paste, and the debug notes stay out of this zip.
-    zip = zipUnderLimit(
-      [
-        { name: `openIntent_${slug}.json`, data: Buffer.from(oiJson) },
-        { name: "images/" + imgName, data: imgBuf },
-      ],
-      ZIP_DOWNLOAD_MAX
+    zip = require("./stage-clock").timeSpanSync("zip", () =>
+      zipUnderLimit(
+        [
+          { name: `openIntent_${slug}.json`, data: Buffer.from(oiJson) },
+          { name: "images/" + imgName, data: imgBuf },
+        ],
+        ZIP_DOWNLOAD_MAX
+      )
     );
   }
   return {

@@ -25,6 +25,10 @@ async function venueSnippet(q) {
 }
 
 exports.handler = async (event) => {
+  return require("../lib/stage-clock").timeSpan("geocode", () => geocodeHandler(event));
+};
+
+async function geocodeHandler(event) {
   const cors = {
     "access-control-allow-origin": "*",
     "access-control-allow-headers": "content-type",

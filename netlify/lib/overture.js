@@ -292,6 +292,11 @@ async function readGroupRows(reader, source, group, filter, signal) {
 }
 
 async function fetchOvertureFootprints(frame, opts) {
+  const { timeSpan } = require("./stage-clock");
+  return timeSpan("overture", () => fetchOvertureFootprintsWork(frame, opts));
+}
+
+async function fetchOvertureFootprintsWork(frame, opts) {
   const bbox = {
     west: +frame.west,
     south: +frame.south,
