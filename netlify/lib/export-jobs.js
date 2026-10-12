@@ -5,12 +5,20 @@
  * The background function writes stages and the zip. A status read drops a
  * job that is older than an hour. The zip is deleted once it is downloaded.
  * Blobs have no server-side TTL, so the hour is checked on read.
+ *
+ * The Fly worker also writes a heartbeat on this same job while an export
+ * runs. The heartbeat is the current stage name and a timestamp. Netlify
+ * treats a gap of HEARTBEAT_STALE_MS as a stopped worker.
  */
 
 const { markStage } = require("./export-progress");
 
 const STORE_NAME = "openclutter-exports";
 const TTL_MS = 60 * 60 * 1000;
+// The worker writes this often. A missed beat still lands inside the
+// 45 second stale window unless the machine has actually stopped.
+const HEARTBEAT_MS = 10 * 1000;
+const HEARTBEAT_STALE_MS = 45 * 1000;
 // Netlify rejects a function response above 6,291,556 bytes. The zip is
 // base64 in that response. This is the largest file whose base64 form,
 // plus a small envelope, still fits. It is not a Hamina import limit.
@@ -167,8 +175,29 @@ async function deleteJob(id) {
   await store.delete(zipKey(id)).catch(() => {});
 }
 
+/**
+ * Stamp the job the worker is still running. A finished job is left as it
+ * is, so a late beat cannot turn a done export back into a running one.
+ * The patch is only the beat, so a stage update is not rolled back.
+ */
+async function writeHeartbeat(id, stage) {
+  if (!validJobId(id)) return null;
+  const cur = await readJob(id);
+  if (!cur) return null;
+  if (cur.state === "done" || cur.state === "error") return cur;
+  const name = String(stage || cur.heartbeatStage || cur.stage || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return updateJob(id, {
+    heartbeatAt: Date.now(),
+    heartbeatStage: name,
+  });
+}
+
 module.exports = {
   TTL_MS,
+  HEARTBEAT_MS,
+  HEARTBEAT_STALE_MS,
   ZIP_DOWNLOAD_MAX,
   FUNCTION_RESPONSE_MAX,
   zipDownloadFits,
@@ -184,4 +213,5 @@ module.exports = {
   takeZip,
   deleteJob,
   freshJob,
+  writeHeartbeat,
 };

@@ -7,6 +7,7 @@
 
 const crypto = require("node:crypto");
 const jobs = require("../netlify/lib/export-jobs");
+const { HEARTBEAT_MS } = jobs;
 const areaCache = require("../netlify/lib/area-cache");
 const { completeExportJob } = require("../netlify/lib/export-run");
 
@@ -116,12 +117,94 @@ async function handleWorkerRequest(req) {
   return { statusCode: 202, body: { ok: true, accepted: true }, job };
 }
 
+function stageStartLine(jobId, stage, elapsedMs) {
+  const elapsed = (Math.max(0, elapsedMs) / 1000).toFixed(1);
+  return "export " + jobId + " stage start " + stage + " elapsed " + elapsed + "s";
+}
+
+function stageDoneLine(jobId, stage, durationMs) {
+  const duration = (Math.max(0, durationMs) / 1000).toFixed(1);
+  return "export " + jobId + " stage done " + stage + " duration " + duration + "s";
+}
+
+/**
+ * One line when a stage starts, one when it finishes. fly logs shows both.
+ * elapsed is from the start of this export. duration is that stage only.
+ */
+function createStageLogger(jobId, opts) {
+  const nowFn = (opts && opts.now) || Date.now;
+  const log = (opts && opts.log) || ((line) => console.log(line));
+  const t0 = nowFn();
+  let current = "";
+  let currentAt = t0;
+  return {
+    note(stage) {
+      const name = String(stage || "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!name || name === current) return;
+      const now = nowFn();
+      if (current) log(stageDoneLine(jobId, current, now - currentAt));
+      current = name;
+      currentAt = now;
+      log(stageStartLine(jobId, name, now - t0));
+    },
+    finish() {
+      if (!current) return;
+      const now = nowFn();
+      log(stageDoneLine(jobId, current, now - currentAt));
+      current = "";
+    },
+  };
+}
+
+function createWorkerSession(jobId, opts) {
+  const logger = createStageLogger(jobId, opts);
+  let stage = "Fetching aerial";
+  logger.note(stage);
+  return {
+    stageName() {
+      return stage;
+    },
+    async onProgress(patch) {
+      if (!patch || !patch.stage) return;
+      stage = String(patch.stage);
+      logger.note(stage);
+      await jobs.writeHeartbeat(jobId, stage);
+    },
+    finish() {
+      logger.finish();
+    },
+  };
+}
+
+function startHeartbeatTimer(jobId, getStage, intervalMs) {
+  const ms = intervalMs == null ? HEARTBEAT_MS : intervalMs;
+  const beat = () => {
+    Promise.resolve()
+      .then(() => jobs.writeHeartbeat(jobId, typeof getStage === "function" ? getStage() : getStage))
+      .catch(() => {});
+  };
+  beat();
+  const timer = setInterval(beat, ms);
+  if (typeof timer.unref === "function") timer.unref();
+  return timer;
+}
+
 async function runAcceptedJob(jobId, inner) {
   enableAreaCache();
+  const session = createWorkerSession(jobId);
+  const timer = startHeartbeatTimer(jobId, () => session.stageName());
   try {
-    return await completeExportJob(jobId, inner, { worker: "fly" });
+    return await completeExportJob(jobId, inner, {
+      worker: "fly",
+      onProgress: (patch) => session.onProgress(patch),
+    });
   } catch {
     return { ok: false, reason: "export-failed" };
+  } finally {
+    clearInterval(timer);
+    session.finish();
   }
 }
 
@@ -131,8 +214,14 @@ function jobInFlight() {
 
 module.exports = {
   BODY_MAX,
+  HEARTBEAT_MS,
   handleWorkerRequest,
   configureBlobsFromEnv,
   secretOk,
   jobInFlight,
+  createStageLogger,
+  createWorkerSession,
+  startHeartbeatTimer,
+  stageStartLine,
+  stageDoneLine,
 };
