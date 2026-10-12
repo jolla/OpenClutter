@@ -1,0 +1,2 @@
+site,class,recall,precision,labels,predictions,source,merged,json_bytes,json_budget,pass
+Rogers campground,rv,50.0%,50.0%,10,28,manual image labels,no,72159,4900000,no
