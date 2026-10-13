@@ -93,6 +93,29 @@
     return raised + sloped;
   }
 
+  const TERRAIN_OMITTED_LINE = "Terrain was not included.";
+
+  /**
+   * The one Export button reads Copy terrain only after a finished export
+   * that includes a terrain mesh. Terrain off, or terrain left out, stays
+   * Export and the summary says terrain was not included.
+   */
+  function finishedExportButton(choice) {
+    const copyReady = !!(choice && choice.json && !choice.gpsOnly);
+    return {
+      copyReady: copyReady,
+      label: copyReady ? "Copy terrain" : "Export",
+      omittedLine: copyReady ? "" : TERRAIN_OMITTED_LINE,
+    };
+  }
+
+  function appendTerrainOmitted(lines, button) {
+    const next = lines.slice();
+    const line = button && !button.copyReady ? button.omittedLine : "";
+    if (line && next.indexOf(line) === -1) next.push(line);
+    return next;
+  }
+
   function terrainPasteLine(clip) {
     const floors = pasteFloors(clip);
     if (!(floors > 0)) return "";
@@ -260,7 +283,7 @@
       if (+counts[i][1] > 0) lines.push(counts[i][0] + " " + (+counts[i][1]));
     }
     if (options.terrainOn === false) {
-      lines.push("Terrain off");
+      lines.push(TERRAIN_OMITTED_LINE);
     } else {
       const minM = finiteNum(stats.terrainMinM);
       const maxM = finiteNum(stats.terrainMaxM);
@@ -303,6 +326,8 @@
     pasteFloors: pasteFloors,
     terrainPasteLine: terrainPasteLine,
     chooseTerrainPaste: chooseTerrainPaste,
+    finishedExportButton: finishedExportButton,
+    appendTerrainOmitted: appendTerrainOmitted,
     exportSummaryLines: exportSummaryLines,
     steepestGrade: steepestGrade,
   };
