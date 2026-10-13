@@ -132,8 +132,8 @@ const BACKGROUND_ANSWER_MS = BACKGROUND_PLATFORM_MS - 60 * 1000;
 const BACKGROUND_CHM_MS = 180 * 1000;
 const BACKGROUND_COVER_MS = 60 * 1000;
 const BACKGROUND_LIDAR_MS = 45 * 1000;
-const BACKGROUND_PLATE_MS = 90000;
-const BACKGROUND_PLATE_FALLBACK_MS = 45000;
+// The aerial stage budget lives in aerial-fetch.js. A single 10 MP export
+// used to hold the job for 90s, then a one-pixel-different cap held it again.
 const { AsyncLocalStorage } = require("node:async_hooks");
 const exportAls = new AsyncLocalStorage();
 
@@ -169,6 +169,7 @@ const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape")
 const { fetchUsgsLidar, applyLidarSample, lidarNote, lidarStatusLine } = require("../lib/usgs-lidar");
 const exportJobs = require("../lib/export-jobs");
 const stageClock = require("../lib/stage-clock");
+const aerialFetch = require("../lib/aerial-fetch");
 const areaCache = require("../lib/area-cache");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
 const { fetchMsGlobalFootprints, globalSkipWarning } = require("../lib/ms-global");
@@ -350,9 +351,7 @@ function backgroundImagerySteps(devHost, bbox) {
   } else {
     plan = imageryExportPlan(true, bbox, "auto").filter((step) => step.maxSide >= IMAGERY_MAX_SIDE);
   }
-  return plan.map((step, i) =>
-    Object.assign({ attemptMs: i === 0 ? BACKGROUND_PLATE_MS : BACKGROUND_PLATE_FALLBACK_MS }, step)
-  );
+  return plan.map((step) => Object.assign({ attemptMs: aerialFetch.aerialBudgetMs() }, step));
 }
 
 function imagerySteps(devHost, bbox) {
@@ -406,7 +405,7 @@ function imagerySteps(devHost, bbox) {
  * function can still answer. 0 means do not start another image.
  */
 function imageryStepBudget(elapsed, attemptMs) {
-  if (isBackgroundExport()) return attemptMs > 0 ? attemptMs : BACKGROUND_PLATE_FALLBACK_MS;
+  if (isBackgroundExport()) return aerialFetch.aerialBudgetMs();
   const elapsedMs = Math.max(0, +elapsed || 0);
   const attempt = attemptMs > 0 ? attemptMs : IMAGERY_ATTEMPT_MS;
   if (elapsedMs < IMAGERY_STEPDOWN_QUICK_MS) return attempt;
@@ -423,18 +422,18 @@ async function fetchImageryStepped(bbox, steps) {
   let last;
   const started = Date.now();
   let askedSide = 0;
-  const seen = new Set();
   const prepared = [];
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     const plate = imageryFrame(bbox, step);
-    const key = plate.imgW + "x" + plate.imgH;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (prepared.some((entry) => aerialFetch.sameExportPlate(entry.plate, plate))) continue;
     if (!askedSide) askedSide = Math.max(plate.imgW, plate.imgH);
     prepared.push({ step, plate });
   }
   const sharpCapped = !!(prepared[0] && prepared[0].step.sharpCapped);
+  if (isBackgroundExport()) {
+    return fetchImageryWithinBudget(prepared, askedSide, sharpCapped);
+  }
   for (let n = 0; n < prepared.length; n++) {
     const entry = prepared[n];
     const elapsed = Date.now() - started;
@@ -452,6 +451,53 @@ async function fetchImageryStepped(bbox, steps) {
     }
   }
   throw last;
+}
+
+/**
+ * Background exports race every distinct plate and stop at the stage
+ * budget. The sharpest JPEG that has arrived is the one kept. A plate
+ * near the Esri pixel cap is fetched as tiles so one request cannot sit
+ * for 90s.
+ */
+async function fetchImageryWithinBudget(prepared, askedSide, sharpCapped) {
+  let unitTotal = 0;
+  let unitDone = 0;
+  function noteAerial() {
+    reportProgress({
+      stage: "Fetching aerial",
+      tilesDone: unitDone,
+      tilesTotal: unitTotal > 0 ? unitTotal : 1,
+    });
+  }
+  let got;
+  try {
+    got = await stageClock.timeSpan("aerialFetch", () =>
+      aerialFetch.racePlates(
+        prepared.map((entry, i) => ({
+          plate: entry.plate,
+          tile: i === 0 && aerialFetch.shouldTilePlate(entry.plate),
+        })),
+        {
+          budgetMs: aerialFetch.aerialBudgetMs(),
+          onUnits: (total) => {
+            unitTotal = total;
+            noteAerial();
+          },
+          onUnit: () => {
+            unitDone += 1;
+            noteAerial();
+          },
+          fetchImage: (frame, signal) =>
+            fetchImageryJpegBody(esriImageryUrl(frame), aerialFetch.aerialBudgetMs(), signal),
+        }
+      )
+    );
+  } catch (err) {
+    if (err && err.source) throw err;
+    throw fail("imagery", "The operation was aborted due to timeout");
+  }
+  const plate = prepared[got.index] ? prepared[got.index].plate : prepared[0].plate;
+  return plateResult({ buf: got.buf, plate }, askedSide, got.index > 0, sharpCapped);
 }
 
 function imageryFrame(bbox, step) {
@@ -506,19 +552,25 @@ function imageryDeadline(ms, ctrl) {
   };
 }
 
-async function fetchImageryJpeg(url, attemptMs) {
-  return stageClock.timeSpan("aerialFetch", () => fetchImageryJpegBody(url, attemptMs));
+async function fetchImageryJpeg(url, attemptMs, signal) {
+  return stageClock.timeSpan("aerialFetch", () => fetchImageryJpegBody(url, attemptMs, signal));
 }
 
-async function fetchImageryJpegBody(url, attemptMs) {
+async function fetchImageryJpegBody(url, attemptMs, signal) {
   const ceiling = attemptMs > 0 ? attemptMs : IMAGERY_ATTEMPT_MS;
   let last = "aerial imagery failed";
   let timedOut = false;
   const started = Date.now();
   for (let attempt = 0; attempt < IMAGERY_ATTEMPTS; attempt++) {
+    if (signal && signal.aborted) break;
     const budget = Math.min(ceiling, ceiling - (Date.now() - started));
     if (budget < 1200) break;
     const ctrl = new AbortController();
+    const onAbort = () => ctrl.abort();
+    if (signal) {
+      if (signal.aborted) ctrl.abort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
     const deadline = imageryDeadline(budget, ctrl);
     const work = (async () => {
       const r = await fetch(url, { headers: { "user-agent": UA }, signal: ctrl.signal });
@@ -542,7 +594,9 @@ async function fetchImageryJpegBody(url, attemptMs) {
       timedOut = isTimeout(e) || !(e && e.httpStatus);
     } finally {
       deadline.clear();
+      if (signal) signal.removeEventListener("abort", onAbort);
     }
+    if (signal && signal.aborted) break;
     if (attempt + 1 >= IMAGERY_ATTEMPTS) break;
     const pause = IMAGERY_BACKOFF_MS * (attempt + 1);
     if (Date.now() - started + pause > ceiling - 1200) break;
@@ -2538,4 +2592,6 @@ exports.terrainRescueBudget = terrainRescueBudget;
 exports.setFetchTerrainDemForTests = setFetchTerrainDemForTests;
 exports.setFetchChmGridForTests = setFetchChmGridForTests;
 exports.setFetchOvertureForTests = setFetchOvertureForTests;
+exports.setAerialBudgetForTests = aerialFetch.setAerialBudgetForTests;
+exports.AERIAL_STAGE_BUDGET_MS = aerialFetch.AERIAL_STAGE_BUDGET_MS;
 exports.devChmWait = devChmWait;
