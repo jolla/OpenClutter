@@ -192,7 +192,8 @@ const {
   noteMissingTerrain,
   normalizeTerrainResolution,
   normalizeTerrainStyle,
-  isDevDemHost,
+  isDevTestHost,
+  isQualityHost,
   parseTerrainFloorOverride,
   frameHas3dep,
   ABSOLUTE_MAX_SAMPLES,
@@ -1195,7 +1196,7 @@ async function respondTerrainAside(frame, body, event, cors) {
         terrainStyle,
         kind,
         attribution,
-        terrainFloors: isDevDemHost(event) ? parseTerrainFloorOverride(body && body.terrainFloors) : 0,
+        terrainFloors: isDevTestHost(event) ? parseTerrainFloorOverride(body && body.terrainFloors) : 0,
       });
     } catch {
       terrain = null;
@@ -1355,10 +1356,13 @@ async function handleClutter(event) {
     return json(400, cors, { error: "invalid json" });
   }
 
-  const devHost = isDevDemHost(event);
-  const areaCapOverride = devHost ? parseAreaCapOverride(body.areaCap) : 0;
-  const jsonBudgetOverride = devHost ? parseJsonBudgetOverride(body.jsonBudget) : 0;
-  const terrainFloors = devHost ? parseTerrainFloorOverride(body.terrainFloors) : 0;
+  // devHost is the quality gate (dev, previews and production). testHost
+  // gates the testing overrides, which stay off the public site.
+  const devHost = isQualityHost(event);
+  const testHost = isDevTestHost(event);
+  const areaCapOverride = testHost ? parseAreaCapOverride(body.areaCap) : 0;
+  const jsonBudgetOverride = testHost ? parseJsonBudgetOverride(body.jsonBudget) : 0;
+  const terrainFloors = testHost ? parseTerrainFloorOverride(body.terrainFloors) : 0;
   const deckCap = raisedDeckCap(areaCapOverride);
   if (body.async === true || body.async === "true") {
     return enqueueBackgroundExport(event, body, cors);
