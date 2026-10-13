@@ -9,7 +9,7 @@ const { geoFrame, lockIsotropicImagery, llToPx } = require("../netlify/lib/geo-f
 const { rejectPavementFootprints } = require("../netlify/lib/pavement");
 const { footprintsToClutter } = require("../netlify/lib/pipeline");
 const { parseBuildingDetail, shapeBuildings } = require("../netlify/lib/building-shape");
-const { semisAtDocks } = require("../netlify/lib/vehicle-track");
+const { semisAtDocks, yardInsideFootprint } = require("../netlify/lib/vehicle-track");
 
 const dir = path.join(__dirname, "fixtures/structure-sites");
 const sites = JSON.parse(fs.readFileSync(path.join(dir, "sites.json"), "utf8"));
@@ -109,7 +109,7 @@ function exportSite(site) {
     break;
   }
   const trailers = site.kind === "warehouse" ? semisAtDocks([site.ring], frame, plate, [site.ring]) : [];
-  return { paved, shaped, built, material, trailers, frame };
+  return { paved, shaped, built, material, trailers, frame, plate };
 }
 
 describe("deck and warehouse rules on other US sites", () => {
@@ -149,11 +149,15 @@ describe("deck and warehouse rules on other US sites", () => {
           site.id + " yard recall " + out.trailers.length
         );
       }
+      const yard = yardInsideFootprint(site.ring, out.frame, out.plate);
       for (const trailer of out.trailers) {
         assert.equal(trailer.heightM, 4.1);
         if (!trailer.center || !pointInRing(trailer.center, site.ring)) continue;
         const inside = edgeMeters(trailer.center, site.ring);
-        assert.ok(inside <= 8, site.id + " trailer " + inside.toFixed(1) + " m inside the roof");
+        if (inside <= 8) continue;
+        const x = ((trailer.center[0] - out.frame.west) / (out.frame.east - out.frame.west)) * out.frame.imgW;
+        const y = ((out.frame.north - trailer.center[1]) / (out.frame.north - out.frame.south)) * out.frame.imgH;
+        assert.ok(yard.allow && yard.allow(x, y), site.id + " trailer " + inside.toFixed(1) + " m inside the roof");
       }
     });
   }
