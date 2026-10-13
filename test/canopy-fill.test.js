@@ -91,6 +91,40 @@ describe("dark conifer canopy", () => {
     assert.equal(filled.values[2 * 12 + 8], 18);
   });
 
+  it("keeps a measured crown when the cell center is lawn and the edge is spruce", () => {
+    const frame = { west: 0, south: 0, east: 1, north: 1 };
+    const w = 24;
+    const h = 24;
+    const data = Buffer.alloc(w * h * 4, 255);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        const spruce = x >= 8 && x <= 14 && y >= 6 && y <= 12;
+        const n = (x * 3 + y * 5) % 7;
+        data[i] = spruce ? 32 + n * 4 : 176;
+        data[i + 1] = spruce ? 58 + n * 5 : 198;
+        data[i + 2] = spruce ? 18 + n * 3 : 120;
+      }
+    }
+    const grid = {
+      west: 0,
+      south: 0,
+      east: 1,
+      north: 1,
+      width: 6,
+      height: 4,
+      values: new Uint8Array(24),
+      nonzero: 1,
+    };
+    grid.values[1 * 6 + 1] = 11;
+    const filled = fillCanopyGaps(grid, {
+      frame,
+      image: { data, width: w, height: h },
+      worldcover: { sample: () => 0 },
+    });
+    assert.equal(filled.values[1 * 6 + 1], 11, "height the model measured under the crown stays");
+  });
+
   it("leaves a lawn, a pitch, and a road open when the map calls them trees", () => {
     assert.equal(openGroundPixel(176, 198, 120, 2), "lawn");
     assert.equal(openGroundPixel(160, 130, 80, 3), "pitch");

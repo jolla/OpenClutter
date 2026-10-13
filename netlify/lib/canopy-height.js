@@ -1020,7 +1020,7 @@ function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH, medianTop
       const cover = cellCoverage(open, pixels);
       if (prof) profile.add("coverage", profile.msSince(tProf));
       const spill = Math.abs(polyArea(open)) / pixels.length;
-      if (cover >= 0.92 && spill <= 1.06) break;
+      if (cover >= 0.92 && spill <= 1.035) break;
       const nextVerts = Math.min(160, Math.max(maxVerts + 8, Math.round(maxVerts * 1.5)));
       if (nextVerts <= maxVerts) break;
       if (prof) tProf = profile.now();

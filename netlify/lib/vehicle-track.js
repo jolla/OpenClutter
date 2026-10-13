@@ -1531,11 +1531,11 @@ function mobileHomesInRingWork(ring, frame, plate) {
  * shadow on one flank. A building roof is wide on both sides, so it is
  * left out. Each kept trailer is one oriented metal box.
  */
-function semisInLot(ring, frame, plate, holes) {
-  return require("./stage-clock").timeSpanSync("vehicle", () => semisInLotWork(ring, frame, plate, holes));
+function semisInLot(ring, frame, plate, holes, opts) {
+  return require("./stage-clock").timeSpanSync("vehicle", () => semisInLotWork(ring, frame, plate, holes, opts));
 }
 
-function semisInLotWork(ring, frame, plate, holes) {
+function semisInLotWork(ring, frame, plate, holes, opts) {
   if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return [];
   const poly = [];
   let minX = Infinity;
@@ -1572,8 +1572,11 @@ function semisInLotWork(ring, frame, plate, holes) {
     const i = (y * W + x) * 4;
     return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
   }
+  const allow = opts && opts.allow;
   function inLot(x, y) {
-    if (!pointInRing([x, y], poly)) return false;
+    if (allow) {
+      if (!allow(x, y)) return false;
+    } else if (!pointInRing([x, y], poly)) return false;
     for (let h = 0; h < holePolys.length; h++) {
       if (pointInRing([x, y], holePolys[h])) return false;
     }
@@ -1831,6 +1834,246 @@ function dockAprons(ring, depthM) {
   return aprons;
 }
 
+/**
+ * A light membrane, including the panel grid on a white roof, is not a yard.
+ * A bright trailer row inside a gray footprint is pavement the outline swallowed.
+ * The row has to show a light body beside a darker flank, and it cannot be
+ * most of the footprint.
+ */
+function yardInsideFootprint(ring, frame, plate) {
+  const empty = { yardM2: 0, roofShare: 0, bright: 0, allow: null };
+  if (!ring || ring.length < 4 || !frame || !plate || !(plate.width > 1) || !plate.data) return empty;
+  const W = plate.width | 0;
+  const H = plate.height | 0;
+  const data = plate.data;
+  const poly = [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const xy = llToImagePx(ring[i][0], ring[i][1], frame);
+    if (!Number.isFinite(xy[0]) || !Number.isFinite(xy[1])) continue;
+    poly.push(xy);
+    if (xy[0] < minX) minX = xy[0];
+    if (xy[1] < minY) minY = xy[1];
+    if (xy[0] > maxX) maxX = xy[0];
+    if (xy[1] > maxY) maxY = xy[1];
+  }
+  if (poly.length < 3) return empty;
+  const x0 = Math.max(1, Math.floor(minX));
+  const y0 = Math.max(1, Math.floor(minY));
+  const x1 = Math.min(W - 2, Math.ceil(maxX));
+  const y1 = Math.min(H - 2, Math.ceil(maxY));
+  const cw = x1 - x0 + 1;
+  const ch = y1 - y0 + 1;
+  if (cw < 12 || ch < 12 || cw * ch > 2500000) return empty;
+  const mpu = Math.min(frame.mpuX > 0 ? frame.mpuX : 1, frame.mpuY > 0 ? frame.mpuY : 1);
+  const cellM2 = Math.max(mpu * mpu, 0.04);
+  function Yat(x, y) {
+    const i = (y * W + x) * 4;
+    return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+  }
+  function greenAt(x, y) {
+    const i = (y * W + x) * 4;
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    return g >= r + 18 && g >= b + 8 && 2 * g - r - b >= 30;
+  }
+  const step = 1;
+  const inside = new Uint8Array(cw * ch);
+  const bright = new Uint8Array(cw * ch);
+  let inN = 0;
+  let brightN = 0;
+  for (let y = y0; y <= y1; y += step) {
+    for (let x = x0; x <= x1; x += step) {
+      if (!pointInRing([x, y], poly) || greenAt(x, y)) continue;
+      const k = (y - y0) * cw + (x - x0);
+      inside[k] = 1;
+      inN++;
+      if (Yat(x, y) >= 186) {
+        bright[k] = 1;
+        brightN++;
+      }
+    }
+  }
+  if (inN < 40) return empty;
+  const brightFrac = brightN / inN;
+  const seen = new Uint8Array(cw * ch);
+  let best = [];
+  for (let y = 0; y < ch; y += step) {
+    for (let x = 0; x < cw; x += step) {
+      const start = y * cw + x;
+      if (!bright[start] || seen[start]) continue;
+      const comp = [];
+      const stack = [start];
+      seen[start] = 1;
+      while (stack.length) {
+        const c = stack.pop();
+        comp.push(c);
+        const cx = c % cw;
+        const cy = (c / cw) | 0;
+        const nbr = [cx - step, cx + step, cx, cx];
+        const nby = [cy, cy, cy - step, cy + step];
+        for (let n = 0; n < 4; n++) {
+          const nx = nbr[n];
+          const ny = nby[n];
+          if (nx < 0 || ny < 0 || nx >= cw || ny >= ch) continue;
+          const nk = ny * cw + nx;
+          if (!bright[nk] || seen[nk]) continue;
+          seen[nk] = 1;
+          stack.push(nk);
+        }
+      }
+      if (comp.length > best.length) best = comp;
+    }
+  }
+  const roof = new Uint8Array(cw * ch);
+  const bestM2 = best.length * cellM2 * step * step;
+  if (bestM2 >= 2500) {
+    const rad = Math.max(step, Math.round(10 / Math.max(mpu, 0.2)));
+    for (let i = 0; i < best.length; i++) {
+      const c = best[i];
+      const cx = c % cw;
+      const cy = (c / cw) | 0;
+      for (let dy = -rad; dy <= rad; dy += step) {
+        const yy = cy + dy;
+        if (yy < 0 || yy >= ch) continue;
+        for (let dx = -rad; dx <= rad; dx += step) {
+          if (dx * dx + dy * dy > rad * rad) continue;
+          const xx = cx + dx;
+          if (xx < 0 || xx >= cw) continue;
+          const k = yy * cw + xx;
+          if (inside[k]) roof[k] = 1;
+        }
+      }
+    }
+    let roofN = 0;
+    for (let i = 0; i < roof.length; i += step) if (roof[i]) roofN++;
+    const roofShare = roofN / inN;
+    // A panel roof fills the outline once the white aisles spread over the panels.
+    if (roofShare >= 0.7) return { yardM2: 0, roofShare, bright: brightFrac, allow: null };
+    // A bright trailer block is large, but it is not the membrane. Leave it searchable.
+    if (roofShare < 0.4) roof.fill(0);
+  }
+  const radBody = Math.max(step, Math.round(4 / Math.max(mpu, 0.2)));
+  const seed = new Uint8Array(cw * ch);
+  for (let y = 0; y < ch; y += step) {
+    for (let x = 0; x < cw; x += step) {
+      const k = y * cw + x;
+      if (!inside[k] || roof[k]) continue;
+      const Y = Yat(x0 + x, y0 + y);
+      if (Y < 158) continue;
+      let dark = false;
+      for (let dy = -radBody; dy <= radBody && !dark; dy += step) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= ch) continue;
+        for (let dx = -radBody; dx <= radBody; dx += step) {
+          if (dx * dx + dy * dy > radBody * radBody) continue;
+          const xx = x + dx;
+          const ax = x0 + xx;
+          const ay = y0 + yy;
+          if (ax < 1 || ay < 1 || ax >= W - 1 || ay >= H - 1) continue;
+          if (Yat(ax, ay) <= 115) {
+            dark = true;
+            break;
+          }
+        }
+      }
+      if (dark) seed[k] = 1;
+    }
+  }
+  const radYard = Math.max(step, Math.round(6 / Math.max(mpu, 0.2)));
+  const grown = new Uint8Array(cw * ch);
+  for (let y = 0; y < ch; y += step) {
+    for (let x = 0; x < cw; x += step) {
+      if (!seed[y * cw + x]) continue;
+      for (let dy = -radYard; dy <= radYard; dy += step) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= ch) continue;
+        for (let dx = -radYard; dx <= radYard; dx += step) {
+          if (dx * dx + dy * dy > radYard * radYard) continue;
+          const xx = x + dx;
+          if (xx < 0 || xx >= cw) continue;
+          const k = yy * cw + xx;
+          if (!inside[k] || roof[k]) continue;
+          grown[k] = 1;
+        }
+      }
+    }
+  }
+  const seenY = new Uint8Array(cw * ch);
+  const keep = new Uint8Array(cw * ch);
+  let yardCells = 0;
+  const minCells = Math.max(8, Math.round(400 / Math.max(cellM2 * step * step, 0.25)));
+  for (let y = 0; y < ch; y += step) {
+    for (let x = 0; x < cw; x += step) {
+      const start = y * cw + x;
+      if (!grown[start] || seenY[start]) continue;
+      const comp = [];
+      const stack = [start];
+      seenY[start] = 1;
+      let touch = false;
+      while (stack.length) {
+        const c = stack.pop();
+        comp.push(c);
+        const cx = c % cw;
+        const cy = (c / cw) | 0;
+        const ix = x0 + cx;
+        const iy = y0 + cy;
+        // The plate edge counts. A yard cut by the draw still touches that edge.
+        if (ix <= x0 + step * 2 || iy <= y0 + step * 2 || ix >= x1 - step * 2 || iy >= y1 - step * 2) touch = true;
+        if (
+          !pointInRing([ix - step * 2, iy], poly) ||
+          !pointInRing([ix + step * 2, iy], poly) ||
+          !pointInRing([ix, iy - step * 2], poly) ||
+          !pointInRing([ix, iy + step * 2], poly)
+        ) {
+          touch = true;
+        }
+        const nbr = [
+          [cx - step, cy],
+          [cx + step, cy],
+          [cx, cy - step],
+          [cx, cy + step],
+        ];
+        for (let n = 0; n < nbr.length; n++) {
+          const nx = nbr[n][0];
+          const ny = nbr[n][1];
+          if (nx < 0 || ny < 0 || nx >= cw || ny >= ch) continue;
+          const nk = ny * cw + nx;
+          if (!grown[nk] || seenY[nk]) continue;
+          seenY[nk] = 1;
+          stack.push(nk);
+        }
+      }
+      if (comp.length < minCells) continue;
+      if (!touch && comp.length * cellM2 * step * step < 1500) continue;
+      for (let i = 0; i < comp.length; i++) keep[comp[i]] = 1;
+      yardCells += comp.length;
+    }
+  }
+  let keepN = 0;
+  for (let y = 0; y < ch; y += step) {
+    for (let x = 0; x < cw; x += step) if (keep[y * cw + x]) keepN++;
+  }
+  const yardM2 = yardCells * cellM2 * step * step;
+  const share = inN ? keepN / inN : 0;
+  if (!(yardM2 >= 400) || share >= 0.8) {
+    return { yardM2: 0, roofShare: 1 - brightFrac, bright: brightFrac, allow: null };
+  }
+  function allow(x, y) {
+    const xx = (x | 0) - x0;
+    const yy = (y | 0) - y0;
+    if (xx < 0 || yy < 0 || xx >= cw || yy >= ch) return false;
+    const sx = xx - (xx % step);
+    const sy = yy - (yy % step);
+    return keep[sy * cw + sx] === 1;
+  }
+  return { yardM2, roofShare: 1 - share, bright: brightFrac, allow };
+}
+
 function semisAtDocks(rings, frame, plate, holes) {
   return require("./stage-clock").timeSpanSync("vehicle", () => semisAtDocksWork(rings, frame, plate, holes));
 }
@@ -1838,28 +2081,38 @@ function semisAtDocks(rings, frame, plate, holes) {
 function semisAtDocksWork(rings, frame, plate, holes) {
   const out = [];
   const used = [];
+  function take(found) {
+    for (let i = 0; i < found.length; i++) {
+      const c = found[i].center;
+      if (!c) continue;
+      let clash = false;
+      for (let u = 0; u < used.length; u++) {
+        const dlon = (c[0] - used[u][0]) * 111320 * Math.cos((c[1] * Math.PI) / 180);
+        const dlat = (c[1] - used[u][1]) * 110540;
+        if (dlon * dlon + dlat * dlat < 64) {
+          clash = true;
+          break;
+        }
+      }
+      if (clash) continue;
+      used.push(c);
+      out.push(found[i]);
+      if (out.length >= SEMI_CAP) return true;
+    }
+    return false;
+  }
   for (let r = 0; r < (rings || []).length; r++) {
     const aprons = dockAprons(rings[r], DOCK_DEPTH_M);
     for (let a = 0; a < aprons.length; a++) {
-      const found = semisInLot(aprons[a], frame, plate, holes);
-      for (let i = 0; i < found.length; i++) {
-        const c = found[i].center;
-        if (!c) continue;
-        let clash = false;
-        for (let u = 0; u < used.length; u++) {
-          const dlon = (c[0] - used[u][0]) * 111320 * Math.cos((c[1] * Math.PI) / 180);
-          const dlat = (c[1] - used[u][1]) * 110540;
-          if (dlon * dlon + dlat * dlat < 64) {
-            clash = true;
-            break;
-          }
-        }
-        if (clash) continue;
-        used.push(c);
-        out.push(found[i]);
-        if (out.length >= SEMI_CAP) return out;
-      }
+      if (take(semisInLot(aprons[a], frame, plate, holes))) return out;
     }
+    const yard = yardInsideFootprint(rings[r], frame, plate);
+    if (!yard.allow) continue;
+    const other = [];
+    for (let h = 0; h < (holes || []).length; h++) {
+      if (holes[h] !== rings[r]) other.push(holes[h]);
+    }
+    if (take(semisInLot(rings[r], frame, plate, other, { allow: yard.allow }))) return out;
   }
   return out;
 }
@@ -2089,6 +2342,7 @@ module.exports = {
   DOCK_MIN_ROOF_M2,
   roofWantsDocks,
   dockAprons,
+  yardInsideFootprint,
   semisAtDocks,
   boatBoxes,
   mergeDenseCars,
