@@ -8,6 +8,8 @@
 
 **v1.1.97** on `dev` — Sloped terrain is an adaptive mesh, not a fixed 20×20 grid. The paste spends its budget on the worst saddles, keeps a planar fit near half a meter, and merges a flat bench into one raised floor. Neighboring ramps share an edge height, and a coarse piece is split where it meets a finer one so the seam has no gap. A pure north-south or east-west grade stays one ramp per cell. The badge stays (`dev · v1.1.97`).
 
+**v1.1.161** on `dev`. A crown checks the roof samples inside its own box, and clipping runs only for roofs that touch that box. A large draw spends less time in Trees. Set OPENCLUTTER_PROFILE=1 to log each tile, the thread that ran it, and CPU use. The badge stays (`dev · v1.1.161`).
+
 **v1.1.160** on `dev`. The map is always ready to draw. There is no Draw button. Drag a box, or click corners and click the first point or double-click to close a polygon. A drag under 8 px stays a click. Esc cancels an open polygon. A small x beside the area label clears a finished shape, and a new box replaces the old one. Trackpad scroll, two-finger drag, Space, the right mouse button, and the arrow keys pan. Pinch and the mouse wheel still zoom. One finger draws on touch. Two fingers pan and zoom. Export stays off until a shape exists. The badge stays (`dev · v1.1.160`).
 
 **v1.1.159** on `dev`. The address box is full width and searches on Enter. The version label sits at the bottom of Advanced and hides when Advanced is closed. Map notes keep obstructions and key structures. They no longer suggest an AP or a gateway, and they no longer state GPS coordinates. The two GPS tie points stay. The badge stays (`dev · v1.1.159`).

@@ -16,6 +16,7 @@
  */
 
 const { quadkeysForBbox } = require("./ms-global");
+const profile = require("./profile-log");
 
 const CHM_ZOOM = 10;
 const MAX_TILES = 4;
@@ -998,25 +999,37 @@ function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH, medianTop
   // and used to miss the 12 m² floor.
   if (pixels.length < 2 && heightM < 5) return null;
   if (pixels.length >= 2 && heightM < 5 && pixels.length < 3 && area < CROWN_MIN_AREA_M2) return null;
+  const prof = profile.profileOn();
+  if (prof) profile.add("crown-pixels", pixels.length);
+  let tProf = prof ? profile.now() : 0;
   let ring = tracePixels(pixels);
+  if (prof) profile.add("trace", profile.msSince(tProf));
   if (!ring) return null;
   // A large stand needs a longer edge. 32 vertices chord across a woods.
   // Shoelace area can look full while the chord sits outside the cells and
   // the bays are uncovered, so the test is the cells themselves.
+  if (prof) tProf = profile.now();
   const traced = dropCollinearPx(ring);
   let maxVerts = CROWN_MAX_VERTS;
   let open = simplifyContour(traced, maxVerts);
+  if (prof) profile.add("simplify", profile.msSince(tProf));
   if (pixels.length > 24) {
     let guard = 0;
     while (guard++ < 5 && maxVerts < 160) {
+      if (prof) tProf = profile.now();
       const cover = cellCoverage(open, pixels);
+      if (prof) profile.add("coverage", profile.msSince(tProf));
       const spill = Math.abs(polyArea(open)) / pixels.length;
       if (cover >= 0.92 && spill <= 1.06) break;
       const nextVerts = Math.min(160, Math.max(maxVerts + 8, Math.round(maxVerts * 1.5)));
       if (nextVerts <= maxVerts) break;
+      if (prof) tProf = profile.now();
       const next = simplifyContour(traced, nextVerts);
+      if (prof) profile.add("simplify", profile.msSince(tProf));
       if (!next || next.length < 3) break;
+      if (prof) tProf = profile.now();
       const nextCover = cellCoverage(next, pixels);
+      if (prof) profile.add("coverage", profile.msSince(tProf));
       const nextSpill = Math.abs(polyArea(next)) / pixels.length;
       if (nextCover + 0.004 < cover && nextSpill >= spill) break;
       maxVerts = nextVerts;
@@ -1075,6 +1088,7 @@ function crownsFromChm(grid, opts) {
   const at = (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? 0 : values[y * w + x] || 0);
   const seen = new Uint8Array(w * h);
   const crowns = [];
+  const prof = profile.profileOn();
   const acceptRows = (y0, y1) => (px, py) => {
     if (py < y0 || py >= y1) return false;
     const id = py * w + px;
@@ -1086,11 +1100,13 @@ function crownsFromChm(grid, opts) {
       if (seen[idx] || at(x, y) < CROWN_MIN_H) continue;
       let pixels = null;
       const clipped = halo > 0 && (clipY0 > 0 || clipY1 < h);
+      let tProf = prof ? profile.now() : 0;
       if (clipped) {
         pixels = flood(w, h, x, y, acceptRows(clipY0, clipY1));
         if (pixels && componentTouchesClip(pixels, clipY0, clipY1, h)) pixels = null;
       }
       if (!pixels) pixels = flood(w, h, x, y, acceptRows(0, h));
+      if (prof) profile.add("flood", profile.msSince(tProf));
       if (!pixels) continue;
       let top = pixels[0][1];
       for (let i = 1; i < pixels.length; i++) if (pixels[i][1] < top) top = pixels[i][1];
@@ -1102,7 +1118,9 @@ function crownsFromChm(grid, opts) {
       // before that turned a forest into thousands of specks, and the export
       // cap then dropped most of them.
       if (area >= TILE_AREA_M2) {
+        if (prof) tProf = profile.now();
         const blocks = tilePixels(pixels, mPerX, mPerY, tileMeters(area));
+        if (prof) profile.add("tile-split", profile.msSince(tProf));
         if (blocks) {
           for (let b = 0; b < blocks.length; b++) groups.push(blocks[b]);
         }
@@ -1134,10 +1152,12 @@ function crownsFromChm(grid, opts) {
               const sx = group[i][0];
               const sy = group[i][1];
               if (used[sy * w + sx]) continue;
+              if (prof) tProf = profile.now();
               const part = flood(w, h, sx, sy, (px, py) => {
                 const id = py * w + px;
                 return local[id] && !used[id];
               });
+              if (prof) profile.add("flood", profile.msSince(tProf));
               if (!part) continue;
               for (let k = 0; k < part.length; k++) used[part[k][1] * w + part[k][0]] = 1;
               groups.push(part);

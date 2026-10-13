@@ -265,7 +265,28 @@ async function runQueue(task, payloads) {
     }
   };
   const n = pool ? Math.min(pool.length, list.length) : 1;
+  const profiling = process.env.OPENCLUTTER_PROFILE === "1";
+  const profile = profiling ? require("./profile-log") : null;
+  const cpu0 = profiling ? profile.cpuTimes() : null;
+  const wall0 = profiling ? Date.now() : 0;
   await Promise.all(Array.from({ length: n }, (_, workerIndex) => pull(workerIndex)));
+  if (profiling) {
+    const cpu1 = profile.cpuTimes();
+    const wall = Date.now() - wall0;
+    const write = logState.jobId ? logState.log : console.log;
+    write(
+      "profile queue " +
+        task +
+        " tiles " +
+        list.length +
+        " threads " +
+        n +
+        " wallMs " +
+        wall +
+        " " +
+        profile.cpuUtilLine(cpu0, cpu1)
+    );
+  }
   return out;
 }
 
