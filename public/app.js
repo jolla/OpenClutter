@@ -268,6 +268,8 @@ function setStatus(msg, err) {
   const more = document.getElementById("status-more");
   const body = document.getElementById("status-body");
   statusEl.className = err ? "err" : "";
+  const done = !err && /^Done in \d+:\d\d$/.test(parts[0] || "");
+  if (lineEl) lineEl.classList.toggle("done", done);
   if (!lineEl || !more || !body) {
     statusEl.textContent = text;
     return;
@@ -1027,6 +1029,12 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
     if (/^Map (image|stepped) /.test(warnLines[i])) continue;
     lines.push(warnLines[i]);
   }
+  const doneMs = exportClock ? exportClock.elapsedMs() : null;
+  if (doneMs != null) {
+    const withDone = OpenClutterExport.withExportDone(lines, doneMs);
+    lines.length = 0;
+    for (let i = 0; i < withDone.length; i++) lines.push(withDone[i]);
+  }
   setStatus(lines.join("\n"));
   if (exportCopyReady && !drawHidesCopy) setCopyNote("Paste terrain separately in Hamina.");
 }
@@ -1035,6 +1043,24 @@ let exportLive = false;
 let exportPercentHeld = 0;
 let exportTick = 0;
 let exportShownStage = "";
+let exportClock = null;
+
+function paintExportElapsedLabel(label) {
+  const elapsed = document.getElementById("export-elapsed");
+  if (!elapsed) return;
+  elapsed.hidden = false;
+  elapsed.textContent = label;
+  if (exportBtn && exportLive) {
+    exportBtn.setAttribute("aria-valuetext", "Exporting " + exportPercentHeld + "%, " + label);
+  }
+}
+
+function hideExportElapsed() {
+  const elapsed = document.getElementById("export-elapsed");
+  if (!elapsed) return;
+  elapsed.hidden = true;
+  elapsed.textContent = "";
+}
 
 function stopExportTick() {
   if (exportTick) {
@@ -1057,10 +1083,12 @@ function hideExportProgress() {
     exportBtn.removeAttribute("aria-valuenow");
     exportBtn.removeAttribute("aria-valuetext");
   }
+  hideExportElapsed();
 }
 
 function endExportProgress() {
   stopExportTick();
+  if (exportClock) exportClock.stop();
   exportLive = false;
   exportShownStage = "";
   hideExportProgress();
@@ -1091,12 +1119,17 @@ function showExportProgress(job) {
     exportBtn.setAttribute("aria-valuemin", "0");
     exportBtn.setAttribute("aria-valuemax", "100");
     exportBtn.setAttribute("aria-valuenow", String(pct));
-    exportBtn.setAttribute("aria-valuetext", "Exporting " + pct + "%");
+    const elapsedEl = document.getElementById("export-elapsed");
+    const time = elapsedEl && !elapsedEl.hidden && elapsedEl.textContent ? ", " + elapsedEl.textContent : "";
+    exportBtn.setAttribute("aria-valuetext", "Exporting " + pct + "%" + time);
   }
   const line = document.getElementById("status-line");
   let stageText = (job && (job.stageLabel || job.stage)) || "Fetching aerial";
   if (/^Fetching map$/i.test(stageText)) stageText = "Fetching aerial";
-  if (line) line.textContent = stageText;
+  if (line) {
+    line.textContent = stageText;
+    line.classList.remove("done");
+  }
   if (statusEl) statusEl.className = "";
   const more = document.getElementById("status-more");
   if (more) {
@@ -1107,6 +1140,10 @@ function showExportProgress(job) {
 
 function beginExportProgress() {
   stopExportTick();
+  if (exportClock) exportClock.stop();
+  exportClock = OpenClutterExport.createExportClock({
+    onTick: paintExportElapsedLabel,
+  });
   exportPercentHeld = 0;
   exportShownStage = "Fetching aerial";
   const started = Date.now();

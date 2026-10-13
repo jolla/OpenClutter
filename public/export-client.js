@@ -316,6 +316,57 @@
     return lines;
   }
 
+  function formatExportElapsed(ms) {
+    const total = Math.max(0, Math.floor(Math.max(0, +ms || 0) / 1000));
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return m + ":" + (s < 10 ? "0" : "") + s;
+  }
+
+  function exportDoneLine(ms) {
+    return "Done in " + formatExportElapsed(ms);
+  }
+
+  function withExportDone(lines, ms) {
+    const next = Array.isArray(lines) ? lines.slice() : [];
+    const line = exportDoneLine(ms);
+    if (next[0] !== line) next.unshift(line);
+    return next;
+  }
+
+  /**
+   * Elapsed label for the Export button. The interval is one second, and
+   * it does not wait on the percent, so the label still advances when the
+   * percent is unchanged.
+   */
+  function createExportClock(opts) {
+    const options = opts || {};
+    const now = options.now || Date.now;
+    const every = options.setInterval || setInterval;
+    const cancel = options.clearInterval || clearInterval;
+    const onTick = options.onTick;
+    const started = now();
+    let handle = 0;
+    function paint() {
+      const elapsedMs = Math.max(0, now() - started);
+      if (onTick) onTick(formatExportElapsed(elapsedMs), elapsedMs);
+    }
+    paint();
+    handle = every(paint, 1000);
+    return {
+      stop: function () {
+        if (handle) cancel(handle);
+        handle = 0;
+      },
+      elapsedMs: function () {
+        return Math.max(0, now() - started);
+      },
+      doneLine: function () {
+        return exportDoneLine(Math.max(0, now() - started));
+      },
+    };
+  }
+
   return {
     WORKING_STATUS: WORKING_STATUS,
     EMPTY_502_STATUS: EMPTY_502_STATUS,
@@ -330,5 +381,9 @@
     appendTerrainOmitted: appendTerrainOmitted,
     exportSummaryLines: exportSummaryLines,
     steepestGrade: steepestGrade,
+    formatExportElapsed: formatExportElapsed,
+    exportDoneLine: exportDoneLine,
+    withExportDone: withExportDone,
+    createExportClock: createExportClock,
   };
 });

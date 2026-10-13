@@ -76,6 +76,15 @@
       transition: width 0.45s linear;
     }
     #export-label { position: relative; z-index: 1; }
+    #export-elapsed {
+      position: relative;
+      z-index: 1;
+      margin-left: 8px;
+      font-size: 12px;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+    }
+    #export-elapsed[hidden] { display: none; }
     #export.exporting:disabled { opacity: 1; cursor: default; }
     @media (prefers-reduced-motion: reduce) {
       #export-fill { transition: none; }
@@ -84,6 +93,11 @@
     #copy-note.err { color: #f85149; }
     #status { margin-top: 10px; font-size: 12px; color: #8b949e; min-height: 16px; }
     #status-line { margin: 0; line-height: 1.4; color: #c9d1d9; }
+    #status-line.done {
+      color: #e8eaed;
+      font-weight: 650;
+      font-variant-numeric: tabular-nums;
+    }
     #status-line[hidden] { display: none; }
     #status.err #status-line { color: #f85149; }
     #status-more { margin-top: 6px; }
@@ -146,7 +160,7 @@
     <div class="row">
       <button type="button" id="export" disabled>
         <span id="export-fill"></span>
-        <span id="export-label">Export</span>
+        <span id="export-label">Export</span><span id="export-elapsed" hidden></span>
       </button>
     </div>
     <p id="copy-note" class="hint" hidden></p>
@@ -215,7 +229,7 @@
           <option value="8k">8K · 8192 px</option>
         </select>
       </label>
-      <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.169</span></p>
+      <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.170</span></p>
     </details>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
