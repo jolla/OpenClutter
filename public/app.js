@@ -182,8 +182,11 @@ let panLast = null;
 const drawSession = OpenClutterDraw.createSession();
 const statusEl = document.getElementById("status");
 const exportBtn = document.getElementById("export");
-const copyTerrainBtn = document.getElementById("copy-terrain");
 let terrainPasteJson = "";
+let exportCopyReady = false;
+let drawHidesCopy = false;
+let drawEpoch = 0;
+let exportEpoch = 0;
 
 function chipBbox(bounds) {
   return {
@@ -313,6 +316,7 @@ function restoreCommitted() {
   sketchHidden = false;
   if (committedBounds) showAreaChip(committedBounds, committedLabel, true);
   else hideAreaChip();
+  noteDrawCancelled();
 }
 
 function syncDrawMode() {
@@ -399,6 +403,7 @@ function resumeDrawMode() {
 }
 
 function applyExtent(bounds, label) {
+  noteAreaReplaced();
   committedBounds = bounds;
   committedLabel = label == null ? null : label;
   bbox = chipBbox(bounds);
@@ -410,6 +415,7 @@ function applyExtent(bounds, label) {
 }
 
 function clearFinishedShape() {
+  noteAreaReplaced();
   drawn.clearLayers();
   if (!map.hasLayer(drawn)) map.addLayer(drawn);
   committedBounds = null;
@@ -448,6 +454,7 @@ function commitPolygon(vertices) {
 }
 
 function showDragPreview(start, end) {
+  noteDrawInProgress();
   concealCommitted();
   const bounds = L.latLngBounds([start.lat, start.lng], [end.lat, end.lng]);
   if (rubber && typeof rubber.setBounds === "function") rubber.setBounds(bounds);
@@ -459,6 +466,7 @@ function showDragPreview(start, end) {
 }
 
 function showVertexPreview(vertices) {
+  noteDrawInProgress();
   concealCommitted();
   clearRubber();
   const latlngs = [];
@@ -879,37 +887,61 @@ function b64ToBlob(b64, type) {
   return new Blob([bytes], { type });
 }
 
+function copyTerrainLabelReady() {
+  return !!(exportCopyReady && !drawHidesCopy && terrainPasteJson && !terrainPasteGpsOnly);
+}
+
+function syncIdleExportLabel() {
+  if (exportLive) return;
+  const label = document.getElementById("export-label");
+  if (!label) return;
+  label.textContent = OpenClutterExport.finishedExportButton(
+    copyTerrainLabelReady() ? { json: terrainPasteJson, gpsOnly: false } : { json: "", gpsOnly: false }
+  ).label;
+}
+
+function noteDrawInProgress() {
+  if (drawHidesCopy) return;
+  drawHidesCopy = true;
+  syncIdleExportLabel();
+  clearCopyNote();
+}
+
+function noteDrawCancelled() {
+  if (!drawHidesCopy) return;
+  drawHidesCopy = false;
+  syncIdleExportLabel();
+  if (exportCopyReady) setCopyNote("Paste terrain separately in Hamina.");
+}
+
+function noteAreaReplaced() {
+  drawHidesCopy = false;
+  if (drawEpoch === exportEpoch) drawEpoch += 1;
+  exportCopyReady = false;
+  terrainPasteJson = "";
+  terrainPasteGpsOnly = false;
+  syncIdleExportLabel();
+  clearCopyNote();
+}
+
 function rememberTerrain(data, includeTerrain) {
   const choice = OpenClutterExport.chooseTerrainPaste(data, includeTerrain);
   terrainPasteJson = choice.json;
   terrainPasteGpsOnly = choice.gpsOnly;
   if (data && includeTerrain !== false && !choice.json) data.terrainStatus = choice.status;
-  if (copyTerrainBtn) {
-    copyTerrainBtn.hidden = !terrainPasteJson;
-    copyTerrainBtn.textContent = terrainPasteGpsOnly ? "Copy GPS points" : "Copy terrain";
-  }
-  return terrainPasteJson;
+  const button = OpenClutterExport.finishedExportButton(choice);
+  exportCopyReady = !!(button.copyReady && drawEpoch === exportEpoch);
+  return button;
 }
 
-if (copyTerrainBtn) {
-  copyTerrainBtn.onclick = async () => {
-    if (!terrainPasteJson) return;
-    try {
-      await navigator.clipboard.writeText(terrainPasteJson);
-      setCopyNote(
-        terrainPasteGpsOnly
-          ? "Copied. Paste the GPS points separately in Hamina."
-          : "Copied. Paste terrain separately in Hamina."
-      );
-    } catch (e) {
-      setCopyNote(
-        terrainPasteGpsOnly
-          ? "Could not copy the GPS points. Allow clipboard access and try Copy GPS points again."
-          : "Could not copy terrain. Allow clipboard access and try Copy terrain again.",
-        true
-      );
-    }
-  };
+async function copyFinishedTerrain() {
+  if (!terrainPasteJson || terrainPasteGpsOnly) return;
+  try {
+    await navigator.clipboard.writeText(terrainPasteJson);
+    setCopyNote("Copied. Paste terrain separately in Hamina.");
+  } catch (e) {
+    setCopyNote("Could not copy terrain. Allow clipboard access and try Copy terrain again.", true);
+  }
 }
 
 function exportError(status, data) {
@@ -954,9 +986,9 @@ async function fetchTerrainPaste() {
 
 function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
   const terrainOff = includeTerrain === false;
-  rememberTerrain(data, includeTerrain);
+  const button = rememberTerrain(data, includeTerrain);
   const summary = (data.stats && data.stats.summary) || "";
-  const terrainNote = terrainOff ? "Terrain off" : data.terrainStatus || "";
+  const terrainNote = terrainOff ? button.omittedLine : data.terrainStatus || "";
   const pasteLine = terrainOff ? "" : OpenClutterExport.terrainPasteLine(data && data.terrainClipboard);
   let pastedNotes = 0;
   if (terrainPasteJson) {
@@ -967,7 +999,7 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
       pastedNotes = 0;
     }
   }
-  const gpsNote = terrainPasteJson
+  const gpsNote = button.copyReady
     ? "Two GPS points, the southwest and northeast corners of the imported map, are on the paste." +
       (pastedNotes ? " Map notes are on that paste." : "")
     : "";
@@ -987,19 +1019,16 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
   if (pasteLine && !detail.some((line) => line.indexOf("Terrain pieces ") === 0)) lines.push(pasteLine);
   if (gpsNote) lines.push(gpsNote);
   if (summary && !detail.length) lines.push(summary);
+  const withOmitted = OpenClutterExport.appendTerrainOmitted(lines, button);
+  lines.length = 0;
+  for (let i = 0; i < withOmitted.length; i++) lines.push(withOmitted[i]);
   for (let i = 0; i < warnLines.length; i++) {
     if (/^Lidar heights (used|not used)\.$/.test(warnLines[i])) continue;
     if (/^Map (image|stepped) /.test(warnLines[i])) continue;
     lines.push(warnLines[i]);
   }
   setStatus(lines.join("\n"));
-  if (copyTerrainBtn && !copyTerrainBtn.hidden) {
-    setCopyNote(
-      terrainPasteGpsOnly
-        ? "Paste the GPS points separately in Hamina."
-        : "Paste terrain separately in Hamina."
-    );
-  }
+  if (exportCopyReady && !drawHidesCopy) setCopyNote("Paste terrain separately in Hamina.");
 }
 
 let exportLive = false;
@@ -1009,9 +1038,8 @@ function hideExportProgress() {
   if (exportLive) return;
   exportPercentHeld = 0;
   const fill = document.getElementById("export-fill");
-  const label = document.getElementById("export-label");
   if (fill) fill.style.width = "0";
-  if (label) label.textContent = "Export";
+  syncIdleExportLabel();
   if (exportBtn) {
     exportBtn.classList.remove("exporting");
     exportBtn.removeAttribute("role");
@@ -1220,6 +1248,10 @@ function openRingExportStatus(count) {
 }
 
 document.getElementById("export").onclick = async () => {
+  if (copyTerrainLabelReady()) {
+    await copyFinishedTerrain();
+    return;
+  }
   const pending = OpenClutterDraw.prepareExport(drawSession);
   if (pending.type === "blocked") {
     syncExportReady();
@@ -1231,6 +1263,8 @@ document.getElementById("export").onclick = async () => {
     if (!bbox || exportBtn.disabled) return;
   }
   if (!bbox) return;
+  exportEpoch = drawEpoch;
+  exportCopyReady = false;
   exportBtn.disabled = true;
   const includeFoliage = clutterChecked("include-foliage");
   const includeTerrain = terrainExportEnabled();
