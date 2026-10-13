@@ -29,7 +29,8 @@ const {
 const { isParkingClass, planOutdoor, fitOutdoorBudget } = require("./outdoor-clutter");
 const { decodePlate, needsPitchImage, roofWantsDocks } = require("./vehicle-track");
 const { treePairsFromPoints } = require("./vegetation");
-const { intersectionAreaPx } = require("./poly-clip");
+const { intersectionAreaPx, bounds: clipBounds, bboxHit, prepareClipRings } = require("./poly-clip");
+const profile = require("./profile-log");
 const { dedupeStackedFootprints } = require("./conflate");
 const { footprintRings } = require("./building-shape");
 const polygonClipping = require("polygon-clipping");
@@ -1290,6 +1291,120 @@ function ringCoversPoint(ring, pt) {
 }
 
 /**
+ * Grid of keep-out samples. A crown tests the cells under its own box.
+ * The samples are the same points the flat scan used.
+ */
+function indexPointCloud(points, cell) {
+  const src = points || [];
+  const step = cell > 4 ? cell : 32;
+  if (!src.length) return { points: src, step, minX: 0, minY: 0, cols: 0, rows: 0, start: new Uint32Array(0), counts: new Uint32Array(0), order: new Uint32Array(0) };
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < src.length; i++) {
+    const p = src[i];
+    if (p[0] < minX) minX = p[0];
+    if (p[1] < minY) minY = p[1];
+    if (p[0] > maxX) maxX = p[0];
+    if (p[1] > maxY) maxY = p[1];
+  }
+  const cols = Math.max(1, Math.floor((maxX - minX) / step) + 1);
+  const rows = Math.max(1, Math.floor((maxY - minY) / step) + 1);
+  if (cols > 4000 || rows > 4000) return null;
+  const counts = new Uint32Array(cols * rows);
+  const cx = new Uint16Array(src.length);
+  const cy = new Uint16Array(src.length);
+  for (let i = 0; i < src.length; i++) {
+    let x = Math.floor((src[i][0] - minX) / step);
+    let y = Math.floor((src[i][1] - minY) / step);
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x >= cols) x = cols - 1;
+    if (y >= rows) y = rows - 1;
+    cx[i] = x;
+    cy[i] = y;
+    counts[y * cols + x]++;
+  }
+  const start = new Uint32Array(cols * rows);
+  let acc = 0;
+  for (let i = 0; i < counts.length; i++) {
+    start[i] = acc;
+    acc += counts[i];
+  }
+  const cursor = start.slice();
+  const order = new Uint32Array(src.length);
+  for (let i = 0; i < src.length; i++) {
+    const bin = cy[i] * cols + cx[i];
+    order[cursor[bin]++] = i;
+  }
+  return { points: src, step, minX, minY, cols, rows, start, counts, order };
+}
+
+function cloudHitsRing(index, ring) {
+  if (!index || !index.points || !index.points.length || !ring || ring.length < 3) return false;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const p = ring[i];
+    if (p[0] < minX) minX = p[0];
+    if (p[1] < minY) minY = p[1];
+    if (p[0] > maxX) maxX = p[0];
+    if (p[1] > maxY) maxY = p[1];
+  }
+  let x0 = Math.floor((minX - index.minX) / index.step);
+  let y0 = Math.floor((minY - index.minY) / index.step);
+  let x1 = Math.floor((maxX - index.minX) / index.step);
+  let y1 = Math.floor((maxY - index.minY) / index.step);
+  if (x0 < 0) x0 = 0;
+  if (y0 < 0) y0 = 0;
+  if (x1 >= index.cols) x1 = index.cols - 1;
+  if (y1 >= index.rows) y1 = index.rows - 1;
+  if (x1 < x0 || y1 < y0) return false;
+  const pts = index.points;
+  for (let y = y0; y <= y1; y++) {
+    const row = y * index.cols;
+    for (let x = x0; x <= x1; x++) {
+      const bin = row + x;
+      const from = index.start[bin];
+      const to = from + index.counts[bin];
+      for (let k = from; k < to; k++) {
+        const p = pts[index.order[k]];
+        if (p[0] < minX || p[0] > maxX || p[1] < minY || p[1] > maxY) continue;
+        if (ringCoversPoint(ring, p)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+let activeCloud = null;
+let activeRoofs = null;
+let profAcc = null;
+
+function roofsFor(rings) {
+  if (!rings || !rings.length) return null;
+  if (activeRoofs && rings[0] === activeRoofs.first) return activeRoofs.list;
+  return null;
+}
+
+function keepOutHits(points, ring) {
+  if (!points || !points.length || !ring) return false;
+  if (activeCloud && activeCloud.points === points) return cloudHitsRing(activeCloud, ring);
+  for (let i = 0; i < points.length; i++) {
+    if (ringCoversPoint(ring, points[i])) return true;
+  }
+  return false;
+}
+
+function profLap(name, t0) {
+  if (!profAcc || !t0) return;
+  profAcc[name] = (profAcc[name] || 0) + profile.msSince(t0);
+}
+
+/**
  * OpenIntent vertex ceiling. Rings already under the budget are returned
  * unchanged (a bowtie stays a bowtie so validation can reject it). Longer
  * rings are Douglas–Peucker'd, then subsampled.
@@ -1413,14 +1528,7 @@ function capOiRingPx(ring, maxPts, opts) {
   let fallback = null;
   for (const c of candidates) {
     if (c.length < 3 || c.length > limit || ringAreaPx(c) <= 1e-4 || ringSelfIntersectsPx(c)) continue;
-    let covered = false;
-    for (let k = 0; k < keepOut.length; k++) {
-      if (ringCoversPoint(c, keepOut[k])) {
-        covered = true;
-        break;
-      }
-    }
-    if (covered) continue;
+    if (keepOutHits(keepOut, c)) continue;
     const cc = ringCentroidPx(c);
     const drift = origin && cc ? Math.hypot(cc[0] - origin[0], cc[1] - origin[1]) : 0;
     const area = ringAreaPx(c);
@@ -2719,10 +2827,7 @@ function canopyRingFaithful(ringPx, coords, mpuX, keepOutPx) {
   // A few square metres of edge noise is rounding. A chord across a field
   // or a roof is not. Cut the ring until the corner list follows it.
   if (!(missed <= Math.max(20, before * cell * cell * 0.01) && outside <= 1)) return false;
-  const simpRing = simp;
-  for (let i = 0; i < (keepOutPx ? keepOutPx.length : 0); i++) {
-    if (pointInRing(keepOutPx[i], simpRing)) return false;
-  }
+  if (keepOutHits(keepOutPx, simp)) return false;
   return true;
 }
 
@@ -2735,17 +2840,26 @@ function notchCanopyRoofs(ringPx, roofs) {
   let geom = [[ringPx]];
   let area = ringAreaPx(ringPx);
   let changed = false;
-  for (let i = 0; i < roofs.length; i++) {
+  const prepared = roofsFor(roofs);
+  const n = prepared ? prepared.length : roofs.length;
+  const bb = prepared ? clipBounds(ringPx) : null;
+  for (let i = 0; i < n; i++) {
+    const ring = prepared ? prepared[i].ring : roofs[i];
+    if (prepared && !bboxHit(bb, prepared[i].bbox, 0)) {
+      if (profAcc) profAcc.roofMiss = (profAcc.roofMiss || 0) + 1;
+      continue;
+    }
+    if (profAcc) profAcc.roofHit = (profAcc.roofHit || 0) + 1;
     let inter = 0;
     try {
-      inter = intersectionAreaPx(ringPx, roofs[i]);
+      inter = intersectionAreaPx(ringPx, ring);
     } catch {
       continue;
     }
     if (inter <= 0.5) continue;
     let next = null;
     try {
-      next = polygonClipping.difference(geom, [[roofs[i]]]);
+      next = polygonClipping.difference(geom, [[ring]]);
     } catch {
       next = null;
     }
@@ -2768,8 +2882,10 @@ function notchCanopyRoofs(ringPx, roofs) {
 function emitCanopyCovered(t, ringPx, imgW, imgH, mpuX, depth, areas, kinds) {
   const opts = { keepShape: true, noHull: t.kind !== "trunk", keepOutPx: t.keepOutPx || [] };
   const roofsIn = t.keepOutRings || [];
+  let tProf = profAcc ? profile.now() : 0;
   if (t.kind !== "trunk" && !t.roofNotched && roofsIn.length) {
     const notched = notchCanopyRoofs(ringPx, roofsIn);
+    profLap("notch", tProf);
     if (notched) {
       const next = Object.assign({}, t, { roofNotched: true });
       let any = false;
@@ -2786,18 +2902,33 @@ function emitCanopyCovered(t, ringPx, imgW, imgH, mpuX, depth, areas, kinds) {
     opts.minSpanPx = hold;
     opts.spanFloorPx = Math.min(MIN_OI_SPAN_PX, Math.max(drawn * 0.5, 0.02));
   }
+  tProf = profAcc ? profile.now() : 0;
   const coords = ringToOi(ringPx, imgW, imgH, mpuX, opts);
+  profLap("convert", tProf);
+  tProf = profAcc ? profile.now() : 0;
   const faithful = t.kind === "trunk" || canopyRingFaithful(ringPx, coords, mpuX, opts.keepOutPx);
+  profLap("faithful", tProf);
   const simp = coords ? oiRingPx(coords) : null;
   let roofM2 = 0;
   const roofs = t.keepOutRings || [];
+  tProf = profAcc ? profile.now() : 0;
   if (simp && roofs.length) {
     const cell = Math.max(mpuX || 1, 0.05);
-    for (let i = 0; i < roofs.length; i++) {
-      roofM2 += intersectionAreaPx(simp, roofs[i]) * cell * cell;
+    const prepared = roofsFor(roofs);
+    const n = prepared ? prepared.length : roofs.length;
+    const bb = prepared ? clipBounds(simp) : null;
+    for (let i = 0; i < n; i++) {
+      const ring = prepared ? prepared[i].ring : roofs[i];
+      if (prepared && !bboxHit(bb, prepared[i].bbox, 0)) {
+        if (profAcc) profAcc.roofMiss = (profAcc.roofMiss || 0) + 1;
+        continue;
+      }
+      if (profAcc) profAcc.roofHit = (profAcc.roofHit || 0) + 1;
+      roofM2 += intersectionAreaPx(simp, ring) * cell * cell;
       if (roofM2 > 0.5) break;
     }
   }
+  profLap("roof", tProf);
   const fits = ringVertexCount(ringPx) <= MAX_OI_RING_VERTS;
   // A ring under the corner cap is emitted as-is. ringToOi still returns
   // nothing when that outline crosses itself, and the old branch treated
@@ -2839,8 +2970,46 @@ function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
   const areas = [];
   const kinds = [];
   let droppedInvalid = 0;
-  for (const t of oiTreeAreas || []) {
-    if (!emitCanopyCovered(t, t.ringPx, imgW, imgH, mpuX, 0, areas, kinds)) droppedInvalid++;
+  const list = oiTreeAreas || [];
+  let src = null;
+  for (let i = 0; i < list.length; i++) {
+    const pts = list[i] && list[i].keepOutPx;
+    if (pts && pts.length > 48) {
+      src = pts;
+      break;
+    }
+  }
+  const prof = profile.profileOn();
+  const tIndex = prof ? profile.now() : 0;
+  activeCloud = src ? indexPointCloud(src, 32) : null;
+  if (activeCloud && !activeCloud.order) activeCloud = null;
+  let roofSrc = null;
+  for (let i = 0; i < list.length; i++) {
+    const rings = list[i] && list[i].keepOutRings;
+    if (rings && rings.length) {
+      roofSrc = rings;
+      break;
+    }
+  }
+  activeRoofs = roofSrc ? { first: roofSrc[0], list: prepareClipRings(roofSrc) } : null;
+  if (prof) profile.add("oi-index", profile.msSince(tIndex));
+  if (prof) profAcc = { notch: 0, convert: 0, roof: 0, faithful: 0 };
+  try {
+    for (const t of list) {
+      if (!emitCanopyCovered(t, t.ringPx, imgW, imgH, mpuX, 0, areas, kinds)) droppedInvalid++;
+    }
+  } finally {
+    if (prof && profAcc) {
+      profile.add("oi-notch", profAcc.notch);
+      profile.add("oi-convert", profAcc.convert);
+      profile.add("oi-roof", profAcc.roof);
+      profile.add("oi-faithful", profAcc.faithful);
+      if (profAcc.roofHit) profile.add("roof-hit", profAcc.roofHit);
+      if (profAcc.roofMiss) profile.add("roof-miss", profAcc.roofMiss);
+    }
+    profAcc = null;
+    activeCloud = null;
+    activeRoofs = null;
   }
   return { areas, kinds, droppedInvalid };
 }
@@ -3625,6 +3794,8 @@ module.exports = {
   ensureMinSpan,
   minOiSpanPx,
   capOiRingPx,
+  indexPointCloud,
+  cloudHitsRing,
   ringSpanClass,
   treesToOi,
 };

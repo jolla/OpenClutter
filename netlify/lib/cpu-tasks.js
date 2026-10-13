@@ -116,7 +116,14 @@ function foliageAssemble(payload) {
   });
   const { treesToOi } = require("./pipeline");
   const frame = payload.frame || {};
+  const profile = require("./profile-log");
+  const tOi = profile.profileOn() ? profile.now() : 0;
   pack.treeOi = treesToOi(pack.oiAreas, frame.imgW, frame.imgH, frame.mpuX);
+  if (profile.profileOn()) profile.add("trees-oi", profile.msSince(tOi));
+  const areas = pack.oiAreas || [];
+  for (let i = 0; i < areas.length; i++) {
+    if (areas[i] && areas[i].keepOutPx && areas[i].keepOutPx.length > 48) areas[i].keepOutPx = [];
+  }
   return pack;
 }
 

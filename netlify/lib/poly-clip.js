@@ -604,6 +604,17 @@ function openHoles(multi) {
   return simples;
 }
 
+function prepareClipRings(rings) {
+  const out = [];
+  const list = rings || [];
+  for (let i = 0; i < list.length; i++) {
+    const ring = list[i];
+    if (!ring || ring.length < 4) continue;
+    out.push({ ring, bbox: bounds(ring) });
+  }
+  return out;
+}
+
 function intersectionAreaPx(ringA, ringB) {
   const a = orientPositive(ringA);
   const b = orientPositive(ringB);
@@ -1033,6 +1044,8 @@ module.exports = {
   openRing,
   closeRing,
   bounds,
+  bboxHit,
+  prepareClipRings,
   pointInRing,
   bufferGeom,
   intersectionAreaPx,

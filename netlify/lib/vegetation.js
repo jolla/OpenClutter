@@ -16,6 +16,7 @@ const { MAX_TREES, maxTreesForBbox, canopyHeightM } = require("./tree-source");
 const { crownsForExport } = require("./canopy-height");
 const { BUILDING_BUFFER_M, createClipSet, clipFoliageRing, dissolveFoliageRings, pointInRing, intersectionAreaPx } = require("./poly-clip");
 const polygonClipping = require("polygon-clipping");
+const profile = require("./profile-log");
 
 function pointInAabb(x, y, boxes, pad) {
   for (const b of boxes) {
@@ -1370,6 +1371,51 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
   });
 }
 
+let sampledKeepOut = null;
+
+function buildingKeepOutSig(buildings) {
+  let verts = 0;
+  for (let i = 0; i < buildings.length; i++) verts += buildings[i].ring.length;
+  const a = buildings[0].ring[0];
+  const b = buildings[buildings.length - 1].ring[0];
+  return buildings.length + ":" + verts + ":" + a[0] + ":" + a[1] + ":" + b[0] + ":" + b[1];
+}
+
+/**
+ * Interior samples of each roof, 4 px apart. The same list is reused for
+ * every foliage tile on this worker. A later export with a different roof
+ * set misses the cache.
+ */
+function sampleBuildingKeepOut(buildings) {
+  if (!buildings || !buildings.length) return [];
+  const sig = buildingKeepOutSig(buildings);
+  if (sampledKeepOut && sampledKeepOut.sig === sig) return sampledKeepOut.points;
+  const keepOutPx = [];
+  for (let i = 0; i < buildings.length; i++) {
+    const ring = buildings[i].ring;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let k = 0; k < ring.length; k++) {
+      const p = ring[k];
+      if (p[0] < minX) minX = p[0];
+      if (p[1] < minY) minY = p[1];
+      if (p[0] > maxX) maxX = p[0];
+      if (p[1] > maxY) maxY = p[1];
+    }
+    const step = 4;
+    for (let y = minY + step * 0.5; y < maxY; y += step) {
+      for (let x = minX + step * 0.5; x < maxX; x += step) {
+        const c = [x, y];
+        if (pointInRing(c, ring)) keepOutPx.push(c);
+      }
+    }
+  }
+  sampledKeepOut = { sig, points: keepOutPx };
+  return keepOutPx;
+}
+
 function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   void buildingAabbs;
   const oiAreas = [];
@@ -1389,29 +1435,12 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     opts && opts.maskPolygons,
     bufferM / Math.max(frame.mpuX || 1, 0.05)
   );
-  const keepOutPx = [];
-  if (clipSet && clipSet.buildings) {
-    for (let i = 0; i < clipSet.buildings.length; i++) {
-      const ring = clipSet.buildings[i].ring;
-      let minX = Infinity;
-      let minY = Infinity;
-      let maxX = -Infinity;
-      let maxY = -Infinity;
-      for (let k = 0; k < ring.length; k++) {
-        const p = ring[k];
-        if (p[0] < minX) minX = p[0];
-        if (p[1] < minY) minY = p[1];
-        if (p[0] > maxX) maxX = p[0];
-        if (p[1] > maxY) maxY = p[1];
-      }
-      const step = 4;
-      for (let y = minY + step * 0.5; y < maxY; y += step) {
-        for (let x = minX + step * 0.5; x < maxX; x += step) {
-          const c = [x, y];
-          if (pointInRing(c, ring)) keepOutPx.push(c);
-        }
-      }
-    }
+  const prof = profile.profileOn();
+  let tProf = prof ? profile.now() : 0;
+  const keepOutPx = sampleBuildingKeepOut(clipSet && clipSet.buildings);
+  if (prof) {
+    profile.add("keepout-build", profile.msSince(tProf));
+    profile.add("keepout-points", keepOutPx.length);
   }
   const pushCanopy = (ringPx, material, shape, context) => {
     const pieces = clipFoliageRing(ringPx, clipSet);
@@ -1450,11 +1479,15 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   polygons.sort((a, b) => ringPxArea(b.ringPx) - ringPxArea(a.ringPx));
   let ownedPolygons = 0;
   for (let i = 0; i < polygons.length; i++) if (!polygons[i].context) ownedPolygons++;
+  if (prof) tProf = profile.now();
   for (const poly of polygons) pushCanopy(poly.ringPx, poly.material, "polygon", poly.context);
+  if (prof) profile.add("clip", profile.msSince(tProf));
 
   // Clip against roofs, water, and ski runs, then dissolve so two patches do
   // not paint green on green. Clipboard follows the dissolved rings.
+  if (prof) tProf = profile.now();
   const dissolved = dissolveFoliageRings(oiAreas, clipSet);
+  if (prof) profile.add("dissolve", profile.msSince(tProf));
   oiAreas.length = 0;
   overlayRings.length = 0;
   const slopeTop = opts && typeof opts.slopeTop === "function" ? opts.slopeTop : null;
@@ -1549,6 +1582,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     if (up - down > 3) return down;
     return up;
   };
+  if (prof) tProf = profile.now();
   for (const area of dissolved) {
     // A neighbor crown is here so a shared edge is cut the same way. Its
     // pieces belong to the tile that owns that crown.
@@ -1608,7 +1642,9 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       pending.push({ area: rowArea, clip, trunk, slopePiece: seat.slopePiece });
     }
   }
+  if (prof) profile.add("seat", profile.msSince(tProf));
   let canopyCount = 0;
+  if (prof) tProf = profile.now();
   const plans = layerCounts(pending, frame);
   for (let r = 0; r < pending.length; r++) {
     const row = pending[r];
@@ -1663,6 +1699,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       pushFoliageClip(part.clip, part.ringPx, frame, affine, seenClip, clipTypes, clipZones);
     }
     canopyCount++;
+    if (prof && r === pending.length - 1) profile.add("stack", profile.msSince(tProf));
     const trunk = row.trunk;
     if (!trunk) continue;
     oiAreas.push(trunk);
