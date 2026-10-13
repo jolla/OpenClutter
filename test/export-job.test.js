@@ -219,7 +219,7 @@ describe("export jobs", { concurrency: 1 }, () => {
     const sharp = backgroundImagerySteps(true, Object.assign({ imageryQuality: "sharp" }, BOX));
     assert.equal(sharp[0].maxSide, 2048);
     assert.equal(sharp[0].metersPerPx, 0.25);
-    assert.ok(sharp[0].attemptMs >= 60000);
+    assert.ok(sharp[0].attemptMs >= 30000 && sharp[0].attemptMs <= 40000);
     assert.equal(sharp.some((step) => step.maxSide === 400), false);
     const four = backgroundImagerySteps(true, Object.assign({ imageryQuality: "4k" }, BOX));
     assert.equal(four[0].maxSide, 4096);
