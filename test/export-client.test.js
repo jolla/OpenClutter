@@ -14,6 +14,8 @@ const {
   chooseTerrainPaste,
   terrainPasteLine,
   exportSummaryLines,
+  finishedExportButton,
+  appendTerrainOmitted,
   steepestGrade,
 } = require("../public/export-client");
 const { steepestClipboardGrade } = require("../netlify/lib/terrain");
@@ -276,13 +278,58 @@ describe("Copy terrain after a background result", () => {
       { stats: { buildings: 0, trees: 4, openIntentJsonBytes: 80000 } },
       { foliageOn: false, terrainOn: false }
     );
-    assert.deepEqual(off, ["Buildings 0", "Terrain off", "OpenIntent 80 KB of 4.90 MB"]);
+    assert.deepEqual(off, ["Buildings 0", "Terrain was not included.", "OpenIntent 80 KB of 4.90 MB"]);
     const stands = exportSummaryLines(
       { stats: { buildings: 1, trees: 12, discreteTrees: 0 }, frame: { imgW: 2048, imgH: 1800, mpuX: 0.4 } },
       { foliageOn: true, terrainOn: true }
     );
     assert.equal(stands[1], "Stands 12");
     assert.equal(stands[stands.length - 1], "Map 2048 px, 0.40 m per pixel");
+  });
+
+  it("switches the Export button to Copy terrain only when the mesh is included", () => {
+    const mesh = finishedExportButton({
+      json: JSON.stringify({ slopedFloors: [{}], raisedFloorZones: [] }),
+      gpsOnly: false,
+    });
+    assert.equal(mesh.label, "Copy terrain");
+    assert.equal(mesh.copyReady, true);
+    assert.equal(mesh.omittedLine, "");
+    const off = finishedExportButton({ json: JSON.stringify({ tiePoints: [{}, {}] }), gpsOnly: true });
+    assert.equal(off.label, "Export");
+    assert.equal(off.copyReady, false);
+    assert.equal(off.omittedLine, "Terrain was not included.");
+    const leftOut = finishedExportButton({ json: "", gpsOnly: false });
+    assert.equal(leftOut.label, "Export");
+    assert.equal(leftOut.copyReady, false);
+    assert.equal(leftOut.omittedLine, "Terrain was not included.");
+    const summary = appendTerrainOmitted(["Zip ready.", "Buildings 1"], leftOut);
+    assert.equal(summary[summary.length - 1], "Terrain was not included.");
+    const once = appendTerrainOmitted(summary, leftOut);
+    assert.equal(once.filter((line) => line === "Terrain was not included.").length, 1);
+    const kept = appendTerrainOmitted(["Zip ready.", "Terrain pieces 2"], mesh);
+    assert.equal(kept.includes("Terrain was not included."), false);
+    assert.equal(/\u2014/.test(off.omittedLine + mesh.label), false);
+  });
+
+  it("a new or changed draw returns the button to Export and copy leaves the summary", () => {
+    const app = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
+    const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+    assert.equal(/id="copy-terrain"/.test(html + app), false);
+    assert.equal((html.match(/<button/gi) || []).length, 1);
+    const drag = app.slice(app.indexOf("function showDragPreview"), app.indexOf("function showVertexPreview"));
+    const vertex = app.slice(app.indexOf("function showVertexPreview"), app.indexOf("function handleDraw"));
+    assert.match(drag, /noteDrawInProgress\(\)/);
+    assert.match(vertex, /noteDrawInProgress\(\)/);
+    const replaced = app.slice(app.indexOf("function noteAreaReplaced"), app.indexOf("function rememberTerrain"));
+    assert.match(replaced, /exportCopyReady = false/);
+    assert.match(replaced, /label is Export|syncIdleExportLabel\(\)/);
+    const copy = app.slice(app.indexOf("async function copyFinishedTerrain"), app.indexOf("function exportError"));
+    assert.match(copy, /navigator\.clipboard\.writeText\(terrainPasteJson\)/);
+    assert.match(copy, /setCopyNote\("Copied\. Paste terrain separately in Hamina\."\)/);
+    assert.equal(/setStatus\(/.test(copy), false);
+    assert.equal(/status-more|status-line|status-body/.test(copy), false);
+    assert.match(app, /if \(exportCopyReady && !drawHidesCopy\) setCopyNote\("Paste terrain separately in Hamina\."\)/);
   });
 
   it("still copies GPS points when Terrain is off", () => {
