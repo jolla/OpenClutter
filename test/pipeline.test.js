@@ -1231,6 +1231,12 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /more\.open = false/);
     assert.match(html, /id="clutter-options"/);
     assert.match(html, /<details id="advanced">\s*<summary>Advanced<\/summary>/);
+    assert.match(html, /class="panel-links"/);
+    assert.match(html, /<details id="howto">\s*<summary>How it works<\/summary>/);
+    const panelLinksAt = html.indexOf('class="panel-links"');
+    const advancedAtRow = html.indexOf('<details id="advanced">');
+    const howtoAt = html.indexOf('<details id="howto">');
+    assert.ok(panelLinksAt > 0 && advancedAtRow > panelLinksAt && howtoAt > advancedAtRow);
     assert.match(html, /id="include-terrain"[^>]*checked/);
     assert.match(html, />\s*Terrain\s*</);
     assert.equal(/paste hamina-clipboard\.json for trees/i.test(html), false);
