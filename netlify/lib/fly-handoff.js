@@ -180,6 +180,29 @@ async function watchAfterDrop(jobId, startedAt, nowFn, sleepFn, pollMs, staleMs)
 async function handOffExport(jobId, inner, fetchImpl) {
   const cfg = flyWorkerConfig();
   if (!cfg) return { skipped: true, handed: false, fallback: false, stay: false };
+  const { sleepFn } = clockFns();
+  let result = null;
+  for (let attempt = 0; attempt <= BUSY_RETRY_MS.length; attempt++) {
+    result = await handOffOnce(jobId, inner, fetchImpl, cfg);
+    if (!isBusyResult(result) || attempt === BUSY_RETRY_MS.length) break;
+    await sleepFn(BUSY_RETRY_MS[attempt]);
+  }
+  return result;
+}
+
+// A busy machine answers 409. The Fly proxy answers 429 or 503 when every
+// machine is at its hard limit or still starting. Each retry lets the proxy
+// start or pick another machine before the job falls back to Netlify.
+const BUSY_STATUSES = [409, 429, 502, 503];
+const BUSY_RETRY_MS = [3000, 6000, 10000];
+
+function isBusyResult(result) {
+  if (!result || !result.fallback || typeof result.reason !== "string") return false;
+  const m = /^invoke-(\d+)$/.exec(result.reason);
+  return !!m && BUSY_STATUSES.includes(Number(m[1]));
+}
+
+async function handOffOnce(jobId, inner, fetchImpl, cfg) {
   const { nowFn, sleepFn, pollMs, staleMs } = clockFns();
   const fetchFn = fetchImpl || globalThis.fetch;
   const startedAt = nowFn();
@@ -292,4 +315,6 @@ module.exports = {
   heartbeatIsStale,
   rerunHasRoom,
   handOffExport,
+  isBusyResult,
+  BUSY_RETRY_MS,
 };

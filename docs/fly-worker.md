@@ -125,10 +125,10 @@ fly secrets set \
   NETLIFY_AUTH_TOKEN='paste-the-personal-access-token'
 
 flyctl deploy --local-only
-fly scale count 1
+fly scale count 4
 ```
 
-`fly scale count 1` is the whole pool. Fly will not create a second machine. The process exits after 5 minutes with no export, which stops the machine. The next export starts it. Fly autostop is off, so it does not stop a machine that still has a job in memory. There is no periodic health check. `GET /health` is only for a manual check. `flyctl deploy --local-only` builds on the machine running the deploy, not on Fly's remote builder.
+`fly scale count 4` is the whole pool: up to four exports at once, one per machine (`soft_limit` and `hard_limit` are 1). The proxy sends a new export to a free machine and starts a stopped one. When all four are busy the proxy refuses, and Netlify retries Fly after 3, 6 and 10 seconds before it runs the job itself. Each machine runs about 1 minute per export plus up to 5 idle minutes, about $0.02 an export at the performance-4x rate below. Stopped machines only bill their small root disk. The process exits after 5 minutes with no export, which stops the machine. The next export starts it. Fly autostop is off, so it does not stop a machine that still has a job in memory. There is no periodic health check. `GET /health` is only for a manual check. `flyctl deploy --local-only` builds on the machine running the deploy, not on Fly's remote builder.
 
 On Netlify, set the URL and the same secret for production and for the `dev` branch. A context that is missing either value keeps the current background export.
 
@@ -147,7 +147,7 @@ No map API key is required for the current sources. The Finland laser grid is al
 
 ## Update the live worker
 
-The app is already `openclutter-export`. From the repo root, on Jerry's machine, deploy this commit so the live machine gets the 16 to 32 tile queue, the terminal done and failed job write, performance-4x with 8 GB, worker threads for Trees, heartbeats, the concurrency limits (soft 200, hard 250), and the 5 minute idle exit. Do not run this from CI.
+The app is already `openclutter-export`. From the repo root, on Jerry's machine, deploy this commit so the live machine gets the 16 to 32 tile queue, the terminal done and failed job write, performance-4x with 8 GB, worker threads for Trees, heartbeats, one export per machine (soft and hard limit 1), and the 5 minute idle exit. Do not run this from CI.
 
 ```bash
 flyctl deploy --local-only
