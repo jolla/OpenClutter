@@ -1460,8 +1460,16 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /ev\.button === 2/);
     assert.match(app, /function panGesture/);
     const panFn = app.slice(app.indexOf("function panGesture"), app.indexOf("function committedExportBlocked"));
-    assert.match(panFn, /ev\.button === 2/);
+    assert.match(panFn, /ev\.button === 1 \|\| ev\.button === 2/);
     assert.match(panFn, /spacePan/);
+    assert.match(app, /"auxclick"/);
+    assert.match(app, /"mousedown"/);
+    const midAt = app.indexOf('"mousedown"');
+    const midBody = app.slice(midAt, midAt + 220);
+    assert.match(midBody, /ev\.button !== 1/);
+    assert.match(midBody, /preventDefault/);
+    assert.match(app, /setView\(\[36\.128, -115\.16\], 16\)/);
+    assert.match(app, /setView\(\[\+hit\.lat, \+hit\.lon\], 17\)/);
     assert.match(app, /ArrowLeft/);
     assert.match(app, /pointerType === "touch"/);
     assert.match(app, /scrollWheelZoom/);
