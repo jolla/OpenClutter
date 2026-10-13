@@ -143,6 +143,17 @@
       cursor: pointer;
     }
     .hint[hidden] { display: none; }
+    #import-tip a, #howto a { color: #58a6ff; }
+    #howto { margin-top: 10px; font-size: 12px; color: #8b949e; }
+    #howto > summary {
+      cursor: pointer; width: fit-content; list-style: none;
+      color: #8b949e; font-size: 12px; user-select: none;
+      text-decoration: underline; text-underline-offset: 2px;
+    }
+    #howto > summary::-webkit-details-marker { display: none; }
+    #howto ol { margin: 6px 0 0; padding-left: 18px; line-height: 1.4; color: #c9d1d9; }
+    #howto li { margin-top: 4px; }
+    #howto p { margin: 6px 0 0; }
   </style>
 </head>
 <body>
@@ -168,6 +179,7 @@
         <div id="status-body"></div>
       </details>
     </div>
+    <p id="import-tip" class="hint" hidden>Next: import the zip in Hamina. <a href="https://docs.hamina.com/hamina/live/openintent" target="_blank" rel="noopener noreferrer">Hamina's import steps</a></p>
     <details id="advanced">
       <summary>Advanced</summary>
       <div id="clutter-options">
@@ -226,7 +238,16 @@
           <option value="8k">8K · 8192 px</option>
         </select>
       </label>
-      <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.173</span></p>
+      <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.174</span></p>
+    </details>
+    <details id="howto">
+      <summary>How it works</summary>
+      <ol>
+        <li>Draw an area on the map and click Export. You get a zip file.</li>
+        <li>In your Hamina project, open the breadcrumb dropdown, choose Import / Export (third icon), and import the zip as OpenIntent.</li>
+        <li>When the import finishes, click Copy terrain here and paste it into Hamina.</li>
+      </ol>
+      <p><a href="https://github.com/google/openintent" target="_blank" rel="noopener noreferrer">OpenIntent</a> · <a href="https://docs.hamina.com/hamina/live/openintent" target="_blank" rel="noopener noreferrer">Hamina's OpenIntent guide</a></p>
     </details>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

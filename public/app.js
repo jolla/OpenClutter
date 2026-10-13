@@ -281,6 +281,8 @@ function setStatus(msg, err) {
   statusEl.className = err ? "err" : "";
   const done = !err && /^Done in \d+:\d\d$/.test(parts[0] || "");
   if (lineEl) lineEl.classList.toggle("done", done);
+  const tip = document.getElementById("import-tip");
+  if (tip) tip.hidden = !done;
   if (!lineEl || !more || !body) {
     statusEl.textContent = text;
     return;
@@ -841,6 +843,13 @@ window.addEventListener("keydown", (ev) => {
     map.panBy(L.point(arrow[0], arrow[1]), { animate: false });
   }
   if (ev.key !== "Escape") return;
+  const howto = document.getElementById("howto");
+  if (howto && howto.open && howto.contains(document.activeElement)) {
+    howto.open = false;
+    howto.querySelector("summary").focus();
+    ev.preventDefault();
+    return;
+  }
   const result = OpenClutterDraw.cancel(drawSession);
   if (result.type !== "cancel") return;
   activePointer = null;
