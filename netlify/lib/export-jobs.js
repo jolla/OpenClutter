@@ -82,6 +82,21 @@ async function openStore() {
   return getStore(opts);
 }
 
+/**
+ * A heartbeat may repeat a stage or move to a later one. It must not
+ * put an earlier label back on the job, or the status line freezes
+ * on the first stage after a newer one was already written.
+ */
+function stageMovesForward(current, next) {
+  const name = String(next || "").trim();
+  if (!name) return false;
+  const prev = String(current || "").trim();
+  if (!prev) return true;
+  if (name === prev) return false;
+  const ahead = markStage(name).progress + 1e-9 >= markStage(prev).progress;
+  return ahead;
+}
+
 function withStageMark(job, stage) {
   const mark = markStage(stage);
   job.stageLabel = mark.label;
@@ -320,10 +335,13 @@ async function writeHeartbeat(id, stage, extra) {
   const name = String(stage || cur.heartbeatStage || cur.stage || "")
     .replace(/\s+/g, " ")
     .trim();
+  const shown = cur.stage || cur.heartbeatStage || "";
+  const forward = stageMovesForward(shown, name);
   const patch = {
     heartbeatAt: Date.now(),
-    heartbeatStage: name,
+    heartbeatStage: forward || !shown ? name : String(shown),
   };
+  if (forward) patch.stage = name;
   const tiles = tilePatch(cur, extra);
   if (tiles) {
     patch.tilesDone = tiles.tilesDone;
@@ -354,4 +372,5 @@ module.exports = {
   writeHeartbeat,
   isTerminalState,
   mergeJobPatch,
+  stageMovesForward,
 };

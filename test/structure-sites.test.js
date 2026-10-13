@@ -137,6 +137,18 @@ describe("deck and warehouse rules on other US sites", () => {
       }
       assert.ok(out.trailers.length >= 1, site.id + " trailers " + out.trailers.length);
       assert.ok(out.trailers.length <= 40, site.id + " trailer carpet " + out.trailers.length);
+      const yardRecall = {
+        "amazon-ind5": 10,
+        "walmart-tx": 12,
+        "amazon-ont9": 5,
+        "walmart-pa": 10,
+      };
+      if (yardRecall[site.id]) {
+        assert.ok(
+          out.trailers.length >= yardRecall[site.id],
+          site.id + " yard recall " + out.trailers.length
+        );
+      }
       for (const trailer of out.trailers) {
         assert.equal(trailer.heightM, 4.1);
         if (!trailer.center || !pointInRing(trailer.center, site.ring)) continue;

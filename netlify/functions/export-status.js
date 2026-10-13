@@ -1,6 +1,7 @@
 "use strict";
 
 const jobs = require("../lib/export-jobs");
+const { markStage } = require("../lib/export-progress");
 
 const cors = {
   "access-control-allow-origin": "*",
@@ -30,13 +31,21 @@ exports.handler = async (event) => {
     return json(503, { error: "Export status is unavailable. Export again." });
   }
   if (!job) return json(404, { error: "This export expired. Export again." });
+  const beat = String(job.heartbeatStage || "");
+  const stored = String(job.stage || "");
+  const live =
+    (job.state === "running" || job.state === "queued") && beat && jobs.stageMovesForward(stored, beat)
+      ? beat
+      : stored || beat;
+  const mark = live ? markStage(live) : null;
+  const finished = job.state === "done";
   return json(200, {
     ok: job.state !== "error",
     state: job.state,
-    stage: job.stage,
-    stageLabel: job.stageLabel || job.stage,
-    progress: job.progress == null ? 0 : job.progress,
-    progressCeiling: job.progressCeiling == null ? 0 : job.progressCeiling,
+    stage: live || job.stage,
+    stageLabel: finished ? job.stageLabel || job.stage : (mark && mark.label) || job.stageLabel || job.stage,
+    progress: finished ? 1 : mark ? mark.progress : job.progress == null ? 0 : job.progress,
+    progressCeiling: finished ? 1 : mark ? mark.ceiling : job.progressCeiling == null ? 0 : job.progressCeiling,
     tilesDone: Number.isFinite(+job.tilesDone) ? job.tilesDone : null,
     tilesTotal: Number.isFinite(+job.tilesTotal) ? job.tilesTotal : null,
     createdAt: job.createdAt || null,

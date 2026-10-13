@@ -89,7 +89,6 @@ async function completeExportJob(jobId, inner, opts) {
   const stopTiles = startTilePulse(jobId);
   try {
     const result = await runBackgroundExport(inner, async (patch) => {
-      const updated = await jobs.updateJob(jobId, withTiles(patch));
       if (opts && typeof opts.onProgress === "function") {
         try {
           await opts.onProgress(patch);
@@ -97,7 +96,7 @@ async function completeExportJob(jobId, inner, opts) {
           /* A stage note must not fail the export. */
         }
       }
-      return updated;
+      return jobs.updateJob(jobId, withTiles(patch));
     });
     const status = result && result.statusCode;
     let data = {};
