@@ -993,6 +993,165 @@ describe("building height from floor on a slope", () => {
   });
 });
 
+describe("flat ground when terrain is off or left out", () => {
+  const frame = geoFrame({ west: -89.7, south: 44.91, east: -89.684, north: 44.926, name: "Granite Peak" });
+  const span = frame.north - frame.south;
+  const spanLon = frame.east - frame.west;
+  const lat0 = frame.south + span * 0.72;
+  const lon0 = frame.west + spanLon * 0.42;
+  const lat1 = lat0 + span * 0.02;
+  const lon1 = lon0 + spanLon * 0.02;
+  const building = squareFeature(lon0, lat0, lon1, lat1, { height: 8 });
+  const skywalk = squareFeature(lon0 + spanLon * 0.08, lat0, lon1 + spanLon * 0.08, lat1, {
+    height: 10,
+    levelBaseM: 6.5,
+    floatSpan: true,
+    buildingPart: true,
+    heightSource: "osm",
+  });
+  const treeLon = frame.west + spanLon * 0.55;
+  const treeLat = frame.south + span * 0.75;
+  const rv = {
+    kind: "rv",
+    heightM: 3.5,
+    coords: [
+      [treeLon, treeLat],
+      [treeLon + spanLon * 0.01, treeLat],
+      [treeLon + spanLon * 0.01, treeLat + span * 0.008],
+      [treeLon, treeLat + span * 0.008],
+      [treeLon, treeLat],
+    ],
+  };
+  const bridge = {
+    kind: "bridge",
+    deckM: 6.5,
+    widthM: 10,
+    coords: [
+      [frame.west + spanLon * 0.3, frame.south + span * 0.6],
+      [frame.west + spanLon * 0.5, frame.south + span * 0.62],
+    ],
+  };
+  const rail = {
+    kind: "guideway",
+    deckM: 9,
+    widthM: 4,
+    thicknessM: 4.5,
+    coords: [
+      [frame.west + spanLon * 0.2, frame.south + span * 0.8],
+      [frame.west + spanLon * 0.45, frame.south + span * 0.82],
+    ],
+  };
+
+  function zAt(_r, _c, _lon, lat) {
+    return 400 + ((lat - frame.south) / span) * 18;
+  }
+
+  function buildAt(terrain) {
+    return buildClutter({
+      frame,
+      footprintsGeojson: { features: [building, skywalk] },
+      treePoints: [],
+      name: "Granite Peak",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain,
+      canopyHits: canopyHitsGrid(frame, treeLon, treeLat, { pct: 80 }),
+      heightSample: () => 14.2,
+      includeFoliage: true,
+      outdoorFeatures: [rv],
+      includeRvs: true,
+      bridgeFeatures: [bridge],
+      includeBridges: true,
+      guidewayFeatures: [rail],
+      includeGuideways: true,
+    });
+  }
+
+  function named(built, prefix) {
+    const areas = built.openintent.floorplans[0].attenuation_areas;
+    return areas.filter((a) => String(a.area_material.name).indexOf(prefix) === 0);
+  }
+
+  function bottom(area) {
+    return "bottom_height" in area.area_material ? area.area_material.bottom_height : 0;
+  }
+
+  it("keeps the slope when the mesh is exported and uses ground 0 when it is not", () => {
+    const terrain = terrainFromSamples(gridSamples(frame, zAt), frame);
+    const seat = slopeSeatUnderRing(terrain, building.geometry.coordinates[0]);
+    assert.ok(seat >= 8 && seat < LIFT_RELIEF_M, "seat " + seat);
+    assert.equal(typeof demUnderFootprint(terrain), "function");
+
+    const on = buildAt(terrain);
+    const onBuilding = named(on, "Building - Two Floor")[0];
+    const onSky = named(on, "Building - 3.5 @")[0];
+    const onRv = named(on, "RV ")[0];
+    const onBridge = named(on, "Bridge ")[0];
+    const onRail = named(on, "Guideway ")[0];
+    const onTrunk = named(on, "Foliage - Understory")[0];
+    const onCrown = named(on, "Foliage - Heavy")[0];
+    assert.equal(bottom(onBuilding), seat);
+    assert.equal(bottom(onSky), Math.round((seat + 6.5) * 10) / 10);
+    assert.ok(bottom(onRv) >= 8, "rv " + bottom(onRv));
+    assert.ok(bottom(onBridge) > 6.5, "bridge " + bottom(onBridge));
+    assert.ok(bottom(onRail) > 9, "rail " + bottom(onRail));
+    assert.ok(bottom(onTrunk) >= 8, "trunk " + bottom(onTrunk));
+    assert.ok(bottom(onCrown) > bottom(onTrunk), "crown stack " + bottom(onCrown));
+
+    const leftOut = Object.assign({}, terrain, { clipboard: null, pasteOmitted: true });
+    assert.equal(demUnderFootprint(leftOut), null);
+    assert.equal(demUnderFootprint(null), null);
+    const off = buildAt(null);
+    const omitted = buildAt(leftOut);
+    for (const built of [off, omitted]) {
+      const groundBuilding = named(built, "Building - Two Floor")[0];
+      const sky = named(built, "Building - 3.5 @")[0];
+      const vehicle = named(built, "RV ")[0];
+      const deck = named(built, "Bridge ")[0];
+      const guide = named(built, "Guideway ")[0];
+      const trunk = named(built, "Foliage - Understory")[0];
+      const crown = named(built, "Foliage - Heavy")[0];
+      assert.equal(bottom(groundBuilding), 0);
+      assert.equal("bottom_height" in groundBuilding.area_material, false);
+      assert.equal(bottom(vehicle), 0);
+      assert.equal("bottom_height" in vehicle.area_material, false);
+      assert.equal(bottom(trunk), 0);
+      assert.equal("bottom_height" in trunk.area_material, false);
+      assert.ok(bottom(crown) > 0 && bottom(crown) < 4, "crown stem " + bottom(crown));
+      assert.equal(bottom(sky), 6.5);
+      assert.equal(bottom(deck), 6.5);
+      assert.equal(bottom(guide), 9);
+    }
+
+    const ski = terrainFromSamples(gridSamples(frame, (_r, _c, _lon, lat) => {
+      const t = (lat - frame.south) / span;
+      return t < 0.35 ? 300 : 300 + ((t - 0.35) / 0.65) * 180;
+    }), frame);
+    assert.ok(ski.reliefM >= LIFT_RELIEF_M);
+    const skiLeft = Object.assign({}, ski, { clipboard: null, pasteOmitted: true, raised: 0, sloped: 0 });
+    assert.equal(demUnderFootprint(skiLeft), null);
+    const skiBuilt = buildClutter({
+      frame,
+      footprintsGeojson: { features: [building] },
+      treePoints: [],
+      name: "Granite Peak",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain: skiLeft,
+    });
+    const skiArea = skiBuilt.openintent.floorplans[0].attenuation_areas[0];
+    assert.equal("bottom_height" in skiArea.area_material, false);
+    const skiOn = buildClutter({
+      frame,
+      footprintsGeojson: { features: [building] },
+      treePoints: [],
+      name: "Granite Peak",
+      imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      terrain: ski,
+    });
+    const skiOnArea = named(skiOn, "Building -")[0];
+    assert.ok(bottom(skiOnArea) >= 50, "ski on " + bottom(skiOnArea));
+  });
+});
+
 describe("foliage height from floor on a slope", () => {
   const frame = geoFrame({ west: -89.7, south: 44.91, east: -89.684, north: 44.926, name: "Granite Peak" });
 
