@@ -18,7 +18,9 @@ const {
   CAR_LAYER_M,
   RV_DB,
   TRAILER_DB,
+  semisAtDocks,
 } = require("../netlify/lib/vehicle-track");
+const { geoFrame } = require("../netlify/lib/geo-frame");
 const { outdoorMaterial } = require("../netlify/lib/materials");
 
 describe("vehicle track", () => {
@@ -200,5 +202,30 @@ describe("vehicle track", () => {
     assert.equal(rows[0].class, "rv");
     assert.equal(rows[0].recall, 1);
     assert.equal(rows[0].precision, 1);
+  });
+
+  it("does not invent trailers on an empty gray apron", () => {
+    const width = 220;
+    const height = 180;
+    const data = new Uint8Array(width * height * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 168;
+      data[i + 1] = 168;
+      data[i + 2] = 168;
+      data[i + 3] = 255;
+    }
+    const frame = geoFrame(
+      { west: -90, south: 40, east: -89.988, north: 40.004 },
+      { imgW: width, imgH: height, maxSpanM: 8000, minSpanM: 1 }
+    );
+    const ring = [
+      [-89.997, 40.0036],
+      [-89.997, 40.0004],
+      [-89.991, 40.0004],
+      [-89.991, 40.0036],
+      [-89.997, 40.0036],
+    ];
+    const found = semisAtDocks([ring], frame, { data, width, height }, [ring]);
+    assert.equal(found.length, 0);
   });
 });

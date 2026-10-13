@@ -423,36 +423,30 @@ async function fetchImageryStepped(bbox, steps) {
   let last;
   const started = Date.now();
   let askedSide = 0;
+  const seen = new Set();
+  const prepared = [];
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
+    const plate = imageryFrame(bbox, step);
+    const key = plate.imgW + "x" + plate.imgH;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!askedSide) askedSide = Math.max(plate.imgW, plate.imgH);
+    prepared.push({ step, plate });
+  }
+  const sharpCapped = !!(prepared[0] && prepared[0].step.sharpCapped);
+  for (let n = 0; n < prepared.length; n++) {
+    const entry = prepared[n];
     const elapsed = Date.now() - started;
-    if (!isBackgroundExport() && i > 0 && elapsed >= IMAGERY_STEPDOWN_QUICK_MS && step.maxSide > 1040) continue;
-    let attemptMs = step.attemptMs;
-    if (i > 0) {
-      attemptMs = imageryStepBudget(elapsed, step.attemptMs);
+    if (!isBackgroundExport() && n > 0 && elapsed >= IMAGERY_STEPDOWN_QUICK_MS && entry.step.maxSide > 1040) continue;
+    let attemptMs = entry.step.attemptMs;
+    if (n > 0) {
+      attemptMs = imageryStepBudget(elapsed, entry.step.attemptMs);
       if (!(attemptMs >= 1500)) break;
     }
     try {
-      let plate = imageryFrame(bbox, step);
-      if (!askedSide) askedSide = Math.max(plate.imgW, plate.imgH);
-      let buf;
-      try {
-        buf = await fetchImageryJpeg(esriImageryUrl(plate), attemptMs);
-      } catch (err) {
-        const safe = capEsriExportFrame(plate);
-        const smaller = safe && (safe.imgW !== plate.imgW || safe.imgH !== plate.imgH);
-        if (!smaller) throw err;
-        plate = safe;
-        buf = await fetchImageryJpeg(esriImageryUrl(plate), Math.min(attemptMs, 45000));
-      }
-      return {
-        buf,
-        stepped: i > 0,
-        imgW: plate.imgW,
-        imgH: plate.imgH,
-        askedSide: askedSide,
-        sharpCapped: !!(steps[0] && steps[0].sharpCapped),
-      };
+      const got = await tryImageryPlate(entry.plate, attemptMs);
+      return plateResult(got, askedSide, n > 0, sharpCapped);
     } catch (e) {
       last = e;
     }
@@ -461,7 +455,35 @@ async function fetchImageryStepped(bbox, steps) {
 }
 
 function imageryFrame(bbox, step) {
-  return capEsriExportFrame(geoFrame(bbox, { maxSide: step.maxSide, metersPerPx: step.metersPerPx }));
+  const raw = geoFrame(bbox, { maxSide: step.maxSide, metersPerPx: step.metersPerPx });
+  const plate = capEsriExportFrame(raw);
+  return Object.assign({}, plate, {
+    pixelCapped: plate.imgW !== raw.imgW || plate.imgH !== raw.imgH,
+  });
+}
+
+function plateResult(got, askedSide, stepped, sharpCapped) {
+  return {
+    buf: got.buf,
+    stepped: !!stepped,
+    imgW: got.plate.imgW,
+    imgH: got.plate.imgH,
+    askedSide: askedSide,
+    sharpCapped: !!sharpCapped,
+  };
+}
+
+async function tryImageryPlate(plate, attemptMs) {
+  try {
+    const buf = await fetchImageryJpeg(esriImageryUrl(plate), attemptMs);
+    return { buf, plate };
+  } catch (err) {
+    const safe = capEsriExportFrame(plate);
+    const smaller = safe && (safe.imgW !== plate.imgW || safe.imgH !== plate.imgH);
+    if (!smaller) throw err;
+    const buf = await fetchImageryJpeg(esriImageryUrl(safe), Math.min(attemptMs, 45000));
+    return { buf, plate: safe };
+  }
 }
 
 /**
