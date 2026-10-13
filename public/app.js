@@ -114,6 +114,8 @@ function terrainExportEnabled() {
 (function markDeployEnv() {
   const badge = document.getElementById("env-badge");
   if (badge && devPage()) badge.classList.add("on");
+  const preview = document.getElementById("preview-tag");
+  if (preview && !devPage()) preview.classList.add("on");
   syncDevPanel();
   restoreAdvanced();
   const lidarBox = document.getElementById("include-lidar");
