@@ -8,6 +8,8 @@
 
 **v1.1.97** on `dev` — Sloped terrain is an adaptive mesh, not a fixed 20×20 grid. The paste spends its budget on the worst saddles, keeps a planar fit near half a meter, and merges a flat bench into one raised floor. Neighboring ramps share an edge height, and a coarse piece is split where it meets a finer one so the seam has no gap. A pure north-south or east-west grade stays one ramp per cell. The badge stays (`dev · v1.1.97`).
 
+**v1.1.168** on `dev`. When Terrain is off, or the terrain mesh is left out, buildings, parts, trees, trunks, vehicles, and stacks sit on flat ground at 0. Bridges, skywalks, elevated rail, and overpasses keep the clearance the map recorded. A pasted mesh still seats those objects on the slope. The badge stays (`dev · v1.1.168`).
+
 **v1.1.167** on `dev`. After an export that includes terrain, the Export button becomes Copy terrain. Drawing a new area, or changing the drawn area, switches it back to Export. An export with terrain off, or with terrain left out, leaves the button as Export and the summary says terrain was not included. The summary and Details stay after a copy. The badge stays (`dev · v1.1.167`).
 
 **v1.1.166** on `dev`. A measured tree stays when the aerial shows a crown in that cell, even if the cell center is lawn. Crown growth stops at about 8 m so open ground is not painted, and a crown outline stays closer to the height cells. A trailer yard inside a warehouse outline is searched when the aerial shows trailer bodies beside a shadow. A white panel roof is not searched. An empty lot stays empty. The badge stays (`dev · v1.1.166`).

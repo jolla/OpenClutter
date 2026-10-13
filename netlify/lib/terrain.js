@@ -11,9 +11,10 @@
  * time is left. The handler can skip that probe on a follow-up read and pass
  * budgetMs for the slice still left after the aerial. GLO-30 is a surface DSM.
  * A pasted mesh lifts attenuating objects on bare earth and on a surface DEM,
- * including relief under 20 m. The old ski-hill gate applies only when the
- * paste was left out. Production callers leave that
- * fallback off and never call GLO-30. A US 3DEP hit is still preferred.
+ * including relief under 20 m. When Terrain is off, or the paste is left out,
+ * objects sit on flat ground at 0. Bridges, skywalks, elevated rail, and
+ * overpasses keep the clearance the map recorded. Production callers leave the
+ * surface fallback off and never call GLO-30. A US 3DEP hit is still preferred.
  * OpenIntent has no raisedFloorZones / slopedFloors. Copy terrain is the paste
  * path. The same JSON is stored in the OpenIntent zip when 3DEP hits; Export
  * does not download it as a second file.
@@ -3736,9 +3737,11 @@ function slopeSampler(terrain) {
  * Ring → meters above the terrain datum for attenuating-object bottoms.
  * Null when objects stay on the floor.
  * A pasted mesh (sloped ramps or raised plates) is sampled for bare earth and
- * for a surface DEM, including relief under 20 m. The ski-hill gate remains
- * only when the paste was left out. The value is the slope top under the
- * ring. fn.seat is the downhill surface, where a building meets the hill.
+ * for a surface DEM, including relief under 20 m. Terrain off, or a paste
+ * that was left out, returns null so buildings, parts, trees, trunks,
+ * vehicles, and stacks sit at 0. Map clearance on a bridge, skywalk, elevated
+ * rail, or overpass is added by the caller and is not in this sampler.
+ * fn.seat is the downhill surface, where a building meets the hill.
  * fn() remains the uphill surface. Ground under LIFT_LOCAL_M still omits
  * bottom_height inside the lifters. fn.split cuts a footprint that climbs
  * more than SPLIT_FLOOR_M. fn.splitCanopy does the same for a woods, with
@@ -3752,11 +3755,9 @@ function restoreElevation(terrain) {
 }
 
 function demUnderFootprint(terrain) {
-  if (!terrain) return null;
+  if (!terrain || terrain.pasteOmitted || !terrain.clipboard) return null;
   const zones = (terrain.raised || 0) + (terrain.sloped || 0);
-  if (zones > 0) return slopeSampler(terrain);
-  if (!terrain.pasteOmitted) return null;
-  if (terrain.kind !== "surface" && !(terrain.reliefM >= LIFT_RELIEF_M)) return null;
+  if (!(zones > 0)) return null;
   return slopeSampler(terrain);
 }
 
