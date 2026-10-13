@@ -8,6 +8,8 @@
 
 **v1.1.97** on `dev` — Sloped terrain is an adaptive mesh, not a fixed 20×20 grid. The paste spends its budget on the worst saddles, keeps a planar fit near half a meter, and merges a flat bench into one raised floor. Neighboring ramps share an edge height, and a coarse piece is split where it meets a finer one so the seam has no gap. A pure north-south or east-west grade stays one ramp per cell. The badge stays (`dev · v1.1.97`).
 
+**v1.1.164** on `dev`. A measured tree stays when the aerial shows a crown in that cell, even if the cell center is lawn. Crown growth stops at about 8 m so open ground is not painted, and a crown outline stays closer to the height cells. A trailer yard inside a warehouse outline is searched when the aerial shows trailer bodies beside a shadow. A white panel roof is not searched. An empty lot stays empty. The badge stays (`dev · v1.1.164`).
+
 **v1.1.163** on `dev`. Export status follows the stage the worker is on, including the heartbeat, and Trees still moves by tiles finished. A map plate Esri does not return is not requested twice, and the next plate stays finer than the coarse step when it fits. Trailer yards beside a large warehouse are searched past the first dock row. An empty lot stays empty. Stacked yard storage stays out unless lidar measures a yard. The badge stays (`dev · v1.1.163`).
 
 **v1.1.162** on `dev`. Passenger cars, car-lot stalls, and the car parking layer stay out of an export unless Cars is on. Cars sits under Advanced and starts off. A request that leaves the flag out exports no passenger cars. Semi-trailers, trucks, RVs, boats, and mobile homes stay on. The badge stays (`dev · v1.1.162`).

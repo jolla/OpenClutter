@@ -228,4 +228,71 @@ describe("vehicle track", () => {
     const found = semisAtDocks([ring], frame, { data, width, height }, [ring]);
     assert.equal(found.length, 0);
   });
+
+  it("searches a yard inside the footprint and skips a panel roof", () => {
+    const { yardInsideFootprint } = require("../netlify/lib/vehicle-track");
+    const width = 400;
+    const height = 240;
+    const frame = geoFrame(
+      { west: -90, south: 40, east: -89.996, north: 40.0024 },
+      { imgW: width, imgH: height, maxSpanM: 8000, minSpanM: 1 }
+    );
+    const ring = [
+      [-89.9992, 40.0022],
+      [-89.9992, 40.0002],
+      [-89.9968, 40.0002],
+      [-89.9968, 40.0022],
+      [-89.9992, 40.0022],
+    ];
+    function paint(draw) {
+      const data = new Uint8Array(width * height * 4);
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const i = (y * width + x) * 4;
+          const rgb = draw(x, y);
+          data[i] = rgb[0];
+          data[i + 1] = rgb[1];
+          data[i + 2] = rgb[2];
+          data[i + 3] = 255;
+        }
+      }
+      return { data, width, height };
+    }
+    function xy(lon, lat) {
+      const x = ((lon - frame.west) / (frame.east - frame.west)) * width;
+      const y = ((frame.north - lat) / (frame.north - frame.south)) * height;
+      return [x, y];
+    }
+    const roofX = xy(-89.9982, 40.0012)[0];
+    const yardPlate = paint((x, y) => {
+      if (x < roofX) return [236, 236, 232];
+      const rel = y - 188;
+      const row = Math.floor(rel / 10);
+      const inRow = row >= 0 && row < 4;
+      const along = x - roofX - 36;
+      const inLen = along >= 0 && along < 16;
+      const across = inRow ? rel - row * 10 : 99;
+      if (inRow && inLen && across >= 0 && across < 2) return [232, 232, 228];
+      if (inRow && inLen && across >= 2 && across < 6) return [42, 42, 40];
+      return [132, 132, 128];
+    });
+    const yard = yardInsideFootprint(ring, frame, yardPlate);
+    assert.ok(yard.yardM2 >= 400, "yard " + yard.yardM2);
+    const found = semisAtDocks([ring], frame, yardPlate, [ring]);
+    assert.ok(found.length >= 2, "trailers " + found.length);
+    for (let i = 0; i < found.length; i++) {
+      const px = xy(found[i].center[0], found[i].center[1]);
+      assert.ok(px[0] > roofX, "trailer on the roof at x " + px[0]);
+    }
+    const solar = paint((x, y) => {
+      const inset = x > 30 && x < width - 30 && y > 24 && y < height - 24;
+      const panel = inset && (Math.floor((x - 30) / 18) % 2 === 0) && (Math.floor((y - 24) / 10) % 2 === 0);
+      return panel ? [42, 48, 44] : [244, 244, 240];
+    });
+    const roof = yardInsideFootprint(ring, frame, solar);
+    assert.equal(roof.allow, null);
+    assert.equal(roof.yardM2, 0);
+    const onRoof = semisAtDocks([ring], frame, solar, [ring]);
+    assert.equal(onRoof.length, 0);
+  });
 });

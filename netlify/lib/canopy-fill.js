@@ -223,10 +223,18 @@ function fillCanopyGaps(grid, opts) {
   }
   // A lawn, a pitch, or a road is not a crown, even when the height model
   // marked that grass. The aerial is the check: a spruce pixel is not ground,
-  // and a textured crown is not a mown field. Clearing it before the seed
-  // pass stops one spike from growing across the pitch.
+  // and a textured crown is not a mown field. A measured cell stays when a
+  // crown pixel sits in it, because the center of a 2 m cell is often the
+  // lawn under the tree. Clearing the rest before the seed pass stops one
+  // spike from growing across the pitch.
   for (let i = 0; i < values.length; i++) {
-    if (ground[i]) values[i] = 0;
+    if (!ground[i]) continue;
+    if (values[i] >= 3) {
+      const x = i % w;
+      const y = (i / w) | 0;
+      if (crownInCell(image, frame, x, y, w, h, dLon, dLat)) continue;
+    }
+    values[i] = 0;
   }
   // Seeds read the measured grid only. Writing heights in the same pass used
   // to walk a WorldCover tree label across a whole field from one crown.
@@ -254,11 +262,12 @@ function fillCanopyGaps(grid, opts) {
     values[i] = seeded[k][1];
     filled++;
   }
-  // A few steps into a woody neighbor pull a shadowed crown in. A flat
-  // shadow still needs two canopy neighbors, so a lone dark pixel stays empty.
-  // Textured spruce can walk further than a smooth shadow, and it still
-  // stops at a lawn, a pitch, or a road.
-  for (let pass = 0; pass < 8; pass++) {
+  // A few steps into a woody neighbor pull a shadowed crown in. Four steps
+  // is about 8 m. Farther than that paints the fairway. A flat shadow still
+  // needs two canopy neighbors, so a lone dark pixel stays empty. Textured
+  // spruce can walk further than a smooth shadow, and it still stops at a
+  // lawn, a pitch, or a road.
+  for (let pass = 0; pass < 4; pass++) {
     const add = [];
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
@@ -372,6 +381,28 @@ function fillCanopyGaps(grid, opts) {
   base.nonzero = nz;
   base.filled = filled;
   return base;
+}
+
+function crownInCell(image, frame, x, y, w, h, dLon, dLat) {
+  const lon = +frame.west + ((x + 0.5) / w) * dLon;
+  const lat = +frame.north - ((y + 0.5) / h) * dLat;
+  const ox = dLon / w;
+  const oy = dLat / h;
+  const offs = [
+    [0, 0],
+    [0.45, 0],
+    [-0.45, 0],
+    [0, 0.45],
+    [0, -0.45],
+  ];
+  for (let k = 0; k < offs.length; k++) {
+    const px = sampleRgb(image, frame, lon + offs[k][0] * ox, lat - offs[k][1] * oy);
+    if (!px) continue;
+    if (coniferPixel(px.r, px.g, px.b)) return true;
+    const std = localStd(px.data, px.w, px.h, px.x, px.y);
+    if (broadleafPixel(px.r, px.g, px.b) && std >= 8) return true;
+  }
+  return false;
 }
 
 function coniferInCell(image, frame, x, y, w, h, dLon, dLat) {
