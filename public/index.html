@@ -4,25 +4,25 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>OpenClutter</title>
-  <meta name="description" content="OpenClutter: search, draw, export one OpenIntent zip. Import in Hamina for the map and buildings; paste the clipboard JSON for trees." />
+  <meta name="description" content="OpenClutter: search, draw, export one OpenIntent zip. Import in Hamina for the map and buildings. Foliage adds canopy." />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23238636'/><text x='8' y='12' text-anchor='middle' font-size='10' fill='white'>OC</text></svg>" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
   <style>
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; font: 15px/1.4 ui-sans-serif, system-ui, sans-serif; background: #0e1116; color: #e8eaed; }
-    #map { position: absolute; inset: 0; }
+    #map { position: absolute; inset: 0; background: #0e1116; }
     .panel {
       position: absolute; z-index: 1000; top: 12px; left: 12px; width: min(360px, calc(100% - 24px));
+      max-height: calc(100% - 24px); overflow: auto;
       background: #161b22ee; border: 1px solid #30363d; border-radius: 12px; padding: 14px 16px;
       backdrop-filter: blur(8px);
     }
     h1 { font-size: 16px; margin: 0 0 4px; font-weight: 650; }
     .sub { color: #8b949e; font-size: 12px; margin-bottom: 12px; }
-    form { display: flex; gap: 8px; }
+    form { display: block; }
     input[type=search] {
-      flex: 1; background: #0d1117; color: #e8eaed; border: 1px solid #30363d; border-radius: 8px;
+      background: #0d1117; color: #e8eaed; border: 1px solid #30363d; border-radius: 8px;
       padding: 8px 10px; font: inherit; width: 100%;
     }
     button {
@@ -31,44 +31,199 @@
     }
     button.secondary { background: #21262d; border: 1px solid #30363d; }
     button:disabled { opacity: .5; cursor: not-allowed; }
+    .check {
+      display: flex; align-items: center; gap: 8px; margin-top: 10px;
+      font-size: 13px; color: #e8eaed; user-select: none; cursor: pointer;
+    }
+    .check[hidden] { display: none; }
+    .check input { width: 16px; height: 16px; margin: 0; accent-color: #238636; }
+    .checks { display: flex; flex-wrap: wrap; gap: 0 12px; }
+    .checks .check { margin-top: 6px; }
+    #copy-terrain { width: 100%; margin-top: 10px; }
+    .sub[hidden] { display: none; }
+    .map-quality {
+      display: flex; align-items: center; gap: 8px; margin-top: 10px;
+      font-size: 12px; color: #8b949e;
+    }
+    .map-quality[hidden] { display: none; }
+    .map-quality select {
+      flex: 1; background: #0d1117; color: #e8eaed; border: 1px solid #30363d;
+      border-radius: 8px; padding: 4px 8px; font: inherit; font-size: 12px;
+    }
+    #advanced { margin-top: 12px; }
+    #advanced > summary {
+      cursor: pointer; width: fit-content; list-style: none;
+      color: #58a6ff; font-size: 12px; font-weight: 500;
+      text-decoration: underline; text-underline-offset: 2px; user-select: none;
+    }
+    #advanced > summary::-webkit-details-marker { display: none; }
     .row { display: flex; gap: 8px; margin-top: 10px; }
     .row button { flex: 1; }
-    #status { margin-top: 10px; font-size: 12px; color: #8b949e; min-height: 16px; white-space: pre-wrap; }
-    #status.err { color: #f85149; }
-    .foot {
-      margin-top: 12px; padding-top: 10px; border-top: 1px solid #30363d;
-      font-size: 11px; color: #6e7681; display: flex; align-items: center; gap: 8px;
+    #export {
+      position: relative;
+      overflow: hidden;
     }
-    #env-badge {
-      display: none; font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
-      text-transform: uppercase; color: #0d1117; background: #d29922;
-      border-radius: 4px; padding: 2px 6px;
+    #export-fill {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 0;
+      background: #3fb950;
+      pointer-events: none;
+      transition: width 0.45s linear;
     }
-    #env-badge.on { display: inline-block; }
+    #export-label { position: relative; z-index: 1; }
+    #export.exporting:disabled { opacity: 1; cursor: default; }
+    @media (prefers-reduced-motion: reduce) {
+      #export-fill { transition: none; }
+    }
+    .hint { margin: 8px 0 0; font-size: 11px; line-height: 1.35; color: #6e7681; }
+    #copy-note.err { color: #f85149; }
+    #status { margin-top: 10px; font-size: 12px; color: #8b949e; min-height: 16px; }
+    #status-line { margin: 0; line-height: 1.4; color: #c9d1d9; }
+    #status-line[hidden] { display: none; }
+    #status.err #status-line { color: #f85149; }
+    #status-more { margin-top: 6px; }
+    #status-more[hidden] { display: none; }
+    #status-more summary {
+      cursor: pointer; color: #8b949e; font-size: 12px; user-select: none;
+    }
+    #status-body p { margin: 1px 0 0; line-height: 1.35; font-variant-numeric: tabular-nums; }
+    .build {
+      margin: 14px 0 0;
+      font-size: 10px; line-height: 1.2; font-weight: 500; color: #6e7681;
+    }
+    #env-badge { display: none; }
+    #env-badge.on { display: inline; }
+    #app-version { font-size: inherit; font-weight: inherit; color: inherit; }
+    #env-badge.on + #app-version::before {
+      content: "·";
+      margin: 0 4px;
+      font-weight: 500;
+      color: #6e7681;
+    }
+    .leaflet-tooltip.area-chip {
+      background: #161b22ee;
+      border: 1px solid #3fb950;
+      color: #3fb950;
+      border-radius: 8px;
+      padding: 3px 8px;
+      font: 600 12px/1.3 ui-sans-serif, system-ui, sans-serif;
+      box-shadow: none;
+      backdrop-filter: blur(8px);
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    .leaflet-tooltip.area-chip .area-quiet {
+      color: #8b949e;
+      font-weight: 500;
+    }
+    .leaflet-tooltip.area-chip .area-clear {
+      pointer-events: auto;
+      margin: 0 0 0 6px;
+      padding: 0 2px;
+      border: 0;
+      background: transparent;
+      color: #8b949e;
+      font: 600 13px/1 ui-sans-serif, system-ui, sans-serif;
+      cursor: pointer;
+    }
+    .hint[hidden] { display: none; }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <div class="panel">
     <h1>OpenClutter</h1>
-    <div class="sub">One zip. Import OpenIntent for map + buildings; paste hamina-clipboard.json for trees.</div>
+    <div class="sub" id="panel-sub">Export a zip. Import it in Hamina for the aerial map and buildings.</div>
     <form id="search">
-      <input type="search" id="q" placeholder="Address" required />
-      <button type="submit">Go</button>
+      <input type="search" id="q" placeholder="Search address, press Enter" enterkeyhint="search" required />
     </form>
+    <p id="draw-hint" class="hint">Drag on the map to select an area</p>
     <div class="row">
-      <button type="button" id="draw" class="secondary">Draw</button>
-      <button type="button" id="export" disabled>Export</button>
+      <button type="button" id="export" disabled>
+        <span id="export-fill"></span>
+        <span id="export-label">Export</span>
+      </button>
     </div>
-    <div id="status">Search, then draw the site.</div>
-    <div class="foot">
-      <span id="env-badge">dev</span>
-      <span id="app-version">v1.0.0</span>
+    <button type="button" id="copy-terrain" class="secondary" hidden>Copy terrain</button>
+    <p id="copy-note" class="hint" hidden></p>
+    <div id="status">
+      <p id="status-line"></p>
+      <details id="status-more" hidden>
+        <summary>Details</summary>
+        <div id="status-body"></div>
+      </details>
     </div>
+    <details id="advanced">
+      <summary>Advanced</summary>
+      <div id="clutter-options">
+        <label class="check" for="include-foliage">
+          <input type="checkbox" id="include-foliage" checked />
+          Foliage
+        </label>
+        <div class="checks">
+          <label class="check" for="include-water">
+            <input type="checkbox" id="include-water" />
+            Water
+          </label>
+          <label class="check" for="include-parking">
+            <input type="checkbox" id="include-parking" checked />
+            Parking
+          </label>
+          <label class="check" for="include-cars">
+            <input type="checkbox" id="include-cars" />
+            Cars
+          </label>
+          <label class="check" for="include-walls">
+            <input type="checkbox" id="include-walls" checked />
+            Walls
+          </label>
+          <label class="check" for="include-poles">
+            <input type="checkbox" id="include-poles" checked />
+            Poles
+          </label>
+          <label class="check" for="include-rvs">
+            <input type="checkbox" id="include-rvs" checked />
+            RVs
+          </label>
+        </div>
+      </div>
+      <label class="check" id="include-terrain-row" for="include-terrain">
+        <input type="checkbox" id="include-terrain" checked />
+        Terrain
+      </label>
+      <label class="check" for="include-lidar">
+        <input type="checkbox" id="include-lidar" />
+        Lidar heights
+      </label>
+      <label class="check" for="include-map-notes">
+        <input type="checkbox" id="include-map-notes" checked />
+        Map notes
+      </label>
+      <label id="map-quality-row" class="map-quality">
+        Map
+        <select id="map-quality" aria-label="Map quality">
+          <option value="auto" selected>Auto</option>
+          <option value="low">Low · 256 px</option>
+          <option value="standard">Standard · 640 px</option>
+          <option value="high">High · 1040 px</option>
+          <option value="sharp">Sharp · 2048 px</option>
+          <option value="4k">4K · 4096 px</option>
+          <option value="8k">8K · 8192 px</option>
+        </select>
+      </label>
+      <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.163</span></p>
+    </details>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script src="/tree-detect.js"></script>
+  <script src="/bbox-area.js"></script>
+  <script src="/site-draw.js"></script>
+  <script src="/export-progress.js"></script>
+  <script src="/export-client.js"></script>
+  <script src="/version.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -6,7 +6,8 @@ const fs = require("fs");
 const path = require("path");
 const { geoFrame } = require("../netlify/lib/geo-frame");
 const { buildClutter, expandOiCoordTriples, oiPixelCoords, validateOiCoords } = require("../netlify/lib/pipeline");
-const { catalogMaterials, OI_BUILDING_NAMES } = require("../netlify/lib/materials");
+const { buildingCatalog, OI_BUILDING_NAMES, isVegetationOiName, isUnderstoryOiName, isPoisonedOiName } = require("../netlify/lib/materials");
+const { canopyHitsGrid } = require("./canopy-grid");
 
 const SAMPLE = JSON.parse(
   fs.readFileSync(path.join(__dirname, "fixtures/hamina-native/attenuation-area-sample.json"), "utf8")
@@ -48,7 +49,7 @@ describe("Hamina-native OpenIntent gold shape", () => {
     assert.ok(Math.abs(m0.y - p0.y * mpu) < 1e-4);
   });
 
-  it("emits OI materials ⊆ gold Building-* set; trees stay on clipboard", () => {
+  it("emits tree areas on stock foliage materials and keeps the gold building prefix", () => {
     const frame = geoFrame({
       west: -87.93,
       south: 42.89,
@@ -81,9 +82,11 @@ describe("Hamina-native OpenIntent gold shape", () => {
           },
         ],
       },
-      treePoints: [{ lon: lon0 + dLon * 2, lat: lat0 + dLat * 2, pct: 50 }],
+      treePoints: [{ lon: lon0 + dLon * 2, lat: lat0 + dLat * 2, pct: 50, median: true }],
+      canopyHits: canopyHitsGrid(frame, lon0 + dLon * 2, lat0 + dLat * 2, { pct: 50 }),
       name: "Native",
       imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      includeFoliage: true,
     });
     const fp = built.openintent.floorplans[0];
     assert.deepEqual(fp.reference_markers, []);
@@ -93,40 +96,56 @@ describe("Hamina-native OpenIntent gold shape", () => {
     assert.equal(meters.height, 2.5);
     assert.equal(feet.height, 8.202);
     assert.ok(Math.abs(pixels.height - 2.5 / frame.mpuX) < 1e-9);
-    assert.deepEqual(
-      built.openintent.area_materials.map((m) => m.name),
-      OI_BUILDING_NAMES
-    );
+    const names = built.openintent.area_materials.map((m) => m.name);
+    assert.deepEqual(names.slice(0, 4), OI_BUILDING_NAMES);
     assert.deepEqual(OI_BUILDING_NAMES, GOLD_BUILDING_NAMES);
-    assert.deepEqual(built.openintent.area_materials, catalogMaterials());
+    assert.deepEqual(built.openintent.area_materials.slice(0, 4), buildingCatalog());
+    const extra = names.slice(4);
+    assert.ok(extra.length >= 1);
+    for (const n of extra) assert.equal(isVegetationOiName(n) || isUnderstoryOiName(n), true, n);
     for (const mat of built.openintent.area_materials) {
-      assert.deepEqual(Object.keys(mat), ["name", "rf_properties", "top_height", "display_color"]);
-      assert.ok(GOLD_BUILDING_NAMES.includes(mat.name));
+      if (isVegetationOiName(mat.name) || isUnderstoryOiName(mat.name)) {
+        assert.equal(mat.transparencyEnabled, true);
+        const keys = ["name", "rf_properties", "top_height", "display_color", "transparencyEnabled"];
+        if ("bottom_height" in mat) keys.splice(3, 0, "bottom_height");
+        assert.deepEqual(Object.keys(mat), keys);
+      } else {
+        assert.equal("transparencyEnabled" in mat, false);
+        assert.deepEqual(Object.keys(mat), ["name", "rf_properties", "top_height", "display_color"]);
+      }
     }
-    assert.equal(fp.attenuation_areas.length, 1);
+    assert.equal(built.stats.openIntentBuildingAreas, 1);
+    assert.ok(built.stats.openIntentTreeAreas >= 1);
+    assert.equal(fp.attenuation_areas.length, 1 + built.stats.openIntentTreeAreas);
+    let vegetationAreas = 0;
     for (const a of fp.attenuation_areas) {
-      assert.ok(GOLD_BUILDING_NAMES.includes(a.area_material.name));
+      const name = a.area_material.name;
+      assert.ok(GOLD_BUILDING_NAMES.includes(name) || isVegetationOiName(name) || isUnderstoryOiName(name), name);
+      if (isVegetationOiName(name) || isUnderstoryOiName(name)) vegetationAreas++;
       const coords = a.area.coordinates;
-      assert.equal(coords.length % 3, 0);
-      assert.ok(coords.length >= 12);
-      for (let i = 0; i < coords.length; i += 3) {
+      assert.ok(coords.length >= 4);
+      for (let i = 0; i < coords.length; i++) {
         assert.equal(coords[i].coordinate_xyz.unit, "pixels");
-        assert.equal(coords[i + 1].coordinate_xyz.unit, "meters");
-        assert.equal(coords[i + 2].coordinate_xyz.unit, "feet");
+        assert.ok(coords[i].coordinate_xyz.x < frame.imgW);
+        assert.ok(coords[i].coordinate_xyz.y < frame.imgH);
       }
       assert.equal(validateOiCoords(coords, frame.imgW, frame.imgH).ok, true);
       const pixels = oiPixelCoords(coords);
-      assert.ok(pixels.length >= 4);
+      assert.equal(pixels.length, coords.length);
       const again = expandOiCoordTriples(pixels, frame.mpuX);
-      assert.equal(again.length, coords.length);
+      assert.equal(again.length, coords.length * 3);
     }
+    assert.ok(vegetationAreas >= 1);
     const dumped = JSON.stringify(built.openintent);
-    assert.equal(/Foliage|Tree Trunk|Hotel podium/.test(dumped), false);
-    assert.ok(built.clipboard.attenuatingZones.length >= 3);
-    assert.ok(
-      built.clipboard.attenuatingZones.some(
-        (z) => z.typeId === "tree-trunk" || String(z.typeId).indexOf("foliage") === 0 || String(z.typeId).indexOf("trunk") === 0
-      )
+    assert.ok(built.openintent.area_materials.every((m) => !isPoisonedOiName(m.name)));
+    assert.ok(dumped.includes("Foliage - Heavy"));
+    assert.equal(dumped.includes("Tree Trunk"), false);
+    assert.equal(dumped.includes("Tree Wood"), false);
+    assert.ok(built.clipboard.attenuatingZones.length >= 2);
+    assert.ok(built.clipboard.attenuatingZones.some((z) => String(z.typeId).indexOf("foliage") === 0));
+    assert.equal(
+      built.clipboard.attenuatingZones.some((z) => z.typeId === "tree-trunk" || String(z.typeId).indexOf("trunk") === 0),
+      false
     );
   });
 });

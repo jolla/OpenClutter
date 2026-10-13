@@ -17,8 +17,9 @@ const {
 const { canopySamplesUrl } = require("../netlify/lib/tree-source");
 const { fetchMsGlobalFootprints, mergeFootprintFeatures } = require("../netlify/lib/ms-global");
 const { fetchUsaStructures } = require("../netlify/lib/usa-structures");
+const { version: APP_VERSION } = require("../netlify/lib/version");
 
-const UA = "openclutter/0.12.0-eval (https://github.com/jolla/OpenClutter)";
+const UA = `openclutter/${APP_VERSION}-eval (https://github.com/jolla/OpenClutter)`;
 const ROOT = path.join(__dirname, "..", "test", "fixtures");
 const SITES = JSON.parse(fs.readFileSync(path.join(ROOT, "sites.json"), "utf8")).sites;
 

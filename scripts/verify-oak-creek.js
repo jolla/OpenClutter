@@ -18,18 +18,21 @@
  *     --max-time 12 \
  *     -d '{"west":-87.92259693145752,"south":42.89043196008693,"east":-87.91184663772584,"north":42.90325386116256,"name":"Oak Creek WI commercial","trees":[],"format":"bundle"}'
  *
- * Pass: HTTP 200, wall clock under 10s, attenuation_areas > 0 and ≤ 982,
- * exactly the six stock area_materials, every area_material a catalog-equal
- * object (a name string is Invalid OpenIntent format), JPEG SOI, clipboard
- * vertices inside the meter frame, and VERIFY.txt / export-stats.json
- * agreeing with that length. When ajv is installed, the OpenIntent JSON is
+ * Pass: HTTP 200, wall clock under 10s, attenuation_areas > 0 and ≤ 5000,
+ * the gold Building - One/Two/Five/Ten Floor prefix, plus stock
+ * Foliage - Heavy / Foliage - Light or Foliage - Heavy H.H / Foliage - Light H.H
+ * only when a tree area uses that material. Every
+ * area_material is a catalog-equal object (a name string is Invalid
+ * OpenIntent format). Poisoned names (Tree Trunk, Foliage
+ * N.N m) fail the check. JPEG SOI. The zip is the OpenIntent JSON and the
+ * aerial. When ajv is installed, the OpenIntent JSON is
  * also checked against google/openintent 2.0.1.
  */
 
 const fs = require("fs");
 const path = require("path");
 const { unzipStore } = require("../netlify/lib/zip-store");
-const { OI_BUILDING_NAMES } = require("../netlify/lib/materials");
+const { OI_BUILDING_NAMES, isVegetationOiName, isPoisonedOiName, COMPATIBILITY_MODE } = require("../netlify/lib/materials");
 const { scoreClipboardOverlayAlignment } = require("../netlify/lib/overlay");
 
 const BBOX = {
@@ -85,8 +88,8 @@ function checkZip(zipBuf) {
   const failures = [];
   if (!oiName) failures.push("missing openIntent JSON");
   if (!jpegName) failures.push("missing JPEG");
-  if (!files["VERIFY.txt"]) failures.push("missing VERIFY.txt");
-  if (!files["export-stats.json"]) failures.push("missing export-stats.json");
+  const extra = Object.keys(files).filter((name) => name !== oiName && name !== jpegName);
+  if (extra.length) failures.push("zip has files Hamina OpenIntent does not import: " + extra.join(", "));
   let areas = 0;
   let materials = [];
   let verifyAreas = null;
@@ -112,13 +115,16 @@ function checkZip(zipBuf) {
       if (!cat || JSON.stringify(m) !== JSON.stringify(cat) || "bottom_height" in m) mismatches++;
     }
     if (!(areas > 0)) failures.push("attenuation_areas.length is " + areas);
-    if (areas > 982) failures.push("attenuation_areas " + areas + " above the last accepted import (982)");
-    if (materials.length !== STOCK_NAMES.length) failures.push("area_materials count " + materials.length);
-    const custom = materials.filter((n) => !STOCK_NAMES.includes(n));
-    if (custom.length) failures.push("non-gold Building materials: " + custom.join(", "));
-    if (STOCK_NAMES.some((n) => !materials.includes(n))) failures.push("gold Building set mismatch: " + materials.join(" | "));
-    if (/Foliage|Tree Trunk|Hotel podium/.test(materials.join("|"))) {
-      failures.push("OI catalog still has foliage/trunk/hotel names");
+    if (areas > 5000) failures.push("attenuation_areas " + areas + " above the 5000 sanity cap");
+    const goldPrefix = materials.slice(0, STOCK_NAMES.length);
+    if (goldPrefix.join("|") !== STOCK_NAMES.join("|")) {
+      failures.push("gold Building prefix mismatch: " + materials.join(" | "));
+    }
+    const custom = materials.slice(STOCK_NAMES.length);
+    const badCustom = custom.filter((n) => !isVegetationOiName(n) || isPoisonedOiName(n));
+    if (badCustom.length) failures.push("unexpected vegetation materials: " + badCustom.join(", "));
+    if (materials.some((n) => isPoisonedOiName(n))) {
+      failures.push("OI catalog has a name that emptied imports: " + materials.join(" | "));
     }
     if (strings) failures.push("string area_material (Invalid OpenIntent format): " + strings);
     if (mismatches) failures.push("area_material not equal to catalog entry: " + mismatches);
@@ -137,7 +143,7 @@ function checkZip(zipBuf) {
     if (matKeys && matKeys.join(",") !== "name,rf_properties,top_height,display_color") {
       failures.push("material key order/shape " + matKeys.join(","));
     }
-    let badTriples = 0;
+    let badRings = 0;
     let aspectFail = false;
     const px = (fp.dimensions || []).find((d) => d.unit === "pixels");
     const meters = (fp.dimensions || []).find((d) => d.unit === "meters");
@@ -165,22 +171,25 @@ function checkZip(zipBuf) {
     }
     for (const a of areaList) {
       const coords = a.area && a.area.coordinates;
-      if (!coords || coords.length < 12 || coords.length % 3 !== 0) {
-        badTriples++;
+      if (!coords || coords.length < 4) {
+        badRings++;
         continue;
       }
-      for (let i = 0; i < Math.min(coords.length, 12); i += 3) {
-        if (
-          coords[i].coordinate_xyz.unit !== "pixels" ||
-          coords[i + 1].coordinate_xyz.unit !== "meters" ||
-          coords[i + 2].coordinate_xyz.unit !== "feet"
-        ) {
-          badTriples++;
+      const first = coords[0].coordinate_xyz;
+      const last = coords[coords.length - 1].coordinate_xyz;
+      if (!first || first.unit !== "pixels" || !last || first.x !== last.x || first.y !== last.y) {
+        badRings++;
+        continue;
+      }
+      for (let i = 0; i < coords.length; i++) {
+        const p = coords[i].coordinate_xyz;
+        if (!p || p.unit !== "pixels" || !(p.x >= 0) || !(p.y >= 0)) {
+          badRings++;
           break;
         }
       }
     }
-    if (badTriples) failures.push("attenuation rings missing pixels+meters+feet triples: " + badTriples);
+    if (badRings) failures.push("attenuation rings are not closed in-bounds pixels: " + badRings);
     void aspectFail;
   }
   if (jpegName) {
@@ -191,7 +200,7 @@ function checkZip(zipBuf) {
     const v = parseVerify(files["VERIFY.txt"].toString("utf8"));
     verifyAreas = Number(v.attenuation_areas);
     if (verifyAreas !== areas) failures.push("VERIFY attenuation_areas " + verifyAreas + " != JSON " + areas);
-    if (Number(v.area_materials) !== STOCK_NAMES.length) failures.push("VERIFY area_materials " + v.area_materials);
+    if (Number(v.area_materials) !== materials.length) failures.push("VERIFY area_materials " + v.area_materials);
   }
   if (files["hamina-clipboard.json"] && oiName) {
     const clip = JSON.parse(files["hamina-clipboard.json"].toString("utf8"));
@@ -251,8 +260,8 @@ function checkZip(zipBuf) {
     statsMaterials = stats.areaMaterials;
     compatibilityMode = stats.compatibilityMode;
     if (statsAreas !== areas) failures.push("export-stats attenuationAreasEmitted " + statsAreas + " != JSON " + areas);
-    if (statsMaterials !== STOCK_NAMES.length) failures.push("export-stats areaMaterials " + statsMaterials);
-    if (compatibilityMode !== "stock-openintent") failures.push("compatibilityMode " + compatibilityMode);
+    if (statsMaterials !== materials.length) failures.push("export-stats areaMaterials " + statsMaterials);
+    if (compatibilityMode !== COMPATIBILITY_MODE) failures.push("compatibilityMode " + compatibilityMode);
   }
   return {
     failures,

@@ -15,8 +15,9 @@ const {
   applyImageryMeta,
   lockIsotropicImagery,
   jpegSize,
+  geodesicPixelMismatchPx,
 } = require("../../netlify/lib/geo-frame");
-const { buildClutter, footprintsToClutter } = require("../../netlify/lib/pipeline");
+const { buildClutter, footprintsToClutter, oiPixelCoords, featureExteriorRings } = require("../../netlify/lib/pipeline");
 const T = require("../../netlify/lib/tree-source");
 const { treeHitsBuilding } = require("../../netlify/lib/vegetation");
 const { fetchMsGlobalFootprints, mergeFootprintFeatures } = require("../../netlify/lib/ms-global");
@@ -24,14 +25,19 @@ const { fetchUsaStructures } = require("../../netlify/lib/usa-structures");
 const { conflateFootprints, countHeightSources } = require("../../netlify/lib/conflate");
 const { terrainFromSamples } = require("../../netlify/lib/terrain");
 const { applyChmToTrees, sampleChmGrid } = require("../../netlify/lib/canopy-height");
-const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, scoreMeasuredHeights, scoreMaterialCompatibility, evaluate, pointInRing, THRESHOLDS } = require("./score");
+const { isVegetationOiName } = require("../../netlify/lib/materials");
+const { intersectionAreaPx } = require("../../netlify/lib/poly-clip");
+const { scoreBuildings, scoreTrees, scoreRoofTrees, scoreRoofProbes, scoreMeasuredHeights, scoreMaterialCompatibility, scoreFoliageBuildingOverlap, scorePairwiseOverlap, evaluate, pointInRing, THRESHOLDS } = require("./score");
+const { surfaceMasksFromImage } = require("../../netlify/lib/surface-mask");
 const { supplementFootprints } = require("../../netlify/lib/roof-mask");
-const { featureExteriorRings } = require("../../netlify/lib/pipeline");
+const { rejectPavementFootprints } = require("../../netlify/lib/pavement");
+const { scoreOiContentGrid } = require("../../netlify/lib/overlay");
+const { version: APP_VERSION } = require("../../netlify/lib/version");
 
 const ROOT = path.join(__dirname, "..", "..");
 const FIXTURES = path.join(ROOT, "test", "fixtures");
 const DEFAULT_OUT = path.join(ROOT, "test", "eval", "out");
-const UA = "openclutter/0.12.0-eval (https://github.com/jolla/OpenClutter)";
+const UA = `openclutter/${APP_VERSION}-eval (https://github.com/jolla/OpenClutter)`;
 
 function loadSitesIndex() {
   return JSON.parse(fs.readFileSync(path.join(FIXTURES, "sites.json"), "utf8")).sites;
@@ -129,6 +135,57 @@ function resolveFromSources(frame, tcc, jpegDecoded, rgbPolicy, buildingAabbs) {
   return { canopy, rgb, resolved, parsed };
 }
 
+function ringAreaPx(ring) {
+  if (!ring || ring.length < 3) return 0;
+  let a = 0;
+  const n = ring.length;
+  const closed = ring[0][0] === ring[n - 1][0] && ring[0][1] === ring[n - 1][1];
+  const last = closed ? n - 1 : n;
+  for (let i = 0; i < last; i++) {
+    const p = ring[i];
+    const q = ring[(i + 1) % last];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return Math.abs(a) / 2;
+}
+
+/**
+ * Drop a band that sits inside a larger foliage ring. Those are one crown.
+ * The inset only has to be mostly inside: a notched outline loses a little
+ * when the ring is written back out of the zip, so a strict nine-tenths
+ * cut still counts the top of that crown against its own skirt.
+ */
+function outerFoliageRings(rings) {
+  const areas = (rings || []).map(ringAreaPx);
+  const keep = [];
+  for (let i = 0; i < rings.length; i++) {
+    let nested = false;
+    for (let j = 0; j < rings.length; j++) {
+      if (i === j || !(areas[j] > areas[i] * 1.05)) continue;
+      if (intersectionAreaPx(rings[i], rings[j]) >= areas[i] * 0.8) {
+        nested = true;
+        break;
+      }
+    }
+    if (!nested) keep.push(rings[i]);
+  }
+  return keep;
+}
+
+function vegetationRingsFromOi(oi) {
+  const areas =
+    (oi && oi.floorplans && oi.floorplans[0] && oi.floorplans[0].attenuation_areas) || [];
+  const rings = [];
+  for (const a of areas) {
+    const name = a && a.area_material && a.area_material.name;
+    if (!isVegetationOiName(name)) continue;
+    const px = oiPixelCoords(a.area.coordinates);
+    if (!px || px.length < 4) continue;
+    rings.push(px.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]));
+  }
+  return rings;
+}
+
 function probeInsideFeature(feature, probe) {
   const rings = featureExteriorRings(feature && feature.geometry);
   for (let i = 0; i < rings.length; i++) {
@@ -168,7 +225,14 @@ function runLoaded(loaded, opts) {
   const supplemented = prefer
     ? supplementFootprints(jpegDecoded, frame, vectorFeatures)
     : { features: baseFeatures, imageryRoofs: 0, droppedStubs: 0 };
-  const fp = footprintsToClutter(supplemented.features, frame);
+  const pavement = prefer && jpegDecoded
+    ? rejectPavementFootprints(jpegDecoded, frame, supplemented.features)
+    : { features: supplemented.features, dropped: 0 };
+  const emittedFeatures = pavement.features;
+  const pavementLeft = prefer && jpegDecoded
+    ? rejectPavementFootprints(jpegDecoded, frame, emittedFeatures).dropped
+    : 0;
+  const fp = footprintsToClutter(emittedFeatures, frame);
   const { canopy, resolved, parsed } = resolveFromSources(
     frame,
     loaded.tcc,
@@ -197,29 +261,41 @@ function runLoaded(loaded, opts) {
   }
   const terrain = prefer && loaded.dem && loaded.dem.samples ? terrainFromSamples(loaded.dem.samples, frame) : null;
   const heightSources = countHeightSources(vectorFeatures);
+  const surface =
+    jpegDecoded && jpegDecoded.width === frame.imgW && jpegDecoded.height === frame.imgH
+      ? surfaceMasksFromImage(jpegDecoded, frame)
+      : { waterRings: [], pavementPolygons: [], waterM2: 0, pavementM2: 0 };
+  const includeFoliage = opts.includeFoliage === true;
   const built = buildClutter({
     frame,
-    footprintsGeojson: { type: "FeatureCollection", features: supplemented.features },
-    treePoints,
+    footprintsGeojson: { type: "FeatureCollection", features: emittedFeatures },
+    treePoints: includeFoliage ? treePoints : [],
     name: loaded.site.name || loaded.bbox.name || loaded.site.id,
     imgBuf: locked.jpegBuf || loaded.jpeg,
-    treesSource: resolved.source,
+    treesSource: includeFoliage ? resolved.source : "none",
     terrain,
+    maskRings: surface.waterRings,
+    maskPolygons: surface.pavementPolygons,
     footprintMeta: {
       imageryRoofs: supplemented.imageryRoofs || 0,
-      medianTrees: medianKept,
+      droppedPavement: pavement.dropped || 0,
+      medianTrees: includeFoliage ? medianKept : 0,
       overtureFootprints: loaded.overture && loaded.overture.features ? loaded.overture.features.length : 0,
       overtureAdded: overtureMerge ? overtureMerge.added : 0,
       msHeights: heightSources["ms-global"] || 0,
       overtureHeights: heightSources.overture || 0,
       femaHeights: heightSources.fema || 0,
       floorHeights: heightSources["overture-floors"] || 0,
-      chmTrees: chmApplied,
+      chmTrees: includeFoliage ? chmApplied : 0,
     },
+    canopyHits: includeFoliage && resolved.source === "nlcd-canopy" && parsed && parsed.hits ? parsed.hits : [],
+    heightSample: includeFoliage && prefer && loaded.chm ? (lon, lat) => sampleChmGrid(loaded.chm, lon, lat) : null,
+    chmGrid: includeFoliage && prefer && loaded.chm ? loaded.chm : null,
+    includeFoliage,
   });
-  const buildings = scoreBuildings(vectorFeatures, fp.overlayRings, frame);
+  const buildings = scoreBuildings(emittedFeatures, fp.overlayRings, frame);
   const trees = scoreTrees(treePoints, frame, jpegDecoded, loaded.tcc, resolved.source);
-  Object.assign(trees, scoreRoofTrees(treePoints, supplemented.features));
+  Object.assign(trees, scoreRoofTrees(treePoints, emittedFeatures));
   const probes = (loaded.roofPoints && loaded.roofPoints.points) || [];
   const roofProbes = probes.length ? scoreRoofProbes(probes, fp.overlayRings, frame) : null;
   if (roofProbes) buildings.roofProbes = roofProbes;
@@ -232,6 +308,21 @@ function runLoaded(loaded, opts) {
     built.clipboard
   );
   const compatibility = scoreMaterialCompatibility(built.openintent);
+  let customTreeAreas = 0;
+  const oiAreas =
+    (built.openintent.floorplans[0] && built.openintent.floorplans[0].attenuation_areas) || [];
+  for (const a of oiAreas) {
+    const name = a && a.area_material && a.area_material.name;
+    if (isVegetationOiName(name)) customTreeAreas++;
+  }
+  const openIntentTrees = {
+    required: includeFoliage && treePoints.length > 0,
+    placed: treePoints.length,
+    emitted: built.stats.openIntentTreeAreas || 0,
+    custom: customTreeAreas,
+    buildingAreas: built.stats.openIntentBuildingAreas || 0,
+    canopyOnly: includeFoliage,
+  };
   const recovery = prefer ? imageryRecovery(jpegDecoded, frame, vectorFeatures, probes) : { required: false, hit: true };
   const medians = {
     required: prefer && loaded.site.id === "oak-creek-commercial",
@@ -244,10 +335,19 @@ function runLoaded(loaded, opts) {
     heightsUpgraded: overtureMerge ? overtureMerge.heightsUpgraded : 0,
     explicit: heightSources.overture || 0,
   };
+  let maxRaisedM = 0;
+  const raisedZones = terrain && terrain.clipboard && terrain.clipboard.raisedFloorZones;
+  if (raisedZones) {
+    for (let i = 0; i < raisedZones.length; i++) {
+      const h = Number(raisedZones[i] && raisedZones[i].height);
+      if (h > maxRaisedM) maxRaisedM = h;
+    }
+  }
   const terrainScore = {
     required: prefer && !!(loaded.dem && loaded.dem.samples && loaded.dem.samples.length),
     raised: terrain ? terrain.raised : 0,
     sloped: terrain ? terrain.sloped : 0,
+    maxRaisedM,
     reliefM: terrain ? terrain.reliefM : 0,
     polygons: terrain ? terrain.raised + terrain.sloped : 0,
     separateFromOpenIntent: !JSON.stringify(built.openintent).includes("raisedFloorZones"),
@@ -256,6 +356,45 @@ function runLoaded(loaded, opts) {
   const chm = {
     required: prefer && !!loaded.chm,
     applied: chmApplied,
+  };
+  const oiRings = (fp.oiAreas || []).map((area) => {
+    const pix = oiPixelCoords(area.area.coordinates);
+    const pts = [];
+    for (let i = 0; i < pix.length - 1; i++) {
+      pts.push([pix[i].coordinate_xyz.x, pix[i].coordinate_xyz.y]);
+    }
+    return pts;
+  });
+  const foliageRings = vegetationRingsFromOi(built.openintent);
+  const foliageOverlap = scoreFoliageBuildingOverlap(foliageRings, fp.overlayRings, frame);
+  const buildingOverlap = scorePairwiseOverlap(oiRings, frame);
+  // Inset crown bands sit inside the traced footprint. Self-overlap is two
+  // different canopies on the same ground, not the bands of one crown.
+  // Contacts under 15 m² are the 4 px outline floor, not a second stand.
+  const foliageSelfOverlap = scorePairwiseOverlap(outerFoliageRings(foliageRings), frame, 15);
+  const drift = scoreOiContentGrid(fp.overlayRings, oiRings);
+  const jpegWH = jpegSize(locked.jpegBuf || loaded.jpeg);
+  const retail = (probes || []).find((p) => p.id === "big-white-retail") || { lon: frame.west, lat: frame.south };
+  const geodesicMismatchPx = geodesicPixelMismatchPx(frame, retail.lon, retail.lat);
+  const contentGrid = {
+    required: prefer,
+    jpegMatchesFrame: !!(jpegWH && jpegWH.width === frame.imgW && jpegWH.height === frame.imgH),
+    mpuLocked: frame.mpuX === frame.mpuY && Math.abs(frame.lengthM - frame.imgH * frame.mpuX) < 1e-6,
+    geodesicMismatchPx,
+    // Oak Creek's Esri JPEG is degree-linear. A geodesic imgH would make this ~0
+    // and put footprints on a different pixel grid than the aerial.
+    minGeodesicMismatchPx: loaded.site.id === "oak-creek-commercial" ? 40 : 0,
+    drift,
+    ok:
+      drift.ok &&
+      !!(jpegWH && jpegWH.width === frame.imgW && jpegWH.height === frame.imgH) &&
+      frame.mpuX === frame.mpuY,
+  };
+  const pavementFootprints = {
+    required: prefer,
+    dropped: pavement.dropped || 0,
+    kept: pavementLeft,
+    minDropped: loaded.site.id === "oak-creek-commercial" ? 4 : 0,
   };
   const gate = evaluate({
     buildings,
@@ -268,6 +407,13 @@ function runLoaded(loaded, opts) {
     terrain: terrainScore,
     chm,
     compatibility,
+    openIntentTrees,
+    foliageOverlap,
+    buildingOverlap,
+    foliageSelfOverlap,
+    contentGrid,
+    pavementFootprints,
+    includeFoliage,
   });
   const exportStats = {
     site: loaded.site.id,
@@ -297,11 +443,24 @@ function runLoaded(loaded, opts) {
     trees,
     heights,
     compatibility,
+    openIntentTrees,
     imageryRecovery: recovery,
     medians,
     overture,
     terrain: terrainScore,
     chm,
+    foliageOverlap,
+    buildingOverlap,
+    foliageSelfOverlap,
+    surface: {
+      waterRings: surface.waterRings.length,
+      waterM2: surface.waterM2 || 0,
+      pavementRings: surface.pavementPolygons.length,
+      pavementM2: surface.pavementM2 || 0,
+    },
+    contentGrid,
+    pavementFootprints,
+    includeFoliage,
     gate,
     thresholds: THRESHOLDS,
     canopyReason: canopy.reason,
@@ -359,13 +518,16 @@ function formatRow(stats) {
     `roof ${stats.trees.roofTreeFrac == null ? "n/a" : stats.trees.roofTreeFrac.toFixed(3)} ` +
     `canopy ${rec} ` +
     `trees ${stats.trees.treesPlaced} (${stats.trees.treesSource}) ` +
+    `foliage ${stats.includeFoliage ? "on" : "off"} ` +
     `h ${stats.heights && stats.heights.uniqueBuildingHeights != null ? stats.heights.uniqueBuildingHeights : "-"} ` +
     `fol ${stats.heights && stats.heights.uniqueFoliageHeights != null ? stats.heights.uniqueFoliageHeights : "-"} ` +
     `med ${stats.medians ? stats.medians.kept : "-"} ` +
     `ov ${stats.overture ? stats.overture.explicit : "-"} ` +
     `chm ${stats.chm ? stats.chm.applied : "-"} ` +
     `ter ${stats.terrain ? stats.terrain.sloped + "/" + stats.terrain.raised : "-"} ` +
-    `roofFill ${stats.imageryRecovery && stats.imageryRecovery.imageryRoofs != null ? stats.imageryRecovery.imageryRoofs : "-"}`
+    `roofFill ${stats.imageryRecovery && stats.imageryRecovery.imageryRoofs != null ? stats.imageryRecovery.imageryRoofs : "-"} ` +
+    `bOv ${((stats.buildingOverlap && stats.buildingOverlap.overlapM2) || 0).toFixed(1)} ` +
+    `fOv ${((stats.foliageSelfOverlap && stats.foliageSelfOverlap.overlapM2) || 0).toFixed(1)}`
   );
 }
 

@@ -8,6 +8,9 @@ const {
   urlsForBbox,
   featuresFromGzip,
   mergeFootprintFeatures,
+  fetchMsGlobalFootprints,
+  globalSkipWarning,
+  MAX_GZIP_BYTES,
   QUADKEY_ZOOM,
 } = require("../netlify/lib/ms-global");
 
@@ -68,6 +71,28 @@ describe("Microsoft global building footprints", () => {
     assert.ok(lons.some((x) => x < -87.916));
   });
 
+  it("keeps the larger roof when a tile has more buildings than the export can hold", () => {
+    const small = poly([
+      [-87.9182, 42.8992],
+      [-87.9181, 42.8992],
+      [-87.9181, 42.8993],
+      [-87.9182, 42.8993],
+      [-87.9182, 42.8992],
+    ]);
+    const large = poly([
+      [-87.919, 42.898],
+      [-87.916, 42.898],
+      [-87.916, 42.901],
+      [-87.919, 42.901],
+      [-87.919, 42.898],
+    ]);
+    const gz = zlib.gzipSync(Buffer.from([small, large].map((f) => JSON.stringify(f)).join("\n")));
+    const feats = featuresFromGzip(gz, OAK, { keep: 1 });
+    assert.equal(feats.length, 1);
+    const xs = feats[0].geometry.coordinates[0].map((p) => p[0]);
+    assert.ok(Math.min(...xs) < -87.9185);
+  });
+
   it("adds an ArcGIS footprint only when its centroid is outside the global set", () => {
     const globalF = poly([
       [-87.918, 42.899],
@@ -124,5 +149,47 @@ describe("Microsoft global building footprints", () => {
     assert.equal(merged.features.length, 1);
     assert.equal(merged.heightsTransferred, 1);
     assert.equal(merged.features[0].properties.height, 7.4);
+  });
+
+  it("does not download a quadkey gzip over the export size limit", async () => {
+    assert.ok(MAX_GZIP_BYTES >= 70 * 1024 * 1024);
+    assert.ok(MAX_GZIP_BYTES < 100 * 1024 * 1024);
+    let bodyReads = 0;
+    const pack = await fetchMsGlobalFootprints(OAK, async () => ({
+      ok: true,
+      headers: { get: (name) => (String(name).toLowerCase() === "content-length" ? String(179 * 1024 * 1024) : null) },
+      arrayBuffer: async () => {
+        bodyReads++;
+        return new ArrayBuffer(8);
+      },
+      body: { cancel: async () => {} },
+    }));
+    assert.equal(bodyReads, 0);
+    assert.equal(pack.features.length, 0);
+    assert.equal(pack.skipped, 1);
+    const warning = globalSkipWarning(pack);
+    assert.match(warning, /omitted/);
+    assert.match(warning, /179 MB/);
+    assert.equal(/esri/i.test(warning), false);
+    assert.equal(/smaller box/i.test(warning), false);
+  });
+
+  it("still parses a gzip under the size limit", async () => {
+    const inside = poly([
+      [-87.918, 42.899],
+      [-87.917, 42.899],
+      [-87.917, 42.900],
+      [-87.918, 42.900],
+      [-87.918, 42.899],
+    ]);
+    const gz = zlib.gzipSync(Buffer.from(JSON.stringify(inside) + "\n"));
+    const pack = await fetchMsGlobalFootprints(OAK, async () => ({
+      ok: true,
+      headers: { get: () => String(gz.length) },
+      arrayBuffer: async () => gz,
+    }));
+    assert.equal(pack.skipped, 0);
+    assert.equal(pack.features.length, 1);
+    assert.equal(globalSkipWarning(pack), "");
   });
 });

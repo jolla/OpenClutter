@@ -1,0 +1,375 @@
+"use strict";
+
+const { describe, it } = require("node:test");
+const assert = require("node:assert/strict");
+const {
+  DRAG_PX,
+  CLOSE_PX,
+  createSession,
+  arm,
+  pointerDown,
+  pointerMove,
+  pointerUp,
+  abortPress,
+  finish,
+  prepareExport,
+  cancel,
+  setVertexPixels,
+  wheelAction,
+  boundsOf,
+} = require("../public/site-draw");
+
+function click(session, pt) {
+  const down = pointerDown(session, pt);
+  const up = pointerUp(session, pt);
+  return { down: down, up: up };
+}
+
+describe("site draw gestures", () => {
+  it("treats a short press as a polygon vertex and a drag as a box", () => {
+    assert.equal(DRAG_PX, 8);
+    const session = createSession();
+    assert.equal(pointerDown(session, { x: 0, y: 0, lat: 36, lng: -115 }).type, "ignore");
+
+    arm(session);
+    const jitter = click(session, { x: 10, y: 10, lat: 36.12, lng: -115.16 });
+    assert.equal(jitter.up.type, "vertex");
+    assert.equal(jitter.up.vertices.length, 1);
+    assert.equal(session.phase, "polygon");
+    assert.equal(session.armed, true);
+
+    pointerDown(session, { x: 10, y: 40, lat: 36.13, lng: -115.16 });
+    const small = pointerMove(session, { x: 14, y: 40, lat: 36.13, lng: -115.15 });
+    assert.equal(small.type, "ignore");
+    const stillClick = pointerUp(session, { x: 14, y: 40, lat: 36.13, lng: -115.15 });
+    assert.equal(stillClick.type, "vertex");
+    assert.equal(stillClick.vertices.length, 2);
+
+    pointerDown(session, { x: 14, y: 40, lat: 36.13, lng: -115.15 });
+    const drag = pointerMove(session, { x: 14 + DRAG_PX, y: 40, lat: 36.2, lng: -115.1 });
+    assert.equal(drag.type, "drag");
+    const box = pointerUp(session, { x: 80, y: 90, lat: 36.25, lng: -115.05 });
+    assert.equal(box.type, "commit-box");
+    assert.deepEqual(box.start, { lat: 36.13, lng: -115.15 });
+    assert.deepEqual(box.end, { lat: 36.25, lng: -115.05 });
+    assert.equal(session.vertices.length, 0);
+    assert.equal(session.armed, false);
+    assert.equal(session.phase, "idle");
+    assert.equal(finish(session).type, "ignore");
+  });
+
+  it("closes on finish only with 3 or more corners, in click order", () => {
+    const session = createSession();
+    arm(session);
+    assert.equal(finish(session).type, "ignore");
+    assert.equal(session.armed, true);
+
+    const corners = [
+      { x: 0, y: 0, lat: 36.1, lng: -115.2 },
+      { x: 40, y: 0, lat: 36.1, lng: -115.1 },
+      { x: 40, y: 50, lat: 36.2, lng: -115.12 },
+    ];
+    click(session, corners[0]);
+    click(session, corners[1]);
+    const early = finish(session);
+    assert.equal(early.type, "discard");
+    assert.equal(early.count, 2);
+    assert.equal(session.vertices.length, 0);
+    assert.equal(session.armed, false);
+    assert.notEqual(early.type, "commit-polygon");
+
+    arm(session);
+    let last;
+    for (let i = 0; i < corners.length; i++) last = click(session, corners[i]).up;
+    assert.equal(last.vertices.length, 3);
+    last.vertices.push({ lat: 0, lng: 0 });
+    assert.equal(session.vertices.length, 3);
+
+    const closed = finish(session);
+    assert.equal(closed.type, "commit-polygon");
+    assert.deepEqual(
+      closed.vertices,
+      corners.map((p) => ({ lat: p.lat, lng: p.lng }))
+    );
+    assert.deepEqual(closed.bounds, {
+      west: -115.2,
+      south: 36.1,
+      east: -115.1,
+      north: 36.2,
+    });
+    assert.deepEqual(closed.bounds, boundsOf(closed.vertices));
+    assert.equal(session.vertices.length, 0);
+    assert.equal(session.armed, false);
+    assert.equal(finish(session).type, "ignore");
+    closed.vertices.push({ lat: 1, lng: 1 });
+    assert.equal(session.vertices.length, 0);
+  });
+
+  it("cancels an open ring without committing it, and ignores a second click on the same corner", () => {
+    const session = createSession();
+    assert.equal(cancel(session).type, "ignore");
+    arm(session);
+    click(session, { x: 0, y: 0, lat: 36, lng: -115 });
+    const dup = click(session, { x: 3, y: 1, lat: 36.01, lng: -115.01 });
+    assert.equal(dup.up.type, "ignore");
+    assert.equal(session.vertices.length, 1);
+
+    setVertexPixels(session, [{ x: 200, y: 200 }]);
+    const closeToZoomed = click(session, { x: 204, y: 200, lat: 37, lng: -114 });
+    assert.equal(closeToZoomed.up.type, "ignore");
+    const far = click(session, { x: 230, y: 200, lat: 36.2, lng: -115.1 });
+    assert.equal(far.up.type, "vertex");
+    assert.equal(far.up.vertices.length, 2);
+
+    const aborted = cancel(session);
+    assert.equal(aborted.type, "cancel");
+    assert.equal(aborted.discarded, 2);
+    assert.equal(session.phase, "idle");
+    assert.equal(session.vertices.length, 0);
+    assert.notEqual(aborted.type, "commit-polygon");
+    assert.notEqual(aborted.type, "commit-box");
+  });
+
+  it("does not add a vertex for a right-click or ctrl-click, and a cancelled press is not a box", () => {
+    const session = createSession();
+    arm(session);
+    assert.equal(pointerDown(session, { x: 0, y: 0, lat: 36, lng: -115, button: 2 }).type, "ignore");
+    assert.equal(pointerUp(session, { x: 0, y: 0, lat: 36, lng: -115, button: 2 }).type, "ignore");
+    assert.equal(pointerDown(session, { x: 0, y: 0, lat: 36, lng: -115, button: 0, ctrlKey: true }).type, "ignore");
+
+    pointerDown(session, { x: 0, y: 0, lat: 36, lng: -115 });
+    pointerMove(session, { x: 30, y: 0, lat: 36.2, lng: -115 });
+    assert.equal(abortPress(session).type, "abort-press");
+    assert.equal(pointerUp(session, { x: 30, y: 0, lat: 36.2, lng: -115 }).type, "ignore");
+    assert.equal(session.armed, true);
+    assert.equal(session.vertices.length, 0);
+
+    click(session, { x: 0, y: 0, lat: 36.1, lng: -115.2 });
+    click(session, { x: 20, y: 0, lat: 36.1, lng: -115.1 });
+    click(session, { x: 20, y: 30, lat: 36.2, lng: -115.1 });
+    const closed = finish(session);
+    assert.equal(closed.type, "commit-polygon");
+    assert.equal(boundsOf(null), null);
+    assert.deepEqual(boundsOf(closed.vertices).west, -115.2);
+  });
+
+  it("closes when a click lands on the first corner after 3 vertices", () => {
+    assert.equal(CLOSE_PX, 24);
+    const session = createSession();
+    const corners = [
+      { x: 10, y: 10, lat: 36.1, lng: -115.2 },
+      { x: 80, y: 10, lat: 36.1, lng: -115.1 },
+      { x: 80, y: 70, lat: 36.2, lng: -115.1 },
+    ];
+    arm(session);
+    click(session, corners[0]);
+    click(session, corners[1]);
+    const tooSoon = click(session, { x: 10, y: 10, lat: 36.1, lng: -115.2 });
+    assert.equal(tooSoon.up.type, "short");
+    assert.equal(tooSoon.up.count, 2);
+    assert.equal(session.vertices.length, 2);
+    assert.equal(session.armed, true);
+    assert.notEqual(tooSoon.up.type, "commit-polygon");
+
+    arm(session);
+    for (let i = 0; i < corners.length; i++) click(session, corners[i]);
+    const miss = click(session, { x: 10 + CLOSE_PX, y: 10, lat: 36.15, lng: -115.15 });
+    assert.equal(miss.up.type, "vertex");
+    assert.equal(miss.up.vertices.length, 4);
+
+    arm(session);
+    for (let i = 0; i < corners.length; i++) click(session, corners[i]);
+    setVertexPixels(session, [
+      { x: 300, y: 400 },
+      { x: 80, y: 10 },
+      { x: 80, y: 70 },
+    ]);
+    const closed = click(session, { x: 304, y: 400, lat: 10, lng: 10 });
+    assert.equal(closed.up.type, "commit-polygon");
+    assert.equal(closed.up.vertices.length, 3);
+    assert.deepEqual(
+      closed.up.vertices,
+      corners.map((p) => ({ lat: p.lat, lng: p.lng }))
+    );
+    assert.equal(session.vertices.length, 0);
+    assert.equal(session.armed, false);
+  });
+
+  it("double-click finishes a ring of 3 or more and leaves a shorter ring open", () => {
+    const session = createSession();
+    arm(session);
+    click(session, { x: 0, y: 0, lat: 1, lng: 1 });
+    click(session, { x: 40, y: 0, lat: 1, lng: 2 });
+    const third = { x: 40, y: 30, lat: 2, lng: 2 };
+    pointerDown(session, third);
+    const placed = pointerUp(session, Object.assign({ clicks: 1 }, third));
+    assert.equal(placed.type, "vertex");
+    assert.equal(placed.vertices.length, 3);
+    pointerDown(session, third);
+    const closed = pointerUp(session, Object.assign({ clicks: 2 }, third));
+    assert.equal(closed.type, "commit-polygon");
+    assert.equal(closed.vertices.length, 3);
+    assert.equal(closed.vertices[2].lat, 2);
+    assert.equal(session.armed, false);
+
+    arm(session);
+    click(session, { x: 0, y: 0, lat: 1, lng: 1 });
+    const last = { x: 40, y: 0, lat: 1, lng: 2 };
+    click(session, last);
+    pointerDown(session, last);
+    const early = pointerUp(session, Object.assign({ clicks: 2 }, last));
+    assert.equal(early.type, "ignore");
+    assert.equal(session.vertices.length, 2);
+    assert.equal(session.armed, true);
+    assert.notEqual(early.type, "discard");
+    assert.notEqual(early.type, "commit-polygon");
+  });
+
+  it("export commits an open ring of 3 or more and blocks one or two corners with no finish control", () => {
+    const session = createSession();
+    assert.equal(prepareExport(session).type, "use-committed");
+    arm(session);
+    assert.equal(prepareExport(session).type, "use-committed");
+    click(session, { x: 0, y: 0, lat: 1, lng: 2 });
+    const one = prepareExport(session);
+    assert.equal(one.type, "blocked");
+    assert.equal(one.count, 1);
+    assert.equal(session.vertices.length, 1);
+    assert.equal(session.armed, true);
+    click(session, { x: 30, y: 0, lat: 1, lng: 3 });
+    const blocked = prepareExport(session);
+    assert.equal(blocked.type, "blocked");
+    assert.equal(blocked.count, 2);
+    assert.equal(session.vertices.length, 2);
+    assert.equal(session.armed, true);
+    click(session, { x: 30, y: 40, lat: 2, lng: 3 });
+    const closed = prepareExport(session);
+    assert.equal(closed.type, "commit-polygon");
+    assert.equal(closed.vertices.length, 3);
+    assert.deepEqual(closed.bounds, boundsOf(closed.vertices));
+    assert.equal(session.vertices.length, 0);
+    assert.equal(session.armed, false);
+    assert.equal(prepareExport(session).type, "use-committed");
+  });
+
+  it("closes a closable ring when the click returns near the start, not only on the exact pixel", () => {
+    const session = createSession();
+    arm(session);
+    click(session, { x: 0, y: 0, lat: 1, lng: 1 });
+    click(session, { x: 140, y: 0, lat: 1, lng: 2 });
+    click(session, { x: 140, y: 90, lat: 2, lng: 2 });
+    const back = click(session, { x: 20, y: 0, lat: 9, lng: 9 });
+    assert.ok(20 < CLOSE_PX);
+    assert.ok(20 > 12);
+    assert.equal(back.up.type, "commit-polygon");
+    assert.equal(back.up.vertices.length, 3);
+    assert.equal(back.up.vertices[0].lat, 1);
+    assert.equal(back.up.vertices[2].lat, 2);
+    assert.equal(session.armed, false);
+  });
+
+  it("does not close a two-corner line when the click returns to the start", () => {
+    const session = createSession();
+    arm(session);
+    click(session, { x: 0, y: 0, lat: 1, lng: 1 });
+    click(session, { x: 140, y: 30, lat: 2, lng: 2 });
+    const back = click(session, { x: 8, y: 0, lat: 1, lng: 1 });
+    assert.equal(back.up.type, "short");
+    assert.equal(back.up.count, 2);
+    assert.equal(session.vertices.length, 2);
+    assert.equal(session.armed, true);
+    assert.notEqual(back.up.type, "commit-polygon");
+    assert.notEqual(back.up.type, "discard");
+
+    const third = click(session, { x: 20, y: 0, lat: 1.4, lng: 1.2 });
+    assert.equal(third.up.type, "vertex");
+    assert.equal(third.up.vertices.length, 3);
+    const closed = click(session, { x: CLOSE_PX - 1, y: 0, lat: 3, lng: 3 });
+    assert.equal(closed.up.type, "commit-polygon");
+    assert.equal(closed.up.vertices.length, 3);
+    assert.equal(closed.up.vertices[2].lat, 1.4);
+  });
+
+  it("closes when the press starts on the first corner and the release is just outside", () => {
+    const session = createSession();
+    arm(session);
+    click(session, { x: 0, y: 0, lat: 1, lng: 1 });
+    click(session, { x: 90, y: 0, lat: 1, lng: 2 });
+    click(session, { x: 90, y: 70, lat: 2, lng: 2 });
+    const down = { x: CLOSE_PX - 2, y: 0, lat: 1.1, lng: 1.1 };
+    const up = { x: CLOSE_PX + 2, y: 0, lat: 1.2, lng: 1.2 };
+    assert.ok(Math.abs(up.x - down.x) < DRAG_PX);
+    pointerDown(session, down);
+    const closed = pointerUp(session, up);
+    assert.equal(closed.type, "commit-polygon");
+    assert.equal(closed.vertices.length, 3);
+    assert.equal(session.armed, false);
+  });
+
+  it("a drag under 8 px is a click and does not commit a box", () => {
+    const session = createSession();
+    arm(session);
+    pointerDown(session, { x: 0, y: 0, lat: 1, lng: 1 });
+    const move = pointerMove(session, { x: 7, y: 0, lat: 1.01, lng: 1.01 });
+    assert.equal(move.type, "ignore");
+    const up = pointerUp(session, { x: 7, y: 0, lat: 1.01, lng: 1.01 });
+    assert.equal(up.type, "vertex");
+    assert.notEqual(up.type, "commit-box");
+    assert.equal(session.phase, "polygon");
+    assert.equal(session.vertices.length, 1);
+  });
+
+  it("a later drag commits a new box and drops the previous ring", () => {
+    const session = createSession();
+    arm(session);
+    pointerDown(session, { x: 0, y: 0, lat: 1, lng: 1 });
+    pointerMove(session, { x: 40, y: 30, lat: 2, lng: 2 });
+    const first = pointerUp(session, { x: 40, y: 30, lat: 2, lng: 2 });
+    assert.equal(first.type, "commit-box");
+    assert.deepEqual(first.start, { lat: 1, lng: 1 });
+    arm(session);
+    pointerDown(session, { x: 5, y: 5, lat: 3, lng: 3 });
+    pointerMove(session, { x: 50, y: 40, lat: 4, lng: 4 });
+    const second = pointerUp(session, { x: 50, y: 40, lat: 4, lng: 4 });
+    assert.equal(second.type, "commit-box");
+    assert.deepEqual(second.start, { lat: 3, lng: 3 });
+    assert.deepEqual(second.end, { lat: 4, lng: 4 });
+    assert.notDeepEqual(second.start, first.start);
+    assert.equal(session.vertices.length, 0);
+  });
+
+  it("escape cancel drops an open ring and does not commit a shape", () => {
+    const session = createSession();
+    arm(session);
+    click(session, { x: 0, y: 0, lat: 1, lng: 1 });
+    click(session, { x: 40, y: 0, lat: 1, lng: 2 });
+    click(session, { x: 40, y: 30, lat: 2, lng: 2 });
+    const aborted = cancel(session);
+    assert.equal(aborted.type, "cancel");
+    assert.equal(aborted.discarded, 3);
+    assert.notEqual(aborted.type, "commit-polygon");
+    assert.notEqual(aborted.type, "commit-box");
+    assert.equal(session.vertices.length, 0);
+    assert.equal(session.phase, "idle");
+    assert.equal(cancel(session).type, "ignore");
+  });
+
+  it("trackpad scroll pans and a mouse wheel or pinch still zooms", () => {
+    assert.equal(wheelAction({ deltaX: 0, deltaY: 12, deltaMode: 0 }), "pan");
+    assert.equal(wheelAction({ deltaX: 8, deltaY: 4, deltaMode: 0 }), "pan");
+    assert.equal(wheelAction({ deltaX: 0, deltaY: 100, deltaMode: 0 }), "zoom");
+    assert.equal(wheelAction({ deltaX: 0, deltaY: 3, deltaMode: 1 }), "zoom");
+    assert.equal(wheelAction({ deltaX: 4, deltaY: 4, deltaMode: 0, ctrlKey: true }), "zoom");
+  });
+
+  it("arm drops an in-progress ring so the next shape starts clean", () => {
+    const session = createSession();
+    arm(session);
+    click(session, { x: 0, y: 0, lat: 1, lng: 2 });
+    click(session, { x: 20, y: 0, lat: 1, lng: 3 });
+    assert.equal(arm(session).type, "armed");
+    assert.equal(session.vertices.length, 0);
+    assert.equal(session.phase, "armed");
+    assert.equal(boundsOf([{ lat: 3, lng: 0 }, { lat: 0, lng: 2 }, { lat: 1, lng: 1 }]).north, 3);
+  });
+});

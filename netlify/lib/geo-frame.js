@@ -15,7 +15,18 @@
  * content pixel grid (downscale only if over maxSide) and unifyFrameMpu sets
  * lengthM = imgH * (widthM/imgW) so Hamina's isotropic map meters match the
  * image aspect. Stretching the aerial to geodesic aspect shifted footprints
- * south of rooftops on Oak Creek.
+ * south of rooftops on Oak Creek — that miss was projecting lon/lat on one
+ * pixel grid and shipping a JPEG on another. Continental US stays on the
+ * content grid.
+ *
+ * At Finland latitudes a 4326 JPEG is square in degrees, so a ground square
+ * is about half as many pixels tall as it is wide (cos 60° ≈ 0.5). Hamina
+ * then treats those pixels as square meters and the import looks stretched,
+ * with north–south scale about half of east–west. Above GROUND_METER_STRETCH
+ * the same lock resamples the JPEG onto the ground-meter aspect and projects
+ * footprints on that new grid, so the aerial, buildings, and terrain paste
+ * share one isotropic meter frame. The OpenClutter draw is Web Mercator,
+ * which matches that frame to a few centimetres on a town-scale box.
  *
  * Two pixel conventions (unit-tested):
  *   OpenIntent / Y-up: (0,0) = SW, y increases north (oiconvert + Hamina OI)
@@ -39,6 +50,188 @@ function metersPerDeg(lat) {
   return { lon: 111320 * Math.cos(rad), lat: 110540 };
 }
 
+/**
+ * How many times taller a degree of latitude is, in ground meters, than a
+ * degree of longitude. Plate carrée pixels are square in degrees, so this is
+ * the N–S stretch Hamina applies when it treats those pixels as square meters.
+ * ~1.36 at Oak Creek (42.9°N), ~1.40 at Granite Peak (44.9°N), ~2.02 at
+ * Hamina (60.6°N).
+ */
+function groundMeterStretch(lat) {
+  const mpd = metersPerDeg(lat);
+  if (!(mpd.lon > 0)) return Infinity;
+  return mpd.lat / mpd.lon;
+}
+
+/**
+ * CONUS stays under ~1.55 (49°N). 1.7 is about 54°N, south of mainland
+ * Finland (~59.5°N) and north of the US sites this exporter already locks
+ * to the Esri content grid.
+ */
+const GROUND_METER_STRETCH = 1.7;
+
+function needsGroundMeterImage(lat) {
+  return groundMeterStretch(lat) >= GROUND_METER_STRETCH;
+}
+
+/** Geodesic width × length of the JPEG extent. Ignores a unified lengthM. */
+function geodesicSpans(frame) {
+  const south = +frame.south;
+  const north = +frame.north;
+  const west = +frame.west;
+  const east = +frame.east;
+  const mpd = metersPerDeg((south + north) / 2);
+  return {
+    mpd,
+    widthM: (east - west) * mpd.lon,
+    lengthM: (north - south) * mpd.lat,
+  };
+}
+
+/**
+ * Production long side at 1 m/px. An Oak Creek-scale box (~0.9–1.4 km) stays
+ * near a 1000px JPEG. Callers on the dev host pass imageryMaxSide(true).
+ */
+const IMAGERY_MAX_SIDE = 1040;
+const IMAGERY_METERS_PER_PX = 1;
+/**
+ * The frame helper can still build a 2048 px / 0.5 m plate. Esri allows
+ * 4096 px, and the roof decode refuses above 6 MP, so a square stops at
+ * 2048 (2048² is 4.2 MP). 2400 px did not return within 18s. Export does
+ * not ask for that plate: a ~2221 m box at 2048 px used the function clock
+ * and came back as a 502 with no zip. imageryMaxSide(true) stays 2048 for
+ * callers that measure the cap. The export plan is imageryExportPlan.
+ */
+const IMAGERY_MAX_SIDE_DEV = 2048;
+const IMAGERY_METERS_PER_PX_DEV = 0.5;
+/**
+ * Esri World Imagery answers HTTP 500 ("Error: bytes") for a tall plate
+ * near 12 MP, such as 4096 by 3100 on a 700 m site. About 10 MP returns.
+ * The first request still asks for the plate. A rejection retries under
+ * this budget instead of stepping down to roughly 0.4 m.
+ */
+const ESRI_MAX_EXPORT_PIXELS = 10000000;
+
+function imageryMaxSide(devHost) {
+  return devHost ? IMAGERY_MAX_SIDE_DEV : IMAGERY_MAX_SIDE;
+}
+
+function imageryMetersPerPx(devHost) {
+  return devHost ? IMAGERY_METERS_PER_PX_DEV : IMAGERY_METERS_PER_PX;
+}
+
+/**
+ * A town-scale draw (the Wi-Co peninsula is about 360 m) at half a meter
+ * is a few hundred pixels. A 2 km campus at that pitch is the plate that
+ * used the gateway window. Dev keeps the coarse plate for the long draws.
+ */
+const DEV_SHARP_DRAW_M = 800;
+
+function bboxLongSideM(bbox) {
+  if (!bbox) return 0;
+  const south = +bbox.south;
+  const north = +bbox.north;
+  const west = +bbox.west;
+  const east = +bbox.east;
+  if (![south, north, west, east].every(Number.isFinite)) return 0;
+  const mpd = metersPerDeg((south + north) / 2);
+  return Math.max(Math.abs(east - west) * mpd.lon, Math.abs(north - south) * mpd.lat);
+}
+
+/**
+ * Auto plate. The aerial does not count toward Hamina's JSON limit, so the
+ * first request is an 8192 px plate at 0.075 m. A long site is scaled to
+ * that side, then to Esri's pixel budget. 4K, Sharp, High, and a coarse
+ * plate follow, and run only when the finer plate or its time budget misses.
+ */
+function autoImageryPlan() {
+  return [
+    { maxSide: 8192, metersPerPx: 0.075 },
+    { maxSide: 4096, metersPerPx: 0.15 },
+    { maxSide: 4096, metersPerPx: 0.25 },
+    { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.4 },
+    { maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX_DEV },
+    { maxSide: 400, metersPerPx: 2 },
+  ];
+}
+
+/**
+ * Dev map-quality choices. Auto is null and uses autoImageryPlan.
+ * Low / Standard / High / Sharp / 4K are explicit plates. Each larger plate keeps a
+ * smaller step so a slow Esri answer can still return a zip. The short export
+ * path still asks for Sharp instead of 4K. The background export waits for 4K.
+ */
+function imageryQualityPlan(quality) {
+  const q = String(quality || "")
+    .trim()
+    .toLowerCase();
+  if (!q || q === "auto") return null;
+  if (q === "low" || q === "lower" || q === "256") {
+    return [{ maxSide: 256, metersPerPx: 2 }];
+  }
+  if (q === "standard" || q === "640") {
+    return [
+      { maxSide: 640, metersPerPx: 1 },
+      { maxSide: 400, metersPerPx: 2 },
+    ];
+  }
+  if (q === "high" || q === "higher" || q === "1040") {
+    return [
+      { maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX_DEV },
+      { maxSide: 400, metersPerPx: 2 },
+    ];
+  }
+  // 2048 is the largest plate the short path waits for.
+  if (q === "sharp" || q === "2048" || q === "2k") {
+    return [
+      { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.4 },
+      { maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX_DEV },
+      { maxSide: 400, metersPerPx: 2 },
+    ];
+  }
+  if (q === "8k" || q === "8192" || q === "max") {
+    return [
+      { maxSide: 8192, metersPerPx: 0.075 },
+      { maxSide: 4096, metersPerPx: 0.15 },
+    ];
+  }
+  if (q === "4k" || q === "4096" || q === "ultra") {
+    return [
+      { maxSide: 4096, metersPerPx: 0.15 },
+      { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.25 },
+    ];
+  }
+  return null;
+}
+
+/**
+ * Export asks for an image that can finish inside the function clock.
+ * Production stays at 1040 px / 1 m and ignores a quality choice.
+ * Auto on the dev host starts at the 8192 px plate, scaled to the site,
+ * then 4K, Sharp, High, and a coarse plate.
+ * Low, Standard, High, Sharp, 4K, and 8K replace that plan on the dev host only.
+ * Sharp is the 2048 px plate. 4K is 4096 px. 8K is 8192 px. The short path
+ * does not wait for 4K or 8K; the background export does.
+ */
+function imageryExportPlan(devHost, bbox, quality) {
+  if (!devHost) {
+    return [{ maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX }];
+  }
+  const picked = imageryQualityPlan(quality);
+  if (picked) return picked;
+  return autoImageryPlan();
+}
+
+function spanLimitLabel(maxSpan) {
+  const n = +maxSpan;
+  if (n >= 1000) {
+    const km = n / 1000;
+    const text = Math.abs(km - Math.round(km)) < 1e-6 ? String(Math.round(km)) : km.toFixed(1);
+    return text + " km";
+  }
+  return Math.round(n) + " m";
+}
+
 function geoFrame(bbox, opts = {}) {
   const west = +bbox.west;
   const south = +bbox.south;
@@ -52,18 +245,17 @@ function geoFrame(bbox, opts = {}) {
   const mpd = metersPerDeg((south + north) / 2);
   const widthM = (east - west) * mpd.lon;
   const lengthM = (north - south) * mpd.lat;
-  const maxSpan = opts.maxSpanM ?? 2500;
+  const maxSpan = opts.maxSpanM ?? 10000;
   const minSpan = opts.minSpanM ?? 40;
-  if (widthM > maxSpan || lengthM > maxSpan) {
-    throw new Error("bbox too large (max 2.5 km)");
+  if (widthM > maxSpan + 1 || lengthM > maxSpan + 1) {
+    throw new Error("bbox too large (max " + spanLimitLabel(maxSpan) + ")");
   }
   if (widthM < minSpan || lengthM < minSpan) {
     throw new Error("bbox too small");
   }
 
   const metersPerPx = opts.metersPerPx ?? 1.0;
-  // 1040 keeps an Oak Creek-scale box (~0.9–1.4 km) near a 1000px JPEG instead of 1280.
-  const maxSide = opts.maxSide ?? 1040;
+  const maxSide = opts.maxSide ?? IMAGERY_MAX_SIDE;
   let imgW;
   let imgH;
   if (opts.imgW > 0 && opts.imgH > 0) {
@@ -108,6 +300,27 @@ const CLIPBOARD_ORIGIN =
   "x_clip = x_img * mpuX - widthM; y_clip = -y_img * mpuY. " +
   "Import this zip in Hamina (Projects → Import → OpenIntent); OpenIntent attenuation_areas are the objects. " +
   "Google Earth screenshots as maps are an anti-pattern (Hamina auto-scale ≠ photo meters).";
+
+/**
+ * Same extent, fewer pixels, when the asked plate is over the Esri limit.
+ * The frame is unchanged when it already fits.
+ */
+function capEsriExportFrame(frame) {
+  if (!frame || !(frame.imgW > 0) || !(frame.imgH > 0)) return frame;
+  if (frame.imgW * frame.imgH <= ESRI_MAX_EXPORT_PIXELS) return frame;
+  const k = Math.sqrt(ESRI_MAX_EXPORT_PIXELS / (frame.imgW * frame.imgH));
+  let imgW = Math.max(64, Math.floor(frame.imgW * k));
+  let imgH = Math.max(64, Math.floor(frame.imgH * k));
+  while (imgW * imgH > ESRI_MAX_EXPORT_PIXELS && imgW > 64 && imgH > 64) {
+    if (imgW >= imgH) imgW -= 1;
+    else imgH -= 1;
+  }
+  const padM = Math.max(frame.widthM || 0, frame.lengthM || 0, 2500) * 2.5;
+  return geoFrame(
+    { west: frame.west, south: frame.south, east: frame.east, north: frame.north },
+    { imgW, imgH, maxSpanM: padM, minSpanM: 1 }
+  );
+}
 
 function llToPx(lon, lat, frame) {
   const x = ((lon - frame.west) / (frame.east - frame.west)) * frame.imgW;
@@ -272,37 +485,80 @@ function extentFromMeta(meta) {
 }
 
 /**
+ * Geographic extent of an Esri World Imagery export with imageSR=4326.
+ *
+ * The service keeps the requested pixel size and expands whichever degree
+ * axis is short so (east−west)/(north−south) = imgW/imgH, centered on the
+ * request. On a meter-square Las Vegas draw that is a latitude pad of about
+ * 1/cos φ (~23%). Longitude is unchanged. Projecting footprints with the
+ * drawn box then scales Y about the site center: the Sphere stays on the
+ * dome, and a roof 80–120 m south of it lands 49–73 ft south of the JPEG
+ * (0 ft east). That is the octest-sphere2 “~50–80 ft” miss. It is not a
+ * constant southeast translation — an east pre-shift would move the Sphere
+ * with every other roof. export?f=json repeats this same extent; this
+ * function is that extent when the JSON does not arrive.
+ */
+function esriContentExtent(bbox, imgW, imgH) {
+  const west = +bbox.west;
+  const south = +bbox.south;
+  const east = +bbox.east;
+  const north = +bbox.north;
+  const lonSpan = east - west;
+  const latSpan = north - south;
+  if (!(imgW > 0) || !(imgH > 0) || !(lonSpan > 0) || !(latSpan > 0)) {
+    return { west, south, east, north };
+  }
+  const target = imgW / imgH;
+  const current = lonSpan / latSpan;
+  if (Math.abs(current - target) <= Math.abs(target) * 1e-9) {
+    return { west, south, east, north };
+  }
+  if (current > target) {
+    const newLat = lonSpan / target;
+    const mid = (south + north) / 2;
+    return { west, east, south: mid - newLat / 2, north: mid + newLat / 2 };
+  }
+  const newLon = latSpan * target;
+  const mid = (west + east) / 2;
+  return { south, north, west: mid - newLon / 2, east: mid + newLon / 2 };
+}
+
+function requestSeed(opts, frame) {
+  const seed = opts && opts.requestBbox;
+  if (seed && [seed.west, seed.south, seed.east, seed.north].every(Number.isFinite)) return seed;
+  return frame;
+}
+
+/**
  * Rebuild the frame from the JPEG Esri actually returned.
  * Footprints, trees, OpenIntent, and clipboard must all use this, not the drawn box.
  *
  * Esri often pads N/S while keeping the requested pixel size, so mpuX ≠ mpuY
  * after this snap. Call lockIsotropicImagery next to unify meters to the JPEG
  * pixel aspect (keep content pixels; do not stretch the aerial).
+ *
+ * When export?f=json has no extent, the frame is still the content grid
+ * (esriContentExtent). Leaving the drawn box in place is the Sphere-site
+ * shift: roofs scale away from the draw center on the padded JPEG.
+ * opts.requestBbox is the rectangle sent to Esri, so a second snap does not
+ * expand an extent that was already padded.
  */
-function applyImageryMeta(frame, meta, jpegWH) {
+function applyImageryMeta(frame, meta, jpegWH, opts) {
   const ext = extentFromMeta(meta);
   const wh = jpegWH && jpegWH.width > 0 && jpegWH.height > 0 ? jpegWH : null;
   const imgW = (wh && wh.width) || (meta && +meta.width) || frame.imgW;
   const imgH = (wh && wh.height) || (meta && +meta.height) || frame.imgH;
   if (!(imgW > 0 && imgH > 0)) return frame;
-  const bbox = ext || {
-    west: frame.west,
-    south: frame.south,
-    east: frame.east,
-    north: frame.north,
-  };
-  const padM = Math.max(frame.widthM, frame.lengthM, 2500) * 2.5;
+  const seed = requestSeed(opts, frame);
+  const bbox = ext || esriContentExtent(seed, imgW, imgH);
+  const padM = Math.max(frame.widthM, frame.lengthM, seed.widthM || 0, 2500) * 2.5;
+  const size = { imgW, imgH, maxSpanM: padM, minSpanM: 1 };
   try {
-    return geoFrame(bbox, { imgW, imgH, maxSpanM: padM, minSpanM: 1 });
+    return geoFrame(bbox, size);
   } catch {
     return geoFrame(
-      {
-        west: frame.west,
-        south: frame.south,
-        east: frame.east,
-        north: frame.north,
-      },
-      { imgW, imgH, maxSpanM: padM, minSpanM: 1 }
+      { west: seed.west, south: seed.south, east: seed.east, north: seed.north },
+      size
     );
   }
 }
@@ -321,7 +577,7 @@ function isAspectLocked(frame, eps = 0.002) {
 
 /** Choose imgW×imgH with the geographic aspect, capped on the long side. */
 function isotropicPixelSize(widthM, lengthM, maxSide) {
-  const side = Math.max(64, Math.round(+maxSide || 1040));
+  const side = Math.max(64, Math.round(+maxSide || IMAGERY_MAX_SIDE));
   const aspect = widthM / lengthM;
   let imgW;
   let imgH;
@@ -375,6 +631,29 @@ function resizeRgba(src, sw, sh, dstW, dstH) {
  * north stay the Esri JPEG extent for lon/lat → pixel mapping onto the
  * **content** pixel grid — do not stretch the aerial to fit geodesic meters.
  */
+/**
+ * How far a roof moves if content-grid Y pixels are read on a geodesic-aspect
+ * pixel grid (the stretch-after-project miss). Zero only when imgH already
+ * matches geodesic meters per pixel — which the Esri 4326 JPEG does not.
+ * lockIsotropicImagery keeps the content grid instead, so this number stays
+ * large on Oak Creek and the export never applies it.
+ */
+function geodesicPixelMismatchPx(frame, lon, lat) {
+  if (!frame || !(frame.imgW > 0) || !(frame.imgH > 0)) return 0;
+  if (![lon, lat, frame.west, frame.south, frame.east, frame.north].every(Number.isFinite)) return 0;
+  const span = frame.north - frame.south;
+  if (!(span > 0)) return 0;
+  const mpd = frame.mpd || metersPerDeg((frame.south + frame.north) / 2);
+  const geoWid = (frame.east - frame.west) * mpd.lon;
+  const geoLen = span * mpd.lat;
+  if (!(geoWid > 0) || !(geoLen > 0)) return 0;
+  const stretchedH = Math.max(1, Math.round(frame.imgW * (geoLen / geoWid)));
+  const frac = (frame.north - lat) / span;
+  const yContent = frac * frame.imgH;
+  const yStretched = frac * stretchedH;
+  return Math.abs(yStretched - yContent);
+}
+
 function unifyFrameMpu(frame) {
   if (!frame || !(frame.imgW > 0) || !(frame.imgH > 0) || !(frame.widthM > 0)) return frame;
   const mpu = frame.widthM / frame.imgW;
@@ -387,15 +666,70 @@ function unifyFrameMpu(frame) {
   });
 }
 
+function encodeJpegRgba(rgba, imgW, imgH, quality) {
+  const jpeg = require("jpeg-js");
+  const enc = jpeg.encode({ data: rgba, width: imgW, height: imgH }, quality);
+  return Buffer.from(enc.data);
+}
+
 /**
- * Lock Hamina map meters to the Esri JPEG pixel aspect without distorting the
- * aerial. Stretching the JPEG to geodesic aspect (PR #20) made footprints sit
- * south/large of rooftops on Oak Creek — lon/lat was projected in a different
- * pixel space than the final image content. Keep the content grid; only
- * downscale when the long side exceeds maxSide (same aspect). Then unify mpu.
+ * Same pixel size, smaller file. A 4K plate can be larger than the function
+ * response that delivers the zip. Dimensions stay put so roof pixels still match.
+ */
+function compressJpegToMax(imgBuf, maxBytes) {
+  if (!imgBuf || imgBuf.length < 100) return imgBuf;
+  if (!(maxBytes > 0) || imgBuf.length <= maxBytes) return imgBuf;
+  let decoded;
+  try {
+    const jpeg = require("jpeg-js");
+    decoded = jpeg.decode(imgBuf, { useTArray: true, maxResolutionInMP: 24, formatAsRGBA: true });
+  } catch {
+    return imgBuf;
+  }
+  if (!decoded || !decoded.data || !(decoded.width > 1) || !(decoded.height > 1)) return imgBuf;
+  const qualities = [70, 50, 35, 22];
+  let best = imgBuf;
+  for (let i = 0; i < qualities.length; i++) {
+    let next;
+    try {
+      next = encodeJpegRgba(decoded.data, decoded.width, decoded.height, qualities[i]);
+    } catch {
+      break;
+    }
+    if (!next || next.length >= best.length) continue;
+    best = next;
+    if (best.length <= maxBytes) break;
+  }
+  return best;
+}
+
+/**
+ * Pixel size whose aspect is geodesic width/length. Long side is `cap`.
+ * Callers cap `cap` at the source long side so a Finland resample does not
+ * invent resolution the 4326 JPEG never had.
+ */
+function groundMeterPixelSize(frame, cap) {
+  const spans = geodesicSpans(frame);
+  return isotropicPixelSize(spans.widthM, spans.lengthM, cap);
+}
+
+/**
+ * Lock Hamina map meters to the JPEG pixel aspect.
+ *
+ * Continental US: keep the Esri content pixel grid (downscale only if over
+ * maxSide — same aspect). Stretching that JPEG to geodesic aspect (PR #20)
+ * made footprints sit south of rooftops on Oak Creek, because lon/lat was
+ * projected on a different grid than the pixels Hamina displayed. Then
+ * unify mpu.
+ *
+ * High latitude (needsGroundMeterImage): the 4326 content grid is square in
+ * degrees, and Hamina's isotropic meters stretch it. Resample onto the
+ * ground-meter aspect in this same step, then project every later lon/lat
+ * through the returned frame. The JPEG size and the meter frame move
+ * together, which is the Oak Creek failure avoided.
  */
 function lockIsotropicImagery(frame, jpegBuf, opts = {}) {
-  const maxSide = opts.maxSide != null ? opts.maxSide : 1040;
+  const maxSide = opts.maxSide != null ? opts.maxSide : IMAGERY_MAX_SIDE;
   if (!frame) return { frame, jpegBuf, resampled: false };
   if (!jpegBuf || jpegBuf.length < 100) {
     return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
@@ -410,23 +744,30 @@ function lockIsotropicImagery(frame, jpegBuf, opts = {}) {
   if (!raw || !raw.data || !(raw.width > 0) || !(raw.height > 0)) {
     return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
   }
-  const longSide = Math.max(raw.width, raw.height);
+  const quality = opts.quality != null ? opts.quality : 85;
+  const groundMeters = needsGroundMeterImage((+frame.south + +frame.north) / 2);
   let imgW = raw.width;
   let imgH = raw.height;
   let outBuf = jpegBuf;
   let resampled = false;
-  if (longSide > maxSide) {
-    const k = maxSide / longSide;
-    imgW = Math.max(64, Math.round(raw.width * k));
-    imgH = Math.max(64, Math.round(raw.height * k));
-    const rgba = resizeRgba(raw.data, raw.width, raw.height, imgW, imgH);
+  let targetW = imgW;
+  let targetH = imgH;
+  if (groundMeters) {
+    const cap = Math.min(Math.max(64, Math.round(+maxSide || IMAGERY_MAX_SIDE)), Math.max(raw.width, raw.height));
+    const sized = groundMeterPixelSize(frame, cap);
+    targetW = sized.imgW;
+    targetH = sized.imgH;
+  } else if (Math.max(raw.width, raw.height) > maxSide) {
+    const k = maxSide / Math.max(raw.width, raw.height);
+    targetW = Math.max(64, Math.round(raw.width * k));
+    targetH = Math.max(64, Math.round(raw.height * k));
+  }
+  if (targetW !== raw.width || targetH !== raw.height) {
+    const rgba = resizeRgba(raw.data, raw.width, raw.height, targetW, targetH);
     try {
-      const jpeg = require("jpeg-js");
-      const enc = jpeg.encode(
-        { data: rgba, width: imgW, height: imgH },
-        opts.quality != null ? opts.quality : 85
-      );
-      outBuf = Buffer.from(enc.data);
+      outBuf = encodeJpegRgba(rgba, targetW, targetH, quality);
+      imgW = targetW;
+      imgH = targetH;
       resampled = true;
     } catch {
       return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
@@ -439,7 +780,7 @@ function lockIsotropicImagery(frame, jpegBuf, opts = {}) {
       { imgW, imgH, maxSpanM: padM, minSpanM: 1 }
     )
   );
-  return { frame: locked, jpegBuf: outBuf, resampled };
+  return { frame: locked, jpegBuf: outBuf, resampled, groundMeters };
 }
 
 const FP_PAGE_SIZE = 500;
@@ -478,33 +819,89 @@ function msFootprintsUrl(frame, recordCount = FP_PAGE_SIZE, resultOffset = 0) {
   );
 }
 
+function footprintAbort(err) {
+  if (!err) return false;
+  if (err.name === "AbortError") return true;
+  return /abort|timeout/i.test(String(err.message || err));
+}
+
+async function readFootprintPage(frame, fetchFn, offset, want) {
+  const url = msFootprintsUrl(frame, want, offset);
+  const res = await fetchFn(url);
+  const gj = await res.json();
+  return gj && Array.isArray(gj.features) ? gj.features : [];
+}
+
 /**
  * Paginate MSBFP2 until the service is exhausted or FP_CAP (2000) features.
  * resultRecordCount alone (historically 300) truncates large campus/golf bboxes.
+ * The first page is alone. Further pages run together so four dense pages
+ * cannot add up to four timeouts. opts.budgetMs (default 7s) is the wall
+ * clock for the whole query; a full first page and no time left returns
+ * that page with partial set.
  */
 async function fetchMsFootprints(frame, fetchFn, opts = {}) {
+  const { timeSpan } = require("./stage-clock");
+  return timeSpan("microsoft", () => fetchMsFootprintsWork(frame, fetchFn, opts));
+}
+
+async function fetchMsFootprintsWork(frame, fetchFn, opts = {}) {
   const pageSize = opts.pageSize || FP_PAGE_SIZE;
   const cap = opts.cap || FP_CAP;
+  const budgetMs = opts.budgetMs == null ? 7000 : opts.budgetMs;
   const queryFrame = opts.pad === false ? frame : padFootprintBbox(frame);
-  const features = [];
-  let offset = 0;
-  let pages = 0;
-  while (features.length < cap && pages < 8) {
-    const want = Math.min(pageSize, cap - features.length);
-    const url = msFootprintsUrl(queryFrame, want, offset);
-    const res = await fetchFn(url);
-    const gj = await res.json();
-    const chunk = gj && Array.isArray(gj.features) ? gj.features : [];
-    features.push.apply(features, chunk);
-    pages++;
-    offset += chunk.length;
-    if (chunk.length < want) break;
+  const started = Date.now();
+  const maxPages = Math.min(8, Math.max(1, Math.ceil(cap / pageSize)));
+  const timeLeft = () => budgetMs - (Date.now() - started);
+  const firstWant = Math.min(pageSize, cap);
+  const first = await readFootprintPage(queryFrame, fetchFn, 0, firstWant);
+  const features = first.slice();
+  let pages = 1;
+  let partial = false;
+  if (first.length < firstWant || features.length >= cap || pages >= maxPages) {
+    return packFootprints(features, cap, pages, false);
   }
+  if (timeLeft() < 400) {
+    return packFootprints(features, cap, pages, true);
+  }
+  const jobs = [];
+  let offset = first.length;
+  while (offset < cap && pages + jobs.length < maxPages && timeLeft() >= 400) {
+    const want = Math.min(pageSize, cap - offset);
+    const pageOffset = offset;
+    jobs.push(
+      readFootprintPage(queryFrame, fetchFn, pageOffset, want).then(
+        (chunk) => ({ offset: pageOffset, chunk, want }),
+        (err) => {
+          if (footprintAbort(err)) return { offset: pageOffset, chunk: null, want, aborted: true };
+          throw err;
+        }
+      )
+    );
+    offset += want;
+  }
+  const parts = await Promise.all(jobs);
+  parts.sort((a, b) => a.offset - b.offset);
+  for (const part of parts) {
+    pages++;
+    if (!part.chunk || part.aborted) {
+      partial = true;
+      break;
+    }
+    features.push.apply(features, part.chunk);
+    if (part.chunk.length < part.want) break;
+  }
+  return packFootprints(features, cap, pages, partial);
+}
+
+function packFootprints(features, cap, pages, partial) {
+  const kept = features.slice(0, cap);
   return {
     type: "FeatureCollection",
-    features: features.slice(0, cap),
-    fetched: Math.min(features.length, cap),
+    features: kept,
+    fetched: kept.length,
     pages,
+    partial: !!partial,
   };
 }
 
@@ -587,8 +984,25 @@ function applyAffine(lon, lat, affine) {
 
 module.exports = {
   CLIPBOARD_ORIGIN,
+  IMAGERY_MAX_SIDE,
+  IMAGERY_MAX_SIDE_DEV,
+  ESRI_MAX_EXPORT_PIXELS,
+  IMAGERY_METERS_PER_PX,
+  IMAGERY_METERS_PER_PX_DEV,
+  imageryMaxSide,
+  imageryMetersPerPx,
+  imageryExportPlan,
+  imageryQualityPlan,
+  bboxLongSideM,
+  DEV_SHARP_DRAW_M,
   metersPerDeg,
+  groundMeterStretch,
+  GROUND_METER_STRETCH,
+  needsGroundMeterImage,
+  geodesicSpans,
+  groundMeterPixelSize,
   geoFrame,
+  capEsriExportFrame,
   llToPx,
   pxToLl,
   llToImagePx,
@@ -607,13 +1021,16 @@ module.exports = {
   esriImageryMetaUrl,
   jpegSize,
   extentFromMeta,
+  esriContentExtent,
   applyImageryMeta,
   aspectMismatch,
   isAspectLocked,
   isotropicPixelSize,
   resizeRgba,
+  geodesicPixelMismatchPx,
   unifyFrameMpu,
   lockIsotropicImagery,
+  compressJpegToMax,
   FP_PAGE_SIZE,
   FP_CAP,
   padFootprintBbox,
