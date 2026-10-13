@@ -49,13 +49,27 @@
       flex: 1; background: #0d1117; color: #e8eaed; border: 1px solid #30363d;
       border-radius: 8px; padding: 4px 8px; font: inherit; font-size: 12px;
     }
-    #advanced { margin-top: 12px; }
-    #advanced > summary {
-      cursor: pointer; width: fit-content; list-style: none;
-      color: #58a6ff; font-size: 12px; font-weight: 500;
-      text-decoration: underline; text-underline-offset: 2px; user-select: none;
+    .panel-links {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      column-gap: 12px;
+      margin-top: 12px;
+      align-items: baseline;
     }
-    #advanced > summary::-webkit-details-marker { display: none; }
+    .panel-links > details { display: contents; }
+    .panel-links > details > summary {
+      cursor: pointer; width: fit-content; list-style: none;
+      font-size: 12px; font-weight: 500; user-select: none;
+      text-decoration: underline; text-underline-offset: 2px;
+    }
+    .panel-links > details > summary::-webkit-details-marker { display: none; }
+    #advanced > summary {
+      grid-column: 1; grid-row: 1; justify-self: start; color: #58a6ff;
+    }
+    #howto > summary {
+      grid-column: 2; grid-row: 1; justify-self: end; color: #8b949e;
+    }
+    .panel-links-body { grid-column: 1 / -1; }
     .row { display: flex; gap: 8px; margin-top: 10px; }
     .row button { flex: 1; }
     #export {
@@ -144,13 +158,7 @@
     }
     .hint[hidden] { display: none; }
     #import-tip a, #howto a { color: #58a6ff; }
-    #howto { margin-top: 10px; font-size: 12px; color: #8b949e; }
-    #howto > summary {
-      cursor: pointer; width: fit-content; list-style: none;
-      color: #8b949e; font-size: 12px; user-select: none;
-      text-decoration: underline; text-underline-offset: 2px;
-    }
-    #howto > summary::-webkit-details-marker { display: none; }
+    #howto .panel-links-body { font-size: 12px; color: #8b949e; }
     #howto ol { margin: 6px 0 0; padding-left: 18px; line-height: 1.4; color: #c9d1d9; }
     #howto li { margin-top: 4px; }
     #howto p { margin: 6px 0 0; }
@@ -180,8 +188,10 @@
       </details>
     </div>
     <p id="import-tip" class="hint" hidden>Next: import the zip in Hamina. <a href="https://docs.hamina.com/hamina/live/openintent" target="_blank" rel="noopener noreferrer">Hamina's import steps</a></p>
+    <div class="panel-links">
     <details id="advanced">
       <summary>Advanced</summary>
+      <div class="panel-links-body">
       <div id="clutter-options">
         <label class="check" for="include-foliage">
           <input type="checkbox" id="include-foliage" checked />
@@ -238,17 +248,21 @@
           <option value="8k">8K · 8192 px</option>
         </select>
       </label>
-      <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.174</span></p>
+      <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.175</span></p>
+      </div>
     </details>
     <details id="howto">
       <summary>How it works</summary>
+      <div class="panel-links-body">
       <ol>
         <li>Draw an area on the map and click Export. You get a zip file.</li>
         <li>In your Hamina project, open the breadcrumb dropdown, choose Import / Export (third icon), and import the zip as OpenIntent.</li>
         <li>When the import finishes, click Copy terrain here and paste it into Hamina.</li>
       </ol>
       <p><a href="https://github.com/google/openintent" target="_blank" rel="noopener noreferrer">OpenIntent</a> · <a href="https://docs.hamina.com/hamina/live/openintent" target="_blank" rel="noopener noreferrer">Hamina's OpenIntent guide</a></p>
+      </div>
     </details>
+    </div>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/tree-detect.js"></script>
