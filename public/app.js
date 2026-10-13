@@ -170,7 +170,7 @@ let terrainPasteGpsOnly = false;
 // native zoom down so the last good tiles scale up instead of breaking the map.
 const ESRI_TILE_MAX_ZOOM = 23;
 const mapZoom = qualityPage() ? ESRI_TILE_MAX_ZOOM : 18;
-const map = L.map("map", { maxZoom: mapZoom }).setView([36.128, -115.16], 17);
+const map = L.map("map", { maxZoom: mapZoom }).setView([36.128, -115.16], 16);
 // CARTO's keyless dark tiles now paint "API KEY REQUIRED" through the aerial.
 // The draw sits on World Imagery. The page background shows where a tile misses.
 const imageryTiles = L.tileLayer(
@@ -400,7 +400,7 @@ function releasePanelFocus() {
 }
 
 function panGesture(ev) {
-  if (ev.button === 2) return true;
+  if (ev.button === 1 || ev.button === 2) return true;
   if (ev.button !== 0) return false;
   return spacePan || !!ev.ctrlKey;
 }
@@ -828,6 +828,27 @@ mapEl.addEventListener(
   true
 );
 
+// Middle-click would otherwise start browser autoscroll or paste on the map.
+mapEl.addEventListener(
+  "mousedown",
+  (ev) => {
+    if (ev.button !== 1) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+  },
+  true
+);
+
+mapEl.addEventListener(
+  "auxclick",
+  (ev) => {
+    if (ev.button !== 1) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+  },
+  true
+);
+
 mapEl.addEventListener(
   "dblclick",
   (ev) => {
@@ -904,7 +925,7 @@ document.getElementById("search").onsubmit = async (e) => {
     if (!r.ok) throw new Error(hits.error || "Geocode failed");
     if (!hits.length) throw new Error("No results. Try the street address.");
     const hit = hits[0];
-    map.setView([+hit.lat, +hit.lon], 18);
+    map.setView([+hit.lat, +hit.lon], 17);
     if (!bbox) setStatus("");
     else if (exportBtn.disabled) setStatus("Area must be between 40 m and 10 km on a side.", true);
     else setStatus("Ready to export.");

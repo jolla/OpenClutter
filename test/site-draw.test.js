@@ -130,9 +130,11 @@ describe("site draw gestures", () => {
     assert.notEqual(aborted.type, "commit-box");
   });
 
-  it("does not add a vertex for a right-click or ctrl-click, and a cancelled press is not a box", () => {
+  it("does not add a vertex for a middle-click, right-click or ctrl-click, and a cancelled press is not a box", () => {
     const session = createSession();
     arm(session);
+    assert.equal(pointerDown(session, { x: 0, y: 0, lat: 36, lng: -115, button: 1 }).type, "ignore");
+    assert.equal(pointerUp(session, { x: 0, y: 0, lat: 36, lng: -115, button: 1 }).type, "ignore");
     assert.equal(pointerDown(session, { x: 0, y: 0, lat: 36, lng: -115, button: 2 }).type, "ignore");
     assert.equal(pointerUp(session, { x: 0, y: 0, lat: 36, lng: -115, button: 2 }).type, "ignore");
     assert.equal(pointerDown(session, { x: 0, y: 0, lat: 36, lng: -115, button: 0, ctrlKey: true }).type, "ignore");
