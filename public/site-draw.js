@@ -226,18 +226,10 @@
   }
 
   /**
-   * Trackpad scroll pans. A mouse wheel and a pinch still zoom.
-   * Pinch sets ctrlKey. A mouse wheel uses line mode or a large
-   * vertical step with no horizontal travel.
+   * Wheel and trackpad scroll always zoom (Leaflet centers on the cursor).
+   * Pan stays on right-drag, Space plus drag, and touch — never on scroll.
    */
   function wheelAction(ev) {
-    if (!ev || ev.ctrlKey || ev.metaKey) return "zoom";
-    const mode = ev.deltaMode == null ? 0 : +ev.deltaMode;
-    if (mode !== 0) return "zoom";
-    const dx = Math.abs(+ev.deltaX || 0);
-    const dy = Math.abs(+ev.deltaY || 0);
-    if (dx > 0.5) return "pan";
-    if (dy > 0 && dy < 50) return "pan";
     return "zoom";
   }
 

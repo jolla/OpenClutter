@@ -354,12 +354,13 @@ describe("site draw gestures", () => {
     assert.equal(cancel(session).type, "ignore");
   });
 
-  it("trackpad scroll pans and a mouse wheel or pinch still zooms", () => {
-    assert.equal(wheelAction({ deltaX: 0, deltaY: 12, deltaMode: 0 }), "pan");
-    assert.equal(wheelAction({ deltaX: 8, deltaY: 4, deltaMode: 0 }), "pan");
+  it("wheel and trackpad scroll always zoom; never pan", () => {
+    assert.equal(wheelAction({ deltaX: 0, deltaY: 12, deltaMode: 0 }), "zoom");
+    assert.equal(wheelAction({ deltaX: 8, deltaY: 4, deltaMode: 0 }), "zoom");
     assert.equal(wheelAction({ deltaX: 0, deltaY: 100, deltaMode: 0 }), "zoom");
     assert.equal(wheelAction({ deltaX: 0, deltaY: 3, deltaMode: 1 }), "zoom");
     assert.equal(wheelAction({ deltaX: 4, deltaY: 4, deltaMode: 0, ctrlKey: true }), "zoom");
+    assert.equal(wheelAction(null), "zoom");
   });
 
   it("arm drops an in-progress ring so the next shape starts clean", () => {
