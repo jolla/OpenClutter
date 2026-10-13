@@ -60,11 +60,13 @@
       top: 0;
       cursor: pointer; width: fit-content; list-style: none;
       font-size: 12px; font-weight: 500; user-select: none;
+      color: #8b949e;
       text-decoration: underline; text-underline-offset: 2px;
     }
     .panel-links > details > summary::-webkit-details-marker { display: none; }
-    #advanced > summary { left: 0; color: #58a6ff; }
-    #howto > summary { right: 0; color: #8b949e; }
+    .panel-links > details[open] > summary { color: #c9d1d9; }
+    #howto > summary { left: 0; }
+    #advanced > summary { right: 0; }
     .panel-links-body { margin-top: 4px; }
     .row { display: flex; gap: 8px; margin-top: 10px; }
     .row button { flex: 1; }
@@ -185,6 +187,17 @@
     </div>
     <p id="import-tip" class="hint" hidden>Next: import the zip in Hamina. <a href="https://docs.hamina.com/hamina/live/openintent" target="_blank" rel="noopener noreferrer">Hamina's import steps</a></p>
     <div class="panel-links">
+    <details id="howto">
+      <summary>How it works</summary>
+      <div class="panel-links-body">
+      <ol>
+        <li>Draw an area on the map and click Export. You get a zip file.</li>
+        <li>In your Hamina project, open the breadcrumb dropdown, choose Import / Export (third icon), and import the zip as OpenIntent.</li>
+        <li>When the import finishes, click Copy terrain here and paste it into Hamina.</li>
+      </ol>
+      <p><a href="https://github.com/google/openintent" target="_blank" rel="noopener noreferrer">OpenIntent</a> · <a href="https://docs.hamina.com/hamina/live/openintent" target="_blank" rel="noopener noreferrer">Hamina's OpenIntent guide</a></p>
+      </div>
+    </details>
     <details id="advanced">
       <summary>Advanced</summary>
       <div class="panel-links-body">
@@ -244,18 +257,7 @@
           <option value="8k">8K · 8192 px</option>
         </select>
       </label>
-      <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.176</span></p>
-      </div>
-    </details>
-    <details id="howto">
-      <summary>How it works</summary>
-      <div class="panel-links-body">
-      <ol>
-        <li>Draw an area on the map and click Export. You get a zip file.</li>
-        <li>In your Hamina project, open the breadcrumb dropdown, choose Import / Export (third icon), and import the zip as OpenIntent.</li>
-        <li>When the import finishes, click Copy terrain here and paste it into Hamina.</li>
-      </ol>
-      <p><a href="https://github.com/google/openintent" target="_blank" rel="noopener noreferrer">OpenIntent</a> · <a href="https://docs.hamina.com/hamina/live/openintent" target="_blank" rel="noopener noreferrer">Hamina's OpenIntent guide</a></p>
+      <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.177</span></p>
       </div>
     </details>
     </div>
