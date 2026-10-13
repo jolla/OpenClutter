@@ -9,6 +9,19 @@ function devPage() {
   );
 }
 
+// Production gets the same export quality as /dev. Testing overrides
+// (areaCap, terrainFloors, jsonBudget) and the dev badge stay on devPage().
+function qualityPage() {
+  if (devPage()) return true;
+  const host = (location.hostname || "").toLowerCase();
+  return (
+    host === "openclutter.com" ||
+    host === "www.openclutter.com" ||
+    host === "openclutter.netlify.app" ||
+    host === "main--openclutter.netlify.app"
+  );
+}
+
 function syncDevPanel() {
   const dev = devPage();
   const sub = document.getElementById("panel-sub");
@@ -86,7 +99,7 @@ function lidarQueryOn() {
 }
 
 function lidarEnabled() {
-  if (!devPage()) return undefined;
+  if (!qualityPage()) return undefined;
   const input = document.getElementById("include-lidar");
   if (input && input.checked) return true;
   return lidarQueryOn() ? true : undefined;
@@ -119,7 +132,7 @@ function terrainExportEnabled() {
   syncDevPanel();
   restoreAdvanced();
   const lidarBox = document.getElementById("include-lidar");
-  if (lidarBox && devPage() && lidarQueryOn()) lidarBox.checked = true;
+  if (lidarBox && qualityPage() && lidarQueryOn()) lidarBox.checked = true;
   const ver = document.getElementById("app-version");
   if (ver && window.OPENCLUTTER_VERSION) ver.textContent = "v" + window.OPENCLUTTER_VERSION;
 })();
@@ -132,7 +145,7 @@ let terrainPasteGpsOnly = false;
 // On /dev the map follows that pyramid. A missing high level steps the
 // native zoom down so the last good tiles scale up instead of breaking the map.
 const ESRI_TILE_MAX_ZOOM = 23;
-const mapZoom = devPage() ? ESRI_TILE_MAX_ZOOM : 18;
+const mapZoom = qualityPage() ? ESRI_TILE_MAX_ZOOM : 18;
 const map = L.map("map", { maxZoom: mapZoom }).setView([36.128, -115.16], 15);
 // CARTO's keyless dark tiles now paint "API KEY REQUIRED" through the aerial.
 // The draw sits on World Imagery. The page background shows where a tile misses.
@@ -140,12 +153,12 @@ const imageryTiles = L.tileLayer(
   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
   {
     opacity: 1,
-    maxZoom: devPage() ? ESRI_TILE_MAX_ZOOM : 19,
-    maxNativeZoom: devPage() ? ESRI_TILE_MAX_ZOOM : 19,
+    maxZoom: qualityPage() ? ESRI_TILE_MAX_ZOOM : 19,
+    maxNativeZoom: qualityPage() ? ESRI_TILE_MAX_ZOOM : 19,
     attribution: "Tiles &copy; Esri",
   }
 ).addTo(map);
-if (devPage()) {
+if (qualityPage()) {
   imageryTiles.on("tileerror", function (ev) {
     const z = ev.coords && ev.coords.z;
     const native = imageryTiles.options.maxNativeZoom;
@@ -1189,7 +1202,7 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
       deferTerrain: false,
       terrainResolution: terrain ? "auto" : undefined,
       terrainStyle: terrain ? "sloped" : undefined,
-      imageryQuality: devPage() ? selectedImageryQuality() : undefined,
+      imageryQuality: qualityPage() ? selectedImageryQuality() : undefined,
       areaCap: areaCapOverride(),
       jsonBudget: jsonBudgetOverride(),
       terrainFloors: terrainFloorsOverride(),
@@ -1270,7 +1283,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
   const foliage = includeFoliage === true;
   const terrain = includeTerrain !== false;
   const liftSamples =
-    terrain && devPage() && terrainPaste && Array.isArray(terrainPaste.liftSamples)
+    terrain && qualityPage() && terrainPaste && Array.isArray(terrainPaste.liftSamples)
       ? terrainPaste.liftSamples
       : undefined;
   const r = await fetch("/api/clutter", {
@@ -1288,12 +1301,12 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       includeRvs: clutterChecked("include-rvs"),
       includeCars: clutterChecked("include-cars"),
       includeTerrain: terrain,
-      deferTerrain: terrain && devPage(),
+      deferTerrain: terrain && qualityPage(),
       terrainResolution: terrain ? "auto" : undefined,
       terrainStyle: terrain ? "sloped" : undefined,
       liftSamples,
       liftKind: liftSamples && terrainPaste.liftKind ? terrainPaste.liftKind : undefined,
-      imageryQuality: devPage() ? selectedImageryQuality() : undefined,
+      imageryQuality: qualityPage() ? selectedImageryQuality() : undefined,
       areaCap: areaCapOverride(),
       jsonBudget: jsonBudgetOverride(),
       terrainFloors: terrainFloorsOverride(),
@@ -1388,7 +1401,7 @@ document.getElementById("export").onclick = async () => {
         ? queued.note || "Background export is unavailable. This export uses the short path."
         : "";
     if (fallbackNote) setStatus(fallbackNote);
-    const terrainPromise = includeTerrain && devPage() ? fetchTerrainPaste() : null;
+    const terrainPromise = includeTerrain && qualityPage() ? fetchTerrainPaste() : null;
     if (terrainPromise) terrainPromise.catch(() => {});
     const paste = terrainPromise ? await terrainPromise : null;
     const data = await OpenClutterExport.runExportAttempts((attempt) => {

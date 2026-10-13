@@ -3914,11 +3914,7 @@ function usableDemSamples(samples) {
   );
 }
 
-/**
- * Dev-host gate, same host/path check as the Terrain checkbox.
- * Accepts a Netlify event or a headers object.
- */
-function isDevDemHost(eventOrHeaders) {
+function requestHostPath(eventOrHeaders) {
   const event =
     eventOrHeaders && (eventOrHeaders.headers || eventOrHeaders.httpMethod || eventOrHeaders.path)
       ? eventOrHeaders
@@ -3926,8 +3922,19 @@ function isDevDemHost(eventOrHeaders) {
   const headers = event.headers || {};
   const host = String(headers.host || headers.Host || "")
     .trim()
-    .toLowerCase();
+    .toLowerCase()
+    .replace(/:\d+$/, "");
   const path = String(event.path || event.rawPath || "");
+  return { host, path };
+}
+
+/**
+ * Testing gate: /dev and deploy previews only. Area cap, JSON budget and
+ * terrain floor overrides stay behind this check, never on the public site.
+ * Accepts a Netlify event or a headers object.
+ */
+function isDevTestHost(eventOrHeaders) {
+  const { host, path } = requestHostPath(eventOrHeaders);
   return (
     host.startsWith("dev--") ||
     host.startsWith("deploy-preview-") ||
@@ -3935,6 +3942,28 @@ function isDevDemHost(eventOrHeaders) {
     path.startsWith("/dev/")
   );
 }
+
+// Public hosts that get the same export quality as /dev.
+const PRODUCTION_HOSTS = [
+  "openclutter.com",
+  "www.openclutter.com",
+  "openclutter.netlify.app",
+  "main--openclutter.netlify.app",
+];
+
+/**
+ * Quality gate: sharp aerial plan, longer terrain wait and the related
+ * limits. On for /dev, deploy previews and production. Classic v1 and
+ * unknown hosts keep the conservative plan.
+ */
+function isQualityHost(eventOrHeaders) {
+  if (isDevTestHost(eventOrHeaders)) return true;
+  const { host } = requestHostPath(eventOrHeaders);
+  return PRODUCTION_HOSTS.includes(host);
+}
+
+/** Kept for older callers. Same as isDevTestHost. */
+const isDevDemHost = isDevTestHost;
 
 function packSurfaceDem(samples, plan, requested, opts, frame) {
   const preset = normalizeTerrainResolution(opts && opts.terrainResolution);
@@ -4150,6 +4179,9 @@ module.exports = {
   fetchDemSamples,
   fetchTerrainDem,
   isDevDemHost,
+  isDevTestHost,
+  isQualityHost,
+  PRODUCTION_HOSTS,
   frameHas3dep,
   glo30SamplePlan,
   DEP3_OUTSIDE_MS,

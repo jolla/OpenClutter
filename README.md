@@ -8,6 +8,8 @@
 
 **v1.1.97** on `dev` — Sloped terrain is an adaptive mesh, not a fixed 20×20 grid. The paste spends its budget on the worst saddles, keeps a planar fit near half a meter, and merges a flat bench into one raised floor. Neighboring ramps share an edge height, and a coarse piece is split where it meets a finer one so the seam has no gap. A pure north-south or east-west grade stays one ramp per cell. The badge stays (`dev · v1.1.97`).
 
+**v1.1.172** on `dev` and production. openclutter.com exports at the same quality as /dev: the sharp aerial plan, the longer terrain wait and Copy terrain. The areaCap, jsonBudget and terrainFloors testing overrides stay on /dev and deploy previews only. The badge stays (`dev · v1.1.172`).
+
 **v1.1.171** on `dev`. Several exports can run at once on the Fly worker, one per machine. When every machine is busy, Netlify retries Fly a few times before it runs the export itself. The badge stays (`dev · v1.1.171`).
 
 **v1.1.169** on `dev`. The export percent moves during Fetching aerial, in the status the page polls and on the Export button. It leaves 0 as soon as tiles, bytes, or time inside that stage arrive. The aerial stage stops at about 36 seconds, including download, decode, and stitch, and keeps the sharpest plate already in hand. Trees on a large course no longer waits behind the yard scan. A measured crown still stays when the aerial shows a crown in that cell, and crown growth still stops at about 8 m. The badge stays (`dev · v1.1.169`).
