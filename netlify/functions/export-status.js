@@ -1,7 +1,7 @@
 "use strict";
 
 const jobs = require("../lib/export-jobs");
-const { markStage } = require("../lib/export-progress");
+const { markStage, exportPercent, liveFraction } = require("../lib/export-progress");
 
 const cors = {
   "access-control-allow-origin": "*",
@@ -37,15 +37,25 @@ exports.handler = async (event) => {
     (job.state === "running" || job.state === "queued") && beat && jobs.stageMovesForward(stored, beat)
       ? beat
       : stored || beat;
-  const mark = live ? markStage(live) : null;
+  const view = Object.assign({}, job, { stage: live || job.stage || beat });
+  if (/^Fetching (aerial|map)\b/i.test(String(view.stage || ""))) {
+    const started = Number(view.aerialStartedAt || view.createdAt);
+    let elapsed = started > 0 ? Math.max(0, Date.now() - started) : 0;
+    if (+view.aerialElapsedMs > elapsed) elapsed = +view.aerialElapsedMs;
+    if (elapsed > 0) view.aerialElapsedMs = elapsed;
+  }
+  const mark = view.stage ? markStage(view.stage) : null;
   const finished = job.state === "done";
+  const pct = finished ? 100 : exportPercent(view, 0);
   return json(200, {
     ok: job.state !== "error",
     state: job.state,
-    stage: live || job.stage,
-    stageLabel: finished ? job.stageLabel || job.stage : (mark && mark.label) || job.stageLabel || job.stage,
-    progress: finished ? 1 : mark ? mark.progress : job.progress == null ? 0 : job.progress,
+    stage: view.stage || job.stage,
+    stageLabel: finished ? job.stageLabel || job.stage : (mark && mark.label) || view.stage || job.stage,
+    progress: finished ? 1 : liveFraction(view),
+    percent: pct,
     progressCeiling: finished ? 1 : mark ? mark.ceiling : job.progressCeiling == null ? 0 : job.progressCeiling,
+    aerialElapsedMs: view.aerialElapsedMs > 0 ? view.aerialElapsedMs : null,
     tilesDone: Number.isFinite(+job.tilesDone) ? job.tilesDone : null,
     tilesTotal: Number.isFinite(+job.tilesTotal) ? job.tilesTotal : null,
     createdAt: job.createdAt || null,

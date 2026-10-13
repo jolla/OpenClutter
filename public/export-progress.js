@@ -20,7 +20,7 @@
   "use strict";
 
   const STAGES = [
-    { id: "map", label: "Fetching map", weight: 4, test: /^Fetching (aerial|map)\b/i },
+    { id: "map", label: "Fetching aerial", weight: 4, test: /^Fetching (aerial|map)\b/i },
     { id: "footprints", label: "Fetching footprints", weight: 3, test: /^Fetching footprints\b/i },
     { id: "canopy", label: "Canopy height", weight: 3, test: /^Canopy height\b/i },
     { id: "cover", label: "World cover", weight: 2, test: /^World cover\b/i },
@@ -60,6 +60,11 @@
     if (elapsed > 0 && budget > 0) {
       frac = Math.max(frac, Math.min(0.92, elapsed / budget));
     }
+    const bytesTotal = Number(job && job.bytesTotal);
+    const bytesDone = Number(job && job.bytesDone);
+    if (bytesTotal > 0 && Number.isFinite(bytesDone) && bytesDone >= 0) {
+      frac = Math.max(frac, Math.min(1, bytesDone / bytesTotal));
+    }
     if (!(frac > 0)) return 0;
     if (frac < 1) frac = Math.min(0.98, 0.25 + 0.75 * frac);
     return frac;
@@ -95,23 +100,60 @@
     };
   }
 
+  function withAerialElapsed(job, now) {
+    const view = Object.assign({}, job || {});
+    const stage = String(view.stage || view.heartbeatStage || "");
+    if (!/^Fetching (aerial|map)\b/i.test(stage)) return view;
+    if (view.aerialElapsedMs > 0) return view;
+    const started = Number(view.aerialStartedAt || view.createdAt);
+    const clock = now > 0 ? now : Date.now();
+    if (started > 0) view.aerialElapsedMs = Math.max(0, clock - started);
+    return view;
+  }
+
+  /**
+   * 0 to 1 for the status payload. Aerial moves inside its weight from
+   * tiles, bytes, or time already spent. Trees moves from tiles. The
+   * value stays under 1 until the job state is done.
+   */
+  function liveFraction(job, now) {
+    if (job && job.state === "done") return 1;
+    const view = withAerialElapsed(job, now);
+    const stage = String(view.stage || view.heartbeatStage || view.stageLabel || "");
+    const mark = markStage(stage);
+    let value = mark.progress;
+    const total = Number(view.tilesTotal);
+    const done = Number(view.tilesDone);
+    const span = Math.max(0, mark.ceiling - mark.progress);
+    if (/^Trees\b/i.test(stage) && total > 0 && Number.isFinite(done) && done >= 0) {
+      const frac = Math.min(1, Math.max(0, done / total));
+      value = mark.progress + span * frac;
+    } else if (/^Fetching (aerial|map)\b/i.test(stage)) {
+      value = mark.progress + span * aerialFraction(view);
+    }
+    if (!(value < 1)) value = 0.99;
+    if (value < 0) value = 0;
+    return value;
+  }
+
   /**
    * Integer percent for the button. held is the last value shown, so a poll
    * that drops tile counts cannot move the bar backward. 100 is state done.
    */
   function exportPercent(job, held) {
     if (job && job.state === "done") return 100;
-    const stage = String((job && (job.stage || job.heartbeatStage || job.stageLabel)) || "");
+    const view = withAerialElapsed(job, 0);
+    const stage = String((view && (view.stage || view.heartbeatStage || view.stageLabel)) || "");
     const mark = markStage(stage);
     let value = mark.progress;
-    const total = Number(job && job.tilesTotal);
-    const done = Number(job && job.tilesDone);
+    const total = Number(view && view.tilesTotal);
+    const done = Number(view && view.tilesDone);
     const span = Math.max(0, mark.ceiling - mark.progress);
     if (/^Trees\b/i.test(stage) && total > 0 && Number.isFinite(done) && done >= 0) {
       const frac = Math.min(1, Math.max(0, done / total));
       value = mark.progress + span * frac;
     } else if (/^Fetching (aerial|map)\b/i.test(stage)) {
-      value = mark.progress + span * aerialFraction(job);
+      value = mark.progress + span * aerialFraction(view);
     }
     if (!(value < 1)) value = 0.99;
     let pct = Math.floor(value * 100 + 1e-9);
@@ -128,5 +170,7 @@
     markStage: markStage,
     stageKey: stageKey,
     exportPercent: exportPercent,
+    liveFraction: liveFraction,
+    withAerialElapsed: withAerialElapsed,
   };
 });

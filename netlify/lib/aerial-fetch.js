@@ -7,7 +7,9 @@
  * still return nothing. A second step that rounds to the same pixel size
  * used to spend that wait again. This module races the distinct sizes
  * together, splits a large plate into parallel tiles, and stops at
- * AERIAL_STAGE_BUDGET_MS with the sharpest JPEG that arrived.
+ * AERIAL_STAGE_BUDGET_MS. Download, tile decode, and stitch all sit
+ * inside that budget. When it expires, the sharpest JPEG already in
+ * hand is the one kept.
  */
 
 const { esriContentExtent, jpegSize, resizeRgba } = require("./geo-frame");
@@ -16,7 +18,6 @@ const AERIAL_STAGE_BUDGET_MS = 36000;
 const AERIAL_TILE_MIN_SIDE = 2800;
 const AERIAL_TILE_LONG_SIDE = 1280;
 const AERIAL_TILE_POOL = 6;
-const STITCH_GRACE_MS = 4000;
 
 let budgetOverride = 0;
 
@@ -92,10 +93,24 @@ function blitTile(dst, dstW, src, sw, sh, x, y) {
   }
 }
 
-function stitchTiles(plate, tiles, buffers) {
+function stitchExpired(opts) {
+  if (!opts) return false;
+  if (opts.signal && opts.signal.aborted) return true;
+  const now = typeof opts.now === "function" ? opts.now : Date.now;
+  return !!(opts.deadlineAt && now() > opts.deadlineAt);
+}
+
+function abortError() {
+  return Object.assign(new Error("aborted"), { name: "AbortError" });
+}
+
+async function stitchTiles(plate, tiles, buffers, opts) {
   const jpeg = require("jpeg-js");
+  if (stitchExpired(opts)) throw abortError();
   const rgba = new Uint8Array(plate.imgW * plate.imgH * 4);
   for (let i = 0; i < tiles.length; i++) {
+    if (opts && typeof opts.pace === "function") await opts.pace(i);
+    if (stitchExpired(opts)) throw abortError();
     const tile = tiles[i];
     let decoded;
     try {
@@ -122,7 +137,9 @@ function stitchTiles(plate, tiles, buffers) {
       sh = tile.imgH;
     }
     blitTile(rgba, plate.imgW, src, sw, sh, tile.x, tile.y);
+    await Promise.resolve();
   }
+  if (stitchExpired(opts)) throw abortError();
   const enc = jpeg.encode({ data: rgba, width: plate.imgW, height: plate.imgH }, 82);
   const buf = Buffer.from(enc.data);
   const sized = jpegSize(buf);
@@ -160,15 +177,39 @@ async function fetchTiled(plate, opts) {
     if (opts.onUnit) opts.onUnit();
     return buf;
   }
-  const buffers = await mapPool(plan.tiles, AERIAL_TILE_POOL, async (tile) => {
-    if (opts.signal && opts.signal.aborted) throw new Error("aborted");
+  const tiled = mapPool(plan.tiles, AERIAL_TILE_POOL, async (tile) => {
+    if (opts.signal && opts.signal.aborted) throw abortError();
+    if (opts.deadlineAt && Date.now() > opts.deadlineAt) throw abortError();
     const buf = await opts.fetchImage(frameFromTile(tile), opts.signal);
     if (opts.onUnit) opts.onUnit();
     return buf;
   });
-  if (opts.signal && opts.signal.aborted) throw new Error("aborted");
+  tiled.catch(() => {});
+  let buffers;
+  if (opts.deadlineAt) {
+    const left = opts.deadlineAt - Date.now();
+    let timer;
+    const stop = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(abortError()), Math.max(0, left));
+      if (timer && typeof timer.unref === "function") timer.unref();
+    });
+    try {
+      buffers = await Promise.race([tiled, stop]);
+    } finally {
+      clearTimeout(timer);
+    }
+  } else {
+    buffers = await tiled;
+  }
+  if (opts.signal && opts.signal.aborted) throw abortError();
+  if (opts.deadlineAt && Date.now() > opts.deadlineAt) throw abortError();
   if (opts.onStitch) opts.onStitch(true);
-  return stitchTiles(plate, plan.tiles, buffers);
+  return stitchTiles(plate, plan.tiles, buffers, {
+    deadlineAt: opts.deadlineAt,
+    signal: opts.signal,
+    pace: opts.pace,
+    now: opts.now,
+  });
 }
 
 function sleep(ms) {
@@ -187,8 +228,8 @@ async function racePlates(entries, opts) {
   const list = entries || [];
   const budgetMs = opts && opts.budgetMs > 0 ? opts.budgetMs : aerialBudgetMs();
   const started = Date.now();
+  const deadlineAt = started + budgetMs;
   const ctrl = new AbortController();
-  let stitching = false;
   const timer = setTimeout(() => ctrl.abort(), budgetMs);
   if (typeof timer.unref === "function") timer.unref();
 
@@ -234,11 +275,13 @@ async function racePlates(entries, opts) {
         ? fetchTiled(entry.plate, {
             fetchImage: opts.fetchImage,
             signal: ctrl.signal,
+            deadlineAt: deadlineAt,
+            pace: opts.pace,
+            now: opts.now,
             onUnit: function () {
               if (opts.onUnit) opts.onUnit();
             },
             onStitch: function () {
-              stitching = true;
               notify();
             },
           })
@@ -270,13 +313,6 @@ async function racePlates(entries, opts) {
       const left = budgetMs - (Date.now() - started);
       if (!(left > 0)) break;
       await waitChange(left);
-    }
-    if (!results[0] && !errors[0] && stitching) {
-      const grace = Math.min(STITCH_GRACE_MS, Math.max(0, budgetMs + STITCH_GRACE_MS - (Date.now() - started)));
-      const until = Date.now() + grace;
-      while (!results[0] && !errors[0] && Date.now() < until) {
-        await waitChange(until - Date.now());
-      }
     }
   } finally {
     clearTimeout(timer);

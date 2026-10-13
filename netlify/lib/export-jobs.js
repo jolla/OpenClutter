@@ -349,6 +349,13 @@ async function writeHeartbeat(id, stage, extra) {
     heartbeatStage: forward || !shown ? name : String(shown),
   };
   if (forward) patch.stage = name;
+  if (/^Fetching (aerial|map)\b/i.test(patch.heartbeatStage || name)) {
+    const now = Date.now();
+    const started = cur.aerialStartedAt || cur.createdAt || now;
+    if (!cur.aerialStartedAt) patch.aerialStartedAt = started;
+    const elapsed = Math.max(0, now - started);
+    if (!(+cur.aerialElapsedMs >= elapsed)) patch.aerialElapsedMs = elapsed;
+  }
   const tiles = tilePatch(cur, extra, forward && stageKey(shown) !== stageKey(name));
   if (tiles) {
     patch.tilesDone = tiles.tilesDone;

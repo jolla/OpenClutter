@@ -10,7 +10,7 @@ describe("export progress", () => {
   it("weights the real stages and names them for the panel", () => {
     assert.equal(WEIGHT_TOTAL, 100);
     const map = markStage("Fetching aerial");
-    assert.equal(map.label, "Fetching map");
+    assert.equal(map.label, "Fetching aerial");
     assert.equal(map.progress, 0);
     assert.equal(map.ceiling, 0.04);
     assert.deepEqual(markStage("Fetching footprints"), {
