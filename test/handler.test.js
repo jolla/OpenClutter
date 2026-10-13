@@ -1282,7 +1282,7 @@ describe("dev-host Esri long side", () => {
     }
   });
 
-  it("asks the dev host for the Sharp plate on the short path", async () => {
+  it("asks quality hosts for the Sharp plate on the short path", async () => {
     assert.equal(await longSideFor({ headers: { host: "dev--openclutter.netlify.app" } }), 2048);
     assert.equal(
       await longSideFor({ headers: { host: "deploy-preview-12--openclutter.netlify.app" } }),
@@ -1292,11 +1292,13 @@ describe("dev-host Esri long side", () => {
       await longSideFor({ headers: { host: "openclutter.netlify.app" }, path: "/dev" }),
       2048
     );
-    assert.equal(await longSideFor({ headers: { host: "openclutter.netlify.app" } }), 1040);
+    assert.equal(await longSideFor({ headers: { host: "openclutter.netlify.app" } }), 2048);
+    assert.equal(await longSideFor({ headers: { host: "openclutter.com" } }), 2048);
     assert.equal(
       await longSideFor({ headers: { host: "openclutter.netlify.app" }, path: "/api/clutter" }),
-      1040
+      2048
     );
+    assert.equal(await longSideFor({ headers: { host: "v1--openclutter.netlify.app" } }), 1040);
   });
 
   it("steps down to the High plate when the Sharp export fails", async () => {
@@ -1692,44 +1694,52 @@ describe("dev-host Esri long side", () => {
     assert.equal(/Map image stepped down/.test(notes), false);
   });
 
-  it("ignores a map quality choice off the dev host", async () => {
+  it("honors a map quality choice on production and ignores it off quality hosts", async () => {
     const small = { west: -115.166, south: 36.126, east: -115.161, north: 36.13, name: "Corner" };
-    const prod = imageryExportPlan(false, small)[0];
+    const plain = imageryExportPlan(false, small)[0];
     const high = imageryExportPlan(true, small, "high")[0];
-    const prodFrame = geoFrame(small, { maxSide: prod.maxSide, metersPerPx: prod.metersPerPx });
+    const plainFrame = geoFrame(small, { maxSide: plain.maxSide, metersPerPx: plain.metersPerPx });
     const highFrame = geoFrame(small, { maxSide: high.maxSide, metersPerPx: high.metersPerPx });
-    const prodSide = Math.max(prodFrame.imgW, prodFrame.imgH);
+    const plainSide = Math.max(plainFrame.imgW, plainFrame.imgH);
     const highSide = Math.max(highFrame.imgW, highFrame.imgH);
-    assert.notEqual(prodSide, highSide);
-    const seen = [];
-    global.fetch = async (url) => {
-      const u = String(url);
-      seen.push(u);
-      if (u.includes("World_Imagery") && u.includes("f=json")) {
-        return {
-          ok: true,
-          json: async () => ({
-            width: prodFrame.imgW,
-            height: prodFrame.imgH,
-            extent: { xmin: small.west, ymin: small.south, xmax: small.east, ymax: small.north },
-          }),
-        };
-      }
-      if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
-      return { ok: true, json: async () => ({ features: [] }) };
-    };
-    const res = await handler({
-      httpMethod: "POST",
-      headers: { host: "openclutter.netlify.app" },
-      body: JSON.stringify({ ...small, format: "bundle", imageryQuality: "high" }),
-    });
-    assert.equal(res.statusCode, 200, String(res.body).slice(0, 500));
-    const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
-    assert.equal(images.length, 1, images.join("\n"));
-    assert.match(images[0], new RegExp("size=" + prodSide + ","));
-    assert.equal(new RegExp("size=" + highSide + ",").test(images[0]), false);
-    const notes = (JSON.parse(res.body).warnings || []).join("\n");
-    assert.equal(/Map image/.test(notes), false);
+    assert.notEqual(plainSide, highSide);
+    async function exportQuality(host) {
+      const seen = [];
+      global.fetch = async (url) => {
+        const u = String(url);
+        seen.push(u);
+        if (u.includes("World_Imagery") && u.includes("f=json")) {
+          return {
+            ok: true,
+            json: async () => ({
+              width: 64,
+              height: 64,
+              extent: { xmin: small.west, ymin: small.south, xmax: small.east, ymax: small.north },
+            }),
+          };
+        }
+        if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
+        return { ok: true, json: async () => ({ features: [] }) };
+      };
+      const res = await handler({
+        httpMethod: "POST",
+        headers: { host },
+        body: JSON.stringify({ ...small, format: "bundle", imageryQuality: "high" }),
+      });
+      assert.equal(res.statusCode, 200, String(res.body).slice(0, 500));
+      const images = seen.filter((u) => u.includes("World_Imagery") && u.includes("f=image"));
+      const notes = (JSON.parse(res.body).warnings || []).join("\n");
+      return { images, notes };
+    }
+    const prod = await exportQuality("openclutter.netlify.app");
+    assert.equal(prod.images.length, 1, prod.images.join("\n"));
+    assert.match(prod.images[0], new RegExp("size=" + highSide + ","));
+    assert.match(prod.notes, /Map image/);
+    const classic = await exportQuality("v1--openclutter.netlify.app");
+    assert.equal(classic.images.length, 1, classic.images.join("\n"));
+    assert.match(classic.images[0], new RegExp("size=" + plainSide + ","));
+    assert.equal(new RegExp("size=" + highSide + ",").test(classic.images[0]), false);
+    assert.equal(/Map image/.test(classic.notes), false);
   });
 
   it("keeps a High plate that arrives after the Auto imagery budget", async () => {
@@ -2129,18 +2139,32 @@ describe("dev-host Copernicus fallback", () => {
     assert.match(body.terrainStatus, /USGS 3DEP did not return a usable grid/);
   });
 
-  it("leaves production on 3DEP alone when that grid is missing", async () => {
-    const urls = installFetch({ error: { message: "Invalid or missing input parameters" } });
-    const res = await handler({
+  it("reads GLO-30 on production when 3DEP is missing and leaves classic hosts on 3DEP", async () => {
+    const prodUrls = installFetch({ error: { message: "Invalid or missing input parameters" } });
+    const prodRes = await handler({
       httpMethod: "POST",
       headers: { host: "openclutter.netlify.app" },
       body: JSON.stringify({ ...TRAFALGAR, format: "bundle" }),
     });
-    assert.equal(res.statusCode, 200);
-    const body = JSON.parse(res.body);
-    assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
-    assert.equal(body.terrainClipboard, null);
-    assert.match(body.terrainStatus, /Terrain omitted/);
+    assert.equal(prodRes.statusCode, 200);
+    const prodBody = JSON.parse(prodRes.body);
+    const glo = prodUrls.filter((u) => u.includes("copernicus-dem"));
+    assert.equal(glo.length >= 1, true);
+    assert.match(glo[0], /Copernicus_DSM_COG_10_N51_00_W001_00_DEM\.tif/);
+    assert.equal(prodBody.terrainClipboard, null);
+    assert.match(prodBody.terrainStatus, /Terrain omitted/);
+
+    const classicUrls = installFetch({ error: { message: "Invalid or missing input parameters" } });
+    const classicRes = await handler({
+      httpMethod: "POST",
+      headers: { host: "v1--openclutter.netlify.app" },
+      body: JSON.stringify({ ...TRAFALGAR, format: "bundle" }),
+    });
+    assert.equal(classicRes.statusCode, 200);
+    const classicBody = JSON.parse(classicRes.body);
+    assert.equal(classicUrls.some((u) => u.includes("copernicus-dem")), false);
+    assert.equal(classicBody.terrainClipboard, null);
+    assert.match(classicBody.terrainStatus, /Terrain omitted/);
   });
 
   const HAMINA = {
@@ -2426,19 +2450,31 @@ describe("dev-host Copernicus fallback", () => {
     }
   });
 
-  it("does not call GLO-30 for Hamina on production", async () => {
-    const urls = installFetch({ error: { message: "Invalid or missing input parameters" } }, HAMINA);
-    const res = await handler({
+  it("reads GLO-30 for Hamina on production and stays on 3DEP off quality hosts", async () => {
+    const prodUrls = installFetch({ error: { message: "Invalid or missing input parameters" } }, HAMINA);
+    const prodRes = await handler({
       httpMethod: "POST",
       headers: { host: "openclutter.netlify.app" },
       body: JSON.stringify({ ...HAMINA, format: "bundle", includeFoliage: false }),
     });
-    assert.equal(res.statusCode, 200, res.body);
-    const body = JSON.parse(res.body);
-    assert.equal(urls.some((u) => u.includes("copernicus-dem")), false);
-    assert.equal(urls.some((u) => u.includes("elevation.nationalmap.gov")), true);
-    assert.equal(body.terrainClipboard, null);
-    assert.match(body.terrainStatus, /Terrain omitted/);
+    assert.equal(prodRes.statusCode, 200, prodRes.body);
+    const prodBody = JSON.parse(prodRes.body);
+    assert.equal(prodUrls.some((u) => u.includes("copernicus-dem")), true);
+    assert.equal(prodBody.terrainClipboard, null);
+    assert.match(prodBody.terrainStatus, /Terrain omitted/);
+
+    const classicUrls = installFetch({ error: { message: "Invalid or missing input parameters" } }, HAMINA);
+    const classicRes = await handler({
+      httpMethod: "POST",
+      headers: { host: "v1--openclutter.netlify.app" },
+      body: JSON.stringify({ ...HAMINA, format: "bundle", includeFoliage: false }),
+    });
+    assert.equal(classicRes.statusCode, 200, classicRes.body);
+    const classicBody = JSON.parse(classicRes.body);
+    assert.equal(classicUrls.some((u) => u.includes("copernicus-dem")), false);
+    assert.equal(classicUrls.some((u) => u.includes("elevation.nationalmap.gov")), true);
+    assert.equal(classicBody.terrainClipboard, null);
+    assert.match(classicBody.terrainStatus, /Terrain omitted/);
   });
 
   it("keeps the full 3DEP sample count for a US frame on the dev host", async () => {
