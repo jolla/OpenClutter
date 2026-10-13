@@ -30,6 +30,7 @@ function syncDevPanel() {
 
 function restoreAdvanced() {
   const details = document.getElementById("advanced");
+  const howto = document.getElementById("howto");
   if (!details) return;
   let open = false;
   try {
@@ -38,11 +39,18 @@ function restoreAdvanced() {
     open = false;
   }
   details.open = open;
+  if (open && howto) howto.open = false;
   details.addEventListener("toggle", function () {
+    if (details.open && howto) howto.open = false;
     try {
       localStorage.setItem("openclutter-advanced", details.open ? "1" : "0");
     } catch (err) {}
   });
+  if (howto) {
+    howto.addEventListener("toggle", function () {
+      if (howto.open && details.open) details.open = false;
+    });
+  }
 }
 
 function areaCapOverride() {
