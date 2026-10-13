@@ -56,7 +56,7 @@ function scoreSite(site, aerialBuf) {
   const plate = decodePlate(aerialBuf);
   if (!plate) throw new Error(site.id + " aerial did not decode");
   const frame = geoFrame(site, { imgW: plate.width, imgH: plate.height, maxSpanM: 8000, minSpanM: 1 });
-  const parsed = parseOverpass(fixture, { rvs: true, parking: true });
+  const parsed = parseOverpass(fixture, { rvs: true, parking: true, cars: true });
   const planned = planOutdoor({
     features: parsed.features.filter((f) => f && (f.kind === "rv" || f.kind === "trailer-candidate" || f.kind === "trailer" || f.kind === "marina" || f.kind === "boat" || f.kind === "mobile-park" || f.kind === "mobile-home" || f.kind === "truck-lot" || f.kind === "building-hole" || f.kind === "car")),
     frame,

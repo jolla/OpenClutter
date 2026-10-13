@@ -3125,6 +3125,49 @@ function fitChunksToJsonBudget(frame, name, imgName, chunks, budget) {
   };
 }
 
+function dropPassengerCars(features) {
+  const list = features || [];
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    if (list[i] && list[i].kind === "car") continue;
+    out.push(list[i]);
+  }
+  return out;
+}
+
+/** A prebuilt outdoor plan still drops passenger cars when the flag is off. */
+function dropPassengerCarsFromPlan(plan) {
+  if (!plan) return plan;
+  if (plan.converted && plan.planned) {
+    const srcItems = plan.planned.items || [];
+    const items = [];
+    for (let i = 0; i < srcItems.length; i++) {
+      if (srcItems[i] && srcItems[i].kind === "car") continue;
+      items.push(srcItems[i]);
+    }
+    const srcKinds = plan.converted.kinds || [];
+    const srcAreas = plan.converted.areas || [];
+    const areas = [];
+    const kinds = [];
+    for (let i = 0; i < srcKinds.length; i++) {
+      if (srcKinds[i] === "car") continue;
+      kinds.push(srcKinds[i]);
+      areas.push(srcAreas[i]);
+    }
+    if (items.length === srcItems.length && kinds.length === srcKinds.length) return plan;
+    return {
+      planned: Object.assign({}, plan.planned, { items: items }),
+      converted: Object.assign({}, plan.converted, { areas: areas, kinds: kinds }),
+    };
+  }
+  if (plan.items) {
+    const items = dropPassengerCars(plan.items);
+    if (items.length === (plan.items || []).length) return plan;
+    return Object.assign({}, plan, { items: items });
+  }
+  return plan;
+}
+
 function buildClutter({
   frame,
   footprintsGeojson,
@@ -3155,6 +3198,7 @@ function buildClutter({
   includeWalls,
   includePoles,
   includeRvs,
+  includeCars,
   outdoorMiss,
   guidewayFeatures,
   includeGuideways,
@@ -3269,7 +3313,9 @@ function buildClutter({
     includeParking === true ||
     includeWalls === true ||
     includePoles === true ||
-    includeRvs === true;
+    includeRvs === true ||
+    includeCars === true;
+  if (includeCars !== true) outdoorPlan = dropPassengerCarsFromPlan(outdoorPlan);
   const guideIn = [];
   const outdoorRest = [];
   const rawOutdoor = outdoorFeatures || [];
@@ -3297,7 +3343,7 @@ function buildClutter({
     converted = outdoorToOi(planned.items, frame.imgW, frame.imgH, frame.mpuX);
   } else if ((outdoorOn && outdoorMiss !== true) || planGuides || storageFeats.length) {
     const buildings = [];
-    if ((includeWater === true || includeParking === true || includeRvs === true) && outdoorOn && outdoorMiss !== true) {
+    if ((includeWater === true || includeParking === true || includeRvs === true || includeCars === true) && outdoorOn && outdoorMiss !== true) {
       for (let i = 0; i < fp.oiAreas.length; i++) {
         buildings.push({
           index: i,
@@ -3307,7 +3353,8 @@ function buildClutter({
       }
     }
     const liveOutdoor = outdoorOn && outdoorMiss !== true ? outdoorRest : storageFeats;
-    const features = liveOutdoor.concat(guides, bridges);
+    const carGated = includeCars === true ? liveOutdoor : dropPassengerCars(liveOutdoor);
+    const features = carGated.concat(guides, bridges);
     let vehiclePlate = null;
     const dockRings = [];
     for (let i = 0; i < buildings.length; i++) {
@@ -3634,6 +3681,7 @@ function buildClutter({
     includeWalls: includeWalls === true,
     includePoles: includePoles === true,
     includeRvs: includeRvs === true,
+    includeCars: includeCars === true,
     includeGuideways: includeGuideways === true || guides.length > 0,
     includeBridges: includeBridges === true || bridges.length > 0,
     outdoorMiss: outdoorMiss === true,
