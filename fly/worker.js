@@ -174,7 +174,11 @@ function createWorkerSession(jobId, opts) {
       if (!patch || !patch.stage) return;
       stage = String(patch.stage);
       logger.note(stage);
-      await jobs.writeHeartbeat(jobId, stage, heartbeatTiles());
+      const tiles =
+        patch.tilesTotal > 0
+          ? { tilesDone: patch.tilesDone | 0, tilesTotal: patch.tilesTotal | 0 }
+          : heartbeatTiles();
+      await jobs.writeHeartbeat(jobId, stage, tiles);
     },
     finish() {
       logger.finish();

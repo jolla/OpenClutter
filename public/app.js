@@ -1029,7 +1029,13 @@ function endExportProgress() {
 
 function showExportProgress(job) {
   exportLive = true;
-  const pct = OpenClutterProgress.exportPercent(job, exportPercentHeld);
+  const view = job ? Object.assign({}, job) : {};
+  const stageName = String(view.stage || view.heartbeatStage || "");
+  if (/^Fetching (aerial|map)\b/i.test(stageName) && !(view.aerialElapsedMs > 0)) {
+    const started = Number(view.createdAt);
+    if (started > 0) view.aerialElapsedMs = Math.max(0, Date.now() - started);
+  }
+  const pct = OpenClutterProgress.exportPercent(view, exportPercentHeld);
   exportPercentHeld = pct;
   const fill = document.getElementById("export-fill");
   const label = document.getElementById("export-label");

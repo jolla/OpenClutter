@@ -6,7 +6,9 @@
  * that same Trees window, so they share the slice instead of adding a second
  * one. The other stages keep their previous shares of the remaining 22.
  * A stage with no tile counts stays at the start of its slice. Trees moves
- * by tiles finished. The button reaches 100 only when the job state is done.
+ * by tiles finished. Fetching aerial moves by tiles finished or by time
+ * already spent inside that stage's weight. The button reaches 100 only
+ * when the job state is done.
  *
  * Browser + Node.
  */
@@ -30,6 +32,38 @@
   ];
 
   const WEIGHT_TOTAL = STAGES.reduce((sum, stage) => sum + stage.weight, 0);
+  const AERIAL_BUDGET_MS = 36000;
+
+  function stageKey(stage) {
+    const name = String(stage || "");
+    if (/^zip ready\b/i.test(name)) return "ready";
+    for (let i = 0; i < STAGES.length; i++) {
+      if (STAGES[i].test.test(name)) return STAGES[i].id;
+    }
+    return name;
+  }
+
+  /**
+   * Share of the aerial slice, 0 at the start. Tiles and elapsed both
+   * count. The first bit of work is lifted so the button leaves 0, and
+   * the slice still ends below the next stage.
+   */
+  function aerialFraction(job) {
+    let frac = 0;
+    const total = Number(job && job.tilesTotal);
+    const done = Number(job && job.tilesDone);
+    if (total > 0 && Number.isFinite(done) && done >= 0) {
+      frac = Math.min(1, Math.max(0, done / total));
+    }
+    const elapsed = Number(job && job.aerialElapsedMs);
+    const budget = Number(job && job.aerialBudgetMs) > 0 ? Number(job.aerialBudgetMs) : AERIAL_BUDGET_MS;
+    if (elapsed > 0 && budget > 0) {
+      frac = Math.max(frac, Math.min(0.92, elapsed / budget));
+    }
+    if (!(frac > 0)) return 0;
+    if (frac < 1) frac = Math.min(0.98, 0.25 + 0.75 * frac);
+    return frac;
+  }
 
   function roundProgress(value) {
     return Math.round(value * 1000) / 1000;
@@ -72,10 +106,12 @@
     let value = mark.progress;
     const total = Number(job && job.tilesTotal);
     const done = Number(job && job.tilesDone);
+    const span = Math.max(0, mark.ceiling - mark.progress);
     if (/^Trees\b/i.test(stage) && total > 0 && Number.isFinite(done) && done >= 0) {
-      const span = Math.max(0, mark.ceiling - mark.progress);
       const frac = Math.min(1, Math.max(0, done / total));
       value = mark.progress + span * frac;
+    } else if (/^Fetching (aerial|map)\b/i.test(stage)) {
+      value = mark.progress + span * aerialFraction(job);
     }
     if (!(value < 1)) value = 0.99;
     let pct = Math.floor(value * 100 + 1e-9);
@@ -90,6 +126,7 @@
     STAGES: STAGES,
     WEIGHT_TOTAL: WEIGHT_TOTAL,
     markStage: markStage,
+    stageKey: stageKey,
     exportPercent: exportPercent,
   };
 });

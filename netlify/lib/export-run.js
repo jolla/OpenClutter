@@ -33,6 +33,7 @@ function currentTiles() {
 }
 
 function withTiles(patch) {
+  if (patch && patch.tilesTotal > 0) return patch;
   const tiles = currentTiles();
   if (!tiles || !(tiles.tilesTotal > 0)) return patch;
   return Object.assign({}, patch || {}, {
