@@ -50,26 +50,22 @@
       border-radius: 8px; padding: 4px 8px; font: inherit; font-size: 12px;
     }
     .panel-links {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      column-gap: 12px;
+      position: relative;
       margin-top: 12px;
-      align-items: baseline;
+      padding-top: 18px;
     }
-    .panel-links > details { display: contents; }
+    .panel-links > details { margin: 0; }
     .panel-links > details > summary {
+      position: absolute;
+      top: 0;
       cursor: pointer; width: fit-content; list-style: none;
       font-size: 12px; font-weight: 500; user-select: none;
       text-decoration: underline; text-underline-offset: 2px;
     }
     .panel-links > details > summary::-webkit-details-marker { display: none; }
-    #advanced > summary {
-      grid-column: 1; grid-row: 1; justify-self: start; color: #58a6ff;
-    }
-    #howto > summary {
-      grid-column: 2; grid-row: 1; justify-self: end; color: #8b949e;
-    }
-    .panel-links-body { grid-column: 1 / -1; }
+    #advanced > summary { left: 0; color: #58a6ff; }
+    #howto > summary { right: 0; color: #8b949e; }
+    .panel-links-body { margin-top: 4px; }
     .row { display: flex; gap: 8px; margin-top: 10px; }
     .row button { flex: 1; }
     #export {
@@ -248,7 +244,7 @@
           <option value="8k">8K · 8192 px</option>
         </select>
       </label>
-      <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.175</span></p>
+      <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.176</span></p>
       </div>
     </details>
     <details id="howto">
