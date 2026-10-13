@@ -11,8 +11,8 @@ const { UA } = require("../netlify/functions/clutter");
 const root = path.join(__dirname, "..");
 
 describe("app version", () => {
-  it("is 1.1.177 in package.json", () => {
-    assert.equal(pkg.version, "1.1.177");
+  it("is 1.1.178 in package.json", () => {
+    assert.equal(pkg.version, "1.1.178");
   });
 
   it("uses that version as the API user-agent", () => {
@@ -30,7 +30,13 @@ describe("app version", () => {
   it("shows that version in the page from the package.json stamp", () => {
     const html = fs.readFileSync(path.join(root, "public/index.html"), "utf8");
     const versionJs = fs.readFileSync(path.join(root, "public/version.js"), "utf8");
-    assert.match(html, new RegExp(`<span id="app-version">v${pkg.version}</span>`));
+    assert.match(html, new RegExp(`id="app-version"[^>]*>v${pkg.version}<`));
+    assert.match(html, /<button type="button" id="app-version"/);
+    assert.match(html, /id="whats-new"/);
+    assert.match(html, /What's new in 1\.1/);
+    assert.match(html, /Trees with rounded crowns and trunks, plus forest stands with undergrowth/);
+    assert.match(html, /Much faster exports, with a progress bar and timer/);
+    assert.equal(/\u2014/.test(html), false);
     assert.match(html, /src="\/version\.js"/);
     assert.equal(versionJs.trim(), `window.OPENCLUTTER_VERSION = ${JSON.stringify(pkg.version)};`);
   });

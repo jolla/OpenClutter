@@ -53,6 +53,23 @@ function restoreAdvanced() {
   }
 }
 
+function setWhatsNewOpen(open) {
+  const ver = document.getElementById("app-version");
+  const panel = document.getElementById("whats-new");
+  if (!ver || !panel) return;
+  panel.hidden = !open;
+  ver.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function setupWhatsNew() {
+  const ver = document.getElementById("app-version");
+  const panel = document.getElementById("whats-new");
+  if (!ver || !panel) return;
+  ver.addEventListener("click", function () {
+    setWhatsNewOpen(panel.hidden);
+  });
+}
+
 function areaCapOverride() {
   if (!devPage()) return undefined;
   let raw = "";
@@ -137,6 +154,7 @@ function terrainExportEnabled() {
   if (badge && devPage()) badge.classList.add("on");
   syncDevPanel();
   restoreAdvanced();
+  setupWhatsNew();
   const lidarBox = document.getElementById("include-lidar");
   if (lidarBox && qualityPage() && lidarQueryOn()) lidarBox.checked = true;
   const ver = document.getElementById("app-version");
@@ -855,6 +873,19 @@ window.addEventListener("keydown", (ev) => {
   if (howto && howto.open && howto.contains(document.activeElement)) {
     howto.open = false;
     howto.querySelector("summary").focus();
+    ev.preventDefault();
+    return;
+  }
+  const ver = document.getElementById("app-version");
+  const whats = document.getElementById("whats-new");
+  if (
+    whats &&
+    !whats.hidden &&
+    ver &&
+    (document.activeElement === ver || whats.contains(document.activeElement))
+  ) {
+    setWhatsNewOpen(false);
+    ver.focus();
     ev.preventDefault();
     return;
   }
