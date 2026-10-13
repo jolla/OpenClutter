@@ -1556,11 +1556,22 @@ function semisInLotWork(ring, frame, plate, holes, opts) {
   for (let h = 0; h < (holes || []).length; h++) {
     const hp = [];
     const hole = holes[h];
+    let hx0 = Infinity;
+    let hy0 = Infinity;
+    let hx1 = -Infinity;
+    let hy1 = -Infinity;
     for (let i = 0; i < hole.length; i++) {
       const xy = llToImagePx(hole[i][0], hole[i][1], frame);
-      if (Number.isFinite(xy[0]) && Number.isFinite(xy[1])) hp.push(xy);
+      if (!Number.isFinite(xy[0]) || !Number.isFinite(xy[1])) continue;
+      hp.push(xy);
+      if (xy[0] < hx0) hx0 = xy[0];
+      if (xy[1] < hy0) hy0 = xy[1];
+      if (xy[0] > hx1) hx1 = xy[0];
+      if (xy[1] > hy1) hy1 = xy[1];
     }
-    if (hp.length >= 3) holePolys.push(hp);
+    if (hp.length < 3) continue;
+    if (hx1 < minX || hx0 > maxX || hy1 < minY || hy0 > maxY) continue;
+    holePolys.push(hp);
   }
   const W = plate.width;
   const H = plate.height;
@@ -1835,6 +1846,81 @@ function dockAprons(ring, depthM) {
 }
 
 /**
+ * Even-odd fill that matches pointInRing for integer pixels. One pass
+ * over the edges, not one point-in-ring test per pixel.
+ */
+function rasterInside(poly, x0, y0, cw, ch) {
+  const mask = new Uint8Array(cw * ch);
+  const n = poly.length;
+  if (n < 3 || !(cw > 0) || !(ch > 0)) return mask;
+  const x1 = x0 + cw - 1;
+  for (let row = 0; row < ch; row++) {
+    const py = y0 + row;
+    const hits = [];
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const yi = poly[i][1];
+      const yj = poly[j][1];
+      if ((yi > py) === (yj > py)) continue;
+      const xi = poly[i][0];
+      const xj = poly[j][0];
+      hits.push(((xj - xi) * (py - yi)) / (yj - yi || 1e-20) + xi);
+    }
+    if (hits.length < 2) continue;
+    hits.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < hits.length; k += 2) {
+      let xa = Math.ceil(hits[k]);
+      let xb = Math.floor(hits[k + 1] - 1e-9);
+      if (xa < x0) xa = x0;
+      if (xb > x1) xb = x1;
+      const base = row * cw - x0;
+      for (let x = xa; x <= xb; x++) mask[base + x] = 1;
+    }
+  }
+  return mask;
+}
+
+/** Euclidean disk around set pixels. limit, when set, keeps only those cells. */
+function dilateDisk(src, w, h, rad, limit) {
+  const out = new Uint8Array(w * h);
+  const r = rad | 0;
+  if (r < 1) {
+    for (let i = 0; i < src.length; i++) {
+      if (src[i] && (!limit || limit[i])) out[i] = 1;
+    }
+    return out;
+  }
+  const r2 = r * r;
+  const reach = new Int16Array(r + 1);
+  for (let dy = 0; dy <= r; dy++) reach[dy] = Math.floor(Math.sqrt(r2 - dy * dy));
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    let x = 0;
+    while (x < w) {
+      while (x < w && !src[row + x]) x++;
+      if (x >= w) break;
+      let x2 = x + 1;
+      while (x2 < w && src[row + x2]) x2++;
+      for (let dy = -r; dy <= r; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        const dx = reach[dy < 0 ? -dy : dy];
+        let xa = x - dx;
+        let xb = x2 - 1 + dx;
+        if (xa < 0) xa = 0;
+        if (xb >= w) xb = w - 1;
+        const dest = yy * w;
+        for (let xx = xa; xx <= xb; xx++) {
+          if (limit && !limit[dest + xx]) continue;
+          out[dest + xx] = 1;
+        }
+      }
+      x = x2;
+    }
+  }
+  return out;
+}
+
+/**
  * A light membrane, including the panel grid on a white roof, is not a yard.
  * A bright trailer row inside a gray footprint is pavement the outline swallowed.
  * The row has to show a light body beside a darker flank, and it cannot be
@@ -1882,17 +1968,21 @@ function yardInsideFootprint(ring, frame, plate) {
     return g >= r + 18 && g >= b + 8 && 2 * g - r - b >= 30;
   }
   const step = 1;
+  const rawInside = rasterInside(poly, x0, y0, cw, ch);
   const inside = new Uint8Array(cw * ch);
   const bright = new Uint8Array(cw * ch);
   let inN = 0;
   let brightN = 0;
-  for (let y = y0; y <= y1; y += step) {
-    for (let x = x0; x <= x1; x += step) {
-      if (!pointInRing([x, y], poly) || greenAt(x, y)) continue;
-      const k = (y - y0) * cw + (x - x0);
+  for (let y = 0; y < ch; y += step) {
+    const ay = y0 + y;
+    for (let x = 0; x < cw; x += step) {
+      if (!rawInside[y * cw + x]) continue;
+      const ax = x0 + x;
+      if (greenAt(ax, ay)) continue;
+      const k = y * cw + x;
       inside[k] = 1;
       inN++;
-      if (Yat(x, y) >= 186) {
+      if (Yat(ax, ay) >= 186) {
         bright[k] = 1;
         brightN++;
       }
@@ -1929,26 +2019,13 @@ function yardInsideFootprint(ring, frame, plate) {
       if (comp.length > best.length) best = comp;
     }
   }
-  const roof = new Uint8Array(cw * ch);
+  let roof = new Uint8Array(cw * ch);
   const bestM2 = best.length * cellM2 * step * step;
   if (bestM2 >= 2500) {
     const rad = Math.max(step, Math.round(10 / Math.max(mpu, 0.2)));
-    for (let i = 0; i < best.length; i++) {
-      const c = best[i];
-      const cx = c % cw;
-      const cy = (c / cw) | 0;
-      for (let dy = -rad; dy <= rad; dy += step) {
-        const yy = cy + dy;
-        if (yy < 0 || yy >= ch) continue;
-        for (let dx = -rad; dx <= rad; dx += step) {
-          if (dx * dx + dy * dy > rad * rad) continue;
-          const xx = cx + dx;
-          if (xx < 0 || xx >= cw) continue;
-          const k = yy * cw + xx;
-          if (inside[k]) roof[k] = 1;
-        }
-      }
-    }
+    const comp = new Uint8Array(cw * ch);
+    for (let i = 0; i < best.length; i++) comp[best[i]] = 1;
+    roof = dilateDisk(comp, cw, ch, rad, inside);
     let roofN = 0;
     for (let i = 0; i < roof.length; i += step) if (roof[i]) roofN++;
     const roofShare = roofN / inN;
@@ -1958,30 +2035,31 @@ function yardInsideFootprint(ring, frame, plate) {
     if (roofShare < 0.4) roof.fill(0);
   }
   const radBody = Math.max(step, Math.round(4 / Math.max(mpu, 0.2)));
+  const pad = radBody;
+  const pw = cw + pad * 2;
+  const ph = ch + pad * 2;
+  const dark = new Uint8Array(pw * ph);
+  const dx0 = Math.max(1, x0 - pad);
+  const dy0 = Math.max(1, y0 - pad);
+  const dx1 = Math.min(W - 2, x1 + pad);
+  const dy1 = Math.min(H - 2, y1 + pad);
+  for (let y = dy0; y <= dy1; y += step) {
+    for (let x = dx0; x <= dx1; x += step) {
+      if (Yat(x, y) > 115) continue;
+      const lx = x - (x0 - pad);
+      const ly = y - (y0 - pad);
+      if (lx < 0 || ly < 0 || lx >= pw || ly >= ph) continue;
+      dark[ly * pw + lx] = 1;
+    }
+  }
+  const nearDark = dilateDisk(dark, pw, ph, radBody, null);
   const seed = new Uint8Array(cw * ch);
   for (let y = 0; y < ch; y += step) {
     for (let x = 0; x < cw; x += step) {
       const k = y * cw + x;
       if (!inside[k] || roof[k]) continue;
-      const Y = Yat(x0 + x, y0 + y);
-      if (Y < 158) continue;
-      let dark = false;
-      for (let dy = -radBody; dy <= radBody && !dark; dy += step) {
-        const yy = y + dy;
-        if (yy < 0 || yy >= ch) continue;
-        for (let dx = -radBody; dx <= radBody; dx += step) {
-          if (dx * dx + dy * dy > radBody * radBody) continue;
-          const xx = x + dx;
-          const ax = x0 + xx;
-          const ay = y0 + yy;
-          if (ax < 1 || ay < 1 || ax >= W - 1 || ay >= H - 1) continue;
-          if (Yat(ax, ay) <= 115) {
-            dark = true;
-            break;
-          }
-        }
-      }
-      if (dark) seed[k] = 1;
+      if (Yat(x0 + x, y0 + y) < 158) continue;
+      if (nearDark[(y + pad) * pw + (x + pad)]) seed[k] = 1;
     }
   }
   const radYard = Math.max(step, Math.round(6 / Math.max(mpu, 0.2)));
@@ -2079,6 +2157,8 @@ function semisAtDocks(rings, frame, plate, holes) {
 }
 
 function semisAtDocksWork(rings, frame, plate, holes) {
+  const profile = require("./profile-log");
+  const profiling = profile.profileOn();
   const out = [];
   const used = [];
   function take(found) {
@@ -2102,11 +2182,18 @@ function semisAtDocksWork(rings, frame, plate, holes) {
     return false;
   }
   for (let r = 0; r < (rings || []).length; r++) {
+    let tProf = profiling ? profile.now() : 0;
     const aprons = dockAprons(rings[r], DOCK_DEPTH_M);
     for (let a = 0; a < aprons.length; a++) {
-      if (take(semisInLot(aprons[a], frame, plate, holes))) return out;
+      if (take(semisInLot(aprons[a], frame, plate, holes))) {
+        if (profiling) profile.add("apron-scan", profile.msSince(tProf));
+        return out;
+      }
     }
+    if (profiling) profile.add("apron-scan", profile.msSince(tProf));
+    tProf = profiling ? profile.now() : 0;
     const yard = yardInsideFootprint(rings[r], frame, plate);
+    if (profiling) profile.add("yard-scan", profile.msSince(tProf));
     if (!yard.allow) continue;
     const other = [];
     for (let h = 0; h < (holes || []).length; h++) {
