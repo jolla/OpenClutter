@@ -1,5 +1,5 @@
 {
-  "note": "Points on large roofs in the repro corridor (877x1046). MSBFP2 returns 49 footprints and misses the white retail roofs; Global ML covers those. usa-nw-commercial and usa-center-large are FEMA USA Structures roofs that neither Microsoft layer contains. Eval fails if emit drops them.",
+  "note": "Roof probes must land inside an emitted building. big-white-retail and ne-white-roof are bright retail membranes Global ML covers and MSBFP2 misses. usa-nw-commercial is a FEMA USA Structures roof neither Microsoft layer contains. usa-center-large sits on the Oak Creek multi-level parking deck north of the tan roof (OSM Emerald Row, Overture 4 floors, about 12 m). The deck roof is gray with cars. A floor count keeps it as a building. A surface lot without a floor count stays out. The bright roof south of that point is a different building and stays covered.",
   "points": [
     { "id": "big-white-retail", "lon": -87.91482, "lat": 42.89849 },
     { "id": "ne-white-roof", "lon": -87.91572, "lat": 42.90066 },

@@ -1,0 +1,172 @@
+[
+  {
+    "id": "lancaster-nh",
+    "name": "Rogers campground",
+    "place": "Lancaster, New Hampshire",
+    "kind": "mixed field and dark conifer",
+    "west": -71.5495,
+    "south": 44.46686,
+    "east": -71.54245,
+    "north": 44.4735
+  },
+  {
+    "id": "granite-peak",
+    "name": "Granite Peak ski slope",
+    "place": "Rib Mountain, Wisconsin",
+    "kind": "ski slope and boreal edge",
+    "west": -89.693,
+    "south": 44.924,
+    "east": -89.684,
+    "north": 44.932
+  },
+  {
+    "id": "wynn-golf",
+    "name": "Wynn golf course",
+    "place": "Las Vegas, Nevada",
+    "kind": "desert golf fairways",
+    "west": -115.18,
+    "south": 36.12,
+    "east": -115.171,
+    "north": 36.128
+  },
+  {
+    "id": "montreal-suburb",
+    "name": "Montreal suburb",
+    "place": "West Island, Quebec",
+    "kind": "suburban yards and woods",
+    "west": -73.8305,
+    "south": 45.4262,
+    "east": -73.8235,
+    "north": 45.4312
+  },
+  {
+    "id": "oak-creek",
+    "name": "Oak Creek residential",
+    "place": "Oak Creek, Wisconsin",
+    "kind": "residential yards",
+    "west": -87.918,
+    "south": 42.892,
+    "east": -87.908,
+    "north": 42.9
+  },
+  {
+    "id": "pnw-conifer",
+    "name": "Hoh rainforest edge",
+    "place": "Olympic Peninsula, Washington",
+    "kind": "Pacific conifer forest",
+    "west": -123.942,
+    "south": 47.856,
+    "east": -123.932,
+    "north": 47.864
+  },
+  {
+    "id": "florida-resort",
+    "name": "Innisbrook resort",
+    "place": "Palm Harbor, Florida",
+    "kind": "palms and live oaks",
+    "west": -82.768,
+    "south": 28.104,
+    "east": -82.758,
+    "north": 28.112
+  },
+  {
+    "id": "arizona-desert",
+    "name": "Saguaro west desert",
+    "place": "Tucson, Arizona",
+    "kind": "sparse desert trees",
+    "west": -111.172,
+    "south": 32.25,
+    "east": -111.162,
+    "north": 32.258
+  },
+  {
+    "id": "texas-live-oak",
+    "name": "Brackenridge Park",
+    "place": "San Antonio, Texas",
+    "kind": "live oak park",
+    "west": -98.48,
+    "south": 29.456,
+    "east": -98.47,
+    "north": 29.464
+  },
+  {
+    "id": "colorado-camp",
+    "name": "Moraine Park campground",
+    "place": "Rocky Mountain National Park, Colorado",
+    "kind": "aspen and pine",
+    "west": -105.61,
+    "south": 40.355,
+    "east": -105.6,
+    "north": 40.363
+  },
+  {
+    "id": "chicago-streets",
+    "name": "Lincoln Square street trees",
+    "place": "Chicago, Illinois",
+    "kind": "urban street-tree grid",
+    "west": -87.694,
+    "south": 41.95,
+    "east": -87.684,
+    "north": 41.958
+  },
+  {
+    "id": "manuel-antonio",
+    "name": "Manuel Antonio",
+    "place": "Quepos, Costa Rica",
+    "kind": "tropical forest outside the US",
+    "west": -84.148,
+    "south": 9.386,
+    "east": -84.138,
+    "north": 9.394
+  },
+  {
+    "id": "syracuse-leafoff",
+    "name": "Syracuse leaf-off woods",
+    "place": "Syracuse, New York",
+    "kind": "bare deciduous canopy",
+    "west": -76.155,
+    "south": 43.045,
+    "east": -76.146,
+    "north": 43.053
+  },
+  {
+    "id": "sodus-orchard",
+    "name": "Sodus apple orchard",
+    "place": "Sodus, New York",
+    "kind": "orchard rows",
+    "west": -77.07,
+    "south": 43.22,
+    "east": -77.061,
+    "north": 43.228
+  },
+  {
+    "id": "indio-palms",
+    "name": "Indio date grove",
+    "place": "Indio, California",
+    "kind": "date palms",
+    "west": -116.22,
+    "south": 33.712,
+    "east": -116.211,
+    "north": 33.72
+  },
+  {
+    "id": "vegas-tower-shadow",
+    "name": "Las Vegas tower shadow",
+    "place": "Las Vegas, Nevada",
+    "kind": "tall building shadow over trees",
+    "west": -115.172,
+    "south": 36.126,
+    "east": -115.164,
+    "north": 36.133
+  },
+  {
+    "id": "palm-creek-rv",
+    "name": "Palm Creek RV resort",
+    "place": "Casa Grande, Arizona",
+    "kind": "RV pads and shade trees",
+    "west": -111.756,
+    "south": 32.878,
+    "east": -111.747,
+    "north": 32.886
+  }
+]

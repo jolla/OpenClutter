@@ -16,6 +16,18 @@ const zlib = require("zlib");
 
 const INDEX = require("./ms-buildings-index.json");
 const QUADKEY_ZOOM = 9;
+/**
+ * Zoom-9 quadkeys are one gzip for a whole tile, not the drawn box.
+ * Oak Creek is ~39 MB and Las Vegas ~60 MB; both still download.
+ * The Los Angeles tile (Universal Hollywood) is ~179 MB. Reading it
+ * holds a decompressed copy near the function memory limit and runs
+ * past the gateway clock. Skip that file and keep the other sources.
+ */
+const MAX_GZIP_BYTES = 80 * 1024 * 1024;
+// A 10 km Las Vegas tile matches tens of thousands of roofs. Holding every
+// ring, plus the decompressed tile, runs the background function out of
+// memory before the export can finish. The zip only keeps the largest.
+const FOOTPRINT_KEEP = 4000;
 
 function lonLatToTile(lon, lat, zoom) {
   const n = 2 ** zoom;
@@ -150,11 +162,56 @@ function normalizeFeature(obj) {
   };
 }
 
+function ringAreaAbs(ring) {
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    a += +ring[j][0] * +ring[i][1] - +ring[i][0] * +ring[j][1];
+  }
+  return Math.abs(a);
+}
+
+function footprintScore(feature) {
+  const geom = feature && feature.geometry;
+  let area = 0;
+  if (geom && geom.type === "Polygon" && geom.coordinates && geom.coordinates[0]) {
+    area = ringAreaAbs(geom.coordinates[0]);
+  } else if (geom && geom.type === "MultiPolygon") {
+    const polys = geom.coordinates || [];
+    for (let i = 0; i < polys.length; i++) {
+      if (polys[i] && polys[i][0]) area += ringAreaAbs(polys[i][0]);
+    }
+  }
+  const h = Number(feature && feature.properties && feature.properties.height);
+  const height = h > 2 && h < 400 ? h : 0;
+  return area * Math.max(1, height / 10);
+}
+
+function keepLargestFootprints(features, keep) {
+  const n = keep | 0;
+  if (!(n > 0) || features.length <= n) return features;
+  const scored = new Array(features.length);
+  for (let i = 0; i < features.length; i++) scored[i] = { f: features[i], s: footprintScore(features[i]) };
+  scored.sort((a, b) => b.s - a.s);
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) out[i] = scored[i].f;
+  return out;
+}
+
+function trimFootprints(features, keep) {
+  if (features.length <= keep) return features;
+  const kept = keepLargestFootprints(features, keep);
+  features.length = 0;
+  for (let i = 0; i < kept.length; i++) features.push(kept[i]);
+  return features;
+}
+
 /**
  * @param {Buffer} gz gzip of newline-delimited GeoJSON
  * @param {{west:number,south:number,east:number,north:number}} bbox
+ * @param {{keep?:number}} [opts]
  */
-function featuresFromGzip(gz, bbox) {
+function featuresFromGzip(gz, bbox, opts) {
+  const keep = opts && opts.keep > 0 ? opts.keep | 0 : FOOTPRINT_KEEP;
   const text = zlib.gunzipSync(gz);
   const lonNeedles = spanNeedles(+bbox.west, +bbox.east, 0.03);
   const latNeedles = spanNeedles(+bbox.south, +bbox.north, 0.03);
@@ -174,9 +231,11 @@ function featuresFromGzip(gz, bbox) {
     }
     if (!geometryHitsBbox(obj.geometry, bbox)) continue;
     const feature = normalizeFeature(obj);
-    if (feature) features.push(feature);
+    if (!feature) continue;
+    features.push(feature);
+    if (features.length >= keep * 2) trimFootprints(features, keep);
   }
-  return features;
+  return trimFootprints(features, keep);
 }
 
 function centroid(ring) {
@@ -247,7 +306,27 @@ function mergeFootprintFeatures(primary, secondary) {
   return { features: base, added, heightsTransferred };
 }
 
+function contentLength(res) {
+  const headers = res && res.headers;
+  if (!headers || typeof headers.get !== "function") return 0;
+  const n = Number(headers.get("content-length") || 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+async function releaseBody(res) {
+  try {
+    if (res && res.body && typeof res.body.cancel === "function") await res.body.cancel();
+  } catch {
+    /* the socket is already closed */
+  }
+}
+
 async function fetchMsGlobalFootprints(frame, fetchFn) {
+  const { timeSpan } = require("./stage-clock");
+  return timeSpan("microsoft", () => fetchMsGlobalFootprintsWork(frame, fetchFn));
+}
+
+async function fetchMsGlobalFootprintsWork(frame, fetchFn) {
   const { keys, urls } = urlsForBbox(frame.west, frame.south, frame.east, frame.north);
   const bbox = {
     west: +frame.west,
@@ -256,16 +335,58 @@ async function fetchMsGlobalFootprints(frame, fetchFn) {
     north: +frame.north,
   };
   const features = [];
+  let skipped = 0;
+  let skippedBytes = 0;
   for (const item of urls) {
     const res = await fetchFn(item.url);
     if (!res || res.ok === false) {
       throw new Error("global footprints HTTP " + (res && res.status));
     }
+    const len = contentLength(res);
+    if (len > MAX_GZIP_BYTES) {
+      skipped++;
+      skippedBytes += len;
+      await releaseBody(res);
+      continue;
+    }
     const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > MAX_GZIP_BYTES) {
+      skipped++;
+      skippedBytes += buf.length;
+      continue;
+    }
     const chunk = featuresFromGzip(buf, bbox);
     for (const f of chunk) features.push(f);
   }
-  return { features, quadkeys: keys, files: urls.length };
+  return { features, quadkeys: keys, files: urls.length, skipped, skippedBytes };
+}
+
+function megabytes(bytes) {
+  return Math.max(1, Math.round((bytes || 0) / (1024 * 1024)));
+}
+
+function globalSkipWarning(pack) {
+  if (!pack || !pack.skipped) return "";
+  const mb = megabytes(pack.skippedBytes);
+  const limit = megabytes(MAX_GZIP_BYTES);
+  if (pack.features && pack.features.length) {
+    return (
+      "Microsoft building footprints partial: kept " +
+      pack.features.length +
+      " and left out a " +
+      mb +
+      " MB tile (limit " +
+      limit +
+      " MB). Other building sources are included."
+    );
+  }
+  return (
+    "Microsoft building footprints omitted: the footprint tile is " +
+    mb +
+    " MB, over the " +
+    limit +
+    " MB export limit. Other building sources are included."
+  );
 }
 
 module.exports = {
@@ -277,7 +398,10 @@ module.exports = {
   spanNeedles,
   featuresFromGzip,
   mergeFootprintFeatures,
+  MAX_GZIP_BYTES,
+  FOOTPRINT_KEEP,
   fetchMsGlobalFootprints,
+  globalSkipWarning,
   exteriorRings,
   pointInRing,
   centroid,

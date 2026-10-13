@@ -1,0 +1,348 @@
+"use strict";
+
+const { describe, it } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("fs");
+const path = require("path");
+const jpeg = require("jpeg-js");
+const { geoFrame, applyImageryMeta, lockIsotropicImagery, jpegSize, llToImagePx } = require("../netlify/lib/geo-frame");
+const { conflateFootprints } = require("../netlify/lib/conflate");
+const { featureExteriorRings, footprintsToClutter } = require("../netlify/lib/pipeline");
+const { rejectPavementFootprints, pavementEvidence, evidenceIsPavement } = require("../netlify/lib/pavement");
+const { pointInRing } = require("./eval/score");
+
+function loadOak() {
+  const dir = path.join(__dirname, "fixtures/oak-creek-commercial");
+  const bbox = JSON.parse(fs.readFileSync(path.join(dir, "bbox.json"), "utf8"));
+  const meta = JSON.parse(fs.readFileSync(path.join(dir, "imagery-meta.json"), "utf8"));
+  const jpegBuf = fs.readFileSync(path.join(dir, "imagery.jpg"));
+  const fp = JSON.parse(fs.readFileSync(path.join(dir, "footprints.geojson"), "utf8"));
+  const ov = JSON.parse(fs.readFileSync(path.join(dir, "overture.geojson"), "utf8"));
+  const locked = lockIsotropicImagery(applyImageryMeta(geoFrame(bbox), meta, jpegSize(jpegBuf)), jpegBuf);
+  const raw = jpeg.decode(locked.jpegBuf, { useTArray: true, maxResolutionInMP: 20, formatAsRGBA: true });
+  const merged = conflateFootprints(fp.features, ov.features, { replaceGeometry: true, rankHeight: true });
+  return { frame: locked.frame, raw, features: merged.features };
+}
+
+function ringBox(ring, frame) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [lon, lat] of ring) {
+    const [x, y] = llToImagePx(lon, lat, frame);
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return { w: maxX - minX, h: maxY - minY };
+}
+
+describe("pavement footprints", () => {
+  it("drops Oak Creek rings that sit on asphalt and keeps bright roofs", () => {
+    const { frame, raw, features } = loadOak();
+    const before = rejectPavementFootprints(raw, frame, features);
+    assert.ok(before.dropped >= 4, "dropped " + before.dropped);
+    let parking = 0;
+    let brightKept = 0;
+    for (const f of features) {
+      const rings = featureExteriorRings(f.geometry);
+      for (const ring of rings) {
+        const box = ringBox(ring, frame);
+        const img = ring.map(([lon, lat]) => llToImagePx(lon, lat, frame));
+        const e = pavementEvidence(raw, img, frame.mpuX);
+        if (box.w > 120 && box.h > 65 && e.roofFrac < 0.1 && e.asphaltFrac > 0.5) {
+          parking++;
+          assert.equal(evidenceIsPavement(e), true, JSON.stringify(e));
+        }
+        if (e.roofFrac > 0.7 && e.areaM2 > 2000) brightKept++;
+      }
+    }
+    assert.ok(parking >= 2, "parking-lot class rings " + parking);
+    assert.ok(brightKept >= 3, "bright roofs " + brightKept);
+    const again = rejectPavementFootprints(raw, frame, before.features);
+    assert.equal(again.dropped, 0);
+    const probes = JSON.parse(
+      fs.readFileSync(path.join(__dirname, "fixtures/oak-creek-commercial/roof-points.json"), "utf8")
+    ).points;
+    const lot = probes.find((p) => p.id === "usa-center-large");
+    const covers = (list) =>
+      list.some((f) => featureExteriorRings(f.geometry).some((ring) => pointInRing([lot.lon, lot.lat], ring)));
+    assert.equal(covers(features), true, "parking deck outline is in the source");
+    assert.equal(covers(before.features), true, "multi-level deck stays a building");
+    const deck = before.features.find(
+      (f) =>
+        f.properties &&
+        f.properties.heightSource === "overture-floors" &&
+        featureExteriorRings(f.geometry).some((ring) => pointInRing([lot.lon, lot.lat], ring))
+    );
+    assert.ok(deck, "Overture floor count still covers the deck");
+    assert.equal(deck.properties.height, 12);
+    for (const f of again.features) {
+      if (f.properties && f.properties.source === "imagery-roof") continue;
+      const rings = featureExteriorRings(f.geometry);
+      const h = Number(f.properties && f.properties.height);
+      const src = f.properties && f.properties.heightSource;
+      for (const ring of rings) {
+        const img = ring.map(([lon, lat]) => llToImagePx(lon, lat, frame));
+        assert.equal(evidenceIsPavement(pavementEvidence(raw, img, frame.mpuX), h, src), false);
+      }
+    }
+  });
+
+  it("keeps the Oak Creek parking deck as a multi-level building and drops a surface lot", () => {
+    const { frame, raw, features } = loadOak();
+    const deckPt = [-87.9198, 42.89908];
+    const kept = rejectPavementFootprints(raw, frame, features);
+    const deck = kept.features.find(
+      (f) =>
+        f.properties &&
+        f.properties.heightSource === "overture-floors" &&
+        Number(f.properties.height) === 12 &&
+        featureExteriorRings(f.geometry).some((ring) => pointInRing(deckPt, ring))
+    );
+    assert.ok(deck, "4-level deck was dropped as pavement");
+    const uncounted = kept.features.filter(
+      (f) =>
+        !(f.properties && f.properties.heightSource === "overture-floors") &&
+        featureExteriorRings(f.geometry).some((ring) => pointInRing(deckPt, ring))
+    );
+    assert.equal(uncounted.length, 0, "a no-height copy of the deck must not become a second building");
+    const built = footprintsToClutter(kept.features, frame);
+    const { llToPx } = require("../netlify/lib/geo-frame");
+    const px = llToPx(deckPt[0], deckPt[1], frame);
+    let height = 0;
+    let name = "";
+    for (let i = 0; i < built.overlayRings.length; i++) {
+      if (!pointInRing(px, built.overlayRings[i])) continue;
+      const area = built.oiAreas[i];
+      const mat = area && area.area_material;
+      if (!mat || !String(mat.name || "").startsWith("Building")) continue;
+      height = mat.top_height;
+      name = mat.name;
+    }
+    assert.equal(name, "Building - Five Floor");
+    assert.ok(height >= 11, "multi-level top " + height);
+    const lot = {
+      type: "Feature",
+      properties: { height: 6 },
+      geometry: features.find((f) => f.properties && f.properties.heightSource === "overture-floors" && Number(f.properties.height) === 12).geometry,
+    };
+    const droppedLot = rejectPavementFootprints(raw, frame, [lot]);
+    assert.equal(droppedLot.dropped, 1, "the same roof without a floor count stays a surface lot");
+    assert.equal(droppedLot.features.length, 0);
+  });
+
+  it("does not drop an imagery roof fill or a Long Meadow house", () => {
+    const { frame, raw, features } = loadOak();
+    const tagged = {
+      type: "Feature",
+      properties: { source: "imagery-roof", height: 8 },
+      geometry: features[0].geometry,
+    };
+    const keptRoof = rejectPavementFootprints(raw, frame, [tagged]);
+    assert.equal(keptRoof.dropped, 0);
+    assert.equal(keptRoof.features.length, 1);
+    assert.equal(keptRoof.features[0].properties.source, "imagery-roof");
+
+    const dir = path.join(__dirname, "fixtures/long-meadow");
+    const bbox = JSON.parse(fs.readFileSync(path.join(dir, "bbox.json"), "utf8"));
+    const meta = JSON.parse(fs.readFileSync(path.join(dir, "imagery-meta.json"), "utf8"));
+    const jpegBuf = fs.readFileSync(path.join(dir, "imagery.jpg"));
+    const fp = JSON.parse(fs.readFileSync(path.join(dir, "footprints.geojson"), "utf8"));
+    const locked = lockIsotropicImagery(applyImageryMeta(geoFrame(bbox), meta, jpegSize(jpegBuf)), jpegBuf);
+    const houseRaw = jpeg.decode(locked.jpegBuf, { useTArray: true, maxResolutionInMP: 20, formatAsRGBA: true });
+    const houses = rejectPavementFootprints(houseRaw, locked.frame, fp.features);
+    assert.equal(houses.dropped, 0);
+    assert.equal(houses.features.length, fp.features.length);
+  });
+
+  it("keeps a smooth gray roof and still drops a textured lot", () => {
+    const frame = geoFrame(
+      { west: -87.92, south: 42.898, east: -87.915, north: 42.902 },
+      { imgW: 200, imgH: 200, maxSpanM: 5000 }
+    );
+    const data = new Uint8Array(200 * 200 * 4);
+    for (let y = 0; y < 200; y++) {
+      for (let x = 0; x < 200; x++) {
+        const i = (y * 200 + x) * 4;
+        const roof = x >= 20 && x <= 70 && y >= 20 && y <= 70;
+        const lot = x >= 100 && x <= 170 && y >= 30 && y <= 110;
+        let rgb = [30, 90, 40];
+        if (roof) rgb = [148, 146, 144];
+        else if (lot) {
+          const block = ((x / 6) | 0) % 2 !== ((y / 6) | 0) % 2;
+          rgb = block ? [72, 74, 76] : [168, 166, 160];
+        }
+        data[i] = rgb[0];
+        data[i + 1] = rgb[1];
+        data[i + 2] = rgb[2];
+        data[i + 3] = 255;
+      }
+    }
+    function ringAt(x0, y0, x1, y1) {
+      const ll = (x, y) => [
+        frame.west + (x / 200) * (frame.east - frame.west),
+        frame.north - (y / 200) * (frame.north - frame.south),
+      ];
+      return [ll(x0, y0), ll(x1, y0), ll(x1, y1), ll(x0, y1), ll(x0, y0)];
+    }
+    const features = [
+      {
+        type: "Feature",
+        properties: { height: 8 },
+        geometry: { type: "Polygon", coordinates: [ringAt(20, 20, 70, 70)] },
+      },
+      {
+        type: "Feature",
+        properties: { height: 6 },
+        geometry: { type: "Polygon", coordinates: [ringAt(100, 30, 170, 110)] },
+      },
+    ];
+    const out = rejectPavementFootprints({ data, width: 200, height: 200 }, frame, features);
+    assert.equal(out.features.length, 1);
+    assert.equal(out.dropped, 1);
+    assert.equal(out.features[0].properties.height, 8);
+  });
+
+  it("keeps a measured roof under trees and still drops a gray lot", () => {
+    const frame = geoFrame(
+      { west: -73.83, south: 45.424, east: -73.822, north: 45.43 },
+      { imgW: 220, imgH: 220, maxSpanM: 5000 }
+    );
+    const data = new Uint8Array(220 * 220 * 4);
+    for (let y = 0; y < 220; y++) {
+      for (let x = 0; x < 220; x++) {
+        const i = (y * 220 + x) * 4;
+        const trees = x >= 30 && x <= 110 && y >= 40 && y <= 130;
+        const lot = x >= 130 && x <= 200 && y >= 40 && y <= 140;
+        let rgb = [40, 70, 35];
+        if (trees) {
+          const canopy = (x + y) % 9 === 0;
+          rgb = canopy ? [70, 98, 55] : [96, 104, 94];
+        } else if (lot) {
+          const block = ((x / 5) | 0) % 2 !== ((y / 5) | 0) % 2;
+          rgb = block ? [78, 80, 82] : [160, 158, 154];
+        }
+        data[i] = rgb[0];
+        data[i + 1] = rgb[1];
+        data[i + 2] = rgb[2];
+        data[i + 3] = 255;
+      }
+    }
+    function ringAt(x0, y0, x1, y1) {
+      const ll = (x, y) => [
+        frame.west + (x / 220) * (frame.east - frame.west),
+        frame.north - (y / 220) * (frame.north - frame.south),
+      ];
+      return [ll(x0, y0), ll(x1, y0), ll(x1, y1), ll(x0, y1), ll(x0, y0)];
+    }
+    const features = [
+      {
+        type: "Feature",
+        properties: { height: 9.9, heightSource: "overture" },
+        geometry: { type: "Polygon", coordinates: [ringAt(30, 40, 110, 130)] },
+      },
+      {
+        type: "Feature",
+        properties: { height: 6, heightSource: "overture" },
+        geometry: { type: "Polygon", coordinates: [ringAt(130, 40, 200, 140)] },
+      },
+    ];
+    const raw = { data, width: 220, height: 220 };
+    const treeImg = ringAt(30, 40, 110, 130).map(([lon, lat]) => llToImagePx(lon, lat, frame));
+    const treeEv = pavementEvidence(raw, treeImg, frame.mpuX);
+    assert.ok(treeEv.greenFrac >= 0.05, JSON.stringify(treeEv));
+    assert.equal(evidenceIsPavement(treeEv, 9.9), false);
+    const out = rejectPavementFootprints(raw, frame, features);
+    assert.equal(out.dropped, 1);
+    assert.equal(out.features.length, 1);
+    assert.equal(out.features[0].properties.height, 9.9);
+  });
+
+  it("keeps the Lebanon warehouse membrane and seats it at 12 m", () => {
+    const frame = geoFrame(
+      { west: -86.491, south: 40.026, east: -86.484, north: 40.034, name: "Lebanon membrane" },
+      { imgW: 320, imgH: 560, maxSpanM: 20000 }
+    );
+    const ring = [
+      [-86.4892, 40.0326],
+      [-86.4893, 40.0274],
+      [-86.4862, 40.0274],
+      [-86.4861, 40.0326],
+      [-86.4892, 40.0326],
+    ];
+    const imgRing = ring.map(([lon, lat]) => llToImagePx(lon, lat, frame));
+    const data = new Uint8Array(frame.imgW * frame.imgH * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 40;
+      data[i + 1] = 90;
+      data[i + 2] = 45;
+      data[i + 3] = 255;
+    }
+    for (let y = 0; y < frame.imgH; y++) {
+      for (let x = 0; x < frame.imgW; x++) {
+        if (!pointInRing([x + 0.5, y + 0.5], imgRing)) continue;
+        const i = (y * frame.imgW + x) * 4;
+        data[i] = 142;
+        data[i + 1] = 140;
+        data[i + 2] = 138;
+      }
+    }
+    const feature = {
+      type: "Feature",
+      properties: { geomSource: "overture" },
+      geometry: { type: "Polygon", coordinates: [ring] },
+    };
+    const evidence = pavementEvidence({ data, width: frame.imgW, height: frame.imgH }, imgRing, frame.mpuX);
+    assert.ok(evidence.areaM2 > 20000 && evidence.areaM2 < 400000, "area " + evidence.areaM2);
+    assert.ok(evidence.medianStd < 5, "std " + evidence.medianStd);
+    const out = rejectPavementFootprints({ data, width: frame.imgW, height: frame.imgH }, frame, [feature]);
+    assert.equal(out.dropped, 0);
+    assert.equal(out.features.length, 1);
+    assert.equal(out.features[0].properties.height, 12);
+    assert.equal(out.features[0].properties.heightSource, "warehouse");
+  });
+
+  it("seats a large bright roof with no height at 12 m", () => {
+    const frame = geoFrame(
+      { west: -83.322, south: 39.942, east: -83.314, north: 39.946, name: "Bright roof" },
+      { imgW: 200, imgH: 140, maxSpanM: 20000 }
+    );
+    const ring = [
+      [frame.west + (frame.east - frame.west) * 0.08, frame.south + (frame.north - frame.south) * 0.08],
+      [frame.east - (frame.east - frame.west) * 0.08, frame.south + (frame.north - frame.south) * 0.08],
+      [frame.east - (frame.east - frame.west) * 0.08, frame.north - (frame.north - frame.south) * 0.08],
+      [frame.west + (frame.east - frame.west) * 0.08, frame.north - (frame.north - frame.south) * 0.08],
+      [frame.west + (frame.east - frame.west) * 0.08, frame.south + (frame.north - frame.south) * 0.08],
+    ];
+    const imgRing = ring.map(([lon, lat]) => llToImagePx(lon, lat, frame));
+    const data = new Uint8Array(frame.imgW * frame.imgH * 4);
+    for (let y = 0; y < frame.imgH; y++) {
+      for (let x = 0; x < frame.imgW; x++) {
+        const i = (y * frame.imgW + x) * 4;
+        const on = pointInRing([x + 0.5, y + 0.5], imgRing);
+        data[i] = on ? 236 : 70;
+        data[i + 1] = on ? 236 : 110;
+        data[i + 2] = on ? 232 : 60;
+        data[i + 3] = 255;
+      }
+    }
+    const feature = {
+      type: "Feature",
+      properties: { geomSource: "overture" },
+      geometry: { type: "Polygon", coordinates: [ring] },
+    };
+    const out = rejectPavementFootprints({ data, width: frame.imgW, height: frame.imgH }, frame, [feature]);
+    assert.equal(out.dropped, 0);
+    assert.equal(out.features.length, 1);
+    assert.equal(out.features[0].properties.height, 12);
+    assert.equal(out.features[0].properties.heightSource, "warehouse");
+    const built = footprintsToClutter(out.features, frame, null);
+    assert.equal(built.stats.buildings, 1);
+    assert.equal(built.oiAreas[0].area_material.name, "Building - 12.0");
+    assert.equal(built.oiAreas[0].area_material.top_height, 12);
+    assert.equal(built.oiAreas[0].area_material.rf_properties.attenuation_per_m, 5);
+  });
+});

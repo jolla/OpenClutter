@@ -8,15 +8,32 @@
  */
 
 const { llToPx, llToImagePx, metersPerDeg } = require("../../netlify/lib/geo-frame");
-const { OI_BUILDING_NAMES, catalogMaterials } = require("../../netlify/lib/materials");
+const {
+  OI_BUILDING_NAMES,
+  isVegetationOiName,
+  isLiftedBuildingName,
+  isLiftedMeasuredBuildingName,
+  isMeasuredBuildingOiName,
+  isPodiumName,
+  isLiftedPodiumName,
+  isTrunkOiName,
+  isUnderstoryOiName,
+  isOutdoorOiName,
+  isLiftedOutdoorName,
+  buildingCatalog,
+  isPoisonedOiName,
+  COMPATIBILITY_MODE,
+} = require("../../netlify/lib/materials");
 const {
   featureExteriorRings,
   ringAreaM2,
-  MEGA_CAMPUS_M2,
   MIN_AREA_M2,
   coverageStats,
+  isMegaCampus,
+  ringVertexCount,
 } = require("../../netlify/lib/pipeline");
 const T = require("../../netlify/lib/tree-source");
+const { intersectionAreaPx } = require("../../netlify/lib/poly-clip");
 
 const THRESHOLDS = {
   minCentroidHitRate: 0.85,
@@ -36,6 +53,11 @@ const THRESHOLDS = {
   minOvertureExplicit: 8,
   minChmTrees: 8,
   minTerrainPolygons: 1,
+  maxFoliageBuildingOverlapM2: 5,
+  maxBuildingOverlapM2: 80,
+  maxBuildingPairM2: 40,
+  maxFoliageSelfOverlapM2: 80,
+  maxFoliageSelfPairM2: 40,
 };
 
 function luma(r, g, b) {
@@ -177,7 +199,11 @@ function scoreBuildings(features, overlayRings, frame) {
   let incompleteMultiPolygons = 0;
 
   for (const m of majors) {
-    const keepable = m.parts.filter((p) => p.areaM2 >= MIN_AREA_M2 && p.areaM2 <= MEGA_CAMPUS_M2);
+    const keepable = m.parts.filter((p) => {
+      if (p.areaM2 < MIN_AREA_M2) return false;
+      const verts = ringVertexCount(p.ring);
+      return !isMegaCampus(p.areaM2, verts);
+    });
     if (!keepable.length) continue;
     let keptParts = 0;
     for (const p of keepable) {
@@ -362,10 +388,9 @@ function highCanopyRecall(trees, hits, bbox) {
 function treePointsFromBuilt(built) {
   const pts = [];
   const areas = (built.openintent && built.openintent.floorplans[0].attenuation_areas) || [];
-  const mats = new Set(["Tree Trunk"]);
   for (const a of areas) {
     const trunkName = typeof a.area_material === "string" ? a.area_material : a.area_material && a.area_material.name;
-    if (!mats.has(trunkName)) continue;
+    if (!isVegetationOiName(trunkName)) continue;
     const coords = a.area.coordinates || [];
     const pixels = [];
     for (let i = 0; i < coords.length; i++) {
@@ -410,14 +435,20 @@ function scoreRoofTrees(treeLonLat, features) {
   };
 }
 
-/** Probe points (lon/lat) that must land inside an emitted building ring. */
+/**
+ * Probe points (lon/lat). Default role is a roof: the point must land inside
+ * an emitted building ring. role "pavement" is a stale outline on asphalt and
+ * must stay outside every emitted ring.
+ */
 function scoreRoofProbes(probes, overlayRings, frame) {
   const points = probes || [];
   let hit = 0;
   const missed = [];
   for (const p of points) {
     const px = llToPx(+p.lon, +p.lat, frame);
-    const ok = (overlayRings || []).some((ring) => pointInRing(px, ring));
+    const inside = (overlayRings || []).some((ring) => pointInRing(px, ring));
+    const wantInside = p.role !== "pavement";
+    const ok = wantInside ? inside : !inside;
     if (ok) hit++;
     else missed.push(p.id || `${p.lon},${p.lat}`);
   }
@@ -492,7 +523,7 @@ function evaluate(scores, thresholds) {
     if (h.matchedFrac < t.minMatchedHeightFrac) {
       failures.push(`matchedHeightFrac ${h.matchedFrac.toFixed(3)} < ${t.minMatchedHeightFrac}`);
     }
-    if (h.uniqueFoliageHeights < t.minUniqueFoliageHeights) {
+    if (scores.includeFoliage && h.uniqueFoliageHeights < t.minUniqueFoliageHeights) {
       failures.push(`uniqueFoliageHeights ${h.uniqueFoliageHeights} < ${t.minUniqueFoliageHeights}`);
     }
   }
@@ -514,21 +545,84 @@ function evaluate(scores, thresholds) {
   const terrain = scores.terrain;
   if (terrain && terrain.required) {
     if (terrain.polygons < t.minTerrainPolygons) failures.push("terrain clipboard empty");
-    if (terrain.reliefM > 2 && terrain.sloped < 1) failures.push("terrain relief missing sloped floors");
+    if (
+      terrain.reliefM > 2 &&
+      terrain.sloped < 1 &&
+      !(terrain.raised >= 1 && terrain.maxRaisedM >= 1)
+    ) {
+      failures.push("terrain relief missing raised layers");
+    }
     if (!terrain.separateFromOpenIntent) failures.push("terrain leaked into OpenIntent");
     if (!terrain.mainClipboardFlat) failures.push("main hamina clipboard gained terrain zones");
+  }
+  const foliageOn = scores.includeFoliage === true;
+  const foliageOverlap = scores.foliageOverlap;
+  if (foliageOn && foliageOverlap && foliageOverlap.overlapM2 > t.maxFoliageBuildingOverlapM2) {
+    failures.push(
+      `foliageBuildingOverlapM2 ${foliageOverlap.overlapM2.toFixed(1)} > ${t.maxFoliageBuildingOverlapM2}`
+    );
+  }
+  const buildingOverlap = scores.buildingOverlap;
+  if (buildingOverlap) {
+    if (buildingOverlap.overlapM2 > t.maxBuildingOverlapM2) {
+      failures.push(`buildingOverlapM2 ${buildingOverlap.overlapM2.toFixed(1)} > ${t.maxBuildingOverlapM2}`);
+    }
+    if (buildingOverlap.maxPairM2 > t.maxBuildingPairM2) {
+      failures.push(`buildingPairM2 ${buildingOverlap.maxPairM2.toFixed(1)} > ${t.maxBuildingPairM2}`);
+    }
+  }
+  const foliageSelf = scores.foliageSelfOverlap;
+  if (foliageOn && foliageSelf) {
+    if (foliageSelf.overlapM2 > t.maxFoliageSelfOverlapM2) {
+      failures.push(`foliageSelfOverlapM2 ${foliageSelf.overlapM2.toFixed(1)} > ${t.maxFoliageSelfOverlapM2}`);
+    }
+    if (foliageSelf.maxPairM2 > t.maxFoliageSelfPairM2) {
+      failures.push(`foliageSelfPairM2 ${foliageSelf.maxPairM2.toFixed(1)} > ${t.maxFoliageSelfPairM2}`);
+    }
   }
   const chm = scores.chm;
   if (chm && chm.required && chm.applied < t.minChmTrees) {
     failures.push(`chmTrees ${chm.applied} < ${t.minChmTrees}`);
   }
+  const grid = scores.contentGrid;
+  if (grid && grid.required) {
+    if (!grid.jpegMatchesFrame) failures.push("JPEG size is not the content-grid frame");
+    if (!grid.mpuLocked) failures.push("floorplan mpu is not the JPEG content grid");
+    if (grid.drift && !grid.drift.ok) {
+      for (const f of grid.drift.failures) failures.push(f);
+    }
+    if (grid.geodesicMismatchPx < (grid.minGeodesicMismatchPx || 0)) {
+      failures.push(
+        `geodesic stretch collapsed content grid (${grid.geodesicMismatchPx.toFixed(1)} px < ${grid.minGeodesicMismatchPx})`
+      );
+    }
+  }
+  const pavF = scores.pavementFootprints;
+  if (pavF && pavF.required) {
+    if (pavF.kept > 0) failures.push(`pavementFootprints kept ${pavF.kept}`);
+    if (pavF.dropped < (pavF.minDropped || 0)) {
+      failures.push(`pavementFootprints dropped ${pavF.dropped} < ${pavF.minDropped}`);
+    }
+  }
   const compat = scores.compatibility;
   if (compat && compat.required !== false) {
-    if (compat.materials !== OI_BUILDING_NAMES.length) {
-      failures.push(`openIntentMaterials ${compat.materials} !== ${OI_BUILDING_NAMES.length}`);
-    }
-    if (!compat.stockOnly) failures.push("OpenIntent material is not a Hamina outdoor Building-* name");
+    if (!compat.buildingsExact) failures.push("OpenIntent building materials drifted from the gold set");
+    if (!compat.customsOk) failures.push("OpenIntent vegetation material is not stock Foliage - Heavy / Light or a measured-height custom");
+    if (compat.poisoned) failures.push("OpenIntent catalog contains a name that emptied imports");
     if (!compat.consistent) failures.push("area material does not match the catalog entry");
+  }
+  const oiTrees = scores.openIntentTrees;
+  if (!foliageOn && oiTrees && oiTrees.emitted > 0) {
+    failures.push(`openIntentTreeAreas ${oiTrees.emitted} emitted with Include foliage off`);
+  }
+  if (foliageOn && oiTrees && oiTrees.required) {
+    if (oiTrees.emitted < 1) failures.push(`openIntentTreeAreas ${oiTrees.emitted} < 1`);
+    if (oiTrees.custom < 1) failures.push("tree attenuation areas are not on a custom vegetation material");
+    // CHM crowns can outnumber the NLCD point sample. A pixel scatter would
+    // blow past this ceiling; individual crowns stay under it.
+    if (oiTrees.emitted > 1200) {
+      failures.push(`openIntentTreeAreas ${oiTrees.emitted} > 1200`);
+    }
   }
   return { ok: failures.length === 0, failures };
 }
@@ -538,29 +632,58 @@ function scoreMaterialCompatibility(openintent) {
   const areas =
     (openintent && openintent.floorplans && openintent.floorplans[0] && openintent.floorplans[0].attenuation_areas) ||
     [];
-  const expected = catalogMaterials().map((m) => m.name);
+  const gold = buildingCatalog();
   const names = mats.map((m) => m && m.name);
-  const stockOnly = names.length === expected.length && names.every((n, i) => n === expected[i]);
+  const buildingsExact =
+    names.length >= gold.length &&
+    gold.every((g, i) => names[i] === g.name && JSON.stringify(mats[i]) === JSON.stringify(g));
+  const extras = mats.slice(gold.length);
+  const allowedExtra = (name) =>
+    isVegetationOiName(name) ||
+    isTrunkOiName(name) ||
+    isUnderstoryOiName(name) ||
+    isLiftedBuildingName(name) ||
+    isLiftedMeasuredBuildingName(name) ||
+    isMeasuredBuildingOiName(name) ||
+    isPodiumName(name) ||
+    isLiftedPodiumName(name) ||
+    isOutdoorOiName(name) ||
+    isLiftedOutdoorName(name);
+  const customsOk = extras.every((m) => m && allowedExtra(m.name));
+  const poisoned = names.some((n) => isPoisonedOiName(n));
   const byName = new Map(mats.map((m) => [m.name, m]));
-  let consistent = stockOnly;
+  let consistent = buildingsExact && customsOk && !poisoned;
+  let vegetationAreas = 0;
+  const vegetationHeights = new Set();
   for (const a of areas) {
     const m = a && a.area_material;
     const name = typeof m === "string" ? m : m && m.name;
-    const cat = name && byName.get(name);
+    // Several bases share the name Building - Podium at different tops.
+    const raw = typeof m === "object" && m ? JSON.stringify(m) : null;
+    const cat = raw ? mats.find((c) => c && JSON.stringify(c) === raw) : name && byName.get(name);
     if (!cat || typeof m !== "object" || m == null || JSON.stringify(m) !== JSON.stringify(cat)) {
       consistent = false;
       break;
     }
-    if (!OI_BUILDING_NAMES.includes(name)) {
+    if (!OI_BUILDING_NAMES.includes(name) && !allowedExtra(name)) {
       consistent = false;
       break;
+    }
+    if (isVegetationOiName(name)) {
+      vegetationAreas++;
+      if (m.top_height > 2) vegetationHeights.add(Number(m.top_height).toFixed(1));
     }
   }
   return {
     required: true,
-    mode: "stock-openintent",
+    mode: COMPATIBILITY_MODE,
     materials: mats.length,
-    stockOnly,
+    stockOnly: buildingsExact && customsOk && !poisoned,
+    buildingsExact,
+    customsOk,
+    poisoned,
+    vegetationAreas,
+    vegetationHeights: vegetationHeights.size,
     consistent,
   };
 }
@@ -572,7 +695,7 @@ function scoreMeasuredHeights(features, overlayRings, overlayHeights, frame, ope
   for (const f of features || []) {
     const props = (f && f.properties) || {};
     const h = Number(props.height || props.Height || props.HEIGHT || 0);
-    if (!(h > 2 && h < 80)) continue;
+    if (!(h > 2 && h < 400)) continue;
     const rings = [];
     const g = f.geometry;
     if (!g) continue;
@@ -636,6 +759,86 @@ function scoreMeasuredHeights(features, overlayRings, overlayHeights, frame, ope
   };
 }
 
+function scoreFoliageBuildingOverlap(vegRings, buildingRings, frame) {
+  let px = 0;
+  const veg = vegRings || [];
+  const buildings = buildingRings || [];
+  for (let i = 0; i < veg.length; i++) {
+    for (let j = 0; j < buildings.length; j++) {
+      px += intersectionAreaPx(veg[i], buildings[j]);
+    }
+  }
+  const mpuX = frame && frame.mpuX ? frame.mpuX : 1;
+  const mpuY = frame && frame.mpuY ? frame.mpuY : 1;
+  return { overlapPx2: px, overlapM2: px * mpuX * mpuY };
+}
+
+function ringPxArea(ring) {
+  if (!ring || ring.length < 3) return 0;
+  let a = 0;
+  const n = ring.length;
+  const closed = ring[0][0] === ring[n - 1][0] && ring[0][1] === ring[n - 1][1];
+  const last = closed ? n - 1 : n;
+  for (let i = 0; i < last; i++) {
+    const p = ring[i];
+    const q = ring[(i + 1) % last];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return Math.abs(a) / 2;
+}
+
+function ringBBox(ring) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of ring || []) {
+    if (!p) continue;
+    if (p[0] < minX) minX = p[0];
+    if (p[1] < minY) minY = p[1];
+    if (p[0] > maxX) maxX = p[0];
+    if (p[1] > maxY) maxY = p[1];
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+/**
+ * Pairwise intersection of emitted rings, in square metres.
+ * `minPairM2` leaves out contacts smaller than that. Foliage uses it so the
+ * 4 px crown floor, which rounds two nearby outlines onto the same pixels,
+ * does not add up to a false double canopy. A real shared stand still counts.
+ */
+function scorePairwiseOverlap(rings, frame, minPairM2) {
+  const list = rings || [];
+  const mpuX = frame && frame.mpuX ? frame.mpuX : 1;
+  const mpuY = frame && frame.mpuY ? frame.mpuY : 1;
+  const scale = mpuX * mpuY;
+  const boxes = list.map(ringBBox);
+  const areas = list.map((ring) => ringPxArea(ring) * scale);
+  const floor = Number(minPairM2) > 0 ? Number(minPairM2) : 0;
+  let overlapM2 = 0;
+  let pairs = 0;
+  let heavyPairs = 0;
+  let maxPairM2 = 0;
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      const a = boxes[i];
+      const b = boxes[j];
+      if (a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY) continue;
+      const px = intersectionAreaPx(list[i], list[j]);
+      if (!(px > 0.5)) continue;
+      const m2 = px * scale;
+      if (m2 > maxPairM2) maxPairM2 = m2;
+      if (m2 < floor) continue;
+      overlapM2 += m2;
+      pairs++;
+      const smaller = Math.min(areas[i], areas[j]);
+      if (m2 >= 40 || (smaller > 1 && m2 / smaller >= 0.25 && m2 >= 15)) heavyPairs++;
+    }
+  }
+  return { overlapM2, pairs, heavyPairs, maxPairM2 };
+}
+
 function scoreSite({ built, frame, footprints, jpegDecoded, tcc, treePoints, treesSource }) {
   const buildings = scoreBuildings(footprints.features || [], built._overlayRings || [], frame);
   // overlay rings are not on built; caller may pass overlayRings
@@ -666,5 +869,7 @@ module.exports = {
   treePointsFromBuilt,
   evaluate,
   scoreSite,
+  scoreFoliageBuildingOverlap,
+  scorePairwiseOverlap,
   nearestTccPct,
 };

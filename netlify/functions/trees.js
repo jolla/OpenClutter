@@ -37,8 +37,10 @@ function mat(name, color, top, bottom, db) {
   return m;
 }
 
-const CANOPY = mat("Tree_Canopy", "#415915", 12, 3.5, 2);
-const TRUNK = mat("Tree_Trunk", "#7F4A1E", 3.5, null, 10);
+const CANOPY = mat("Tree_Canopy", "#415915", 12, 3.5, 1.5);
+const TRUNK = mat("Tree_Trunk", "#7F4A1E", 3.5, null, 3);
+CANOPY.transparencyEnabled = true;
+TRUNK.transparencyEnabled = true;
 
 function toArea(ringPx, imgW, imgH, material, xyz) {
   const coords = ringPx.map(([x, y]) =>
@@ -65,9 +67,9 @@ function treesFromJpeg(imgBuf, imgW, imgH, mpu, xyz) {
     shortcutKey: "d",
     topEdge: 12,
     bottomEdge: 3.5,
-    attenuationDbPerMeter: 2,
+    attenuationDbPerMeter: 1.5,
     ituRModelEnabled: true,
-    transparencyEnabled: false,
+    transparencyEnabled: true,
   };
   const typeTrunk = {
     id: "5749a1d6-1774-4a23-86de-538dbeabf3ee",
@@ -76,9 +78,9 @@ function treesFromJpeg(imgBuf, imgW, imgH, mpu, xyz) {
     shortcutKey: "z",
     topEdge: 3.5,
     bottomEdge: null,
-    attenuationDbPerMeter: 10,
+    attenuationDbPerMeter: 3,
     ituRModelEnabled: true,
-    transparencyEnabled: false,
+    transparencyEnabled: true,
   };
   picked.forEach((p, n) => {
     const hit = { x: p.x * sx, yUp: imgH - p.y * sy, seed: p.x * 0.13 + p.y * 0.07 };

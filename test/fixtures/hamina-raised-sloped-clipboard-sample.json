@@ -1,0 +1,63 @@
+{
+  "header": {
+    "type": "HaminaClipboard",
+    "version": [1, 0, 0],
+    "id": "01a0c5e0-73bd-754b-9fa5-62461900602a",
+    "isCut": false
+  },
+  "walls": [],
+  "wallEndpoints": [],
+  "wallTypes": [],
+  "cableTrays": [],
+  "cableTrayEndpoints": [],
+  "attenuatingZones": [],
+  "attenuatingZoneTypes": [],
+  "scopeZones": [],
+  "capacityZones": [],
+  "holeInFloorZones": [],
+  "accessPoints": [],
+  "mapNotes": [],
+  "tiePoints": [],
+  "cableRisers": [],
+  "clientDevices": [],
+  "networkInfraDevices": [],
+  "raisedFloorZones": [
+    {
+      "area": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [593.9802383760311, -641.5482719705884],
+            [578.4208254727189, -707.3427823607047],
+            [652.1696874134104, -707.3427823607047],
+            [652.1696874134104, -641.5482719705884]
+          ]
+        ]
+      },
+      "height": 1.5,
+      "attenuationDbPerMeter": 10,
+      "slabOnly": false
+    }
+  ],
+  "slopedFloors": [
+    {
+      "area": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [547.8153295860747, -681.7656903061778, 0],
+            [564.6868783010972, -681.7656903061778, 0],
+            [578.4208254727189, -646.2970935757312, 3.0480370641306997],
+            [547.8153295860747, -646.2970935757312, 3.0480370641306997]
+          ]
+        ]
+      },
+      "attenuationDbPerMeter": 10,
+      "crowdEnabled": false,
+      "drawStairs": false,
+      "slabOnly": false,
+      "crowdHeight": 1,
+      "crowdAttenuationDbPerMeter": 5
+    }
+  ]
+}

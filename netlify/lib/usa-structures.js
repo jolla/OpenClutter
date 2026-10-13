@@ -45,6 +45,12 @@ function esriFeaturesToGeojson(features) {
   return out;
 }
 
+function isAbortError(err) {
+  if (!err) return false;
+  if (err.name === "AbortError") return true;
+  return /abort|timeout/i.test(String(err.message || err));
+}
+
 async function mapPool(items, limit, fn) {
   const out = new Array(items.length);
   let next = 0;
@@ -84,9 +90,10 @@ async function fetchUsaStructures(frame, fetchFn) {
     throw new Error("usa structures " + (idJson.error.message || "ids"));
   }
   const ids = (idJson.objectIds || []).slice(0, ID_CAP);
-  if (!ids.length) return { features: [] };
+  if (!ids.length) return { features: [], partial: false };
   const chunks = [];
   for (let i = 0; i < ids.length; i += CHUNK) chunks.push(ids.slice(i, i + CHUNK));
+  let partial = false;
   const parts = await mapPool(chunks, POOL, async (chunk) => {
     const url =
       LAYER +
@@ -98,21 +105,29 @@ async function fetchUsaStructures(frame, fetchFn) {
         returnGeometry: "true",
         f: "json",
       });
-    const res = await fetchFn(url);
-    if (!res || res.ok === false) {
-      throw new Error("usa structures HTTP " + (res && res.status));
+    try {
+      const res = await fetchFn(url);
+      if (!res || res.ok === false) {
+        throw new Error("usa structures HTTP " + (res && res.status));
+      }
+      const body = await res.json();
+      if (body && body.error) {
+        throw new Error("usa structures " + (body.error.message || "query"));
+      }
+      return esriFeaturesToGeojson(body.features);
+    } catch (e) {
+      if (isAbortError(e)) {
+        partial = true;
+        return [];
+      }
+      throw e;
     }
-    const body = await res.json();
-    if (body && body.error) {
-      throw new Error("usa structures " + (body.error.message || "query"));
-    }
-    return esriFeaturesToGeojson(body.features);
   });
   const features = [];
   for (const part of parts) {
-    for (const feature of part) features.push(feature);
+    for (const feature of part || []) features.push(feature);
   }
-  return { features };
+  return { features, partial };
 }
 
 module.exports = {

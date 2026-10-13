@@ -1,0 +1,280 @@
+/**
+ * Site outline gestures.
+ *
+ * Drag commits a box. A click (no drag) adds a polygon vertex. A ring of
+ * 3 or more corners closes by itself when a click lands on the first
+ * corner or returns near the start. Double-click is an optional shortcut.
+ * There is no Finish shape control. A right-click does not finish the ring. A click
+ * that returns to the start with only two corners does not close a line
+ * and does not drop a duplicate point on the start. finish() with fewer
+ * than 3 vertices discards the ring. prepareExport() commits an open ring
+ * of 3+ vertices and refuses a 1–2 vertex ring so a newer sketch cannot
+ * export the previous site. Escape is cancel() and does not touch a
+ * finished site. A drag after vertices have been placed commits a box and
+ * drops the open ring.
+ *
+ * Distances are container pixels. DRAG_PX is the click/drag split.
+ * Travel under DRAG_PX is a click, not a box.
+ * CLOSE_PX is how near a click must be to the first corner to close.
+ * Browser + Node. The export path still sends the axis-aligned box.
+ */
+(function (root, factory) {
+  const lib = factory();
+  if (typeof module === "object" && module.exports) module.exports = lib;
+  if (typeof globalThis !== "undefined") globalThis.OpenClutterDraw = lib;
+})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  "use strict";
+
+  /** Pointer travel at or above this many pixels is a box, not a vertex. */
+  const DRAG_PX = 8;
+  /**
+   * Click inside this radius of the first corner to close a 3+ vertex ring.
+   * Wide enough that a click returning near the start closes, including a
+   * click on the close handle.
+   */
+  const CLOSE_PX = 24;
+  /**
+   * With only two corners, a click this close to the start is not a new
+   * corner and does not close a line.
+   */
+  const EARLY_PX = 12;
+
+  function createSession() {
+    return {
+      armed: false,
+      phase: "idle",
+      down: null,
+      dragged: false,
+      vertices: [],
+    };
+  }
+
+  function dist2(a, b) {
+    const dx = +a.x - +b.x;
+    const dy = +a.y - +b.y;
+    return dx * dx + dy * dy;
+  }
+
+  function copyVerts(list) {
+    const out = [];
+    for (let i = 0; i < list.length; i++) {
+      out.push({ lat: list[i].lat, lng: list[i].lng });
+    }
+    return out;
+  }
+
+  function arm(session) {
+    session.armed = true;
+    session.phase = "armed";
+    session.down = null;
+    session.dragged = false;
+    session.vertices = [];
+    return { type: "armed" };
+  }
+
+  function pointerDown(session, pt) {
+    if (!session.armed || !pt) return { type: "ignore" };
+    if (pt.button != null && pt.button !== 0) return { type: "ignore" };
+    if (pt.ctrlKey) return { type: "ignore" };
+    const lat = +pt.lat;
+    const lng = +pt.lng;
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return { type: "ignore" };
+    session.down = { x: +pt.x, y: +pt.y, lat: lat, lng: lng };
+    session.dragged = false;
+    return { type: "down" };
+  }
+
+  function pointerMove(session, pt) {
+    if (!session.armed || !session.down || !pt) return { type: "ignore" };
+    if (!session.dragged && Number.isFinite(+pt.x) && Number.isFinite(+pt.y)) {
+      if (dist2(session.down, pt) >= DRAG_PX * DRAG_PX) session.dragged = true;
+    }
+    if (!session.dragged) return { type: "ignore" };
+    const lat = +pt.lat;
+    const lng = +pt.lng;
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return { type: "ignore" };
+    return {
+      type: "drag",
+      start: { lat: session.down.lat, lng: session.down.lng },
+      end: { lat: lat, lng: lng },
+    };
+  }
+
+  function nearVertex(vertex, pt, px) {
+    if (!vertex || !pt) return false;
+    if (![pt.x, pt.y, vertex.x, vertex.y].every(Number.isFinite)) return false;
+    return dist2(vertex, pt) < px * px;
+  }
+
+  function nearLastVertex(session, pt) {
+    return nearVertex(session.vertices[session.vertices.length - 1], pt, DRAG_PX);
+  }
+
+  function nearStart(session, pt, px) {
+    if (!session.vertices.length) return false;
+    return nearVertex(session.vertices[0], pt, px == null ? CLOSE_PX : px);
+  }
+
+  function pointerUp(session, pt) {
+    if (!session.armed || !session.down) return { type: "ignore" };
+    const start = { lat: session.down.lat, lng: session.down.lng };
+    const endLat = pt && Number.isFinite(+pt.lat) ? +pt.lat : start.lat;
+    const endLng = pt && Number.isFinite(+pt.lng) ? +pt.lng : start.lng;
+    const end = { lat: endLat, lng: endLng };
+    let dragged = session.dragged;
+    if (!dragged && pt && Number.isFinite(+pt.x) && Number.isFinite(+pt.y)) {
+      dragged = dist2(session.down, pt) >= DRAG_PX * DRAG_PX;
+    }
+    const downPt = session.down;
+    session.down = null;
+    session.dragged = false;
+    if (dragged) {
+      session.vertices = [];
+      session.phase = "idle";
+      session.armed = false;
+      return { type: "commit-box", start: start, end: end };
+    }
+    const candidate = {
+      lat: end.lat,
+      lng: end.lng,
+      x: pt && Number.isFinite(+pt.x) ? +pt.x : downPt.x,
+      y: pt && Number.isFinite(+pt.y) ? +pt.y : downPt.y,
+    };
+    const doubleClick = pt && +pt.clicks >= 2;
+    const backToStart = nearStart(session, candidate) || nearStart(session, downPt);
+    if (session.vertices.length >= 3 && backToStart) return finish(session);
+    if (nearLastVertex(session, candidate)) {
+      if (doubleClick && session.vertices.length >= 3) return finish(session);
+      return { type: "ignore" };
+    }
+    const early = nearStart(session, candidate, EARLY_PX) || nearStart(session, downPt, EARLY_PX);
+    if (session.vertices.length === 2 && early) return { type: "short", count: 2 };
+    session.vertices.push(candidate);
+    session.phase = "polygon";
+    if (doubleClick && session.vertices.length >= 3) return finish(session);
+    return { type: "vertex", vertices: copyVerts(session.vertices) };
+  }
+
+  function abortPress(session) {
+    if (!session.down) return { type: "ignore" };
+    session.down = null;
+    session.dragged = false;
+    return { type: "abort-press" };
+  }
+
+  /**
+   * Commit a ring of 3 or more corners. Fewer than 3 discards the ring.
+   * Called by a click on the first corner, by double-click, and by
+   * prepareExport. A right-click does not finish.
+   */
+  function finish(session) {
+    if (!session.armed || session.phase !== "polygon" || session.down) return { type: "ignore" };
+    if (!session.vertices.length) return { type: "ignore" };
+    if (session.vertices.length < 3) {
+      const count = session.vertices.length;
+      session.vertices = [];
+      session.phase = "idle";
+      session.armed = false;
+      session.down = null;
+      session.dragged = false;
+      return { type: "discard", count: count };
+    }
+    const vertices = copyVerts(session.vertices);
+    session.vertices = [];
+    session.phase = "idle";
+    session.armed = false;
+    return { type: "commit-polygon", vertices: vertices, bounds: boundsOf(vertices) };
+  }
+
+  /**
+   * Export guard. An open ring of 3+ vertices is committed first.
+   * A ring of 1–2 vertices blocks export and is left in progress.
+   * No open ring means the caller should use the already committed site.
+   */
+  function prepareExport(session) {
+    const n = session && session.phase === "polygon" ? session.vertices.length : 0;
+    if (n >= 3) {
+      const closed = finish(session);
+      if (closed.type === "commit-polygon") return closed;
+      return { type: "blocked", count: n };
+    }
+    if (n > 0) return { type: "blocked", count: n };
+    return { type: "use-committed" };
+  }
+
+  /** Escape. Drops an open ring and leaves draw mode. Does not touch a finished site. */
+  function cancel(session) {
+    if (!session.armed && !session.down && session.vertices.length === 0) return { type: "ignore" };
+    const discarded = session.vertices.length;
+    session.vertices = [];
+    session.down = null;
+    session.dragged = false;
+    session.armed = false;
+    session.phase = "idle";
+    return { type: "cancel", discarded: discarded };
+  }
+
+  function setVertexPixels(session, points) {
+    if (!session || !Array.isArray(points)) return;
+    const n = Math.min(session.vertices.length, points.length);
+    for (let i = 0; i < n; i++) {
+      const p = points[i];
+      if (!p || !Number.isFinite(+p.x) || !Number.isFinite(+p.y)) continue;
+      session.vertices[i].x = +p.x;
+      session.vertices[i].y = +p.y;
+    }
+  }
+
+  /**
+   * Trackpad scroll pans. A mouse wheel and a pinch still zoom.
+   * Pinch sets ctrlKey. A mouse wheel uses line mode or a large
+   * vertical step with no horizontal travel.
+   */
+  function wheelAction(ev) {
+    if (!ev || ev.ctrlKey || ev.metaKey) return "zoom";
+    const mode = ev.deltaMode == null ? 0 : +ev.deltaMode;
+    if (mode !== 0) return "zoom";
+    const dx = Math.abs(+ev.deltaX || 0);
+    const dy = Math.abs(+ev.deltaY || 0);
+    if (dx > 0.5) return "pan";
+    if (dy > 0 && dy < 50) return "pan";
+    return "zoom";
+  }
+
+  function boundsOf(vertices) {
+    if (!Array.isArray(vertices) || !vertices.length) return null;
+    let west = Infinity;
+    let south = Infinity;
+    let east = -Infinity;
+    let north = -Infinity;
+    for (let i = 0; i < vertices.length; i++) {
+      const v = vertices[i];
+      if (!v) return null;
+      const lat = +v.lat;
+      const lng = +(v.lng != null ? v.lng : v.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+      if (lng < west) west = lng;
+      if (lng > east) east = lng;
+      if (lat < south) south = lat;
+      if (lat > north) north = lat;
+    }
+    return { west: west, south: south, east: east, north: north };
+  }
+
+  return {
+    DRAG_PX: DRAG_PX,
+    CLOSE_PX: CLOSE_PX,
+    createSession: createSession,
+    arm: arm,
+    pointerDown: pointerDown,
+    pointerMove: pointerMove,
+    pointerUp: pointerUp,
+    abortPress: abortPress,
+    finish: finish,
+    prepareExport: prepareExport,
+    cancel: cancel,
+    setVertexPixels: setVertexPixels,
+    wheelAction: wheelAction,
+    boundsOf: boundsOf,
+  };
+});

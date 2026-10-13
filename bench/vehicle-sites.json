@@ -1,0 +1,74 @@
+[
+  {
+    "id": "rogers-campground",
+    "name": "Rogers campground",
+    "place": "Lancaster, New Hampshire",
+    "kind": "campground",
+    "west": -71.5506429,
+    "south": 44.463992,
+    "east": -71.543438,
+    "north": 44.4697113,
+    "fixture": "bench/fixtures/rogers-pitches.json",
+    "labels": "bench/vehicle-labels/rogers-campground.json"
+  },
+  {
+    "id": "mesa-rv",
+    "name": "Mesa RV resorts",
+    "place": "Mesa, Arizona",
+    "kind": "rv resort",
+    "west": -111.7698238,
+    "south": 33.417469,
+    "east": -111.7612268,
+    "north": 33.4228392,
+    "fixture": "bench/fixtures/mesa-rv.json",
+    "labels": "bench/vehicle-labels/mesa-rv.json"
+  },
+  {
+    "id": "wentworth-marina",
+    "name": "Wentworth marina",
+    "place": "New Castle, New Hampshire",
+    "kind": "marina",
+    "west": -70.7284,
+    "south": 43.0563,
+    "east": -70.7243,
+    "north": 43.0592,
+    "fixture": "bench/fixtures/wentworth-marina.json",
+    "labels": "bench/vehicle-labels/wentworth-marina.json"
+  },
+  {
+    "id": "citrus-gardens",
+    "name": "Citrus Gardens",
+    "place": "Mesa, Arizona",
+    "kind": "mobile home park",
+    "west": -111.7465,
+    "south": 33.4178,
+    "east": -111.741,
+    "north": 33.4212,
+    "fixture": "bench/fixtures/citrus-gardens.json",
+    "labels": "bench/vehicle-labels/citrus-gardens.json"
+  },
+  {
+    "id": "iowa-80",
+    "name": "Iowa 80 truck stop",
+    "place": "Walcott, Iowa",
+    "kind": "truck stop",
+    "west": -90.7832965,
+    "south": 41.6153174,
+    "east": -90.7755229,
+    "north": 41.6202658,
+    "fixture": "bench/fixtures/iowa-80.json",
+    "labels": "bench/vehicle-labels/iowa-80.json"
+  },
+  {
+    "id": "walmart-davenport",
+    "name": "Walmart Davenport lot",
+    "place": "Davenport, Iowa",
+    "kind": "surface lot",
+    "west": -90.5276,
+    "south": 41.5786,
+    "east": -90.523,
+    "north": 41.5823,
+    "fixture": "bench/fixtures/walmart-davenport.json",
+    "labels": "bench/vehicle-labels/walmart-davenport.json"
+  }
+]
