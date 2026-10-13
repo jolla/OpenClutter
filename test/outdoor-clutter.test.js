@@ -477,7 +477,7 @@ describe("outdoor clutter fetch", () => {
           { type: "way", tags: { amenity: "parking", parking: "underground" }, geometry: ringAt(BOX.south + 0.0026) },
         ],
       },
-      { parking: true },
+      { parking: true, cars: true },
       BOX
     );
     const garages = parsed.features.filter((f) => f.kind === "parking");
@@ -515,6 +515,95 @@ describe("outdoor clutter fetch", () => {
     assert.equal(planned.updates.length, 0);
     assert.ok(planned.items.some((item) => item.kind === "car" && item.material.name === "Car 1.5"));
     assert.equal(planned.items[0].material.rf_properties.attenuation_per_m, 6);
+  });
+
+  it("omits passenger cars unless Cars is on and still exports the other vehicles", () => {
+    const ringAt = (lat0) => [
+      { lon: BOX.west + 0.001, lat: lat0 },
+      { lon: BOX.east - 0.001, lat: lat0 },
+      { lon: BOX.east - 0.001, lat: lat0 + 0.0005 },
+      { lon: BOX.west + 0.001, lat: lat0 + 0.0005 },
+      { lon: BOX.west + 0.001, lat: lat0 },
+    ];
+    const elements = {
+      elements: [
+        { type: "way", tags: { amenity: "parking" }, geometry: ringAt(BOX.south + 0.0003) },
+        { type: "way", tags: { amenity: "parking", parking: "multi-storey" }, geometry: ringAt(BOX.south + 0.0012) },
+        { type: "way", tags: { amenity: "parking", parking: "truck" }, geometry: ringAt(BOX.south + 0.002) },
+      ],
+    };
+    const parked = parseOverpass(elements, { parking: true, rvs: true }, BOX);
+    assert.equal(parked.features.filter((f) => f.kind === "car").length, 0);
+    assert.equal(parked.features.filter((f) => f.kind === "parking").length, 1);
+    assert.equal(parked.features.filter((f) => f.kind === "truck-lot").length, 1);
+    const carsOn = parseOverpass(elements, { parking: true, cars: true }, BOX);
+    assert.equal(carsOn.features.filter((f) => f.kind === "car").length, 1);
+    assert.equal(carsOn.features.filter((f) => f.kind === "parking").length, 1);
+    assert.equal(carsOn.features.filter((f) => f.kind === "truck-lot").length, 1);
+    const carsOnly = parseOverpass(elements, { cars: true }, BOX);
+    assert.equal(carsOnly.features.filter((f) => f.kind === "car").length, 1);
+    assert.equal(carsOnly.features.filter((f) => f.kind === "truck-lot").length, 0);
+    assert.equal(carsOnly.features.filter((f) => f.kind === "parking").length, 0);
+    const onlyCars = overpassQuery(BOX, { cars: true });
+    assert.match(onlyCars, /amenity"="parking"/);
+    assert.equal(/caravan_site/.test(onlyCars), false);
+    const clutter = fs.readFileSync(path.join(__dirname, "../netlify/functions/clutter.js"), "utf8");
+    assert.match(clutter, /wantOutdoorFlag\(event, body, "includeCars"\)/);
+
+    const f = frame();
+    function box(x0, y0, x1, y1) {
+      return [
+        [f.west + (f.east - f.west) * x0, f.south + (f.north - f.south) * y0],
+        [f.west + (f.east - f.west) * x1, f.south + (f.north - f.south) * y0],
+        [f.west + (f.east - f.west) * x1, f.south + (f.north - f.south) * y1],
+        [f.west + (f.east - f.west) * x0, f.south + (f.north - f.south) * y1],
+        [f.west + (f.east - f.west) * x0, f.south + (f.north - f.south) * y0],
+      ];
+    }
+    const outdoorFeatures = [
+      { kind: "car", coords: box(0.05, 0.05, 0.28, 0.22), heightM: 1.5, explicitHeight: true, merged: true },
+      { kind: "rv", coords: box(0.35, 0.05, 0.55, 0.22), heightM: 3.5, explicitHeight: true },
+      { kind: "trailer", coords: box(0.62, 0.05, 0.9, 0.22), heightM: 3.5, explicitHeight: true },
+      { kind: "semi", coords: box(0.05, 0.4, 0.28, 0.58), heightM: 4.1, explicitHeight: true },
+      { kind: "boat", coords: box(0.35, 0.4, 0.55, 0.58), heightM: 3.5, explicitHeight: true },
+      { kind: "mobile-home", coords: box(0.62, 0.4, 0.9, 0.7), heightM: 4, explicitHeight: true },
+    ];
+    const off = buildClutter({
+      frame: f,
+      footprintsGeojson: { features: [] },
+      name: "CarsOff",
+      warnings: [],
+      includeParking: true,
+      includeRvs: true,
+      outdoorFeatures,
+    });
+    assert.equal(off.stats.carAreas, 0);
+    assert.equal(off.stats.includeCars, false);
+    assert.equal(off.stats.rvAreas, 1);
+    assert.equal(off.stats.trailerAreas, 1);
+    assert.equal(off.stats.semiAreas, 1);
+    assert.equal(off.stats.boatAreas, 1);
+    assert.equal(off.stats.mobileHomeAreas, 1);
+    const offNames = off.openintent.floorplans[0].attenuation_areas.map((a) => a.area_material.name);
+    assert.equal(offNames.some((n) => String(n).indexOf("Car") === 0), false);
+    const on = buildClutter({
+      frame: f,
+      footprintsGeojson: { features: [] },
+      name: "CarsOn",
+      warnings: [],
+      includeParking: true,
+      includeRvs: true,
+      includeCars: true,
+      outdoorFeatures,
+    });
+    assert.equal(on.stats.carAreas, 1);
+    assert.equal(on.stats.includeCars, true);
+    assert.equal(on.stats.rvAreas, 1);
+    assert.equal(on.stats.trailerAreas, 1);
+    assert.equal(on.stats.semiAreas, 1);
+    assert.equal(on.stats.boatAreas, 1);
+    assert.equal(on.stats.mobileHomeAreas, 1);
+    assert.match(on.stats.summary, /Cars 1/);
   });
 
   it("reads a map extract and closes a lake shore on the water side", () => {
@@ -625,13 +714,17 @@ describe("outdoor clutter fetch", () => {
     for (const id of ["include-parking", "include-walls", "include-poles", "include-rvs"]) {
       assert.match(html, new RegExp('id="' + id + '" checked'));
     }
+    assert.match(html, /id="include-cars"/);
+    assert.equal(/id="include-cars"[^>]*checked/.test(html), false);
     assert.match(html, />\s*Water\s*</);
     assert.match(html, />\s*Parking\s*</);
+    assert.match(html, />\s*Cars\s*</);
     assert.match(html, />\s*Walls\s*</);
     assert.match(html, />\s*Poles\s*</);
     assert.match(app, /includeWater: clutterChecked\("include-water"\)/);
     assert.match(app, /includePoles: clutterChecked\("include-poles"\)/);
     assert.match(app, /includeRvs: clutterChecked\("include-rvs"\)/);
+    assert.match(app, /includeCars: clutterChecked\("include-cars"\)/);
     assert.match(app, /function clutterChecked\(id\) \{\n  const input = document\.getElementById\(id\);\n  if \(!input\) return true;/);
     assert.match(html, />\s*RVs\s*</);
     const headline = app.slice(app.indexOf("function exportHeadline"), app.indexOf("function setCopyNote"));

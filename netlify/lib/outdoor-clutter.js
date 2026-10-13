@@ -17,6 +17,8 @@
  *
  * A surface parking lot is one 1.5 m car layer around the rows where cars
  * sit, not one box per car. Empty stalls stay out of that layer.
+ * Passenger cars, car-lot stalls, and that layer are included only when
+ * cars is on. Omitting the flag leaves them out.
  * A truck lot keeps a metal semi where the aerial shows a trailer, about
  * 16 by 2.6 m and 4.1 m tall, at 12 dB/m. Empty stalls stay empty.
  * Dock doors on a large warehouse use that same box, only where the aerial
@@ -108,7 +110,7 @@ const LINE_KINDS = { wall: true, fence: true, retaining: true, hedge: true };
 const OUTDOOR_MISS = "Outdoor clutter did not return. Export again.";
 
 function wantAny(want) {
-  return !!(want && (want.water || want.parking || want.walls || want.poles || want.rvs));
+  return !!(want && (want.water || want.parking || want.walls || want.poles || want.rvs || want.cars));
 }
 
 function overpassQuery(bbox, want) {
@@ -124,7 +126,7 @@ function overpassQuery(bbox, want) {
     parts.push('way["waterway"="riverbank"](' + box + ");");
     parts.push('way["landuse"="reservoir"](' + box + ");");
   }
-  if (want.parking) {
+  if (want.parking || want.cars) {
     parts.push('way["amenity"="parking"](' + box + ");");
     parts.push('way["amenity"="parking"]["parking"="multi-storey"](' + box + ");");
     parts.push('way["building"="parking"](' + box + ");");
@@ -1177,23 +1179,26 @@ function parseOverpass(payload, want, bbox, deckCap) {
       });
       continue;
     }
-    if (on.parking && isParkingWay(tags)) {
+    if ((on.parking || on.cars) && isParkingWay(tags)) {
       if (!isClosed(coords)) continue;
       const h = heightFor("parking", tags);
       const structure = parkingStructure(tags);
       if (!structure && !(h.explicitHeight && h.heightM > 2)) {
-        features.push({
-          kind: "car",
-          coords,
-          closed: true,
-          heightM: 1.5,
-          explicitHeight: true,
-          structure: false,
-          merged: true,
-          rank: 0,
-        });
+        if (on.cars && !isTruckLotTags(tags)) {
+          features.push({
+            kind: "car",
+            coords,
+            closed: true,
+            heightM: 1.5,
+            explicitHeight: true,
+            structure: false,
+            merged: true,
+            rank: 0,
+          });
+        }
         continue;
       }
+      if (!on.parking) continue;
       features.push({
         kind: "parking",
         coords,
