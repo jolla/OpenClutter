@@ -19,6 +19,9 @@
       backdrop-filter: blur(8px);
     }
     h1 { font-size: 16px; margin: 0 0 4px; font-weight: 650; }
+    #preview-tag { display: none; font-size: 11px; font-weight: 400; color: #8b949e; margin-left: 6px; }
+    #preview-tag.on { display: inline; }
+    #preview-tag a { color: #8b949e; margin-left: 6px; }
     .sub { color: #8b949e; font-size: 12px; margin-bottom: 12px; }
     form { display: block; }
     input[type=search] {
@@ -135,7 +138,7 @@
 <body>
   <div id="map"></div>
   <div class="panel">
-    <h1>OpenClutter</h1>
+    <h1>OpenClutter<span id="preview-tag">Free preview<a href="https://v1--openclutter.netlify.app/">Classic v1.0</a></span></h1>
     <div class="sub" id="panel-sub">Export a zip. Import it in Hamina for the aerial map and buildings.</div>
     <form id="search">
       <input type="search" id="q" placeholder="Search address, press Enter" enterkeyhint="search" required />
@@ -214,7 +217,7 @@
           <option value="8k">8K · 8192 px</option>
         </select>
       </label>
-      <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.163</span></p>
+      <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.164</span></p>
     </details>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
