@@ -115,7 +115,9 @@ const LIFT_BARE_EARTH =
   "ground under that piece and top_height to that bottom plus the building height.\n" +
   "The uphill side of the piece is cut into the ramp. Canopy still uses the uphill\n" +
   "slope under that canopy. A hill under 20 m is included.\n" +
-  "Ground under 1 m omits bottom_height.\n";
+  "Ground under 1 m omits bottom_height.\n" +
+  "When Terrain is off, or the mesh is left out, those bottoms stay on the floor.\n" +
+  "Bridges, skywalks, elevated rail, and overpasses keep the clearance the map recorded.\n";
 
 const LIFT_SURFACE =
   "This export used Copernicus DEM GLO-30, a surface model.\n" +
@@ -123,6 +125,8 @@ const LIFT_SURFACE =
   "top_height to that bottom plus the building height. Canopy still uses the\n" +
   "uphill slope under that canopy, plus the foliage height.\n" +
   "The 20 m ski-hill gate does not apply. Ground under 1 m omits bottom_height.\n" +
+  "When Terrain is off, or the mesh is left out, those bottoms stay on the floor.\n" +
+  "Bridges, skywalks, elevated rail, and overpasses keep the clearance the map recorded.\n" +
   "Do not write bottom_height: 0.\n";
 
 const ZIP_TROUBLESHOOT =
@@ -514,7 +518,9 @@ const TERRAIN_README =
   "edge is that low side, and both corners of that edge share it. The opposite\n" +
   "edge shares the higher z. A quad with a different z on every corner is\n" +
   "rejected. The ring is not closed.\n" +
-  "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
+  "If terrain-clipboard.json is absent, the mesh was left out.\n" +
+  "Buildings, parts, trees, trunks, vehicles, and stacks then sit on flat ground at 0.\n" +
+  "Bridges, skywalks, elevated rail, and overpasses keep the clearance the map recorded.\n" +
   "Building attenuating objects stay in this OpenIntent zip. When this mesh is pasted,\n" +
   "bottom_height is bottom height from floor (the downhill ground under that piece,\n" +
   "including a hill under 20 m) and top_height is top height from floor (that bottom\n" +
@@ -575,8 +581,10 @@ const TERRAIN_README_SURFACE =
   "edge is that low side, and both corners of that edge share it. The opposite\n" +
   "edge shares the higher z. A quad with a different z on every corner is\n" +
   "rejected. The ring is not closed.\n" +
-  "If terrain-clipboard.json is absent, the DEM request did not return a usable grid.\n" +
-  "Building attenuating objects stay in this OpenIntent zip. They are cut into this DEM:\n" +
+  "If terrain-clipboard.json is absent, the mesh was left out.\n" +
+  "Buildings, parts, trees, trunks, vehicles, and stacks then sit on flat ground at 0.\n" +
+  "Bridges, skywalks, elevated rail, and overpasses keep the clearance the map recorded.\n" +
+  "Building attenuating objects stay in this OpenIntent zip. When this mesh is pasted, they are cut into this DEM:\n" +
   "bottom_height is the downhill ground under that piece, and top_height is that\n" +
   "bottom plus the building height. The uphill side of the piece is in the ramp.\n" +
   "Canopy polygons still use the uphill slope under that canopy, plus the foliage\n" +
