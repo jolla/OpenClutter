@@ -7,6 +7,7 @@ const path = require("node:path");
 const jpeg = require("jpeg-js");
 const jobs = require("../netlify/lib/export-jobs");
 const { exportPercent } = require("../netlify/lib/export-progress");
+const { handler: statusHandler } = require("../netlify/functions/export-status");
 const { geoFrame, capEsriExportFrame } = require("../netlify/lib/geo-frame");
 const {
   AERIAL_STAGE_BUDGET_MS,
@@ -114,12 +115,12 @@ describe("aerial budget", () => {
     assert.equal(area, plate.imgW * plate.imgH);
   });
 
-  it("stitches tile JPEGs back to the plate size", () => {
+  it("stitches tile JPEGs back to the plate size", async () => {
     const tiles = [
       { x: 0, y: 0, imgW: 8, imgH: 8 },
       { x: 8, y: 0, imgW: 8, imgH: 8 },
     ];
-    const buf = stitchTiles({ imgW: 16, imgH: 8 }, tiles, [
+    const buf = await stitchTiles({ imgW: 16, imgH: 8 }, tiles, [
       solidJpeg(8, 8, [220, 10, 10]),
       solidJpeg(8, 8, [10, 10, 220]),
     ]);
@@ -293,5 +294,99 @@ describe("aerial budget", () => {
       0
     );
     assert.ok(moving >= 1 && moving < 100, String(moving));
+  });
+
+  it("counts decode and stitch in the budget and moves status during Fetching aerial", async () => {
+    const tiles = [];
+    const bufs = [];
+    for (let i = 0; i < 6; i++) {
+      tiles.push({ x: i * 8, y: 0, imgW: 8, imgH: 8 });
+      bufs.push(solidJpeg(8, 8, [20, 140, 20]));
+    }
+    const t0 = Date.now();
+    let paces = 0;
+    await assert.rejects(
+      () =>
+        stitchTiles({ imgW: 48, imgH: 8 }, tiles, bufs, {
+          deadlineAt: t0 + 100,
+          pace: async () => {
+            paces += 1;
+            await new Promise((resolve) => setTimeout(resolve, 80));
+          },
+        }),
+      (err) => err && err.name === "AbortError"
+    );
+    const stitchElapsed = Date.now() - t0;
+    assert.ok(paces > 0 && paces < 6, "paces " + paces);
+    assert.ok(stitchElapsed < 500, "stitch elapsed " + stitchElapsed);
+
+    const big = {
+      west: -86.49,
+      south: 40.02,
+      east: -86.48,
+      north: 40.03,
+      imgW: 3000,
+      imgH: 2000,
+    };
+    const small = { west: big.west, south: big.south, east: big.east, north: big.north, imgW: 40, imgH: 30 };
+    assert.ok(tilePlan(big).tiles.length >= 4);
+    const budgetMs = 280;
+    const raced = Date.now();
+    const got = await racePlates(
+      [
+        { plate: big, tile: true },
+        { plate: small, tile: false },
+      ],
+      {
+        budgetMs,
+        fetchImage: (frame, signal) => {
+          if (frame.imgW > 200) {
+            return new Promise((resolve, reject) => {
+              const timer = setTimeout(() => resolve(solidJpeg(8, 8, [1, 1, 1])), 60000);
+              const abort = () => {
+                clearTimeout(timer);
+                reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+              };
+              if (signal) {
+                if (signal.aborted) abort();
+                else signal.addEventListener("abort", abort, { once: true });
+              }
+            });
+          }
+          return Promise.resolve(solidJpeg(frame.imgW, frame.imgH, [10, 10, 200]));
+        },
+      }
+    );
+    const raceElapsed = Date.now() - raced;
+    assert.equal(got.stepped, true);
+    assert.equal(got.index, 1);
+    assert.ok(raceElapsed < budgetMs + 500, "race elapsed " + raceElapsed);
+
+    jobs.setExportStoreForTests(memoryStore());
+    const id = "12121212-1212-4212-8212-121212121212";
+    await jobs.createJob(id);
+    await jobs.updateJob(id, {
+      state: "running",
+      stage: "Fetching aerial",
+      createdAt: Date.now() - 8000,
+      aerialStartedAt: Date.now() - 8000,
+    });
+    const res = await statusHandler({ httpMethod: "GET", queryStringParameters: { job: id } });
+    const body = JSON.parse(res.body);
+    assert.equal(body.stage, "Fetching aerial");
+    assert.equal(body.stageLabel, "Fetching aerial");
+    assert.notEqual(body.stageLabel, "Fetching map");
+    assert.ok(body.progress > 0, "progress " + body.progress);
+    assert.ok(body.percent >= 1 && body.percent < 100, "percent " + body.percent);
+    assert.equal(body.state === "done" ? body.percent : body.percent < 100, true);
+    const beat = await jobs.writeHeartbeat(id, "Fetching aerial", { tilesDone: 3, tilesTotal: 8 });
+    assert.equal(beat.heartbeatStage, "Fetching aerial");
+    assert.ok(beat.aerialElapsedMs > 0);
+    const moved = await statusHandler({ httpMethod: "GET", queryStringParameters: { job: id } });
+    const movedBody = JSON.parse(moved.body);
+    assert.equal(movedBody.stageLabel, "Fetching aerial");
+    assert.ok(movedBody.percent >= 1 && movedBody.percent < 100, "tiles percent " + movedBody.percent);
+    assert.equal(exportPercent({ stage: "Zip ready", state: "done" }, 0), 100);
+    assert.ok(exportPercent({ stage: "Fetching aerial", state: "running", aerialElapsedMs: 8000 }, 0) >= 1);
   });
 });

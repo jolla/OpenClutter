@@ -1033,6 +1033,15 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
 
 let exportLive = false;
 let exportPercentHeld = 0;
+let exportTick = 0;
+let exportShownStage = "";
+
+function stopExportTick() {
+  if (exportTick) {
+    clearInterval(exportTick);
+    exportTick = 0;
+  }
+}
 
 function hideExportProgress() {
   if (exportLive) return;
@@ -1051,7 +1060,9 @@ function hideExportProgress() {
 }
 
 function endExportProgress() {
+  stopExportTick();
   exportLive = false;
+  exportShownStage = "";
   hideExportProgress();
 }
 
@@ -1059,11 +1070,16 @@ function showExportProgress(job) {
   exportLive = true;
   const view = job ? Object.assign({}, job) : {};
   const stageName = String(view.stage || view.heartbeatStage || "");
-  if (/^Fetching (aerial|map)\b/i.test(stageName) && !(view.aerialElapsedMs > 0)) {
-    const started = Number(view.createdAt);
-    if (started > 0) view.aerialElapsedMs = Math.max(0, Date.now() - started);
+  if (stageName) exportShownStage = stageName;
+  if (/^Fetching (aerial|map)\b/i.test(stageName)) {
+    const started = Number(view.aerialStartedAt || view.createdAt);
+    let elapsed = started > 0 ? Math.max(0, Date.now() - started) : 0;
+    if (+view.aerialElapsedMs > elapsed) elapsed = +view.aerialElapsedMs;
+    if (elapsed > 0) view.aerialElapsedMs = elapsed;
   }
-  const pct = OpenClutterProgress.exportPercent(view, exportPercentHeld);
+  let pct = OpenClutterProgress.exportPercent(view, exportPercentHeld);
+  if (view.state === "done") pct = 100;
+  else if (Number.isFinite(+view.percent) && +view.percent > pct) pct = Math.min(99, Math.floor(+view.percent));
   exportPercentHeld = pct;
   const fill = document.getElementById("export-fill");
   const label = document.getElementById("export-label");
@@ -1078,7 +1094,9 @@ function showExportProgress(job) {
     exportBtn.setAttribute("aria-valuetext", "Exporting " + pct + "%");
   }
   const line = document.getElementById("status-line");
-  if (line) line.textContent = (job && (job.stageLabel || job.stage)) || "Fetching map";
+  let stageText = (job && (job.stageLabel || job.stage)) || "Fetching aerial";
+  if (/^Fetching map$/i.test(stageText)) stageText = "Fetching aerial";
+  if (line) line.textContent = stageText;
   if (statusEl) statusEl.className = "";
   const more = document.getElementById("status-more");
   if (more) {
@@ -1088,12 +1106,26 @@ function showExportProgress(job) {
 }
 
 function beginExportProgress() {
+  stopExportTick();
   exportPercentHeld = 0;
+  exportShownStage = "Fetching aerial";
+  const started = Date.now();
   showExportProgress({
     stage: "Fetching aerial",
-    stageLabel: "Fetching map",
+    stageLabel: "Fetching aerial",
     state: "running",
+    createdAt: started,
   });
+  exportTick = setInterval(() => {
+    if (!exportLive) return;
+    if (!/^Fetching (aerial|map)\b/i.test(exportShownStage)) return;
+    showExportProgress({
+      stage: "Fetching aerial",
+      stageLabel: "Fetching aerial",
+      state: "running",
+      createdAt: started,
+    });
+  }, 400);
 }
 
 function sleep(ms) {

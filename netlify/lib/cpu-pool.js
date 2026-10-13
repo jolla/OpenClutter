@@ -165,6 +165,26 @@ let workers = null;
 let seq = 1;
 const pending = new Map();
 let failed = false;
+const workerBusy = [];
+
+function bumpBusy(index, delta) {
+  workerBusy[index] = Math.max(0, (workerBusy[index] || 0) + delta);
+}
+
+function freestWorker(poolLength, prefer) {
+  let best = Math.abs(prefer | 0) % poolLength;
+  let bestN = workerBusy[best] || 0;
+  if (!bestN) return best;
+  for (let i = 0; i < poolLength; i++) {
+    const n = workerBusy[i] || 0;
+    if (n < bestN) {
+      best = i;
+      bestN = n;
+      if (!bestN) break;
+    }
+  }
+  return best;
+}
 
 function onMessage(msg) {
   if (!msg || msg.id == null) return;
@@ -222,8 +242,11 @@ function runOn(workerIndex, task, payload, hooks) {
     });
   }
   const id = seq++;
-  const worker = pool[Math.abs(workerIndex | 0) % pool.length];
-  return new Promise((resolve, reject) => {
+  let index = Math.abs(workerIndex | 0) % pool.length;
+  if (hooks && hooks.balance) index = freestWorker(pool.length, index);
+  const worker = pool[index];
+  bumpBusy(index, 1);
+  const job = new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject, onTime });
     try {
       worker.postMessage({ id, task, payload });
@@ -232,6 +255,8 @@ function runOn(workerIndex, task, payload, hooks) {
       reject(err);
     }
   });
+  job.finally(() => bumpBusy(index, -1));
+  return job;
 }
 
 function runOne(task, payload, hooks) {
@@ -257,6 +282,7 @@ async function runQueue(task, payloads) {
       const payload = list[i];
       const tileId = payload && payload.tileId != null ? payload.tileId : task + "-" + i;
       out[i] = await runOn(workerIndex, task, payload, {
+        balance: true,
         onTime(info) {
           noteTile(tileId, info);
           completeTreeTile(task);
