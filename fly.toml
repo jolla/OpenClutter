@@ -1,7 +1,7 @@
 # Placeholder name. Change it before fly launch if it is already taken.
 # The public URL is https://<app-name>.fly.dev
 app = "openclutter-export"
-primary_region = "iad"
+primary_region = "ord"
 
 [build]
   dockerfile = "Dockerfile"
@@ -27,14 +27,16 @@ primary_region = "iad"
   min_machines_running = 0
   processes = ["app"]
 
-  # One export holds its POST open. soft_limit 1 made Fly look for another
-  # machine, and hard_limit 1 refused the request that was already here:
-  # "could not find a good candidate within 40 attempts at load balancing".
-  # These are Fly's current http_service example values, well above 1.
+  # One export per machine. Each export holds its POST open, so a second
+  # export goes to another machine, and the proxy starts a stopped one.
+  # With every machine busy the proxy refuses, and Netlify retries against
+  # Fly a few times (netlify/lib/fly-handoff.js) before it runs the job
+  # itself. fly/worker.js still answers 409 if two ever land together.
+  # Machine count: fly scale count 4. Idle machines exit after 5 minutes.
   [http_service.concurrency]
     type = "requests"
-    soft_limit = 200
-    hard_limit = 250
+    soft_limit = 1
+    hard_limit = 1
 
   # 15 minutes. The export also writes a newline every 20 seconds.
   # No periodic health check. The process exits from idle jobs, not from

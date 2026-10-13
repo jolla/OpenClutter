@@ -115,6 +115,28 @@ describe("fly worker handoff", { concurrency: 1 }, () => {
     assert.equal(result.handed, false);
   });
 
+  it("retries a busy 409 against Fly before falling back", async () => {
+    saveEnv();
+    process.env.FLY_WORKER_URL = "https://openclutter-export.fly.dev";
+    process.env.FLY_WORKER_SECRET = "local-secret";
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    await jobs.createJob(JOB);
+    const waits = [];
+    setHandoffDepsForTests({ sleep: async (ms) => { waits.push(ms); } });
+    let calls = 0;
+    const fakeFetch = async () => {
+      calls++;
+      if (calls < 3) return { status: 409, text: async () => "busy" };
+      return { status: 200, text: async () => '{"ok":true}' };
+    };
+    const result = await handOffExport(JOB, innerEvent(), fakeFetch);
+    assert.equal(calls, 3);
+    assert.equal(result.handed, true);
+    assert.equal(result.fallback, false);
+    assert.ok(waits.includes(3000) && waits.includes(6000));
+  });
+
   it("keeps the Netlify background path when the worker does not accept the job", async () => {
     saveEnv();
     process.env.FLY_WORKER_URL = "https://openclutter-export.fly.dev";
@@ -122,6 +144,7 @@ describe("fly worker handoff", { concurrency: 1 }, () => {
     const store = memoryStore();
     jobs.setExportStoreForTests(store);
     await jobs.createJob(JOB);
+    setHandoffDepsForTests({ sleep: async () => {} });
     let seen = null;
     const fakeFetch = async (url, init) => {
       seen = { url: String(url), authorization: init.headers.authorization };
@@ -566,7 +589,7 @@ function tomlInt(toml, key) {
 }
 
 describe("fly worker config", () => {
-  it("accepts more than one request and exits itself when idle", () => {
+  it("runs one export per machine and exits itself when idle", () => {
     const toml = fs.readFileSync(path.join(root, "fly.toml"), "utf8");
     const docker = fs.readFileSync(path.join(root, "Dockerfile"), "utf8");
     const docs = fs.readFileSync(path.join(root, "docs/fly-worker.md"), "utf8");
@@ -582,13 +605,9 @@ describe("fly worker config", () => {
     assert.match(toml, /policy = "on-failure"/);
     const hard = tomlInt(toml, "hard_limit");
     const soft = tomlInt(toml, "soft_limit");
-    assert.ok(hard > 1, "hard_limit " + hard);
-    assert.ok(soft > 1, "soft_limit " + soft);
-    assert.ok(hard > soft);
-    assert.equal(hard, 250);
-    assert.equal(soft, 200);
-    assert.equal(/hard_limit = 1/.test(toml), false);
-    assert.equal(/soft_limit = 1/.test(toml), false);
+    // One export per machine. The proxy sends the next export to another machine.
+    assert.equal(hard, 1);
+    assert.equal(soft, 1);
     assert.equal(IDLE_EXIT_MS, 5 * 60 * 1000);
     assert.match(docs, /flyctl deploy --local-only/);
     assert.match(docs, /auto_stop_machines = "off"/);
