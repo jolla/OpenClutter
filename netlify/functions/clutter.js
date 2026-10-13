@@ -1322,7 +1322,8 @@ async function handleClutter(event) {
   const includeWalls = wantOutdoorFlag(event, body, "includeWalls");
   const includePoles = wantOutdoorFlag(event, body, "includePoles");
   const includeRvs = wantOutdoorFlag(event, body, "includeRvs");
-  const outdoorOn = includeWater || includeParking || includeWalls || includePoles || includeRvs;
+  const includeCars = wantOutdoorFlag(event, body, "includeCars");
+  const outdoorOn = includeWater || includeParking || includeWalls || includePoles || includeRvs || includeCars;
   const includeTerrain = wantTerrain(event, body);
   // The dev page sets this and reads elevation on its own request. The zip
   // then does not start a DEM, so the map cannot omit it.
@@ -1400,6 +1401,7 @@ async function handleClutter(event) {
           walls: includeWalls,
           poles: includePoles,
           rvs: includeRvs,
+          cars: includeCars,
         }, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background, deckCap })
       );
     }
@@ -2080,7 +2082,7 @@ async function handleClutter(event) {
         process.stderr.write("stage outdoor-parallel " + outdoorFeatures.length + "\n");
       }
       const buildings = [];
-      if ((includeWater === true || includeParking === true || includeRvs === true) && outdoorOn && outdoorMiss !== true) {
+      if ((includeWater === true || includeParking === true || includeRvs === true || includeCars === true) && outdoorOn && outdoorMiss !== true) {
         for (let i = 0; i < preview.oiAreas.length; i++) {
           buildings.push({
             index: i,
@@ -2093,12 +2095,14 @@ async function handleClutter(event) {
         outdoorOn && outdoorMiss !== true
           ? outdoorFeatures
           : outdoorFeatures.filter((feat) => feat && feat.kind === "storage");
+      const outdoorForPlan =
+        includeCars === true ? liveOutdoor : liveOutdoor.filter((feat) => !feat || feat.kind !== "car");
       const deckCapNow = raisedDeckCap(areaCapOverride);
       parallelTasks.push(
         stageClock
           .timeSpan("vehicle", () =>
             detectParallel.outdoorParallel({
-              features: liveOutdoor.concat(guidewayFeatures, bridgeFeatures),
+              features: outdoorForPlan.concat(guidewayFeatures, bridgeFeatures),
               frame,
               buildings,
               parkingRings:
@@ -2192,6 +2196,7 @@ async function handleClutter(event) {
       includeWalls,
       includePoles,
       includeRvs,
+      includeCars,
       outdoorMiss,
       guidewayFeatures,
       includeGuideways: true,
