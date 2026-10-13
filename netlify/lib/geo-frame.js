@@ -148,6 +148,7 @@ function autoImageryPlan() {
   return [
     { maxSide: 8192, metersPerPx: 0.075 },
     { maxSide: 4096, metersPerPx: 0.15 },
+    { maxSide: 4096, metersPerPx: 0.25 },
     { maxSide: IMAGERY_MAX_SIDE_DEV, metersPerPx: 0.4 },
     { maxSide: IMAGERY_MAX_SIDE, metersPerPx: IMAGERY_METERS_PER_PX_DEV },
     { maxSide: 400, metersPerPx: 2 },

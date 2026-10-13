@@ -100,6 +100,7 @@ describe("shared geo frame", () => {
       [
         [8192, 0.075],
         [4096, 0.15],
+        [4096, 0.25],
         [2048, 0.4],
         [1040, 0.5],
         [400, 2],
@@ -118,6 +119,7 @@ describe("shared geo frame", () => {
       [
         [8192, 0.075],
         [4096, 0.15],
+        [4096, 0.25],
         [2048, 0.4],
         [1040, 0.5],
         [400, 2],
@@ -150,6 +152,7 @@ describe("shared geo frame", () => {
       [
         [8192, 0.075],
         [4096, 0.15],
+        [4096, 0.25],
         [2048, 0.4],
         [1040, 0.5],
         [400, 2],
@@ -160,6 +163,7 @@ describe("shared geo frame", () => {
       [
         [8192, 0.075],
         [4096, 0.15],
+        [4096, 0.25],
         [2048, 0.4],
         [1040, 0.5],
         [400, 2],
@@ -857,5 +861,32 @@ describe("Esri plate pixel budget", () => {
     assert.ok(safe.imgW * safe.imgH <= ESRI_MAX_EXPORT_PIXELS, String(safe.imgW * safe.imgH));
     assert.ok(Math.max(safe.imgW, safe.imgH) > 3000, safe.imgW + "x" + safe.imgH);
     assert.equal(capEsriExportFrame(geoFrame(lancaster, { maxSide: 1040, metersPerPx: 1 })).imgW, geoFrame(lancaster, { maxSide: 1040, metersPerPx: 1 }).imgW);
+  });
+
+  it("keeps a finer plate after the pixel cap instead of repeating it", () => {
+    const mpdLon = 111320 * Math.cos((40 * Math.PI) / 180);
+    const tall = {
+      west: -90,
+      south: 40,
+      east: -90 + 450 / mpdLon,
+      north: 40 + 580 / 110540,
+    };
+    const plan = imageryExportPlan(true, tall, "auto");
+    const plates = [];
+    const seen = new Set();
+    for (let i = 0; i < plan.length; i++) {
+      const raw = geoFrame(tall, plan[i]);
+      const plate = capEsriExportFrame(raw);
+      const key = plate.imgW + "x" + plate.imgH;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      plates.push(plate);
+    }
+    const first = Math.max(plates[0].imgW, plates[0].imgH);
+    const second = Math.max(plates[1].imgW, plates[1].imgH);
+    assert.ok(first > 3000, "capped side " + first);
+    assert.ok(plates[0].imgW * plates[0].imgH <= ESRI_MAX_EXPORT_PIXELS);
+    assert.ok(second > 1800 && second < first, "next side " + second + " from " + first);
+    assert.ok(second > Math.max(plates[2].imgW, plates[2].imgH));
   });
 });

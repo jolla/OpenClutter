@@ -279,6 +279,23 @@ describe("USGS lidar", () => {
     assert.equal(applied.features[0].properties.heightSource, "warehouse");
   });
 
+  it("does not turn canopy vegetation into a stacked yard", () => {
+    const points = [];
+    for (let ix = 0; ix <= 30; ix++) {
+      for (let iy = 0; iy <= 24; iy++) points.push(pt(ix, iy, 280, 2));
+    }
+    for (let ix = 8; ix <= 22; ix++) {
+      for (let iy = 0; iy <= 4; iy++) {
+        points.push(pt(ix, iy, 286, 5));
+        points.push(pt(ix, iy, 284, 5));
+      }
+    }
+    const grid = gridFromPoints(points, frame, { cellM: CELL, spacingM: 2 });
+    const host = ringAround(4, 6, 28, 22);
+    const yards = storageYards(grid, [host]);
+    assert.equal(yards.length, 0);
+  });
+
   it("says whether lidar heights were used", () => {
     assert.equal(lidarStatusLine(null), "Lidar heights not used.");
     assert.equal(lidarStatusLine({ skipped: "outside" }), "Lidar heights not used.");

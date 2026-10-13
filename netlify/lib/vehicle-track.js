@@ -53,8 +53,12 @@ const ROOF_TOUCH_M = 3;
 const ROOF_MIN_M2 = 1.4;
 const CAR_MERGE_MIN = 8;
 const SEMI_CAP = 80;
-/** A parked semi sits about this far out from the dock wall. */
-const DOCK_DEPTH_M = 46;
+/**
+ * A parked semi sits out from the dock wall, often in more than one row.
+ * Six trailer lengths covers a yard beside a long wall. Empty pavement
+ * still has to show a trailer body and a row.
+ */
+const DOCK_DEPTH_M = 96;
 const DOCK_MIN_EDGE_M = 28;
 const DOCK_MIN_ROOF_M2 = 8000;
 const BOAT_CAP = 200;
@@ -1618,70 +1622,76 @@ function semisInLotWork(ring, frame, plate, holes) {
   }
   const margin = px(9.6);
   const scan = Math.max(1, px(1.2));
+  function axisHit(x, y, ang) {
+    const nx = Math.cos(ang);
+    const ny = Math.sin(ang);
+    const tx = -ny;
+    const ty = nx;
+    let sum = 0;
+    let n = 0;
+    let hi = 0;
+    const half = px(4.8);
+    const alongStep = Math.max(1, px(0.8));
+    for (let t = -half; t <= half + 0.01; t += alongStep) {
+      const v = yAt(x + tx * t, y + ty * t);
+      sum += v;
+      n++;
+      if (v > 175) hi++;
+    }
+    const body = sum / n;
+    if (hi < Math.max(3, Math.round(n * 0.45)) || body < 175) return null;
+    const endPx = px(8);
+    const end1 = yAt(x - tx * endPx, y - ty * endPx);
+    const end2 = yAt(x + tx * endPx, y + ty * endPx);
+    if (body < end1 + 16 || body < end2 + 16) return null;
+    let sh = 0;
+    let sh2 = 0;
+    for (let s = 0; s < 3; s++) {
+      const t = px(2) + s * px(0.8);
+      sh += yAt(x + nx * t, y + ny * t);
+      sh2 += yAt(x - nx * t, y - ny * t);
+    }
+    sh /= 3;
+    sh2 /= 3;
+    const usePos = sh <= sh2;
+    const shadow = usePos ? sh : sh2;
+    const other = usePos ? sh2 : sh;
+    if (shadow > 100 || body - shadow < 45 || other < 120) return null;
+    const farPx = px(6.4);
+    const farS = usePos ? yAt(x + nx * farPx, y + ny * farPx) : yAt(x - nx * farPx, y - ny * farPx);
+    const farO = usePos ? yAt(x - nx * farPx, y - ny * farPx) : yAt(x + nx * farPx, y + ny * farPx);
+    if (farS > body - 15 && farO > body - 15) return null;
+    let bestV = -1;
+    let bestT = 0;
+    const nudge = px(2.4);
+    for (let t = -nudge; t <= nudge + 0.01; t += Math.max(1, px(0.4))) {
+      const v = yAt(x + nx * t, y + ny * t);
+      if (v > bestV) {
+        bestV = v;
+        bestT = t;
+      }
+    }
+    return {
+      x: x + nx * bestT,
+      y: y + ny * bestT,
+      score: body - shadow,
+      tx,
+      ty,
+      nx,
+      ny,
+    };
+  }
   const hits = [];
   for (let y = Math.max(margin, yLo); y < Math.min(H - margin, yHi); y += scan) {
     for (let x = Math.max(margin, xLo); x < Math.min(W - margin, xHi); x += scan) {
       if (!inLot(x, y)) continue;
       const ci = ((y / cell) | 0) * cols + ((x / cell) | 0);
       if (strength[ci] < 0.16) continue;
+      // A yard's strong edge is often the row, not the trailer. Try that
+      // axis too, so a packed row is not read as a wide roof.
       const ang = ori[ci];
-      const nx = Math.cos(ang);
-      const ny = Math.sin(ang);
-      const tx = -ny;
-      const ty = nx;
-      let sum = 0;
-      let n = 0;
-      let hi = 0;
-      const half = px(4.8);
-      const alongStep = Math.max(1, px(0.8));
-      for (let t = -half; t <= half + 0.01; t += alongStep) {
-        const v = yAt(x + tx * t, y + ty * t);
-        sum += v;
-        n++;
-        if (v > 175) hi++;
-      }
-      const body = sum / n;
-      if (hi < Math.max(3, Math.round(n * 0.45)) || body < 175) continue;
-      const endPx = px(8);
-      const end1 = yAt(x - tx * endPx, y - ty * endPx);
-      const end2 = yAt(x + tx * endPx, y + ty * endPx);
-      if (body < end1 + 16 || body < end2 + 16) continue;
-      let sh = 0;
-      let sh2 = 0;
-      for (let s = 0; s < 3; s++) {
-        const t = px(2) + s * px(0.8);
-        sh += yAt(x + nx * t, y + ny * t);
-        sh2 += yAt(x - nx * t, y - ny * t);
-      }
-      sh /= 3;
-      sh2 /= 3;
-      const usePos = sh <= sh2;
-      const shadow = usePos ? sh : sh2;
-      const other = usePos ? sh2 : sh;
-      if (shadow > 100 || body - shadow < 45 || other < 120) continue;
-      const farPx = px(6.4);
-      const farS = usePos ? yAt(x + nx * farPx, y + ny * farPx) : yAt(x - nx * farPx, y - ny * farPx);
-      const farO = usePos ? yAt(x - nx * farPx, y - ny * farPx) : yAt(x + nx * farPx, y + ny * farPx);
-      if (farS > body - 15 && farO > body - 15) continue;
-      let bestV = -1;
-      let bestT = 0;
-      const nudge = px(2.4);
-      for (let t = -nudge; t <= nudge + 0.01; t += Math.max(1, px(0.4))) {
-        const v = yAt(x + nx * t, y + ny * t);
-        if (v > bestV) {
-          bestV = v;
-          bestT = t;
-        }
-      }
-      hits.push({
-        x: x + nx * bestT,
-        y: y + ny * bestT,
-        score: body - shadow,
-        tx,
-        ty,
-        nx,
-        ny,
-      });
+      const hit = axisHit(x, y, ang) || axisHit(x, y, ang + Math.PI / 2);
+      if (hit) hits.push(hit);
     }
   }
   hits.sort((a, b) => b.score - a.score);

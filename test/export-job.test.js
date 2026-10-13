@@ -137,6 +137,32 @@ describe("export jobs", { concurrency: 1 }, () => {
     assert.equal(body.tilesDone, 4);
     assert.equal(body.tilesTotal, 16);
     assert.equal(body.stage, "Trees");
+    assert.equal(body.stageLabel, "Trees");
+    const moved = "44444444-4444-4444-8444-444444444444";
+    await jobs.createJob(moved);
+    await jobs.updateJob(moved, { state: "running", stage: "Fetching aerial" });
+    await jobs.writeHeartbeat(moved, "Canopy height");
+    const mid = await statusHandler({
+      httpMethod: "GET",
+      queryStringParameters: { job: moved },
+    });
+    const midBody = JSON.parse(mid.body);
+    assert.equal(midBody.stage, "Canopy height");
+    assert.equal(midBody.stageLabel, "Canopy height");
+    assert.equal(midBody.progress, 0.07);
+    await jobs.writeHeartbeat(moved, "Fetching aerial");
+    const stuck = await jobs.readJob(moved);
+    assert.equal(stuck.stage, "Canopy height");
+    assert.equal(stuck.stageLabel, "Canopy height");
+    const stuckBody = JSON.parse(
+      (
+        await statusHandler({
+          httpMethod: "GET",
+          queryStringParameters: { job: moved },
+        })
+      ).body
+    );
+    assert.equal(stuckBody.stageLabel, "Canopy height");
     const fresh = "88888888-8888-4888-8888-888888888888";
     await jobs.createJob(fresh);
     const empty = await statusHandler({
