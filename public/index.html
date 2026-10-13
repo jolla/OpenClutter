@@ -121,13 +121,49 @@
     }
     #env-badge { display: none; }
     #env-badge.on { display: inline; }
-    #app-version { font-size: inherit; font-weight: inherit; color: inherit; }
+    #app-version {
+      display: inline;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: none;
+      font: inherit;
+      font-size: inherit;
+      font-weight: inherit;
+      color: inherit;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    #app-version:hover,
+    #app-version:focus-visible {
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
     #env-badge.on + #app-version::before {
       content: "·";
       margin: 0 4px;
       font-weight: 500;
       color: #6e7681;
     }
+    #whats-new {
+      margin-top: 6px;
+      font-size: 11px;
+      line-height: 1.35;
+      color: #8b949e;
+    }
+    #whats-new[hidden] { display: none; }
+    #whats-new .whats-new-title {
+      margin: 0;
+      font-size: 11px;
+      font-weight: 600;
+      color: #c9d1d9;
+    }
+    #whats-new ul {
+      margin: 4px 0 0;
+      padding-left: 16px;
+      color: #8b949e;
+    }
+    #whats-new li { margin-top: 3px; }
     .leaflet-tooltip.area-chip {
       background: #161b22ee;
       border: 1px solid #3fb950;
@@ -257,7 +293,20 @@
           <option value="8k">8K · 8192 px</option>
         </select>
       </label>
-      <p class="build"><span id="env-badge">dev</span><span id="app-version">v1.1.177</span></p>
+      <p class="build"><span id="env-badge">dev</span><button type="button" id="app-version" aria-expanded="false" aria-controls="whats-new">v1.1.178</button></p>
+      <div id="whats-new" hidden>
+        <p class="whats-new-title">What's new in 1.1</p>
+        <ul>
+          <li>Trees with rounded crowns and trunks, plus forest stands with undergrowth</li>
+          <li>Detailed building outlines, including parking decks, large warehouses and podiums</li>
+          <li>Bridges and elevated rail exported as raised objects</li>
+          <li>Semi-trailers, RVs and boats (cars optional)</li>
+          <li>Terrain from elevation data, pasted into Hamina with Copy terrain</li>
+          <li>Sharper aerial maps, chosen automatically</li>
+          <li>Two GPS points and site notes added to the import</li>
+          <li>Much faster exports, with a progress bar and timer</li>
+        </ul>
+      </div>
       </div>
     </details>
     </div>
