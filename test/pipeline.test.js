@@ -1464,7 +1464,8 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(panFn, /spacePan/);
     assert.match(app, /ArrowLeft/);
     assert.match(app, /pointerType === "touch"/);
-    assert.match(app, /wheelAction/);
+    assert.match(app, /scrollWheelZoom/);
+    assert.doesNotMatch(app, /wheelAction\(ev\) !== "pan"/);
     assert.match(app, /map\.touchZoom/);
     assert.match(app, /Escape/);
     assert.match(app, /commit-box/);

@@ -170,7 +170,7 @@ let terrainPasteGpsOnly = false;
 // native zoom down so the last good tiles scale up instead of breaking the map.
 const ESRI_TILE_MAX_ZOOM = 23;
 const mapZoom = qualityPage() ? ESRI_TILE_MAX_ZOOM : 18;
-const map = L.map("map", { maxZoom: mapZoom }).setView([36.128, -115.16], 15);
+const map = L.map("map", { maxZoom: mapZoom }).setView([36.128, -115.16], 17);
 // CARTO's keyless dark tiles now paint "API KEY REQUIRED" through the aerial.
 // The draw sits on World Imagery. The page background shows where a tile misses.
 const imageryTiles = L.tileLayer(
@@ -818,19 +818,6 @@ mapEl.addEventListener("click", (ev) => {
   clearFinishedShape();
 });
 
-mapEl.addEventListener(
-  "wheel",
-  (ev) => {
-    if (OpenClutterDraw.wheelAction(ev) !== "pan") return;
-    ev.preventDefault();
-    ev.stopPropagation();
-    const dx = +ev.deltaX || 0;
-    const dy = +ev.deltaY || 0;
-    if (!dx && !dy) return;
-    map.panBy(L.point(dx, dy), { animate: false });
-  },
-  { capture: true, passive: false }
-);
 
 mapEl.addEventListener(
   "contextmenu",
@@ -917,7 +904,7 @@ document.getElementById("search").onsubmit = async (e) => {
     if (!r.ok) throw new Error(hits.error || "Geocode failed");
     if (!hits.length) throw new Error("No results. Try the street address.");
     const hit = hits[0];
-    map.setView([+hit.lat, +hit.lon], 16);
+    map.setView([+hit.lat, +hit.lon], 18);
     if (!bbox) setStatus("");
     else if (exportBtn.disabled) setStatus("Area must be between 40 m and 10 km on a side.", true);
     else setStatus("Ready to export.");
