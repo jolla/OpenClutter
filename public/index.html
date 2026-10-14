@@ -61,12 +61,45 @@
       cursor: pointer; width: fit-content; list-style: none;
       font-size: 12px; font-weight: 500; user-select: none;
       color: #8b949e;
-      text-decoration: underline; text-underline-offset: 2px;
+      text-decoration: none;
     }
     .panel-links > details > summary::-webkit-details-marker { display: none; }
     .panel-links > details[open] > summary { color: #c9d1d9; }
-    #howto > summary { left: 0; }
-    #advanced > summary { right: 0; }
+    #howto > summary {
+      left: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    #howto > summary .chev {
+      display: inline-block;
+      font-size: 10px;
+      line-height: 1;
+      transition: transform 0.15s ease;
+      transform-origin: 50% 55%;
+    }
+    #howto[open] > summary .chev { transform: rotate(90deg); }
+    #advanced > summary {
+      right: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2px;
+      border-radius: 6px;
+      color: #8b949e;
+    }
+    #advanced > summary:hover,
+    #advanced > summary:focus-visible { color: #c9d1d9; }
+    #advanced[open] > summary {
+      color: #c9d1d9;
+      background: #21262d88;
+    }
+    #advanced > summary svg {
+      display: block;
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+    }
     .panel-links-body { margin-top: 4px; }
     .row { display: flex; gap: 8px; margin-top: 10px; }
     .row button { flex: 1; }
@@ -173,6 +206,23 @@
       text-decoration: underline;
       text-underline-offset: 2px;
     }
+    .map-credit #gh-link {
+      display: inline-flex;
+      align-items: center;
+      vertical-align: -2px;
+      text-decoration: none;
+    }
+    .map-credit #gh-link:hover,
+    .map-credit #gh-link:focus-visible {
+      text-decoration: none;
+      color: #8b949e;
+    }
+    .map-credit #gh-link svg {
+      display: block;
+      width: 12px;
+      height: 12px;
+      fill: currentColor;
+    }
     #whats-new {
       position: absolute;
       z-index: 1001;
@@ -205,60 +255,6 @@
       color: #8b949e;
     }
     #whats-new li { margin-top: 3px; }
-    #update-toast {
-      position: absolute;
-      z-index: 1001;
-      right: 6px;
-      bottom: 42px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      max-width: min(320px, calc(100% - 24px));
-      margin: 0;
-      padding: 8px 10px;
-      font-size: 11px;
-      line-height: 1.35;
-      color: #c9d1d9;
-      background: #161b22ee;
-      border: 1px solid #30363d;
-      border-radius: 8px;
-      backdrop-filter: blur(8px);
-      box-shadow: 0 8px 24px #00000066;
-    }
-    #update-toast[hidden] { display: none; }
-    #update-toast .toast-text { margin: 0; flex: 1; min-width: 0; }
-    #update-toast .toast-see {
-      margin: 0;
-      padding: 0;
-      border: 0;
-      background: none;
-      font: inherit;
-      font-size: inherit;
-      font-weight: 600;
-      color: #58a6ff;
-      cursor: pointer;
-      white-space: nowrap;
-      text-decoration: none;
-    }
-    #update-toast .toast-see:hover,
-    #update-toast .toast-see:focus-visible {
-      text-decoration: underline;
-      text-underline-offset: 2px;
-    }
-    #update-toast .toast-close {
-      margin: 0;
-      padding: 0 2px;
-      border: 0;
-      background: none;
-      font: inherit;
-      font-size: 14px;
-      line-height: 1;
-      font-weight: 600;
-      color: #8b949e;
-      cursor: pointer;
-    }
-    #update-toast .toast-close:hover,
-    #update-toast .toast-close:focus-visible { color: #c9d1d9; }
     .leaflet-tooltip.area-chip {
       background: #161b22ee;
       border: 1px solid #3fb950;
@@ -320,7 +316,7 @@
     <p id="import-tip" class="hint" hidden>Next: import the zip in Hamina. <a href="https://docs.hamina.com/hamina/live/openintent" target="_blank" rel="noopener noreferrer">Hamina's import steps</a></p>
     <div class="panel-links">
     <details id="howto">
-      <summary>How it works</summary>
+      <summary><span class="chev" aria-hidden="true">▸</span>How it works</summary>
       <div class="panel-links-body">
       <ol>
         <li>Draw an area on the map and click Export. You get a zip file.</li>
@@ -331,7 +327,7 @@
       </div>
     </details>
     <details id="advanced">
-      <summary>Advanced</summary>
+      <summary aria-label="Settings" title="Settings"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/><path d="M9.763.602a.75.75 0 0 0-1.526 0l-.086.484a5.98 5.98 0 0 0-1.502.52l-.45-.375a.75.75 0 0 0-1.036.04l-.97.97a.75.75 0 0 0-.04 1.036l.375.45c-.24.47-.422.974-.52 1.502l-.484.086a.75.75 0 0 0 0 1.526l.484.086c.098.528.28 1.032.52 1.502l-.375.45a.75.75 0 0 0 .04 1.036l.97.97a.75.75 0 0 0 1.036.04l.45-.375c.47.24.974.422 1.502.52l.086.484a.75.75 0 0 0 1.526 0l.086-.484a5.98 5.98 0 0 0 1.502-.52l.45.375a.75.75 0 0 0 1.036-.04l.97-.97a.75.75 0 0 0 .04-1.036l-.375-.45c.24-.47.422-.974.52-1.502l.484-.086a.75.75 0 0 0 0-1.526l-.484-.086a5.98 5.98 0 0 0-.52-1.502l.375-.45a.75.75 0 0 0-.04-1.036l-.97-.97a.75.75 0 0 0-1.036-.04l-.45.375a5.98 5.98 0 0 0-1.502-.52L9.763.602zM7.995 1.69l.084.473a.75.75 0 0 0 .595.595c.58.105 1.13.3 1.63.566a.75.75 0 0 0 .748-.073l.44-.367.622.622-.367.44a.75.75 0 0 0-.073.748c.266.5.461 1.05.566 1.63a.75.75 0 0 0 .595.595l.473.084-.084.473a.75.75 0 0 0-.595.595 5.23 5.23 0 0 1-.566 1.63.75.75 0 0 0 .073.748l.367.44-.622.622-.44-.367a.75.75 0 0 0-.748-.073 5.23 5.23 0 0 1-1.63.566.75.75 0 0 0-.595.595l-.084.473-.473-.084a.75.75 0 0 0-.595-.595 5.23 5.23 0 0 1-1.63-.566.75.75 0 0 0-.748.073l-.44.367-.622-.622.367-.44a.75.75 0 0 0 .073-.748 5.23 5.23 0 0 1-.566-1.63.75.75 0 0 0-.595-.595l-.473-.084.084-.473a.75.75 0 0 0 .595-.595c.105-.58.3-1.13.566-1.63a.75.75 0 0 0-.073-.748l-.367-.44.622-.622.44.367a.75.75 0 0 0 .748.073c.5-.266 1.05-.461 1.63-.566a.75.75 0 0 0 .595-.595l.084-.473z"/></svg></summary>
       <div class="panel-links-body">
       <div id="clutter-options">
         <label class="check" for="include-foliage">
@@ -394,7 +390,7 @@
     </div>
   </div>
   <p class="map-credit" id="map-credit">
-    <span id="env-badge">dev</span><span id="env-sep" class="map-credit-sep" aria-hidden="true">·</span><button type="button" id="app-version" aria-expanded="false" aria-controls="whats-new" title="What's new">v1.1.182</button><span class="map-credit-sep" aria-hidden="true">·</span><button type="button" id="whats-new-open" aria-expanded="false" aria-controls="whats-new">What's new</button><span class="map-credit-sep" aria-hidden="true">·</span><a id="gh-link" href="https://github.com/jolla/OpenClutter" target="_blank" rel="noopener noreferrer">GitHub</a>
+    <span id="env-badge">dev</span><span id="env-sep" class="map-credit-sep" aria-hidden="true">·</span><button type="button" id="app-version" aria-expanded="false" aria-controls="whats-new" title="What's new">v1.1.183</button><span class="map-credit-sep" aria-hidden="true">·</span><a id="gh-link" href="https://github.com/jolla/OpenClutter" target="_blank" rel="noopener noreferrer" aria-label="OpenClutter on GitHub" title="OpenClutter on GitHub"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
   </p>
   <div id="whats-new" hidden role="region" aria-labelledby="whats-new-title">
     <p class="whats-new-title" id="whats-new-title">What's new in 1.1</p>
@@ -408,11 +404,6 @@
       <li>Two GPS points and site notes added to the import</li>
       <li>Much faster exports, with a progress bar and timer</li>
     </ul>
-  </div>
-  <div id="update-toast" hidden role="status">
-    <p class="toast-text" id="update-toast-label">What's new in v1.1.182</p>
-    <button type="button" class="toast-see" id="update-toast-see">See what's new</button>
-    <button type="button" class="toast-close" id="update-toast-close" aria-label="Dismiss">×</button>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/tree-detect.js"></script>
