@@ -1695,6 +1695,10 @@ async function handleClutter(event) {
       frame = locked.frame;
       imgBuf = locked.jpegBuf;
       if (devHost && imageryPlate) warnings.push(mapImageNote(imageryPlate, frame, imgBuf));
+      const side = Math.max(+frame.imgW || 0, +frame.imgH || 0);
+      reportProgress({ step: { id: "aerial", detail: side > 0 ? side + " px" : "" } });
+    } else {
+      reportProgress({ step: { id: "aerial", skipped: true, detail: "no image" } });
     }
     const canopy = fetched[4];
     if (canopy && canopy.parsed && canopy.parsed.hits && canopy.parsed.hits.length) {
@@ -1850,6 +1854,14 @@ async function handleClutter(event) {
   } else {
     demSamples = null;
   }
+  if (readTerrain) {
+    reportProgress({
+      step:
+        demSamples && demSamples.length
+          ? { id: "terrain", detail: demSamples.length + " pts" }
+          : { id: "terrain", skipped: true, detail: "left out" },
+    });
+  }
   chmGrid = optional[2] && optional[2].values ? optional[2] : null;
   const chmTimedOut =
     includeFoliage &&
@@ -1878,6 +1890,7 @@ async function handleClutter(event) {
   let features = assembled.features;
   if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage buildings " + (Date.now() - started) + "\n");
   reportProgress({ stage: "Buildings " + features.length });
+  reportProgress({ step: { id: "buildings", detail: String(features.length) } });
   const sources = assembled.heightSources || {};
   const footprintMeta = {
     globalFootprints: globalFeatures.length,
@@ -2359,6 +2372,25 @@ async function handleClutter(event) {
   }
   if (shrinkNote && warnings.indexOf(shrinkNote) < 0) warnings.push(shrinkNote);
   if (includeFoliage && built.stats) reportProgress({ stage: "Trees " + (built.stats.treesKept || 0) });
+  if (includeFoliage) {
+    reportProgress({
+      step: chmTimedOut
+        ? { id: "trees", skipped: true, detail: "canopy timed out" }
+        : { id: "trees", detail: String((built.stats && built.stats.treesKept) || 0) },
+    });
+  }
+  {
+    const st = built.stats || {};
+    const vehicles =
+      (+st.rvAreas || 0) + (+st.trailerAreas || 0) + (+st.semiAreas || 0) + (+st.boatAreas || 0) +
+      (+st.carAreas || 0) + (+st.mobileHomeAreas || 0);
+    reportProgress({
+      step:
+        includeRvs || includeCars
+          ? { id: "vehicles", detail: String(vehicles) }
+          : { id: "vehicles", skipped: true, detail: "off" },
+    });
+  }
   reportProgress({ stage: "Packing zip" });
 
   const frameHeaders = {

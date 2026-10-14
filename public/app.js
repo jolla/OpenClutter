@@ -307,6 +307,7 @@ function setStatus(msg, err) {
   statusEl.className = err ? "err" : "";
   const done = !err && /^Done in \d+:\d\d$/.test(parts[0] || "");
   if (lineEl) lineEl.classList.toggle("done", done);
+  if (!err && !(done && exportStepsSeen)) hideExportSteps();
   const tip = document.getElementById("import-tip");
   if (tip) tip.hidden = !done;
   if (!lineEl || !more || !body) {
@@ -1106,6 +1107,84 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
   if (exportCopyReady && !drawHidesCopy) setCopyNote("Paste terrain separately in Hamina.");
 }
 
+const EXPORT_STEPS = [
+  { id: "aerial", label: "Aerial image" },
+  { id: "terrain", label: "Terrain", when: "terrain" },
+  { id: "buildings", label: "Buildings" },
+  { id: "trees", label: "Trees", when: "foliage" },
+  { id: "vehicles", label: "Vehicles" },
+  { id: "zip", label: "Packing zip" },
+];
+let exportStepOpts = { terrain: true, foliage: true };
+let exportStepsSeen = false;
+
+function zipSizeText(bytes) {
+  const b = +bytes || 0;
+  if (!(b > 0)) return "";
+  return b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB";
+}
+
+/** Checklist rows from the worker's finished steps. Pure, for tests too. */
+function exportStepRows(steps, opts, finished, zipBytes) {
+  const got = steps && typeof steps === "object" ? steps : {};
+  const rows = [];
+  let current = false;
+  for (let i = 0; i < EXPORT_STEPS.length; i++) {
+    const def = EXPORT_STEPS[i];
+    if (def.when === "terrain" && !opts.terrain) continue;
+    if (def.when === "foliage" && !opts.foliage) continue;
+    let mark = got[def.id];
+    if (!mark && def.id === "zip" && finished) mark = { done: true, detail: zipSizeText(zipBytes) };
+    let state = "todo";
+    if (mark && mark.skipped) state = "skip";
+    else if (mark && mark.done) state = "ok";
+    else if (finished) state = "skip";
+    else if (!current) {
+      state = "now";
+      current = true;
+    }
+    rows.push({ id: def.id, label: def.label, state, detail: (mark && mark.detail) || "" });
+  }
+  return rows;
+}
+
+function paintExportSteps(job, finished) {
+  const list = document.getElementById("export-steps");
+  if (!list) return;
+  const steps = job && job.steps;
+  if (steps && typeof steps === "object" && Object.keys(steps).length) exportStepsSeen = true;
+  const rows = exportStepRows(steps, exportStepOpts, !!finished, job && job.zipBytes);
+  list.replaceChildren();
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const li = document.createElement("li");
+    li.className = r.state;
+    const mk = document.createElement("span");
+    mk.className = "mk";
+    mk.textContent = r.state === "ok" ? "\u2713" : r.state === "skip" ? "\u2013" : r.state === "now" ? "\u2022" : "\u00b7";
+    const name = document.createElement("span");
+    name.textContent = r.label;
+    li.append(mk, name);
+    if (r.detail) {
+      const dt = document.createElement("span");
+      dt.className = "dt";
+      dt.textContent = r.detail;
+      li.appendChild(dt);
+    }
+    list.appendChild(li);
+  }
+  list.classList.toggle("compact", !!finished);
+  list.hidden = false;
+}
+
+function hideExportSteps() {
+  const list = document.getElementById("export-steps");
+  if (list) {
+    list.hidden = true;
+    list.replaceChildren();
+  }
+}
+
 let exportLive = false;
 let exportPercentHeld = 0;
 let exportTick = 0;
@@ -1190,6 +1269,7 @@ function showExportProgress(job) {
     const time = elapsedEl && !elapsedEl.hidden && elapsedEl.textContent ? ", " + elapsedEl.textContent : "";
     exportBtn.setAttribute("aria-valuetext", "Exporting " + pct + "%" + time);
   }
+  if (view.state !== "done") paintExportSteps(view, false);
   const line = document.getElementById("status-line");
   let stageText = (job && (job.stageLabel || job.stage)) || "Fetching aerial";
   if (/^Fetching map$/i.test(stageText)) stageText = "Fetching aerial";
@@ -1205,8 +1285,10 @@ function showExportProgress(job) {
   }
 }
 
-function beginExportProgress() {
+function beginExportProgress(opts) {
   stopExportTick();
+  exportStepOpts = Object.assign({ terrain: true, foliage: true }, opts || {});
+  exportStepsSeen = false;
   if (exportClock) exportClock.stop();
   exportClock = OpenClutterExport.createExportClock({
     onTick: paintExportElapsedLabel,
@@ -1411,7 +1493,7 @@ document.getElementById("export").onclick = async () => {
   const includeFoliage = clutterChecked("include-foliage");
   const includeTerrain = terrainExportEnabled();
   try {
-    beginExportProgress();
+    beginExportProgress({ terrain: includeTerrain !== false, foliage: includeFoliage === true });
     let trees = [];
     let treesSource = "none";
     let canopyHits = null;
@@ -1446,6 +1528,7 @@ document.getElementById("export").onclick = async () => {
     }
     if (queued && queued.jobId) {
       const data = await pollExport(queued.jobId);
+      paintExportSteps(data, true);
       await downloadJobZip(queued.jobId, data.zipFilename);
       showExportResult(data, includeFoliage, includeTerrain, "");
       return;
