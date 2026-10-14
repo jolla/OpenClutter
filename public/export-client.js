@@ -20,7 +20,7 @@
   "use strict";
 
   const WORKING_STATUS = "Export is still working.";
-  const EMPTY_502_STATUS = "The export did not return a zip.";
+  const EMPTY_502_STATUS = "The export did not return an OpenIntent file.";
 
   function quietServerMessage(message) {
     return /Aerial imagery timed out|stopped before a zip was ready|too large to finish/i.test(message);
@@ -104,7 +104,7 @@
     const copyReady = !!(choice && choice.json && !choice.gpsOnly);
     return {
       copyReady: copyReady,
-      label: copyReady ? "Copy terrain" : "Export",
+      label: copyReady ? "Copy terrain" : "Export OpenIntent",
       omittedLine: copyReady ? "" : TERRAIN_OMITTED_LINE,
     };
   }

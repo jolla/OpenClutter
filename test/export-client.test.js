@@ -91,7 +91,7 @@ describe("export gateway timeout", () => {
     assert.equal(empty502.retry, true);
     assert.equal(empty502.attempts, 2);
     assert.equal(empty502.message, EMPTY_502_STATUS);
-    assert.equal(EMPTY_502_STATUS, "The export did not return a zip.");
+    assert.equal(EMPTY_502_STATUS, "The export did not return an OpenIntent file.");
     assert.equal(/Export failed\. Retry\.|did not finish|stopped before a zip|Aerial imagery timed out|too large to finish/i.test(EMPTY_502_STATUS), false);
     assert.equal(idleStatus(failureError(502, {})), EMPTY_502_STATUS);
     assert.notEqual(idleStatus(failureError(502, {})), "");
@@ -139,7 +139,7 @@ describe("export gateway timeout", () => {
     });
     assert.deepEqual(recovered, [1, 2]);
     assert.equal(zipAfterMiss.zipFilename, "openclutter.zip");
-    assert.match(app, /The first export did not return a zip\. Export is still working\./);
+    assert.match(app, /The first export did not return an OpenIntent file\. Export is still working\./);
 
     const jsonCalls = [];
     await assert.rejects(
@@ -296,18 +296,18 @@ describe("Copy terrain after a background result", () => {
     assert.equal(mesh.copyReady, true);
     assert.equal(mesh.omittedLine, "");
     const off = finishedExportButton({ json: JSON.stringify({ tiePoints: [{}, {}] }), gpsOnly: true });
-    assert.equal(off.label, "Export");
+    assert.equal(off.label, "Export OpenIntent");
     assert.equal(off.copyReady, false);
     assert.equal(off.omittedLine, "Terrain was not included.");
     const leftOut = finishedExportButton({ json: "", gpsOnly: false });
-    assert.equal(leftOut.label, "Export");
+    assert.equal(leftOut.label, "Export OpenIntent");
     assert.equal(leftOut.copyReady, false);
     assert.equal(leftOut.omittedLine, "Terrain was not included.");
-    const summary = appendTerrainOmitted(["Zip ready.", "Buildings 1"], leftOut);
+    const summary = appendTerrainOmitted(["OpenIntent file ready.", "Buildings 1"], leftOut);
     assert.equal(summary[summary.length - 1], "Terrain was not included.");
     const once = appendTerrainOmitted(summary, leftOut);
     assert.equal(once.filter((line) => line === "Terrain was not included.").length, 1);
-    const kept = appendTerrainOmitted(["Zip ready.", "Terrain pieces 2"], mesh);
+    const kept = appendTerrainOmitted(["OpenIntent file ready.", "Terrain pieces 2"], mesh);
     assert.equal(kept.includes("Terrain was not included."), false);
     assert.equal(/\u2014/.test(off.omittedLine + mesh.label), false);
   });

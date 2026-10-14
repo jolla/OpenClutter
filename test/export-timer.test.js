@@ -63,11 +63,11 @@ describe("export elapsed timer", () => {
 
   it("starts the finished summary with Done in 0:55 and keeps that line after Copy terrain", () => {
     const summary = withExportDone(
-      ["Zip ready. 2 buildings.", "Buildings 2", "Import this zip in Hamina (Projects → Import → OpenIntent)."],
+      ["OpenIntent file ready. 2 buildings.", "Buildings 2", "Import this OpenIntent file in Hamina (Projects → Import → OpenIntent)."],
       55000
     );
     assert.equal(summary[0], "Done in 0:55");
-    assert.equal(summary[1], "Zip ready. 2 buildings.");
+    assert.equal(summary[1], "OpenIntent file ready. 2 buildings.");
     const summaryLine = summary[0];
     const details = summary.slice(1);
     const afterCopy = {
@@ -76,7 +76,7 @@ describe("export elapsed timer", () => {
       note: "Copied. Paste terrain separately in Hamina.",
     };
     assert.equal(afterCopy.summaryLine, "Done in 0:55");
-    assert.equal(afterCopy.details[0], "Zip ready. 2 buildings.");
+    assert.equal(afterCopy.details[0], "OpenIntent file ready. 2 buildings.");
     assert.equal(afterCopy.details.length, summary.length - 1);
     assert.equal(/\u2014/.test(summary.join("\n")), false);
 

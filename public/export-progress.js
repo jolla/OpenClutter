@@ -28,7 +28,7 @@
     { id: "terrain", label: "Terrain", weight: 3, test: /^(Reading terrain|Terrain)\b/i },
     { id: "buildings", label: "", weight: 4, test: /^Buildings\b/i },
     { id: "trees", label: "", weight: 78, test: /^Trees\b/i },
-    { id: "zip", label: "Building zip", weight: 2, test: /^(Packing zip|Building zip)\b/i },
+    { id: "zip", label: "OpenIntent file", weight: 2, test: /^(Packing zip|Building zip)\b/i },
   ];
 
   const WEIGHT_TOTAL = STAGES.reduce((sum, stage) => sum + stage.weight, 0);
@@ -77,7 +77,7 @@
   function markStage(stage) {
     const name = String(stage || "");
     if (/^zip ready\b/i.test(name)) {
-      return { label: "Zip ready", progress: 1, ceiling: 1 };
+      return { label: "OpenIntent file ready", progress: 1, ceiling: 1 };
     }
     let at = 0;
     for (let i = 0; i < STAGES.length; i++) {
