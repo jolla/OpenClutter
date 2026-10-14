@@ -582,3 +582,23 @@ describe("export jobs", { concurrency: 1 }, () => {
     assert.match(res.body, /invalid json/);
   });
 });
+
+describe("export step checklist", () => {
+  const { mergeJobPatch } = require("../netlify/lib/export-jobs");
+  it("records finished and skipped steps without touching the stage", () => {
+    const cur = { state: "running", stage: "Buildings 12", stages: ["Buildings 12"] };
+    let r = mergeJobPatch(cur, { step: { id: "buildings", detail: "12" } });
+    r = mergeJobPatch(r.job, { step: { id: "terrain", skipped: true, detail: "left out" } });
+    assert.equal(r.job.stage, "Buildings 12");
+    assert.equal(r.job.step, undefined);
+    assert.deepEqual(
+      { b: r.job.steps.buildings.done, d: r.job.steps.buildings.detail, t: r.job.steps.terrain.skipped },
+      { b: true, d: "12", t: true }
+    );
+  });
+  it("ignores unknown step ids", () => {
+    const cur = { state: "running", stage: "Trees", stages: [] };
+    const r = mergeJobPatch(cur, { step: { id: "nope" } });
+    assert.equal(r.unchanged, true);
+  });
+});

@@ -114,6 +114,18 @@
     #status-more summary {
       cursor: pointer; color: #8b949e; font-size: 12px; user-select: none;
     }
+    #export-steps { list-style: none; margin: 6px 0 0; padding: 0; font-size: 11.5px; line-height: 1.55; font-variant-numeric: tabular-nums; }
+    #export-steps[hidden] { display: none; }
+    #export-steps li { display: flex; gap: 6px; color: #484f58; }
+    #export-steps .mk { width: 12px; text-align: center; flex: none; }
+    #export-steps .dt { color: #6e7681; margin-left: auto; }
+    #export-steps li.ok { color: #8b949e; }
+    #export-steps li.ok .mk { color: #3fb950; }
+    #export-steps li.skip { color: #6e7681; }
+    #export-steps li.now { color: #e8eaed; }
+    #export-steps li.now .mk { animation: oc-step 1.2s ease-in-out infinite; }
+    @keyframes oc-step { 50% { opacity: 0.3; } }
+    #export-steps.compact { line-height: 1.35; font-size: 11px; }
     #status-body p { margin: 1px 0 0; line-height: 1.35; font-variant-numeric: tabular-nums; }
     .build {
       margin: 14px 0 0;
@@ -216,6 +228,7 @@
     <p id="copy-note" class="hint" hidden></p>
     <div id="status">
       <p id="status-line"></p>
+      <ul id="export-steps" hidden></ul>
       <details id="status-more" hidden>
         <summary>Details</summary>
         <div id="status-body"></div>
@@ -293,7 +306,7 @@
           <option value="8k">8K · 8192 px</option>
         </select>
       </label>
-      <p class="build"><span id="env-badge">dev</span><button type="button" id="app-version" aria-expanded="false" aria-controls="whats-new">v1.1.180</button></p>
+      <p class="build"><span id="env-badge">dev</span><button type="button" id="app-version" aria-expanded="false" aria-controls="whats-new">v1.1.181</button></p>
       <div id="whats-new" hidden>
         <p class="whats-new-title">What's new in 1.1</p>
         <ul>

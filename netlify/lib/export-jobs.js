@@ -216,6 +216,24 @@ async function saveJobRecord(store, id, job, etag) {
  * fields apply only while the job is still queued or running.
  * A patch that tries to leave a terminal state is ignored entirely.
  */
+/**
+ * Finished export steps for the page checklist, keyed by id. Each entry is
+ * { done, skipped, detail, at }. Older pages ignore this field.
+ */
+const STEP_IDS = ["aerial", "terrain", "buildings", "trees", "vehicles", "zip"];
+
+function mergeStep(prev, step) {
+  if (!step || STEP_IDS.indexOf(step.id) < 0) return null;
+  const next = Object.assign({}, prev && typeof prev === "object" ? prev : {});
+  next[step.id] = {
+    done: !step.skipped,
+    skipped: !!step.skipped,
+    detail: String(step.detail || "").slice(0, 60),
+    at: Date.now(),
+  };
+  return next;
+}
+
 function mergeJobPatch(cur, patch) {
   const incoming = Object.assign({}, patch || {});
   if (isTerminalState(cur.state)) {
@@ -244,6 +262,12 @@ function mergeJobPatch(cur, patch) {
   } else if (keyChanged) {
     incoming.tilesDone = null;
     incoming.tilesTotal = null;
+  }
+  let steps = null;
+  if (incoming.step) {
+    steps = mergeStep(cur.steps, incoming.step);
+    delete incoming.step;
+    if (steps) incoming.steps = steps;
   }
   const keys = Object.keys(incoming);
   if (!keys.length) return { unchanged: true, job: cur };
