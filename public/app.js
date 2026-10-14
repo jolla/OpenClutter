@@ -59,6 +59,40 @@ function setWhatsNewOpen(open) {
   if (!ver || !panel) return;
   panel.hidden = !open;
   ver.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) {
+    ["howto", "advanced"].forEach(function (id) {
+      const d = document.getElementById(id);
+      if (d && d.open) d.open = false;
+    });
+    markWhatsNewSeen();
+  }
+}
+
+const WHATS_NEW_KEY = "openclutter.whatsNewSeen";
+
+function markWhatsNewSeen() {
+  try {
+    localStorage.setItem(WHATS_NEW_KEY, String(window.OPENCLUTTER_VERSION || ""));
+  } catch (err) {
+    /* Private mode: the dot just stays until reload. */
+  }
+  syncWhatsNewDot();
+}
+
+function syncWhatsNewDot() {
+  const dot = document.getElementById("whats-new-dot");
+  const ver = document.getElementById("app-version");
+  if (!dot) return;
+  let seen = "";
+  try {
+    seen = localStorage.getItem(WHATS_NEW_KEY) || "";
+  } catch (err) {
+    seen = "";
+  }
+  const unseen = !!window.OPENCLUTTER_VERSION && seen !== String(window.OPENCLUTTER_VERSION);
+  const panel = document.getElementById("whats-new");
+  dot.hidden = !unseen || (panel && !panel.hidden);
+  if (ver) ver.setAttribute("aria-label", "Version " + (window.OPENCLUTTER_VERSION || "") + (dot.hidden ? "" : ", new") + ". What's new");
 }
 
 function setupWhatsNew() {
@@ -68,6 +102,13 @@ function setupWhatsNew() {
   ver.addEventListener("click", function () {
     setWhatsNewOpen(panel.hidden);
   });
+  ["howto", "advanced"].forEach(function (id) {
+    const d = document.getElementById(id);
+    if (d) d.addEventListener("toggle", function () {
+      if (d.open && !panel.hidden) setWhatsNewOpen(false);
+    });
+  });
+  syncWhatsNewDot();
 }
 
 function areaCapOverride() {
