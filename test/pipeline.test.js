@@ -1216,7 +1216,7 @@ describe("main UI: import buildings, optional foliage", () => {
   it("index and app keep one Foliage toggle, on unless unchecked", () => {
     const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
     const app = fs.readFileSync(path.join(root, "app.js"), "utf8");
-    assert.match(html, /Export a zip\. Import it in Hamina for the aerial map and buildings\./);
+    assert.match(html, /Export an OpenIntent site model\. Import it in Hamina for the aerial map and buildings\./);
     assert.equal(/Import OpenIntent for the map and buildings/i.test(html), false);
     assert.equal(/One zip\./i.test(html), false);
     assert.match(html, />\s*Foliage\s*</);
@@ -1226,7 +1226,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(html, /id="status-more"[^>]*hidden/);
     assert.equal(/<details[^>]*\sopen/.test(html), false);
     assert.match(app, /function exportHeadline/);
-    assert.match(app, /Zip ready\./);
+    assert.match(app, /OpenIntent file ready\./);
     assert.match(app, /px, down from /);
     assert.match(app, /more\.open = false/);
     assert.match(html, /id="clutter-options"/);
@@ -1247,7 +1247,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(html, /id="include-terrain"[^>]*checked/);
     assert.match(html, />\s*Terrain\s*</);
     assert.equal(/paste hamina-clipboard\.json for trees/i.test(html), false);
-    assert.match(app, /Import this zip in Hamina \(Projects → Import → OpenIntent\)/);
+    assert.match(app, /Import this OpenIntent file in Hamina \(Projects → Import → OpenIntent\)/);
     assert.match(app, /includeFoliage/);
     assert.equal(/Paste hamina-clipboard\.json from the zip for trees/i.test(app), false);
     assert.match(app, /stats\.summary/);

@@ -293,8 +293,8 @@ function exportHeadline(stats, warnings, foliageOn) {
   else if (px) bits.push(px[1] + " px");
   const lidarLine = (warnings || []).find((w) => /^Lidar heights (used|not used)\./.test(String(w)));
   if (lidarLine) bits.push(String(lidarLine).replace(/\.$/, ""));
-  if (!bits.length) return "Zip ready.";
-  return "Zip ready. " + bits.join(", ") + ".";
+  if (!bits.length) return "OpenIntent file ready.";
+  return "OpenIntent file ready. " + bits.join(", ") + ".";
 }
 
 function setCopyNote(msg, err) {
@@ -1104,7 +1104,7 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
     terrainOn: !terrainOff,
   });
   for (let i = 0; i < detail.length; i++) lines.push(detail[i]);
-  lines.push("Import this zip in Hamina (Projects → Import → OpenIntent).");
+  lines.push("Import this OpenIntent file in Hamina (Projects → Import → OpenIntent).");
   if (fallbackNote) lines.push(fallbackNote);
   const coveredTerrain = detail.some((line) => line.indexOf("Terrain") === 0 || line.indexOf("Minimum ") === 0);
   if (terrainNote && !coveredTerrain) lines.push(terrainNote);
@@ -1135,7 +1135,7 @@ const EXPORT_STEPS = [
   { id: "buildings", label: "Buildings" },
   { id: "trees", label: "Trees", when: "foliage" },
   { id: "vehicles", label: "Vehicles" },
-  { id: "zip", label: "Packing zip" },
+  { id: "zip", label: "OpenIntent file" },
 ];
 let exportStepOpts = { terrain: true, foliage: true };
 let exportStepsSeen = false;
@@ -1411,9 +1411,9 @@ async function pollExport(jobId) {
 function downloadFailure(status, data) {
   const msg = data && (data.error || data.errorMessage);
   if (msg) return String(msg);
-  if (status === 413) return "The zip is too large to download. Export again.";
-  if (status) return "The zip download failed (" + status + "). Export again.";
-  return "The zip download failed. Export again.";
+  if (status === 413) return "The OpenIntent file is too large to download. Export again.";
+  if (status) return "The OpenIntent download failed (" + status + "). Export again.";
+  return "The OpenIntent download failed. Export again.";
 }
 
 async function downloadJobZip(jobId, filename) {
@@ -1425,7 +1425,7 @@ async function downloadJobZip(jobId, filename) {
       const blob = await r.blob();
       const disp = r.headers.get("content-disposition") || "";
       const named = disp.match(/filename="([^"]+)"/);
-      downloadBlob(blob, (named && named[1]) || filename || "openclutter.zip");
+      downloadBlob(blob, (named && named[1]) || filename || "openintent.zip");
       return;
     }
     lastStatus = r.status;
@@ -1565,11 +1565,11 @@ document.getElementById("export").onclick = async () => {
     const paste = terrainPromise ? await terrainPromise : null;
     const data = await OpenClutterExport.runExportAttempts((attempt) => {
       if (attempt > 1) {
-        setStatus("The first export did not return a zip. Export is still working.");
+        setStatus("The first export did not return an OpenIntent file. Export is still working.");
       }
       return exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain, paste);
     });
-    downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openclutter.zip");
+    downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openintent.zip");
     if (paste && paste.terrainClipboard) {
       const keptNotes = data.terrainClipboard && data.terrainClipboard.mapNotes;
       data.terrainClipboard = paste.terrainClipboard;
