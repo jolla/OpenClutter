@@ -127,24 +127,32 @@
     @keyframes oc-step { 50% { opacity: 0.3; } }
     #export-steps.compact { line-height: 1.35; font-size: 11px; }
     #status-body p { margin: 1px 0 0; line-height: 1.35; font-variant-numeric: tabular-nums; }
-    .panel-links > .build {
-      position: absolute; top: 1px; left: 50%; transform: translateX(-50%);
-      margin: 0; white-space: nowrap;
+    .map-credit {
+      position: absolute;
+      z-index: 1000;
+      right: 0;
+      bottom: 18px;
+      margin: 0;
+      padding: 2px 8px;
+      font-size: 10px;
+      line-height: 1.35;
+      font-weight: 500;
+      color: #6e7681;
+      background: #0e1116cc;
+      border-radius: 4px 0 0 0;
+      white-space: nowrap;
+      pointer-events: auto;
     }
-    #whats-new-dot {
-      display: inline-block; width: 5px; height: 5px; margin-left: 4px;
-      border-radius: 50%; background: #58a6ff; vertical-align: 1px;
-    }
-    #whats-new-dot[hidden] { display: none; }
-    #gh-link { color: #6e7681; margin-left: 6px; display: inline-flex; vertical-align: -1px; }
-    #gh-link:hover, #gh-link:focus-visible { color: #8b949e; }
-    .build {
-      margin: 14px 0 0;
-      font-size: 10px; line-height: 1.2; font-weight: 500; color: #6e7681;
+    .map-credit .map-credit-sep {
+      margin: 0 4px;
+      color: #6e7681;
     }
     #env-badge { display: none; }
     #env-badge.on { display: inline; }
-    #app-version {
+    #env-sep { display: none; }
+    #env-badge.on + #env-sep { display: inline; }
+    .map-credit button,
+    .map-credit a {
       display: inline;
       margin: 0;
       padding: 0;
@@ -157,22 +165,32 @@
       cursor: pointer;
       text-decoration: none;
     }
-    #app-version:hover,
-    #app-version:focus-visible {
+    .map-credit button:hover,
+    .map-credit button:focus-visible,
+    .map-credit a:hover,
+    .map-credit a:focus-visible {
+      color: #8b949e;
       text-decoration: underline;
       text-underline-offset: 2px;
     }
-    #env-badge.on + #app-version::before {
-      content: "·";
-      margin: 0 4px;
-      font-weight: 500;
-      color: #6e7681;
-    }
     #whats-new {
-      margin-top: 6px;
+      position: absolute;
+      z-index: 1001;
+      right: 6px;
+      bottom: 42px;
+      width: min(280px, calc(100% - 24px));
+      max-height: min(42vh, 300px);
+      overflow: auto;
+      margin: 0;
+      padding: 10px 12px;
       font-size: 11px;
       line-height: 1.35;
       color: #8b949e;
+      background: #161b22ee;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 8px 24px #00000066;
     }
     #whats-new[hidden] { display: none; }
     #whats-new .whats-new-title {
@@ -187,6 +205,60 @@
       color: #8b949e;
     }
     #whats-new li { margin-top: 3px; }
+    #update-toast {
+      position: absolute;
+      z-index: 1001;
+      right: 6px;
+      bottom: 42px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      max-width: min(320px, calc(100% - 24px));
+      margin: 0;
+      padding: 8px 10px;
+      font-size: 11px;
+      line-height: 1.35;
+      color: #c9d1d9;
+      background: #161b22ee;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 8px 24px #00000066;
+    }
+    #update-toast[hidden] { display: none; }
+    #update-toast .toast-text { margin: 0; flex: 1; min-width: 0; }
+    #update-toast .toast-see {
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: none;
+      font: inherit;
+      font-size: inherit;
+      font-weight: 600;
+      color: #58a6ff;
+      cursor: pointer;
+      white-space: nowrap;
+      text-decoration: none;
+    }
+    #update-toast .toast-see:hover,
+    #update-toast .toast-see:focus-visible {
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    #update-toast .toast-close {
+      margin: 0;
+      padding: 0 2px;
+      border: 0;
+      background: none;
+      font: inherit;
+      font-size: 14px;
+      line-height: 1;
+      font-weight: 600;
+      color: #8b949e;
+      cursor: pointer;
+    }
+    #update-toast .toast-close:hover,
+    #update-toast .toast-close:focus-visible { color: #c9d1d9; }
     .leaflet-tooltip.area-chip {
       background: #161b22ee;
       border: 1px solid #3fb950;
@@ -319,21 +391,28 @@
       </label>
       </div>
     </details>
-    <p class="build"><span id="env-badge">dev</span><button type="button" id="app-version" aria-expanded="false" aria-controls="whats-new" title="What's new">v1.1.181</button><span id="whats-new-dot" hidden aria-hidden="true"></span><a id="gh-link" href="https://github.com/jolla/OpenClutter" target="_blank" rel="noopener noreferrer" aria-label="OpenClutter on GitHub" title="OpenClutter on GitHub"><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a></p>
-    <div id="whats-new" hidden>
-        <p class="whats-new-title">What's new in 1.1</p>
-        <ul>
-          <li>Trees with rounded crowns and trunks, plus forest stands with undergrowth</li>
-          <li>Detailed building outlines, including parking decks, large warehouses and podiums</li>
-          <li>Bridges and elevated rail exported as raised objects</li>
-          <li>Semi-trailers, RVs and boats (cars optional)</li>
-          <li>Terrain from elevation data, pasted into Hamina with Copy terrain</li>
-          <li>Sharper aerial maps, chosen automatically</li>
-          <li>Two GPS points and site notes added to the import</li>
-          <li>Much faster exports, with a progress bar and timer</li>
-        </ul>
-      </div>
     </div>
+  </div>
+  <p class="map-credit" id="map-credit">
+    <span id="env-badge">dev</span><span id="env-sep" class="map-credit-sep" aria-hidden="true">·</span><button type="button" id="app-version" aria-expanded="false" aria-controls="whats-new" title="What's new">v1.1.182</button><span class="map-credit-sep" aria-hidden="true">·</span><button type="button" id="whats-new-open" aria-expanded="false" aria-controls="whats-new">What's new</button><span class="map-credit-sep" aria-hidden="true">·</span><a id="gh-link" href="https://github.com/jolla/OpenClutter" target="_blank" rel="noopener noreferrer">GitHub</a>
+  </p>
+  <div id="whats-new" hidden role="region" aria-labelledby="whats-new-title">
+    <p class="whats-new-title" id="whats-new-title">What's new in 1.1</p>
+    <ul>
+      <li>Trees with rounded crowns and trunks, plus forest stands with undergrowth</li>
+      <li>Detailed building outlines, including parking decks, large warehouses and podiums</li>
+      <li>Bridges and elevated rail exported as raised objects</li>
+      <li>Semi-trailers, RVs and boats (cars optional)</li>
+      <li>Terrain from elevation data, pasted into Hamina with Copy terrain</li>
+      <li>Sharper aerial maps, chosen automatically</li>
+      <li>Two GPS points and site notes added to the import</li>
+      <li>Much faster exports, with a progress bar and timer</li>
+    </ul>
+  </div>
+  <div id="update-toast" hidden role="status">
+    <p class="toast-text" id="update-toast-label">What's new in v1.1.182</p>
+    <button type="button" class="toast-see" id="update-toast-see">See what's new</button>
+    <button type="button" class="toast-close" id="update-toast-close" aria-label="Dismiss">×</button>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/tree-detect.js"></script>
