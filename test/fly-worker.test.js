@@ -281,7 +281,7 @@ describe("fly worker handoff", { concurrency: 1 }, () => {
     }
   });
 
-  it("re-runs on Netlify when the heartbeat is older than 45 seconds", async () => {
+  it("re-runs on Netlify when the heartbeat is older than the stale window", async () => {
     saveEnv();
     process.env.FLY_WORKER_URL = "https://openclutter-export.fly.dev";
     process.env.FLY_WORKER_SECRET = "local-secret";
@@ -292,7 +292,7 @@ describe("fly worker handoff", { concurrency: 1 }, () => {
       state: "running",
       worker: "fly",
       stage: "Trees",
-      heartbeatAt: Date.now() - 46 * 1000,
+      heartbeatAt: Date.now() - (HEARTBEAT_STALE_MS + 1000),
       heartbeatStage: "Trees",
     });
     let fetched = false;
@@ -329,7 +329,7 @@ describe("fly worker handoff", { concurrency: 1 }, () => {
       worker: "fly",
       stage: "Trees",
       heartbeatStage: "Trees",
-      heartbeatAt: now - 50 * 1000,
+      heartbeatAt: now - (HEARTBEAT_STALE_MS + 5 * 1000),
       createdAt: now - (PAGE_MS - 30 * 1000),
     });
     const prevFetch = global.fetch;
@@ -348,7 +348,7 @@ describe("fly worker handoff", { concurrency: 1 }, () => {
     }
   });
 
-  it("falls back after 45 seconds when the worker never writes a heartbeat", async () => {
+  it("falls back after the stale window when the worker never writes a heartbeat", async () => {
     saveEnv();
     process.env.FLY_WORKER_URL = "https://openclutter-export.fly.dev";
     process.env.FLY_WORKER_SECRET = "local-secret";
@@ -437,17 +437,17 @@ describe("fly worker handoff", { concurrency: 1 }, () => {
     }
   });
 
-  it("treats a heartbeat as stale at 45 seconds and leaves room for a re-run", () => {
+  it("treats a heartbeat as stale at five minutes and leaves room for a re-run", () => {
     assert.equal(PAGE_MS, BACKGROUND_PLATFORM_MS);
     assert.equal(FUNCTION_ANSWER_MS, BACKGROUND_ANSWER_MS);
-    assert.equal(HEARTBEAT_STALE_MS, 45 * 1000);
+    assert.equal(HEARTBEAT_STALE_MS, 5 * 60 * 1000);
     assert.equal(RERUN_MIN_MS, 2 * 60 * 1000);
     const started = 1_000_000;
-    assert.equal(heartbeatIsStale(started, started + 44_999, started), false);
-    assert.equal(heartbeatIsStale(started, started + 45_000, started), true);
-    assert.equal(heartbeatIsStale(null, started + 44_999, started), false);
-    assert.equal(heartbeatIsStale(null, started + 45_000, started), true);
-    assert.equal(rerunHasRoom({ createdAt: started }, started + 45_000, started), true);
+    assert.equal(heartbeatIsStale(started, started + HEARTBEAT_STALE_MS - 1, started), false);
+    assert.equal(heartbeatIsStale(started, started + HEARTBEAT_STALE_MS, started), true);
+    assert.equal(heartbeatIsStale(null, started + HEARTBEAT_STALE_MS - 1, started), false);
+    assert.equal(heartbeatIsStale(null, started + HEARTBEAT_STALE_MS, started), true);
+    assert.equal(rerunHasRoom({ createdAt: started }, started + HEARTBEAT_STALE_MS, started), true);
     assert.equal(rerunHasRoom({ createdAt: started }, started + 12 * 60 * 1000, started), true);
     assert.equal(rerunHasRoom({ createdAt: started }, started + 12 * 60 * 1000 + 1, started), false);
     const pageEdge = started + PAGE_MS - RERUN_MIN_MS;
