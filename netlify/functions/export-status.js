@@ -60,6 +60,7 @@ exports.handler = async (event) => {
     tilesTotal: Number.isFinite(+job.tilesTotal) ? job.tilesTotal : null,
     createdAt: job.createdAt || null,
     stages: job.stages || [],
+    steps: job.steps || {},
     error: job.error || null,
     stats: job.stats || null,
     warnings: job.warnings || [],
