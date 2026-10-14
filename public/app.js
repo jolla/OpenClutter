@@ -54,10 +54,7 @@ function restoreAdvanced() {
 }
 
 function whatsNewTriggers() {
-  return [
-    document.getElementById("app-version"),
-    document.getElementById("whats-new-open"),
-  ].filter(Boolean);
+  return [document.getElementById("app-version")].filter(Boolean);
 }
 
 function setWhatsNewOpen(open) {
@@ -67,65 +64,6 @@ function setWhatsNewOpen(open) {
   whatsNewTriggers().forEach(function (el) {
     el.setAttribute("aria-expanded", open ? "true" : "false");
   });
-  if (open) {
-    hideUpdateToast(true);
-    markWhatsNewSeen();
-  }
-}
-
-const WHATS_NEW_KEY = "openclutter.whatsNewSeen";
-let updateToastTimer = 0;
-
-function markWhatsNewSeen() {
-  try {
-    localStorage.setItem(WHATS_NEW_KEY, String(window.OPENCLUTTER_VERSION || ""));
-  } catch (err) {
-    /* Private mode: toast may show again on reload. */
-  }
-}
-
-function hideUpdateToast(markSeen) {
-  const toast = document.getElementById("update-toast");
-  if (updateToastTimer) {
-    clearTimeout(updateToastTimer);
-    updateToastTimer = 0;
-  }
-  if (toast && !toast.hidden) toast.hidden = true;
-  if (markSeen) markWhatsNewSeen();
-}
-
-function setupUpdateToast() {
-  const toast = document.getElementById("update-toast");
-  const label = document.getElementById("update-toast-label");
-  const see = document.getElementById("update-toast-see");
-  const close = document.getElementById("update-toast-close");
-  if (!toast || !see || !close) return;
-  const ver = String(window.OPENCLUTTER_VERSION || "");
-  if (!ver) return;
-  if (label) label.textContent = "What's new in v" + ver;
-  let seen = "";
-  try {
-    seen = localStorage.getItem(WHATS_NEW_KEY) || "";
-  } catch (err) {
-    return;
-  }
-  if (!seen) {
-    markWhatsNewSeen();
-    return;
-  }
-  if (seen === ver) return;
-  toast.hidden = false;
-  see.addEventListener("click", function () {
-    hideUpdateToast(true);
-    setWhatsNewOpen(true);
-  });
-  close.addEventListener("click", function () {
-    hideUpdateToast(true);
-  });
-  updateToastTimer = setTimeout(function () {
-    updateToastTimer = 0;
-    hideUpdateToast(true);
-  }, 10000);
 }
 
 function setupWhatsNew() {
@@ -141,10 +79,9 @@ function setupWhatsNew() {
     if (panel.hidden) return;
     const t = ev.target;
     if (!t || !t.closest) return;
-    if (t.closest("#whats-new") || t.closest("#map-credit") || t.closest("#update-toast")) return;
+    if (t.closest("#whats-new") || t.closest("#map-credit")) return;
     setWhatsNewOpen(false);
   });
-  setupUpdateToast();
 }
 
 function areaCapOverride() {
@@ -236,10 +173,6 @@ function terrainExportEnabled() {
   if (lidarBox && qualityPage() && lidarQueryOn()) lidarBox.checked = true;
   const ver = document.getElementById("app-version");
   if (ver && window.OPENCLUTTER_VERSION) ver.textContent = "v" + window.OPENCLUTTER_VERSION;
-  const toastLabel = document.getElementById("update-toast-label");
-  if (toastLabel && window.OPENCLUTTER_VERSION) {
-    toastLabel.textContent = "What's new in v" + window.OPENCLUTTER_VERSION;
-  }
 })();
 
 let bbox = null;
@@ -482,8 +415,7 @@ function releasePanelFocus() {
     el.closest &&
     (el.closest(".panel") ||
       el.closest("#map-credit") ||
-      el.closest("#whats-new") ||
-      el.closest("#update-toast"))
+      el.closest("#whats-new"))
   ) {
     el.blur();
   }
@@ -985,12 +917,6 @@ window.addEventListener("keydown", (ev) => {
     setWhatsNewOpen(false);
     const ver = document.getElementById("app-version");
     if (ver) ver.focus();
-    ev.preventDefault();
-    return;
-  }
-  const toast = document.getElementById("update-toast");
-  if (toast && !toast.hidden && toast.contains(active)) {
-    hideUpdateToast(true);
     ev.preventDefault();
     return;
   }
