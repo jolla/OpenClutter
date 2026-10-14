@@ -49,11 +49,11 @@ describe("export progress", () => {
       ceiling: 0.98,
     });
     assert.deepEqual(markStage("Packing zip"), {
-      label: "Building zip",
+      label: "OpenIntent file",
       progress: 0.98,
       ceiling: 1,
     });
-    assert.deepEqual(markStage("Zip ready"), { label: "Zip ready", progress: 1, ceiling: 1 });
+    assert.deepEqual(markStage("Zip ready"), { label: "OpenIntent file ready", progress: 1, ceiling: 1 });
   });
 
   it("moves forward as the export writes each stage", () => {
@@ -82,7 +82,7 @@ describe("export progress", () => {
     const app = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
     const clutter = fs.readFileSync(path.join(__dirname, "../netlify/functions/clutter.js"), "utf8");
     assert.match(html, /id="export-fill"/);
-    assert.match(html, /id="export-label">Export</);
+    assert.match(html, /id="export-label">Export OpenIntent</);
     assert.equal(html.includes('id="export-progress"'), false);
     assert.match(app, /beginExportProgress/);
     assert.match(app, /showExportProgress\(data\)/);
