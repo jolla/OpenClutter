@@ -427,11 +427,52 @@ function panGesture(ev) {
   return spacePan || !!ev.ctrlKey;
 }
 
-function committedExportBlocked() {
-  if (!bbox) return true;
+const MAX_EXPORT_SIDE_M = 15000;
+const MIN_EXPORT_SIDE_M = 40;
+
+function formatExportSide(meters) {
+  const n = +meters;
+  if (!(n >= 0) || !Number.isFinite(n)) return "0 m";
+  if (n >= 1000) {
+    const km = n / 1000;
+    const text = Math.abs(km - Math.round(km)) < 0.05 ? String(Math.round(km)) : km.toFixed(1);
+    return text + " km";
+  }
+  return Math.round(n) + " m";
+}
+
+function committedSideMeters() {
+  if (!bbox) return null;
   const w = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.south, bbox.east));
   const h = L.latLng(bbox.south, bbox.west).distanceTo(L.latLng(bbox.north, bbox.west));
-  return w > 10000 || h > 10000 || w < 40 || h < 40;
+  return { w, h };
+}
+
+function committedExportBlocked() {
+  const side = committedSideMeters();
+  if (!side) return true;
+  return side.w > MAX_EXPORT_SIDE_M || side.h > MAX_EXPORT_SIDE_M || side.w < MIN_EXPORT_SIDE_M || side.h < MIN_EXPORT_SIDE_M;
+}
+
+/** Names the side that is too large or too small. Empty when the draw is fine. */
+function areaLimitMessage() {
+  const side = committedSideMeters();
+  if (!side) return "";
+  const w = side.w;
+  const h = side.h;
+  if (w > MAX_EXPORT_SIDE_M || h > MAX_EXPORT_SIDE_M) {
+    if (w >= h && w > MAX_EXPORT_SIDE_M) {
+      return "Area is " + formatExportSide(w) + " wide. The max is " + formatExportSide(MAX_EXPORT_SIDE_M) + " per side.";
+    }
+    return "Area is " + formatExportSide(h) + " tall. The max is " + formatExportSide(MAX_EXPORT_SIDE_M) + " per side.";
+  }
+  if (w < MIN_EXPORT_SIDE_M || h < MIN_EXPORT_SIDE_M) {
+    if (w <= h && w < MIN_EXPORT_SIDE_M) {
+      return "Too small: " + formatExportSide(w) + " wide. The min is " + formatExportSide(MIN_EXPORT_SIDE_M) + ".";
+    }
+    return "Too small: " + formatExportSide(h) + " tall. The min is " + formatExportSide(MIN_EXPORT_SIDE_M) + ".";
+  }
+  return "";
 }
 
 function syncDrawHint() {
@@ -473,7 +514,7 @@ function applyExtent(bounds, label) {
   showAreaChip(bounds, committedLabel, true);
   syncExportReady();
   syncDrawHint();
-  if (exportBtn.disabled) setStatus("Area must be between 40 m and 10 km on a side.", true);
+  if (exportBtn.disabled) setStatus(areaLimitMessage() || "Area is outside the export size limits.", true);
   else setStatus("Ready to export.");
 }
 
@@ -611,7 +652,7 @@ function handleDraw(result) {
     syncDrawHint();
     if (!result.discarded) return;
     if (!bbox) setStatus("");
-    else if (exportBtn.disabled) setStatus("Area must be between 40 m and 10 km on a side.", true);
+    else if (exportBtn.disabled) setStatus(areaLimitMessage() || "Area is outside the export size limits.", true);
     else setStatus("Ready to export.");
   }
 }
@@ -950,7 +991,7 @@ document.getElementById("search").onsubmit = async (e) => {
     const hit = hits[0];
     map.setView([+hit.lat, +hit.lon], 17);
     if (!bbox) setStatus("");
-    else if (exportBtn.disabled) setStatus("Area must be between 40 m and 10 km on a side.", true);
+    else if (exportBtn.disabled) setStatus(areaLimitMessage() || "Area is outside the export size limits.", true);
     else setStatus("Ready to export.");
   } catch (err) {
     setStatus(err.message, true);
