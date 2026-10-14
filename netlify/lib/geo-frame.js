@@ -222,14 +222,40 @@ function imageryExportPlan(devHost, bbox, quality) {
   return autoImageryPlan();
 }
 
-function spanLimitLabel(maxSpan) {
-  const n = +maxSpan;
+/** Longest draw side the export accepts. Larger boxes lower map meters per pixel. */
+const MAX_SPAN_M = 15000;
+const MIN_SPAN_M = 40;
+
+function spanLimitLabel(meters) {
+  const n = +meters;
+  if (!(n >= 0) || !Number.isFinite(n)) return "0 m";
   if (n >= 1000) {
     const km = n / 1000;
-    const text = Math.abs(km - Math.round(km)) < 1e-6 ? String(Math.round(km)) : km.toFixed(1);
+    const text = Math.abs(km - Math.round(km)) < 0.05 ? String(Math.round(km)) : km.toFixed(1);
     return text + " km";
   }
   return Math.round(n) + " m";
+}
+
+/**
+ * Plain size errors for the page and the API. Names the side that fails.
+ */
+function spanLimitError(widthM, lengthM, maxSpan, minSpan) {
+  const maxM = maxSpan == null ? MAX_SPAN_M : +maxSpan;
+  const minM = minSpan == null ? MIN_SPAN_M : +minSpan;
+  if (widthM > maxM + 1 || lengthM > maxM + 1) {
+    if (widthM >= lengthM && widthM > maxM + 1) {
+      return "Area is " + spanLimitLabel(widthM) + " wide. The max is " + spanLimitLabel(maxM) + " per side.";
+    }
+    return "Area is " + spanLimitLabel(lengthM) + " tall. The max is " + spanLimitLabel(maxM) + " per side.";
+  }
+  if (widthM < minM || lengthM < minM) {
+    if (widthM <= lengthM && widthM < minM) {
+      return "Too small: " + spanLimitLabel(widthM) + " wide. The min is " + spanLimitLabel(minM) + ".";
+    }
+    return "Too small: " + spanLimitLabel(lengthM) + " tall. The min is " + spanLimitLabel(minM) + ".";
+  }
+  return "";
 }
 
 function geoFrame(bbox, opts = {}) {
@@ -245,14 +271,10 @@ function geoFrame(bbox, opts = {}) {
   const mpd = metersPerDeg((south + north) / 2);
   const widthM = (east - west) * mpd.lon;
   const lengthM = (north - south) * mpd.lat;
-  const maxSpan = opts.maxSpanM ?? 10000;
-  const minSpan = opts.minSpanM ?? 40;
-  if (widthM > maxSpan + 1 || lengthM > maxSpan + 1) {
-    throw new Error("bbox too large (max " + spanLimitLabel(maxSpan) + ")");
-  }
-  if (widthM < minSpan || lengthM < minSpan) {
-    throw new Error("bbox too small");
-  }
+  const maxSpan = opts.maxSpanM ?? MAX_SPAN_M;
+  const minSpan = opts.minSpanM ?? MIN_SPAN_M;
+  const spanErr = spanLimitError(widthM, lengthM, maxSpan, minSpan);
+  if (spanErr) throw new Error(spanErr);
 
   const metersPerPx = opts.metersPerPx ?? 1.0;
   const maxSide = opts.maxSide ?? IMAGERY_MAX_SIDE;
@@ -984,6 +1006,10 @@ function applyAffine(lon, lat, affine) {
 
 module.exports = {
   CLIPBOARD_ORIGIN,
+  MAX_SPAN_M,
+  MIN_SPAN_M,
+  spanLimitLabel,
+  spanLimitError,
   IMAGERY_MAX_SIDE,
   IMAGERY_MAX_SIDE_DEV,
   ESRI_MAX_EXPORT_PIXELS,

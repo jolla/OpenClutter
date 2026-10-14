@@ -285,6 +285,19 @@ describe("Copy terrain after a background result", () => {
     );
     assert.equal(stands[1], "Stands 12");
     assert.equal(stands[stands.length - 1], "Map 2048 px, 0.40 m per pixel");
+    const trimmed = exportSummaryLines(
+      {
+        stats: {
+          buildings: 40,
+          openIntentJsonBytes: 4900000,
+          jsonBudget: 4900000,
+          stoppedBy: "bytes",
+        },
+      },
+      { foliageOn: false, terrainOn: false }
+    );
+    assert.ok(trimmed.includes("Some buildings or trees left out for the 4.90 MB limit."));
+    assert.equal(/\u2014/.test(trimmed.join("\n")), false);
   });
 
   it("switches the Export button to Copy terrain only when the mesh is included", () => {

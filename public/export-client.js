@@ -309,6 +309,9 @@
     const budget = +stats.jsonBudget > 0 ? +stats.jsonBudget : JSON_BUDGET_BYTES;
     const budgetText = (budget / 1e6).toFixed(2) + " MB";
     if (jsonBytes > 0) lines.push("OpenIntent " + formatBytes(jsonBytes) + " of " + budgetText);
+    if (stats.stoppedBy === "bytes") {
+      lines.push("Some buildings or trees left out for the " + budgetText + " limit.");
+    }
     const mapLine = mapResolutionLine(data);
     if (mapLine) lines.push(mapLine);
     const cached = stats.cachedSources;
