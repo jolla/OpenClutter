@@ -17,10 +17,12 @@ const { markStage, stageKey } = require("./export-progress");
 
 const STORE_NAME = "openclutter-exports";
 const TTL_MS = 60 * 60 * 1000;
-// The worker writes this often. A missed beat still lands inside the
-// 45 second stale window unless the machine has actually stopped.
+// The worker writes this often. A long CPU stage (buildings on a large
+// draw) can block the event loop for well over a minute, so the stale
+// window is five minutes. A machine that has actually stopped still
+// falls back; a live export that is mid-stage does not.
 const HEARTBEAT_MS = 10 * 1000;
-const HEARTBEAT_STALE_MS = 45 * 1000;
+const HEARTBEAT_STALE_MS = 5 * 60 * 1000;
 // Netlify rejects a function response above 6,291,556 bytes. The zip is
 // base64 in that response. This is the largest file whose base64 form,
 // plus a small envelope, still fits. It is not a Hamina import limit.

@@ -76,6 +76,14 @@ function startTilePulse(jobId) {
  * Returns { ok: false } when the job store could not be written, so the
  * caller can run the Netlify path instead.
  */
+async function otherWorkerFinished(jobId, worker) {
+  if (!worker) return false;
+  const cur = await jobs.readJob(jobId).catch(() => null);
+  if (!cur || !jobs.isTerminalState(cur.state)) return false;
+  const who = String(cur.worker || "");
+  return !!(who && who !== worker);
+}
+
 async function completeExportJob(jobId, inner, opts) {
   const warning = opts && opts.warning ? String(opts.warning) : "";
   const worker = opts && opts.worker ? String(opts.worker) : "";
@@ -99,6 +107,9 @@ async function completeExportJob(jobId, inner, opts) {
       }
       return jobs.updateJob(jobId, withTiles(patch));
     });
+    if (await otherWorkerFinished(jobId, worker)) {
+      return { ok: true, finished: false, reason: "other-worker-finished" };
+    }
     const status = result && result.statusCode;
     let data = {};
     try {
@@ -119,6 +130,9 @@ async function completeExportJob(jobId, inner, opts) {
       await jobs.updateJob(jobId, errPatch);
       return { ok: true, finished: false };
     }
+    if (await otherWorkerFinished(jobId, worker)) {
+      return { ok: true, finished: false, reason: "other-worker-finished" };
+    }
     const zip = Buffer.from(data.zipBase64, "base64");
     await jobs.saveZip(jobId, zip);
     const warnings = withWarning(Array.isArray(data.warnings) ? data.warnings : [], warning);
@@ -137,6 +151,9 @@ async function completeExportJob(jobId, inner, opts) {
     });
     return { ok: true, finished: true };
   } catch (err) {
+    if (await otherWorkerFinished(jobId, worker)) {
+      return { ok: true, finished: false, reason: "other-worker-finished" };
+    }
     const errPatch = {
       state: "error",
       stage: "Export failed",

@@ -77,7 +77,9 @@ exports.handler = async (event) => {
       return { statusCode: 202, body: "" };
     }
     await jobs.updateJob(jobId, { workerFallback: fly.reason || "invoke-failed" }).catch(() => {});
+    await completeExportJob(jobId, inner, { warning: FALLBACK_NOTE, worker: "netlify" });
+    return { statusCode: 202, body: "" };
   }
-  await completeExportJob(jobId, inner, fly.fallback ? { warning: FALLBACK_NOTE } : undefined);
+  await completeExportJob(jobId, inner);
   return { statusCode: 202, body: "" };
 };
