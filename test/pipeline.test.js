@@ -1230,7 +1230,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /px, down from /);
     assert.match(app, /more\.open = false/);
     assert.match(html, /id="clutter-options"/);
-    assert.match(html, /<details id="howto">\s*<summary><span class="chev" aria-hidden="true">▸<\/span>How it works<\/summary>/);
+    assert.match(html, /<details id="howto">\s*<summary><svg class="chev"[^>]*>.*?<\/svg>How it works<\/summary>/);
     assert.match(html, /class="panel-links"/);
     assert.match(html, /<details id="advanced">\s*<summary aria-label="Settings" title="Settings">/);
     assert.equal(/<summary>Advanced<\/summary>/.test(html), false);
