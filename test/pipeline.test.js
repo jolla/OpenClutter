@@ -1434,6 +1434,11 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /function syncDrawHint/);
     assert.match(app, /hint\.hidden = !!\(bbox/);
     assert.match(app, /function syncExportReady\(\) \{\n  exportBtn\.disabled = committedExportBlocked\(\);\n\}/);
+    assert.match(app, /MAX_EXPORT_SIDE_M = 15000/);
+    assert.match(app, /MIN_EXPORT_SIDE_M = 40/);
+    assert.match(app, /function areaLimitMessage\(/);
+    assert.equal(/Area must be between 40 m and 10 km/.test(app), false);
+    assert.match(app, /Area is " \+ formatExportSide\(w\) \+ " wide/);
     assert.match(app, /function clearFinishedShape/);
     const clearFn = app.slice(app.indexOf("function clearFinishedShape"), app.indexOf("function commitBox"));
     assert.match(clearFn, /bbox = null/);

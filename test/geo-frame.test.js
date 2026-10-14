@@ -27,6 +27,10 @@ const {
   needsGroundMeterImage,
   geodesicSpans,
   metersPerDeg,
+  MAX_SPAN_M,
+  MIN_SPAN_M,
+  spanLimitLabel,
+  spanLimitError,
   IMAGERY_MAX_SIDE,
   IMAGERY_MAX_SIDE_DEV,
   ESRI_MAX_EXPORT_PIXELS,
@@ -888,5 +892,82 @@ describe("Esri plate pixel budget", () => {
     assert.ok(plates[0].imgW * plates[0].imgH <= ESRI_MAX_EXPORT_PIXELS);
     assert.ok(second > 1800 && second < first, "next side " + second + " from " + first);
     assert.ok(second > Math.max(plates[2].imgW, plates[2].imgH));
+  });
+});
+
+
+describe("export span limits", () => {
+  it("accepts a 15 km side and rejects a longer one with a named message", () => {
+    assert.equal(MAX_SPAN_M, 15000);
+    assert.equal(MIN_SPAN_M, 40);
+    const mpd = metersPerDeg(40.03);
+    const side = 12000;
+    const ok = {
+      west: -86.4877 - (side / 2) / mpd.lon,
+      south: 40.0306 - (side / 2) / mpd.lat,
+      east: -86.4877 + (side / 2) / mpd.lon,
+      north: 40.0306 + (side / 2) / mpd.lat,
+    };
+    const frame = geoFrame(ok, { maxSide: 8192, metersPerPx: 0.075 });
+    assert.ok(frame.widthM > 11900 && frame.widthM < 12100, String(frame.widthM));
+    assert.ok(Math.max(frame.imgW, frame.imgH) <= 8192);
+    const safe = capEsriExportFrame(frame);
+    assert.ok(safe.imgW * safe.imgH <= ESRI_MAX_EXPORT_PIXELS, String(safe.imgW * safe.imgH));
+    assert.ok(Math.max(safe.imgW, safe.imgH) > 2500, safe.imgW + "x" + safe.imgH);
+
+    const maxBox = {
+      west: -86.4877 - (MAX_SPAN_M / 2) / mpd.lon,
+      south: 40.0306 - (MAX_SPAN_M / 2) / mpd.lat,
+      east: -86.4877 + (MAX_SPAN_M / 2) / mpd.lon,
+      north: 40.0306 + (MAX_SPAN_M / 2) / mpd.lat,
+    };
+    assert.doesNotThrow(() => geoFrame(maxBox, { maxSide: 2048, metersPerPx: 0.4 }));
+
+    const over = {
+      west: -86.4877 - 8000 / mpd.lon,
+      south: 40.0306 - 5000 / mpd.lat,
+      east: -86.4877 + 8000 / mpd.lon,
+      north: 40.0306 + 5000 / mpd.lat,
+    };
+    assert.throws(
+      () => geoFrame(over),
+      (err) => /Area is 16(?:\.0)? km wide\. The max is 15 km per side\./.test(String(err.message))
+    );
+  });
+
+  it("names the short side when the draw is under 40 m", () => {
+    const mpd = metersPerDeg(40);
+    const box = {
+      west: -86.5,
+      south: 40,
+      east: -86.5 + 80 / mpd.lon,
+      north: 40 + 30 / mpd.lat,
+    };
+    assert.throws(
+      () => geoFrame(box),
+      (err) => /Too small: 30 m tall\. The min is 40 m\./.test(String(err.message))
+    );
+    assert.equal(spanLimitError(12400, 8000, 10000, MIN_SPAN_M), "Area is 12.4 km wide. The max is 10 km per side.");
+    assert.equal(spanLimitError(16400, 8000, MAX_SPAN_M, MIN_SPAN_M), "Area is 16.4 km wide. The max is 15 km per side.");
+    assert.equal(spanLimitError(80, 30, MAX_SPAN_M, MIN_SPAN_M), "Too small: 30 m tall. The min is 40 m.");
+    assert.equal(spanLimitLabel(15000), "15 km");
+    assert.equal(spanLimitLabel(40), "40 m");
+  });
+
+  it("keeps a 15 km Auto plate under the Esri pixel limit", () => {
+    const mpd = metersPerDeg(40.03);
+    const side = 15000;
+    const box = {
+      west: -86.4877 - (side / 2) / mpd.lon,
+      south: 40.0306 - (side / 2) / mpd.lat,
+      east: -86.4877 + (side / 2) / mpd.lon,
+      north: 40.0306 + (side / 2) / mpd.lat,
+    };
+    const plan = imageryExportPlan(true, box, "auto");
+    const raw = geoFrame(box, plan[0]);
+    const plate = capEsriExportFrame(raw);
+    assert.ok(plate.imgW * plate.imgH <= ESRI_MAX_EXPORT_PIXELS);
+    assert.ok(plate.mpuX > 3, "coarser map " + plate.mpuX);
+    assert.ok(Math.max(plate.imgW, plate.imgH) >= 2500);
   });
 });
