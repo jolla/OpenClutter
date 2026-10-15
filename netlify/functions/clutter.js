@@ -1016,6 +1016,16 @@ function coverJoinWait(started, background) {
   return sourceWait(started, cappedMs(background, "coverMs", BACKGROUND_COVER_MS, 8000));
 }
 
+/**
+ * Canopy outline cap for one export. 720 was sized for a dense site. Each
+ * building left out of a 2000-building ceiling frees JSON room, so a site
+ * with few roofs keeps up to 1200 outlines. The byte budget is still final.
+ */
+function foliageCapFor(buildings) {
+  const n = Math.max(0, buildings | 0);
+  return Math.max(720, Math.min(1200, Math.round(1200 - n * 0.4)));
+}
+
 function lidarCapMs(background) {
   return cappedMs(background, "lidarMs", BACKGROUND_LIDAR_MS, 8000);
 }
@@ -2173,11 +2183,12 @@ async function handleClutter(event) {
     }
   }
 
-  // 720 keeps the largest canopies and fills the rest with compact crowns.
-  // The OpenIntent JSON budget is what drops the rest. The zip size is not.
-  const foliageCap = 720;
+  // 720 keeps the largest canopies and fills the rest with measured crowns.
+  // A site with few buildings has JSON room for more, so the cap rises with
+  // that headroom up to 1200. The OpenIntent byte budget still drops the rest.
 
   async function emitClutter(list, extraWarnings) {
+    const foliageCap = foliageCapFor(list ? list.length : 0);
     const slopeTop = demUnderFootprint(terrain);
     const areaCap = areaCapOverride > 0 ? areaCapOverride | 0 : DEFAULT_AREA_CAP;
     const buildingCeiling =
