@@ -363,9 +363,11 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
     const part = traced[i] && traced[i].crowns;
     if (part && part.length) crowns = crowns.concat(part);
   }
+  // Count every traced crown. Counting after the safety cap always reported
+  // the cap minus the budget, not the outlines really left out.
+  const before = crowns.length;
   if (crowns.length > CROWN_CAP) crowns = selectCrownsForExport(crowns, CROWN_CAP);
   const max = opts.maxPolygons > 0 ? opts.maxPolygons | 0 : 720;
-  const before = crowns.length;
   if (crowns.length > max) crowns = selectCrownsForExport(crowns, max);
   const meta = {
     coarsened: before > crowns.length,

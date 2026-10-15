@@ -33,7 +33,7 @@ const CROWN_MAX_VERTS = 32;
  * 480 slots (the previous budget). Further slots are compact measured crowns,
  * so a busy site does not spend the whole cap on woods and drop every tree.
  */
-const CROWN_CAP = 800;
+const CROWN_CAP = 1400;
 const BULK_POLYGONS = 480;
 /** A fairway tree, not a woods mass. Extra slots stay available for these. */
 const COMPACT_AREA_M2 = 180;
@@ -1219,7 +1219,13 @@ function selectCrownsForExport(crowns, max) {
     if (c.heightM >= COMPACT_MIN_H && c.areaM2 <= COMPACT_AREA_M2) extra.push(c);
   }
   extra.sort((a, b) => b.heightM - a.heightM || b.areaM2 - a.areaM2);
-  return bulk.concat(extra.slice(0, limit - bulk.length));
+  const picked = bulk.concat(extra.slice(0, limit - bulk.length));
+  if (picked.length >= limit) return picked;
+  // Slots left after the compact crowns go to the next largest canopies.
+  // A mid-size crown was dropped here even when the cap had room for it.
+  const taken = new Set(picked);
+  const rest = list.filter((c) => !taken.has(c)).sort((a, b) => b.areaM2 - a.areaM2);
+  return picked.concat(rest.slice(0, limit - picked.length));
 }
 
 function copyGrid(grid, values, nonzero) {
