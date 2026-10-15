@@ -64,6 +64,18 @@ async function fetchWorldCoverTreesWork(frame, opts) {
   const minY = bbox[1];
   const maxX = bbox[2];
   const maxY = bbox[3];
+  // The map frame is the Esri content grid, often taller or wider than the
+  // drawn box this was asked for. A band outside the window read class 0, so
+  // dark harbor water there was not water and grew conifer crowns. Pad the
+  // window so every cell of the frame and the canopy grid has a class.
+  const padLon = Math.max(Math.abs(+frame.east - +frame.west) * 0.15, 0.002);
+  const padLat = Math.max(Math.abs(+frame.north - +frame.south) * 0.15, 0.002);
+  frame = {
+    west: Math.min(+frame.west, +frame.east) - padLon,
+    east: Math.max(+frame.west, +frame.east) + padLon,
+    south: Math.min(+frame.south, +frame.north) - padLat,
+    north: Math.max(+frame.south, +frame.north) + padLat,
+  };
   const px = (x) => ((x - minX) / (maxX - minX || 1)) * iw;
   const py = (y) => ((maxY - y) / (maxY - minY || 1)) * ih;
   let left = Math.floor(Math.min(px(frame.west), px(frame.east)));
