@@ -3732,6 +3732,8 @@ function buildClutter({
     femaHeights: footprintMeta && footprintMeta.femaHeights ? footprintMeta.femaHeights : 0,
     floorHeights: footprintMeta && footprintMeta.floorHeights ? footprintMeta.floorHeights : 0,
     chmTrees: footprintMeta && footprintMeta.chmTrees ? footprintMeta.chmTrees : 0,
+    waterCanopyCells: footprintMeta && footprintMeta.waterCanopyCells ? footprintMeta.waterCanopyCells : 0,
+    waterTreesDropped: footprintMeta && footprintMeta.waterTreesDropped ? footprintMeta.waterTreesDropped : 0,
     terrainRaised: terrain && terrain.raised ? terrain.raised : 0,
     terrainSloped: terrain && terrain.sloped ? terrain.sloped : 0,
     terrainMinM: terrain && Number.isFinite(+terrain.minZ) ? +terrain.minZ : null,

@@ -226,6 +226,7 @@ const { buildMapNotes, stampMapNotes } = require("../lib/map-notes");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
 const { surfaceMasksFromImage } = require("../lib/surface-mask");
+const { createWaterTest, clearWaterCanopy, dropWaterPoints } = require("../lib/water-mask");
 const { rejectPavementFootprints } = require("../lib/pavement");
 function json(status, cors, obj) {
   return {
@@ -1929,6 +1930,7 @@ async function handleClutter(event) {
     }
   }
   let guidewayFeatures = [];
+  let osmWater = [];
   let bridgeFeatures = [];
   let planningPlaces = [];
   function takePlaces(pack) {
@@ -1949,6 +1951,7 @@ async function handleClutter(event) {
       takePlaces(pack);
       guidewayFeatures = pack.guideways || [];
       bridgeFeatures = pack.bridges || [];
+      osmWater = pack.water || [];
       try {
         const roofRaw = decoded || decodeRoofImagery(imgBuf);
         const shaped = shapeBuildings(features, Object.assign({}, pack, {
@@ -1969,7 +1972,7 @@ async function handleClutter(event) {
   gj = { type: "FeatureCollection", features };
 
   const clientHits = normalizeCanopyHits(body.canopyHits);
-  const placeHits =
+  let placeHits =
     clientHits.length > 0
       ? clientHits
       : treesSource === "nlcd-canopy"
@@ -2126,6 +2129,28 @@ async function handleClutter(event) {
     await flushProgress();
   }
 
+  // Water has no canopy. Dark open water reads as a dark conifer stand, and
+  // the height model carries noise over a harbor, so crowns stood on the bay.
+  // WorldCover water (sea included) and OSM water polygons clear those cells
+  // and points. A shoreline crown or an island stays.
+  let waterTest = null;
+  if (includeFoliage) {
+    const polys = osmWater;
+    try {
+      waterTest = createWaterTest({ worldcover: worldCover, waterPolygons: polys });
+    } catch {
+      waterTest = null;
+    }
+    if (waterTest) {
+      footprintMeta.waterCanopyCells = clearWaterCanopy(chmGrid, waterTest);
+      const pts = dropWaterPoints(treePoints, waterTest);
+      treePoints = pts.points;
+      const hits = dropWaterPoints(placeHits, waterTest);
+      placeHits = hits.points;
+      footprintMeta.waterTreesDropped = pts.dropped + hits.dropped;
+    }
+  }
+
   // Gap fill runs on a worker while the rest of this stage prepares
   // footprints. It used to sit on the Trees clock before any tile started.
   let fillPromise = null;
@@ -2222,7 +2247,10 @@ async function handleClutter(event) {
     if (fillPromise) {
       try {
         const filled = await fillPromise;
-        if (filled && filled.values && filled.nonzero > 0) chmGrid = filled;
+        if (filled && filled.values && filled.nonzero > 0) {
+          chmGrid = filled;
+          if (waterTest) footprintMeta.waterCanopyCells = (footprintMeta.waterCanopyCells || 0) + clearWaterCanopy(chmGrid, waterTest);
+        }
       } catch {
         // The measured grid still ships when the fill cannot be read.
       }
