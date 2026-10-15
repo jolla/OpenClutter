@@ -175,6 +175,12 @@ function isOpeningTags(tags) {
   return false;
 }
 
+/** Open water, not a pool. Trees are masked out of these. */
+function isWaterTags(tags) {
+  if (!tags || tags.leisure === "swimming_pool" || tags.water === "pool") return false;
+  return isOpeningTags(tags);
+}
+
 function partFeature(rings, tags) {
   const exterior = rings[0];
   if (!exterior) return null;
@@ -235,6 +241,7 @@ function parseBuildingDetail(payload, bbox) {
   const elements = (payload && payload.elements) || [];
   const parts = [];
   const openings = [];
+  const water = [];
   const buildings = [];
   const structures = [];
   for (let i = 0; i < elements.length; i++) {
@@ -259,6 +266,7 @@ function parseBuildingDetail(payload, bbox) {
       }
       if (isOpeningTags(tags)) {
         openings.push(ring);
+        if (isWaterTags(tags)) water.push([ring]);
         continue;
       }
       if (tags.building) pushOutlinedBuilding(buildings, structures, ring, tags);
@@ -276,7 +284,10 @@ function parseBuildingDetail(payload, bbox) {
     }
     if (isOpeningTags(tags)) {
       for (let o = 0; o < outers.length; o++) {
-        if (!bbox || ringHitsBox(outers[o], bbox)) openings.push(outers[o]);
+        if (!bbox || ringHitsBox(outers[o], bbox)) {
+          openings.push(outers[o]);
+          if (isWaterTags(tags)) water.push([outers[o]].concat(inners));
+        }
       }
       continue;
     }
@@ -296,7 +307,7 @@ function parseBuildingDetail(payload, bbox) {
       }
     }
   }
-  return { parts, openings, buildings, structures, places: placesFromElements(elements) };
+  return { parts, openings, buildings, structures, water, places: placesFromElements(elements) };
 }
 
 function ringHitsBox(ring, bbox) {
@@ -515,6 +526,7 @@ function roadsFromWays(ways, nodes) {
 function mergeBuildingDetail(packs) {
   const parts = [];
   const openings = [];
+  const water = [];
   const buildings = [];
   const structures = [];
   const guideways = [];
@@ -582,8 +594,15 @@ function mergeBuildingDetail(packs) {
     }
     const spots = pack.places || [];
     for (let i = 0; i < spots.length; i++) places.push(spots[i]);
+    const lakes = pack.water || [];
+    for (let i = 0; i < lakes.length; i++) {
+      const key = ringKey(lakes[i] && lakes[i][0]);
+      if (key && seenO.has("water:" + key)) continue;
+      if (key) seenO.add("water:" + key);
+      water.push(lakes[i]);
+    }
   }
-  return { parts, openings, buildings, structures, guideways, bridges, roads, places };
+  return { parts, openings, buildings, structures, guideways, bridges, roads, places, water };
 }
 
 async function fetchBuildingDetail(bbox, opts) {
@@ -617,6 +636,7 @@ async function fetchBuildingDetail(bbox, opts) {
             ok: true,
             parts: parsed.parts,
             openings: parsed.openings,
+            water: parsed.water || [],
             buildings: parsed.buildings || [],
             structures: parsed.structures || [],
             roads: [],
@@ -634,6 +654,7 @@ async function fetchBuildingDetail(bbox, opts) {
             ok: true,
             parts: merged.parts,
             openings: merged.openings,
+            water: merged.water || [],
             buildings: merged.buildings || [],
             structures: merged.structures || [],
             roads: merged.roads || [],
@@ -669,6 +690,7 @@ async function fetchBuildingDetail(bbox, opts) {
           ok: true,
           parts: parsed.parts,
           openings: parsed.openings,
+          water: parsed.water || [],
           buildings: parsed.buildings || [],
           structures: parsed.structures || [],
           roads: [],
