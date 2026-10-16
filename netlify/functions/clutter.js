@@ -1958,6 +1958,7 @@ async function handleClutter(event) {
       const sup = supplementFootprints(decoded, frame, features);
       features = sup.features;
       footprintMeta.imageryRoofs = sup.imageryRoofs;
+      footprintMeta.droppedShadow = sup.droppedShadow || 0;
       const pav = rejectPavementFootprints(decoded, frame, features);
       features = pav.features;
       footprintMeta.droppedPavement = pav.dropped;
