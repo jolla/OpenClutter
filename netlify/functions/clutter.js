@@ -166,7 +166,8 @@ const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchSlopeForest } = require("../lib/slope-forest");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
-const { fetchUsgsLidar, applyLidarSample, lidarNote, lidarStatusLine } = require("../lib/usgs-lidar");
+const { fetchUsgsLidar, applyLidarSample, lidarNote, lidarStatusLine, rankProjects } = require("../lib/usgs-lidar");
+const { fuseLidarCanopy, keepLidarOpen, clearInside, vehicleFeatures, lidarCanopyNote } = require("../lib/lidar-canopy");
 const exportJobs = require("../lib/export-jobs");
 const stageClock = require("../lib/stage-clock");
 const aerialFetch = require("../lib/aerial-fetch");
@@ -1408,6 +1409,16 @@ async function handleClutter(event) {
   const includeFoliage = wantFoliage(event, body);
   const lidarOn =
     devHost && (body.lidar === true || body.lidar === "true" || body.lidar === 1 || body.lidar === "1");
+  // Where a USGS 3DEP cloud covers the draw, tree canopy is traced from it.
+  // Building heights from that cloud stay on the dev request above.
+  let lidarCanopyOn = false;
+  if (includeFoliage && needImage && body.lidarCanopy !== false && body.lidarCanopy !== "false") {
+    try {
+      lidarCanopyOn = rankProjects(frame).length > 0;
+    } catch {
+      lidarCanopyOn = false;
+    }
+  }
   const includeWater = wantOutdoorFlag(event, body, "includeWater");
   const includeParking = wantOutdoorFlag(event, body, "includeParking");
   const includeWalls = wantOutdoorFlag(event, body, "includeWalls");
@@ -1606,14 +1617,18 @@ async function handleClutter(event) {
       };
       coverJob = beginOptional((signal) => fetchWorldCoverImpl(coverFrame, { signal }));
     }
-    if (lidarOn && !lidarPromise) {
+    if ((lidarOn || lidarCanopyOn) && !lidarPromise) {
       lidarSettled = false;
-      const lidarBox = {
-        west: requestBbox.west,
-        south: requestBbox.south,
-        east: requestBbox.east,
-        north: requestBbox.north,
-      };
+      // The canopy grid covers the snapped map frame, a little past the
+      // draw. Read the cloud for that frame so its edge is measured too.
+      const lidarBox = lidarCanopyOn && frame
+        ? { west: frame.west, south: frame.south, east: frame.east, north: frame.north }
+        : {
+            west: requestBbox.west,
+            south: requestBbox.south,
+            east: requestBbox.east,
+            north: requestBbox.north,
+          };
       lidarPromise = fetchUsgsLidar(lidarBox, { maxMs: lidarCapMs(background) })
         .then((value) => {
           lidarSettled = true;
@@ -1841,6 +1856,7 @@ async function handleClutter(event) {
     { label: "Canopy height", open: () => !!(chmJob && !chmJob.isSettled()) },
     { label: "World cover", open: () => !!(coverJob && !coverJob.isSettled()) },
     { label: "Lidar heights", open: () => lidarOn && !lidarSettled },
+    { label: "Lidar canopy", open: () => !lidarOn && lidarCanopyOn && !lidarSettled },
   ]);
   slowWatch.tick();
   let optional;
@@ -2016,6 +2032,35 @@ async function handleClutter(event) {
     if (src === "warehouse") warehouseMembranes++;
   }
   let lidarYards = [];
+  let lidarCanopy = null;
+  if (lidarCanopyOn && !lidarOn && !chmTimedOut) {
+    try {
+      if (!lidarSettled) {
+        reportProgress({ stage: "Lidar canopy" });
+        await flushProgress();
+      }
+      const lidar = await lidarPromise;
+      lidarCanopy = fuseCanopyFromLidar(lidar);
+    } catch {
+      lidarCanopy = null;
+    }
+  }
+  function fuseCanopyFromLidar(lidar) {
+    if (!lidar || lidar.skipped || !lidar.grid) return null;
+    const fused = fuseLidarCanopy(chmGrid, lidar, { frame, buildings: features });
+    if (!fused || !fused.stats.cellsDecided) return null;
+    chmGrid = fused.grid;
+    fused.original = new Uint8Array(fused.grid.values);
+    footprintMeta.lidarCanopy = fused.stats.lidarCanopy;
+    footprintMeta.lidarCanopyStats = fused.stats;
+    footprintMeta.lidarProject = lidar.project || "";
+    footprintMeta.lidarCollected = lidar.collected || "";
+    footprintMeta.lidarMs = lidar.ms || 0;
+    if (process.env.OC_LIDAR_DEBUG) process.stderr.write("lidarcanopy " + JSON.stringify(fused.stats) + " frame " + JSON.stringify([frame.west, frame.south, frame.east, frame.north]) + " lid " + JSON.stringify(lidar.frame) + " partial " + lidar.partial + " pts " + lidar.points + "\n");
+    const note = lidarCanopyNote(fused.stats);
+    if (note && warnings.indexOf(note) < 0) warnings.push(note);
+    return fused;
+  }
   if (lidarOn) {
     try {
       if (!lidarSettled) {
@@ -2037,6 +2082,7 @@ async function handleClutter(event) {
           footprintMeta.lidarAdded = applied.added;
           footprintMeta.lidarCanopy = applied.canopy;
           if (applied.yards && applied.yards.length) lidarYards = applied.yards;
+          if (lidarCanopyOn && !chmTimedOut) lidarCanopy = fuseCanopyFromLidar(lidar);
         }
         footprintMeta.lidarProject = lidar.project || "";
         footprintMeta.lidarCollected = lidar.collected || "";
@@ -2260,11 +2306,22 @@ async function handleClutter(event) {
         const filled = await fillPromise;
         if (filled && filled.values && filled.nonzero > 0) {
           chmGrid = filled;
+          // The gap fill reads the aerial. Where the lidar measured open
+          // ground or a crown, the measurement stands.
+          if (lidarCanopy) {
+            const fillNz = chmGrid.nonzero;
+            const reverted = keepLidarOpen(chmGrid, lidarCanopy.decided, lidarCanopy.original);
+            if (process.env.OC_LIDAR_DEBUG) process.stderr.write("lidarfill nz " + fillNz + " reverted " + reverted + " now " + chmGrid.nonzero + "\n");
+          }
           if (waterTest) footprintMeta.waterCanopyCells = (footprintMeta.waterCanopyCells || 0) + clearWaterCanopy(chmGrid, waterTest);
         }
       } catch {
         // The measured grid still ships when the fill cannot be read.
       }
+    }
+    if (lidarCanopy && chmGrid) {
+      // Trailers, RVs, cars, and storage stacks are not crowns.
+      footprintMeta.vehicleCanopyCells = clearInside(chmGrid, vehicleFeatures(outdoorFeatures));
     }
     if (background && includeFoliage && !chmTimedOut) {
       if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage trees-parallel\n");
