@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+"""Ground-truth tree checks on a Wynn preview scene (scripts/hamina-preview.js).
+
+Each reference is a box in scene metres with what Street View shows there.
+Reports tree tops, trunk counts, and the widest crown piece in each box.
+usage: tree-refs.py full.scene.json [refs.json]
+"""
+import json, sys, os
+
+def area(r):
+    a = 0
+    for i in range(len(r)):
+        x1, y1 = r[i][:2]; x2, y2 = r[(i + 1) % len(r)][:2]; a += x1 * y2 - x2 * y1
+    return abs(a) / 2
+
+def centre(r):
+    return sum(p[0] for p in r) / len(r), sum(p[1] for p in r) / len(r)
+
+scene = json.load(open(sys.argv[1]))
+refs = json.load(open(sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(__file__), "..", "bench", "tree-refs.json")))
+out = []
+for ref in refs:
+    x0, y0, x1, y1 = ref["box"]
+    inside = lambda o: x0 <= centre(o["ring"])[0] <= x1 and y0 <= centre(o["ring"])[1] <= y1
+    trees = [o for o in scene["objects"] if o["kind"] == "tree" and inside(o)]
+    trunks = [o for o in scene["objects"] if o["kind"] == "trunk" and inside(o)]
+    tops = sorted(o["top"] - (o.get("ground") or 0) for o in trees)
+    top = max((o["top"] for o in trees), default=0)
+    widest = max((area(o["ring"]) for o in trees), default=0)
+    lo, hi = ref["heightM"]
+    ok = (not trees or top <= hi + 2) and len(trunks) >= ref.get("minTrunks", 0) and widest <= ref.get("maxCrownM2", 1e9)
+    out.append({"id": ref["id"], "trees": len(trees), "trunks": len(trunks), "maxTop": round(top, 1), "widestM2": round(widest), "expect": ref["heightM"], "pass": ok})
+print(json.dumps(out, indent=1))
