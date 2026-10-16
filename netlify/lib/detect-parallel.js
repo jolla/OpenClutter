@@ -169,6 +169,7 @@ function plainOpts(opts) {
     chmRequired: src.chmRequired === true,
     maxPolygons: src.maxPolygons,
     buildingBufferM: src.buildingBufferM,
+    palmPoints: src.palmPoints || [],
   };
 }
 
@@ -399,6 +400,7 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
       maskRings: opts.maskRings || [],
       maskPolygons: opts.maskPolygons || [],
       buildingBufferM: opts.buildingBufferM,
+      palmPoints: opts.palmPoints || [],
       terrain,
       chmBuffer: chmShared,
       west: +grid.west,

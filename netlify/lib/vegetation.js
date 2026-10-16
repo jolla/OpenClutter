@@ -13,7 +13,7 @@ const {
 } = require("./materials");
 
 const { MAX_TREES, maxTreesForBbox, canopyHeightM } = require("./tree-source");
-const { crownsForExport } = require("./canopy-height");
+const { crownsForExport, tracePixels } = require("./canopy-height");
 const { BUILDING_BUFFER_M, createClipSet, clipFoliageRing, dissolveFoliageRings, pointInRing, intersectionAreaPx } = require("./poly-clip");
 const polygonClipping = require("polygon-clipping");
 const profile = require("./profile-log");
@@ -566,6 +566,364 @@ function trunkRingPx(ringPx, frame) {
   return null;
 }
 
+
+/**
+ * Palms. A palm is a bare stem with a small crown at the top. Drawn as one
+ * full-height prism it reads as a solid green column in Hamina.
+ *
+ * A crown is a palm when:
+ * - an OSM natural=tree node inside it is tagged as a palm (leaf_type=palm,
+ *   genus Phoenix / Washingtonia / Syagrus / Roystonea / Sabal / Cocos, or a
+ *   species or taxon naming one), or
+ * - the measured outline is a tall, narrow column: at least 7 m tall, no more
+ *   than 6.5 m across, and at least twice as tall as it is wide. A broadleaf
+ *   tree that tall spreads wider than that.
+ * A narrow row of palm crowns that merged on the canopy grid is split at its
+ * measured height peaks, never at guessed spacing.
+ */
+const PALM_MIN_H = 7;
+/** Slope pieces smaller than this join a neighbour instead of shipping alone. */
+const SLIVER_M2 = 25;
+const SPIRE_MIN_H = 32;
+const SPIRE_MAX_M2 = 40;
+const PALM_MAX_H = 35;
+const PALM_MAX_DIAM_M = 6.5;
+const PALM_MIN_RATIO = 2;
+const PALM_CROWN_MIN_M = 4;
+const PALM_CROWN_MAX_M = 6;
+const PALM_TRUNK_M = 0.6;
+const PALM_ROW_MAX_M = 90;
+const PALM_PEAK_GAP_M = 4.5;
+const PALM_GENUS = /\b(phoenix|washingtonia|syagrus|roystonea|sabal|cocos|trachycarpus|butia|livistona|chamaerops|brahea|archontophoenix|dypsis|bismarckia|areca|arecaceae|palmae)\b/i;
+
+function isPalmTags(tags) {
+  if (!tags || typeof tags !== "object") return false;
+  if (String(tags.leaf_type || "").toLowerCase() === "palm") return true;
+  const keys = ["genus", "species", "taxon", "species:en", "taxon:en", "genus:en", "family", "species:wikidata_label"];
+  for (let i = 0; i < keys.length; i++) {
+    const v = tags[keys[i]];
+    if (v && (PALM_GENUS.test(String(v)) || /\bpalm\b/i.test(String(v)))) return true;
+  }
+  return false;
+}
+
+function ringMeters(frame) {
+  const mpuX = (frame && (frame.mpuX || frame.mpu)) || 1;
+  const mpuY = (frame && (frame.mpuY || mpuX)) || mpuX;
+  return { mpuX, mpuY };
+}
+
+/** Major axis of a ring in px, from its second moments. */
+function ringAxis(ring, frame) {
+  const { mpuX, mpuY } = ringMeters(frame);
+  const c = ringCentroidPx(ring);
+  if (!c) return null;
+  const n = ring.length - 1;
+  let sxx = 0;
+  let syy = 0;
+  let sxy = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = (ring[i][0] - c[0]) * mpuX;
+    const dy = (ring[i][1] - c[1]) * mpuY;
+    sxx += dx * dx;
+    syy += dy * dy;
+    sxy += dx * dy;
+  }
+  const a = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+  const ux = Math.cos(a);
+  const uy = Math.sin(a);
+  let lo = Infinity;
+  let hi = -Infinity;
+  let wlo = Infinity;
+  let whi = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const dx = (ring[i][0] - c[0]) * mpuX;
+    const dy = (ring[i][1] - c[1]) * mpuY;
+    const t = dx * ux + dy * uy;
+    const w = -dx * uy + dy * ux;
+    if (t < lo) lo = t;
+    if (t > hi) hi = t;
+    if (w < wlo) wlo = w;
+    if (w > whi) whi = w;
+  }
+  return { c, ux, uy, lo, hi, length: hi - lo, width: whi - wlo };
+}
+
+/**
+ * Measured shape of an untagged palm. The whole footprint is crown near the
+ * top (a palm head is flat-ish, a conifer is a cone whose edge cells read
+ * low), and the ground around it is open (a palm stands alone or in a row,
+ * a conifer in a stand has more canopy beside it). Without a height model
+ * the shape cannot be checked, so it is not a palm.
+ */
+function palmProfile(ringPx, frame, h, heightSample) {
+  if (typeof heightSample !== "function") return false;
+  const { mpuX, mpuY } = ringMeters(frame);
+  const c = ringCentroidPx(ringPx);
+  if (!c) return false;
+  let inSum = 0;
+  let inN = 0;
+  let openN = 0;
+  let ringN = 0;
+  for (let dy = -9; dy <= 9; dy += 1) {
+    for (let dx = -9; dx <= 9; dx += 1) {
+      const p = [c[0] + dx / mpuX, c[1] + dy / mpuY];
+      const ll = pxToLl(p[0], p[1], frame);
+      const v = Number(heightSample(ll[0], ll[1])) || 0;
+      if (pointInRing(p, ringPx)) {
+        inSum += v;
+        inN++;
+      } else {
+        const r = Math.sqrt(dx * dx + dy * dy);
+        if (r < 5 || r > 9) continue;
+        ringN++;
+        if (v < 3) openN++;
+      }
+    }
+  }
+  if (inN < 3 || ringN < 8) return false;
+  return inSum / inN >= 0.55 * h && openN / ringN >= 0.5;
+}
+
+function palmTagIn(ringPx, palmPx) {
+  if (!palmPx || !palmPx.length) return false;
+  for (let i = 0; i < palmPx.length; i++) if (pointInRing(palmPx[i], ringPx)) return true;
+  return false;
+}
+
+/**
+ * Palm crown centres in px for one traced canopy, or null when it is not
+ * palms. Each centre carries its own measured height.
+ */
+function palmCentres(ringPx, frame, heightM, palmPx, heightSample) {
+  const h = Number(heightM);
+  if (!(h >= 6 && h < PALM_MAX_H) || !ringPx || ringPx.length < 4) return null;
+  const { mpuX, mpuY } = ringMeters(frame);
+  const areaM = ringPxArea(ringPx) * mpuX * mpuY;
+  const diam = 2 * Math.sqrt(areaM / Math.PI);
+  const tagged = palmTagIn(ringPx, palmPx);
+  const c = ringCentroidPx(ringPx);
+  if (!c || !pointInRing(c, ringPx)) return null;
+  if (diam <= PALM_MAX_DIAM_M && (tagged || (h >= PALM_MIN_H && h / diam >= PALM_MIN_RATIO && palmProfile(ringPx, frame, h, heightSample)))) {
+    return [{ c, h, diam }];
+  }
+  // Several palms whose crowns merged on the canopy grid: a row along a
+  // street, a grove, a cluster by a pool. Split at the measured height peaks.
+  return palmCluster(ringPx, frame, h, heightSample, tagged);
+}
+
+const PALM_CLUSTER_MAX_M2 = 6000;
+
+/**
+ * Local-maximum tree segmentation on the height model inside one traced
+ * canopy. Each peak at least 4.5 m from a taller one is a tree top. Its crown
+ * radius is where the height first drops below 60% of the peak in 8
+ * directions. The canopy is palms only when most tops are narrow tall heads
+ * and the tops explain the canopy area, so a broad tree with a bumpy top is
+ * not cut into fake palms.
+ */
+function palmCluster(ringPx, frame, h, heightSample, tagged) {
+  if (typeof heightSample !== "function") return null;
+  const { mpuX, mpuY } = ringMeters(frame);
+  const areaM = ringPxArea(ringPx) * mpuX * mpuY;
+  if (!(areaM <= PALM_CLUSTER_MAX_M2) || !(h >= PALM_MIN_H)) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ringPx.length; i++) {
+    if (ringPx[i][0] < minX) minX = ringPx[i][0];
+    if (ringPx[i][1] < minY) minY = ringPx[i][1];
+    if (ringPx[i][0] > maxX) maxX = ringPx[i][0];
+    if (ringPx[i][1] > maxY) maxY = ringPx[i][1];
+  }
+  const step = 1;
+  const nx = Math.max(2, Math.ceil(((maxX - minX) * mpuX) / step) + 1);
+  const ny = Math.max(2, Math.ceil(((maxY - minY) * mpuY) / step) + 1);
+  if (nx * ny > 40000) return null;
+  const val = new Float32Array(nx * ny);
+  const inside = new Uint8Array(nx * ny);
+  const pxAt = (x, y) => [minX + (x * step) / mpuX, minY + (y * step) / mpuY];
+  for (let y = 0; y < ny; y++) {
+    for (let x = 0; x < nx; x++) {
+      const p = pxAt(x, y);
+      const ll = pxToLl(p[0], p[1], frame);
+      val[y * nx + x] = Number(heightSample(ll[0], ll[1])) || 0;
+      if (pointInRing(p, ringPx)) inside[y * nx + x] = 1;
+    }
+  }
+  const at = (x, y) => (x < 0 || y < 0 || x >= nx || y >= ny ? 0 : val[y * nx + x]);
+  const peaks = [];
+  for (let y = 0; y < ny; y++) {
+    for (let x = 0; x < nx; x++) {
+      const k = y * nx + x;
+      const v = val[k];
+      if (!inside[k] || !(v >= PALM_MIN_H - 1) || v < 0.6 * h) continue;
+      let top = true;
+      for (let dy = -2; dy <= 2 && top; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          if (!dx && !dy) continue;
+          const u = at(x + dx, y + dy);
+          if (u > v || (u === v && (dy < 0 || (dy === 0 && dx < 0)))) {
+            top = false;
+            break;
+          }
+        }
+      }
+      if (top) peaks.push({ x, y, v });
+    }
+  }
+  peaks.sort((p, q) => q.v - p.v);
+  const tops = [];
+  for (let i = 0; i < peaks.length; i++) {
+    const p = peaks[i];
+    if (tops.every((q) => Math.hypot(q.x - p.x, q.y - p.y) * step >= PALM_PEAK_GAP_M)) tops.push(p);
+  }
+  if (tops.length < 2) return null;
+  // Each top owns the connected cells within 6 m that stay above 60% of its
+  // height and are closer to it than to any other top.
+  const owner = new Int32Array(nx * ny).fill(-1);
+  let palmish = 0;
+  let crownArea = 0;
+  const out = [];
+  for (let i = 0; i < tops.length; i++) {
+    const t = tops[i];
+    const floor = 0.6 * t.v;
+    const stack = [t.y * nx + t.x];
+    owner[stack[0]] = i;
+    let n = 0;
+    let sx = 0;
+    let sy = 0;
+    while (stack.length) {
+      const k = stack.pop();
+      const x = k % nx;
+      const y = (k / nx) | 0;
+      n++;
+      sx += x;
+      sy += y;
+      const nb = [x > 0 ? k - 1 : -1, x < nx - 1 ? k + 1 : -1, y > 0 ? k - nx : -1, y < ny - 1 ? k + nx : -1];
+      for (let j = 0; j < 4; j++) {
+        const q = nb[j];
+        if (q < 0 || owner[q] >= 0 || val[q] < floor) continue;
+        const qx = q % nx;
+        const qy = (q / nx) | 0;
+        const d = Math.hypot(qx - t.x, qy - t.y) * step;
+        if (d > 6) continue;
+        let nearest = true;
+        for (let m = 0; m < tops.length && nearest; m++) {
+          if (m !== i && Math.hypot(qx - tops[m].x, qy - tops[m].y) * step < d) nearest = false;
+        }
+        if (!nearest) continue;
+        owner[q] = i;
+        stack.push(q);
+      }
+    }
+    const areaT = n * step * step;
+    const diam = 2 * Math.sqrt(areaT / Math.PI);
+    crownArea += areaT;
+    if (diam <= PALM_MAX_DIAM_M && t.v / Math.max(diam, 1) >= PALM_MIN_RATIO) palmish++;
+    out.push({ c: pxAt(sx / n, sy / n), h: Math.round(t.v * 10) / 10, diam: Math.min(diam, PALM_CROWN_MAX_M) });
+  }
+  const need = tagged ? 0.5 : 0.75;
+  if (palmish / tops.length < need) return null;
+  // Tall narrow tops that leave most of the canopy unexplained are a broad
+  // crown with bumps, not palms.
+  if (crownArea < areaM * 0.2) return null;
+  return out;
+}
+
+/** Round palm crown: 4 to 6 m, kept off roofs and water by the same clip. */
+function palmCrownRing(centre, frame, clipSet, neighbours) {
+  const { mpuX, mpuY } = ringMeters(frame);
+  let d = Math.max(PALM_CROWN_MIN_M, Math.min(PALM_CROWN_MAX_M, centre.diam * 1.1));
+  if (neighbours && neighbours > 0) d = Math.min(d, Math.max(PALM_CROWN_MIN_M, neighbours * 0.95));
+  const circle = circleRingPx(centre.c, d, mpuX, mpuY, 12);
+  const full = ringPxArea(circle);
+  const pieces = clipFoliageRing(circle, clipSet) || [];
+  let best = null;
+  for (let i = 0; i < pieces.length; i++) if (!best || ringPxArea(pieces[i]) > ringPxArea(best)) best = pieces[i];
+  if (!best || ringPxArea(best) < full * 0.5) return null;
+  if (!pointInRing(centre.c, best)) return null;
+  return best;
+}
+
+/**
+ * Layer outline from the measured canopy height: the part of `ring` where
+ * the height model reaches `minH` above ground. Null when the height model
+ * cannot say, so the caller keeps its geometric inset.
+ */
+function heightContourRing(ring, frame, heightSample, minH) {
+  if (typeof heightSample !== "function" || !ring || ring.length < 4) return null;
+  const { mpuX, mpuY } = ringMeters(frame);
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    if (ring[i][0] < minX) minX = ring[i][0];
+    if (ring[i][1] < minY) minY = ring[i][1];
+    if (ring[i][0] > maxX) maxX = ring[i][0];
+    if (ring[i][1] > maxY) maxY = ring[i][1];
+  }
+  const wM = (maxX - minX) * mpuX;
+  const hM = (maxY - minY) * mpuY;
+  const cellM = Math.max(1.2, Math.sqrt((wM * hM) / 3600));
+  const nx = Math.max(2, Math.ceil(wM / cellM));
+  const ny = Math.max(2, Math.ceil(hM / cellM));
+  const sx = (maxX - minX) / nx;
+  const sy = (maxY - minY) / ny;
+  const on = new Uint8Array(nx * ny);
+  let count = 0;
+  for (let y = 0; y < ny; y++) {
+    for (let x = 0; x < nx; x++) {
+      const p = [minX + (x + 0.5) * sx, minY + (y + 0.5) * sy];
+      if (!pointInRing(p, ring)) continue;
+      const ll = pxToLl(p[0], p[1], frame);
+      const v = Number(heightSample(ll[0], ll[1])) || 0;
+      if (v >= minH) {
+        on[y * nx + x] = 1;
+        count++;
+      }
+    }
+  }
+  if (count < 3) return null;
+  // Largest 4-connected patch.
+  const seen = new Uint8Array(nx * ny);
+  let best = null;
+  for (let i = 0; i < on.length; i++) {
+    if (!on[i] || seen[i]) continue;
+    const stack = [i];
+    seen[i] = 1;
+    const cells = [];
+    while (stack.length) {
+      const k = stack.pop();
+      const x = k % nx;
+      const y = (k / nx) | 0;
+      cells.push([x, y]);
+      const nb = [x > 0 ? k - 1 : -1, x < nx - 1 ? k + 1 : -1, y > 0 ? k - nx : -1, y < ny - 1 ? k + nx : -1];
+      for (let j = 0; j < 4; j++) {
+        const q = nb[j];
+        if (q >= 0 && on[q] && !seen[q]) {
+          seen[q] = 1;
+          stack.push(q);
+        }
+      }
+    }
+    if (!best || cells.length > best.length) best = cells;
+  }
+  if (!best || best.length < 3) return null;
+  const traced = tracePixels(best);
+  if (!traced) return null;
+  let px = traced.map(([x, y]) => [minX + x * sx, minY + y * sy]);
+  if (px.length > 25) px = decimateClosed(px, 24) || px;
+  try {
+    const inter = polygonClipping.intersection([closeCrownRing(openCrownRing(ring))], [closeCrownRing(openCrownRing(px))]);
+    return largestExterior(inter);
+  } catch {
+    return null;
+  }
+}
+
 function roundTenths(n) {
   return Math.round(Number(n) * 10) / 10;
 }
@@ -909,7 +1267,7 @@ function layerCounts(pending, frame) {
     const stand = !discrete && areaM >= STAND_LAYER_M2 && standUnderstoryM(thickness, tier) >= 2.5;
     const wide = row.slopePiece && areaM >= 4000;
     return {
-      n: stand ? 2 : row.slopePiece && !wide ? 1 : wantedCrownLayers(discrete, thickness, treeCount),
+      n: row.palm ? 1 : stand ? 2 : row.slopePiece && !wide ? 1 : wantedCrownLayers(discrete, thickness, treeCount),
       stand,
       discrete,
       area: ringPxArea(row.area && row.area.ringPx),
@@ -1290,7 +1648,7 @@ function ringForFraction(ring, frame, fraction) {
  * Bands that cannot clear the span floor are dropped by asking for fewer
  * layers. The traced ring is always one of the bands that remain.
  */
-function crownStack(row, frame, want) {
+function crownStack(row, frame, want, heightSample) {
   const ring = row.area && row.area.ringPx;
   if (!ring || !(want >= 2)) return null;
   const discrete = !!row.trunk;
@@ -1301,8 +1659,33 @@ function crownStack(row, frame, want) {
     if (!bands || bands.length !== n) continue;
     const parts = [];
     let ok = true;
+    const groundM = Number(row.ground) >= 1 ? roundTenths(row.ground) : 0;
+    let prev = null;
     for (let i = 0; i < n; i++) {
-      const shaped = ringForFraction(ring, frame, fractions[i]);
+      let shaped = null;
+      // A band above the skirt follows where the height model really reaches
+      // into it, so a mound tapers where its crowns do instead of stepping
+      // in by a fixed fraction.
+      if (heightSample && !discrete && i > 0 && prev) {
+        const bottom = Number(bands[i].material.bottom_height) || 0;
+        const top = Number(bands[i].material.top_height) || 0;
+        const reach = bottom - groundM + Math.min(1, (top - bottom) * 0.35);
+        const c = reach > 0 ? heightContourRing(prev, frame, heightSample, reach) : null;
+        if (
+          c &&
+          ringClearsSpan(c, crownSpanFloorPx(frame)) &&
+          insetStaysIn(c, prev) &&
+          ringPxArea(c) <= ringPxArea(prev) * 0.97 &&
+          ringPxArea(c) >= ringPxArea(ring) * 0.06
+        ) {
+          shaped = c;
+        }
+      }
+      if (!shaped) shaped = ringForFraction(ring, frame, fractions[i]);
+      if (shaped && prev && !discrete && i > 0 && !insetStaysIn(shaped, prev)) {
+        const fallback = ringForFraction(prev, frame, Math.min(0.9, fractions[i] / Math.max(fractions[i - 1], 0.01)));
+        if (fallback) shaped = fallback;
+      }
       if (!shaped) {
         ok = false;
         break;
@@ -1313,6 +1696,7 @@ function crownStack(row, frame, want) {
         clip: bands[i].clip,
         scale: fractions[i],
       });
+      prev = shaped;
     }
     if (ok) return parts;
   }
@@ -1539,8 +1923,50 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       const ground = typeof slopeTop.seat === "function" ? Number(slopeTop.seat(split[i])) || 0 : Number(slopeTop(split[i])) || 0;
       seats.push({ ringPx: px, ground, slopePiece: true, ll: split[i] });
     }
-    if (seats.length >= 2) return seats;
+    if (seats.length >= 2) return mergeSlivers(seats);
     return one(area.ringPx, groundOf(ll), false);
+  };
+  // A slope cut leaves slivers of a few square metres. Each one used to ship
+  // as its own full-height prism, which reads as a thin green column. A
+  // sliver joins the neighbour it touches; it sits on that neighbour's ground.
+  const mergeSlivers = (seats) => {
+    const mpu = (frame.mpuX || 1) * (frame.mpuY || frame.mpuX || 1);
+    const list = seats.slice();
+    for (let pass = 0; pass < 3; pass++) {
+      let changed = false;
+      list.sort((a, b) => ringPxArea(a.ringPx) - ringPxArea(b.ringPx));
+      for (let i = 0; i < list.length; i++) {
+        const small = list[i];
+        if (!small || ringPxArea(small.ringPx) * mpu >= SLIVER_M2) continue;
+        let best = -1;
+        let bestRing = null;
+        for (let j = list.length - 1; j >= 0; j--) {
+          if (j === i || !list[j]) continue;
+          let u = null;
+          try {
+            u = polygonClipping.union([closeCrownRing(openCrownRing(small.ringPx))], [closeCrownRing(openCrownRing(list[j].ringPx))]);
+          } catch {
+            u = null;
+          }
+          if (u && u.length === 1 && u[0][0] && u[0][0].length >= 4) {
+            best = j;
+            bestRing = u[0][0];
+            break;
+          }
+        }
+        if (best < 0) {
+          list[i] = null;
+          changed = true;
+          continue;
+        }
+        list[best] = Object.assign({}, list[best], { ringPx: bestRing, ll: null });
+        list[i] = null;
+        changed = true;
+      }
+      for (let i = list.length - 1; i >= 0; i--) if (!list[i]) list.splice(i, 1);
+      if (!changed) break;
+    }
+    return list.length ? list : seats;
   };
   const seatNear = (ll) => {
     let lon = 0;
@@ -1582,6 +2008,50 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     if (up - down > 3) return down;
     return up;
   };
+  const palmPx = [];
+  const palmLl = (opts && opts.palmPoints) || [];
+  for (let i = 0; i < palmLl.length; i++) {
+    const q = palmLl[i];
+    const lon = Array.isArray(q) ? +q[0] : +(q && q.lon);
+    const lat = Array.isArray(q) ? +q[1] : +(q && q.lat);
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+    const p = llToPx(lon, lat, frame);
+    if (Number.isFinite(p[0]) && Number.isFinite(p[1])) palmPx.push(p);
+  }
+  let palmCount = 0;
+  let spiresDropped = 0;
+  // One palm row per centre: a round crown in the top 2 to 3 m on a thin stem.
+  const palmRows = (centres, ground) => {
+    const out = [];
+    for (let k = 0; k < centres.length; k++) {
+      const cen = centres[k];
+      let gap = 0;
+      for (let j = 0; j < centres.length; j++) {
+        if (j === k) continue;
+        const dx = (centres[j].c[0] - cen.c[0]) * (frame.mpuX || 1);
+        const dy = (centres[j].c[1] - cen.c[1]) * (frame.mpuY || frame.mpuX || 1);
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (!gap || d < gap) gap = d;
+      }
+      const crownRing = palmCrownRing(cen, frame, clipSet, gap);
+      if (!crownRing) continue;
+      const crownM = Math.max(2.2, Math.min(3, cen.h * 0.2));
+      const base = materialForVegetation(cen.h, "light");
+      const parts = base && individualTreeParts(base, ground, crownM);
+      if (!parts) continue;
+      const stem = circleRingPx(cen.c, PALM_TRUNK_M, frame.mpuX || 1, frame.mpuY || frame.mpuX || 1, TRUNK_SIDES);
+      out.push({
+        area: { ringPx: crownRing, material: parts.crownMat, kind: "canopy", shape: "polygon" },
+        clip: parts.crownClip,
+        trunk: { ringPx: stem, material: parts.trunkMat, kind: "trunk", shape: "polygon", clip: parts.trunkClip },
+        slopePiece: false,
+        palm: true,
+        ground,
+      });
+      if (ground >= 1) foliageLifted++;
+    }
+    return out;
+  };
   if (prof) tProf = profile.now();
   for (const area of dissolved) {
     // A neighbor crown is here so a shared edge is cut the same way. Its
@@ -1615,6 +2085,22 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       let trunk = null;
       const ground = seat.ground;
       const height = rowArea.material && Number(rowArea.material.top_height);
+      // A canopy outline a few metres across that measures over 32 m is a
+      // sign, a mast, or a tower edge in the height model. A real tree that
+      // tall has a crown far wider than this.
+      if (height >= SPIRE_MIN_H && canopyAreaM2(rowArea.ringPx, frame) <= SPIRE_MAX_M2) {
+        spiresDropped++;
+        continue;
+      }
+      if (rowArea.material) {
+        const palms = palmCentres(rowArea.ringPx, frame, height, palmPx, heightSample);
+        const made = palms ? palmRows(palms, ground) : null;
+        if (made && made.length) {
+          for (let k = 0; k < made.length; k++) pending.push(made[k]);
+          palmCount += made.length;
+          continue;
+        }
+      }
       if (!seat.slopePiece && looksLikeIndividualTree(rowArea.ringPx, frame, height)) {
         const parts = individualTreeParts(rowArea.material, ground);
         const stem = parts && trunkRingPx(rowArea.ringPx, frame);
@@ -1639,7 +2125,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
           foliageLifted++;
         }
       }
-      pending.push({ area: rowArea, clip, trunk, slopePiece: seat.slopePiece });
+      pending.push({ area: rowArea, clip, trunk, slopePiece: seat.slopePiece, ground });
     }
   }
   if (prof) profile.add("seat", profile.msSince(tProf));
@@ -1671,8 +2157,10 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
         scale: 1,
       }));
     }
-    const stack = stand || (row.slopePiece && !wideSlope ? null : crownStack(row, frame, plans[r].n));
-    const parts = dropStack(
+    const stack = stand || (row.slopePiece && !wideSlope ? null : crownStack(row, frame, plans[r].n, heightSample));
+    // A crown on a stem is meant to sit above the ground; dropping it would
+    // put the crown at the foot of its own trunk.
+    const parts = (row.trunk ? (s0) => s0 : (s0) => dropStack(s0, slopeTop, frame))(
       stack || [
         {
           ringPx: area.ringPx,
@@ -1680,9 +2168,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
           clip: row.clip || clipboardForCanopy(area.material),
           scale: 1,
         },
-      ],
-      slopeTop,
-      frame
+      ]
     );
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
@@ -1712,6 +2198,8 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     clipTypes,
     materials,
     count: canopyCount,
+    palms: palmCount,
+    spiresDropped,
     foliageLifted,
     foliageGeometry,
     foliageCoarsened: coarsened,
@@ -1723,6 +2211,9 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
 }
 
 module.exports = {
+  isPalmTags,
+  palmCentres,
+  heightContourRing,
   MAX_TREES,
   maxTreesForBbox,
   pointInAabb,

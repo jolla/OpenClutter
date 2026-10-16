@@ -1514,6 +1514,7 @@ async function handleClutter(event) {
           poles: includePoles,
           rvs: includeRvs,
           cars: includeCars,
+          trees: includeFoliage,
         }, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background, deckCap })
       );
     }
@@ -2346,6 +2347,7 @@ async function handleClutter(event) {
               maskRings,
               maskPolygons,
               woodRings,
+              palmPoints,
               terrain,
               omitFoliage: false,
               chmRequired: true,
@@ -2366,6 +2368,7 @@ async function handleClutter(event) {
     if (parallelTasks.length) await Promise.all(parallelTasks);
     if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage build-clutter\n");
     return buildClutter({
+      palmPoints,
       frame,
       footprintsGeojson: { type: "FeatureCollection", features: list },
       treePoints,
@@ -2418,6 +2421,7 @@ async function handleClutter(event) {
 
   let outdoorFeatures = [];
   let outdoorNotes = [];
+  let palmPoints = [];
   let outdoorMiss = false;
   if (outdoorJob) {
     const pack = await outdoorJob.work;
@@ -2427,6 +2431,7 @@ async function handleClutter(event) {
     } else {
       outdoorFeatures = pack.features || [];
       outdoorNotes = pack.notes || [];
+      palmPoints = Array.isArray(pack.palms) ? pack.palms : [];
       takePlaces(pack);
       const rest = [];
       const fromOutdoor = [];

@@ -638,6 +638,18 @@ function individualTreeCrownBase(heightM) {
   return base;
 }
 
+/**
+ * Stem height under a palm crown. The crown is only the top 2 to 3 m; the
+ * rest is the bare stem. Zero when the palm is too short for a stem.
+ */
+function palmCrownBase(heightM, crownM) {
+  const h = roundHeightM(heightM);
+  const c = roundTenths(Math.max(2.2, Math.min(3, Number(crownM) || 0)));
+  if (!(h >= 6)) return 0;
+  const base = roundTenths(h - c);
+  return base >= 2.5 ? base : 0;
+}
+
 function trunkOiMaterial(stemM, groundM) {
   const stem = roundHeightM(stemM);
   if (!stem) return null;
@@ -770,11 +782,11 @@ function canonicalUnderstory(material) {
  * the stem top are the same clearance. A slope adds that ground under both.
  * Null when the height cannot hold a stem and a crown.
  */
-function individualTreeParts(material, groundM) {
+function individualTreeParts(material, groundM, crownM) {
   if (!material || !isVegetationOiName(material.name) || isLiftedFoliageName(material.name)) return null;
   const height = roundHeightM(material.top_height);
   if (!height) return null;
-  let clearance = individualTreeCrownBase(height);
+  let clearance = crownM > 0 ? palmCrownBase(height, crownM) : individualTreeCrownBase(height);
   if (!clearance) return null;
   const tier = String(material.name).indexOf(FOLIAGE_LIGHT_NAME) >= 0 ? "light" : "heavy";
   let thickness = roundTenths(height - clearance);
@@ -1329,6 +1341,7 @@ module.exports = {
   measuredFoliageMaterial,
   measuredTrunkMaterial,
   individualTreeCrownBase,
+  palmCrownBase,
   individualTreeParts,
   trunkOiMaterial,
   isTrunkOiName,
