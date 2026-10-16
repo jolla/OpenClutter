@@ -584,8 +584,8 @@ function trunkRingPx(ringPx, frame) {
 const PALM_MIN_H = 7;
 /** Slope pieces smaller than this join a neighbour instead of shipping alone. */
 const SLIVER_M2 = 25;
-const SPIRE_MIN_H = 32;
-const SPIRE_MAX_M2 = 40;
+const SPIRE_MIN_H = 40;
+const SPIRE_MAX_M2 = 25;
 const PALM_MAX_H = 35;
 const PALM_MAX_DIAM_M = 6.5;
 const PALM_MIN_RATIO = 2;
@@ -2085,7 +2085,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       let trunk = null;
       const ground = seat.ground;
       const height = rowArea.material && Number(rowArea.material.top_height);
-      // A canopy outline a few metres across that measures over 32 m is a
+      // A canopy outline a few metres across that measures over 40 m is a
       // sign, a mast, or a tower edge in the height model. A real tree that
       // tall has a crown far wider than this.
       if (height >= SPIRE_MIN_H && canopyAreaM2(rowArea.ringPx, frame) <= SPIRE_MAX_M2) {
