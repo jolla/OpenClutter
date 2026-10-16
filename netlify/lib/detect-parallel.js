@@ -194,6 +194,8 @@ function mergeFoliage(parts, meta) {
   const overlayRings = [];
   const seen = new Set();
   let count = 0;
+  let palms = 0;
+  let spiresDropped = 0;
   let foliageLifted = 0;
   let polygons = 0;
   const treeAreas = [];
@@ -208,6 +210,8 @@ function mergeFoliage(parts, meta) {
     if (part.overlayRings) overlayRings.push.apply(overlayRings, part.overlayRings);
     if (part.materials) materials.push.apply(materials, part.materials);
     count += part.count | 0;
+    palms += part.palms | 0;
+    spiresDropped += part.spiresDropped | 0;
     foliageLifted += part.foliageLifted | 0;
     polygons += part.polygons | 0;
     if (part.treeOi) {
@@ -225,6 +229,8 @@ function mergeFoliage(parts, meta) {
     }
   }
   return {
+    palms,
+    spiresDropped,
     oiAreas,
     clipZones,
     clipTypes,

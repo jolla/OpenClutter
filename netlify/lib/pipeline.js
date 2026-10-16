@@ -3051,6 +3051,11 @@ function outdoorToOi(items, imgW, imgH, mpuX) {
 const OI_FLOORPLAN_HEIGHT_M = 2.5;
 const OI_FLOORPLAN_HEIGHT_FT = 8.202;
 
+function isTrunkArea(a) {
+  const m = a && a.area_material;
+  return !!(m && /^Foliage - Trunk /.test(String(m.name || "")));
+}
+
 function buildOpenIntent(frame, name, imgName, areas, materials) {
   const mpu = frame.mpuX || frame.mpu || frame.widthM / frame.imgW;
   return {
@@ -3662,6 +3667,8 @@ function buildClutter({
     trees: treeGroupsKept,
     treesMeasured: veg.count,
     discreteTrees: discreteKept,
+    trunks: areas.filter(isTrunkArea).length,
+    palms: foliagePack && Number(foliagePack.palms) > 0 ? Number(foliagePack.palms) : 0,
     treesSource: omitFoliage
       ? "none"
       : foliageOn
