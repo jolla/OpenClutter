@@ -168,5 +168,15 @@
     "south": 32.878,
     "east": -111.747,
     "north": 32.886
+  },
+  {
+    "id": "lebanon-dc",
+    "name": "Lebanon IN distribution center",
+    "place": "Lebanon, Indiana",
+    "kind": "warehouse yard",
+    "west": -86.491,
+    "south": 40.026,
+    "east": -86.484,
+    "north": 40.034
   }
 ]

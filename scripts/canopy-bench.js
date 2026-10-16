@@ -502,6 +502,33 @@ async function scoreSite(site, zipPath) {
       paint[i] = precise ? 1 : isRef && !isPred ? 2 : isPred ? 3 : 0;
     }
   }
+  if (process.env.TT_SHIFT) {
+    // Diagnostic: best rigid shift of the emitted mask against the reference.
+    const refM = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      const yy = Math.min(raw.height - 1, y * step + (step >> 1));
+      for (let x = 0; x < w; x++) {
+        if (bld.mask[y * w + x]) continue;
+        const xx = Math.min(raw.width - 1, x * step + (step >> 1));
+        const [lon, lat] = imagePxToLl(xx, yy, frame);
+        if (chmAt(refGrid, lon, lat) >= 3) refM[y * w + x] = 1;
+      }
+    }
+    let best = null;
+    for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) {
+      let r = 0, p = 0, t = 0;
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const sx = x - dx, sy = y - dy;
+        const pv = sx >= 0 && sy >= 0 && sx < w && sy < h ? fol.mask[sy * w + sx] === 1 : false;
+        const rv = refM[y * w + x] === 1;
+        if (rv) r++; if (pv) p++; if (rv && pv) t++;
+      }
+      const f = (2 * t) / Math.max(1, r + p);
+      if (!best || f > best.f) best = { dx, dy, f, rec: t / Math.max(1, r), prec: t / Math.max(1, p) };
+    }
+    const m = (step * (frame.mpuX || 0.3)).toFixed(2);
+    console.log(site.id, "SHIFT cell_m", m, JSON.stringify(best));
+  }
   const errs = [];
   for (const row of shape.heights) {
     const [lon, lat] = pxToLl(row.x, row.y, frame);
@@ -849,7 +876,7 @@ async function main() {
 }
 
 if (require.main === module) {
-  main().catch((e) => {
+  main().then(() => process.exit(0)).catch((e) => {
     console.error(e);
     process.exit(1);
   });
