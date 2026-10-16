@@ -3936,6 +3936,7 @@ function requestHostPath(eventOrHeaders) {
 function isDevTestHost(eventOrHeaders) {
   const { host, path } = requestHostPath(eventOrHeaders);
   return (
+    host === "dev.openclutter.com" ||
     host.startsWith("dev--") ||
     host.startsWith("deploy-preview-") ||
     path === "/dev" ||

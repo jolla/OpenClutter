@@ -2,6 +2,7 @@ function devPage() {
   const host = location.hostname || "";
   const path = location.pathname || "";
   return (
+    host === "dev.openclutter.com" ||
     host.startsWith("dev--") ||
     host.startsWith("deploy-preview-") ||
     path === "/dev" ||
