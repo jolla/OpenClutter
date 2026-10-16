@@ -1143,6 +1143,13 @@ function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH, medianTop
   if (medianTop && hs.length >= 12) {
     hs.sort((a, b) => a - b);
     top = hs[hs.length >> 1];
+  } else if (hs.length >= 12) {
+    // A few cells far above the rest of a crown are a mast, a sign, or a
+    // facade return. They do not lift the whole crown: it keeps its 90th
+    // percentile.
+    const sorted = hs.slice().sort((a, b) => a - b);
+    const p90 = sorted[Math.floor((sorted.length - 1) * 0.9)];
+    if (maxH > p90 + Math.max(6, p90 * 0.4)) top = p90;
   }
   const heightM = Math.round(Math.max(top, hintH || 0) * 10) / 10;
   if (!(heightM >= CROWN_MIN_H) || heightM >= 80) return null;

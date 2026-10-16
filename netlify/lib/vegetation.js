@@ -369,6 +369,7 @@ function polygonsFromCrowns(crowns, frame) {
       material,
       kind: "canopy",
       shape: "polygon",
+      segTree: c.segTree === true,
     });
   }
   return polygons;
@@ -472,6 +473,54 @@ function ringCentroidPx(ring) {
  * True when an existing canopy ring is one discrete tree. A woods, a tree
  * line, and a 30 m canopy cell are not. This does not create a ring.
  */
+/** A segmented tree is one crown: up to 22 m across and 400 m², 4 m tall. */
+const SEG_TREE_MAX_M2 = 400;
+const SEG_TREE_MAX_SIDE_M = 24;
+function segTreeFits(ringPx, frame, heightM) {
+  const h = Number(heightM);
+  if (!(h >= 4 && h < 60) || !ringPx || ringPx.length < 4 || !frame) return false;
+  const area = canopyAreaM2(ringPx, frame);
+  if (!(area >= 6 && area <= SEG_TREE_MAX_M2)) return false;
+  const mpuX = frame.mpuX || frame.mpu || 1;
+  const mpuY = frame.mpuY || mpuX;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of ringPx) {
+    if (p[0] < x0) x0 = p[0];
+    if (p[1] < y0) y0 = p[1];
+    if (p[0] > x1) x1 = p[0];
+    if (p[1] > y1) y1 = p[1];
+  }
+  return Math.max((x1 - x0) * mpuX, (y1 - y0) * mpuY) <= SEG_TREE_MAX_SIDE_M;
+}
+
+/**
+ * Crown form from the measured heights: a conifer's top falls away fast
+ * from its peak, a broadleaf crown stays near its top across most of its
+ * width. "conifer", "column" (a cypress: tall and under 4 m across), or
+ * "broadleaf".
+ */
+function crownForm(ringPx, frame, heightM, heightSample) {
+  const area = canopyAreaM2(ringPx, frame);
+  const width = 2 * Math.sqrt(Math.max(area, 0) / Math.PI);
+  if (heightM >= 8 && width <= 4 && heightM / Math.max(width, 0.5) >= 3) return "column";
+  if (typeof heightSample !== "function") return "broadleaf";
+  const c = ringCentroidPx(ringPx);
+  if (!c) return "broadleaf";
+  const mpu = frame.mpuX || frame.mpu || 1;
+  const r = (0.6 * width) / 2 / mpu;
+  const ring = [];
+  for (let k = 0; k < 8; k++) {
+    const a = (k * Math.PI) / 4;
+    const ll = pxToLl(c[0] + r * Math.cos(a), c[1] + r * Math.sin(a), frame);
+    const v = Number(heightSample(ll[0], ll[1]));
+    if (v >= 1) ring.push(v);
+  }
+  if (ring.length < 5) return "broadleaf";
+  ring.sort((x, y) => x - y);
+  const mid = ring[ring.length >> 1];
+  return mid / Math.max(heightM, 1) < 0.62 ? "conifer" : "broadleaf";
+}
+
 function looksLikeIndividualTree(ringPx, frame, heightM) {
   const h = Number(heightM);
   if (!(h >= 5 && h < 50) || !ringPx || ringPx.length < 4 || !frame) return false;
@@ -962,8 +1011,14 @@ function wantedCrownLayers(discrete, thickness, treeCount) {
  * A tree is narrow, widest, then a top near a third. A woods stays full
  * at the ground and steps in.
  */
-function domeAreaFractions(n, discrete) {
+function domeAreaFractions(n, discrete, form) {
   if (!(n >= 2)) return [1];
+  // A conifer narrows all the way up; a cypress is one narrow column.
+  if (discrete && form === "conifer") {
+    if (n === 2) return [1, 0.4];
+    if (n === 3) return [1, 0.55, 0.22];
+    return [1, 0.7, 0.42, 0.18];
+  }
   if (!discrete) {
     // The full outline is only the skirt. The inset bands are the crown,
     // so a woods reads as a rounded top instead of a flat slab.
@@ -1271,7 +1326,7 @@ function layerCounts(pending, frame) {
     const stand = !discrete && areaM >= STAND_LAYER_M2 && standUnderstoryM(thickness, tier) >= 2.5;
     const wide = row.slopePiece && areaM >= 4000;
     return {
-      n: row.palm ? 1 : stand ? (thickness >= 12 ? 4 : thickness >= 9 ? 3 : 2) : row.slopePiece && !wide ? (thickness >= SLOPE_LAYER_MIN_H && areaM >= SLOPE_LAYER_MIN_M2 ? 2 : 1) : wantedCrownLayers(discrete, thickness, treeCount),
+      n: row.palm || row.form === "column" ? 1 : stand ? (thickness >= 12 ? 4 : thickness >= 9 ? 3 : 2) : row.slopePiece && !wide ? (thickness >= SLOPE_LAYER_MIN_H && areaM >= SLOPE_LAYER_MIN_M2 ? 2 : 1) : wantedCrownLayers(discrete, thickness, treeCount),
       stand,
       discrete,
       slope: !!row.slopePiece && !wide,
@@ -1662,7 +1717,7 @@ function crownStack(row, frame, want, heightSample, onUnderstory) {
   if (!ring || !(want >= 2)) return null;
   const discrete = !!row.trunk;
   for (let n = Math.min(want, 4); n >= 2; n--) {
-    const fractions = domeAreaFractions(n, discrete);
+    const fractions = domeAreaFractions(n, discrete, row.form);
     if (fractions.length !== n) continue;
     const bands = buildCrownBands(row.area.material, n, !discrete && row.skirt !== false);
     if (!bands || bands.length !== n) continue;
@@ -1887,13 +1942,27 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   let ownedPolygons = 0;
   for (let i = 0; i < polygons.length; i++) if (!polygons[i].context) ownedPolygons++;
   if (prof) tProf = profile.now();
-  for (const poly of polygons) pushCanopy(poly.ringPx, poly.material, "polygon", poly.context);
+  // A lidar-segmented tree partitions measured cells with its neighbours, so
+  // it skips the overlap trim: that trim cut neighbouring trees into slivers
+  // and dropped them. Each one is clipped to roofs and water on its own.
+  const segAreas = [];
+  for (const poly of polygons) {
+    if (poly.segTree && !poly.context) {
+      for (const piece of clipFoliageRing(poly.ringPx, clipSet)) {
+        if (!(ringPxArea(piece) > 0)) continue;
+        segAreas.push({ ringPx: piece, material: poly.material, kind: "canopy", shape: "polygon", segTree: true });
+        if (poly.material) materials.push(poly.material);
+      }
+      continue;
+    }
+    pushCanopy(poly.ringPx, poly.material, "polygon", poly.context);
+  }
   if (prof) profile.add("clip", profile.msSince(tProf));
 
   // Clip against roofs, water, and ski runs, then dissolve so two patches do
   // not paint green on green. Clipboard follows the dissolved rings.
   if (prof) tProf = profile.now();
-  const dissolved = dissolveFoliageRings(oiAreas, clipSet);
+  const dissolved = dissolveFoliageRings(oiAreas, clipSet).concat(segAreas);
   if (prof) profile.add("dissolve", profile.msSince(tProf));
   oiAreas.length = 0;
   overlayRings.length = 0;
@@ -2106,6 +2175,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       }
       let clip = null;
       let trunk = null;
+      let form = "";
       const ground = seat.ground;
       const height = rowArea.material && Number(rowArea.material.top_height);
       // A canopy outline a few metres across that measures over 40 m is a
@@ -2124,7 +2194,24 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
           continue;
         }
       }
-      if (!seat.slopePiece && looksLikeIndividualTree(rowArea.ringPx, frame, height)) {
+      const segTree = area.segTree === true && seats.length === 1 && segTreeFits(rowArea.ringPx, frame, height);
+      // A lidar tree whose crown at 60% of its height is a few metres across
+      // and far shorter than it is tall is a palm: a stem and a small crown.
+      if (segTree && heightSample && height >= PALM_MIN_H) {
+        const top = heightContourRing(rowArea.ringPx, frame, heightSample, height * 0.6);
+        const topM2 = top ? canopyAreaM2(top, frame) : 0;
+        const diam = 2 * Math.sqrt(topM2 / Math.PI);
+        const cen = top && ringCentroidPx(top);
+        if (cen && diam > 0 && diam <= PALM_MAX_DIAM_M && height / diam >= PALM_MIN_RATIO) {
+          const made = palmRows([{ c: cen, h: height }], ground);
+          if (made && made.length) {
+            for (let k = 0; k < made.length; k++) pending.push(made[k]);
+            palmCount += made.length;
+            continue;
+          }
+        }
+      }
+      if (segTree || (!seat.slopePiece && looksLikeIndividualTree(rowArea.ringPx, frame, height))) {
         const parts = individualTreeParts(rowArea.material, ground);
         const stem = parts && trunkRingPx(rowArea.ringPx, frame);
         if (parts && stem) {
@@ -2137,6 +2224,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
             shape: "polygon",
             clip: parts.trunkClip,
           };
+          if (segTree) form = crownForm(rowArea.ringPx, frame, height, heightSample);
           if (ground >= 1) foliageLifted++;
         }
       }
@@ -2148,7 +2236,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
           foliageLifted++;
         }
       }
-      pending.push({ area: rowArea, clip, trunk, slopePiece: seat.slopePiece, ground });
+      pending.push({ area: rowArea, clip, trunk, slopePiece: seat.slopePiece, ground, form });
     }
   }
   if (prof) profile.add("seat", profile.msSince(tProf));
