@@ -329,7 +329,10 @@ describe("Copy terrain after a background result", () => {
     const app = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     assert.equal(/id="copy-terrain"/.test(html + app), false);
-    assert.equal((html.match(/<button/gi) || []).length, 1);
+    // Export is the only action button; the map-corner version link (What's new, v1.1.182) is the one other button.
+    const buttonIds = [...html.matchAll(/<button\b[^>]*\bid="([^"]+)"/gi)].map((m) => m[1]).sort();
+    assert.equal((html.match(/<button/gi) || []).length, buttonIds.length);
+    assert.deepEqual(buttonIds, ["app-version", "export"]);
     const drag = app.slice(app.indexOf("function showDragPreview"), app.indexOf("function showVertexPreview"));
     const vertex = app.slice(app.indexOf("function showVertexPreview"), app.indexOf("function handleDraw"));
     assert.match(drag, /noteDrawInProgress\(\)/);

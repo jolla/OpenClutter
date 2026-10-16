@@ -52,7 +52,7 @@ const OCCUPIED_HI = 180;
 const ROOF_TOUCH_M = 3;
 const ROOF_MIN_M2 = 1.4;
 const CAR_MERGE_MIN = 8;
-const SEMI_CAP = 80;
+const SEMI_CAP = 320;
 /**
  * A parked semi sits out from the dock wall, often in more than one row.
  * Six trailer lengths covers a yard beside a long wall. Empty pavement
@@ -1527,6 +1527,28 @@ function mobileHomesInRingWork(ring, frame, plate) {
 }
 
 /**
+ * Two oriented boxes overlap (separating-axis test). Each box is a center,
+ * a unit long axis, and half length / half width in the same units.
+ */
+function boxesOverlap(a, b) {
+  const axes = [
+    [a.ux, a.uy],
+    [-a.uy, a.ux],
+    [b.ux, b.uy],
+    [-b.uy, b.ux],
+  ];
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  for (let i = 0; i < axes.length; i++) {
+    const [ax, ay] = axes[i];
+    const ra = a.hl * Math.abs(a.ux * ax + a.uy * ay) + a.hw * Math.abs(-a.uy * ax + a.ux * ay);
+    const rb = b.hl * Math.abs(b.ux * ax + b.uy * ay) + b.hw * Math.abs(-b.uy * ax + b.ux * ay);
+    if (Math.abs(dx * ax + dy * ay) > ra + rb) return false;
+  }
+  return true;
+}
+
+/**
  * A parked semi is a bright body about one trailer long, with a dark
  * shadow on one flank. A building roof is wide on both sides, so it is
  * left out. Each kept trailer is one oriented metal box.
@@ -1695,6 +1717,112 @@ function semisInLotWork(ring, frame, plate, holes, opts) {
       ny,
     };
   }
+  // A packed dock row has no shadow strip: the next trailer is half a metre
+  // away. Read it as its own pattern. The body is bright for most of a
+  // trailer length, still bright 0.8 m to either side of the axis, and the
+  // across profile dips at a 2.7 to 4.6 m pitch and comes back up on at
+  // least one neighbor. A painted stall line is too thin, a car too short,
+  // and a roof has no dips.
+  // The gap between packed trailers is about half a metre. A plate coarser
+  // than 0.5 m per pixel cannot show it, so the row reader stays off there.
+  const packedOn = mpu <= 0.5;
+  function packedHit(x0, y0, ang) {
+    if (!packedOn) return null;
+    const nx = Math.cos(ang);
+    const ny = Math.sin(ang);
+    const tx = -ny;
+    const ty = nx;
+    const alongStep = Math.max(1, px(0.8));
+    const fine = Math.max(1, px(0.25));
+    const lineMean = (ox, oy, half) => {
+      let sum = 0;
+      let n = 0;
+      for (let t = -half; t <= half + 0.01; t += alongStep) {
+        sum += yAt(ox + tx * t, oy + ty * t);
+        n++;
+      }
+      return n ? sum / n : 0;
+    };
+    // Across: find the darkest line 0.6 to 2.3 m out on each side. That is
+    // the gap to the next trailer or the shadow. Center between the two.
+    const gapOn = (sign) => {
+      let best = null;
+      for (let d = px(0.6); d <= px(2.3) + 0.01; d += fine) {
+        const v = lineMean(x0 + nx * d * sign, y0 + ny * d * sign, px(4));
+        if (!best || v < best.v) best = { v, d };
+      }
+      return best;
+    };
+    const gA = gapOn(1);
+    const gB = gapOn(-1);
+    const shift = (gA.d - gB.d) / 2;
+    const x1 = x0 + nx * shift;
+    const y1 = y0 + ny * shift;
+    const widthM = (gA.d + gB.d) * mpu;
+    if (widthM < 1.8 || widthM > 3.8) return null;
+    const body = lineMean(x1, y1, px(4.8));
+    if (body < 175) return null;
+    if (lineMean(x1 + nx * px(0.7), y1 + ny * px(0.7), px(4)) < body - 25) return null;
+    if (lineMean(x1 - nx * px(0.7), y1 - ny * px(0.7), px(4)) < body - 25) return null;
+    // Sun puts a dark strip on one side. The lit side gap can be narrow.
+    const gap = Math.min(gA.v, gB.v);
+    if (gap > body - 25 || Math.max(gA.v, gB.v) > body - 8) return null;
+    // A neighbor trailer, 2.7 to 4.6 m pitch, on at least one side.
+    let nb = 0;
+    for (let sign = -1; sign <= 1; sign += 2) {
+      for (let d = px(2.7); d <= px(4.6) + 0.01; d += fine) {
+        const v = lineMean(x1 + nx * d * sign, y1 + ny * d * sign, px(4));
+        if (v > nb) nb = v;
+      }
+    }
+    if (nb < body - 25 || nb < gap + 20) return null;
+    // Along: walk out to where the body ends and center on it.
+    const bodyAt = (t) => {
+      let sum = 0;
+      let n = 0;
+      for (let d = -px(0.6); d <= px(0.6) + 0.01; d += fine) {
+        sum += yAt(x1 + tx * t + nx * d, y1 + ty * t + ny * d);
+        n++;
+      }
+      return sum / n;
+    };
+    const cut = body - 30;
+    const reach = (sign) => {
+      let last = 0;
+      let miss = 0;
+      for (let t = 0; t <= px(20); t += fine) {
+        if (bodyAt(t * sign) >= cut) {
+          last = t;
+          miss = 0;
+        } else if (++miss * fine > px(0.9)) break;
+      }
+      return last;
+    };
+    const ra = reach(1);
+    const rb = reach(-1);
+    const lenM = (ra + rb) * mpu;
+    if (lenM < 10 || lenM > 19) return null;
+    // One flat roof. A trailer top reads almost one tone for 12 m (spread
+    // under 3 levels on the Lebanon yard). A row of cars, or cars on light
+    // concrete, swings by 10 or more between glass, paint, and pavement.
+    {
+      const mid0 = (ra - rb) / 2;
+      let n = 0;
+      let sum = 0;
+      let sum2 = 0;
+      for (let t = mid0 - px(6); t <= mid0 + px(6) + 0.01; t += fine) {
+        const v = bodyAt(t);
+        sum += v;
+        sum2 += v * v;
+        n++;
+      }
+      const mean = sum / n;
+      const sd = Math.sqrt(Math.max(0, sum2 / n - mean * mean));
+      if (sd > 7) return null;
+    }
+    const mid = (ra - rb) / 2;
+    return { x: x1 + tx * mid, y: y1 + ty * mid, score: body - gap, tx, ty, nx, ny, pitch: gA.d + gB.d, ang };
+  }
   const hits = [];
   for (let y = Math.max(margin, yLo); y < Math.min(H - margin, yHi); y += scan) {
     for (let x = Math.max(margin, xLo); x < Math.min(W - margin, xHi); x += scan) {
@@ -1704,8 +1832,38 @@ function semisInLotWork(ring, frame, plate, holes, opts) {
       // A yard's strong edge is often the row, not the trailer. Try that
       // axis too, so a packed row is not read as a wide roof.
       const ang = ori[ci];
-      const hit = axisHit(x, y, ang) || axisHit(x, y, ang + Math.PI / 2);
+      const hit =
+        axisHit(x, y, ang) ||
+        axisHit(x, y, ang + Math.PI / 2) ||
+        packedHit(x, y, ang) ||
+        packedHit(x, y, ang + Math.PI / 2);
       if (hit) hits.push(hit);
+    }
+  }
+  // Walk each packed row one pitch at a time. The scan grid lands on only
+  // some trailers in a tight row. Each step re-reads the aerial, so the row
+  // stops at the first slot that is not a trailer.
+  const seeds = hits.filter((h) => h.pitch > 0);
+  for (let i = 0; i < seeds.length && hits.length < 4000; i++) {
+    const seed = seeds[i];
+    for (let sign = -1; sign <= 1; sign += 2) {
+      let cur = seed;
+      for (let k = 0; k < 40; k++) {
+        const nxp = cur.x + cur.nx * cur.pitch * sign;
+        const nyp = cur.y + cur.ny * cur.pitch * sign;
+        if (nxp < margin || nyp < margin || nxp >= W - margin || nyp >= H - margin) break;
+        if (!inLot(nxp, nyp)) break;
+        const next = packedHit(nxp, nyp, seed.ang);
+        if (!next) break;
+        const moved = (next.x - cur.x) * cur.nx + (next.y - cur.y) * cur.ny;
+        if (Math.abs(moved) < px(2)) break;
+        // A row stays in line. A step that slides far along the trailer is
+        // a staircase off a tilted seed, not the next trailer.
+        const slid = (next.x - cur.x) * cur.tx + (next.y - cur.y) * cur.ty;
+        if (Math.abs(slid) > px(2.5)) break;
+        hits.push(next);
+        cur = next;
+      }
     }
   }
   hits.sort((a, b) => b.score - a.score);
@@ -1719,13 +1877,22 @@ function semisInLotWork(ring, frame, plate, holes, opts) {
       const dy = h.y - prev.y;
       const along = Math.abs(dx * prev.tx + dy * prev.ty);
       const across = Math.abs(dx * prev.nx + dy * prev.ny);
-      if (along < px(8) && across < px(2.8)) {
+      // A box turned against its neighbor overlaps it. Only parallel boxes
+      // can sit a trailer width apart.
+      const parallel = Math.abs(h.tx * prev.tx + h.ty * prev.ty) > 0.97;
+      const overlap = parallel
+        ? along < px(8) && across < px(2.3)
+        : boxesOverlap(
+            { x: h.x, y: h.y, ux: h.tx, uy: h.ty, hl: px(8), hw: px(1.2) },
+            { x: prev.x, y: prev.y, ux: prev.tx, uy: prev.ty, hl: px(8), hw: px(1.2) }
+          );
+      if (overlap) {
         clash = true;
         break;
       }
     }
     if (!clash) kept.push(h);
-    if (kept.length >= 220) break;
+    if (kept.length >= 400) break;
   }
   const rowed = [];
   for (let i = 0; i < kept.length; i++) {
@@ -1755,6 +1922,9 @@ function semisInLotWork(ring, frame, plate, holes, opts) {
   const out = [];
   for (let i = 0; i < rowed.length; i++) {
     const h = rowed[i];
+    // Recentering can slide a box off the lot. Its final center has to be
+    // on the lot too, not on the roof beside it.
+    if (!inLot(h.x, h.y)) continue;
     const lon = frame.west + (h.x / frame.imgW) * (frame.east - frame.west);
     const lat = frame.north - (h.y / frame.imgH) * (frame.north - frame.south);
     const mx = h.tx * mpuX;
@@ -2161,21 +2331,52 @@ function semisAtDocksWork(rings, frame, plate, holes) {
   const profiling = profile.profileOn();
   const out = [];
   const used = [];
+  // Two boxes clash when they overlap as trailers: closer than a trailer
+  // length along the first box and closer than a trailer width across it.
+  // A plain 8 m radius dropped every other trailer in a packed dock row.
+  function axisOf(item) {
+    const r = item.coords;
+    if (!r || r.length < 2) return null;
+    const k = Math.cos((r[0][1] * Math.PI) / 180) * 111320;
+    const ex = (r[0][0] - r[1][0]) * k;
+    const ey = (r[0][1] - r[1][1]) * 110540;
+    const len = Math.hypot(ex, ey);
+    return len > 0 ? [ex / len, ey / len] : null;
+  }
   function take(found) {
     for (let i = 0; i < found.length; i++) {
       const c = found[i].center;
       if (!c) continue;
+      const ax = axisOf(found[i]);
       let clash = false;
       for (let u = 0; u < used.length; u++) {
         const dlon = (c[0] - used[u][0]) * 111320 * Math.cos((c[1] * Math.PI) / 180);
         const dlat = (c[1] - used[u][1]) * 110540;
-        if (dlon * dlon + dlat * dlat < 64) {
+        const d2 = dlon * dlon + dlat * dlat;
+        const uax = used[u][2];
+        if (!ax || !uax) {
+          if (d2 < 64) {
+            clash = true;
+            break;
+          }
+          continue;
+        }
+        const along = Math.abs(dlon * uax[0] + dlat * uax[1]);
+        const across = Math.abs(-dlon * uax[1] + dlat * uax[0]);
+        const parallel = Math.abs(ax[0] * uax[0] + ax[1] * uax[1]) > 0.97;
+        const overlap = parallel
+          ? along < 8 && across < 2.3
+          : boxesOverlap(
+              { x: 0, y: 0, ux: uax[0], uy: uax[1], hl: 8, hw: 1.2 },
+              { x: dlon, y: dlat, ux: ax[0], uy: ax[1], hl: 8, hw: 1.2 }
+            );
+        if (overlap) {
           clash = true;
           break;
         }
       }
       if (clash) continue;
-      used.push(c);
+      used.push([c[0], c[1], ax]);
       out.push(found[i]);
       if (out.length >= SEMI_CAP) return true;
     }
