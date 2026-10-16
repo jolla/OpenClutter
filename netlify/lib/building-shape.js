@@ -202,6 +202,10 @@ function partFeature(rings, tags) {
     properties.levelBaseM = Math.round(h.minH * 10) / 10;
     properties.floatSpan = true;
   }
+  const roofShape = tags && tags["roof:shape"];
+  if (roofShape) properties.roofShape = String(roofShape).slice(0, 40);
+  const buildingShape = tags && tags["building:shape"];
+  if (buildingShape) properties.buildingShape = String(buildingShape).slice(0, 40);
   const name = tags && (tags.name || tags["building:part"]);
   if (name && name !== "yes") properties.partName = String(name).slice(0, 80);
   return {
