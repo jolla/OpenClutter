@@ -970,6 +970,158 @@ function tilePixels(pixels, mPerX, mPerY, tileM) {
   return groups;
 }
 
+
+/** Lidar tree segmentation. Components under this area are cut into trees. */
+const SEG_MAX_M2 = 20000;
+const SEG_MIN_M2 = 40;
+const SEG_TOP_MIN_H = 5;
+/** A segmented tree smaller than this joins its neighbour (the sliver floor). */
+const SEG_PIECE_MIN_M2 = 30;
+
+/**
+ * Individual trees in one canopy component, from the height model only.
+ * Treetops are local maxima at least 5 m tall. Two tops closer than about a
+ * quarter of the taller one's height, or joined by a saddle that dips less
+ * than 1.5 m (or 15% of the lower top), are one tree. Every cell then flows
+ * to a top by a marker watershed, highest cells first, so each tree keeps
+ * the cells that slope down from its own top. Null when the component is
+ * one tree. Nothing is added: the trees partition the measured cells.
+ */
+function segmentTrees(pixels, at, w, mPerX, mPerY) {
+  const area = pixels.length * mPerX * mPerY;
+  if (area < SEG_MIN_M2 || area > SEG_MAX_M2) return null;
+  const cell = Math.sqrt(mPerX * mPerY);
+  const inSet = new Map();
+  for (let i = 0; i < pixels.length; i++) inSet.set(pixels[i][1] * w + pixels[i][0], i);
+  const tops = [];
+  for (let i = 0; i < pixels.length; i++) {
+    const [x, y] = pixels[i];
+    const v = at(x, y);
+    if (v < SEG_TOP_MIN_H) continue;
+    let top = true;
+    for (let dy = -1; dy <= 1 && top; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dy) continue;
+        const u = at(x + dx, y + dy);
+        if (u > v || (u === v && (dy < 0 || (dy === 0 && dx < 0)))) {
+          top = false;
+          break;
+        }
+      }
+    }
+    if (top) tops.push({ x, y, v });
+  }
+  if (tops.length < 2) return null;
+  tops.sort((a, b) => b.v - a.v);
+  const kept = [];
+  for (let i = 0; i < tops.length; i++) {
+    const t = tops[i];
+    let merge = false;
+    for (let k = 0; k < kept.length && !merge; k++) {
+      const q = kept[k];
+      const d = Math.hypot(q.x - t.x, q.y - t.y) * cell;
+      const minD = Math.max(3, Math.min(8, 0.25 * q.v));
+      if (d < minD) {
+        merge = true;
+        break;
+      }
+      if (d > 30) continue;
+      // Lowest point on the straight line between the two tops.
+      const n = Math.max(2, Math.ceil(d / cell));
+      let low = Infinity;
+      for (let s2 = 1; s2 < n; s2++) {
+        const x = Math.round(t.x + ((q.x - t.x) * s2) / n);
+        const y = Math.round(t.y + ((q.y - t.y) * s2) / n);
+        const u = inSet.has(y * w + x) ? at(x, y) : 0;
+        if (u < low) low = u;
+      }
+      if (t.v - low < Math.max(1.5, 0.15 * t.v)) merge = true;
+    }
+    if (!merge) kept.push(t);
+  }
+  if (kept.length < 2) return null;
+  // Marker watershed: grow every tree from its top, highest cells first.
+  const label = new Int32Array(pixels.length).fill(-1);
+  const heap = [];
+  const push = (idx, pri) => {
+    heap.push([pri, idx]);
+    let c = heap.length - 1;
+    while (c > 0) {
+      const p2 = (c - 1) >> 1;
+      if (heap[p2][0] >= heap[c][0]) break;
+      [heap[p2], heap[c]] = [heap[c], heap[p2]];
+      c = p2;
+    }
+  };
+  const pop = () => {
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length) {
+      heap[0] = last;
+      let c = 0;
+      for (;;) {
+        const l = 2 * c + 1;
+        const r = l + 1;
+        let m = c;
+        if (l < heap.length && heap[l][0] > heap[m][0]) m = l;
+        if (r < heap.length && heap[r][0] > heap[m][0]) m = r;
+        if (m === c) break;
+        [heap[m], heap[c]] = [heap[c], heap[m]];
+        c = m;
+      }
+    }
+    return top;
+  };
+  for (let k = 0; k < kept.length; k++) {
+    const i = inSet.get(kept[k].y * w + kept[k].x);
+    label[i] = k;
+    push(i, kept[k].v);
+  }
+  while (heap.length) {
+    const [, i] = pop();
+    const [x, y] = pixels[i];
+    const nb = [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]];
+    for (let j = 0; j < 4; j++) {
+      const id = inSet.get(nb[j][1] * w + nb[j][0]);
+      if (id == null || label[id] >= 0) continue;
+      label[id] = label[i];
+      push(id, at(nb[j][0], nb[j][1]));
+    }
+  }
+  // A tree too small to survive as its own crown joins the neighbour it
+  // shares the longest edge with, so no measured canopy is lost.
+  const minCells = Math.ceil(SEG_PIECE_MIN_M2 / (mPerX * mPerY));
+  for (let pass = 0; pass < 3; pass++) {
+    const size = new Array(kept.length).fill(0);
+    for (let i = 0; i < pixels.length; i++) if (label[i] >= 0) size[label[i]]++;
+    const order = size.map((n, k) => k).filter((k) => size[k] > 0 && size[k] < minCells);
+    if (!order.length) break;
+    order.sort((a, b) => size[a] - size[b]);
+    for (const k of order) {
+      const edge = new Map();
+      for (let i = 0; i < pixels.length; i++) {
+        if (label[i] !== k) continue;
+        const [x, y] = pixels[i];
+        const nb = [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]];
+        for (let j = 0; j < 4; j++) {
+          const id = inSet.get(nb[j][1] * w + nb[j][0]);
+          if (id == null || label[id] < 0 || label[id] === k) continue;
+          edge.set(label[id], (edge.get(label[id]) || 0) + 1);
+        }
+      }
+      let best = -1;
+      let bestN = 0;
+      for (const [l, n] of edge) if (n > bestN) [best, bestN] = [l, n];
+      if (best < 0) continue;
+      for (let i = 0; i < pixels.length; i++) if (label[i] === k) label[i] = best;
+    }
+  }
+  const groups = kept.map(() => []);
+  for (let i = 0; i < pixels.length; i++) if (label[i] >= 0) groups[label[i]].push(pixels[i]);
+  const out = groups.filter((g) => g.length >= 1);
+  return out.length >= 2 ? out : null;
+}
+
 function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH, medianTop) {
   const area = pixels.length * mPerX * mPerY;
   let maxH = 0;
@@ -1088,6 +1240,7 @@ function crownsFromChm(grid, opts) {
   const at = (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? 0 : values[y * w + x] || 0);
   const seen = new Uint8Array(w * h);
   const crowns = [];
+  let segSeq = (opt.segBase | 0) * 100000;
   const prof = profile.profileOn();
   const acceptRows = (y0, y1) => (px, py) => {
     if (py < y0 || py >= y1) return false;
@@ -1114,6 +1267,24 @@ function crownsFromChm(grid, opts) {
       if (top < seedY0 || top >= seedY1) continue;
       const area = pixels.length * mPerX * mPerY;
       const groups = [];
+      if (opt.segment) {
+        const trees = segmentTrees(pixels, at, w, mPerX, mPerY);
+        if (trees) {
+          const whole = area < TILE_AREA_M2 ? crownFromPixels(pixels, values, w, grid, mPerX, mPerY, 0, area >= SUBSTAND_AREA_M2) : null;
+          const segId = segSeq++;
+          let first = true;
+          for (let g = 0; g < trees.length; g++) {
+            const crown = crownFromPixels(trees[g], values, w, grid, mPerX, mPerY, 0, false);
+            if (!crown) continue;
+            crown.segId = segId;
+            crown.segTree = true;
+            if (first && whole) crown.whole = whole;
+            first = false;
+            crowns.push(crown);
+          }
+          if (!first) continue;
+        }
+      }
       // A large stand is cut on a grid first. Splitting it by height cell
       // before that turned a forest into thousands of specks, and the export
       // cap then dropped most of them.
@@ -1348,11 +1519,43 @@ function poolChmGrid(grid, stride) {
  * squares and erased crowns that did not survive the coarser cell. The fetch
  * already kept each cell's peak.
  */
+
+/**
+ * Per-tree crowns cost more outlines than the canopy they cut. When the
+ * export would have to drop crowns, a segmented canopy goes back to its
+ * whole outline, the most-cut first, so the canopy stays and only the
+ * per-tree detail is lost.
+ */
+function fitSegments(crowns, max) {
+  if (!(max > 0) || crowns.length <= max) return crowns;
+  const bySeg = new Map();
+  for (let i = 0; i < crowns.length; i++) {
+    const c = crowns[i];
+    if (c.segId == null) continue;
+    if (!bySeg.has(c.segId)) bySeg.set(c.segId, []);
+    bySeg.get(c.segId).push(c);
+  }
+  const groups = [...bySeg.values()].filter((g) => g.some((c) => c.whole)).sort((a, b) => b.length - a.length);
+  const drop = new Set();
+  const add = [];
+  let n = crowns.length;
+  for (let i = 0; i < groups.length && n > max; i++) {
+    const g = groups[i];
+    const whole = g.find((c) => c.whole).whole;
+    for (const c of g) drop.add(c);
+    add.push(whole);
+    n -= g.length - 1;
+  }
+  const out = crowns.filter((c) => !drop.has(c)).concat(add);
+  out.sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
+  return out;
+}
+
 function crownsForExport(grid, opts) {
   const prepared = maskChmGrid(grid, opts);
   if (!prepared || !(prepared.nonzero > 0)) return { crowns: [], coarsened: false, stride: 1 };
   const max = opts && opts.maxPolygons > 0 ? opts.maxPolygons | 0 : BULK_POLYGONS;
-  let crowns = crownsFromChm(prepared);
+  let crowns = fitSegments(crownsFromChm(prepared, { segment: !!(opts && opts.segment) }), max);
   const before = crowns.length;
   let trimmed = false;
   if (crowns.length > max) {
@@ -1393,4 +1596,6 @@ module.exports = {
   selectCrownsForExport,
   crownsForExport,
   tracePixels,
+  segmentTrees,
+  fitSegments,
 };

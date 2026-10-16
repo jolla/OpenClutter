@@ -20,7 +20,7 @@
 
 const { threadCount, runOne, runQueue } = require("./cpu-pool");
 const { polygonsFromCrowns, treePairsFromPoints } = require("./vegetation");
-const { selectCrownsForExport, CROWN_CAP } = require("./canopy-height");
+const { selectCrownsForExport, fitSegments, CROWN_CAP } = require("./canopy-height");
 const { coverClasses } = require("./canopy-fill");
 const { materialForVegetation } = require("./materials");
 const { llToPx, pxToLl } = require("./geo-frame");
@@ -169,6 +169,7 @@ function plainOpts(opts) {
     chmRequired: src.chmRequired === true,
     maxPolygons: src.maxPolygons,
     buildingBufferM: src.buildingBufferM,
+    segmentTrees: src.segmentTrees === true,
     palmPoints: src.palmPoints || [],
   };
 }
@@ -355,6 +356,8 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
         seedY0: bands[i].y0,
         seedY1: bands[i].y1,
         overlap: bands[i].overlap,
+        segment: !!(opts && opts.segmentTrees),
+        segBase: i + 1,
       });
     }
   }
@@ -366,9 +369,10 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
   }
   // Count every traced crown. Counting after the safety cap always reported
   // the cap minus the budget, not the outlines really left out.
+  const max = opts.maxPolygons > 0 ? opts.maxPolygons | 0 : 720;
+  crowns = fitSegments(crowns, Math.min(CROWN_CAP, max));
   const before = crowns.length;
   if (crowns.length > CROWN_CAP) crowns = selectCrownsForExport(crowns, CROWN_CAP);
-  const max = opts.maxPolygons > 0 ? opts.maxPolygons | 0 : 720;
   if (crowns.length > max) crowns = selectCrownsForExport(crowns, max);
   const meta = {
     coarsened: before > crowns.length,
