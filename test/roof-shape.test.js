@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { footprintsToClutter } = require("../netlify/lib/pipeline");
 const { geoFrame } = require("../netlify/lib/geo-frame");
-const { domePieces, slopePieces, piecesForFeature, DOME_BANDS, SLOPE_BANDS } = require("../netlify/lib/roof-form");
+const { domePieces, slopePieces, spherePieces, piecesForFeature, DOME_BANDS, SLOPE_BANDS, SPHERE_MIN_SLICES, SPHERE_MAX_SLICES } = require("../netlify/lib/roof-form");
 
 function metersBox(lon, lat, eastM, northM, props) {
   const mLon = 111320 * Math.cos((lat * Math.PI) / 180);
@@ -64,6 +64,8 @@ describe("dome and sloping roofs", () => {
     const sphere = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/wynn-golf/sphere-overture.geojson"), "utf8"));
     assert.equal(sphere.properties.roofShape, "dome");
     assert.equal(sphere.properties.height, 112);
+    // A tagged dome that is not a sphere keeps the hemisphere bands.
+    sphere.properties.buildingShape = "";
     const pieces = domePieces(sphere);
     assert.ok(pieces);
     assert.equal(pieces.length, DOME_BANDS);
@@ -88,13 +90,50 @@ describe("dome and sloping roofs", () => {
 
     const frame = frameAround(-115.1621, 36.1212);
     const built = footprintsToClutter([sphere], frame, null);
-    assert.ok(built.stats.buildings >= 4 && built.stats.buildings <= DOME_BANDS);
+    assert.ok(built.stats.buildings >= 4 && built.stats.buildings <= SPHERE_MAX_SLICES);
     const heights = tops(built);
     assert.ok(Math.max(...heights) >= 111.5 && Math.max(...heights) <= 112.05);
     assert.ok(Math.min(...heights) < 40);
     assert.ok(new Set(heights.map((h) => h.toFixed(1))).size >= 4, "dome bands share one top");
     const full = built.oiAreas.filter((a) => a.area_material.top_height >= 100 && a.area_material.name === "Building - 112.0");
     assert.equal(full.length, 0);
+  });
+
+  it("slices the Las Vegas Sphere as a ball cut off at the ground", () => {
+    const sphere = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/wynn-golf/sphere-overture.geojson"), "utf8"));
+    const pieces = spherePieces(sphere);
+    assert.ok(pieces, "dome roof on a round plan taller than its radius is a sphere");
+    assert.ok(pieces.length >= SPHERE_MIN_SLICES && pieces.length <= SPHERE_MAX_SLICES, `${pieces.length} slices`);
+    assert.equal(piecesForFeature(sphere).length, pieces.length);
+    const span = (f) => {
+      const xs = f.geometry.coordinates[0].map((p) => p[0]);
+      return Math.max(...xs) - Math.min(...xs);
+    };
+    const widths = pieces.map(span);
+    const widest = widths.indexOf(Math.max(...widths));
+    // Widest in the middle (the equator), narrower at the truncated base, smallest at the top.
+    assert.ok(widest > 0 && widest < pieces.length - 1, `widest slice ${widest}`);
+    assert.ok(widths[0] < widths[widest] * 0.97 && widths[0] > widths[widest] * 0.75, "truncated base");
+    assert.ok(widths[widths.length - 1] < widths[widest] * 0.5, "rounded top");
+    for (let i = 0; i < pieces.length; i++) {
+      const p = pieces[i].properties;
+      assert.equal(p.shapePart, true);
+      assert.equal(p.roofShape, "dome");
+      if (i > 0) assert.equal(p.levelBaseM, pieces[i - 1].properties.height, "slices stack without gaps");
+    }
+    assert.ok(!(pieces[0].properties.levelBaseM > 0));
+    assert.equal(pieces[pieces.length - 1].properties.height, 112);
+
+    const built = footprintsToClutter([sphere], frameAround(-115.1621, 36.1212), null);
+    assert.equal(built.stats.buildings, pieces.length);
+    const mats = new Set(built.oiAreas.map((a) => JSON.stringify(a.area_material.rf_properties)));
+    assert.equal(mats.size, 1, "every slice keeps the same attenuation");
+
+    // An explicit building:shape=sphere tag works on a plain round footprint.
+    const ball = circle(-115.15, 36.12, 20, { height: 36, buildingShape: "sphere" });
+    assert.ok(spherePieces(ball).length >= SPHERE_MIN_SLICES);
+    // A round tank with no dome or sphere tag stays one object.
+    assert.equal(piecesForFeature(circle(-115.15, 36.12, 20, { height: 36 })).length, 1);
   });
 
   it("does not export a high side and a low side as one flat roof", () => {

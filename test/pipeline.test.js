@@ -611,7 +611,7 @@ describe("pipeline: footprints + trees share the frame", () => {
     // Jerry's export extent clips the southern half. The visible cap stays.
     const clipped = frameFor(lock.extent.south);
     const cap = footprintsToClutter([sphere], clipped, null);
-    assert.ok(cap.stats.buildings >= 2 && cap.stats.buildings <= 6, `dome bands ${cap.stats.buildings}`);
+    assert.ok(cap.stats.buildings >= 2 && cap.stats.buildings <= 16, `sphere slices ${cap.stats.buildings}`);
     assert.equal(cap.stats.droppedMega, 0);
     assert.equal(cap.stats.droppedTiny, 0);
     assert.equal(cap.stats.droppedClip, 0);
@@ -629,7 +629,7 @@ describe("pipeline: footprints + trees share the frame", () => {
     // shorter rings up to the measured 112 m. It is not one full-height cylinder.
     const full = frameFor(36.119);
     const disk = footprintsToClutter([sphere], full, null);
-    assert.ok(disk.stats.buildings >= 4 && disk.stats.buildings <= 6, `dome bands ${disk.stats.buildings}`);
+    assert.ok(disk.stats.buildings >= 4 && disk.stats.buildings <= 16, `sphere slices ${disk.stats.buildings}`);
     assert.equal(disk.stats.droppedMega, 0);
     const diskTops = disk.oiAreas.map((a) => a.area_material.top_height);
     assert.ok(Math.max(...diskTops) >= 111.5 && Math.max(...diskTops) <= 112.05, `apex ${Math.max(...diskTops)}`);
