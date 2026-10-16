@@ -132,6 +132,8 @@ const BACKGROUND_ANSWER_MS = BACKGROUND_PLATFORM_MS - 60 * 1000;
 const BACKGROUND_CHM_MS = 180 * 1000;
 const BACKGROUND_COVER_MS = 60 * 1000;
 const BACKGROUND_LIDAR_MS = 45 * 1000;
+// Lidar canopy on openclutter.com. Flip to true when dev is promoted.
+const LIDAR_CANOPY_ALL_HOSTS = false;
 // The aerial stage budget lives in aerial-fetch.js. A single 10 MP export
 // used to hold the job for 90s, then a one-pixel-different cap held it again.
 const { AsyncLocalStorage } = require("node:async_hooks");
@@ -1411,8 +1413,16 @@ async function handleClutter(event) {
     devHost && (body.lidar === true || body.lidar === "true" || body.lidar === 1 || body.lidar === "1");
   // Where a USGS 3DEP cloud covers the draw, tree canopy is traced from it.
   // Building heights from that cloud stay on the dev request above.
+  // The Fly export server also serves openclutter.com, so this stays on the
+  // dev hosts until LIDAR_CANOPY_ALL_HOSTS is set for a production release.
   let lidarCanopyOn = false;
-  if (includeFoliage && needImage && body.lidarCanopy !== false && body.lidarCanopy !== "false") {
+  if (
+    (testHost || LIDAR_CANOPY_ALL_HOSTS) &&
+    includeFoliage &&
+    needImage &&
+    body.lidarCanopy !== false &&
+    body.lidarCanopy !== "false"
+  ) {
     try {
       lidarCanopyOn = rankProjects(frame).length > 0;
     } catch {
