@@ -3723,6 +3723,7 @@ function buildClutter({
     arcgisFootprints: footprintMeta && footprintMeta.arcgisFootprints ? footprintMeta.arcgisFootprints : 0,
     usaFootprints: footprintMeta && footprintMeta.usaFootprints ? footprintMeta.usaFootprints : 0,
     imageryRoofs: footprintMeta && footprintMeta.imageryRoofs ? footprintMeta.imageryRoofs : 0,
+    droppedShadow: footprintMeta && footprintMeta.droppedShadow ? footprintMeta.droppedShadow : 0,
     droppedPavement: footprintMeta && footprintMeta.droppedPavement ? footprintMeta.droppedPavement : 0,
     medianTrees: footprintMeta && footprintMeta.medianTrees ? footprintMeta.medianTrees : 0,
     overtureFootprints: footprintMeta && footprintMeta.overtureFootprints ? footprintMeta.overtureFootprints : 0,
