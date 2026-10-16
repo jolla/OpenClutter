@@ -189,6 +189,21 @@ function ingestPoint(grid, x, y, z, cls, ret, nret, maxX, maxY) {
     grid.cells.set(key, rec);
   }
   rec.n++;
+  // Tree evidence for lidar canopy. Ground, building, water, rail, road,
+  // wire, tower, wire connector, and bridge deck are never a crown.
+  if (cls !== 2 && cls !== 6 && cls !== 9 && cls !== 10 && cls !== 11 && !(cls >= 13 && cls <= 17)) {
+    if (ret === 1) {
+      rec.tc++;
+      if (rec.tMax == null || z > rec.tMax) rec.tMax = z;
+      if (nret >= 2) rec.mr++;
+    } else if (ret >= 2) {
+      rec.lr++;
+    }
+    if (cls === 3 || cls === 4 || cls === 5) {
+      rec.vegN++;
+      if (rec.vegMax == null || z > rec.vegMax) rec.vegMax = z;
+    }
+  }
   // Canopy height is the highest first return above ground. Building class
   // stays out so a roof is not a crown. Ground is the class-2 minimum.
   if (cls !== 2 && cls !== 6 && ret === 1) {
@@ -218,7 +233,10 @@ function ingestPoint(grid, x, y, z, cls, ret, nret, maxX, maxY) {
 }
 
 function emptyCell() {
-  return { g: null, b: [], bc: 0, u: [], uc: 0, uMin: null, uMax: null, v: [], vc: 0, n: 0, fc: 0, fMax: null };
+  return {
+    g: null, b: [], bc: 0, u: [], uc: 0, uMin: null, uMax: null, v: [], vc: 0, n: 0, fc: 0, fMax: null,
+    tc: 0, tMax: null, mr: 0, lr: 0, vegN: 0, vegMax: null,
+  };
 }
 
 /**
@@ -1256,6 +1274,8 @@ module.exports = {
   gridFromPoints,
   canopyCellM,
   canopyRaster,
+  groundAt,
+  unmercator,
   applyLidarSample,
   storageYards,
   lidarStatusLine,
