@@ -2057,7 +2057,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       out.push({
         area: { ringPx: crownRing, material: parts.crownMat, kind: "canopy", shape: "polygon" },
         clip: parts.crownClip,
-        trunk: { ringPx: stem, material: parts.trunkMat, kind: "trunk", shape: "polygon", clip: parts.trunkClip },
+        trunk: { ringPx: stem, material: parts.trunkMat, kind: "trunk", shape: "polygon", clip: parts.trunkClip, palm: true },
         slopePiece: false,
         palm: true,
         ground,
