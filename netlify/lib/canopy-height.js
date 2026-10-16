@@ -1392,4 +1392,5 @@ module.exports = {
   peakPool,
   selectCrownsForExport,
   crownsForExport,
+  tracePixels,
 };

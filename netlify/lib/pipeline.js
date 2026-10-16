@@ -3177,6 +3177,7 @@ function dropPassengerCarsFromPlan(plan) {
 }
 
 function buildClutter({
+  palmPoints,
   frame,
   footprintsGeojson,
   treePoints,
@@ -3273,6 +3274,7 @@ function buildClutter({
           chmRequired: chmRequired === true,
           maxPolygons: maxFoliagePolygons,
           woodRings,
+          palmPoints,
         }))
       : {
         oiAreas: [],

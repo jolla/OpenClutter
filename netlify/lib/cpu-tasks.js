@@ -105,6 +105,7 @@ function foliageAssemble(payload) {
     maskRings: payload.maskRings,
     maskPolygons: payload.maskPolygons,
     buildingBufferM: payload.buildingBufferM,
+    palmPoints: payload.palmPoints || [],
     skipWood: true,
     slopeTop,
     heightSample: grid ? (lon, lat) => sampleChmGrid(grid, lon, lat) : null,
