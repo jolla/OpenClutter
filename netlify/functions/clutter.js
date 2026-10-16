@@ -1024,6 +1024,11 @@ function coverJoinWait(started, background) {
  * building left out of a 2000-building ceiling frees JSON room, so a site
  * with few roofs keeps up to 1200 outlines. The byte budget is still final.
  */
+const SEGMENT_CAP_SCALE = 1.6;
+// Lidar tree segmentation is opt-in until it stops costing canopy cover
+// (bench: Chicago, Colorado and Florida lost 5-15 points of recall).
+const SEGMENT_TREES = process.env.OC_SEGMENT_TREES === "1";
+
 function foliageCapFor(buildings) {
   const n = Math.max(0, buildings | 0);
   return Math.max(720, Math.min(1200, Math.round(1200 - n * 0.4)));
@@ -2348,10 +2353,13 @@ async function handleClutter(event) {
               maskPolygons,
               woodRings,
               palmPoints,
+              segmentTrees: SEGMENT_TREES && !!lidarCanopy,
               terrain,
               omitFoliage: false,
               chmRequired: true,
-              maxPolygons: foliageCap,
+              // Per-tree lidar crowns need more outlines than whole stands.
+              // The zip budget still trims after this.
+              maxPolygons: SEGMENT_TREES && lidarCanopy ? Math.round(foliageCap * SEGMENT_CAP_SCALE) : foliageCap,
             })
           )
           .then((pack) => {

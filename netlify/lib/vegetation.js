@@ -344,6 +344,7 @@ function chmCrownPolygons(grid, frame, buildingAabbs, hits, opts) {
     blocked,
     hits,
     maxPolygons: opts && opts.maxPolygons,
+    segment: !!(opts && opts.segmentTrees),
   });
   const polygons = polygonsFromCrowns(packed.crowns, frame);
   polygons.coarsened = !!packed.coarsened;
@@ -585,6 +586,9 @@ const PALM_MIN_H = 7;
 /** Slope pieces smaller than this join a neighbour instead of shipping alone. */
 const SLIVER_M2 = 25;
 const SPIRE_MIN_H = 40;
+/** A hillside piece this tall and wide gets a rounded top band. */
+const SLOPE_LAYER_MIN_H = 8;
+const SLOPE_LAYER_MIN_M2 = 150;
 const SPIRE_MAX_M2 = 25;
 const PALM_MAX_H = 35;
 const PALM_MAX_DIAM_M = 6.5;
@@ -1267,9 +1271,10 @@ function layerCounts(pending, frame) {
     const stand = !discrete && areaM >= STAND_LAYER_M2 && standUnderstoryM(thickness, tier) >= 2.5;
     const wide = row.slopePiece && areaM >= 4000;
     return {
-      n: row.palm ? 1 : stand ? 2 : row.slopePiece && !wide ? 1 : wantedCrownLayers(discrete, thickness, treeCount),
+      n: row.palm ? 1 : stand ? (thickness >= 12 ? 4 : thickness >= 9 ? 3 : 2) : row.slopePiece && !wide ? (thickness >= SLOPE_LAYER_MIN_H && areaM >= SLOPE_LAYER_MIN_M2 ? 2 : 1) : wantedCrownLayers(discrete, thickness, treeCount),
       stand,
       discrete,
+      slope: !!row.slopePiece && !wide,
       area: ringPxArea(row.area && row.area.ringPx),
     };
   });
@@ -1289,6 +1294,10 @@ function layerCounts(pending, frame) {
       plans[best].n = next(plans[best].n);
     }
   };
+  // Rounded hillside tops go first when the budget is short; the stand stays.
+  shrink((p) => p.slope && p.n >= 2, () => 1);
+  shrink((p) => p.stand && p.n >= 3, (n) => n - 1);
+  shrink((p) => p.stand && p.n >= 3, (n) => n - 1);
   shrink((p) => p.discrete && p.n >= 4, () => 3);
   shrink((p) => !p.discrete && !p.stand && p.n >= 3, () => 2);
   shrink((p) => p.discrete && p.n >= 3, () => 2);
@@ -1648,7 +1657,7 @@ function ringForFraction(ring, frame, fraction) {
  * Bands that cannot clear the span floor are dropped by asking for fewer
  * layers. The traced ring is always one of the bands that remain.
  */
-function crownStack(row, frame, want, heightSample) {
+function crownStack(row, frame, want, heightSample, onUnderstory) {
   const ring = row.area && row.area.ringPx;
   if (!ring || !(want >= 2)) return null;
   const discrete = !!row.trunk;
@@ -1661,6 +1670,7 @@ function crownStack(row, frame, want, heightSample) {
     let ok = true;
     const groundM = Number(row.ground) >= 1 ? roundTenths(row.ground) : 0;
     let prev = null;
+    let measured = 0;
     for (let i = 0; i < n; i++) {
       let shaped = null;
       // A band above the skirt follows where the height model really reaches
@@ -1670,7 +1680,9 @@ function crownStack(row, frame, want, heightSample) {
         const bottom = Number(bands[i].material.bottom_height) || 0;
         const top = Number(bands[i].material.top_height) || 0;
         const reach = bottom - groundM + Math.min(1, (top - bottom) * 0.35);
-        const c = reach > 0 ? heightContourRing(prev, frame, heightSample, reach) : null;
+        // Clip to a slightly inset band below so the contour never shares its edge.
+        const host = reach > 0 ? insetRingPx(prev, 0.3, frame) : null;
+        const c = host && host.length >= 4 ? heightContourRing(host, frame, heightSample, reach) : null;
         if (
           c &&
           ringClearsSpan(c, crownSpanFloorPx(frame)) &&
@@ -1681,6 +1693,7 @@ function crownStack(row, frame, want, heightSample) {
           shaped = c;
         }
       }
+      if (shaped) measured++;
       if (!shaped) shaped = ringForFraction(ring, frame, fractions[i]);
       if (shaped && prev && !discrete && i > 0 && !insetStaysIn(shaped, prev)) {
         const fallback = ringForFraction(prev, frame, Math.min(0.9, fractions[i] / Math.max(fractions[i - 1], 0.01)));
@@ -1698,6 +1711,7 @@ function crownStack(row, frame, want, heightSample) {
       });
       prev = shaped;
     }
+    if (onUnderstory && !measured) ok = false;
     if (ok) return parts;
   }
   return null;
@@ -2156,8 +2170,19 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
         clip: p.clip,
         scale: 1,
       }));
+      // The crown over the understory follows the measured height too, so a
+      // woods has a rounded, uneven top instead of one flat lid.
+      if (heightSample && stand.length === 2) {
+        const crownThick = crownThicknessM(stand[1].material);
+        const nTop = Math.min(plans[r].n - 1, crownThick >= 3 * MIN_CROWN_BAND_M + 0.3 ? 3 : crownThick >= 2 * MIN_CROWN_BAND_M + 0.2 ? 2 : 1);
+        const upper =
+          nTop >= 2
+            ? crownStack({ area: { ringPx: area.ringPx, material: stand[1].material }, trunk: null, ground: row.ground, skirt: false }, frame, nTop, heightSample, true)
+            : null;
+        if (upper && upper.length >= 2) stand = [stand[0]].concat(upper);
+      }
     }
-    const stack = stand || (row.slopePiece && !wideSlope ? null : crownStack(row, frame, plans[r].n, heightSample));
+    const stack = stand || crownStack(row, frame, plans[r].n, heightSample);
     // A crown on a stem is meant to sit above the ground; dropping it would
     // put the crown at the foot of its own trunk.
     const parts = (row.trunk ? (s0) => s0 : (s0) => dropStack(s0, slopeTop, frame))(
