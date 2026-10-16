@@ -109,6 +109,7 @@ function lidarCells(grid, opts) {
   }
   let flat = 0;
   if (!classified && !splitKnown) flat = dropFlatTops(out);
+  const jagged = classified ? 0 : dropJaggedTops(out);
   // A lone tall cell with almost no split returns is a pole, mast, or lamp.
   let poles = 0;
   for (const c of out.values()) {
@@ -148,7 +149,7 @@ function lidarCells(grid, opts) {
       closed++;
     }
   }
-  return { cells: out, classified, splitKnown, nMed, minN, poles, closed, flat };
+  return { cells: out, classified, splitKnown, nMed, minN, poles, closed, flat, jagged };
 }
 
 /**
@@ -219,6 +220,70 @@ function dropFlatTops(cells) {
     }
     const rough = steps ? sum / steps : 0;
     if (rough < 0.35) {
+      for (const cur of comp) cur.h = 0;
+      dropped += comp.length;
+    }
+  }
+  return dropped;
+}
+
+/**
+ * In an unclassified cloud a tower, facade, or crane is a patch whose cells
+ * jump many metres from one to the next: a glass wall and its window ledges.
+ * A crown at this cell size steps a metre or two, a tall conifer a few. A
+ * patch at least 15 m tall whose mean step is over 5 m and over 15% of its
+ * median height is cleared.
+ */
+const JAGGED_MIN_STEP_M = 5;
+const JAGGED_MIN_MID_M = 15;
+const JAGGED_STEP_SHARE = 0.15;
+const SMOOTH_MIN_MID_M = 8;
+const SMOOTH_MIN_CELLS = 20;
+const SMOOTH_MAX_STEP_M = 0.45;
+function dropJaggedTops(cells) {
+  const seen = new Set();
+  let dropped = 0;
+  for (const [key, c] of cells) {
+    if (!(c.h >= CANOPY_MIN_M) || seen.has(key)) continue;
+    const comp = [];
+    const stack = [c];
+    seen.add(key);
+    while (stack.length) {
+      const cur = stack.pop();
+      comp.push(cur);
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const k = cur.ix + dx + "," + (cur.iy + dy);
+          if (seen.has(k)) continue;
+          const n = cells.get(k);
+          if (n && n.h >= CANOPY_MIN_M) {
+            seen.add(k);
+            stack.push(n);
+          }
+        }
+      }
+    }
+    if (comp.length < 6) continue;
+    let steps = 0;
+    let sum = 0;
+    for (const cur of comp) {
+      for (const [dx, dy] of [[1, 0], [0, 1]]) {
+        const n = cells.get(cur.ix + dx + "," + (cur.iy + dy));
+        if (n && n.h >= CANOPY_MIN_M) {
+          sum += Math.abs(n.h - cur.h);
+          steps++;
+        }
+      }
+    }
+    if (!steps) continue;
+    const rough = sum / steps;
+    const mid = median(comp.map((x) => x.h));
+    const jagged = mid >= JAGGED_MIN_MID_M && rough > JAGGED_MIN_STEP_M && rough > JAGGED_STEP_SHARE * mid;
+    // A tall patch whose top barely changes from cell to cell is a roof, a
+    // deck, or an embankment, never a crown.
+    const smooth = mid >= SMOOTH_MIN_MID_M && comp.length >= SMOOTH_MIN_CELLS && rough < SMOOTH_MAX_STEP_M;
+    if (jagged || smooth) {
       for (const cur of comp) cur.h = 0;
       dropped += comp.length;
     }
@@ -317,6 +382,95 @@ function closeGaps(values, decided, w, h) {
     }
   }
   return filled;
+}
+
+/**
+ * Lidar off a wall, an awning, or a glass facade lands just outside the
+ * footprint and reads as a crown as tall as the building. Within two to five
+ * cells of a footprint (further for a taller building), canopy over 10 m keeps at most the height of the crowns
+ * around it that are clear of the wall, plus 2 m; with none around, it goes.
+ */
+const WALL_HALO_PX = 2;
+const WALL_HALO_MAX_PX = 5;
+const WALL_HALO_SHARE = 0.08;
+const WALL_MIN_M = 10;
+function haloPxFor(f, cellM) {
+  const p = (f && f.properties) || {};
+  const hM = Number(p.height != null ? p.height : f && f.height) || 0;
+  // A tall or curved facade throws returns further out than a low wall.
+  const px = Math.round((hM * WALL_HALO_SHARE) / Math.max(cellM, 0.5));
+  return Math.max(WALL_HALO_PX, Math.min(WALL_HALO_MAX_PX, px));
+}
+function wallHalo(values, buildings, lattice) {
+  const w = lattice.width;
+  const h = lattice.height;
+  const lat = (lattice.south + lattice.north) / 2;
+  const cellM = (Math.abs(lattice.east - lattice.west) * 111320 * Math.cos((lat * Math.PI) / 180)) / w;
+  const mask = new Uint8Array(w * h);
+  const reach = new Uint8Array(w * h);
+  for (const f of buildings) {
+    const r = haloPxFor(f, cellM);
+    for (const ring of featureRings(f)) {
+      const px = ringPx(ring, lattice);
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const q of px) {
+        if (q[0] < x0) x0 = q[0];
+        if (q[1] < y0) y0 = q[1];
+        if (q[0] > x1) x1 = q[0];
+        if (q[1] > y1) y1 = q[1];
+      }
+      fillRing(mask, w, h, px);
+      const bx0 = Math.max(0, Math.floor(x0)), by0 = Math.max(0, Math.floor(y0));
+      const bx1 = Math.min(w - 1, Math.ceil(x1)), by1 = Math.min(h - 1, Math.ceil(y1));
+      for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) if (mask[y * w + x] && reach[y * w + x] < r) reach[y * w + x] = r;
+    }
+  }
+  const near = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const r = reach[y * w + x];
+      if (!r) continue;
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx >= 0 && yy >= 0 && xx < w && yy < h && !mask[yy * w + xx]) near[yy * w + xx] = 1;
+        }
+      }
+    }
+  }
+  let cleared = 0;
+  let capped = 0;
+  const next = new Uint8Array(values);
+  const R = WALL_HALO_MAX_PX + 2;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!near[i] || !(values[i] > WALL_MIN_M)) continue;
+      const hs = [];
+      for (let dy = -R; dy <= R; dy++) {
+        for (let dx = -R; dx <= R; dx++) {
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          const j = yy * w + xx;
+          if (!mask[j] && !near[j] && values[j] >= CANOPY_MIN_M) hs.push(values[j]);
+        }
+      }
+      if (hs.length < 2) {
+        next[i] = 0;
+        cleared++;
+      } else {
+        const cap = Math.round(median(hs) + 2);
+        if (values[i] > cap) {
+          next[i] = cap;
+          capped++;
+        }
+      }
+    }
+  }
+  values.set(next);
+  return { cleared, capped };
 }
 
 function ringPx(ring, lattice) {
@@ -506,6 +660,7 @@ function fuseLidarCanopy(chmGrid, lidar, opts) {
       }
     }
   }
+  const halo = Array.isArray(opt.buildings) && opt.buildings.length ? wallHalo(values, opt.buildings, lattice) : { cleared: 0, capped: 0 };
   recount(lattice);
   let decidedN = 0;
   for (let i = 0; i < decided.length; i++) if (decided[i]) decidedN++;
@@ -531,6 +686,8 @@ function fuseLidarCanopy(chmGrid, lidar, opts) {
       speckFilled: speck.filled,
       speckCleared: speck.cleared,
       buildingCells,
+      wallCleared: halo.cleared,
+      wallCapped: halo.capped,
       after: lattice.nonzero,
     },
   };

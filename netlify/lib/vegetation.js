@@ -1691,6 +1691,15 @@ function crownStack(row, frame, want, heightSample, onUnderstory) {
           ringPxArea(c) >= ringPxArea(ring) * 0.06
         ) {
           shaped = c;
+          // A band that barely steps in reads as a box. Where the height
+          // model is flat across the band, it still tapers toward a dome:
+          // no band keeps more than 1.6x the dome's share of the one below.
+          const want = Math.min(0.9, (fractions[i] / Math.max(fractions[i - 1], 0.01)) * 1.6);
+          const share = ringPxArea(c) / Math.max(ringPxArea(prev), 1e-9);
+          if (share > want) {
+            const tight = ringForFraction(c, frame, want / share);
+            if (tight && insetStaysIn(tight, prev) && ringClearsSpan(tight, crownSpanFloorPx(frame))) shaped = tight;
+          }
         }
       }
       if (shaped) measured++;

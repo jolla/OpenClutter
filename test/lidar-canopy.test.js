@@ -16,7 +16,9 @@ function cloud(opts) {
       const inTree = x < a[0] + 40 && y < a[1] + 40;
       const inRoof = x > b[0] - 40 && y > b[1] - 40;
       if (inTree) {
-        pts.push({ x, y, z: 112, cls: opts.cls, ret: 1, nret: 2 });
+        // A crown has relief: tops rise and fall a few metres.
+        const top = opts.flat ? 112 : 112 + 3 * Math.sin((x - a[0]) / 3) * Math.cos((y - a[1]) / 3);
+        pts.push({ x, y, z: top, cls: opts.cls, ret: 1, nret: 2 });
         pts.push({ x, y, z: 106, cls: opts.cls, ret: 2, nret: 2 });
       }
       // A trailer roof: a hard single return 4 m up.
@@ -86,4 +88,11 @@ test("vehicle footprints clear canopy cells", () => {
   const g = Object.assign({}, frame, { width: 10, height: 10, values: new Uint8Array(100).fill(6) });
   const ring = [[frame.west, frame.south], [frame.east, frame.south], [frame.east, frame.north], [frame.west, frame.north], [frame.west, frame.south]];
   assert.equal(clearInside(g, [{ kind: "trailer", coords: ring }]), 100);
+});
+
+test("an unclassified flat 12 m deck is not a crown", () => {
+  const lidar = { grid: cloud({ cls: 1, flat: true }), collected: "2019-07-01", frame };
+  const out = fuseLidarCanopy(metaEverywhere(), lidar, { frame });
+  const deck = share(out.grid, (u) => u < 0.15, (v) => v > 0.85);
+  assert.ok(deck < 0.05, "deck " + deck);
 });
