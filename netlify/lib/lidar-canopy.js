@@ -231,11 +231,13 @@ function dropFlatTops(cells) {
  * In an unclassified cloud a tower, facade, or crane is a patch whose cells
  * jump many metres from one to the next: a glass wall and its window ledges.
  * A crown at this cell size steps a metre or two, a tall conifer a few. A
- * patch at least 15 m tall whose mean step is over 5 m and over 15% of its
+ * patch at least 30 m tall whose mean step is over 5 m and over 15% of its
  * median height is cleared.
  */
 const JAGGED_MIN_STEP_M = 5;
-const JAGGED_MIN_MID_M = 15;
+// Lower than this a jagged patch can be a palm grove: tall crowns over bare
+// trunks.
+const JAGGED_MIN_MID_M = 30;
 const JAGGED_STEP_SHARE = 0.15;
 const SMOOTH_MIN_MID_M = 8;
 const SMOOTH_MIN_CELLS = 20;
@@ -394,6 +396,9 @@ const WALL_HALO_PX = 2;
 const WALL_HALO_MAX_PX = 5;
 const WALL_HALO_SHARE = 0.08;
 const WALL_MIN_M = 10;
+const LONE_CROWN_MAX_M2 = 60;
+const STALE_MIN_M = 12;
+const STALE_MAX_M2 = 2000;
 function haloPxFor(f, cellM) {
   const p = (f && f.properties) || {};
   const hM = Number(p.height != null ? p.height : f && f.height) || 0;
@@ -401,7 +406,7 @@ function haloPxFor(f, cellM) {
   const px = Math.round((hM * WALL_HALO_SHARE) / Math.max(cellM, 0.5));
   return Math.max(WALL_HALO_PX, Math.min(WALL_HALO_MAX_PX, px));
 }
-function wallHalo(values, buildings, lattice) {
+function wallHalo(values, buildings, lattice, meta) {
   const w = lattice.width;
   const h = lattice.height;
   const lat = (lattice.south + lattice.north) / 2;
@@ -439,14 +444,49 @@ function wallHalo(values, buildings, lattice) {
       }
     }
   }
+  // A lone compact crown that does not touch the footprint is a tree by the
+  // wall (a palm on a sidewalk), not a facade return: it keeps its height.
+  const keep = new Uint8Array(w * h);
+  const seen = new Uint8Array(w * h);
+  const maxCells = Math.max(4, Math.round(LONE_CROWN_MAX_M2 / (cellM * cellM)));
+  for (let s0 = 0; s0 < w * h; s0++) {
+    if (seen[s0] || !near[s0] || !(values[s0] > WALL_MIN_M)) continue;
+    const comp = [s0];
+    seen[s0] = 1;
+    let touches = false;
+    for (let k = 0; k < comp.length && comp.length <= maxCells; k++) {
+      const i = comp[k];
+      const x = i % w;
+      const y = (i - x) / w;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          const j = yy * w + xx;
+          if (mask[j]) touches = true;
+          if (!seen[j] && values[j] >= CANOPY_MIN_M) {
+            seen[j] = 1;
+            comp.push(j);
+          }
+        }
+      }
+    }
+    if (!touches && comp.length <= maxCells) for (const i of comp) keep[i] = 1;
+  }
   let cleared = 0;
   let capped = 0;
+  let lone = 0;
   const next = new Uint8Array(values);
   const R = WALL_HALO_MAX_PX + 2;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
       if (!near[i] || !(values[i] > WALL_MIN_M)) continue;
+      if (keep[i]) {
+        lone++;
+        continue;
+      }
       const hs = [];
       for (let dy = -R; dy <= R; dy++) {
         for (let dx = -R; dx <= R; dx++) {
@@ -470,7 +510,66 @@ function wallHalo(values, buildings, lattice) {
     }
   }
   values.set(next);
-  return { cleared, capped };
+  // Lidar older than the building beside it: a tall patch hugging the wall
+  // (half its cells within the wall's reach)
+  // where the canopy height map, made from later imagery, sees no canopy at
+  // all. That is scaffolding, a crane, or a shell going up, not trees.
+  let stale = 0;
+  if (meta) {
+    const done = new Uint8Array(w * h);
+    const maxStale = Math.round(STALE_MAX_M2 / (cellM * cellM));
+    for (let s0 = 0; s0 < w * h; s0++) {
+      if (done[s0] || !(values[s0] >= CANOPY_MIN_M)) continue;
+      const comp = [s0];
+      done[s0] = 1;
+      let nearN = 0;
+      let metaN = 0;
+      let sum = 0;
+      for (let k = 0; k < comp.length; k++) {
+        const i = comp[k];
+        if (near[i]) nearN++;
+        if (meta[i] >= CANOPY_MIN_M) metaN++;
+        sum += values[i];
+        const x = i % w;
+        const y = (i - x) / w;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx;
+            const yy = y + dy;
+            if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+            const j = yy * w + xx;
+            if (!done[j] && values[j] >= CANOPY_MIN_M) {
+              done[j] = 1;
+              comp.push(j);
+            }
+          }
+        }
+      }
+      if (comp.length > maxStale || !nearN) continue;
+      if (nearN >= comp.length * 0.5 && sum / comp.length >= STALE_MIN_M && metaN < comp.length * 0.05) {
+        for (const i of comp) values[i] = 0;
+        stale += comp.length;
+      }
+    }
+  }
+  return { cleared, capped, lone, stale };
+}
+
+/**
+ * The same tower, facade, and deck rules as dropJaggedTops, on a plain
+ * height raster (the bench's lidar reference). Returns cells cleared.
+ */
+function clearStructuresRaster(values, w, h) {
+  const cells = new Map();
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const v = values[y * w + x];
+      if (v >= CANOPY_MIN_M) cells.set(x + "," + y, { ix: x, iy: y, h: v });
+    }
+  }
+  const n = dropJaggedTops(cells);
+  for (const c of cells.values()) if (!(c.h > 0)) values[c.iy * w + c.ix] = 0;
+  return n;
 }
 
 function ringPx(ring, lattice) {
@@ -660,7 +759,7 @@ function fuseLidarCanopy(chmGrid, lidar, opts) {
       }
     }
   }
-  const halo = Array.isArray(opt.buildings) && opt.buildings.length ? wallHalo(values, opt.buildings, lattice) : { cleared: 0, capped: 0 };
+  const halo = Array.isArray(opt.buildings) && opt.buildings.length ? wallHalo(values, opt.buildings, lattice, meta) : { cleared: 0, capped: 0 };
   recount(lattice);
   let decidedN = 0;
   for (let i = 0; i < decided.length; i++) if (decided[i]) decidedN++;
@@ -688,6 +787,7 @@ function fuseLidarCanopy(chmGrid, lidar, opts) {
       buildingCells,
       wallCleared: halo.cleared,
       wallCapped: halo.capped,
+      wallStale: halo.stale || 0,
       after: lattice.nonzero,
     },
   };
@@ -733,4 +833,5 @@ module.exports = {
   lidarCanopyNote,
   leafOffDate,
   lidarCells,
+  clearStructuresRaster,
 };

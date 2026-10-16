@@ -914,6 +914,14 @@ async function lidarReference(frame) {
     const lidar = await fetchUsgsLidar(frame, { maxMs: 45000, index: [ranked[i]] });
     const kept = lidar && lidar.grid ? lidar.grid.kept : 0;
     const raster = lidar && !lidar.skipped && kept > 500 ? canopyRaster(lidar.grid) : null;
+    // Tower, facade, and deck returns are not canopy in the reference either.
+    if (raster && raster.values) {
+      const { clearStructuresRaster } = require("../netlify/lib/lidar-canopy");
+      clearStructuresRaster(raster.values, raster.width, raster.height);
+      let nz = 0;
+      for (let k = 0; k < raster.values.length; k++) if (raster.values[k] > 0) nz++;
+      raster.nonzero = nz;
+    }
     if (raster && raster.nonzero >= 40) {
       return { raster, project: lidar.project, spacingM: lidar.spacingM };
     }
