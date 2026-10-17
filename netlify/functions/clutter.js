@@ -2394,6 +2394,14 @@ async function handleClutter(event) {
         // The measured grid still ships when the fill cannot be read.
       }
     }
+    // OSM woods are an unmeasured outline painted at one guessed height, and
+    // Overpass answers some runs and not others. Where a measured height grid
+    // covers the draw it decides the canopy, so the result no longer depends
+    // on whether that fetch came back.
+    if (woodRings.length && chmGrid && chmGrid.nonzero > 0) {
+      footprintMeta.woodRingsSkipped = woodRings.length;
+      woodRings = [];
+    }
     if (lidarCanopy && chmGrid) {
       // Trailers, RVs, cars, and storage stacks are not crowns.
       footprintMeta.vehicleCanopyCells = clearInside(chmGrid, vehicleFeatures(outdoorFeatures));
