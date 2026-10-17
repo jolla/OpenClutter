@@ -170,6 +170,7 @@ function plainOpts(opts) {
     maxPolygons: src.maxPolygons,
     buildingBufferM: src.buildingBufferM,
     segmentTrees: src.segmentTrees === true,
+    segmentMinM2: Number(src.segmentMinM2) || 0,
     palmPoints: src.palmPoints || [],
   };
 }
@@ -369,6 +370,7 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
         seedY1: bands[i].y1,
         overlap: bands[i].overlap,
         segment: !!(opts && opts.segmentTrees),
+        segMinM2: (opts && opts.segmentMinM2) || 0,
         segBase: i + 1,
       });
     }

@@ -987,9 +987,9 @@ const SEG_PIECE_MIN_M2 = 30;
  * the cells that slope down from its own top. Null when the component is
  * one tree. Nothing is added: the trees partition the measured cells.
  */
-function segmentTrees(pixels, at, w, mPerX, mPerY) {
+function segmentTrees(pixels, at, w, mPerX, mPerY, minM2) {
   const area = pixels.length * mPerX * mPerY;
-  if (area < SEG_MIN_M2 || area > SEG_MAX_M2) return null;
+  if (area < Math.max(SEG_MIN_M2, minM2 || 0) || area > SEG_MAX_M2) return null;
   const cell = Math.sqrt(mPerX * mPerY);
   const inSet = new Map();
   for (let i = 0; i < pixels.length; i++) inSet.set(pixels[i][1] * w + pixels[i][0], i);
@@ -1275,7 +1275,7 @@ function crownsFromChm(grid, opts) {
       const area = pixels.length * mPerX * mPerY;
       const groups = [];
       if (opt.segment) {
-        const trees = segmentTrees(pixels, at, w, mPerX, mPerY);
+        const trees = segmentTrees(pixels, at, w, mPerX, mPerY, opt.segMinM2);
         if (trees) {
           const whole = area < TILE_AREA_M2 ? crownFromPixels(pixels, values, w, grid, mPerX, mPerY, 0, area >= SUBSTAND_AREA_M2) : null;
           const segId = segSeq++;
@@ -1562,7 +1562,7 @@ function crownsForExport(grid, opts) {
   const prepared = maskChmGrid(grid, opts);
   if (!prepared || !(prepared.nonzero > 0)) return { crowns: [], coarsened: false, stride: 1 };
   const max = opts && opts.maxPolygons > 0 ? opts.maxPolygons | 0 : BULK_POLYGONS;
-  let crowns = fitSegments(crownsFromChm(prepared, { segment: !!(opts && opts.segment) }), max);
+  let crowns = fitSegments(crownsFromChm(prepared, { segment: !!(opts && opts.segment), segMinM2: (opts && opts.segMinM2) || 0 }), max);
   const before = crowns.length;
   let trimmed = false;
   if (crowns.length > max) {
