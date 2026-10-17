@@ -3140,6 +3140,38 @@ function rankPiecesByCover(pieces) {
 }
 
 const OPEN_TREE_MAX_M2 = 400;
+const WALL_CROWN_MAX_W_M = 6;
+const WALL_CROWN_MIN_L_M = 18;
+const WALL_CROWN_RATIO = 3.5;
+
+/** Full major and minor axes (m) of the ellipse with the ring's second moments. */
+function crownAxesM(ring) {
+  let A = 0, cx = 0, cy = 0, sxx = 0, syy = 0, sxy = 0;
+  const n = ring.length;
+  for (let i = 0; i < n; i++) {
+    const [x0, y0] = ring[i];
+    const [x1, y1] = ring[(i + 1) % n];
+    const c = x0 * y1 - x1 * y0;
+    A += c;
+    cx += (x0 + x1) * c;
+    cy += (y0 + y1) * c;
+    sxx += (y0 * y0 + y0 * y1 + y1 * y1) * c;
+    syy += (x0 * x0 + x0 * x1 + x1 * x1) * c;
+    sxy += (x0 * y1 + 2 * x0 * y0 + 2 * x1 * y1 + x1 * y0) * c;
+  }
+  A /= 2;
+  if (!(Math.abs(A) > 1e-6)) return null;
+  cx /= 6 * A;
+  cy /= 6 * A;
+  const ixx = syy / 12 / A - cx * cx;
+  const iyy = sxx / 12 / A - cy * cy;
+  const ixy = sxy / 24 / A - cx * cy;
+  const tr = ixx + iyy;
+  const d = Math.sqrt(Math.max(0, ((ixx - iyy) * (ixx - iyy)) / 4 + ixy * ixy));
+  const l1 = tr / 2 + d;
+  const l2 = Math.max(0, tr / 2 - d);
+  return { major: 4 * Math.sqrt(l1), minor: 4 * Math.sqrt(l2) };
+}
 const OPEN_TREE_SHARE = 0.85;
 
 function fitChunksToJsonBudget(frame, name, imgName, chunks, budget) {
@@ -3570,6 +3602,29 @@ function buildClutter({
   }
   // A lone tree the aerial shows only as lawn, paving or bare ground is a
   // stale or stray height return. Its crown and stem are dropped together.
+  // An estimated canopy height map smears a row of trees, a hedge line or a
+  // building's shadow into a long thin wall. No crown is a wall: on an
+  // estimated canopy such a shape is dropped. Measured lidar rows stay.
+  let wallCrownsDropped = 0;
+  if (chmGrid && chmGrid.source !== "lidar" && treePieces.length) {
+    const mx = frame.mpuX || 1;
+    const my = frame.mpuY || mx;
+    for (let i = treePieces.length - 1; i >= 0; i--) {
+      const crown = (treePieces[i].areas || []).find((a) => a && !isTrunkArea(a));
+      const coords = crown && crown.area && crown.area.coordinates;
+      if (!coords || coords.length < 4) continue;
+      const ring = coords.map((c) => [c.coordinate_xyz.x * mx, c.coordinate_xyz.y * my]);
+      const w = crownAxesM(ring);
+      if (w && w.minor < WALL_CROWN_MAX_W_M && w.major >= WALL_CROWN_MIN_L_M && w.major >= WALL_CROWN_RATIO * w.minor) {
+        treePieces.splice(i, 1);
+        wallCrownsDropped++;
+      }
+    }
+    if (footprintMeta) footprintMeta.wallCrownsDropped = wallCrownsDropped;
+    if (wallCrownsDropped && Array.isArray(warnings)) {
+      warnings.push("Left out " + wallCrownsDropped + " long thin canopy strips the canopy height map drew along streets and walls.");
+    }
+  }
   let openTreesDropped = 0;
   if (typeof aerialOpenShare === "function" && treePieces.length) {
     for (let i = treePieces.length - 1; i >= 0; i--) {

@@ -162,6 +162,11 @@ function overpassQuery(bbox, want) {
     parts.push('node["natural"="tree"]["species"~"' + PALM_GENUS_RE + '|palm",i](' + box + ");");
     parts.push('node["natural"="tree"]["taxon"~"' + PALM_GENUS_RE + '|palm",i](' + box + ");");
     parts.push('way["highway"~"^(motorway|trunk|primary|secondary|tertiary)(_link)?$"](' + box + ");");
+    // Town streets and squares: no tree grows out of the paving, whatever an
+    // estimated canopy height map smears over them.
+    parts.push('way["highway"~"^(residential|unclassified|living_street|pedestrian|service)$"](' + box + ");");
+    parts.push('way["area:highway"](' + box + ");");
+    parts.push('way["place"="square"](' + box + ");");
   }
   parts.push('way["railway"~"^(monorail|light_rail|subway|rail|tram)$"](' + box + ");");
   parts.push('way["highway"]["bridge"~"^(yes|viaduct|covered)$"](' + box + ");");
@@ -1359,6 +1364,8 @@ function parseOverpass(payload, want, bbox, deckCap) {
 
 // Carriageway width by road class when OSM gives neither width nor lanes.
 const ROAD_WIDTH_M = { motorway: 11, trunk: 10, primary: 10, secondary: 8, tertiary: 7 };
+// Town streets: these cut only an estimated canopy, never measured lidar.
+const STREET_WIDTH_M = { residential: 6, unclassified: 5.5, living_street: 5, pedestrian: 5, service: 4 };
 const LANE_M = 3.5;
 const CORRIDOR_CAP = 6000;
 
@@ -1367,6 +1374,12 @@ const CORRIDOR_CAP = 6000;
  * Only the paved or tracked width itself: a median or verge between two
  * one-way carriageways is a separate strip and keeps its trees.
  */
+function isPavedArea(tags) {
+  if (tags["area:highway"]) return true;
+  if (tags.place === "square") return true;
+  return tags.highway === "pedestrian" && tags.area === "yes";
+}
+
 function corridorLines(records) {
   const out = [];
   for (let i = 0; i < (records || []).length && out.length < CORRIDOR_CAP; i++) {
@@ -1386,6 +1399,14 @@ function corridorLines(records) {
       // A monorail or a rail line on a viaduct is a structure in the air; the
       // lidar returns off its beam are not a crown.
       elevated = rail === "monorail" || raised || (tags.elevated && tags.elevated !== "no");
+    } else if (isPavedArea(tags) && isClosed(coords)) {
+      out.push({ coords, area: true, street: true });
+      continue;
+    } else if (hw && STREET_WIDTH_M[hw] && !raised) {
+      if (tags.service && /^(parking_aisle|driveway)$/.test(String(tags.service))) continue;
+      const w = parseMeters(tags.width);
+      out.push({ coords, widthM: w >= 2 && w <= 30 ? w : STREET_WIDTH_M[hw], street: true });
+      continue;
     } else if (hw) {
       const cls = hw.replace(/_link$/, "");
       if (!ROAD_WIDTH_M[cls] && !raised) continue;
