@@ -3654,7 +3654,7 @@ function buildClutter({
   // On an estimated canopy, a crown the national summer photo shows as roof,
   // shadow or paving is dropped with its stem. Measured lidar crowns stay.
   let leafOnDropped = 0;
-  if (typeof leafOnGreenShare === "function" && chmGrid && chmGrid.source !== "lidar" && treePieces.length) {
+  if (typeof leafOnGreenShare === "function" && canopyEstimated && treePieces.length) {
     for (let i = treePieces.length - 1; i >= 0; i--) {
       const crown = (treePieces[i].areas || []).find((a) => a && !isTrunkArea(a));
       const coords = crown && crown.area && crown.area.coordinates;
