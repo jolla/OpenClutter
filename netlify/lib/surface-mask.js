@@ -414,7 +414,47 @@ function surfaceMasksFromImage(decoded, frame) {
   return { waterRings, pavementPolygons, waterM2, pavementM2 };
 }
 
+/**
+ * Share of a ring's aerial pixels that read as open ground (lawn, paving,
+ * pitch). Ring is OI pixels, y measured up from the image bottom.
+ */
+function openShareSampler(image) {
+  if (!image || !image.data || !(image.width > 0) || !(image.height > 0)) return null;
+  const { data, width: w, height: h } = image;
+  return function openShare(ring) {
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const p of ring) {
+      if (p[0] < x0) x0 = p[0];
+      if (p[0] > x1) x1 = p[0];
+      if (p[1] < y0) y0 = p[1];
+      if (p[1] > y1) y1 = p[1];
+    }
+    const step = Math.max(1, Math.floor(Math.max(x1 - x0, y1 - y0) / 14));
+    let n = 0;
+    let open = 0;
+    for (let y = Math.ceil(y0); y <= y1; y += step) {
+      for (let x = Math.ceil(x0); x <= x1; x += step) {
+        let inside = false;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          const [xi, yi] = ring[i];
+          const [xj, yj] = ring[j];
+          if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+        }
+        if (!inside) continue;
+        const row = h - 1 - Math.round(y);
+        const col = Math.round(x);
+        if (row < 0 || row >= h || col < 0 || col >= w) continue;
+        const k = (row * w + col) * 4;
+        n++;
+        if (openGroundPixel(data[k], data[k + 1], data[k + 2], localStd(data, w, h, col, row))) open++;
+      }
+    }
+    return n >= 6 ? open / n : 0;
+  };
+}
+
 module.exports = {
+  openShareSampler,
   surfaceMasksFromImage,
   MIN_WATER_M2,
   MIN_PAVEMENT_M2,

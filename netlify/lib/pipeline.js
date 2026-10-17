@@ -3139,6 +3139,9 @@ function rankPiecesByCover(pieces) {
   return pieces;
 }
 
+const OPEN_TREE_MAX_M2 = 400;
+const OPEN_TREE_SHARE = 0.85;
+
 function fitChunksToJsonBudget(frame, name, imgName, chunks, budget) {
   const limit = budget > 0 ? budget : OPENINTENT_JSON_BUDGET;
   const src = [];
@@ -3258,6 +3261,7 @@ function buildClutter({
   jsonBudget,
   foliagePack,
   outdoorPlan,
+  aerialOpenShare,
 }) {
   const featureList = footprintsGeojson?.features || [];
   if (Array.isArray(warnings)) {
@@ -3562,6 +3566,28 @@ function buildClutter({
     while (cursor < buildingsBeforeBytes + treeEmittedBefore) {
       treePieces.push({ role: "tree", discrete: false, areas: [areas[cursor]] });
       cursor++;
+    }
+  }
+  // A lone tree the aerial shows only as lawn, paving or bare ground is a
+  // stale or stray height return. Its crown and stem are dropped together.
+  let openTreesDropped = 0;
+  if (typeof aerialOpenShare === "function" && treePieces.length) {
+    for (let i = treePieces.length - 1; i >= 0; i--) {
+      const piece = treePieces[i];
+      if (!piece.discrete || !piece.areas || piece.areas.length < 2) continue;
+      const crown = piece.areas[0];
+      const coords = crown && crown.area && crown.area.coordinates;
+      if (!coords || coords.length < 3) continue;
+      const ring = coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
+      let a = 0;
+      for (let k = 0, m = ring.length - 1; k < ring.length; m = k++) a += (ring[m][0] + ring[k][0]) * (ring[m][1] - ring[k][1]);
+      const m2 = Math.abs(a / 2) * (frame.mpuX || 1) * (frame.mpuY || frame.mpuX || 1);
+      if (!(m2 > 0) || m2 > OPEN_TREE_MAX_M2) continue;
+      const share = aerialOpenShare(ring);
+      if (share >= OPEN_TREE_SHARE) {
+        treePieces.splice(i, 1);
+        openTreesDropped++;
+      }
     }
   }
   const deckPieces = [];

@@ -228,7 +228,7 @@ const { gpsClipboard, stampGpsTiePoints } = require("../lib/hamina-clipboard");
 const { buildMapNotes, stampMapNotes } = require("../lib/map-notes");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
-const { surfaceMasksFromImage } = require("../lib/surface-mask");
+const { surfaceMasksFromImage, openShareSampler } = require("../lib/surface-mask");
 const { createWaterTest, clearWaterCanopy, dropWaterPoints } = require("../lib/water-mask");
 const { rejectPavementFootprints } = require("../lib/pavement");
 function json(status, cors, obj) {
@@ -2476,6 +2476,10 @@ async function handleClutter(event) {
       jsonBudget: jsonBudgetOverride || undefined,
       foliagePack,
       outdoorPlan,
+      aerialOpenShare:
+        decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH
+          ? openShareSampler(decoded)
+          : null,
     });
   }
 
