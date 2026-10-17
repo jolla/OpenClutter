@@ -652,8 +652,11 @@ function corridorMaskPolygons(corridors, frame, mpu) {
       const ay = a[1] - uy * half;
       const bx = b[0] + ux * half;
       const by = b[1] + uy * half;
+      // The -1 third value marks a corridor: it blocks canopy seeds where the
+      // height model reads the road, but it does not cut traced crowns, so a
+      // median palm the canopy shows inside a wide mapped road stays.
       const ring = [
-        [ax + nx, ay + ny],
+        [ax + nx, ay + ny, -1],
         [bx + nx, by + ny],
         [bx - nx, by - ny],
         [ax - nx, ay - ny],

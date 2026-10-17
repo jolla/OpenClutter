@@ -1154,7 +1154,9 @@ async function fetchUsgsLidarWork(frame, opts) {
   const tried = [];
   const need = Math.max(5000, Math.min(80000, Math.round((km2 > 0 ? km2 : 0.1) * 40000)));
   for (let i = 0; i < ranked.length && i < 4; i++) {
-    if (Date.now() - started > caps.maxMs) break;
+    // The two newest surveys over the draw are always read, so the clock
+    // cannot change which survey a draw gets between runs.
+    if (i >= 2 && Date.now() - started > caps.maxMs) break;
     const name = ranked[i][0];
     tried.push(name);
     // A transient fetch error retries the same survey once, so one slow
@@ -1166,7 +1168,6 @@ async function fetchUsgsLidarWork(frame, opts) {
         if (!candidate) break;
       } catch {
         candidate = null;
-        if (Date.now() - started > caps.maxMs) break;
       }
     }
     try {
