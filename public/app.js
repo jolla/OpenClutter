@@ -980,23 +980,123 @@ map.on("zoomend moveend", refreshVertexPixels);
 
 enterDrawMode();
 
-document.getElementById("search").onsubmit = async (e) => {
-  e.preventDefault();
-  const q = document.getElementById("q").value.trim();
+const searchInput = document.getElementById("q");
+const suggestList = document.getElementById("suggest");
+let suggestItems = [];
+let suggestActive = -1;
+let suggestSeq = 0;
+let suggestTimer = null;
+
+function viewParams() {
+  const c = map.getCenter();
+  return "&lat=" + c.lat.toFixed(5) + "&lon=" + c.lng.toFixed(5);
+}
+
+function closeSuggest() {
+  suggestItems = [];
+  suggestActive = -1;
+  suggestList.hidden = true;
+  suggestList.textContent = "";
+  searchInput.setAttribute("aria-expanded", "false");
+}
+
+function renderSuggest() {
+  suggestList.textContent = "";
+  suggestItems.forEach((s, i) => {
+    const li = document.createElement("li");
+    li.id = "suggest-" + i;
+    li.setAttribute("role", "option");
+    li.setAttribute("aria-selected", i === suggestActive ? "true" : "false");
+    li.textContent = s.label;
+    if (s.detail) {
+      const d = document.createElement("span");
+      d.className = "sd";
+      d.textContent = s.detail;
+      li.appendChild(d);
+    }
+    li.addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      pickSuggestion(s);
+    });
+    suggestList.appendChild(li);
+  });
+  suggestList.hidden = !suggestItems.length;
+  searchInput.setAttribute("aria-expanded", suggestItems.length ? "true" : "false");
+  if (suggestActive >= 0) searchInput.setAttribute("aria-activedescendant", "suggest-" + suggestActive);
+  else searchInput.removeAttribute("aria-activedescendant");
+}
+
+searchInput.addEventListener("input", () => {
+  clearTimeout(suggestTimer);
+  const q = searchInput.value.trim();
+  const seq = ++suggestSeq;
+  if (q.length < 2) return closeSuggest();
+  suggestTimer = setTimeout(async () => {
+    try {
+      const r = await fetch("/api/suggest?q=" + encodeURIComponent(q) + viewParams());
+      const list = r.ok ? await r.json() : [];
+      if (seq !== suggestSeq) return;
+      suggestItems = Array.isArray(list) ? list : [];
+      suggestActive = -1;
+      renderSuggest();
+    } catch {
+      // Enter still searches.
+    }
+  }, 200);
+});
+
+searchInput.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") return closeSuggest();
+  if (!suggestItems.length) return;
+  if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+    ev.preventDefault();
+    const n = suggestItems.length;
+    suggestActive = ev.key === "ArrowDown" ? (suggestActive + 1) % n : (suggestActive - 1 + n) % n;
+    renderSuggest();
+  } else if (ev.key === "Enter" && suggestActive >= 0) {
+    ev.preventDefault();
+    pickSuggestion(suggestItems[suggestActive]);
+  }
+});
+
+searchInput.addEventListener("blur", () => setTimeout(closeSuggest, 100));
+
+function flyToHit(hit) {
+  map.setView([+hit.lat, +hit.lon], 17);
+  if (!bbox) setStatus("");
+  else if (exportBtn.disabled) setStatus(areaLimitMessage() || "Area is outside the export size limits.", true);
+  else setStatus("Ready to export.");
+}
+
+async function runSearch(q, extra) {
+  suggestSeq++;
+  clearTimeout(suggestTimer);
+  closeSuggest();
   setStatus("Searching…");
   try {
-    const r = await fetch("/api/geocode?q=" + encodeURIComponent(q));
+    const r = await fetch("/api/geocode?q=" + encodeURIComponent(q) + viewParams() + (extra || ""));
     const hits = await r.json();
     if (!r.ok) throw new Error(hits.error || "Geocode failed");
     if (!hits.length) throw new Error("No results. Try the street address.");
-    const hit = hits[0];
-    map.setView([+hit.lat, +hit.lon], 17);
-    if (!bbox) setStatus("");
-    else if (exportBtn.disabled) setStatus(areaLimitMessage() || "Area is outside the export size limits.", true);
-    else setStatus("Ready to export.");
+    flyToHit(hits[0]);
   } catch (err) {
     setStatus(err.message, true);
   }
+}
+
+function pickSuggestion(s) {
+  searchInput.value = s.text || s.label;
+  if (Number.isFinite(s.lat) && Number.isFinite(s.lon)) {
+    suggestSeq++;
+    closeSuggest();
+    return flyToHit(s);
+  }
+  return runSearch(s.text || s.label, s.magicKey ? "&magicKey=" + encodeURIComponent(s.magicKey) : "");
+}
+
+document.getElementById("search").onsubmit = (e) => {
+  e.preventDefault();
+  runSearch(searchInput.value.trim());
 };
 
 async function detectCanopyTrees(b) {

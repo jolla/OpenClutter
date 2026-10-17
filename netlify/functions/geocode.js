@@ -1,6 +1,13 @@
 const { userAgent: UA } = require("../lib/version");
 const { geocodeQueries } = require("../lib/geocode-query");
 const { looksLikeVenueName, addressFromVenueText } = require("../lib/venue-address");
+const { bestPlace, resolveMagicKey } = require("../lib/place-search");
+
+function viewFrom(params) {
+  const lat = parseFloat(params.lat);
+  const lon = parseFloat(params.lon);
+  return Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon } : null;
+}
 
 async function nominatim(q) {
   const url =
@@ -34,10 +41,31 @@ async function geocodeHandler(event) {
     "access-control-allow-headers": "content-type",
   };
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: cors, body: "" };
-  const q = (event.queryStringParameters || {}).q || "";
+  const params = event.queryStringParameters || {};
+  const q = params.q || "";
   if (!q || q.length > 200) {
     return { statusCode: 400, headers: { ...cors, "content-type": "application/json" }, body: JSON.stringify({ error: "q required" }) };
   }
+  const json = (body) => ({
+    statusCode: 200,
+    headers: { ...cors, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  // A picked Esri suggestion carries its magicKey.
+  if (params.magicKey && params.magicKey.length < 400) {
+    const p = await resolveMagicKey(q, params.magicKey).catch(() => null);
+    if (p) return json([p]);
+  }
+  // Esri + Photon, ranked near the map view. A clean word-for-word match wins.
+  // A typo-only match lets a venue name try its search snippet first, so
+  // "Casa Evexia" is not swapped for a similarly spelled place abroad.
+  let ranked = null;
+  try {
+    ranked = await bestPlace(q, viewFrom(params), { userAgent: UA });
+  } catch {
+    ranked = null;
+  }
+  if (ranked && ranked.exact >= 0.99) return json([ranked]);
   const queries = geocodeQueries(q);
   let sawOk = false;
   let lastStatus = 502;
@@ -50,6 +78,17 @@ async function geocodeHandler(event) {
     }
     return null;
   }
+  if (ranked && looksLikeVenueName(q)) {
+    try {
+      const address = addressFromVenueText(q, await venueSnippet(q));
+      const placed = address ? await firstHit(geocodeQueries(address)) : null;
+      if (placed) return json(placed);
+    } catch {
+      // Keep the ranked place.
+    }
+    return json([ranked]);
+  }
+  if (ranked) return json([ranked]);
   const found = await firstHit(queries);
   if (found) {
     return {
