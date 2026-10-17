@@ -143,6 +143,7 @@ function tileQuery(bbox) {
     'node["highway"="street_lamp"](' + box + ");" +
     'node["man_made"~"^(mast|pole|lighting)$"](' + box + ");" +
     'way["railway"~"^(monorail|light_rail|subway|rail|tram)$"](' + box + ");" +
+    'way["highway"~"^(motorway|trunk|primary|secondary|tertiary)(_link)?$"](' + box + ");" +
     'way["highway"]["bridge"~"^(yes|viaduct|covered)$"](' + box + ");" +
     'way["highway"]["layer"~"^[1-9]"](' + box + ");" +
     'way["man_made"="bridge"](' + box + ");" +

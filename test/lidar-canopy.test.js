@@ -2,7 +2,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const { gridFromPoints, mercator } = require("../netlify/lib/usgs-lidar");
-const { fuseLidarCanopy, keepLidarOpen, leafOffDate, clearInside } = require("../netlify/lib/lidar-canopy");
+const { fuseLidarCanopy, keepLidarOpen, leafOffDate, aridClimate, clearInside } = require("../netlify/lib/lidar-canopy");
 
 const frame = { west: -90.001, south: 40.0, east: -89.999, north: 40.0015 };
 
@@ -73,6 +73,13 @@ test("leaf-off months north of 31 degrees", () => {
   assert.equal(leafOffDate("2018-03-02", 43), true);
   assert.equal(leafOffDate("2018-07-02", 43), false);
   assert.equal(leafOffDate("2018-01-02", 28), false);
+});
+
+test("a winter flight over the desert is not leaf-off", () => {
+  assert.equal(leafOffDate("2023-01-10", 36.13, -115.16), false);
+  assert.equal(leafOffDate("2023-01-10", 39.95, -75.16), true);
+  assert.equal(aridClimate(33.45, -112.07), true);
+  assert.equal(aridClimate(41.88, -87.63), false);
 });
 
 test("gap fill cannot add canopy where lidar measured open ground", () => {
