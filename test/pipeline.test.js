@@ -1310,7 +1310,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.equal(/>Finest</.test(html), false);
     assert.equal(/past 20×20/.test(html), false);
     assert.equal(/Ski hills only/i.test(html), false);
-    assert.match(html, /placeholder="Search address, press Enter"/);
+    assert.match(html, /placeholder="Search a place or address"/);
     assert.match(html, /enterkeyhint="search"/);
     assert.equal(/type="submit"|>Go</.test(html), false);
     assert.match(html, /id="map-credit"/);
