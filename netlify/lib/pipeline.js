@@ -3173,6 +3173,8 @@ function crownAxesM(ring) {
   return { major: 4 * Math.sqrt(l1), minor: 4 * Math.sqrt(l2) };
 }
 const OPEN_TREE_SHARE = 0.85;
+/** An estimated crown with less foliage than this on a leaf-on summer photo is not a tree. */
+const LEAF_ON_MIN_GREEN = 0.08;
 
 function fitChunksToJsonBudget(frame, name, imgName, chunks, budget) {
   const limit = budget > 0 ? budget : OPENINTENT_JSON_BUDGET;
@@ -3294,6 +3296,8 @@ function buildClutter({
   foliagePack,
   outdoorPlan,
   aerialOpenShare,
+  leafOnGreenShare,
+  leafOnSource,
 }) {
   const featureList = footprintsGeojson?.features || [];
   if (Array.isArray(warnings)) {
@@ -3645,6 +3649,25 @@ function buildClutter({
         treePieces.splice(i, 1);
         openTreesDropped++;
       }
+    }
+  }
+  // On an estimated canopy, a crown the national summer photo shows as roof,
+  // shadow or paving is dropped with its stem. Measured lidar crowns stay.
+  let leafOnDropped = 0;
+  if (typeof leafOnGreenShare === "function" && chmGrid && chmGrid.source !== "lidar" && treePieces.length) {
+    for (let i = treePieces.length - 1; i >= 0; i--) {
+      const crown = (treePieces[i].areas || []).find((a) => a && !isTrunkArea(a));
+      const coords = crown && crown.area && crown.area.coordinates;
+      if (!coords || coords.length < 3) continue;
+      const share = leafOnGreenShare(coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]));
+      if (share !== null && share < LEAF_ON_MIN_GREEN) {
+        treePieces.splice(i, 1);
+        leafOnDropped++;
+      }
+    }
+    if (footprintMeta) footprintMeta.leafOnDropped = leafOnDropped;
+    if (leafOnDropped && Array.isArray(warnings)) {
+      warnings.push("Left out " + leafOnDropped + " canopy pieces with no summer foliage on the " + (leafOnSource || "leaf-on orthophoto") + ".");
     }
   }
   const deckPieces = [];
