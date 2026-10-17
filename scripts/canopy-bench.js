@@ -908,6 +908,8 @@ async function exportSite(site) {
   return zipPath;
 }
 
+const LIDAR_REF_RETRY_CELLS = 5000;
+
 async function lidarReference(frame) {
   const ranked = rankProjects(frame).slice(0, 4);
   for (let i = 0; i < ranked.length; i++) {
@@ -923,6 +925,15 @@ async function lidarReference(frame) {
       raster.nonzero = nz;
     }
     if (raster && raster.nonzero >= 40) {
+      // A slow tile server can hand back part of the survey. A thin
+      // reference is fetched once more and the fuller one is kept.
+      if (raster.nonzero < LIDAR_REF_RETRY_CELLS && !frame.__lidarRetried) {
+        const again = await lidarReference(Object.assign({}, frame, { __lidarRetried: true }));
+        if (again && again.raster.nonzero > raster.nonzero) {
+          console.log("lidar reference retry", raster.nonzero, "->", again.raster.nonzero);
+          return again;
+        }
+      }
       return { raster, project: lidar.project, spacingM: lidar.spacingM };
     }
   }

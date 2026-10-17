@@ -37,6 +37,12 @@ for ref in refs:
     # 4 m is not a crown.
     widest = max((area(o["ring"]) for o in trees if above(o) >= 4), default=0)
     lo, hi = ref["heightM"]
-    ok = (not trees or top <= hi + 2) and len(trunks) >= ref.get("minTrunks", 0) and widest <= ref.get("maxCrownM2", 1e9)
-    out.append({"id": ref["id"], "trees": len(trees), "trunks": len(trunks), "maxTop": round(top, 1), "widestM2": round(widest), "expect": ref["heightM"], "pass": ok})
+    fails = []
+    if trees and top > hi + 2:
+        fails.append("height %.1f > %g" % (top, hi + 2))
+    if len(trunks) < ref.get("minTrunks", 0):
+        fails.append("trunks %d < %d" % (len(trunks), ref["minTrunks"]))
+    if widest > ref.get("maxCrownM2", 1e9):
+        fails.append("crown %d m2 > %g" % (round(widest), ref["maxCrownM2"]))
+    out.append({"id": ref["id"], "trees": len(trees), "trunks": len(trunks), "maxTop": round(top, 1), "widestM2": round(widest), "expect": ref["heightM"], "pass": not fails, "fails": fails})
 print(json.dumps(out, indent=1))
