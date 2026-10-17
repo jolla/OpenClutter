@@ -1048,6 +1048,108 @@ function crownThicknessM(material) {
  * short stand of tall crowns. A merged canopy gets 3, then 2. A crown that
  * cannot hold two bands thicker than 2 m stays one footprint.
  */
+/**
+ * Polygon area, centroid and second moments (shoelace form).
+ */
+function ringMoments(ring) {
+  let A = 0, cx = 0, cy = 0, sxx = 0, syy = 0, sxy = 0;
+  const n = ring.length;
+  for (let i = 0; i < n; i++) {
+    const [x0, y0] = ring[i];
+    const [x1, y1] = ring[(i + 1) % n];
+    const c = x0 * y1 - x1 * y0;
+    A += c;
+    cx += (x0 + x1) * c;
+    cy += (y0 + y1) * c;
+    sxx += (y0 * y0 + y0 * y1 + y1 * y1) * c;
+    syy += (x0 * x0 + x0 * x1 + x1 * x1) * c;
+    sxy += (x0 * y1 + 2 * x0 * y0 + 2 * x1 * y1 + x1 * y0) * c;
+  }
+  A /= 2;
+  if (!(Math.abs(A) > 1e-6)) return null;
+  cx /= 6 * A;
+  cy /= 6 * A;
+  // Central moments of x, y per unit area.
+  const ixx = syy / 12 / A - cx * cx;
+  const iyy = sxx / 12 / A - cy * cy;
+  const ixy = sxy / 24 / A - cx * cy;
+  return { area: Math.abs(A), cx, cy, ixx, iyy, ixy };
+}
+
+/**
+ * The ellipse with a ring's area, centre and spread. A lidar crown traced on
+ * height cells is a run of square steps; a real crown edge is round.
+ */
+function ellipseRing(ring, verts, maxScale) {
+  const m = ringMoments(ring);
+  if (!m || !(m.ixx > 0) || !(m.iyy > 0)) return null;
+  const tr = m.ixx + m.iyy;
+  const det = m.ixx * m.iyy - m.ixy * m.ixy;
+  const disc = Math.sqrt(Math.max(0, (tr * tr) / 4 - det));
+  const l1 = tr / 2 + disc;
+  const l2 = Math.max(tr / 2 - disc, l1 * 0.04);
+  let a = 2 * Math.sqrt(l1);
+  let b = 2 * Math.sqrt(l2);
+  const k = Math.sqrt(m.area / (Math.PI * a * b)) * (maxScale || 1);
+  a *= k;
+  b *= k;
+  const th = 0.5 * Math.atan2(2 * m.ixy, m.ixx - m.iyy);
+  const ct = Math.cos(th), st = Math.sin(th);
+  const out = [];
+  for (let i = 0; i < verts; i++) {
+    const t = (2 * Math.PI * i) / verts;
+    const ex = a * Math.cos(t), ey = b * Math.sin(t);
+    out.push([m.cx + ex * ct - ey * st, m.cy + ex * st + ey * ct]);
+  }
+  out.push([out[0][0], out[0][1]]);
+  return out;
+}
+
+/** A crown up to this size is one tree and gets a round outline per band. */
+const ROUND_CROWN_MAX_M2 = 400;
+const ROUND_CROWN_VERTS = 12;
+
+function roundCrownParts(parts, row, frame) {
+  // A one-band crown is its own full outline; rounding it loses canopy.
+  if (!Array.isArray(parts) || parts.length < 2 || row.tile || row.palm) return;
+  const mpu = (frame && frame.mpuX) || 1;
+  const base = parts[0] && parts[0].ringPx;
+  if (!base || base.length < 4) return;
+  const baseM2 = ringPxArea(base) * mpu * mpu;
+  if (!(baseM2 > 0) || baseM2 > ROUND_CROWN_MAX_M2) return;
+  // The full-width band keeps the traced outline so the canopy it covers
+  // stays covered. The narrower bands above and below it round off.
+  let widest = -1;
+  let widestArea = -1;
+  for (let i = 0; i < parts.length; i++) {
+    const a = parts[i].ringPx ? ringPxArea(parts[i].ringPx) : 0;
+    if (a > widestArea) {
+      widestArea = a;
+      widest = i;
+    }
+  }
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (i === widest) continue;
+    if (!part.ringPx || part.ringPx.length < 4) continue;
+    const e = ellipseRing(part.ringPx, ROUND_CROWN_VERTS, 1);
+    if (!e) continue;
+    // The round band stays inside the traced crown so it never spills onto
+    // a neighbour or a roof the outline already avoids.
+    let kept = null;
+    try {
+      const inter = polygonClipping.intersection([closeCrownRing(openCrownRing(e))], [closeCrownRing(openCrownRing(parts[widest].ringPx))]);
+      for (const poly of inter || []) {
+        const r = poly && poly[0];
+        if (r && r.length >= 4 && (!kept || ringPxArea(r) > ringPxArea(kept))) kept = r;
+      }
+    } catch {
+      kept = null;
+    }
+    if (kept && ringPxArea(kept) >= 0.6 * ringPxArea(e)) part.ringPx = kept;
+  }
+}
+
 function wantedCrownLayers(discrete, thickness, treeCount) {
   const fit = Math.floor((Number(thickness) + 1e-6) / MIN_CROWN_BAND_M);
   if (fit < 2) return 1;
@@ -2507,6 +2609,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
         },
       ]
     );
+    roundCrownParts(parts, row, frame);
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
       // An upper band traced on the height grid of a tile can spill past the
