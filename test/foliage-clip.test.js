@@ -160,10 +160,10 @@ describe("foliage rings stay off buildings and water", () => {
     });
     const foliage = pairs.oiAreas.filter((a) => a.kind === "canopy").map((a) => a.ringPx);
     const all = pairs.oiAreas.map((a) => a.ringPx);
-    const before = Math.abs(canopy.ringPx.reduce((s, p, i, arr) => {
+    const before = bare.oiAreas.filter((a) => a.kind === "canopy").reduce((t, a) => t + Math.abs(a.ringPx.reduce((s, p, i, arr) => {
       const q = arr[(i + 1) % arr.length];
       return s + p[0] * q[1] - q[0] * p[1];
-    }, 0) / 2);
+    }, 0) / 2), 0);
     const after = foliage.reduce((s, r) => s + Math.abs(r.reduce((a, p, i, arr) => {
       const q = arr[(i + 1) % arr.length];
       return a + p[0] * q[1] - q[0] * p[1];

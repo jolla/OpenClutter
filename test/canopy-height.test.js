@@ -306,8 +306,10 @@ describe("canopy height grid", () => {
     }
     const nlcd = treePairsFromPoints([], frame, [], null, { canopyHits: hits, heightSample: () => 14 });
     assert.equal(nlcd.foliageGeometry, "nlcd-polygon");
-    assert.equal(nlcd.oiAreas.filter((a) => a.kind === "canopy").length, 1);
-    assert.equal(nlcd.oiAreas.length, 2);
+    // A woods wider than one crown ships as tiles, each with its own top.
+    const nlcdCanopy = nlcd.oiAreas.filter((a) => a.kind === "canopy").length;
+    assert.ok(nlcdCanopy >= 1);
+    assert.ok(nlcd.oiAreas.length >= 2 * nlcdCanopy);
     const mLon = 111320 * Math.cos((42.9 * Math.PI) / 180);
     const w = 36;
     const h = 36;
