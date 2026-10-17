@@ -3174,7 +3174,7 @@ function crownAxesM(ring) {
 }
 const OPEN_TREE_SHARE = 0.85;
 /** An estimated crown with less foliage than this on a leaf-on summer photo is not a tree. */
-const LEAF_ON_MIN_GREEN = 0.08;
+const LEAF_ON_MIN_GREEN = 0.05;
 
 function fitChunksToJsonBudget(frame, name, imgName, chunks, budget) {
   const limit = budget > 0 ? budget : OPENINTENT_JSON_BUDGET;

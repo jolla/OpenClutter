@@ -2566,7 +2566,7 @@ async function handleClutter(event) {
         decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH
           ? openShareSampler(decoded)
           : null,
-      leafOnGreenShare: leafOnPhoto ? leafOnGreenSampler(leafOnPhoto) : null,
+      leafOnGreenShare: leafOnPhoto ? leafOnGreenSampler(leafOnPhoto, frame.mpuX) : null,
       leafOnSource: leafOnPhoto ? leafOnPhoto.source : "",
     });
   }
