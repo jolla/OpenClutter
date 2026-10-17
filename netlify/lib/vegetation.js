@@ -659,6 +659,8 @@ const PALM_ROW_MIN_H = 12;
 const PALM_ROW_MAX_W_M = 9;
 const PALM_ROW_ELONG = 3;
 const PALM_GROVE_MIN_H = 15;
+const PALM_SKIRT_R_M = 5;
+const PALM_SKIRT_MAX = 0.35;
 const PALM_GENUS = /\b(phoenix|washingtonia|syagrus|roystonea|sabal|cocos|trachycarpus|butia|livistona|chamaerops|brahea|archontophoenix|dypsis|bismarckia|areca|arecaceae|palmae)\b/i;
 
 function isPalmTags(tags) {
@@ -908,11 +910,29 @@ function palmCluster(ringPx, frame, h, heightSample, tagged) {
   // times longer, tall as a palm. Its crowns merge on the height grid, but
   // its measured tops are the palms, one stem each.
   const shortM = crownShortM(ringPx, frame);
-  const row = arid && h >= PALM_ROW_MIN_H && shortM > 0 && shortM <= PALM_ROW_MAX_W_M && areaM / shortM >= PALM_ROW_ELONG * shortM;
+  const row = arid && h >= PALM_ROW_MIN_H  && shortM > 0 && shortM <= PALM_ROW_MAX_W_M && areaM / shortM >= PALM_ROW_ELONG * shortM;
   // A desert stand whose separate tops all stand palm-tall: irrigated desert
   // broadleaf rarely clears 15 m, so three or more such tops are palms.
-  const grove = arid && tops.length >= 3 && tops.every((t) => t.v >= PALM_GROVE_MIN_H);
-  if (!row && !grove && palmish / tops.length < need) return null;
+  // Guard against irrigated pines and other conifers: their crown skirts
+  // down the stem, so the disc around a top is full of mid heights. A palm
+  // is a bare stem under its head, so around it the grid is head or ground.
+  const skirted = (t) => {
+    let disc = 0;
+    let mid = 0;
+    const r = Math.round(PALM_SKIRT_R_M / step);
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (dx * dx + dy * dy > r * r) continue;
+        const v = at(t.x + dx, t.y + dy);
+        disc++;
+        if (v > 0.25 * t.v && v < 0.6 * t.v) mid++;
+      }
+    }
+    return disc > 0 && mid / disc > PALM_SKIRT_MAX;
+  };
+  const grove = arid && tops.length >= 3 && tops.every((t) => t.v >= PALM_GROVE_MIN_H) && tops.filter(skirted).length <= tops.length * 0.25;
+  const rowOk = row && tops.filter(skirted).length <= tops.length * 0.25;
+  if (!rowOk && !grove && palmish / tops.length < need) return null;
   // Tall narrow tops that leave most of the canopy unexplained are a broad
   // crown with bumps, not palms.
   if (crownArea < areaM * 0.2) return null;
@@ -1961,7 +1981,7 @@ function clipRingToBox(ring, x0, y0, x1, y1) {
 
 const ARID_TREE_MAX_M = 15;
 const ARID_LONE_MAX_M2 = 200;
-const ARID_H_PER_DIAM = 1;
+const ARID_H_PER_DIAM = 0.6;
 const URBAN_TREE_MAX_M = 25;
 const URBAN_ROOF_SHARE = 0.2;
 
