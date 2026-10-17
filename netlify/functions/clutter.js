@@ -229,6 +229,7 @@ const { buildMapNotes, stampMapNotes } = require("../lib/map-notes");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
 const { surfaceMasksFromImage, openShareSampler, poleShadowContrast } = require("../lib/surface-mask");
+const { fetchLeafOnPhoto, leafOnGreenSampler } = require("../lib/leaf-on-photo");
 const { createWaterTest, clearWaterCanopy, dropWaterPoints } = require("../lib/water-mask");
 const { rejectPavementFootprints } = require("../lib/pavement");
 const POLE_SHADOW_MIN = 0.2;
@@ -2031,6 +2032,9 @@ async function handleClutter(event) {
   // Imagery roof fill walks every footprint. A campus that already has the
   // vector layers does not get that pass; Oak Creek (far fewer roofs) still does.
   const skipRoofFill = features.length > DENSE_FEATURES;
+  // A national leaf-on summer photo, where a country publishes one, checks
+  // crowns drawn from an estimated canopy height map. It loads alongside.
+  const leafOnJob = includeFoliage && frame ? fetchLeafOnPhoto(frame).catch(() => null) : null;
   let decoded = needImage && !skipRoofFill ? decodeImagery(imgBuf) : null;
   // A plate near 10 MP is past the 6 MP roof decode. Canopy color still
   // needs those pixels, and the roof path already accepts that size.
@@ -2514,6 +2518,7 @@ async function handleClutter(event) {
     }
     if (parallelTasks.length) await Promise.all(parallelTasks);
     if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage build-clutter\n");
+    const leafOnPhoto = leafOnJob ? await leafOnJob : null;
     return buildClutter({
       palmPoints,
       frame,
@@ -2561,6 +2566,8 @@ async function handleClutter(event) {
         decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH
           ? openShareSampler(decoded)
           : null,
+      leafOnGreenShare: leafOnPhoto ? leafOnGreenSampler(leafOnPhoto) : null,
+      leafOnSource: leafOnPhoto ? leafOnPhoto.source : "",
     });
   }
 
