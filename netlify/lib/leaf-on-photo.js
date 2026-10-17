@@ -163,10 +163,51 @@ function grayWorldGains(photo) {
  * Share of a ring (OI px, y up) that shows foliage on the leaf-on photo.
  * Returns null when the photo does not cover enough of the ring.
  */
-function leafOnGreenSampler(photo) {
-  if (!photo || !photo.data) return null;
+/** Foliage within this distance of a crown pixel counts: a shaded crown is lit at its edge. */
+const LEAF_ON_REACH_M = 1.5;
+
+function greenMask(photo) {
   const { data, have, width: w, height: h } = photo;
   const [gr, gg, gb] = grayWorldGains(photo);
+  const m = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    if (!have[i]) continue;
+    const k = i * 4;
+    if (leafOnGreenPixel(data[k] * gr, data[k + 1] * gg, data[k + 2] * gb)) m[i] = 1;
+  }
+  return m;
+}
+
+/** Square dilation by r pixels, rows then columns. */
+function dilate(mask, w, h, r) {
+  if (!(r > 0)) return mask;
+  const tmp = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    let last = -1e9;
+    for (let x = 0; x < w; x++) if (mask[y * w + x]) last = x; else if (x - last <= r) tmp[y * w + x] = 1;
+    last = 1e9;
+    for (let x = w - 1; x >= 0; x--) if (mask[y * w + x]) { last = x; tmp[y * w + x] = 1; } else if (last - x <= r) tmp[y * w + x] = 1;
+  }
+  const out = new Uint8Array(w * h);
+  for (let x = 0; x < w; x++) {
+    let last = -1e9;
+    for (let y = 0; y < h; y++) if (tmp[y * w + x]) last = y; else if (y - last <= r) out[y * w + x] = 1;
+    last = 1e9;
+    for (let y = h - 1; y >= 0; y--) if (tmp[y * w + x]) { last = y; out[y * w + x] = 1; } else if (last - y <= r) out[y * w + x] = 1;
+  }
+  return out;
+}
+
+/**
+ * Share of a ring (OI px, y up) that has summer foliage on or next to it on
+ * the leaf-on photo. Returns null when the photo does not cover the ring.
+ * mpp is the frame's metres per pixel.
+ */
+function leafOnGreenSampler(photo, mpp) {
+  if (!photo || !photo.data) return null;
+  const { have, width: w, height: h } = photo;
+  const reach = mpp > 0 ? Math.round(LEAF_ON_REACH_M / mpp) : 0;
+  const green = dilate(greenMask(photo), w, h, reach);
   return function greenShare(ring) {
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
     for (const p of ring) {
@@ -176,7 +217,7 @@ function leafOnGreenSampler(photo) {
       if (p[1] > y1) y1 = p[1];
     }
     const step = Math.max(1, Math.floor(Math.max(x1 - x0, y1 - y0) / 20));
-    let n = 0, inside_n = 0, green = 0;
+    let n = 0, insideN = 0, g = 0;
     for (let y = Math.ceil(y0); y <= y1; y += step) {
       for (let x = Math.ceil(x0); x <= x1; x += step) {
         let inside = false;
@@ -186,17 +227,16 @@ function leafOnGreenSampler(photo) {
           if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
         }
         if (!inside) continue;
-        inside_n++;
+        insideN++;
         const row = h - 1 - Math.round(y);
         const col = Math.round(x);
         if (row < 0 || row >= h || col < 0 || col >= w || !have[row * w + col]) continue;
-        const k = (row * w + col) * 4;
         n++;
-        if (leafOnGreenPixel(data[k] * gr, data[k + 1] * gg, data[k + 2] * gb)) green++;
+        if (green[row * w + col]) g++;
       }
     }
-    if (n < 6 || n < 0.7 * inside_n) return null;
-    return green / n;
+    if (n < 6 || n < 0.7 * insideN) return null;
+    return g / n;
   };
 }
 
