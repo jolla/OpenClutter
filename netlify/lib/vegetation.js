@@ -762,13 +762,18 @@ function palmTagIn(ringPx, palmPx) {
  * Palm crown centres in px for one traced canopy, or null when it is not
  * palms. Each centre carries its own measured height.
  */
-function palmCentres(ringPx, frame, heightM, palmPx, heightSample) {
+const PALM_MAX_LAT = 31;
+
+function palmCentres(ringPx, frame, heightM, palmPx, heightSample, palmClimate) {
   const h = Number(heightM);
   if (!(h >= 6 && h < PALM_MAX_H) || !ringPx || ringPx.length < 4) return null;
   const { mpuX, mpuY } = ringMeters(frame);
   const areaM = ringPxArea(ringPx) * mpuX * mpuY;
   const diam = 2 * Math.sqrt(areaM / Math.PI);
   const tagged = palmTagIn(ringPx, palmPx);
+  // Outside deserts and the subtropics a tall thin reading is a pole or a
+  // narrow conifer, not a palm, unless the map tags one.
+  if (palmClimate === false && !tagged) return null;
   const c = ringCentroidPx(ringPx);
   if (!c || !pointInRing(c, ringPx)) return null;
   if (diam <= PALM_MAX_DIAM_M && (tagged || (h >= PALM_MIN_H && h / diam >= PALM_MIN_RATIO && palmProfile(ringPx, frame, h, heightSample)))) {
@@ -2352,6 +2357,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   } catch {
     regionArid = false;
   }
+  const palmClimate = regionArid || Math.abs((frame.south + frame.north) / 2) < PALM_MAX_LAT;
   // One palm row per centre: a round crown in the top 2 to 3 m on a thin stem.
   const palmRows = (centres, ground) => {
     const out = [];
@@ -2464,7 +2470,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
         continue;
       }
       if (rowArea.material) {
-        const palms = palmCentres(rowArea.ringPx, frame, height, palmPx, heightSample);
+        const palms = palmCentres(rowArea.ringPx, frame, height, palmPx, heightSample, palmClimate);
         const made = palms ? palmRows(palms, ground) : null;
         if (made && made.length) {
           for (let k = 0; k < made.length; k++) pending.push(made[k]);
@@ -2496,7 +2502,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       const segTree = area.segTree === true && seats.length === 1 && segTreeFits(rowArea.ringPx, frame, height);
       // A lidar tree whose crown at 60% of its height is a few metres across
       // and far shorter than it is tall is a palm: a stem and a small crown.
-      if (segTree && heightSample && height >= PALM_MIN_H) {
+      if (segTree && palmClimate && heightSample && height >= PALM_MIN_H) {
         const top = heightContourRing(rowArea.ringPx, frame, heightSample, height * 0.6);
         const topM2 = top ? canopyAreaM2(top, frame) : 0;
         const diam = 2 * Math.sqrt(topM2 / Math.PI);

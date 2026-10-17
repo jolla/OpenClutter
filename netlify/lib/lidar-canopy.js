@@ -28,6 +28,8 @@ const { mercator, groundAt } = require("./usgs-lidar");
 const CANOPY_MIN_M = 3;
 const CANOPY_MAX_M = 75;
 const POLE_MIN_M = 8;
+// A pole cell's neighbours stand under this share of its height.
+const SPIKE_SHARE = 0.5;
 // The tallest a dropped wall cell may stand when the canopy height map
 // refills it: new planting since the flight, not a mature crown.
 const REFILL_MAX_M = 6;
@@ -123,7 +125,7 @@ function lidarCells(grid, opts) {
         if (rec.tc >= 2 && split >= need && top >= CANOPY_MIN_M && top <= CANOPY_MAX_M) h = top;
       }
     }
-    out.set(key, { ix: rec.ix, iy: rec.iy, h, ok, evidence, n: rec.n, split: rec.mr + rec.lr + rec.vegN });
+    out.set(key, { ix: rec.ix, iy: rec.iy, h, ok, evidence, n: rec.n, split: rec.mr + rec.lr + rec.vegN, vegN: rec.vegN, vegMulti: rec.vegMulti || 0, bc: rec.bc || 0 });
   }
   let flat = 0;
   if (!classified && !splitKnown) flat = dropFlatTops(out);
@@ -141,9 +143,49 @@ function lidarCells(grid, opts) {
       }
     }
     if (near === 0 && (splitKnown || classified ? c.split < 3 : true)) {
+      c.poleH = c.h;
       c.h = 0;
       c.pole = true;
       poles++;
+      continue;
+    }
+    // A spike: one tall cell whose neighbours stand far lower. A crown, even
+    // a narrow conifer, keeps half its height across the next cell; a light
+    // or utility pole with its lamp head does not.
+    let tallNear = 0;
+    let tallRing2 = 0;
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        if (!dx && !dy) continue;
+        const n = out.get(c.ix + dx + "," + (c.iy + dy));
+        if (!n || !(n.h >= c.h * SPIKE_SHARE)) continue;
+        if (Math.abs(dx) <= 1 && Math.abs(dy) <= 1) tallNear++;
+        else tallRing2++;
+      }
+    }
+    if (tallNear === 0 && tallRing2 <= 1) {
+      c.poleH = c.h;
+      c.pole = true;
+      c.spike = true;
+    }
+  }
+  const poleSpots = [];
+  for (const c of out.values()) {
+    if (!c.pole) continue;
+    if (c.spike) {
+      c.h = 0;
+      poles++;
+      // The lamp arm and head spill a metre or two: clear lower cells beside it.
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const n = out.get(c.ix + dx + "," + (c.iy + dy));
+          if (n && !n.pole && n.h > 0 && n.h < c.poleH * SPIKE_SHARE) n.h = 0;
+        }
+      }
+    }
+    if (grid.originX != null) {
+      const ll = require("./usgs-lidar").cellCenter(grid, c);
+      poleSpots.push({ lon: ll[0], lat: ll[1], heightM: Math.round(c.poleH * 10) / 10 });
     }
   }
   // The thin-line rule runs on the fused grid only (clearThinLinesGrid); on
@@ -170,7 +212,7 @@ function lidarCells(grid, opts) {
       closed++;
     }
   }
-  return { cells: out, classified, splitKnown, nMed, minN, poles, closed, flat, jagged, lines };
+  return { cells: out, classified, splitKnown, nMed, minN, poles, poleSpots, closed, flat, jagged, lines };
 }
 
 /**
@@ -908,6 +950,7 @@ function fuseLidarCanopy(chmGrid, lidar, opts) {
     decided,
     stats: {
       leafOff,
+      poleSpots: read.poleSpots || [],
       classified: read.classified,
       cellsDecided: decidedN,
       cellsTotal: w * h,

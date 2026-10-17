@@ -1023,7 +1023,7 @@ const OUTDOOR_SPECS = {
   fence: { label: "Fence", db: 1, color: "#9AA3AD", transparent: false },
   retaining: { label: "Retaining wall", db: 6, color: "#7A736C", transparent: false },
   hedge: { label: "Hedge", db: 1, color: FOLIAGE_LIGHT_COLOR, transparent: true },
-  pole: { label: "Light pole", db: 10, color: "#6E7378", transparent: false },
+  pole: { label: "Light pole", db: 10, color: "#FFC20E", transparent: false },
   water: { label: "Water", db: 0.1, color: "#3D7EA6", transparent: false },
   guideway: { label: "Guideway", db: 9, color: "#6A6560", transparent: false },
   bridge: { label: "Bridge", db: 9, color: "#736E68", transparent: false },
