@@ -169,7 +169,7 @@ const { fetchSlopeForest } = require("../lib/slope-forest");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
 const { fetchUsgsLidar, applyLidarSample, lidarNote, lidarStatusLine, rankProjects } = require("../lib/usgs-lidar");
-const { fuseLidarCanopy, keepLidarOpen, clearInside, vehicleFeatures, lidarCanopyNote } = require("../lib/lidar-canopy");
+const { fuseLidarCanopy, keepLidarOpen, clearInside, clearThinLinesGrid, vehicleFeatures, lidarCanopyNote } = require("../lib/lidar-canopy");
 const exportJobs = require("../lib/export-jobs");
 const stageClock = require("../lib/stage-clock");
 const aerialFetch = require("../lib/aerial-fetch");
@@ -652,11 +652,13 @@ function corridorMaskPolygons(corridors, frame, mpu) {
       const ay = a[1] - uy * half;
       const bx = b[0] + ux * half;
       const by = b[1] + uy * half;
-      // The -1 third value marks a corridor: it blocks canopy seeds where the
+      // The -1 third value marks a road or ground-level rail corridor: it blocks canopy seeds where the
       // height model reads the road, but it does not cut traced crowns, so a
       // median palm the canopy shows inside a wide mapped road stays.
+      // An elevated guideway is the exception: its beam reads as a crown in
+      // the lidar, so it cuts measured crowns too.
       const ring = [
-        [ax + nx, ay + ny, -1],
+        c.elevated ? [ax + nx, ay + ny] : [ax + nx, ay + ny, -1],
         [bx + nx, by + ny],
         [bx - nx, by - ny],
         [ax - nx, ay - ny],
@@ -2405,6 +2407,8 @@ async function handleClutter(event) {
     if (lidarCanopy && chmGrid) {
       // Trailers, RVs, cars, and storage stacks are not crowns.
       footprintMeta.vehicleCanopyCells = clearInside(chmGrid, vehicleFeatures(outdoorFeatures));
+      // A guideway or gantry beam is one cell wide and level; it is not a crown.
+      footprintMeta.lineCanopyCells = clearThinLinesGrid(chmGrid);
     }
     if (background && includeFoliage && !chmTimedOut) {
       if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage trees-parallel\n");
