@@ -973,6 +973,7 @@ function tilePixels(pixels, mPerX, mPerY, tileM) {
 
 /** Lidar tree segmentation. Components under this area are cut into trees. */
 const SEG_MAX_M2 = 20000;
+const ESTIMATED_SEG_MAX_M2 = 2000;
 const SEG_MIN_M2 = 40;
 const SEG_TOP_MIN_H = 5;
 /** A segmented tree smaller than this joins its neighbour (the sliver floor). */
@@ -989,7 +990,10 @@ const SEG_PIECE_MIN_M2 = 30;
  */
 function segmentTrees(pixels, at, w, mPerX, mPerY, minM2) {
   const area = pixels.length * mPerX * mPerY;
-  if (area < Math.max(SEG_MIN_M2, minM2 || 0) || area > SEG_MAX_M2) return null;
+  // An estimated split (minM2 set) is for a blob a few crowns across, not a
+  // forest: a woods stays one stand there.
+  const maxM2 = minM2 > 0 ? ESTIMATED_SEG_MAX_M2 : SEG_MAX_M2;
+  if (area < Math.max(SEG_MIN_M2, minM2 || 0) || area > maxM2) return null;
   const cell = Math.sqrt(mPerX * mPerY);
   const inSet = new Map();
   for (let i = 0; i < pixels.length; i++) inSet.set(pixels[i][1] * w + pixels[i][0], i);
