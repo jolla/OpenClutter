@@ -653,6 +653,12 @@ const PALM_CROWN_MAX_M = 6;
 const PALM_TRUNK_M = 0.6;
 const PALM_ROW_MAX_M = 90;
 const PALM_PEAK_GAP_M = 4.5;
+// Widest head (the top 15% of a palm) that still reads as a palm crown.
+const PALM_HEAD_MAX_M = 4.5;
+const PALM_ROW_MIN_H = 12;
+const PALM_ROW_MAX_W_M = 9;
+const PALM_ROW_ELONG = 3;
+const PALM_GROVE_MIN_H = 15;
 const PALM_GENUS = /\b(phoenix|washingtonia|syagrus|roystonea|sabal|cocos|trachycarpus|butia|livistona|chamaerops|brahea|archontophoenix|dypsis|bismarckia|areca|arecaceae|palmae)\b/i;
 
 function isPalmTags(tags) {
@@ -783,6 +789,12 @@ const PALM_CLUSTER_MAX_M2 = 6000;
  */
 function palmCluster(ringPx, frame, h, heightSample, tagged) {
   if (typeof heightSample !== "function") return null;
+  let arid = false;
+  try {
+    arid = require("./lidar-canopy").aridClimate((frame.south + frame.north) / 2, (frame.west + frame.east) / 2);
+  } catch {
+    arid = false;
+  }
   const { mpuX, mpuY } = ringMeters(frame);
   const areaM = ringPxArea(ringPx) * mpuX * mpuY;
   if (!(areaM <= PALM_CLUSTER_MAX_M2) || !(h >= PALM_MIN_H)) return null;
@@ -838,7 +850,9 @@ function palmCluster(ringPx, frame, h, heightSample, tagged) {
     const p = peaks[i];
     if (tops.every((q) => Math.hypot(q.x - p.x, q.y - p.y) * step >= PALM_PEAK_GAP_M)) tops.push(p);
   }
-  if (tops.length < 2) return null;
+  if (tops.length < 2) {
+      return null;
+  }
   // Each top owns the connected cells within 6 m that stay above 60% of its
   // height and are closer to it than to any other top.
   const owner = new Int32Array(nx * ny).fill(-1);
@@ -851,6 +865,7 @@ function palmCluster(ringPx, frame, h, heightSample, tagged) {
     const stack = [t.y * nx + t.x];
     owner[stack[0]] = i;
     let n = 0;
+    let head = 0;
     let sx = 0;
     let sy = 0;
     while (stack.length) {
@@ -875,16 +890,29 @@ function palmCluster(ringPx, frame, h, heightSample, tagged) {
         if (!nearest) continue;
         owner[q] = i;
         stack.push(q);
+        if (val[q] >= 0.85 * t.v) head++;
       }
     }
     const areaT = n * step * step;
     const diam = 2 * Math.sqrt(areaT / Math.PI);
+    const headDiam = 2 * Math.sqrt(((head + 1) * step * step) / Math.PI);
     crownArea += areaT;
     if (diam <= PALM_MAX_DIAM_M && t.v / Math.max(diam, 1) >= PALM_MIN_RATIO) palmish++;
+    // Desert palms: a merged row reads wide at 60% of the height, but the
+    // head of each top is a few metres across, far narrower than a broadleaf.
+    else if (arid && t.v >= PALM_MIN_H && headDiam <= PALM_HEAD_MAX_M && t.v / headDiam >= 2 * PALM_MIN_RATIO) palmish++;
     out.push({ c: pxAt(sx / n, sy / n), h: Math.round(t.v * 10) / 10, diam: Math.min(diam, PALM_CROWN_MAX_M) });
   }
   const need = tagged ? 0.5 : 0.75;
-  if (palmish / tops.length < need) return null;
+  // A desert median or frontage row: a strip a few metres wide and many
+  // times longer, tall as a palm. Its crowns merge on the height grid, but
+  // its measured tops are the palms, one stem each.
+  const shortM = crownShortM(ringPx, frame);
+  const row = arid && h >= PALM_ROW_MIN_H && shortM > 0 && shortM <= PALM_ROW_MAX_W_M && areaM / shortM >= PALM_ROW_ELONG * shortM;
+  // A desert stand whose separate tops all stand palm-tall: irrigated desert
+  // broadleaf rarely clears 15 m, so three or more such tops are palms.
+  const grove = arid && tops.length >= 3 && tops.every((t) => t.v >= PALM_GROVE_MIN_H);
+  if (!row && !grove && palmish / tops.length < need) return null;
   // Tall narrow tops that leave most of the canopy unexplained are a broad
   // crown with bumps, not palms.
   if (crownArea < areaM * 0.2) return null;
@@ -1884,7 +1912,56 @@ function sampleBuildingKeepOut(buildings) {
   return keepOutPx;
 }
 
+const STAND_TILE_MAX_M2 = 6000;
+const STAND_TILE_M = 50;
+
+function ringBoundsPx(ring) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of ring) {
+    if (p[0] < minX) minX = p[0];
+    if (p[1] < minY) minY = p[1];
+    if (p[0] > maxX) maxX = p[0];
+    if (p[1] > maxY) maxY = p[1];
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+/** Sutherland-Hodgman clip of a closed ring to an axis box; closed result or null. */
+function clipRingToBox(ring, x0, y0, x1, y1) {
+  let pts = ring.slice();
+  if (pts.length > 1 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]) pts.pop();
+  const edges = [
+    (p) => p[0] >= x0, (p) => p[0] <= x1, (p) => p[1] >= y0, (p) => p[1] <= y1,
+  ];
+  const cut = [
+    (a, b) => [x0, a[1] + ((b[1] - a[1]) * (x0 - a[0])) / (b[0] - a[0])],
+    (a, b) => [x1, a[1] + ((b[1] - a[1]) * (x1 - a[0])) / (b[0] - a[0])],
+    (a, b) => [a[0] + ((b[0] - a[0]) * (y0 - a[1])) / (b[1] - a[1]), y0],
+    (a, b) => [a[0] + ((b[0] - a[0]) * (y1 - a[1])) / (b[1] - a[1]), y1],
+  ];
+  for (let e = 0; e < 4 && pts.length; e++) {
+    const inside = edges[e];
+    const next = [];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[(i + pts.length - 1) % pts.length];
+      const b = pts[i];
+      const ia = inside(a);
+      const ib = inside(b);
+      if (ib) {
+        if (!ia) next.push(cut[e](a, b));
+        next.push(b);
+      } else if (ia) next.push(cut[e](a, b));
+    }
+    pts = next;
+  }
+  if (pts.length < 3) return null;
+  pts.push([pts[0][0], pts[0][1]]);
+  return pts;
+}
+
 const ARID_TREE_MAX_M = 15;
+const ARID_LONE_MAX_M2 = 200;
+const ARID_H_PER_DIAM = 1;
 const URBAN_TREE_MAX_M = 25;
 const URBAN_ROOF_SHARE = 0.2;
 
@@ -2145,7 +2222,14 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   let spiresDropped = 0;
   let crownCapped = 0;
   let regionCapped = 0;
+  let tiled = 0;
   const regionCapH = plausibleTreeCapM(frame, opts && opts.buildingRings);
+  let regionArid = false;
+  try {
+    regionArid = require("./lidar-canopy").aridClimate((frame.south + frame.north) / 2, (frame.west + frame.east) / 2);
+  } catch {
+    regionArid = false;
+  }
   // One palm row per centre: a round crown in the top 2 to 3 m on a thin stem.
   const palmRows = (centres, ground) => {
     const out = [];
@@ -2178,12 +2262,50 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     }
     return out;
   };
+  // A stand wider than one crown ships as tiles about 50 m across, each at
+  // the canopy height measured over it, never as one flat sheet.
+  const tileSeats = (seats) => {
+    const { mpuX, mpuY } = ringMeters(frame);
+    const out = [];
+    for (let i = 0; i < seats.length; i++) {
+      const seat = seats[i];
+      const m2 = seat.ringPx ? canopyAreaM2(seat.ringPx, frame) : 0;
+      if (!(m2 > STAND_TILE_MAX_M2)) {
+        out.push(seat);
+        continue;
+      }
+      const b = ringBoundsPx(seat.ringPx);
+      const sx = STAND_TILE_M / mpuX;
+      const sy = STAND_TILE_M / (mpuY || mpuX);
+      let made = 0;
+      for (let y = b.minY; y < b.maxY; y += sy) {
+        for (let x = b.minX; x < b.maxX; x += sx) {
+          const box = clipRingToBox(seat.ringPx, x, y, x + sx, y + sy);
+          if (!box || box.length < 4) continue;
+          // A box cut of a notched outline can bridge the notch; the roof
+          // and water clip runs again so a tile never covers what the
+          // outline went around.
+          const parts = clipSet ? clipFoliageRing(box, clipSet) || [] : [box];
+          for (let q = 0; q < parts.length; q++) {
+            const ring = parts[q];
+            if (!ring || ring.length < 4 || canopyAreaM2(ring, frame) < SLIVER_M2) continue;
+            const ll = ring.map((p) => pxToLl(p[0], p[1], frame));
+            out.push({ ringPx: ring, ground: seat.ground, slopePiece: seat.slopePiece, ll, tile: true });
+            made++;
+          }
+        }
+      }
+      if (!made) out.push(seat);
+      else tiled++;
+    }
+    return out;
+  };
   if (prof) tProf = profile.now();
   for (const area of dissolved) {
     // A neighbor crown is here so a shared edge is cut the same way. Its
     // pieces belong to the tile that owns that crown.
     if (area.context) continue;
-    const seats = seatsFor(area);
+    const seats = tileSeats(seatsFor(area));
     for (let s = 0; s < seats.length; s++) {
       const seat = seats[s];
       const rowArea = {
@@ -2192,7 +2314,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
         kind: area.kind || "canopy",
         shape: seats.length > 1 ? "polygon" : area.shape || "polygon",
       };
-      if (seat.slopePiece && heightSample && seat.ll && seat.ll.length >= 3) {
+      if ((seat.slopePiece || seat.tile) && heightSample && seat.ll && seat.ll.length >= 3) {
         let lon = 0;
         let lat = 0;
         const n = seat.ll.length > 1 && seat.ll[0][0] === seat.ll[seat.ll.length - 1][0] ? seat.ll.length - 1 : seat.ll.length;
@@ -2231,9 +2353,19 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       // Plausible height. Outside a palm, a desert tree is rarely above
       // 15 m and a street tree in a dense city rarely above 25 m. A taller
       // reading there is a wall, mast or stale return mixed into the crown.
-      if (regionCapH > 0 && rowArea.material && height > regionCapH) {
+      let capH = regionCapH;
+      // A lone desert broadleaf (palo verde, mesquite, acacia) is about as
+      // tall as it is wide.
+      if (regionArid && rowArea.ringPx) {
+        const m2 = canopyAreaM2(rowArea.ringPx, frame);
+        if (m2 > 0 && m2 <= ARID_LONE_MAX_M2) {
+          const lone = Math.max(CROWN_CAP_MIN_H, ARID_H_PER_DIAM * 2 * Math.sqrt(m2 / Math.PI));
+          capH = capH > 0 ? Math.min(capH, lone) : lone;
+        }
+      }
+      if (capH > 0 && rowArea.material && height > capH) {
         const tier = String(rowArea.material.name || "").indexOf("Light") >= 0 ? "light" : "heavy";
-        const capMat = materialForVegetation(regionCapH, tier);
+        const capMat = materialForVegetation(capH, tier);
         if (capMat) {
           rowArea.material = capMat;
           regionCapped++;
@@ -2299,7 +2431,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
           foliageLifted++;
         }
       }
-      pending.push({ area: rowArea, clip, trunk, slopePiece: seat.slopePiece, ground, form });
+      pending.push({ area: rowArea, clip, trunk, slopePiece: seat.slopePiece, ground, form, tile: !!seat.tile });
     }
   }
   if (prof) profile.add("seat", profile.msSince(tProf));
@@ -2357,6 +2489,15 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     );
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
+      // An upper band traced on the height grid of a tile can spill past the
+      // tile's roof notch; it is clipped again like the tile itself.
+      if (row.tile && i > 0 && clipSet && part.ringPx) {
+        const cut = clipFoliageRing(part.ringPx, clipSet) || [];
+        let best = null;
+        for (let q = 0; q < cut.length; q++) if (!best || ringPxArea(cut[q]) > ringPxArea(best)) best = cut[q];
+        if (!best || best.length < 4) continue;
+        part.ringPx = best;
+      }
       oiAreas.push({
         ringPx: part.ringPx,
         material: part.material,
@@ -2387,6 +2528,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     spiresDropped,
     crownCapped,
     regionCapped,
+    standsTiled: tiled,
     foliageLifted,
     foliageGeometry,
     foliageCoarsened: coarsened,

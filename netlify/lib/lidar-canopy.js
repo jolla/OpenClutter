@@ -28,8 +28,9 @@ const { mercator, groundAt } = require("./usgs-lidar");
 const CANOPY_MIN_M = 3;
 const CANOPY_MAX_M = 75;
 const POLE_MIN_M = 8;
-// The tallest canopy-height-map value a dropped wall cell may take back.
-const REFILL_MAX_M = 25;
+// The tallest a dropped wall cell may stand when the canopy height map
+// refills it: new planting since the flight, not a mature crown.
+const REFILL_MAX_M = 6;
 
 function median(list) {
   if (!list.length) return 0;
@@ -583,8 +584,10 @@ function wallHalo(values, buildings, lattice, meta) {
     for (let i = 0; i < w * h; i++) {
       if (!dropped[i] || mask[i] || values[i] >= CANOPY_MIN_M) continue;
       const mv = meta[i];
-      if (mv >= CANOPY_MIN_M && mv <= REFILL_MAX_M) {
-        values[i] = mv;
+      if (mv >= CANOPY_MIN_M) {
+        // Trees that grew in since a stale flight are young plantings, so
+        // the refill never stands taller than a young street tree.
+        values[i] = Math.min(mv, REFILL_MAX_M);
         refilled++;
       }
     }
