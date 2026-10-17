@@ -201,6 +201,7 @@ function ingestPoint(grid, x, y, z, cls, ret, nret, maxX, maxY) {
     }
     if (cls === 3 || cls === 4 || cls === 5) {
       rec.vegN++;
+      if (nret >= 2) rec.vegMulti++;
       if (rec.vegMax == null || z > rec.vegMax) rec.vegMax = z;
     }
   }
@@ -235,7 +236,7 @@ function ingestPoint(grid, x, y, z, cls, ret, nret, maxX, maxY) {
 function emptyCell() {
   return {
     g: null, b: [], bc: 0, u: [], uc: 0, uMin: null, uMax: null, v: [], vc: 0, n: 0, fc: 0, fMax: null,
-    tc: 0, tMax: null, mr: 0, lr: 0, vegN: 0, vegMax: null,
+    tc: 0, tMax: null, mr: 0, lr: 0, vegN: 0, vegMulti: 0, vegMax: null,
   };
 }
 
@@ -1273,6 +1274,7 @@ async function fetchUsgsLidarWork(frame, opts) {
 }
 
 module.exports = {
+  cellCenter,
   HEIGHT_SOURCE,
   EPT_BUCKET,
   MAX_POINTS,

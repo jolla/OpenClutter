@@ -228,9 +228,38 @@ const { gpsClipboard, stampGpsTiePoints } = require("../lib/hamina-clipboard");
 const { buildMapNotes, stampMapNotes } = require("../lib/map-notes");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
-const { surfaceMasksFromImage, openShareSampler } = require("../lib/surface-mask");
+const { surfaceMasksFromImage, openShareSampler, poleShadowContrast } = require("../lib/surface-mask");
 const { createWaterTest, clearWaterCanopy, dropWaterPoints } = require("../lib/water-mask");
 const { rejectPavementFootprints } = require("../lib/pavement");
+const POLE_SHADOW_MIN = 0.2;
+// Taller lone returns are masts, towers or flags, not light poles.
+const POLE_MAX_H_M = 20;
+// A tall lone return this close to a building outline is a roof edge, parapet or sign.
+const POLE_BUILDING_GAP_M = 3;
+function nearBuilding(lon, lat, buildings, gapM) {
+  const kx = 111320 * Math.cos((lat * Math.PI) / 180);
+  const ky = 110540;
+  for (const f of buildings || []) {
+    const g = f && f.geometry;
+    if (!g) continue;
+    const polys = g.type === "Polygon" ? [g.coordinates] : g.type === "MultiPolygon" ? g.coordinates : [];
+    for (const poly of polys) {
+      for (const ring of poly || []) {
+        let inside = false;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          const ax = (ring[j][0] - lon) * kx, ay = (ring[j][1] - lat) * ky;
+          const bx = (ring[i][0] - lon) * kx, by = (ring[i][1] - lat) * ky;
+          if (ay > 0 !== by > 0 && 0 < ((bx - ax) * (0 - ay)) / (by - ay) + ax) inside = !inside;
+          const dx = bx - ax, dy = by - ay;
+          const t = Math.max(0, Math.min(1, -(ax * dx + ay * dy) / (dx * dx + dy * dy || 1)));
+          if (Math.hypot(ax + t * dx, ay + t * dy) < gapM) return true;
+        }
+        if (inside) return true;
+      }
+    }
+  }
+  return false;
+}
 function json(status, cors, obj) {
   return {
     statusCode: status,
@@ -2327,6 +2356,38 @@ async function handleClutter(event) {
         bridgeFeatures.length);
     if (wantParallel) {
       preview = footprintsToClutter(list, frame, affine, slopeTop, { buildingCeiling });
+    }
+    // Poles the lidar found (one tall cell, far lower around it) are drawn as
+    // light poles only where the photo shows a pole's thin shadow too; the
+    // rest stay out. Either way they are not trees.
+    {
+      const lst = footprintMeta.lidarCanopyStats;
+      const spots = (lst && lst.poleSpots) || [];
+      if (lst) delete lst.poleSpots;
+      const mpp = frame && frame.imgW ? (frame.widthM || 0) / frame.imgW : 0;
+      let drawn = 0;
+      const hs = [];
+      if (includePoles && spots.length && decoded && decoded.width === frame.imgW && decoded.height === frame.imgH) {
+        const have = outdoorFeatures.filter((f) => f && f.kind === "pole").map((f) => f.coords[0]);
+        for (const p of spots) {
+          if (!(p.heightM <= POLE_MAX_H_M)) continue;
+          if (nearBuilding(p.lon, p.lat, features, POLE_BUILDING_GAP_M)) continue;
+          const [px, py] = llToPx(p.lon, p.lat, frame);
+          const c = poleShadowContrast(decoded, px, py, p.heightM, mpp);
+          if (!(c >= POLE_SHADOW_MIN)) continue;
+          // A mapped street lamp at the same spot is the same pole.
+          if (have.some((q) => Math.hypot((q[0] - p.lon) * 81000, (q[1] - p.lat) * 111000) < 3)) continue;
+          outdoorFeatures.push({ kind: "pole", coords: [[p.lon, p.lat]], closed: false, heightM: p.heightM, explicitHeight: true, rank: 3 });
+          drawn++;
+          hs.push(p.heightM);
+        }
+      }
+      footprintMeta.lidarPoleSpots = spots.length;
+      footprintMeta.lidarPolesDrawn = drawn;
+      if (drawn) {
+        hs.sort((a, b) => a - b);
+        warnings.push("Light poles from lidar: " + drawn + " (" + Math.round(hs[0]) + " to " + Math.round(hs[hs.length - 1]) + " m tall), each with a pole shadow on the photo.");
+      }
     }
     const parallelTasks = [];
     if (background && (outdoorFeatures.length || guidewayFeatures.length || bridgeFeatures.length)) {
