@@ -310,13 +310,31 @@ function roundLevelM(n) {
  * (the upper mass then stands on the floor at its own height). Null when
  * the pair is the same roof, a fragment, or a single box.
  */
+/**
+ * A clock tower, belfry, or spire is often under 50 m2. A mapped
+ * building:part, or a laser tower cluster, that clears its roof by
+ * PART_TIER_DELTA_M is an upper mass even that small. An ML or Overture
+ * fragment never qualifies, since it is not a part.
+ */
+const PART_TIER_MIN_M2 = 8;
+const PART_TIER_MIN_RATIO = 0.005;
+const PART_TIER_DELTA_M = 6;
+
+function mappedTier(inner, th, ph) {
+  const props = (inner && inner.properties) || {};
+  if (props.buildingPart !== true) return false;
+  return ph >= 2 && th >= ph + PART_TIER_DELTA_M;
+}
+
 function upperInset(inner, outer, innerArea, outerArea) {
   const th = featureHeight(inner);
   const ph = featureHeight(outer);
   if (!(th > 2)) return null;
   const ta = innerArea > 0 ? innerArea : featureAreaM2(inner);
   const pa = outerArea > 0 ? outerArea : featureAreaM2(outer);
-  if (!(ta >= LEVEL_MIN_INNER_M2) || !(pa > ta)) return null;
+  const ph0 = featureHeight(outer);
+  const minInner = mappedTier(inner, th, ph0) ? PART_TIER_MIN_M2 : LEVEL_MIN_INNER_M2;
+  if (!(ta >= minInner) || !(pa > ta)) return null;
   const ratio = ta / pa;
   if (ratio > LEVEL_MAX_RATIO || ratio >= SAME_ROOF_RATIO) return null;
   const innerRing = singleExterior(inner);
@@ -328,7 +346,7 @@ function upperInset(inner, outer, innerArea, outerArea) {
   const tall = th >= LEVEL_TALL_MIN_M && (!podiumKnown || th >= ph + LEVEL_TALL_DELTA_M);
   const stepped = podiumKnown && th >= ph + LEVEL_MIN_DELTA_M;
   if (!stepped && !tall) return null;
-  const minRatio = tall ? LEVEL_TALL_MIN_RATIO : LEVEL_MIN_RATIO;
+  const minRatio = mappedTier(inner, th, ph) ? PART_TIER_MIN_RATIO : tall ? LEVEL_TALL_MIN_RATIO : LEVEL_MIN_RATIO;
   if (ratio < minRatio) return null;
   return { base: stepped ? roundLevelM(ph) : 0 };
 }
