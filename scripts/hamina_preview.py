@@ -302,6 +302,17 @@ def _ring_area(ring):
     return abs(area) * 0.5
 
 
+def _point_in_ring(x, y, ring):
+    inside = False
+    n = len(ring)
+    for i in range(n):
+        x1, y1 = ring[i][0], ring[i][1]
+        x2, y2 = ring[(i + 1) % n][0], ring[(i + 1) % n][1]
+        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / ((y2 - y1) or 1e-12) + x1:
+            inside = not inside
+    return inside
+
+
 def sits_on_canopy(obj, trees):
     """An inset upper band rests on the band under it. A neighbor on the ground does not.
 
@@ -320,9 +331,12 @@ def sits_on_canopy(obj, trees):
         if abs(bottom - other["top"]) > 0.5:
             continue
         other_area = _ring_area(other["ring"])
-        if other_area < 8:
-            continue
         ox, oy = _centroid(other["ring"])
+        if other_area < 8:
+            # A trunk carries the crown when it stands under the crown.
+            if other_area > 0.05 and _point_in_ring(ox, oy, ring):
+                return True
+            continue
         reach = max(8.0, 0.55 * math.sqrt(max(area, other_area)))
         if abs(cx - ox) <= reach and abs(cy - oy) <= reach:
             return True
@@ -392,18 +406,61 @@ def _slab_stats(trees):
     return slabs, largest
 
 
+def _bbox(ring):
+    xs = [p[0] for p in ring]
+    ys = [p[1] for p in ring]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _unjoined(lifted, trees, touch=0.75):
+    """Lifted crowns not joined, at the same base, to a crown that is carried.
+
+    A crown cut around a roof or split in halves is still one crown on its
+    trunk when the pieces touch at the same height.
+    """
+    if not lifted:
+        return []
+    lifted_ids = set(id(o) for o in lifted)
+    boxes = {id(o): _bbox(o["ring"]) for o in trees if o["ring"]}
+    carried = [o for o in trees if o["ring"] and id(o) not in lifted_ids]
+    left = list(lifted)
+    grew = True
+    while grew and left:
+        grew = False
+        rest = []
+        for o in left:
+            a = boxes[id(o)]
+            hit = False
+            for c in carried:
+                if abs(c["bottom"] - o["bottom"]) > 0.3:
+                    continue
+                b = boxes[id(c)]
+                if a[0] - touch <= b[2] and b[0] - touch <= a[2] and a[1] - touch <= b[3] and b[1] - touch <= a[3]:
+                    hit = True
+                    break
+            if hit:
+                carried.append(o)
+                grew = True
+            else:
+                rest.append(o)
+        left = rest
+    return left
+
+
 def diagnose(scene, floor_xyz):
     trees = [o for o in scene["objects"] if o["kind"] == "tree"]
+    trunks = [o for o in scene["objects"] if o["kind"] == "trunk"]
     buildings = [o for o in scene["objects"] if o["kind"] == "building"]
     thick = [o["top"] - o["bottom"] for o in trees]
     flat = sum(1 for t in thick if t < 1.0)
     floating = 0
     buried = 0
     checked = 0
+    lifted = []
     if floor_xyz and trees:
         for o in trees:
             ring = o["ring"]
-            if not ring or sits_on_canopy(o, trees):
+            if not ring or sits_on_canopy(o, trees) or sits_on_canopy(o, trunks):
                 continue
             cx, cy = _centroid(ring)
             samples = list(ring) + [[cx, cy]]
@@ -416,9 +473,10 @@ def diagnose(scene, floor_xyz):
             # Bottom height is the downhill ground. A base several metres
             # above every sample under the crown is floating.
             if o["bottom"] > ground + 3.0:
-                floating += 1
+                lifted.append(o)
             if o["top"] < ground - 1.0:
                 buried += 1
+    floating = len(_unjoined(lifted, trees))
     med = sorted(thick)[len(thick) // 2] if thick else None
     slabs, largest = _slab_stats(trees)
     return {

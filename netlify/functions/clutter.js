@@ -628,6 +628,43 @@ function describeCoreFailure(e) {
 
 const TIMED_OUT = Symbol("timed-out");
 
+/** One quad per segment of a road or rail line, its mapped width across, in pixels. */
+function corridorMaskPolygons(corridors, frame, mpu) {
+  const out = [];
+  for (let i = 0; i < (corridors || []).length; i++) {
+    const c = corridors[i];
+    const half = (c.widthM || 0) / 2 / mpu;
+    if (!(half > 0)) continue;
+    const pts = c.coords.map((q) => llToPx(q[0], q[1], frame));
+    for (let k = 0; k + 1 < pts.length; k++) {
+      const a = pts[k];
+      const b = pts[k + 1];
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const len = Math.hypot(dx, dy);
+      if (!(len > 0)) continue;
+      // Extend each end by half the width so the joints close.
+      const ux = dx / len;
+      const uy = dy / len;
+      const nx = -uy * half;
+      const ny = ux * half;
+      const ax = a[0] - ux * half;
+      const ay = a[1] - uy * half;
+      const bx = b[0] + ux * half;
+      const by = b[1] + uy * half;
+      const ring = [
+        [ax + nx, ay + ny],
+        [bx + nx, by + ny],
+        [bx - nx, by - ny],
+        [ax - nx, ay - ny],
+        [ax + nx, ay + ny],
+      ];
+      out.push([ring]);
+    }
+  }
+  return out;
+}
+
 /**
  * Start an optional fetch on its own abort signal. Call this during the core
  * phase (Overture), then joinOptional after core. Do not pass the imagery
@@ -1027,7 +1064,7 @@ function coverJoinWait(started, background) {
 const SEGMENT_CAP_SCALE = 1.6;
 // Lidar tree segmentation is opt-in until it stops costing canopy cover
 // (bench: Chicago, Colorado and Florida lost 5-15 points of recall).
-const SEGMENT_TREES = process.env.OC_SEGMENT_TREES === "1";
+const SEGMENT_TREES = process.env.OC_SEGMENT_TREES !== "0";
 
 function foliageCapFor(buildings) {
   const n = Math.max(0, buildings | 0);
@@ -2166,6 +2203,24 @@ async function handleClutter(event) {
     } catch {
       maskRings = [];
       maskPolygons = [];
+    }
+  }
+
+  // Road carriageways, rail beds, the monorail and elevated decks keep no
+  // canopy. The mapped width is cut out; a median or verge outside it keeps
+  // the trees the aerial and canopy height show there.
+  if (includeFoliage && frame && outdoorJob) {
+    try {
+      const pack = await Promise.race([
+        outdoorJob.work,
+        new Promise((r) => setTimeout(() => r(null), background ? 20000 : 1500)),
+      ]);
+      const corridors = pack && pack !== TIMED_OUT && pack.ok !== false ? pack.corridors || [] : [];
+      const mpu = Math.max(frame.mpuX || 1, 0.05);
+      const extra = corridorMaskPolygons(corridors, frame, mpu);
+      if (extra.length) maskPolygons = (maskPolygons || []).concat(extra);
+    } catch {
+      /* keep the image masks */
     }
   }
 

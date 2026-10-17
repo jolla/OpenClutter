@@ -6,20 +6,21 @@ Height ≥ 3 m is the reference share alone, before the aerial open-ground rejec
 
 | Site | Recall | Precision | Height ≥ 3 m | Open ground | Height MAE | Gap MAE | Floating | Slabs | Ref | RF median | RF p90 | Pass |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- |
-| Rogers campground | 95.5% | 52.6% | 59.8% | 15% | 4.3 m | 0.1 m | 8 | 0 | lidar | 59 dB | 106.8 dB | no |
-| Granite Peak ski slope | 90.9% | 56.9% | 63.5% | 10.4% | 5 m | 0 m | 78 | 2 | lidar | 58.8 dB | 95.2 dB | no |
-| Wynn golf course | 50.2% | 54.4% | 57.8% | 5.3% | 4.8 m | 0 m | 19 | 0 | lidar | 11.9 dB | 30.3 dB | no |
-| Montreal suburb | 88.2% | 59.6% | 63.1% | 6.3% | 2.3 m | 0 m | 13 | 0 | chm | 12.4 dB | 59.4 dB | no |
-| Oak Creek residential | 60.5% | 51.5% | 53.6% | 3.1% | 3.8 m | 0 m | 26 | 0 | lidar | 9.5 dB | 28.5 dB | no |
-| Hoh rainforest edge | 95% | 46.5% | 57.6% | 22% | 22.8 m | 0 m | 6 | 0 | lidar | 47.4 dB | 103 dB | no |
-| Innisbrook resort | 69.3% | 41.2% | 42.6% | 3.2% | 3.1 m | 0 m | 63 | 0 | lidar | 4.7 dB | 41.1 dB | no |
-| Saguaro west desert | 1.1% | 30.5% | 31.3% | 2.2% | 8.8 m | — | 5 | 0 | lidar | 11.8 dB | 30.4 dB | no |
-| Brackenridge Park | 88.8% | 33.6% | 35.7% | 5.4% | 3.5 m | 0 m | 27 | 0 | lidar | 17.3 dB | 43 dB | no |
-| Moraine Park campground | 87.7% | 47% | 48.4% | 3.7% | 4.3 m | 0 m | 12 | 0 | lidar | 6.1 dB | 47.8 dB | no |
-| Lincoln Square street trees | 50.2% | 54.1% | 56.2% | 4.5% | 4.6 m | 0 m | 224 | 0 | lidar | 19.9 dB | 43.1 dB | no |
-| Manuel Antonio | 98.5% | 93.1% | 93.5% | 0.8% | 1.6 m | 0.1 m | 6 | 6 | chm | 78.8 dB | 126.9 dB | yes |
-| Syracuse leaf-off woods | 36.4% | 59.9% | 63% | 5.9% | 5 m | 0 m | 48 | 0 | lidar | 34.5 dB | 53.5 dB | no |
-| Sodus apple orchard | 86.7% | 54.3% | 60.4% | 12.9% | 4.9 m | 0 m | 28 | 0 | lidar | 6.1 dB | 55.4 dB | no |
-| Indio date grove | 37.4% | 30.4% | 31.6% | 3.1% | 3.2 m | 0 m | 14 | 0 | lidar | 12.2 dB | 30.9 dB | no |
-| Las Vegas tower shadow | 26.9% | 37.7% | 41.4% | 9% | 12.3 m | 0 m | 3 | 0 | lidar | 0 dB | 34.8 dB | no |
-| Palm Creek RV resort | 56.1% | 42.8% | 43.3% | 1.3% | 2.8 m | 0.2 m | 5 | 0 | lidar | 6.2 dB | 27.6 dB | no |
+| Rogers campground | 94.9% | 55.9% | 63% | 11.1% | 4.5 m | 0.1 m | 93 | 0 | lidar | 59 dB | 106.8 dB | no |
+| Granite Peak ski slope | 94.1% | 67.4% | 75% | 10.2% | 3.9 m | 0.2 m | 533 | 0 | lidar | 60.4 dB | 102.1 dB | no |
+| Wynn golf course | 81.1% | 57.6% | 63.6% | 10.5% | 3.2 m | 0 m | 551 | 0 | lidar | 6.1 dB | 30.3 dB | no |
+| Montreal suburb | 85.9% | 61.4% | 63.9% | 4.5% | 2.4 m | 0 m | 71 | 0 | chm | 17.7 dB | 59.4 dB | no |
+| Oak Creek residential | 63.7% | 67.7% | 70.7% | 3.8% | 2.4 m | 0 m | 758 | 0 | lidar | 11.6 dB | 30.6 dB | no |
+| Hoh rainforest edge | 55.6% | 17.5% | 30.5% | 38.4% | 5.4 m | 0 m | 256 | 0 | lidar | 0 dB | 12 dB | no |
+| Innisbrook resort | 89% | 55.5% | 58.2% | 4.8% | 2.6 m | 0 m | 742 | 0 | lidar | 5.9 dB | 41.1 dB | no |
+| Saguaro west desert | 58.8% | 32.9% | 34.9% | 6.4% | 2.4 m | 0 m | 253 | 0 | lidar | 11.8 dB | 30.4 dB | no |
+| Brackenridge Park | 88.9% | 40.3% | 43.1% | 6.1% | 2.1 m | 0 m | 543 | 0 | lidar | 17.3 dB | 47.3 dB | no |
+| Moraine Park campground | 85% | 59.8% | 61.9% | 4.8% | 3 m | 0 m | 786 | 0 | lidar | 6.1 dB | 47.8 dB | no |
+| Lincoln Square street trees | 57.9% | 52.6% | 55.4% | 7.2% | 4.3 m | 0 m | 119 | 0 | lidar | 13.9 dB | 41.1 dB | no |
+| Manuel Antonio | 98.4% | 93.1% | 93.5% | 0.8% | 3.6 m | 0.7 m | 170 | 6 | chm | 78.8 dB | 126.9 dB | yes |
+| Syracuse leaf-off woods | 36.4% | 59.7% | 62.7% | 5.8% | 4.2 m | 0.3 m | 162 | 0 | lidar | 30.7 dB | 53.5 dB | no |
+| Sodus apple orchard | 83.9% | 63.9% | 72.9% | 13.5% | 3.1 m | 0 m | 530 | 0 | lidar | 12.1 dB | 55.4 dB | no |
+| Indio date grove | 75.5% | 48.3% | 53% | 9.3% | 2.4 m | 0 m | 433 | 0 | lidar | 7.9 dB | 24.3 dB | no |
+| Las Vegas tower shadow | 78.2% | 49.5% | 56.3% | 13.2% | 2.5 m | 0 m | 345 | 0 | lidar | 0 dB | 30.3 dB | no |
+| Palm Creek RV resort | 77.7% | 53.2% | 57.3% | 8.5% | 2.3 m | 0 m | 394 | 0 | lidar | 7.8 dB | 22 dB | no |
+| Lebanon IN distribution center | 43.4% | 64.9% | 77.3% | 16.9% | 1.3 m | — | 80 | 0 | lidar | 0 dB | 21.7 dB | no |

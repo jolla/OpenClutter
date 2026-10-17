@@ -1157,8 +1157,19 @@ async function fetchUsgsLidarWork(frame, opts) {
     if (Date.now() - started > caps.maxMs) break;
     const name = ranked[i][0];
     tried.push(name);
+    // A transient fetch error retries the same survey once, so one slow
+    // response does not swap the survey and change the trees between runs.
+    let candidate = null;
+    for (let attempt = 0; attempt < 2 && !candidate; attempt++) {
+      try {
+        candidate = await readProject(name, frame, caps, fetchImpl);
+        if (!candidate) break;
+      } catch {
+        candidate = null;
+        if (Date.now() - started > caps.maxMs) break;
+      }
+    }
     try {
-      const candidate = await readProject(name, frame, caps, fetchImpl);
       if (!candidate || !candidate.nodes.length) continue;
       if (!plan || candidate.fullPoints > plan.fullPoints) plan = candidate;
       if (candidate.fullPoints >= need) break;

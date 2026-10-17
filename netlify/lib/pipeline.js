@@ -3104,6 +3104,41 @@ function buildOpenIntent(frame, name, imgName, areas, materials) {
  * A chunk is one building, one tree (crown, layers, and stem), or one
  * outdoor area. The next chunk is omitted whole when it would pass the budget.
  */
+function overJsonBudget(frame, name, imgName, chunks, budget) {
+  const limit = budget > 0 ? budget : OPENINTENT_JSON_BUDGET;
+  const flat = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const a = chunks[i] && chunks[i].areas;
+    if (a) for (let j = 0; j < a.length; j++) flat.push(a[j]);
+  }
+  return Buffer.byteLength(JSON.stringify(buildOpenIntent(frame, name, imgName, flat))) > limit;
+}
+
+/** Plan area of an OpenIntent area ring, in its own units. */
+function oiAreaCover(area) {
+  const coords = area && area.area && area.area.coordinates;
+  if (!coords || coords.length < 3) return 0;
+  let a = 0;
+  for (let k = 0, m = coords.length - 1; k < coords.length; m = k++) {
+    const p = coords[k].coordinate_xyz;
+    const q = coords[m].coordinate_xyz;
+    if (!p || !q) return 0;
+    a += (q.x + p.x) * (q.y - p.y);
+  }
+  return Math.abs(a / 2);
+}
+
+/** Sort tree pieces by footprint per byte, largest first; ties keep order. */
+function rankPiecesByCover(pieces) {
+  const keyed = pieces.map((p, i) => {
+    const bytes = Math.max(1, JSON.stringify(p.areas).length);
+    return { p, i, k: oiAreaCover(p.areas[0]) / bytes };
+  });
+  keyed.sort((a, b) => b.k - a.k || a.i - b.i);
+  for (let i = 0; i < keyed.length; i++) pieces[i] = keyed[i].p;
+  return pieces;
+}
+
 function fitChunksToJsonBudget(frame, name, imgName, chunks, budget) {
   const limit = budget > 0 ? budget : OPENINTENT_JSON_BUDGET;
   const src = [];
@@ -3547,6 +3582,12 @@ function buildClutter({
   for (let i = 0; i < waterPieces.length; i++) chunks.push(waterPieces[i]);
   for (let i = 0; i < deckPieces.length; i++) chunks.push(deckPieces[i]);
   for (let i = 0; i < rvPieces.length; i++) chunks.push(rvPieces[i]);
+  // When the scene will not fit the byte budget, the trim drops the tail.
+  // The trees are then ranked by the canopy each one covers per byte, so a
+  // crowd of small stemmed trees cannot push large stands out of the scene.
+  if (treePieces.length > 1 && overJsonBudget(frame, name, imgName, chunks.concat(treePieces, latePieces), jsonByteBudget)) {
+    rankPiecesByCover(treePieces);
+  }
   for (let i = 0; i < treePieces.length; i++) chunks.push(treePieces[i]);
   for (let i = 0; i < latePieces.length; i++) chunks.push(latePieces[i]);
   const fitted = require("./stage-clock").timeSpanSync("jsonBuild", () =>

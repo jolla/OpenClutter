@@ -28,6 +28,8 @@ const { mercator, groundAt } = require("./usgs-lidar");
 const CANOPY_MIN_M = 3;
 const CANOPY_MAX_M = 75;
 const POLE_MIN_M = 8;
+// The tallest canopy-height-map value a dropped wall cell may take back.
+const REFILL_MAX_M = 25;
 
 function median(list) {
   if (!list.length) return 0;
@@ -35,12 +37,27 @@ function median(list) {
   return s[Math.floor(s.length / 2)];
 }
 
-function leafOffDate(collected, lat) {
+/**
+ * Coarse Koppen B (desert and steppe) test for the 3DEP footprint: the
+ * Mojave, Sonoran, Chihuahuan and Great Basin deserts and the dry valleys
+ * west of the Rockies. Palms, palo verde, mesquite and desert shrubs there
+ * keep their leaves, so a winter flight is not a leaf-off flight.
+ */
+function aridClimate(lat, lon) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+  if (lat >= 31 && lat <= 37.5 && lon >= -118.5 && lon <= -108.5) return true; // Mojave, Sonoran
+  if (lat >= 29 && lat <= 34 && lon >= -108.5 && lon <= -102) return true; // Chihuahuan
+  if (lat > 37.5 && lat <= 42 && lon >= -120 && lon <= -114) return true; // Great Basin
+  return false;
+}
+
+function leafOffDate(collected, lat, lon) {
   const m = /^\d{4}-(\d{2})/.exec(String(collected || ""));
   if (!m) return false;
   const month = +m[1];
   // South Florida, south Texas, Hawaii, and the desert keep their leaves.
   if (!(lat >= 31)) return false;
+  if (aridClimate(lat, lon)) return false;
   return month <= 4 || month >= 11;
 }
 
@@ -478,6 +495,7 @@ function wallHalo(values, buildings, lattice, meta) {
   let capped = 0;
   let lone = 0;
   const next = new Uint8Array(values);
+  const dropped = new Uint8Array(w * h);
   const R = WALL_HALO_MAX_PX + 2;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
@@ -499,6 +517,7 @@ function wallHalo(values, buildings, lattice, meta) {
       }
       if (hs.length < 2) {
         next[i] = 0;
+        dropped[i] = 1;
         cleared++;
       } else {
         const cap = Math.round(median(hs) + 2);
@@ -547,12 +566,30 @@ function wallHalo(values, buildings, lattice, meta) {
       }
       if (comp.length > maxStale || !nearN) continue;
       if (nearN >= comp.length * 0.5 && sum / comp.length >= STALE_MIN_M && metaN < comp.length * 0.05) {
-        for (const i of comp) values[i] = 0;
+        for (const i of comp) {
+          values[i] = 0;
+          dropped[i] = 1;
+        }
         stale += comp.length;
       }
     }
   }
-  return { cleared, capped, lone, stale };
+  // A dropped lidar cell takes the canopy height map's value back where that
+  // map, made from later imagery, sees a tree there and the cell is off the
+  // roof. The crowns then grow from it like any other measured canopy. A cell
+  // the imagery shows bare stays empty, so nothing is invented.
+  let refilled = 0;
+  if (meta) {
+    for (let i = 0; i < w * h; i++) {
+      if (!dropped[i] || mask[i] || values[i] >= CANOPY_MIN_M) continue;
+      const mv = meta[i];
+      if (mv >= CANOPY_MIN_M && mv <= REFILL_MAX_M) {
+        values[i] = mv;
+        refilled++;
+      }
+    }
+  }
+  return { cleared, capped, lone, stale, refilled };
 }
 
 /**
@@ -660,7 +697,8 @@ function fuseLidarCanopy(chmGrid, lidar, opts) {
   if (!lidar || lidar.skipped || !lidar.grid || !lidar.grid.cells || lidar.grid.kept < 500) return null;
   const frame = opt.frame || lidar.frame;
   const lat = (+frame.south + +frame.north) / 2;
-  const leafOff = opt.leafOff != null ? !!opt.leafOff : leafOffDate(lidar.collected, lat);
+  const lon = (+frame.west + +frame.east) / 2;
+  const leafOff = opt.leafOff != null ? !!opt.leafOff : leafOffDate(lidar.collected, lat, lon);
   const base = chmGrid && chmGrid.values ? chmGrid : null;
   const lattice = base
     ? Object.assign({}, base, {
@@ -788,6 +826,7 @@ function fuseLidarCanopy(chmGrid, lidar, opts) {
       wallCleared: halo.cleared,
       wallCapped: halo.capped,
       wallStale: halo.stale || 0,
+      wallRefilled: halo.refilled || 0,
       after: lattice.nonzero,
     },
   };
@@ -832,6 +871,7 @@ module.exports = {
   vehicleFeatures,
   lidarCanopyNote,
   leafOffDate,
+  aridClimate,
   lidarCells,
   clearStructuresRaster,
 };

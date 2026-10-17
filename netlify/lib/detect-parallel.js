@@ -196,6 +196,8 @@ function mergeFoliage(parts, meta) {
   let count = 0;
   let palms = 0;
   let spiresDropped = 0;
+  let crownCapped = 0;
+  let regionCapped = 0;
   let foliageLifted = 0;
   let polygons = 0;
   const treeAreas = [];
@@ -212,6 +214,8 @@ function mergeFoliage(parts, meta) {
     count += part.count | 0;
     palms += part.palms | 0;
     spiresDropped += part.spiresDropped | 0;
+    crownCapped += part.crownCapped | 0;
+    regionCapped += part.regionCapped | 0;
     foliageLifted += part.foliageLifted | 0;
     polygons += part.polygons | 0;
     if (part.treeOi) {
@@ -231,6 +235,8 @@ function mergeFoliage(parts, meta) {
   return {
     palms,
     spiresDropped,
+    crownCapped,
+    regionCapped,
     oiAreas,
     clipZones,
     clipTypes,

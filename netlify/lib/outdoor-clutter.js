@@ -161,6 +161,7 @@ function overpassQuery(bbox, want) {
     parts.push('node["natural"="tree"]["genus"~"' + PALM_GENUS_RE + '",i](' + box + ");");
     parts.push('node["natural"="tree"]["species"~"' + PALM_GENUS_RE + '|palm",i](' + box + ");");
     parts.push('node["natural"="tree"]["taxon"~"' + PALM_GENUS_RE + '|palm",i](' + box + ");");
+    parts.push('way["highway"~"^(motorway|trunk|primary|secondary|tertiary)(_link)?$"](' + box + ");");
   }
   parts.push('way["railway"~"^(monorail|light_rail|subway|rail|tram)$"](' + box + ");");
   parts.push('way["highway"]["bridge"~"^(yes|viaduct|covered)$"](' + box + ");");
@@ -1352,7 +1353,47 @@ function parseOverpass(payload, want, bbox, deckCap) {
     features: plain.concat(boxes, boats, guides, bridges),
     openWater,
     places: placesFromElements(elements),
+    corridors: corridorLines(railRecords),
   };
+}
+
+// Carriageway width by road class when OSM gives neither width nor lanes.
+const ROAD_WIDTH_M = { motorway: 11, trunk: 10, primary: 10, secondary: 8, tertiary: 7 };
+const LANE_M = 3.5;
+const CORRIDOR_CAP = 6000;
+
+/**
+ * Road carriageways, rail beds and elevated decks that no tree grows out of.
+ * Only the paved or tracked width itself: a median or verge between two
+ * one-way carriageways is a separate strip and keeps its trees.
+ */
+function corridorLines(records) {
+  const out = [];
+  for (let i = 0; i < (records || []).length && out.length < CORRIDOR_CAP; i++) {
+    const tags = records[i].tags || {};
+    const coords = records[i].coords;
+    if (!coords || coords.length < 2) continue;
+    if (tags.tunnel && tags.tunnel !== "no") continue;
+    if (/^-/.test(String(tags.layer || ""))) continue;
+    let widthM = 0;
+    const rail = String(tags.railway || "");
+    const hw = String(tags.highway || "");
+    const raised = (tags.bridge && tags.bridge !== "no") || /^[1-9]/.test(String(tags.layer || ""));
+    if (RAIL_TYPES[rail]) {
+      if (rail === "subway" && !raised) continue;
+      widthM = rail === "monorail" ? 4 : 5;
+    } else if (hw) {
+      const cls = hw.replace(/_link$/, "");
+      if (!ROAD_WIDTH_M[cls] && !raised) continue;
+      const w = parseMeters(tags.width);
+      const lanes = parseFloat(tags.lanes);
+      if (w >= 2 && w <= 60) widthM = w;
+      else if (lanes >= 1 && lanes <= 12) widthM = lanes * LANE_M;
+      else widthM = /_link$/.test(hw) ? 5 : ROAD_WIDTH_M[cls] || 7;
+    } else continue;
+    out.push({ coords, widthM });
+  }
+  return out;
 }
 
 function ringAreaAbs(coords) {
@@ -1889,23 +1930,25 @@ async function fetchOutdoorClutter(bbox, want, opts) {
       const limited = limitFeatures(dedupeOutdoor(parsed.features || []), bbox, deckCap);
       if (parsed.openWater) limited.notes.push("Open water lines were left out.");
       for (let i = 0; i < maps.notes.length; i++) limited.notes.push(maps.notes[i]);
-      return { ok: true, features: limited.features, notes: limited.notes, places: parsed.places || [] };
+      return { ok: true, features: limited.features, notes: limited.notes, places: parsed.places || [], palms: palmPointsOf(parsed.features), corridors: parsed.corridors || [] };
     }
     if (maps.xmls.length) {
       let features = [];
       let openWater = false;
       const places = [];
+      const corridors = [];
       for (let i = 0; i < maps.xmls.length; i++) {
         const parsed = featuresFromMapXml(maps.xmls[i], want, bbox, deckCap);
         features = features.concat(parsed.features || []);
         if (parsed.places) places.push.apply(places, parsed.places);
         if (parsed.openWater) openWater = true;
+        if (parsed.corridors) corridors.push.apply(corridors, parsed.corridors);
       }
       const palms = palmPointsOf(features);
       const limited = limitFeatures(dedupeOutdoor(features), bbox, deckCap);
       if (openWater) limited.notes.push("Open water lines were left out.");
       for (let i = 0; i < maps.notes.length; i++) limited.notes.push(maps.notes[i]);
-      return { ok: true, features: limited.features, notes: limited.notes, places, palms };
+      return { ok: true, features: limited.features, notes: limited.notes, places, palms, corridors };
     }
     if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
       return { ok: true, features: [], notes: maps.notes };
@@ -1926,7 +1969,7 @@ async function fetchOutdoorClutter(bbox, want, opts) {
     const palms = palmPointsOf(parsed.features);
     const limited = limitFeatures(parsed.features, bbox, deckCap);
     if (parsed.openWater) limited.notes.push("Open water lines were left out.");
-    return { ok: true, features: limited.features, notes: limited.notes, places: parsed.places || [], palms };
+    return { ok: true, features: limited.features, notes: limited.notes, places: parsed.places || [], palms, corridors: parsed.corridors || [] };
   } catch {
     return { ok: false, features: [], notes: [] };
   } finally {
@@ -2613,6 +2656,7 @@ module.exports = {
   RV_CAP,
   OUTDOOR_MISS,
   overpassQuery,
+  corridorLines,
   rvBoxes,
   parseOverpass,
   featuresFromMapXml,

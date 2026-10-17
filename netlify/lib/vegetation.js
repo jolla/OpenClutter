@@ -641,6 +641,12 @@ const SLOPE_LAYER_MIN_M2 = 150;
 const SPIRE_MAX_M2 = 25;
 const PALM_MAX_H = 35;
 const PALM_MAX_DIAM_M = 6.5;
+// A broadleaf crown's height cap per metre of crown width, and its floor.
+const BROADLEAF_H_PER_DIAM = 2;
+const CROWN_CAP_MIN_H = 4;
+// A palm's fronds spread at the top: its crown near the tip is still at
+// least this share of its crown lower down. A cypress narrows to a point.
+const PALM_TOP_SHARE = 0.35;
 const PALM_MIN_RATIO = 2;
 const PALM_CROWN_MIN_M = 4;
 const PALM_CROWN_MAX_M = 6;
@@ -1878,6 +1884,31 @@ function sampleBuildingKeepOut(buildings) {
   return keepOutPx;
 }
 
+const ARID_TREE_MAX_M = 15;
+const URBAN_TREE_MAX_M = 25;
+const URBAN_ROOF_SHARE = 0.2;
+
+/** Height cap for non-palm trees in a desert or dense-city draw, else 0. */
+function plausibleTreeCapM(frame, buildingRings) {
+  if (!frame || !Number.isFinite(frame.south) || !Number.isFinite(frame.west)) return 0;
+  const lat = (frame.south + frame.north) / 2;
+  const lon = (frame.west + frame.east) / 2;
+  let cap = 0;
+  try {
+    if (require("./lidar-canopy").aridClimate(lat, lon)) cap = ARID_TREE_MAX_M;
+  } catch {
+    cap = 0;
+  }
+  const W = frame.imgW || 0;
+  const H = frame.imgH || 0;
+  if (W > 0 && H > 0 && buildingRings && buildingRings.length) {
+    let roof = 0;
+    for (let i = 0; i < buildingRings.length; i++) roof += Math.abs(ringPxArea(buildingRings[i]) || 0);
+    if (roof / (W * H) >= URBAN_ROOF_SHARE) cap = cap ? Math.min(cap, URBAN_TREE_MAX_M) : URBAN_TREE_MAX_M;
+  }
+  return cap;
+}
+
 function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   void buildingAabbs;
   const oiAreas = [];
@@ -2112,6 +2143,9 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   }
   let palmCount = 0;
   let spiresDropped = 0;
+  let crownCapped = 0;
+  let regionCapped = 0;
+  const regionCapH = plausibleTreeCapM(frame, opts && opts.buildingRings);
   // One palm row per centre: a round crown in the top 2 to 3 m on a thin stem.
   const palmRows = (centres, ground) => {
     const out = [];
@@ -2194,6 +2228,17 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
           continue;
         }
       }
+      // Plausible height. Outside a palm, a desert tree is rarely above
+      // 15 m and a street tree in a dense city rarely above 25 m. A taller
+      // reading there is a wall, mast or stale return mixed into the crown.
+      if (regionCapH > 0 && rowArea.material && height > regionCapH) {
+        const tier = String(rowArea.material.name || "").indexOf("Light") >= 0 ? "light" : "heavy";
+        const capMat = materialForVegetation(regionCapH, tier);
+        if (capMat) {
+          rowArea.material = capMat;
+          regionCapped++;
+        }
+      }
       const segTree = area.segTree === true && seats.length === 1 && segTreeFits(rowArea.ringPx, frame, height);
       // A lidar tree whose crown at 60% of its height is a few metres across
       // and far shorter than it is tall is a palm: a stem and a small crown.
@@ -2202,8 +2247,11 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
         const topM2 = top ? canopyAreaM2(top, frame) : 0;
         const diam = 2 * Math.sqrt(topM2 / Math.PI);
         const cen = top && ringCentroidPx(top);
-        if (cen && diam > 0 && diam <= PALM_MAX_DIAM_M && height / diam >= PALM_MIN_RATIO) {
-          const made = palmRows([{ c: cen, h: height }], ground);
+        const tip = top ? heightContourRing(rowArea.ringPx, frame, heightSample, height * 0.85) : null;
+        const tipM2 = tip ? canopyAreaM2(tip, frame) : 0;
+        const flatTop = topM2 > 0 && tipM2 >= topM2 * PALM_TOP_SHARE;
+        if (cen && flatTop && diam > 0 && diam <= PALM_MAX_DIAM_M && height / diam >= PALM_MIN_RATIO) {
+          const made = palmRows([{ c: cen, h: height, diam }], ground);
           if (made && made.length) {
             for (let k = 0; k < made.length; k++) pending.push(made[k]);
             palmCount += made.length;
@@ -2212,6 +2260,21 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
         }
       }
       if (segTree || (!seat.slopePiece && looksLikeIndividualTree(rowArea.ringPx, frame, height))) {
+        // A lone broadleaf crown is never much taller than twice its width;
+        // a taller reading is a wall or pole return mixed into the crown.
+        if (segTree && rowArea.material) {
+          const f0 = crownForm(rowArea.ringPx, frame, height, heightSample);
+          const diamM = 2 * Math.sqrt(canopyAreaM2(rowArea.ringPx, frame) / Math.PI);
+          const capH = Math.max(CROWN_CAP_MIN_H, BROADLEAF_H_PER_DIAM * diamM);
+          if (f0 === "broadleaf" && height > capH) {
+            const tier = String(rowArea.material.name || "").indexOf("Light") >= 0 ? "light" : "heavy";
+            const capMat = materialForVegetation(capH, tier);
+            if (capMat) {
+              rowArea.material = capMat;
+              crownCapped++;
+            }
+          }
+        }
         const parts = individualTreeParts(rowArea.material, ground);
         const stem = parts && trunkRingPx(rowArea.ringPx, frame);
         if (parts && stem) {
@@ -2322,6 +2385,8 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     count: canopyCount,
     palms: palmCount,
     spiresDropped,
+    crownCapped,
+    regionCapped,
     foliageLifted,
     foliageGeometry,
     foliageCoarsened: coarsened,
