@@ -207,24 +207,42 @@ function pieceFeature(feature, geometry, height, levelBase) {
   return { type: "Feature", properties: props, geometry };
 }
 
+/**
+ * A dome roof is the top of the mass, not the whole mass. A clock tower or a
+ * church drum tagged roof:shape=dome keeps straight walls up to the dome,
+ * which is a hemisphere about as tall as the plan's radius. Only a mass at
+ * least as tall as it is wide is a tower; a wide dome (the Sphere, a
+ * stadium) is still drawn over the whole span. Small towers
+ * keep thinner top rings (DOME_MIN_PIECE_M2) so the apex is not cut off.
+ */
+const DOME_MIN_PIECE_M2 = 4;
+
 function domePieces(feature) {
   const props = (feature && feature.properties) || {};
   if (!DOME_SHAPES.has(roofShapeOf(props))) return null;
   const span = spanOf(props);
   if (!span || !feature.geometry) return null;
-  const n = bandCount(span.span, DOME_BANDS);
-  if (!n) return null;
   const ground = ringAreaM2(largestExterior(feature.geometry));
   if (!(ground >= MIN_PIECE_M2)) return null;
+  const radius = Math.sqrt(ground / Math.PI);
+  let domeH = span.span;
+  let wallTop = span.base;
+  if (span.span >= 2 * radius && radius >= MIN_BAND_M) {
+    domeH = radius;
+    wallTop = Math.round((span.top - domeH) * 10) / 10;
+  }
+  const n = bandCount(domeH, DOME_BANDS) || (wallTop > span.base ? 1 : 0);
+  if (!n) return null;
   const pieces = [];
+  if (wallTop > span.base) pieces.push(pieceFeature(feature, feature.geometry, wallTop, span.base));
   for (let i = 0; i < n; i++) {
     const z = i >= n - 1 ? (n - 0.5) / n : i / n;
-    const scale = domeScale(z);
-    if (ground * scale * scale < MIN_PIECE_M2) break;
+    const scale = n === 1 ? domeScale(0.5) : domeScale(z);
+    if (ground * scale * scale < DOME_MIN_PIECE_M2) break;
     const geometry = scaleGeometry(feature.geometry, scale);
     if (!geometry) break;
-    const bottom = span.base + (span.span * i) / n;
-    const top = i === n - 1 ? span.top : span.base + (span.span * (i + 1)) / n;
+    const bottom = wallTop + (domeH * i) / n;
+    const top = i === n - 1 ? span.top : wallTop + (domeH * (i + 1)) / n;
     pieces.push(pieceFeature(feature, geometry, top, bottom));
   }
   return pieces.length >= 2 ? pieces : null;
