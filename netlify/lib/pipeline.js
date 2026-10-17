@@ -3605,8 +3605,10 @@ function buildClutter({
   // An estimated canopy height map smears a row of trees, a hedge line or a
   // building's shadow into a long thin wall. No crown is a wall: on an
   // estimated canopy such a shape is dropped. Measured lidar rows stay.
+  // A grid fused with lidar keeps its source name, so the lidar stats decide.
+  const canopyEstimated = !!chmGrid && chmGrid.source !== "lidar" && !(footprintMeta && footprintMeta.lidarCanopyStats);
   let wallCrownsDropped = 0;
-  if (chmGrid && chmGrid.source !== "lidar" && treePieces.length) {
+  if (canopyEstimated && treePieces.length) {
     const mx = frame.mpuX || 1;
     const my = frame.mpuY || mx;
     for (let i = treePieces.length - 1; i >= 0; i--) {
