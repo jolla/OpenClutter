@@ -345,6 +345,7 @@ function chmCrownPolygons(grid, frame, buildingAabbs, hits, opts) {
     hits,
     maxPolygons: opts && opts.maxPolygons,
     segment: !!(opts && opts.segmentTrees),
+    segMinM2: (opts && opts.segmentMinM2) || 0,
   });
   const polygons = polygonsFromCrowns(packed.crowns, frame);
   polygons.coarsened = !!packed.coarsened;

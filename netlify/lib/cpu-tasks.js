@@ -90,6 +90,7 @@ function canopyTile(payload) {
     halo: payload.overlap,
     noCap: true,
     segment: payload.segment === true,
+    segMinM2: Number(payload.segMinM2) || 0,
     segBase: payload.segBase | 0,
   });
   return { crowns: crowns || [] };

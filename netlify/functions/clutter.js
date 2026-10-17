@@ -1105,6 +1105,8 @@ function coverJoinWait(started, background) {
  * with few roofs keeps up to 1200 outlines. The byte budget is still final.
  */
 const SEGMENT_CAP_SCALE = 1.6;
+/** An estimated crown smaller than this is one tree and is never split. */
+const ESTIMATED_SPLIT_MIN_M2 = 150;
 // Lidar tree segmentation is opt-in until it stops costing canopy cover
 // (bench: Chicago, Colorado and Florida lost 5-15 points of recall).
 const SEGMENT_TREES = process.env.OC_SEGMENT_TREES !== "0";
@@ -2496,7 +2498,11 @@ async function handleClutter(event) {
               maskPolygons,
               woodRings,
               palmPoints,
-              segmentTrees: SEGMENT_TREES && !!lidarCanopy,
+              // Lidar crowns are always split per tree. A blob on an estimated
+              // canopy height map larger than one crown is split too, but only
+              // along a real height valley between two tops.
+              segmentTrees: SEGMENT_TREES,
+              segmentMinM2: lidarCanopy ? 0 : ESTIMATED_SPLIT_MIN_M2,
               terrain,
               omitFoliage: false,
               chmRequired: true,
