@@ -146,6 +146,9 @@ function lidarCells(grid, opts) {
       poles++;
     }
   }
+  // The thin-line rule runs on the fused grid only (clearThinLinesGrid); on
+  // the 1.5 m point cells it took hedgerows and street-tree rows.
+  const lines = 0;
   // Leaf-off: close holes inside a crown from the ring of cells around it.
   let closed = 0;
   if (leafOff) {
@@ -167,7 +170,7 @@ function lidarCells(grid, opts) {
       closed++;
     }
   }
-  return { cells: out, classified, splitKnown, nMed, minN, poles, closed, flat, jagged };
+  return { cells: out, classified, splitKnown, nMed, minN, poles, closed, flat, jagged, lines };
 }
 
 /**
@@ -260,6 +263,77 @@ const JAGGED_STEP_SHARE = 0.15;
 const SMOOTH_MIN_MID_M = 8;
 const SMOOTH_MIN_CELLS = 20;
 const SMOOTH_MAX_STEP_M = 0.45;
+/**
+ * A guideway, gantry, wire run or sign bridge reads as canopy: one cell wide,
+ * tens of metres long, all at one height. A row of trees is wider, or breaks
+ * between crowns, or rises and falls. Such a line is not a crown.
+ */
+const LINE_MIN_M = 30;
+const LINE_MAX_WIDTH_M = 3.5;
+const LINE_MAX_STD_M = 1.2;
+
+function dropThinLines(cells, cellM) {
+  const seen = new Set();
+  let dropped = 0;
+  for (const [key, c] of cells) {
+    if (!(c.h >= CANOPY_MIN_M) || seen.has(key)) continue;
+    const comp = [];
+    const stack = [c];
+    seen.add(key);
+    while (stack.length) {
+      const cur = stack.pop();
+      comp.push(cur);
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const k = cur.ix + dx + "," + (cur.iy + dy);
+          const n = cells.get(k);
+          if (n && n.h >= CANOPY_MIN_M && !seen.has(k)) {
+            seen.add(k);
+            stack.push(n);
+          }
+        }
+      }
+    }
+    if (comp.length < 8) continue;
+    let mx = 0, my = 0, mh = 0;
+    for (const q of comp) {
+      mx += q.ix;
+      my += q.iy;
+      mh += q.h;
+    }
+    mx /= comp.length;
+    my /= comp.length;
+    mh /= comp.length;
+    let sxx = 0, syy = 0, sxy = 0, sh = 0;
+    for (const q of comp) {
+      sxx += (q.ix - mx) ** 2;
+      syy += (q.iy - my) ** 2;
+      sxy += (q.ix - mx) * (q.iy - my);
+      sh += (q.h - mh) ** 2;
+    }
+    const th = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+    const ux = Math.cos(th), uy = Math.sin(th);
+    let lo = Infinity, hi = -Infinity;
+    for (const q of comp) {
+      const t = (q.ix - mx) * ux + (q.iy - my) * uy;
+      if (t < lo) lo = t;
+      if (t > hi) hi = t;
+    }
+    const lengthM = (hi - lo + 1) * cellM;
+    const widthM = (comp.length / (hi - lo + 1)) * cellM;
+    const stdM = Math.sqrt(sh / comp.length);
+    if (lengthM >= LINE_MIN_M && widthM <= Math.max(LINE_MAX_WIDTH_M, 1.3 * cellM) && stdM <= LINE_MAX_STD_M) {
+      for (const q of comp) {
+        q.h = 0;
+        q.line = true;
+      }
+      dropped += comp.length;
+    }
+  }
+  return dropped;
+}
+
 function dropJaggedTops(cells) {
   const seen = new Set();
   let dropped = 0;
@@ -620,6 +694,29 @@ function ringPx(ring, lattice) {
   return ring.map((p) => [((p[0] - lattice.west) / dLon) * w, ((lattice.north - p[1]) / dLat) * h]);
 }
 
+/** The thin-line rule on a plain height grid (the fused canopy the crowns are traced on). */
+function clearThinLinesGrid(grid) {
+  if (!grid || !grid.values || !(grid.width > 0)) return 0;
+  if (typeof grid.values === "string") grid.values = Buffer.from(grid.values, "base64");
+  const w = grid.width | 0;
+  const h = grid.height | 0;
+  const lat = (grid.north + grid.south) / 2;
+  const cellM = (Math.abs(grid.east - grid.west) * 111320 * Math.cos((lat * Math.PI) / 180)) / w;
+  const cells = new Map();
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const v = grid.values[y * w + x];
+      if (v >= CANOPY_MIN_M) cells.set(x + "," + y, { ix: x, iy: y, h: v });
+    }
+  }
+  const n = dropThinLines(cells, cellM);
+  if (n) {
+    for (const c of cells.values()) if (c.line) grid.values[c.iy * w + c.ix] = 0;
+    recount(grid);
+  }
+  return n;
+}
+
 /** Scanline fill of one ring onto a w*h mask (pixel centres). */
 function fillRing(mask, w, h, pts) {
   let minY = Infinity;
@@ -871,6 +968,7 @@ module.exports = {
   fuseLidarCanopy,
   keepLidarOpen,
   clearInside,
+  clearThinLinesGrid,
   vehicleFeatures,
   lidarCanopyNote,
   leafOffDate,

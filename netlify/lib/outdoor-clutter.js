@@ -1376,12 +1376,16 @@ function corridorLines(records) {
     if (tags.tunnel && tags.tunnel !== "no") continue;
     if (/^-/.test(String(tags.layer || ""))) continue;
     let widthM = 0;
+    let elevated = false;
     const rail = String(tags.railway || "");
     const hw = String(tags.highway || "");
     const raised = (tags.bridge && tags.bridge !== "no") || /^[1-9]/.test(String(tags.layer || ""));
     if (RAIL_TYPES[rail]) {
       if (rail === "subway" && !raised) continue;
       widthM = rail === "monorail" ? 4 : 5;
+      // A monorail or a rail line on a viaduct is a structure in the air; the
+      // lidar returns off its beam are not a crown.
+      elevated = rail === "monorail" || raised || (tags.elevated && tags.elevated !== "no");
     } else if (hw) {
       const cls = hw.replace(/_link$/, "");
       if (!ROAD_WIDTH_M[cls] && !raised) continue;
@@ -1391,7 +1395,7 @@ function corridorLines(records) {
       else if (lanes >= 1 && lanes <= 12) widthM = lanes * LANE_M;
       else widthM = /_link$/.test(hw) ? 5 : ROAD_WIDTH_M[cls] || 7;
     } else continue;
-    out.push({ coords, widthM });
+    out.push(elevated ? { coords, widthM, elevated: true } : { coords, widthM });
   }
   return out;
 }
