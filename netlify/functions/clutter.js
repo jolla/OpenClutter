@@ -658,10 +658,18 @@ function describeCoreFailure(e) {
 const TIMED_OUT = Symbol("timed-out");
 
 /** One quad per segment of a road or rail line, its mapped width across, in pixels. */
-function corridorMaskPolygons(corridors, frame, mpu) {
+function corridorMaskPolygons(corridors, frame, mpu, measured) {
   const out = [];
   for (let i = 0; i < (corridors || []).length; i++) {
     const c = corridors[i];
+    // Town streets and squares cut an estimated canopy height map, which
+    // smears crowns over narrow streets. Measured lidar keeps its crowns.
+    if (c.street && measured) continue;
+    if (c.area) {
+      const ring = c.coords.map((q) => llToPx(q[0], q[1], frame));
+      if (ring.length >= 4) out.push([ring]);
+      continue;
+    }
     const half = (c.widthM || 0) / 2 / mpu;
     if (!(half > 0)) continue;
     const pts = c.coords.map((q) => llToPx(q[0], q[1], frame));
@@ -687,7 +695,7 @@ function corridorMaskPolygons(corridors, frame, mpu) {
       // An elevated guideway is the exception: its beam reads as a crown in
       // the lidar, so it cuts measured crowns too.
       const ring = [
-        c.elevated ? [ax + nx, ay + ny] : [ax + nx, ay + ny, -1],
+        c.elevated || c.street ? [ax + nx, ay + ny] : [ax + nx, ay + ny, -1],
         [bx + nx, by + ny],
         [bx - nx, by - ny],
         [ax - nx, ay - ny],
@@ -2251,7 +2259,7 @@ async function handleClutter(event) {
       ]);
       const corridors = pack && pack !== TIMED_OUT && pack.ok !== false ? pack.corridors || [] : [];
       const mpu = Math.max(frame.mpuX || 1, 0.05);
-      const extra = corridorMaskPolygons(corridors, frame, mpu);
+      const extra = corridorMaskPolygons(corridors, frame, mpu, !!lidarCanopy);
       if (extra.length) maskPolygons = (maskPolygons || []).concat(extra);
     } catch {
       /* keep the image masks */
