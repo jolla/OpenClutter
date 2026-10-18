@@ -972,7 +972,7 @@ function tilePixels(pixels, mPerX, mPerY, tileM) {
 
 
 /** Lidar tree segmentation. Components under this area are cut into trees. */
-const SEG_MAX_M2 = 20000;
+const SEG_MAX_M2 = 100000;
 const ESTIMATED_SEG_MAX_M2 = 2000;
 const SEG_MIN_M2 = 40;
 const SEG_TOP_MIN_H = 5;
