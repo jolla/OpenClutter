@@ -18,6 +18,13 @@
   included_files = ["netlify/lib/nls-hamina-ndsm.gz"]
   external_node_modules = ["laz-perf"]
 
+# Direct API v1 prototype (dev branch). Ahead of /api/* and /dev rules.
+[[redirects]]
+  from = "/v1/*"
+  to = "/.netlify/functions/api-v1/:splat"
+  status = 200
+  force = true
+
 # Production API (main deploy only — keep ahead of /dev rules).
 [[redirects]]
   from = "/api/*"

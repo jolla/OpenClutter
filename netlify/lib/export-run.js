@@ -7,7 +7,7 @@
  * Detection stays in clutter.js.
  */
 
-const { runBackgroundExport } = require("../functions/clutter");
+const clutter = require("../functions/clutter");
 const jobs = require("./export-jobs");
 
 function publicError(err) {
@@ -97,7 +97,7 @@ async function completeExportJob(jobId, inner, opts) {
   }
   const stopTiles = startTilePulse(jobId);
   try {
-    const result = await runBackgroundExport(inner, async (patch) => {
+    const result = await clutter.runBackgroundExport(inner, async (patch) => {
       if (opts && typeof opts.onProgress === "function") {
         try {
           await opts.onProgress(patch);
@@ -116,6 +116,22 @@ async function completeExportJob(jobId, inner, opts) {
       data = JSON.parse((result && result.body) || "{}");
     } catch {
       data = {};
+    }
+    if (status === 200 && data.site) {
+      if (await otherWorkerFinished(jobId, worker)) {
+        return { ok: true, finished: false, reason: "other-worker-finished" };
+      }
+      const bytes = await jobs.saveSite(jobId, data.site);
+      await jobs.updateJob(jobId, {
+        state: "done",
+        stage: "Site ready",
+        error: null,
+        siteBytes: bytes,
+        siteStats: data.site.stats || null,
+        warnings: withWarning(Array.isArray(data.site.warnings) ? data.site.warnings : [], warning),
+        timings: data.site.timings || null,
+      });
+      return { ok: true, finished: true };
     }
     if (status !== 200 || !data.zipBase64) {
       const why =
