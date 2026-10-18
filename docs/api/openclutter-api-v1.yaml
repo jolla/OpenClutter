@@ -1,0 +1,1102 @@
+openapi: 3.1.0
+info:
+  title: OpenClutter Site API
+  version: 1.0.0
+  summary: Direct outdoor site models for Hamina (no OpenIntent zip)
+  description: |
+    Draft v1 API. Returns structured GeoJSON site data from the same pipeline
+    that powers openclutter.com, without the OpenIntent zip or clipboard paste.
+
+    Coordinates are EPSG:4326. Lengths and heights are meters. Attenuation
+    defaults are dB/m at 5 GHz (OpenClutter outdoor tune).
+
+    Auth: Bearer API key (`oc_live_…` or `oc_test_…`).
+  contact:
+    name: OpenClutter
+    url: https://openclutter.com
+  license:
+    name: Proprietary API (engine MIT; data licences per provenance)
+    url: https://openclutter.com
+servers:
+  - url: https://dev--openclutter.netlify.app
+    description: Prototype on the dev branch deploy (v1.1.220+). See section 13 of the readable spec.
+  - url: https://api.openclutter.com
+    description: Proposed production
+  - url: https://api-test.openclutter.com
+    description: Proposed sandbox
+tags:
+  - name: sites
+    description: Create and fetch outdoor site builds
+  - name: aerial
+    description: Georeferenced aerial plate for a finished job
+security:
+  - BearerAuth: []
+  - ApiKeyHeader: []
+paths:
+  /v1/sites:
+    post:
+      tags: [sites]
+      operationId: createSite
+      summary: Start an async site build
+      description: |
+        Accepts a GeoJSON Polygon/MultiPolygon or a WGS84 bbox. Returns 202
+        with a job id. Poll GET /v1/sites/{id}; fetch JSON from /result when
+        status is succeeded. Prototype: wait=N (max 20) holds the request and
+        returns 200 with the result when the job finishes in time.
+      parameters:
+        - name: wait
+          in: query
+          schema: { type: integer, minimum: 0, maximum: 20, default: 0 }
+          description: Seconds to wait for a small job before answering 202.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSiteRequest"
+            examples:
+              haminaBbox:
+                summary: Hamina town square (bbox)
+                value:
+                  name: Hamina town square
+                  bbox: [27.1860, 60.5688, 27.1905, 60.5710]
+                  options:
+                    includeBuildings: true
+                    includeFoliage: true
+                    includePoles: true
+                    includeTerrain: true
+                    includeAerial: true
+                    includeMapNotes: true
+                    includeGpsAnchors: true
+                    terrainResolution: auto
+                    imageryQuality: auto
+                    attenuationFrequencyGHz: 5
+              polygon:
+                summary: Polygon geometry
+                value:
+                  name: Site
+                  geometry:
+                    type: Polygon
+                    coordinates:
+                      - - [27.1860, 60.5688]
+                        - [27.1905, 60.5688]
+                        - [27.1905, 60.5710]
+                        - [27.1860, 60.5710]
+                        - [27.1860, 60.5688]
+                  options:
+                    includeFoliage: true
+                    includePoles: true
+      responses:
+        "202":
+          description: Job accepted
+          headers:
+            X-RateLimit-Limit:
+              schema: { type: integer }
+            X-RateLimit-Remaining:
+              schema: { type: integer }
+            X-RateLimit-Reset:
+              schema: { type: integer }
+              description: Unix epoch seconds
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobAccepted"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+  /v1/sites/{id}:
+    get:
+      tags: [sites]
+      operationId: getSiteStatus
+      summary: Job status
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Current job status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobStatus"
+              examples:
+                running:
+                  value:
+                    id: 3f2a9c1e-4b7d-4e2a-9c11-8a0b6d5e4f21
+                    apiVersion: "1.0.0"
+                    engineVersion: "1.1.210"
+                    status: running
+                    stage: Trees
+                    progress: 0.62
+                    percent: 62
+                    createdAt: "2026-10-17T14:32:00Z"
+                    updatedAt: "2026-10-17T14:33:10Z"
+                    warnings: []
+                    error: null
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "410":
+          $ref: "#/components/responses/Error"
+  /v1/sites/{id}/result:
+    get:
+      tags: [sites]
+      operationId: getSiteResult
+      summary: Structured site result
+      description: |
+        Available when status is succeeded. Use collections, page, pageSize,
+        tile, or bbox to page large areas.
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+        - name: collections
+          in: query
+          schema:
+            type: string
+          description: >
+            Comma-separated subset of buildings,trees,poles,water,parking,walls,
+            vehicles,other,terrain,gpsAnchors,mapNotes,aerial,provenance
+          example: buildings,poles,gpsAnchors,provenance
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 2000, default: 500 }
+        - name: tile
+          in: query
+          schema: { type: string, pattern: '^[0-9]+/[0-9]+/[0-9]+$' }
+          description: Optional Web Mercator z/x/y clip (not implemented in the prototype)
+          example: 16/37301/18912
+        - name: bbox
+          in: query
+          schema: { type: string }
+          description: Optional west,south,east,north clip (not implemented in the prototype)
+          example: 27.1860,60.5688,27.1905,60.5710
+      responses:
+        "200":
+          description: Site model
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteResult"
+              examples:
+                haminaTownHall:
+                  summary: Hamina raatihuone with clock tower tiers
+                  value:
+                    id: job-hamina-demo
+                    apiVersion: "1.0.0"
+                    engineVersion: "1.1.210"
+                    name: Hamina town square
+                    crs: EPSG:4326
+                    frame:
+                      west: 27.1860
+                      south: 60.5688
+                      east: 27.1905
+                      north: 60.5710
+                      widthM: 248.1
+                      lengthM: 244.6
+                    buildings:
+                      type: FeatureCollection
+                      features:
+                        - type: Feature
+                          id: bldg-raatihuone
+                          geometry:
+                            type: Polygon
+                            coordinates:
+                              - - [27.18795, 60.56972]
+                                - [27.18855, 60.56972]
+                                - [27.18855, 60.57008]
+                                - [27.18795, 60.57008]
+                                - [27.18795, 60.56972]
+                          properties:
+                            kind: building
+                            name: Haminan raatihuone
+                            baseHeightM: 0
+                            topHeightM: 12.9
+                            heightSource: nls-laser
+                            heightConfidence: 0.9
+                            geomSource: osm
+                            buildingPart: false
+                            podium: false
+                            material:
+                              name: Building - 12.9
+                              attenuationDbPerMeter: 5.0
+                              frequencyGHz: 5
+                              displayColor: "#ABB1B7"
+                            tiers:
+                              - id: mass
+                                role: mass
+                                baseHeightM: 0
+                                topHeightM: 12.9
+                                buildingPart: false
+                              - id: clock-tower
+                                role: tower
+                                baseHeightM: 12.9
+                                topHeightM: 23.1
+                                buildingPart: true
+                                levelBaseM: 12.9
+                                floatSpan: true
+                                heightSource: nls-laser
+                                geometry:
+                                  type: Polygon
+                                  coordinates:
+                                    - - [27.18815, 60.56985]
+                                      - [27.18835, 60.56985]
+                                      - [27.18835, 60.57000]
+                                      - [27.18815, 60.57000]
+                                      - [27.18815, 60.56985]
+                              - id: clock-dome
+                                role: dome
+                                baseHeightM: 23.1
+                                topHeightM: 27.0
+                                buildingPart: true
+                                levelBaseM: 23.1
+                                roofShape: dome
+                                heightSource: nls-laser
+                                geometry:
+                                  type: Polygon
+                                  coordinates:
+                                    - - [27.18818, 60.56988]
+                                      - [27.18832, 60.56988]
+                                      - [27.18832, 60.56997]
+                                      - [27.18818, 60.56997]
+                                      - [27.18818, 60.56988]
+                    poles:
+                      type: FeatureCollection
+                      features:
+                        - type: Feature
+                          geometry:
+                            type: Point
+                            coordinates: [27.1874, 60.5696]
+                          properties:
+                            kind: pole
+                            poleType: lighting
+                            heightM: 9
+                            diameterM: 0.3
+                            explicitHeight: false
+                            material:
+                              name: Light pole
+                              attenuationDbPerMeter: 10
+                              frequencyGHz: 5
+                              displayColor: "#4A4A4A"
+                    trees:
+                      type: FeatureCollection
+                      features: []
+                    water:
+                      type: FeatureCollection
+                      features: []
+                    parking:
+                      type: FeatureCollection
+                      features: []
+                    walls:
+                      type: FeatureCollection
+                      features: []
+                    gpsAnchors:
+                      type: FeatureCollection
+                      features:
+                        - type: Feature
+                          geometry:
+                            type: Point
+                            coordinates: [27.1860, 60.5688]
+                          properties:
+                            role: southwest
+                            localXM: -248.1
+                            localYM: -244.6
+                        - type: Feature
+                          geometry:
+                            type: Point
+                            coordinates: [27.1905, 60.5710]
+                          properties:
+                            role: northeast
+                            localXM: 0
+                            localYM: 0
+                    mapNotes:
+                      type: FeatureCollection
+                      features:
+                        - type: Feature
+                          geometry:
+                            type: Point
+                            coordinates: [27.18825, 60.56992]
+                          properties:
+                            text: Clock tower ~27 m (NLS laser + OSM part)
+                            color: "#db6921"
+                            icon: NOTICE_OUTLINE
+                    terrain:
+                      representation: grid
+                      cellSizeM: 5
+                      cols: 50
+                      rows: 49
+                      west: 27.1860
+                      south: 60.5688
+                      east: 27.1905
+                      north: 60.5710
+                      verticalDatum: EGM96
+                      kind: surface
+                      attribution: Copernicus DEM GLO-30
+                      minZ: 2.1
+                      maxZ: 8.4
+                      reliefM: 6.3
+                      samples: []
+                    aerial:
+                      url: https://api.openclutter.com/v1/sites/job-hamina-demo/aerial.jpg
+                      contentType: image/jpeg
+                      widthPx: 2048
+                      heightPx: 2016
+                      bbox:
+                        west: 27.1860
+                        south: 60.5688
+                        east: 27.1905
+                        north: 60.5710
+                      crs: EPSG:4326
+                      metersPerPixelX: 0.12
+                      metersPerPixelY: 0.12
+                      provider: esri-world-imagery
+                      licence:
+                        commercialUseAllowed: false
+                        note: Esri World Imagery needs a commercial licence inside a paid product.
+                      attribution: Esri, Maxar, Earthstar Geographics, and the GIS User Community
+                    provenance:
+                      sources:
+                        - id: osm
+                          role: buildings-parts-poles
+                          licence: ODbL
+                          attribution: © OpenStreetMap contributors
+                          commercialUseAllowed: true
+                        - id: nls-laser
+                          role: building-heights-finland
+                          licence: NLS open
+                          attribution: National Land Survey of Finland
+                          commercialUseAllowed: true
+                        - id: esri-world-imagery
+                          role: aerial
+                          licence: Esri proprietary
+                          attribution: Esri World Imagery
+                          commercialUseAllowed: false
+                    stats:
+                      buildings: 1
+                      buildingParts: 2
+                      trees: 0
+                      poles: 1
+                      areaM2: 60680
+                    warnings: []
+                    paging:
+                      page: 1
+                      pageSize: 500
+                      totalFeatures: 4
+                      totalPages: 1
+                      next: null
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "410":
+          $ref: "#/components/responses/Error"
+        "413":
+          $ref: "#/components/responses/Error"
+  /v1/sites/{id}/aerial:
+    get:
+      tags: [aerial]
+      operationId: getSiteAerial
+      summary: Download the aerial JPEG for a finished job
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Georeferenced plate (see result.aerial for bbox / licence)
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          description: Key not licensed for imagery redistribution
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: oc_live_… or oc_test_…
+      description: API key as Bearer token
+    ApiKeyHeader:
+      type: apiKey
+      in: header
+      name: X-OpenClutter-Key
+  parameters:
+    JobId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      example: 3f2a9c1e-4b7d-4e2a-9c11-8a0b6d5e4f21
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+  schemas:
+    CreateSiteRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          maxLength: 200
+          example: Hamina town square
+        geometry:
+          description: GeoJSON Polygon or MultiPolygon (EPSG:4326)
+          oneOf:
+            - $ref: "#/components/schemas/GeoJsonPolygon"
+            - $ref: "#/components/schemas/GeoJsonMultiPolygon"
+        bbox:
+          type: array
+          minItems: 4
+          maxItems: 4
+          items: { type: number }
+          description: west, south, east, north (EPSG:4326). Used when geometry is omitted.
+          example: [27.1860, 60.5688, 27.1905, 60.5710]
+        options:
+          $ref: "#/components/schemas/SiteOptions"
+      anyOf:
+        - required: [geometry]
+        - required: [bbox]
+    SiteOptions:
+      type: object
+      additionalProperties: false
+      properties:
+        includeBuildings: { type: boolean, default: true }
+        includeFoliage: { type: boolean, default: true }
+        includePoles: { type: boolean, default: true }
+        includeWater: { type: boolean, default: false }
+        includeParking: { type: boolean, default: true }
+        includeWalls: { type: boolean, default: true }
+        includeTerrain: { type: boolean, default: true }
+        includeVehicles: { type: boolean, default: false, description: Prototype. RVs and cars. }
+        lidarHeights: { type: boolean, default: false, description: Prototype. USGS lidar building heights (dev only). }
+        waitSeconds: { type: integer, minimum: 0, maximum: 20, description: Prototype. Same as the wait query. }
+        includeAerial: { type: boolean, default: true }
+        includeMapNotes: { type: boolean, default: true }
+        includeGpsAnchors: { type: boolean, default: true }
+        terrainResolution:
+          type: string
+          enum: [auto, default, fine, finest, "20", "15", "10", "5", "1"]
+          default: auto
+        imageryQuality:
+          type: string
+          enum: [auto, high, medium, low]
+          default: auto
+        attenuationFrequencyGHz:
+          type: number
+          default: 5
+          description: Band for attenuationDbPerMeter defaults (pipeline outdoor figures are 5 GHz)
+        webhookUrl:
+          type: string
+          format: uri
+        webhookSecret:
+          type: string
+          description: HMAC secret for X-OpenClutter-Signature
+    JobAccepted:
+      type: object
+      required: [id, apiVersion, status, statusUrl, resultUrl, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        apiVersion: { type: string, example: "1.0.0" }
+        status:
+          type: string
+          enum: [queued]
+        statusUrl: { type: string }
+        resultUrl: { type: string }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+    JobStatus:
+      type: object
+      required: [id, apiVersion, status]
+      properties:
+        id: { type: string, format: uuid }
+        apiVersion: { type: string }
+        engineVersion: { type: string, example: "1.1.210" }
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, expired]
+        stage:
+          type: string
+          description: Human stage label (Fetching aerial, Buildings, Trees, …)
+        progress:
+          type: number
+          minimum: 0
+          maximum: 1
+        percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        warnings:
+          type: array
+          items: { type: string }
+        error:
+          oneOf:
+            - type: "null"
+            - $ref: "#/components/schemas/ErrorObject"
+        statsPreview:
+          type: object
+          additionalProperties: true
+    SiteResult:
+      type: object
+      required: [id, apiVersion, crs, frame]
+      properties:
+        id: { type: string }
+        apiVersion: { type: string }
+        engineVersion: { type: string }
+        name: { type: string }
+        crs:
+          type: string
+          const: EPSG:4326
+        frame:
+          $ref: "#/components/schemas/Frame"
+        buildings:
+          $ref: "#/components/schemas/BuildingCollection"
+        trees:
+          $ref: "#/components/schemas/TreeCollection"
+        poles:
+          $ref: "#/components/schemas/PoleCollection"
+        water:
+          $ref: "#/components/schemas/OutdoorPolygonCollection"
+        parking:
+          $ref: "#/components/schemas/OutdoorPolygonCollection"
+        walls:
+          $ref: "#/components/schemas/OutdoorPolygonCollection"
+        terrain:
+          $ref: "#/components/schemas/Terrain"
+        gpsAnchors:
+          $ref: "#/components/schemas/GpsAnchorCollection"
+        mapNotes:
+          $ref: "#/components/schemas/MapNoteCollection"
+        aerial:
+          $ref: "#/components/schemas/Aerial"
+        provenance:
+          $ref: "#/components/schemas/Provenance"
+        stats:
+          $ref: "#/components/schemas/Stats"
+        warnings:
+          type: array
+          items: { type: string }
+        paging:
+          $ref: "#/components/schemas/Paging"
+    Frame:
+      type: object
+      required: [west, south, east, north, widthM, lengthM]
+      properties:
+        west: { type: number }
+        south: { type: number }
+        east: { type: number }
+        north: { type: number }
+        widthM: { type: number }
+        lengthM: { type: number }
+    Material:
+      type: object
+      required: [name, attenuationDbPerMeter, frequencyGHz]
+      properties:
+        name: { type: string }
+        attenuationDbPerMeter: { type: number }
+        frequencyGHz: { type: number, default: 5 }
+        displayColor:
+          type: string
+          pattern: '^#[0-9A-Fa-f]{6}$'
+    BuildingTier:
+      type: object
+      required: [id, role, baseHeightM, topHeightM]
+      properties:
+        id: { type: string }
+        role:
+          type: string
+          enum: [mass, tower, dome, podium, roof, part]
+        baseHeightM: { type: number }
+        topHeightM: { type: number }
+        buildingPart: { type: boolean }
+        levelBaseM: { type: number }
+        floatSpan: { type: boolean }
+        podium: { type: boolean }
+        roofShape:
+          type: [string, "null"]
+          description: OSM roof:shape (dome, onion, …)
+        heightSource: { type: string }
+        geometry:
+          description: Optional tier footprint; defaults to parent when omitted
+          oneOf:
+            - $ref: "#/components/schemas/GeoJsonPolygon"
+            - type: "null"
+    BuildingProperties:
+      type: object
+      required: [kind, baseHeightM, topHeightM]
+      properties:
+        kind: { type: string, const: building }
+        name: { type: [string, "null"] }
+        baseHeightM: { type: number }
+        topHeightM: { type: number }
+        heightSource:
+          type: string
+          description: osm | overture | overture-floors | ms-global | fema | nls-laser | nearby | lidar | …
+        heightConfidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        geomSource: { type: string }
+        buildingPart: { type: boolean, default: false }
+        podium: { type: boolean, default: false }
+        levelBaseM: { type: number }
+        floatSpan: { type: boolean }
+        roofShape: { type: [string, "null"] }
+        roofHeightM: { type: [number, "null"] }
+        roofDirectionDeg: { type: [number, "null"] }
+        material:
+          $ref: "#/components/schemas/Material"
+        tiers:
+          type: array
+          description: Draft. The prototype returns one feature per mass with buildingId and tier instead.
+          items:
+            $ref: "#/components/schemas/BuildingTier"
+        buildingId:
+          type: string
+          description: Prototype. Masses on the same footprint share this id.
+        tier:
+          type: string
+          enum: [mass, part]
+          description: Prototype. Present when a footprint has more than one mass.
+        heightM: { type: number, description: topHeightM minus baseHeightM }
+        groundOffsetM:
+          type: number
+          description: Terrain under the centroid above terrain.minZ. Height above ground is topHeightM minus groundOffsetM.
+        footprintAreaM2: { type: number }
+        materialClass: { type: string, enum: [building, podium] }
+    BuildingFeature:
+      type: object
+      required: [type, geometry, properties]
+      properties:
+        type: { type: string, const: Feature }
+        id: { type: string }
+        geometry:
+          oneOf:
+            - $ref: "#/components/schemas/GeoJsonPolygon"
+            - $ref: "#/components/schemas/GeoJsonMultiPolygon"
+        properties:
+          $ref: "#/components/schemas/BuildingProperties"
+    BuildingCollection:
+      type: object
+      required: [type, features]
+      properties:
+        type: { type: string, const: FeatureCollection }
+        features:
+          type: array
+          items:
+            $ref: "#/components/schemas/BuildingFeature"
+    TreeProperties:
+      type: object
+      required: [kind, crownBaseM, crownTopM]
+      properties:
+        kind:
+          type: string
+          enum: [tree, stand]
+        stem:
+          $ref: "#/components/schemas/GeoJsonPoint"
+        crownRadiusM:
+          type: number
+          description: Used when geometry is a Point instead of a crown polygon
+        crownBaseM: { type: number }
+        crownTopM: { type: number }
+        trunkHeightM: { type: number }
+        trunkDiameterM: { type: [number, "null"] }
+        speciesClass:
+          type: string
+          enum: [palm, conifer, broadleaf, unknown]
+        leafState:
+          type: string
+          enum: [leaf-on, leaf-off, unknown]
+          default: unknown
+        foliageClass:
+          type: string
+          enum: [heavy, light]
+        materialCrown:
+          $ref: "#/components/schemas/Material"
+        materialTrunk:
+          $ref: "#/components/schemas/Material"
+        materialUnderstory:
+          $ref: "#/components/schemas/Material"
+        heightSource: { type: string }
+        heightConfidence:
+          type: number
+          minimum: 0
+          maximum: 1
+    TreeFeature:
+      type: object
+      required: [type, geometry, properties]
+      properties:
+        type: { type: string, const: Feature }
+        id: { type: string }
+        geometry:
+          oneOf:
+            - $ref: "#/components/schemas/GeoJsonPolygon"
+            - $ref: "#/components/schemas/GeoJsonPoint"
+        properties:
+          $ref: "#/components/schemas/TreeProperties"
+    TreeCollection:
+      type: object
+      required: [type, features]
+      properties:
+        type: { type: string, const: FeatureCollection }
+        features:
+          type: array
+          items:
+            $ref: "#/components/schemas/TreeFeature"
+    PoleProperties:
+      type: object
+      required: [kind, heightM, diameterM]
+      properties:
+        kind: { type: string, const: pole }
+        poleType:
+          type: string
+          enum: [lighting, mast, pole, unknown]
+          description: From OSM man_made (lighting / mast / pole)
+        heightM:
+          type: number
+          description: Default 9 m (POLE_HEIGHT_M)
+        diameterM:
+          type: number
+          description: Default 0.3 m (POLE_DIAMETER_M)
+        explicitHeight: { type: boolean }
+        material:
+          $ref: "#/components/schemas/Material"
+    PoleFeature:
+      type: object
+      required: [type, geometry, properties]
+      properties:
+        type: { type: string, const: Feature }
+        id: { type: string }
+        geometry:
+          $ref: "#/components/schemas/GeoJsonPoint"
+        properties:
+          $ref: "#/components/schemas/PoleProperties"
+    PoleCollection:
+      type: object
+      required: [type, features]
+      properties:
+        type: { type: string, const: FeatureCollection }
+        features:
+          type: array
+          items:
+            $ref: "#/components/schemas/PoleFeature"
+    OutdoorProperties:
+      type: object
+      required: [kind, baseHeightM, topHeightM]
+      properties:
+        kind:
+          type: string
+          enum: [water, parking, wall, retaining, fence, hedge]
+        baseHeightM: { type: number }
+        topHeightM: { type: number }
+        material:
+          $ref: "#/components/schemas/Material"
+    OutdoorFeature:
+      type: object
+      required: [type, geometry, properties]
+      properties:
+        type: { type: string, const: Feature }
+        id: { type: string }
+        geometry:
+          oneOf:
+            - $ref: "#/components/schemas/GeoJsonPolygon"
+            - $ref: "#/components/schemas/GeoJsonLineString"
+            - $ref: "#/components/schemas/GeoJsonMultiPolygon"
+        properties:
+          $ref: "#/components/schemas/OutdoorProperties"
+    OutdoorPolygonCollection:
+      type: object
+      required: [type, features]
+      properties:
+        type: { type: string, const: FeatureCollection }
+        features:
+          type: array
+          items:
+            $ref: "#/components/schemas/OutdoorFeature"
+    TerrainSample:
+      type: object
+      required: [lon, lat, z]
+      properties:
+        lon: { type: number }
+        lat: { type: number }
+        z: { type: number }
+    TerrainQuad:
+      type: object
+      required: [ring, style]
+      properties:
+        style:
+          type: string
+          enum: [sloped, raised]
+        ring:
+          type: array
+          description: Open quad corners as [localXM, localYM, zM] (NE origin 0,0)
+          items:
+            type: array
+            minItems: 3
+            maxItems: 3
+            items: { type: number }
+    Terrain:
+      type: object
+      properties:
+        representation:
+          type: string
+          enum: [grid, tin, quads]
+        cellSizeM: { type: number }
+        cols: { type: integer }
+        rows: { type: integer }
+        west: { type: number }
+        south: { type: number }
+        east: { type: number }
+        north: { type: number }
+        verticalDatum:
+          type: string
+          description: NAVD88 (USGS 3DEP) or EGM2008 (Copernicus GLO-30)
+        kind:
+          type: string
+          enum: [bare-earth, surface]
+        attribution: { type: string }
+        minZ: { type: number }
+        maxZ: { type: number }
+        reliefM: { type: number }
+        lons:
+          type: array
+          items: { type: number }
+          description: Prototype grid. Column longitudes, west to east.
+        lats:
+          type: array
+          items: { type: number }
+          description: Prototype grid. Row latitudes, north to south.
+        z:
+          type: array
+          description: Prototype grid. rows arrays of cols elevations (null when missing).
+          items:
+            type: array
+            items: { type: [number, "null"] }
+        samples:
+          type: array
+          description: Draft alternative to lons/lats/z. Not returned by the prototype.
+          items:
+            $ref: "#/components/schemas/TerrainSample"
+        quads:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/TerrainQuad"
+    GpsAnchorProperties:
+      type: object
+      required: [role, localXM, localYM]
+      properties:
+        role:
+          type: string
+          enum: [southwest, northeast, custom]
+        localXM: { type: number }
+        localYM: { type: number }
+    GpsAnchorFeature:
+      type: object
+      required: [type, geometry, properties]
+      properties:
+        type: { type: string, const: Feature }
+        geometry:
+          $ref: "#/components/schemas/GeoJsonPoint"
+        properties:
+          $ref: "#/components/schemas/GpsAnchorProperties"
+    GpsAnchorCollection:
+      type: object
+      required: [type, features]
+      properties:
+        type: { type: string, const: FeatureCollection }
+        features:
+          type: array
+          items:
+            $ref: "#/components/schemas/GpsAnchorFeature"
+    MapNoteProperties:
+      type: object
+      required: [text]
+      properties:
+        text: { type: string }
+        color: { type: string, default: "#db6921" }
+        icon: { type: string, default: NOTICE_OUTLINE }
+    MapNoteFeature:
+      type: object
+      required: [type, geometry, properties]
+      properties:
+        type: { type: string, const: Feature }
+        geometry:
+          $ref: "#/components/schemas/GeoJsonPoint"
+        properties:
+          $ref: "#/components/schemas/MapNoteProperties"
+    MapNoteCollection:
+      type: object
+      required: [type, features]
+      properties:
+        type: { type: string, const: FeatureCollection }
+        features:
+          type: array
+          items:
+            $ref: "#/components/schemas/MapNoteFeature"
+    AerialLicence:
+      type: object
+      required: [commercialUseAllowed]
+      properties:
+        commercialUseAllowed: { type: boolean }
+        note: { type: string }
+    Aerial:
+      type: object
+      properties:
+        url: { type: string, format: uri }
+        contentType: { type: string, example: image/jpeg }
+        widthPx: { type: integer }
+        heightPx: { type: integer }
+        bbox:
+          $ref: "#/components/schemas/FrameBbox"
+        crs: { type: string, const: EPSG:4326 }
+        metersPerPixelX: { type: number }
+        metersPerPixelY: { type: number }
+        provider: { type: string }
+        licence:
+          $ref: "#/components/schemas/AerialLicence"
+        attribution: { type: string }
+    FrameBbox:
+      type: object
+      required: [west, south, east, north]
+      properties:
+        west: { type: number }
+        south: { type: number }
+        east: { type: number }
+        north: { type: number }
+    ProvenanceSource:
+      type: object
+      required: [id, role, licence, attribution, commercialUseAllowed]
+      properties:
+        id: { type: string }
+        role: { type: string }
+        licence: { type: string }
+        attribution: { type: string }
+        commercialUseAllowed: { type: boolean }
+        verticalDatum: { type: string }
+    Provenance:
+      type: object
+      properties:
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProvenanceSource"
+    Stats:
+      type: object
+      additionalProperties: true
+      properties:
+        buildings: { type: integer }
+        buildingParts: { type: integer }
+        trees: { type: integer }
+        discreteTrees: { type: integer }
+        poles: { type: integer }
+        water: { type: integer }
+        parking: { type: integer }
+        walls: { type: integer }
+        terrainCells: { type: integer }
+        areaM2: { type: number }
+        timingsMs:
+          type: object
+          additionalProperties: { type: number }
+    Paging:
+      type: object
+      properties:
+        page: { type: integer }
+        pageSize: { type: integer }
+        totalFeatures: { type: integer }
+        totalPages: { type: integer }
+        next:
+          type: [string, "null"]
+          description: Absolute or relative URL for the next page, if any
+    ErrorObject:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        requestId: { type: string }
+    ErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorObject"
+    GeoJsonPoint:
+      type: object
+      required: [type, coordinates]
+      properties:
+        type: { type: string, const: Point }
+        coordinates:
+          type: array
+          minItems: 2
+          maxItems: 3
+          items: { type: number }
+    GeoJsonLineString:
+      type: object
+      required: [type, coordinates]
+      properties:
+        type: { type: string, const: LineString }
+        coordinates:
+          type: array
+          minItems: 2
+          items:
+            type: array
+            minItems: 2
+            maxItems: 3
+            items: { type: number }
+    GeoJsonPolygon:
+      type: object
+      required: [type, coordinates]
+      properties:
+        type: { type: string, const: Polygon }
+        coordinates:
+          type: array
+          items:
+            type: array
+            minItems: 4
+            items:
+              type: array
+              minItems: 2
+              maxItems: 3
+              items: { type: number }
+    GeoJsonMultiPolygon:
+      type: object
+      required: [type, coordinates]
+      properties:
+        type: { type: string, const: MultiPolygon }
+        coordinates:
+          type: array
+          items:
+            type: array
+            items:
+              type: array
+              minItems: 4
+              items:
+                type: array
+                minItems: 2
+                maxItems: 3
+                items: { type: number }
