@@ -37,6 +37,10 @@ function memoryStore() {
     has(key) {
       return map.has(key);
     },
+    async list(opts) {
+      const prefix = (opts && opts.prefix) || "";
+      return { blobs: [...map.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key })) };
+    },
   };
 }
 
@@ -521,7 +525,7 @@ describe("export jobs", { concurrency: 1 }, () => {
     assert.equal((await jobs.readZip(id)).length, 5000000);
   });
 
-  it("downloads a small zip once, then says it was already downloaded", async () => {
+  it("downloads a small zip again until the job expires", async () => {
     const store = memoryStore();
     jobs.setExportStoreForTests(store);
     const id = "66666666-6666-4666-8666-666666666666";
@@ -541,8 +545,31 @@ describe("export jobs", { concurrency: 1 }, () => {
       queryStringParameters: { job: id },
       headers: {},
     });
-    assert.equal(again.statusCode, 410);
-    assert.match(JSON.parse(again.body).error, /already downloaded/);
+    assert.equal(again.statusCode, 200);
+    assert.equal(Buffer.from(again.body, "base64").toString(), "PK tiny");
+    const job = await jobs.readJob(id);
+    assert.ok(job.expiresAt - job.createdAt >= 24 * 60 * 60 * 1000);
+    await store.setJSON("job/" + id, Object.assign({}, job, { expiresAt: Date.now() - 1 }));
+    const gone = await fileHandler({ httpMethod: "GET", queryStringParameters: { job: id }, headers: {} });
+    assert.equal(gone.statusCode, 404);
+    assert.equal(await store.get("job/" + id + "/zip"), null);
+  });
+
+  it("sweeps expired jobs and their zips", async () => {
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    if (typeof store.list !== "function") return;
+    const old = "77777777-7777-4777-8777-777777777777";
+    const live = "79999999-7777-4777-8777-777777777777";
+    await jobs.createJob(old);
+    await jobs.createJob(live);
+    await jobs.saveZip(old, Buffer.from("PK old"));
+    await jobs.saveZip(live, Buffer.from("PK live"));
+    const j = await store.get("job/" + old, { type: "json" });
+    await store.setJSON("job/" + old, Object.assign({}, j, { expiresAt: Date.now() - 1 }));
+    assert.equal(await jobs.sweepExpired(), 1);
+    assert.equal(await store.get("job/" + old + "/zip"), null);
+    assert.ok(await jobs.readZip(live));
   });
 
   it("records a plain error when the export does not return a zip", async () => {
