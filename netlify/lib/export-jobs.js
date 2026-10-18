@@ -158,7 +158,7 @@ async function sweepExpired(now) {
   let reads = 0;
   let dropped = 0;
   for (const key of keys) {
-    const zipMatch = /^job\/([^/]+)\/zip$/.exec(key);
+    const zipMatch = /^job\/([^/]+)\/(zip|site-v1)$/.exec(key);
     if (zipMatch) {
       if (!have.has(jobKey(zipMatch[1]))) {
         await store.delete(key).catch(() => {});
@@ -173,6 +173,7 @@ async function sweepExpired(now) {
     if (job && job.expiresAt && clock > job.expiresAt) {
       await store.delete(key).catch(() => {});
       await store.delete(zipKey(m[1])).catch(() => {});
+      await store.delete(siteKey(m[1])).catch(() => {});
       dropped += 1;
     }
   }
@@ -194,6 +195,7 @@ async function readJob(id) {
   if (job.expiresAt && Date.now() > job.expiresAt) {
     await store.delete(jobKey(id)).catch(() => {});
     await store.delete(zipKey(id)).catch(() => {});
+    await store.delete(siteKey(id)).catch(() => {});
     return null;
   }
   return job;
@@ -352,6 +354,25 @@ async function saveZip(id, buf) {
   return body.length;
 }
 
+function siteKey(id) {
+  return "job/" + id + "/site-v1";
+}
+
+/** Direct API v1 result. Stored as JSON text next to the job record. */
+async function saveSite(id, site) {
+  const store = await openStore();
+  const text = typeof site === "string" ? site : JSON.stringify(site);
+  await store.set(siteKey(id), text);
+  return Buffer.byteLength(text);
+}
+
+async function readSite(id) {
+  const store = await openStore();
+  const text = await store.get(siteKey(id), { type: "text" });
+  if (!text) return null;
+  return JSON.parse(text);
+}
+
 async function readZip(id) {
   const store = await openStore();
   const raw = await store.get(zipKey(id), { type: "arrayBuffer" });
@@ -363,6 +384,7 @@ async function readZip(id) {
 async function deleteZip(id) {
   const store = await openStore();
   await store.delete(zipKey(id)).catch(() => {});
+  await store.delete(siteKey(id)).catch(() => {});
 }
 
 async function takeZip(id) {
@@ -455,6 +477,8 @@ module.exports = {
   updateJob,
   saveZip,
   readZip,
+  saveSite,
+  readSite,
   deleteZip,
   takeZip,
   deleteJob,

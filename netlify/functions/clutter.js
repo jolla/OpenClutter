@@ -165,6 +165,7 @@ async function runBackgroundExport(event, onProgress) {
 const { geoFrame, capEsriExportFrame, llToPx, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings, parseAreaCapOverride, parseJsonBudgetOverride, raisedDeckCap, MAX_BUILDINGS, MAX_ATTENUATION_AREAS, DEFAULT_AREA_CAP } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
+const { buildSiteV1 } = require("../lib/site-v1");
 const { fetchSlopeForest } = require("../lib/slope-forest");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
@@ -996,6 +997,7 @@ function parseFormat(body) {
     return "hamina-clipboard";
   }
   if (body.format === "zip" || body.output === "zip") return "zip";
+  if (body.format === "site-v1") return "site-v1";
   return "bundle";
 }
 
@@ -1110,6 +1112,8 @@ const ESTIMATED_SPLIT_MIN_M2 = 150;
 // Lidar tree segmentation is opt-in until it stops costing canopy cover
 // (bench: Chicago, Colorado and Florida lost 5-15 points of recall).
 const SEGMENT_TREES = process.env.OC_SEGMENT_TREES !== "0";
+
+const SITE_V1_FOLIAGE_MAX = 3600;
 
 function foliageCapFor(buildings) {
   const n = Math.max(0, buildings | 0);
@@ -2354,7 +2358,11 @@ async function handleClutter(event) {
   // that headroom up to 1200. The OpenIntent byte budget still drops the rest.
 
   async function emitClutter(list, extraWarnings) {
-    const foliageCap = foliageCapFor(list ? list.length : 0);
+    // The API result has no OpenIntent size limit, so it keeps more crowns.
+    const foliageCap =
+      format === "site-v1"
+        ? Math.min(SITE_V1_FOLIAGE_MAX, foliageCapFor(list ? list.length : 0) * 3)
+        : foliageCapFor(list ? list.length : 0);
     const slopeTop = demUnderFootprint(terrain);
     const areaCap = areaCapOverride > 0 ? areaCapOverride | 0 : DEFAULT_AREA_CAP;
     const buildingCeiling =
@@ -2756,6 +2764,37 @@ async function handleClutter(event) {
       }
       guard += 1;
     }
+  }
+
+  // Direct API v1: the same model the OpenIntent writer used, as GeoJSON.
+  // No zip in the response; the job stores this JSON instead.
+  if (format === "site-v1") {
+    const notes = wantMapNotes(event, body)
+      ? buildMapNotes({
+          frame,
+          terrain,
+          places: planningPlaces,
+          features: exportFeatures,
+          trees: treePoints,
+          openintent: built.openintent,
+        })
+      : [];
+    const site = buildSiteV1({
+      name: typeof body.name === "string" ? body.name.slice(0, 200) : null,
+      openintent: built.openintent,
+      frame,
+      features: exportFeatures,
+      demSamples: includeTerrain && demSamples && demSamples.length ? demSamples : null,
+      demKind,
+      demAttribution,
+      notes,
+      stats: built.stats,
+      warnings,
+    });
+    site.timings = stageClock.snapshot({
+      areaM2: frame && frame.widthM && frame.lengthM ? frame.widthM * frame.lengthM : 0,
+    });
+    return json(200, cors, { ok: true, site });
   }
 
   if (!built.zip) return json(500, cors, { error: "zip missing" });
