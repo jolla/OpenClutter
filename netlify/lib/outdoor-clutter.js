@@ -278,7 +278,7 @@ function heightFor(kind, tags) {
   }
   if (kind === "water") return { heightM: 0.1, explicitHeight: false };
   if (kind === "pole") {
-    if (explicit >= 8 && explicit <= 12) return { heightM: explicit, explicitHeight: true };
+    if (explicit >= 3 && explicit <= 45) return { heightM: explicit, explicitHeight: true };
     return { heightM: POLE_HEIGHT_M, explicitHeight: false };
   }
   if (explicit > 2) return { heightM: explicit, explicitHeight: true };
