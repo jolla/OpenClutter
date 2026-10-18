@@ -2903,6 +2903,13 @@ function emitCanopyCovered(t, ringPx, imgW, imgH, mpuX, depth, areas, kinds) {
       if (any) return true;
     }
   }
+  // A piece cut off a crown at a roof edge that is under the 3 m floor is a
+  // sliver of the cut, not a tree. Blowing each one up to a 3 m square left
+  // rows of stacked squares, walls and columns along the roof line.
+  if (depth > 0 && t.kind !== "trunk") {
+    const b = ringBBox(ringPx);
+    if (Math.min(b.w, b.h) < minOiSpanPx(mpuX) - OI_SPAN_SLACK_PX) return false;
+  }
   if (t.kind === "trunk") {
     const b = ringBBox(ringPx);
     const drawn = Math.min(b.w, b.h);
