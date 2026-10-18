@@ -165,6 +165,7 @@ async function runBackgroundExport(event, onProgress) {
 const { geoFrame, capEsriExportFrame, llToPx, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings, parseAreaCapOverride, parseJsonBudgetOverride, raisedDeckCap, MAX_BUILDINGS, MAX_ATTENUATION_AREAS, DEFAULT_AREA_CAP } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
+const { buildSiteV1 } = require("../lib/site-v1");
 const { fetchSlopeForest } = require("../lib/slope-forest");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
@@ -996,6 +997,7 @@ function parseFormat(body) {
     return "hamina-clipboard";
   }
   if (body.format === "zip" || body.output === "zip") return "zip";
+  if (body.format === "site-v1") return "site-v1";
   return "bundle";
 }
 
@@ -2756,6 +2758,37 @@ async function handleClutter(event) {
       }
       guard += 1;
     }
+  }
+
+  // Direct API v1: the same model the OpenIntent writer used, as GeoJSON.
+  // No zip in the response; the job stores this JSON instead.
+  if (format === "site-v1") {
+    const notes = wantMapNotes(event, body)
+      ? buildMapNotes({
+          frame,
+          terrain,
+          places: planningPlaces,
+          features: exportFeatures,
+          trees: treePoints,
+          openintent: built.openintent,
+        })
+      : [];
+    const site = buildSiteV1({
+      name: typeof body.name === "string" ? body.name.slice(0, 200) : null,
+      openintent: built.openintent,
+      frame,
+      features: exportFeatures,
+      demSamples: includeTerrain && demSamples && demSamples.length ? demSamples : null,
+      demKind,
+      demAttribution,
+      notes,
+      stats: built.stats,
+      warnings,
+    });
+    site.timings = stageClock.snapshot({
+      areaM2: frame && frame.widthM && frame.lengthM ? frame.widthM * frame.lengthM : 0,
+    });
+    return json(200, cors, { ok: true, site });
   }
 
   if (!built.zip) return json(500, cors, { error: "zip missing" });
