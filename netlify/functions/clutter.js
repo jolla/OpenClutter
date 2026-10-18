@@ -1113,6 +1113,8 @@ const ESTIMATED_SPLIT_MIN_M2 = 150;
 // (bench: Chicago, Colorado and Florida lost 5-15 points of recall).
 const SEGMENT_TREES = process.env.OC_SEGMENT_TREES !== "0";
 
+const SITE_V1_FOLIAGE_MAX = 3600;
+
 function foliageCapFor(buildings) {
   const n = Math.max(0, buildings | 0);
   return Math.max(720, Math.min(1200, Math.round(1200 - n * 0.4)));
@@ -2356,7 +2358,11 @@ async function handleClutter(event) {
   // that headroom up to 1200. The OpenIntent byte budget still drops the rest.
 
   async function emitClutter(list, extraWarnings) {
-    const foliageCap = foliageCapFor(list ? list.length : 0);
+    // The API result has no OpenIntent size limit, so it keeps more crowns.
+    const foliageCap =
+      format === "site-v1"
+        ? Math.min(SITE_V1_FOLIAGE_MAX, foliageCapFor(list ? list.length : 0) * 3)
+        : foliageCapFor(list ? list.length : 0);
     const slopeTop = demUnderFootprint(terrain);
     const areaCap = areaCapOverride > 0 ? areaCapOverride | 0 : DEFAULT_AREA_CAP;
     const buildingCeiling =
