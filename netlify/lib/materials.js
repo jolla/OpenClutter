@@ -1071,6 +1071,9 @@ function isLiftedOutdoorName(name) {
   return LIFTED_OUTDOOR_NAME.test(name || "");
 }
 
+const POLE_MIN_DRAW_M = 3;
+const POLE_MAX_DRAW_M = 45;
+
 /**
  * Custom outdoor object. Water is a 0.1 m sheet: OpenIntent rejects a
  * negative height, and bottom_height 0 does not import. A pole keeps a
@@ -1084,8 +1087,10 @@ function outdoorHeight(kind, heightM) {
   if (kind === "car") return CAR_LAYER_M;
   const round = kind === "parking" ? roundBuildingHeightM : roundHeightM;
   const h = round(heightM);
+  // A pole keeps a measured or tagged height from a short post to a
+  // high-mast light. Only a missing or implausible height falls back to 9 m.
   if (kind === "pole") {
-    if (h >= 8 && h <= 12) return h;
+    if (h >= POLE_MIN_DRAW_M && h <= POLE_MAX_DRAW_M) return h;
     return 9;
   }
   if (h) return h;
