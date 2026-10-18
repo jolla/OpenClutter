@@ -256,6 +256,22 @@ function terrainGrid(samples, opts) {
   };
 }
 
+/** Nearest grid node elevation at lon/lat, or null outside the grid. */
+function groundSampler(t) {
+  const lon0 = t.lons[0];
+  const lon1 = t.lons[t.lons.length - 1];
+  const latN = t.lats[0];
+  const latS = t.lats[t.lats.length - 1];
+  return function at(lon, lat) {
+    if (!(lon1 > lon0) || !(latN > latS)) return null;
+    const c = Math.round(((lon - lon0) / (lon1 - lon0)) * (t.cols - 1));
+    const r = Math.round(((latN - lat) / (latN - latS)) * (t.rows - 1));
+    if (c < 0 || r < 0 || c >= t.cols || r >= t.rows) return null;
+    const z = t.z[r][c];
+    return Number.isFinite(z) ? z : null;
+  };
+}
+
 const PROVENANCE = [
   { id: "osm", role: "buildings-parts-poles-notes", licence: "ODbL", attribution: "© OpenStreetMap contributors", commercialUseAllowed: true },
   { id: "ms-global", role: "building-footprints", licence: "ODbL", attribution: "© Microsoft", commercialUseAllowed: true },
@@ -299,8 +315,6 @@ function buildSiteV1(p) {
     if (kind === "building") {
       const src = matchSource(index, c);
       const sp = (src && src.props) || {};
-      const part = !!sp.buildingPart || h.baseHeightM > 0.5;
-      if (part) buildingParts++;
       const hs = sp.heightSource || null;
       if (hs) heightSources[hs] = (heightSources[hs] || 0) + 1;
       out.buildings.push({
@@ -375,6 +389,27 @@ function buildSiteV1(p) {
     }
   }
 
+  // More than one area on one footprint: every area above the lowest is a part.
+  {
+    const groups = new Map();
+    for (const b of out.buildings) {
+      const g = b.properties.buildingId;
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(b);
+    }
+    for (const list of groups.values()) {
+      if (list.length < 2) continue;
+      list.sort((x, y) => x.properties.baseHeightM - y.properties.baseHeightM);
+      for (let k = 0; k < list.length; k++) {
+        list[k].properties.tier = k === 0 ? "mass" : "part";
+        if (k > 0) {
+          list[k].properties.buildingPart = true;
+          buildingParts++;
+        }
+      }
+    }
+  }
+
   // A trunk prism sits inside its crown. Fold it onto that tree.
   for (const t of trunks) {
     let host = null;
@@ -401,6 +436,17 @@ function buildSiteV1(p) {
   }
 
   const terrain = p.demSamples ? terrainGrid(p.demSamples, { frame, kind: p.demKind, attribution: p.demAttribution }) : null;
+  if (terrain) {
+    const at = groundSampler(terrain);
+    const stamp = (f, pt) => {
+      const z = at(pt[0], pt[1]);
+      if (z != null) f.properties.groundOffsetM = r2(z - terrain.minZ);
+    };
+    for (const coll of ["buildings", "trees", "parking", "walls", "vehicles", "other"]) {
+      for (const f of out[coll]) stamp(f, centroid(f.geometry.coordinates[0]));
+    }
+    for (const f of out.poles) stamp(f, f.geometry.coordinates);
+  }
 
   const gps = [
     { role: "southwest", lon: frame.west, lat: frame.south, x: -(frame.widthM || 0), y: -(frame.lengthM || 0) },
@@ -449,7 +495,7 @@ function buildSiteV1(p) {
     crs: "EPSG:4326",
     heightDatum:
       terrain
-        ? "Heights are meters above the lowest terrain sample in the frame (terrain.minZ), so objects already sit on the slope."
+        ? "baseHeightM/topHeightM are meters above the lowest terrain sample in the frame (terrain.minZ), so objects already sit on the slope. groundOffsetM is the terrain under the feature above that same datum; topHeightM - groundOffsetM is the height above local ground."
         : "Heights are meters above local ground (terrain off or unavailable).",
     frame: {
       west: r6(frame.west),

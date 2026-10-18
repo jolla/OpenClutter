@@ -123,6 +123,10 @@ describe("site-v1 model", () => {
     const tower = site.buildings.features[1].properties;
     assert.equal(tower.baseHeightM, 12.9);
     assert.equal(tower.buildingId, hall.buildingId);
+    assert.equal(tower.tier, "part");
+    assert.equal(tower.buildingPart, true);
+    assert.equal(hall.tier, "mass");
+    assert.ok(Number.isFinite(hall.groundOffsetM));
     assert.equal(site.stats.buildingParts, 1);
     assert.equal(site.trees.features.length, 1);
     const tree = site.trees.features[0].properties;
