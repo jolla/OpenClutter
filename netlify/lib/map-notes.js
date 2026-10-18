@@ -133,7 +133,14 @@ function landmarkKind(tags, name) {
   const amenity = String((tags && tags.amenity) || "").toLowerCase();
   const building = String((tags && tags.building) || "").toLowerCase();
   const lower = name.toLowerCase();
-  if (amenity === "toilets" || building === "toilets" || /\bbathhouse\b|\bbath house\b|\brestroom\b/.test(lower)) {
+  if (
+    amenity === "toilets" ||
+    amenity === "shower" ||
+    building === "toilets" ||
+    building === "bath_house" ||
+    building === "bathhouse" ||
+    /\bbath ?house\b|\brest ?rooms?\b|\bwash ?rooms?\b|\bcomfort station\b/.test(lower)
+  ) {
     return "bathhouse";
   }
   if (/\bpavilion\b|\bpavillion\b|\bbingo\b/.test(lower)) return "hall";
@@ -301,6 +308,50 @@ function tallRowsFromOpenIntent(oi, frame) {
   return separatePeaks(foliage, 80, 2).concat(separatePeaks(buildings, 40, 2));
 }
 
+// Canada's southern border, west to east, as [lon, lat]. Coarse: it only has
+// to put an export on the right side for a restroom label.
+const CANADA_SOUTH = [
+  [-141, 60], [-130, 55], [-123.3, 49], [-95.15, 49], [-89.6, 48], [-84.8, 46.5], [-82.4, 45.3],
+  [-82.5, 42.2], [-79, 43.3], [-76.5, 44], [-74.7, 45], [-71.5, 45], [-70.7, 45.4], [-69.2, 47.4],
+  [-67.8, 47.1], [-67.8, 45.7], [-67, 44.8], [-52, 44.8],
+];
+
+function inCanada(lon, lat) {
+  if (!(lon > -141 && lon < -52 && lat < 84)) return false;
+  for (let i = 1; i < CANADA_SOUTH.length; i++) {
+    const a = CANADA_SOUTH[i - 1];
+    const b = CANADA_SOUTH[i];
+    if (lon >= a[0] && lon <= b[0]) {
+      const t = b[0] === a[0] ? 0 : (lon - a[0]) / (b[0] - a[0]);
+      return lat > a[1] + t * (b[1] - a[1]);
+    }
+  }
+  return false;
+}
+
+/**
+ * What a public toilet building is called where the export is: Restrooms in
+ * the US, Washrooms in Canada, Toilets in the UK, Ireland, Australia, New
+ * Zealand and as the plain English default elsewhere.
+ */
+function restroomLabel(lon, lat) {
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return "Toilets";
+  if (inCanada(lon, lat)) return "Washrooms";
+  const conus = lon > -125 && lon < -66.5 && lat > 24.4 && lat < 49.4;
+  const alaska = lon < -129.9 && lat > 51 && lat < 72;
+  const hawaii = lon > -161 && lon < -154 && lat > 18.5 && lat < 22.6;
+  const pr = lon > -67.5 && lon < -65 && lat > 17.8 && lat < 18.6;
+  if (conus || alaska || hawaii || pr) return "Restrooms";
+  return "Toilets";
+}
+
+/** An OSM name that only says what the building is, not which one. */
+function genericRestroomName(name) {
+  return /^(the )?(public )?(bath ?houses?|rest ?rooms?|wash ?rooms?|toilets?|showers?|comfort stations?|toilets? (and|&) showers?|showers? (and|&) toilets?|wc)$/i.test(
+    String(name || "").trim()
+  );
+}
+
 function buildMapNotes(opts) {
   const frame = opts && opts.frame;
   const places = (opts && opts.places) || [];
@@ -313,6 +364,7 @@ function buildMapNotes(opts) {
   const placed = [];
   const offices = places.filter((p) => p.role === "office");
   const landmarks = places.filter((p) => p.role === "landmark");
+  const restrooms = restroomLabel((frame.west + frame.east) / 2, (frame.south + frame.north) / 2);
 
   for (let i = 0; i < offices.length && i < 4; i++) {
     const extra = offices[i];
@@ -323,7 +375,7 @@ function buildMapNotes(opts) {
   for (let i = 0; i < landmarks.length && out.length < 10; i++) {
     const mark = landmarks[i];
     let text = mark.name || "";
-    if (mark.kind === "bathhouse") text = mark.name || "Bathhouse";
+    if (mark.kind === "bathhouse") text = mark.name && !genericRestroomName(mark.name) ? mark.name : restrooms;
     else if (mark.kind === "hall" && !text) text = "Hall";
     if (!text) continue;
     pushNote(out, placed, mark.lon, mark.lat, frame, text, 12);
@@ -440,6 +492,7 @@ module.exports = {
   MAP_NOTE_ICON,
   placesFromElements,
   buildMapNotes,
+  restroomLabel,
   stampMapNotes,
   clipboardNote,
 };

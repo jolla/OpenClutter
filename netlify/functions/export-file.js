@@ -44,14 +44,14 @@ exports.handler = async (event) => {
     return json(503, { error: "The zip could not be read. Export again." });
   }
   if (!zip || !zip.length) {
-    if (job.zipTaken) return json(410, { error: "This export was already downloaded. Export again." });
+    if (job.zipTaken) return json(410, { error: "This export expired. Export again." });
     return json(409, { error: "The zip is not in storage yet. Export again." });
   }
   if (!jobs.zipDownloadFits(zip.length)) {
     return json(413, { error: "The zip is too large to download. Export again." });
   }
-  await jobs.updateJob(id, { zipTaken: true });
-  await jobs.deleteZip(id);
+  // The zip stays until the job expires (24 h) so the page can download it again.
+  if (!job.zipTaken) await jobs.updateJob(id, { zipTaken: true });
   const name = String(job.zipFilename || "openclutter.zip").replace(/[^A-Za-z0-9._-]+/g, "-");
   return {
     statusCode: 200,

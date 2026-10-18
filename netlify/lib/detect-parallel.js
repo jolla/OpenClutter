@@ -20,7 +20,7 @@
 
 const { threadCount, runOne, runQueue } = require("./cpu-pool");
 const { polygonsFromCrowns, treePairsFromPoints } = require("./vegetation");
-const { selectCrownsForExport, CROWN_CAP } = require("./canopy-height");
+const { selectCrownsForExport, fitSegments, CROWN_CAP } = require("./canopy-height");
 const { coverClasses } = require("./canopy-fill");
 const { materialForVegetation } = require("./materials");
 const { llToPx, pxToLl } = require("./geo-frame");
@@ -169,6 +169,9 @@ function plainOpts(opts) {
     chmRequired: src.chmRequired === true,
     maxPolygons: src.maxPolygons,
     buildingBufferM: src.buildingBufferM,
+    segmentTrees: src.segmentTrees === true,
+    segmentMinM2: Number(src.segmentMinM2) || 0,
+    palmPoints: src.palmPoints || [],
   };
 }
 
@@ -192,6 +195,10 @@ function mergeFoliage(parts, meta) {
   const overlayRings = [];
   const seen = new Set();
   let count = 0;
+  let palms = 0;
+  let spiresDropped = 0;
+  let crownCapped = 0;
+  let regionCapped = 0;
   let foliageLifted = 0;
   let polygons = 0;
   const treeAreas = [];
@@ -206,6 +213,10 @@ function mergeFoliage(parts, meta) {
     if (part.overlayRings) overlayRings.push.apply(overlayRings, part.overlayRings);
     if (part.materials) materials.push.apply(materials, part.materials);
     count += part.count | 0;
+    palms += part.palms | 0;
+    spiresDropped += part.spiresDropped | 0;
+    crownCapped += part.crownCapped | 0;
+    regionCapped += part.regionCapped | 0;
     foliageLifted += part.foliageLifted | 0;
     polygons += part.polygons | 0;
     if (part.treeOi) {
@@ -223,6 +234,10 @@ function mergeFoliage(parts, meta) {
     }
   }
   return {
+    palms,
+    spiresDropped,
+    crownCapped,
+    regionCapped,
     oiAreas,
     clipZones,
     clipTypes,
@@ -354,6 +369,9 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
         seedY0: bands[i].y0,
         seedY1: bands[i].y1,
         overlap: bands[i].overlap,
+        segment: !!(opts && opts.segmentTrees),
+        segMinM2: (opts && opts.segmentMinM2) || 0,
+        segBase: i + 1,
       });
     }
   }
@@ -365,9 +383,10 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
   }
   // Count every traced crown. Counting after the safety cap always reported
   // the cap minus the budget, not the outlines really left out.
+  const max = opts.maxPolygons > 0 ? opts.maxPolygons | 0 : 720;
+  crowns = fitSegments(crowns, Math.min(CROWN_CAP, max));
   const before = crowns.length;
   if (crowns.length > CROWN_CAP) crowns = selectCrownsForExport(crowns, CROWN_CAP);
-  const max = opts.maxPolygons > 0 ? opts.maxPolygons | 0 : 720;
   if (crowns.length > max) crowns = selectCrownsForExport(crowns, max);
   const meta = {
     coarsened: before > crowns.length,
@@ -399,6 +418,7 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
       maskRings: opts.maskRings || [],
       maskPolygons: opts.maskPolygons || [],
       buildingBufferM: opts.buildingBufferM,
+      palmPoints: opts.palmPoints || [],
       terrain,
       chmBuffer: chmShared,
       west: +grid.west,

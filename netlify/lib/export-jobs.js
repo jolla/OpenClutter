@@ -3,8 +3,10 @@
 /**
  * Export jobs live in Netlify Blobs. The sync function writes the job id.
  * The background function writes stages and the zip. A status read drops a
- * job that is older than an hour. The zip is deleted once it is downloaded.
- * Blobs have no server-side TTL, so the hour is checked on read.
+ * job that is older than 24 hours. The zip and the terrain JSON on the job
+ * stay for those 24 hours so the page can download or copy them again.
+ * Blobs have no server-side TTL, so the expiry is checked on read, and a new
+ * export sweeps a bounded batch of expired jobs so stored zips do not pile up.
  *
  * The Fly worker also writes a heartbeat on this same job while an export
  * runs. The heartbeat is the current stage name, a timestamp, and tile
@@ -16,7 +18,10 @@
 const { markStage, stageKey } = require("./export-progress");
 
 const STORE_NAME = "openclutter-exports";
-const TTL_MS = 60 * 60 * 1000;
+const TTL_MS = 24 * 60 * 60 * 1000;
+const SWEEP_EVERY_MS = 30 * 60 * 1000;
+const SWEEP_MAX_READS = 200;
+let lastSweepAt = 0;
 // The worker writes this often. A long CPU stage (buildings on a large
 // draw) can block the event loop for well over a minute, so the stale
 // window is five minutes. A machine that has actually stopped still
@@ -134,7 +139,51 @@ async function createJob(id) {
   const store = await openStore();
   const job = freshJob(id);
   await store.setJSON(jobKey(id), job);
+  maybeSweepExpired().catch(() => {});
   return job;
+}
+
+/**
+ * Delete jobs (and their zips) past expiresAt. Reads at most
+ * SWEEP_MAX_READS job records, and runs at most every SWEEP_EVERY_MS per
+ * instance. A zip with no job record left is deleted too.
+ */
+async function sweepExpired(now) {
+  const store = await openStore();
+  if (!store || typeof store.list !== "function") return 0;
+  const clock = now > 0 ? now : Date.now();
+  const listed = await store.list({ prefix: "job/" });
+  const keys = ((listed && listed.blobs) || []).map((b) => b.key);
+  const have = new Set(keys);
+  let reads = 0;
+  let dropped = 0;
+  for (const key of keys) {
+    const zipMatch = /^job\/([^/]+)\/zip$/.exec(key);
+    if (zipMatch) {
+      if (!have.has(jobKey(zipMatch[1]))) {
+        await store.delete(key).catch(() => {});
+        dropped += 1;
+      }
+      continue;
+    }
+    const m = /^job\/([^/]+)$/.exec(key);
+    if (!m || reads >= SWEEP_MAX_READS) continue;
+    reads += 1;
+    const job = await store.get(key, { type: "json" }).catch(() => null);
+    if (job && job.expiresAt && clock > job.expiresAt) {
+      await store.delete(key).catch(() => {});
+      await store.delete(zipKey(m[1])).catch(() => {});
+      dropped += 1;
+    }
+  }
+  return dropped;
+}
+
+async function maybeSweepExpired() {
+  const now = Date.now();
+  if (now - lastSweepAt < SWEEP_EVERY_MS) return 0;
+  lastSweepAt = now;
+  return sweepExpired(now);
 }
 
 async function readJob(id) {
@@ -392,6 +441,7 @@ async function writeHeartbeat(id, stage, extra) {
 
 module.exports = {
   TTL_MS,
+  sweepExpired,
   HEARTBEAT_MS,
   HEARTBEAT_STALE_MS,
   ZIP_DOWNLOAD_MAX,

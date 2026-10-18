@@ -132,6 +132,8 @@ const BACKGROUND_ANSWER_MS = BACKGROUND_PLATFORM_MS - 60 * 1000;
 const BACKGROUND_CHM_MS = 180 * 1000;
 const BACKGROUND_COVER_MS = 60 * 1000;
 const BACKGROUND_LIDAR_MS = 45 * 1000;
+// Lidar canopy on openclutter.com. Flip to true when dev is promoted.
+const LIDAR_CANOPY_ALL_HOSTS = false;
 // The aerial stage budget lives in aerial-fetch.js. A single 10 MP export
 // used to hold the job for 90s, then a one-pixel-different cap held it again.
 const { AsyncLocalStorage } = require("node:async_hooks");
@@ -166,7 +168,8 @@ const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { fetchSlopeForest } = require("../lib/slope-forest");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
-const { fetchUsgsLidar, applyLidarSample, lidarNote, lidarStatusLine } = require("../lib/usgs-lidar");
+const { fetchUsgsLidar, applyLidarSample, lidarNote, lidarStatusLine, rankProjects } = require("../lib/usgs-lidar");
+const { fuseLidarCanopy, keepLidarOpen, clearInside, clearThinLinesGrid, vehicleFeatures, lidarCanopyNote } = require("../lib/lidar-canopy");
 const exportJobs = require("../lib/export-jobs");
 const stageClock = require("../lib/stage-clock");
 const aerialFetch = require("../lib/aerial-fetch");
@@ -225,9 +228,39 @@ const { gpsClipboard, stampGpsTiePoints } = require("../lib/hamina-clipboard");
 const { buildMapNotes, stampMapNotes } = require("../lib/map-notes");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
-const { surfaceMasksFromImage } = require("../lib/surface-mask");
+const { surfaceMasksFromImage, openShareSampler, poleShadowContrast } = require("../lib/surface-mask");
+const { fetchLeafOnPhoto, leafOnGreenSampler } = require("../lib/leaf-on-photo");
 const { createWaterTest, clearWaterCanopy, dropWaterPoints } = require("../lib/water-mask");
 const { rejectPavementFootprints } = require("../lib/pavement");
+const POLE_SHADOW_MIN = 0.2;
+// Taller lone returns are masts, towers or flags, not light poles.
+const POLE_MAX_H_M = 20;
+// A tall lone return this close to a building outline is a roof edge, parapet or sign.
+const POLE_BUILDING_GAP_M = 3;
+function nearBuilding(lon, lat, buildings, gapM) {
+  const kx = 111320 * Math.cos((lat * Math.PI) / 180);
+  const ky = 110540;
+  for (const f of buildings || []) {
+    const g = f && f.geometry;
+    if (!g) continue;
+    const polys = g.type === "Polygon" ? [g.coordinates] : g.type === "MultiPolygon" ? g.coordinates : [];
+    for (const poly of polys) {
+      for (const ring of poly || []) {
+        let inside = false;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          const ax = (ring[j][0] - lon) * kx, ay = (ring[j][1] - lat) * ky;
+          const bx = (ring[i][0] - lon) * kx, by = (ring[i][1] - lat) * ky;
+          if (ay > 0 !== by > 0 && 0 < ((bx - ax) * (0 - ay)) / (by - ay) + ax) inside = !inside;
+          const dx = bx - ax, dy = by - ay;
+          const t = Math.max(0, Math.min(1, -(ax * dx + ay * dy) / (dx * dx + dy * dy || 1)));
+          if (Math.hypot(ax + t * dx, ay + t * dy) < gapM) return true;
+        }
+        if (inside) return true;
+      }
+    }
+  }
+  return false;
+}
 function json(status, cors, obj) {
   return {
     statusCode: status,
@@ -625,6 +658,56 @@ function describeCoreFailure(e) {
 
 const TIMED_OUT = Symbol("timed-out");
 
+/** One quad per segment of a road or rail line, its mapped width across, in pixels. */
+function corridorMaskPolygons(corridors, frame, mpu, measured) {
+  const out = [];
+  for (let i = 0; i < (corridors || []).length; i++) {
+    const c = corridors[i];
+    // Town streets and squares cut an estimated canopy height map, which
+    // smears crowns over narrow streets. Measured lidar keeps its crowns.
+    if (c.street && measured) continue;
+    if (c.area) {
+      const ring = c.coords.map((q) => llToPx(q[0], q[1], frame));
+      if (ring.length >= 4) out.push([ring]);
+      continue;
+    }
+    const half = (c.widthM || 0) / 2 / mpu;
+    if (!(half > 0)) continue;
+    const pts = c.coords.map((q) => llToPx(q[0], q[1], frame));
+    for (let k = 0; k + 1 < pts.length; k++) {
+      const a = pts[k];
+      const b = pts[k + 1];
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const len = Math.hypot(dx, dy);
+      if (!(len > 0)) continue;
+      // Extend each end by half the width so the joints close.
+      const ux = dx / len;
+      const uy = dy / len;
+      const nx = -uy * half;
+      const ny = ux * half;
+      const ax = a[0] - ux * half;
+      const ay = a[1] - uy * half;
+      const bx = b[0] + ux * half;
+      const by = b[1] + uy * half;
+      // The -1 third value marks a road or ground-level rail corridor: it blocks canopy seeds where the
+      // height model reads the road, but it does not cut traced crowns, so a
+      // median palm the canopy shows inside a wide mapped road stays.
+      // An elevated guideway is the exception: its beam reads as a crown in
+      // the lidar, so it cuts measured crowns too.
+      const ring = [
+        c.elevated || c.street ? [ax + nx, ay + ny] : [ax + nx, ay + ny, -1],
+        [bx + nx, by + ny],
+        [bx - nx, by - ny],
+        [ax - nx, ay - ny],
+        [ax + nx, ay + ny],
+      ];
+      out.push([ring]);
+    }
+  }
+  return out;
+}
+
 /**
  * Start an optional fetch on its own abort signal. Call this during the core
  * phase (Overture), then joinOptional after core. Do not pass the imagery
@@ -1021,6 +1104,13 @@ function coverJoinWait(started, background) {
  * building left out of a 2000-building ceiling frees JSON room, so a site
  * with few roofs keeps up to 1200 outlines. The byte budget is still final.
  */
+const SEGMENT_CAP_SCALE = 1.6;
+/** An estimated crown smaller than this is one tree and is never split. */
+const ESTIMATED_SPLIT_MIN_M2 = 150;
+// Lidar tree segmentation is opt-in until it stops costing canopy cover
+// (bench: Chicago, Colorado and Florida lost 5-15 points of recall).
+const SEGMENT_TREES = process.env.OC_SEGMENT_TREES !== "0";
+
 function foliageCapFor(buildings) {
   const n = Math.max(0, buildings | 0);
   return Math.max(720, Math.min(1200, Math.round(1200 - n * 0.4)));
@@ -1408,6 +1498,24 @@ async function handleClutter(event) {
   const includeFoliage = wantFoliage(event, body);
   const lidarOn =
     devHost && (body.lidar === true || body.lidar === "true" || body.lidar === 1 || body.lidar === "1");
+  // Where a USGS 3DEP cloud covers the draw, tree canopy is traced from it.
+  // Building heights from that cloud stay on the dev request above.
+  // The Fly export server also serves openclutter.com, so this stays on the
+  // dev hosts until LIDAR_CANOPY_ALL_HOSTS is set for a production release.
+  let lidarCanopyOn = false;
+  if (
+    (testHost || LIDAR_CANOPY_ALL_HOSTS) &&
+    includeFoliage &&
+    needImage &&
+    body.lidarCanopy !== false &&
+    body.lidarCanopy !== "false"
+  ) {
+    try {
+      lidarCanopyOn = rankProjects(frame).length > 0;
+    } catch {
+      lidarCanopyOn = false;
+    }
+  }
   const includeWater = wantOutdoorFlag(event, body, "includeWater");
   const includeParking = wantOutdoorFlag(event, body, "includeParking");
   const includeWalls = wantOutdoorFlag(event, body, "includeWalls");
@@ -1493,6 +1601,7 @@ async function handleClutter(event) {
           poles: includePoles,
           rvs: includeRvs,
           cars: includeCars,
+          trees: includeFoliage,
         }, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background, deckCap })
       );
     }
@@ -1606,14 +1715,18 @@ async function handleClutter(event) {
       };
       coverJob = beginOptional((signal) => fetchWorldCoverImpl(coverFrame, { signal }));
     }
-    if (lidarOn && !lidarPromise) {
+    if ((lidarOn || lidarCanopyOn) && !lidarPromise) {
       lidarSettled = false;
-      const lidarBox = {
-        west: requestBbox.west,
-        south: requestBbox.south,
-        east: requestBbox.east,
-        north: requestBbox.north,
-      };
+      // The canopy grid covers the snapped map frame, a little past the
+      // draw. Read the cloud for that frame so its edge is measured too.
+      const lidarBox = lidarCanopyOn && frame
+        ? { west: frame.west, south: frame.south, east: frame.east, north: frame.north }
+        : {
+            west: requestBbox.west,
+            south: requestBbox.south,
+            east: requestBbox.east,
+            north: requestBbox.north,
+          };
       lidarPromise = fetchUsgsLidar(lidarBox, { maxMs: lidarCapMs(background) })
         .then((value) => {
           lidarSettled = true;
@@ -1841,6 +1954,7 @@ async function handleClutter(event) {
     { label: "Canopy height", open: () => !!(chmJob && !chmJob.isSettled()) },
     { label: "World cover", open: () => !!(coverJob && !coverJob.isSettled()) },
     { label: "Lidar heights", open: () => lidarOn && !lidarSettled },
+    { label: "Lidar canopy", open: () => !lidarOn && lidarCanopyOn && !lidarSettled },
   ]);
   slowWatch.tick();
   let optional;
@@ -1920,6 +2034,9 @@ async function handleClutter(event) {
   // Imagery roof fill walks every footprint. A campus that already has the
   // vector layers does not get that pass; Oak Creek (far fewer roofs) still does.
   const skipRoofFill = features.length > DENSE_FEATURES;
+  // A national leaf-on summer photo, where a country publishes one, checks
+  // crowns drawn from an estimated canopy height map. It loads alongside.
+  const leafOnJob = includeFoliage && frame ? fetchLeafOnPhoto(frame).catch(() => null) : null;
   let decoded = needImage && !skipRoofFill ? decodeImagery(imgBuf) : null;
   // A plate near 10 MP is past the 6 MP roof decode. Canopy color still
   // needs those pixels, and the roof path already accepts that size.
@@ -1932,6 +2049,7 @@ async function handleClutter(event) {
       const sup = supplementFootprints(decoded, frame, features);
       features = sup.features;
       footprintMeta.imageryRoofs = sup.imageryRoofs;
+      footprintMeta.droppedShadow = sup.droppedShadow || 0;
       const pav = rejectPavementFootprints(decoded, frame, features);
       features = pav.features;
       footprintMeta.droppedPavement = pav.dropped;
@@ -2016,6 +2134,35 @@ async function handleClutter(event) {
     if (src === "warehouse") warehouseMembranes++;
   }
   let lidarYards = [];
+  let lidarCanopy = null;
+  if (lidarCanopyOn && !lidarOn && !chmTimedOut) {
+    try {
+      if (!lidarSettled) {
+        reportProgress({ stage: "Lidar canopy" });
+        await flushProgress();
+      }
+      const lidar = await lidarPromise;
+      lidarCanopy = fuseCanopyFromLidar(lidar);
+    } catch {
+      lidarCanopy = null;
+    }
+  }
+  function fuseCanopyFromLidar(lidar) {
+    if (!lidar || lidar.skipped || !lidar.grid) return null;
+    const fused = fuseLidarCanopy(chmGrid, lidar, { frame, buildings: features });
+    if (!fused || !fused.stats.cellsDecided) return null;
+    chmGrid = fused.grid;
+    fused.original = new Uint8Array(fused.grid.values);
+    footprintMeta.lidarCanopy = fused.stats.lidarCanopy;
+    footprintMeta.lidarCanopyStats = fused.stats;
+    footprintMeta.lidarProject = lidar.project || "";
+    footprintMeta.lidarCollected = lidar.collected || "";
+    footprintMeta.lidarMs = lidar.ms || 0;
+    if (process.env.OC_LIDAR_DEBUG) process.stderr.write("lidarcanopy " + JSON.stringify(fused.stats) + " frame " + JSON.stringify([frame.west, frame.south, frame.east, frame.north]) + " lid " + JSON.stringify(lidar.frame) + " partial " + lidar.partial + " pts " + lidar.points + "\n");
+    const note = lidarCanopyNote(fused.stats);
+    if (note && warnings.indexOf(note) < 0) warnings.push(note);
+    return fused;
+  }
   if (lidarOn) {
     try {
       if (!lidarSettled) {
@@ -2037,6 +2184,7 @@ async function handleClutter(event) {
           footprintMeta.lidarAdded = applied.added;
           footprintMeta.lidarCanopy = applied.canopy;
           if (applied.yards && applied.yards.length) lidarYards = applied.yards;
+          if (lidarCanopyOn && !chmTimedOut) lidarCanopy = fuseCanopyFromLidar(lidar);
         }
         footprintMeta.lidarProject = lidar.project || "";
         footprintMeta.lidarCollected = lidar.collected || "";
@@ -2103,6 +2251,24 @@ async function handleClutter(event) {
     } catch {
       maskRings = [];
       maskPolygons = [];
+    }
+  }
+
+  // Road carriageways, rail beds, the monorail and elevated decks keep no
+  // canopy. The mapped width is cut out; a median or verge outside it keeps
+  // the trees the aerial and canopy height show there.
+  if (includeFoliage && frame && outdoorJob) {
+    try {
+      const pack = await Promise.race([
+        outdoorJob.work,
+        new Promise((r) => setTimeout(() => r(null), background ? 20000 : 1500)),
+      ]);
+      const corridors = pack && pack !== TIMED_OUT && pack.ok !== false ? pack.corridors || [] : [];
+      const mpu = Math.max(frame.mpuX || 1, 0.05);
+      const extra = corridorMaskPolygons(corridors, frame, mpu, !!lidarCanopy);
+      if (extra.length) maskPolygons = (maskPolygons || []).concat(extra);
+    } catch {
+      /* keep the image masks */
     }
   }
 
@@ -2205,6 +2371,38 @@ async function handleClutter(event) {
     if (wantParallel) {
       preview = footprintsToClutter(list, frame, affine, slopeTop, { buildingCeiling });
     }
+    // Poles the lidar found (one tall cell, far lower around it) are drawn as
+    // light poles only where the photo shows a pole's thin shadow too; the
+    // rest stay out. Either way they are not trees.
+    {
+      const lst = footprintMeta.lidarCanopyStats;
+      const spots = (lst && lst.poleSpots) || [];
+      if (lst) delete lst.poleSpots;
+      const mpp = frame && frame.imgW ? (frame.widthM || 0) / frame.imgW : 0;
+      let drawn = 0;
+      const hs = [];
+      if (includePoles && spots.length && decoded && decoded.width === frame.imgW && decoded.height === frame.imgH) {
+        const have = outdoorFeatures.filter((f) => f && f.kind === "pole").map((f) => f.coords[0]);
+        for (const p of spots) {
+          if (!(p.heightM <= POLE_MAX_H_M)) continue;
+          if (nearBuilding(p.lon, p.lat, features, POLE_BUILDING_GAP_M)) continue;
+          const [px, py] = llToPx(p.lon, p.lat, frame);
+          const c = poleShadowContrast(decoded, px, py, p.heightM, mpp);
+          if (!(c >= POLE_SHADOW_MIN)) continue;
+          // A mapped street lamp at the same spot is the same pole.
+          if (have.some((q) => Math.hypot((q[0] - p.lon) * 81000, (q[1] - p.lat) * 111000) < 3)) continue;
+          outdoorFeatures.push({ kind: "pole", coords: [[p.lon, p.lat]], closed: false, heightM: p.heightM, explicitHeight: true, rank: 3 });
+          drawn++;
+          hs.push(p.heightM);
+        }
+      }
+      footprintMeta.lidarPoleSpots = spots.length;
+      footprintMeta.lidarPolesDrawn = drawn;
+      if (drawn) {
+        hs.sort((a, b) => a - b);
+        warnings.push("Light poles from lidar: " + drawn + " (" + Math.round(hs[0]) + " to " + Math.round(hs[hs.length - 1]) + " m tall), each with a pole shadow on the photo.");
+      }
+    }
     const parallelTasks = [];
     if (background && (outdoorFeatures.length || guidewayFeatures.length || bridgeFeatures.length)) {
       if (process.env.OPENCLUTTER_STAGE_LOG) {
@@ -2260,11 +2458,32 @@ async function handleClutter(event) {
         const filled = await fillPromise;
         if (filled && filled.values && filled.nonzero > 0) {
           chmGrid = filled;
+          // The gap fill reads the aerial. Where the lidar measured open
+          // ground or a crown, the measurement stands.
+          if (lidarCanopy) {
+            const fillNz = chmGrid.nonzero;
+            const reverted = keepLidarOpen(chmGrid, lidarCanopy.decided, lidarCanopy.original);
+            if (process.env.OC_LIDAR_DEBUG) process.stderr.write("lidarfill nz " + fillNz + " reverted " + reverted + " now " + chmGrid.nonzero + "\n");
+          }
           if (waterTest) footprintMeta.waterCanopyCells = (footprintMeta.waterCanopyCells || 0) + clearWaterCanopy(chmGrid, waterTest);
         }
       } catch {
         // The measured grid still ships when the fill cannot be read.
       }
+    }
+    // OSM woods are an unmeasured outline painted at one guessed height, and
+    // Overpass answers some runs and not others. Where a measured height grid
+    // covers the draw it decides the canopy, so the result no longer depends
+    // on whether that fetch came back.
+    if (woodRings.length && chmGrid && chmGrid.nonzero > 0) {
+      footprintMeta.woodRingsSkipped = woodRings.length;
+      woodRings = [];
+    }
+    if (lidarCanopy && chmGrid) {
+      // Trailers, RVs, cars, and storage stacks are not crowns.
+      footprintMeta.vehicleCanopyCells = clearInside(chmGrid, vehicleFeatures(outdoorFeatures));
+      // A guideway or gantry beam is one cell wide and level; it is not a crown.
+      footprintMeta.lineCanopyCells = clearThinLinesGrid(chmGrid);
     }
     if (background && includeFoliage && !chmTimedOut) {
       if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage trees-parallel\n");
@@ -2278,10 +2497,18 @@ async function handleClutter(event) {
               maskRings,
               maskPolygons,
               woodRings,
+              palmPoints,
+              // Lidar crowns are always split per tree. A blob on an estimated
+              // canopy height map larger than one crown is split too, but only
+              // along a real height valley between two tops.
+              segmentTrees: SEGMENT_TREES,
+              segmentMinM2: lidarCanopy ? 0 : ESTIMATED_SPLIT_MIN_M2,
               terrain,
               omitFoliage: false,
               chmRequired: true,
-              maxPolygons: foliageCap,
+              // Per-tree lidar crowns need more outlines than whole stands.
+              // The zip budget still trims after this.
+              maxPolygons: SEGMENT_TREES && lidarCanopy ? Math.round(foliageCap * SEGMENT_CAP_SCALE) : foliageCap,
             })
           )
           .then((pack) => {
@@ -2297,7 +2524,9 @@ async function handleClutter(event) {
     }
     if (parallelTasks.length) await Promise.all(parallelTasks);
     if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage build-clutter\n");
+    const leafOnPhoto = leafOnJob ? await leafOnJob : null;
     return buildClutter({
+      palmPoints,
       frame,
       footprintsGeojson: { type: "FeatureCollection", features: list },
       treePoints,
@@ -2339,6 +2568,12 @@ async function handleClutter(event) {
       jsonBudget: jsonBudgetOverride || undefined,
       foliagePack,
       outdoorPlan,
+      aerialOpenShare:
+        decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH
+          ? openShareSampler(decoded)
+          : null,
+      leafOnGreenShare: leafOnPhoto ? leafOnGreenSampler(leafOnPhoto, frame.mpuX) : null,
+      leafOnSource: leafOnPhoto ? leafOnPhoto.source : "",
     });
   }
 
@@ -2350,6 +2585,7 @@ async function handleClutter(event) {
 
   let outdoorFeatures = [];
   let outdoorNotes = [];
+  let palmPoints = [];
   let outdoorMiss = false;
   if (outdoorJob) {
     const pack = await outdoorJob.work;
@@ -2359,6 +2595,7 @@ async function handleClutter(event) {
     } else {
       outdoorFeatures = pack.features || [];
       outdoorNotes = pack.notes || [];
+      palmPoints = Array.isArray(pack.palms) ? pack.palms : [];
       takePlaces(pack);
       const rest = [];
       const fromOutdoor = [];

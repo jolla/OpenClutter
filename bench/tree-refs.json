@@ -1,0 +1,4 @@
+[
+  {"id": "sands-ave-row", "note": "Street View: small desert trees, 4-6 m tall, open crowns 4-6 m wide, one row along the Sands Ave sidewalk north of the Sphere.", "box": [-820, -1007, -660, -985], "heightM": [4, 6], "maxCrownM2": 60},
+  {"id": "strip-palms", "note": "Street View: Mexican fan and date palms on Las Vegas Blvd at the Wynn frontage, 15-25 m, bare trunks, 4-5 m crowns.", "box": [-1398, -720, -1340, -460], "heightM": [15, 25], "minTrunks": 4, "maxCrownM2": 30}
+]

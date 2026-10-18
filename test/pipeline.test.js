@@ -611,7 +611,7 @@ describe("pipeline: footprints + trees share the frame", () => {
     // Jerry's export extent clips the southern half. The visible cap stays.
     const clipped = frameFor(lock.extent.south);
     const cap = footprintsToClutter([sphere], clipped, null);
-    assert.ok(cap.stats.buildings >= 2 && cap.stats.buildings <= 6, `dome bands ${cap.stats.buildings}`);
+    assert.ok(cap.stats.buildings >= 2 && cap.stats.buildings <= 16, `sphere slices ${cap.stats.buildings}`);
     assert.equal(cap.stats.droppedMega, 0);
     assert.equal(cap.stats.droppedTiny, 0);
     assert.equal(cap.stats.droppedClip, 0);
@@ -629,7 +629,7 @@ describe("pipeline: footprints + trees share the frame", () => {
     // shorter rings up to the measured 112 m. It is not one full-height cylinder.
     const full = frameFor(36.119);
     const disk = footprintsToClutter([sphere], full, null);
-    assert.ok(disk.stats.buildings >= 4 && disk.stats.buildings <= 6, `dome bands ${disk.stats.buildings}`);
+    assert.ok(disk.stats.buildings >= 4 && disk.stats.buildings <= 16, `sphere slices ${disk.stats.buildings}`);
     assert.equal(disk.stats.droppedMega, 0);
     const diskTops = disk.oiAreas.map((a) => a.area_material.top_height);
     assert.ok(Math.max(...diskTops) >= 111.5 && Math.max(...diskTops) <= 112.05, `apex ${Math.max(...diskTops)}`);
@@ -1279,8 +1279,10 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /function noteAreaReplaced/);
     assert.match(app, /function noteDrawInProgress/);
     const afterDownloadFn = app.split("function downloadBlob")[1] || "";
-    assert.equal((afterDownloadFn.match(/downloadBlob\(/g) || []).length, 2);
-    assert.match(app, /downloadBlob\(b64ToBlob\(data\.zipBase64/);
+    // Zip only: the background path, the short path, and Download again.
+    assert.equal((afterDownloadFn.match(/downloadBlob\(/g) || []).length, 3);
+    assert.match(app, /downloadBlob\(rec\.blob,/);
+    assert.match(app, /b64ToBlob\(data\.zipBase64/);
     assert.match(app, /downloadBlob\(blob,/);
     assert.equal(/terrain-clipboard\.json/.test(app), false);
     assert.equal(/terrainFilename/.test(app), false);
@@ -1310,7 +1312,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.equal(/>Finest</.test(html), false);
     assert.equal(/past 20×20/.test(html), false);
     assert.equal(/Ski hills only/i.test(html), false);
-    assert.match(html, /placeholder="Search address, press Enter"/);
+    assert.match(html, /placeholder="Search a place or address"/);
     assert.match(html, /enterkeyhint="search"/);
     assert.equal(/type="submit"|>Go</.test(html), false);
     assert.match(html, /id="map-credit"/);

@@ -189,6 +189,22 @@ function ingestPoint(grid, x, y, z, cls, ret, nret, maxX, maxY) {
     grid.cells.set(key, rec);
   }
   rec.n++;
+  // Tree evidence for lidar canopy. Ground, building, water, rail, road,
+  // wire, tower, wire connector, and bridge deck are never a crown.
+  if (cls !== 2 && cls !== 6 && cls !== 9 && cls !== 10 && cls !== 11 && !(cls >= 13 && cls <= 17)) {
+    if (ret === 1) {
+      rec.tc++;
+      if (rec.tMax == null || z > rec.tMax) rec.tMax = z;
+      if (nret >= 2) rec.mr++;
+    } else if (ret >= 2) {
+      rec.lr++;
+    }
+    if (cls === 3 || cls === 4 || cls === 5) {
+      rec.vegN++;
+      if (nret >= 2) rec.vegMulti++;
+      if (rec.vegMax == null || z > rec.vegMax) rec.vegMax = z;
+    }
+  }
   // Canopy height is the highest first return above ground. Building class
   // stays out so a roof is not a crown. Ground is the class-2 minimum.
   if (cls !== 2 && cls !== 6 && ret === 1) {
@@ -218,7 +234,10 @@ function ingestPoint(grid, x, y, z, cls, ret, nret, maxX, maxY) {
 }
 
 function emptyCell() {
-  return { g: null, b: [], bc: 0, u: [], uc: 0, uMin: null, uMax: null, v: [], vc: 0, n: 0, fc: 0, fMax: null };
+  return {
+    g: null, b: [], bc: 0, u: [], uc: 0, uMin: null, uMax: null, v: [], vc: 0, n: 0, fc: 0, fMax: null,
+    tc: 0, tMax: null, mr: 0, lr: 0, vegN: 0, vegMulti: 0, vegMax: null,
+  };
 }
 
 /**
@@ -1136,11 +1155,23 @@ async function fetchUsgsLidarWork(frame, opts) {
   const tried = [];
   const need = Math.max(5000, Math.min(80000, Math.round((km2 > 0 ? km2 : 0.1) * 40000)));
   for (let i = 0; i < ranked.length && i < 4; i++) {
-    if (Date.now() - started > caps.maxMs) break;
+    // The two newest surveys over the draw are always read, so the clock
+    // cannot change which survey a draw gets between runs.
+    if (i >= 2 && Date.now() - started > caps.maxMs) break;
     const name = ranked[i][0];
     tried.push(name);
+    // A transient fetch error retries the same survey once, so one slow
+    // response does not swap the survey and change the trees between runs.
+    let candidate = null;
+    for (let attempt = 0; attempt < 2 && !candidate; attempt++) {
+      try {
+        candidate = await readProject(name, frame, caps, fetchImpl);
+        if (!candidate) break;
+      } catch {
+        candidate = null;
+      }
+    }
     try {
-      const candidate = await readProject(name, frame, caps, fetchImpl);
       if (!candidate || !candidate.nodes.length) continue;
       if (!plan || candidate.fullPoints > plan.fullPoints) plan = candidate;
       if (candidate.fullPoints >= need) break;
@@ -1243,6 +1274,7 @@ async function fetchUsgsLidarWork(frame, opts) {
 }
 
 module.exports = {
+  cellCenter,
   HEIGHT_SOURCE,
   EPT_BUCKET,
   MAX_POINTS,
@@ -1256,6 +1288,8 @@ module.exports = {
   gridFromPoints,
   canopyCellM,
   canopyRaster,
+  groundAt,
+  unmercator,
   applyLidarSample,
   storageYards,
   lidarStatusLine,

@@ -12,7 +12,7 @@ test("production hosts get the quality gate but not the testing overrides", () =
 });
 
 test("dev and deploy previews get both gates", () => {
-  for (const h of ["dev--openclutter.netlify.app", "deploy-preview-12--openclutter.netlify.app"]) {
+  for (const h of ["dev.openclutter.com", "dev--openclutter.netlify.app", "deploy-preview-12--openclutter.netlify.app"]) {
     assert.strictEqual(isQualityHost(ev(h)), true, h);
     assert.strictEqual(isDevTestHost(ev(h)), true, h);
     assert.strictEqual(isDevDemHost(ev(h)), true, h);
