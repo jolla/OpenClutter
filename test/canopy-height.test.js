@@ -306,8 +306,10 @@ describe("canopy height grid", () => {
     }
     const nlcd = treePairsFromPoints([], frame, [], null, { canopyHits: hits, heightSample: () => 14 });
     assert.equal(nlcd.foliageGeometry, "nlcd-polygon");
-    assert.equal(nlcd.oiAreas.filter((a) => a.kind === "canopy").length, 1);
-    assert.equal(nlcd.oiAreas.length, 2);
+    // A woods wider than one crown ships as tiles, each with its own top.
+    const nlcdCanopy = nlcd.oiAreas.filter((a) => a.kind === "canopy").length;
+    assert.ok(nlcdCanopy >= 1);
+    assert.ok(nlcd.oiAreas.length >= 2 * nlcdCanopy);
     const mLon = 111320 * Math.cos((42.9 * Math.PI) / 180);
     const w = 36;
     const h = 36;
@@ -585,10 +587,15 @@ describe("canopy height grid", () => {
     assert.ok(foliage.length >= 2);
     const base = Math.min(...foliage.map((a) => a.area_material.bottom_height || 0));
     assert.ok(base >= 20);
+    // The crown may be cut into a skirt and a rounded top band. The stack
+    // still spans the measured 14 m above the lifted ground.
+    const grounds = foliage.map((a) => a.area_material.bottom_height || 0);
     for (const area of foliage) {
-      const mat = area.area_material;
-      const bottom = mat.bottom_height || 0;
-      assert.equal(mat.top_height, Math.round((bottom + 14) * 10) / 10);
+      const t = area.area_material.top_height;
+      // A skirt band ends where the top band starts; only a stack top is checked.
+      if (grounds.some((g) => Math.abs(g - t) < 0.05)) continue;
+      assert.ok(grounds.some((g) => Math.abs(t - Math.round((g + 14) * 10) / 10) < 0.15), "top " + t);
+      assert.ok((area.area_material.bottom_height || 0) >= base - 0.05);
     }
     assert.equal(built.stats.openIntentTreeAreas >= 1, true);
     assert.equal(

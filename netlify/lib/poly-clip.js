@@ -655,6 +655,7 @@ function createClipSet(buildingRings, maskRings, maskPolygons, bufferPx) {
   }
   for (const poly of maskPolygons || []) {
     if (!poly || !poly[0]) continue;
+    if (poly[0][0] && poly[0][0][2] === -1) continue;
     const rings = [];
     for (const ring of poly) {
       const closed = closeRing(openRing(ring));
@@ -912,8 +913,12 @@ function clipFoliageRing(ring, clipSet) {
   const waterHits = [];
   for (const extra of clipSet.extras) {
     if (!bboxHit(bb, extra.bbox, clipSet.bufferPx)) continue;
-    if (extra.geom && extra.geom.length) geoms.push(extra.geom);
-    if (extra.kind === "water") waterHits.push(extra);
+    // Every mask keeps its own entry, so pavement, bright roofs and road
+    // corridors clip too, and the water entries stay aligned with geoms.
+    if (extra.geom && extra.geom.length) {
+      geoms.push(extra.geom);
+      waterHits.push(extra);
+    }
   }
   if (!geoms.length) return [closed];
   // One roof at a time. Unioning every footprint first filled the gap between

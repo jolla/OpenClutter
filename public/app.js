@@ -2,6 +2,7 @@ function devPage() {
   const host = location.hostname || "";
   const path = location.pathname || "";
   return (
+    host === "dev.openclutter.com" ||
     host.startsWith("dev--") ||
     host.startsWith("deploy-preview-") ||
     path === "/dev" ||
@@ -979,23 +980,123 @@ map.on("zoomend moveend", refreshVertexPixels);
 
 enterDrawMode();
 
-document.getElementById("search").onsubmit = async (e) => {
-  e.preventDefault();
-  const q = document.getElementById("q").value.trim();
+const searchInput = document.getElementById("q");
+const suggestList = document.getElementById("suggest");
+let suggestItems = [];
+let suggestActive = -1;
+let suggestSeq = 0;
+let suggestTimer = null;
+
+function viewParams() {
+  const c = map.getCenter();
+  return "&lat=" + c.lat.toFixed(5) + "&lon=" + c.lng.toFixed(5);
+}
+
+function closeSuggest() {
+  suggestItems = [];
+  suggestActive = -1;
+  suggestList.hidden = true;
+  suggestList.textContent = "";
+  searchInput.setAttribute("aria-expanded", "false");
+}
+
+function renderSuggest() {
+  suggestList.textContent = "";
+  suggestItems.forEach((s, i) => {
+    const li = document.createElement("li");
+    li.id = "suggest-" + i;
+    li.setAttribute("role", "option");
+    li.setAttribute("aria-selected", i === suggestActive ? "true" : "false");
+    li.textContent = s.label;
+    if (s.detail) {
+      const d = document.createElement("span");
+      d.className = "sd";
+      d.textContent = s.detail;
+      li.appendChild(d);
+    }
+    li.addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      pickSuggestion(s);
+    });
+    suggestList.appendChild(li);
+  });
+  suggestList.hidden = !suggestItems.length;
+  searchInput.setAttribute("aria-expanded", suggestItems.length ? "true" : "false");
+  if (suggestActive >= 0) searchInput.setAttribute("aria-activedescendant", "suggest-" + suggestActive);
+  else searchInput.removeAttribute("aria-activedescendant");
+}
+
+searchInput.addEventListener("input", () => {
+  clearTimeout(suggestTimer);
+  const q = searchInput.value.trim();
+  const seq = ++suggestSeq;
+  if (q.length < 2) return closeSuggest();
+  suggestTimer = setTimeout(async () => {
+    try {
+      const r = await fetch("/api/suggest?q=" + encodeURIComponent(q) + viewParams());
+      const list = r.ok ? await r.json() : [];
+      if (seq !== suggestSeq) return;
+      suggestItems = Array.isArray(list) ? list : [];
+      suggestActive = -1;
+      renderSuggest();
+    } catch {
+      // Enter still searches.
+    }
+  }, 200);
+});
+
+searchInput.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") return closeSuggest();
+  if (!suggestItems.length) return;
+  if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+    ev.preventDefault();
+    const n = suggestItems.length;
+    suggestActive = ev.key === "ArrowDown" ? (suggestActive + 1) % n : (suggestActive - 1 + n) % n;
+    renderSuggest();
+  } else if (ev.key === "Enter" && suggestActive >= 0) {
+    ev.preventDefault();
+    pickSuggestion(suggestItems[suggestActive]);
+  }
+});
+
+searchInput.addEventListener("blur", () => setTimeout(closeSuggest, 100));
+
+function flyToHit(hit) {
+  map.setView([+hit.lat, +hit.lon], 17);
+  if (!bbox) setStatus("");
+  else if (exportBtn.disabled) setStatus(areaLimitMessage() || "Area is outside the export size limits.", true);
+  else setStatus("Ready to export.");
+}
+
+async function runSearch(q, extra) {
+  suggestSeq++;
+  clearTimeout(suggestTimer);
+  closeSuggest();
   setStatus("Searching…");
   try {
-    const r = await fetch("/api/geocode?q=" + encodeURIComponent(q));
+    const r = await fetch("/api/geocode?q=" + encodeURIComponent(q) + viewParams() + (extra || ""));
     const hits = await r.json();
     if (!r.ok) throw new Error(hits.error || "Geocode failed");
     if (!hits.length) throw new Error("No results. Try the street address.");
-    const hit = hits[0];
-    map.setView([+hit.lat, +hit.lon], 17);
-    if (!bbox) setStatus("");
-    else if (exportBtn.disabled) setStatus(areaLimitMessage() || "Area is outside the export size limits.", true);
-    else setStatus("Ready to export.");
+    flyToHit(hits[0]);
   } catch (err) {
     setStatus(err.message, true);
   }
+}
+
+function pickSuggestion(s) {
+  searchInput.value = s.text || s.label;
+  if (Number.isFinite(s.lat) && Number.isFinite(s.lon)) {
+    suggestSeq++;
+    closeSuggest();
+    return flyToHit(s);
+  }
+  return runSearch(s.text || s.label, s.magicKey ? "&magicKey=" + encodeURIComponent(s.magicKey) : "");
+}
+
+document.getElementById("search").onsubmit = (e) => {
+  e.preventDefault();
+  runSearch(searchInput.value.trim());
 };
 
 async function detectCanopyTrees(b) {
@@ -1037,6 +1138,7 @@ function noteDrawInProgress() {
   if (drawHidesCopy) return;
   drawHidesCopy = true;
   syncIdleExportLabel();
+  paintRedownload();
   clearCopyNote();
 }
 
@@ -1044,10 +1146,93 @@ function noteDrawCancelled() {
   if (!drawHidesCopy) return;
   drawHidesCopy = false;
   syncIdleExportLabel();
+  paintRedownload();
   if (exportCopyReady) setCopyNote("Paste terrain separately in Hamina.");
 }
 
+// The last finished export stays downloadable until the area changes or a
+// new export starts. The blob is the session copy; the job id lets a reload
+// fetch the zip and terrain again while the server keeps them (24 h).
+const LAST_EXPORT_KEY = "openclutter.lastExport";
+const LAST_EXPORT_MS = 24 * 60 * 60 * 1000;
+let lastExport = null;
+
+function formatZipMb(bytes) {
+  const mb = Math.max(0, +bytes || 0) / 1e6;
+  return (mb >= 10 ? mb.toFixed(0) : mb.toFixed(1)) + " MB";
+}
+
+function paintRedownload() {
+  const row = document.getElementById("redownload-row");
+  const link = document.getElementById("redownload");
+  if (!row || !link) return;
+  let live = false;
+  try {
+    live = exportLive;
+  } catch {}
+  const show = !!(lastExport && !live && !drawHidesCopy);
+  row.hidden = !show;
+  if (show) {
+    const size = lastExport.bytes > 0 ? " (" + formatZipMb(lastExport.bytes) + ")" : "";
+    link.textContent = "Download again" + size;
+  }
+}
+
+function rememberExport(rec) {
+  lastExport = rec;
+  if (rec && rec.jobId) {
+    try {
+      const saved = Object.assign({}, rec);
+      delete saved.blob;
+      localStorage.setItem(LAST_EXPORT_KEY, JSON.stringify(saved));
+    } catch {}
+  } else {
+    try {
+      localStorage.removeItem(LAST_EXPORT_KEY);
+    } catch {}
+  }
+  paintRedownload();
+}
+
+function forgetExport() {
+  lastExport = null;
+  try {
+    localStorage.removeItem(LAST_EXPORT_KEY);
+  } catch {}
+  paintRedownload();
+}
+
+async function downloadAgain() {
+  const rec = lastExport;
+  if (!rec) return;
+  if (rec.blob) {
+    downloadBlob(rec.blob, rec.filename || "openintent.zip");
+    return;
+  }
+  if (!rec.jobId) return;
+  const link = document.getElementById("redownload");
+  if (link) link.textContent = "Downloading...";
+  try {
+    const got = await downloadJobZip(rec.jobId, rec.filename);
+    if (lastExport === rec) {
+      rec.blob = got.blob;
+      rec.bytes = got.blob.size || rec.bytes;
+    }
+  } catch (err) {
+    const msg = (err && err.message) || "The download failed. Export again.";
+    if (/expired/i.test(msg) && lastExport === rec) forgetExport();
+    setCopyNote(msg, true);
+  }
+  paintRedownload();
+}
+
+document.getElementById("redownload").addEventListener("click", (e) => {
+  e.preventDefault();
+  downloadAgain();
+});
+
 function noteAreaReplaced() {
+  forgetExport();
   drawHidesCopy = false;
   if (drawEpoch === exportEpoch) drawEpoch += 1;
   exportCopyReady = false;
@@ -1301,6 +1486,7 @@ function endExportProgress() {
   exportLive = false;
   exportShownStage = "";
   hideExportProgress();
+  paintRedownload();
 }
 
 function showExportProgress(job) {
@@ -1466,8 +1652,9 @@ async function downloadJobZip(jobId, filename) {
       const blob = await r.blob();
       const disp = r.headers.get("content-disposition") || "";
       const named = disp.match(/filename="([^"]+)"/);
-      downloadBlob(blob, (named && named[1]) || filename || "openintent.zip");
-      return;
+      const name = (named && named[1]) || filename || "openintent.zip";
+      downloadBlob(blob, name);
+      return { blob, name };
     }
     lastStatus = r.status;
     lastData = await r.json().catch(() => ({}));
@@ -1552,6 +1739,7 @@ document.getElementById("export").onclick = async () => {
   if (!bbox) return;
   exportEpoch = drawEpoch;
   exportCopyReady = false;
+  forgetExport();
   exportBtn.disabled = true;
   const includeFoliage = clutterChecked("include-foliage");
   const includeTerrain = terrainExportEnabled();
@@ -1592,8 +1780,19 @@ document.getElementById("export").onclick = async () => {
     if (queued && queued.jobId) {
       const data = await pollExport(queued.jobId);
       paintExportSteps(data, true);
-      await downloadJobZip(queued.jobId, data.zipFilename);
+      const got = await downloadJobZip(queued.jobId, data.zipFilename);
       showExportResult(data, includeFoliage, includeTerrain, "");
+      rememberExport({
+        jobId: queued.jobId,
+        filename: got.name,
+        bytes: got.blob.size,
+        blob: got.blob,
+        at: Date.now(),
+        bbox: Object.assign({}, bbox),
+        label: committedLabel,
+        includeFoliage: includeFoliage === true,
+        includeTerrain: includeTerrain !== false,
+      });
       return;
     }
     const fallbackNote =
@@ -1610,7 +1809,9 @@ document.getElementById("export").onclick = async () => {
       }
       return exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain, paste);
     });
-    downloadBlob(b64ToBlob(data.zipBase64, "application/zip"), data.zipFilename || "openintent.zip");
+    const shortBlob = b64ToBlob(data.zipBase64, "application/zip");
+    downloadBlob(shortBlob, data.zipFilename || "openintent.zip");
+    rememberExport({ filename: data.zipFilename || "openintent.zip", bytes: shortBlob.size, blob: shortBlob, at: Date.now() });
     if (paste && paste.terrainClipboard) {
       const keptNotes = data.terrainClipboard && data.terrainClipboard.mapNotes;
       data.terrainClipboard = paste.terrainClipboard;
@@ -1636,3 +1837,41 @@ document.getElementById("export").onclick = async () => {
     exportBtn.disabled = false;
   }
 };
+
+// After a reload or a closed tab, bring back the last export's links while
+// the server still has it. A shape drawn meanwhile wins.
+(async function restoreLastExport() {
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(LAST_EXPORT_KEY) || "null");
+  } catch {}
+  if (!saved) return;
+  const b = saved.bbox;
+  const fresh = saved.jobId && b && Date.now() - (+saved.at || 0) < LAST_EXPORT_MS;
+  if (!fresh) {
+    forgetExport();
+    return;
+  }
+  let data = null;
+  try {
+    const r = await fetch("/api/export-status?job=" + encodeURIComponent(saved.jobId), { cache: "no-store" });
+    if (r.status === 404) {
+      forgetExport();
+      return;
+    }
+    if (!r.ok) return;
+    data = await r.json();
+  } catch {
+    return;
+  }
+  if (!data || data.state !== "done" || bbox || exportLive) return;
+  const bounds = L.latLngBounds([b.south, b.west], [b.north, b.east]);
+  applyExtent(bounds, saved.label);
+  try {
+    map.fitBounds(bounds);
+  } catch {}
+  exportEpoch = drawEpoch;
+  showExportResult(data, saved.includeFoliage, saved.includeTerrain, "");
+  syncIdleExportLabel();
+  rememberExport(Object.assign({}, saved, { blob: null, bytes: saved.bytes || data.zipBytes || 0 }));
+})();

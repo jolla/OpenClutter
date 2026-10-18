@@ -75,7 +75,8 @@ describe("Hamina map notes", () => {
     });
     const text = notes.map((n) => n.text).join("\n");
     assert.match(text, /^Office$/m);
-    assert.match(text, /^Bathhouse$/m);
+    assert.match(text, /^Restrooms$/m);
+    assert.equal(/Bathhouse|Bath house/i.test(text), false);
     assert.match(text, /^Pavillion$/m);
     assert.equal(/Suggested gateway|Suggested AP|AFC GPS/.test(text), false);
     assert.equal(/\d+\.\d{4,}/.test(text), false);
@@ -159,4 +160,18 @@ describe("Hamina map notes", () => {
     const off = buildMapNotes({ frame, places: [], features: [], terrain: null });
     assert.deepEqual(off, []);
   });
+});
+
+const { restroomLabel } = require("../netlify/lib/map-notes");
+const assertR = require("node:assert/strict");
+require("node:test").test("restroom label follows the export country", () => {
+  assertR.equal(restroomLabel(-88.0, 43.0), "Restrooms"); // Wisconsin
+  assertR.equal(restroomLabel(-122.3, 47.6), "Restrooms"); // Seattle
+  assertR.equal(restroomLabel(-149.9, 61.2), "Restrooms"); // Anchorage
+  assertR.equal(restroomLabel(-73.57, 45.5), "Washrooms"); // Montreal
+  assertR.equal(restroomLabel(-123.1, 49.28), "Washrooms"); // Vancouver
+  assertR.equal(restroomLabel(-79.38, 43.65), "Washrooms"); // Toronto
+  assertR.equal(restroomLabel(-0.12, 51.5), "Toilets"); // London
+  assertR.equal(restroomLabel(151.2, -33.87), "Toilets"); // Sydney
+  assertR.equal(restroomLabel(27.2, 60.57), "Toilets"); // Hamina
 });

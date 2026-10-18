@@ -414,7 +414,119 @@ function surfaceMasksFromImage(decoded, frame) {
   return { waterRings, pavementPolygons, waterM2, pavementM2 };
 }
 
+/**
+ * Share of a ring's aerial pixels that read as open ground (lawn, paving,
+ * pitch). Ring is OI pixels, y measured up from the image bottom.
+ */
+function openShareSampler(image) {
+  if (!image || !image.data || !(image.width > 0) || !(image.height > 0)) return null;
+  const { data, width: w, height: h } = image;
+  return function openShare(ring) {
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const p of ring) {
+      if (p[0] < x0) x0 = p[0];
+      if (p[0] > x1) x1 = p[0];
+      if (p[1] < y0) y0 = p[1];
+      if (p[1] > y1) y1 = p[1];
+    }
+    const step = Math.max(1, Math.floor(Math.max(x1 - x0, y1 - y0) / 14));
+    let n = 0;
+    let open = 0;
+    for (let y = Math.ceil(y0); y <= y1; y += step) {
+      for (let x = Math.ceil(x0); x <= x1; x += step) {
+        let inside = false;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          const [xi, yi] = ring[i];
+          const [xj, yj] = ring[j];
+          if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+        }
+        if (!inside) continue;
+        const row = h - 1 - Math.round(y);
+        const col = Math.round(x);
+        if (row < 0 || row >= h || col < 0 || col >= w) continue;
+        const k = (row * w + col) * 4;
+        n++;
+        if (openGroundPixel(data[k], data[k + 1], data[k + 2], localStd(data, w, h, col, row))) open++;
+      }
+    }
+    return n >= 6 ? open / n : 0;
+  };
+}
+
+/**
+ * Thin-shadow test for a pole at OI pixel (x, y), y up. Walks rays from the
+ * foot out to about the pole's height and keeps the darkest one: a pole casts
+ * a line a few pixels wide that is clearly darker than the ground either side.
+ * Returns that contrast (0 to 1), or null if the photo is too coarse.
+ */
+function poleShadowContrast(image, x, y, heightM, mpp) {
+  if (!image || !image.data || !(mpp > 0) || mpp > 0.35) return null;
+  const { data, width: w, height: h } = image;
+  const lum = (xx, yy) => {
+    const col = Math.round(xx);
+    const row = h - 1 - Math.round(yy);
+    if (col < 0 || row < 0 || col >= w || row >= h) return null;
+    const k = (row * w + col) * 4;
+    return 0.299 * data[k] + 0.587 * data[k + 1] + 0.114 * data[k + 2];
+  };
+  const r0 = 0.6 / mpp;
+  const r1 = Math.max(3, 0.7 * Math.min(heightM, 25)) / mpp;
+  // An evergreen beside the spot: a tree, not a pole.
+  const rg = 2 / mpp;
+  let gn = 0;
+  let gg = 0;
+  for (let yy = Math.floor(y - rg); yy <= y + rg; yy += 2) {
+    for (let xx = Math.floor(x - rg); xx <= x + rg; xx += 2) {
+      if ((xx - x) * (xx - x) + (yy - y) * (yy - y) > rg * rg) continue;
+      const col = xx;
+      const row = h - 1 - yy;
+      if (col < 0 || row < 0 || col >= w || row >= h) continue;
+      const k = (row * w + col) * 4;
+      const R = data[k], G = data[k + 1], B = data[k + 2];
+      gn++;
+      if ((G >= 25 && G >= R * 1.08 && G >= B * 1.08) || (G >= R + 6 && G >= B + 6 && 2 * G - R - B >= 14)) gg++;
+    }
+  }
+  if (gn && gg / gn >= 0.1) return 0;
+  const side = 1.2 / mpp;
+  let best = 0;
+  for (let t = 0; t < 360; t++) {
+    const a = (Math.PI * 2 * t) / 360;
+    const ux = Math.cos(a);
+    const uy = Math.sin(a);
+    let on = 0;
+    let off = 0;
+    let n = 0;
+    let dark = 0;
+    for (let r = r0; r <= r1; r += 1) {
+      const px = x + ux * r;
+      const py = y + uy * r;
+      // The line is a few pixels wide: take the darkest pixel across it.
+      let c = null;
+      for (let q = -2; q <= 2; q++) {
+        const v = lum(px - uy * q, py + ux * q);
+        if (v != null && (c == null || v < c)) c = v;
+      }
+      const s1 = lum(px - uy * side, py + ux * side);
+      const s2 = lum(px + uy * side, py - ux * side);
+      if (c == null || s1 == null || s2 == null) continue;
+      n++;
+      on += c;
+      off += (s1 + s2) / 2;
+      if (c < 0.85 * Math.min(s1, s2)) dark++;
+    }
+    if (n < 8 || !(off > 0)) continue;
+    // Most of the ray must be darker than both sides, not one dark patch.
+    if (dark < 0.4 * n) continue;
+    const contrast = 1 - on / off;
+    if (contrast > best) best = contrast;
+  }
+  return best;
+}
+
 module.exports = {
+  poleShadowContrast,
+  openShareSampler,
   surfaceMasksFromImage,
   MIN_WATER_M2,
   MIN_PAVEMENT_M2,

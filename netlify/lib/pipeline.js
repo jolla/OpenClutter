@@ -3051,6 +3051,11 @@ function outdoorToOi(items, imgW, imgH, mpuX) {
 const OI_FLOORPLAN_HEIGHT_M = 2.5;
 const OI_FLOORPLAN_HEIGHT_FT = 8.202;
 
+function isTrunkArea(a) {
+  const m = a && a.area_material;
+  return !!(m && /^Foliage - Trunk /.test(String(m.name || "")));
+}
+
 function buildOpenIntent(frame, name, imgName, areas, materials) {
   const mpu = frame.mpuX || frame.mpu || frame.widthM / frame.imgW;
   return {
@@ -3099,6 +3104,78 @@ function buildOpenIntent(frame, name, imgName, areas, materials) {
  * A chunk is one building, one tree (crown, layers, and stem), or one
  * outdoor area. The next chunk is omitted whole when it would pass the budget.
  */
+function overJsonBudget(frame, name, imgName, chunks, budget) {
+  const limit = budget > 0 ? budget : OPENINTENT_JSON_BUDGET;
+  const flat = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const a = chunks[i] && chunks[i].areas;
+    if (a) for (let j = 0; j < a.length; j++) flat.push(a[j]);
+  }
+  return Buffer.byteLength(JSON.stringify(buildOpenIntent(frame, name, imgName, flat))) > limit;
+}
+
+/** Plan area of an OpenIntent area ring, in its own units. */
+function oiAreaCover(area) {
+  const coords = area && area.area && area.area.coordinates;
+  if (!coords || coords.length < 3) return 0;
+  let a = 0;
+  for (let k = 0, m = coords.length - 1; k < coords.length; m = k++) {
+    const p = coords[k].coordinate_xyz;
+    const q = coords[m].coordinate_xyz;
+    if (!p || !q) return 0;
+    a += (q.x + p.x) * (q.y - p.y);
+  }
+  return Math.abs(a / 2);
+}
+
+/** Sort tree pieces by footprint per byte, largest first; ties keep order. */
+function rankPiecesByCover(pieces) {
+  const keyed = pieces.map((p, i) => {
+    const bytes = Math.max(1, JSON.stringify(p.areas).length);
+    return { p, i, k: oiAreaCover(p.areas[0]) / bytes };
+  });
+  keyed.sort((a, b) => b.k - a.k || a.i - b.i);
+  for (let i = 0; i < keyed.length; i++) pieces[i] = keyed[i].p;
+  return pieces;
+}
+
+const OPEN_TREE_MAX_M2 = 400;
+const WALL_CROWN_MAX_W_M = 6;
+const WALL_CROWN_MIN_L_M = 18;
+const WALL_CROWN_RATIO = 3.5;
+
+/** Full major and minor axes (m) of the ellipse with the ring's second moments. */
+function crownAxesM(ring) {
+  let A = 0, cx = 0, cy = 0, sxx = 0, syy = 0, sxy = 0;
+  const n = ring.length;
+  for (let i = 0; i < n; i++) {
+    const [x0, y0] = ring[i];
+    const [x1, y1] = ring[(i + 1) % n];
+    const c = x0 * y1 - x1 * y0;
+    A += c;
+    cx += (x0 + x1) * c;
+    cy += (y0 + y1) * c;
+    sxx += (y0 * y0 + y0 * y1 + y1 * y1) * c;
+    syy += (x0 * x0 + x0 * x1 + x1 * x1) * c;
+    sxy += (x0 * y1 + 2 * x0 * y0 + 2 * x1 * y1 + x1 * y0) * c;
+  }
+  A /= 2;
+  if (!(Math.abs(A) > 1e-6)) return null;
+  cx /= 6 * A;
+  cy /= 6 * A;
+  const ixx = syy / 12 / A - cx * cx;
+  const iyy = sxx / 12 / A - cy * cy;
+  const ixy = sxy / 24 / A - cx * cy;
+  const tr = ixx + iyy;
+  const d = Math.sqrt(Math.max(0, ((ixx - iyy) * (ixx - iyy)) / 4 + ixy * ixy));
+  const l1 = tr / 2 + d;
+  const l2 = Math.max(0, tr / 2 - d);
+  return { major: 4 * Math.sqrt(l1), minor: 4 * Math.sqrt(l2) };
+}
+const OPEN_TREE_SHARE = 0.85;
+/** An estimated crown with less foliage than this on a leaf-on summer photo is not a tree. */
+const LEAF_ON_MIN_GREEN = 0.05;
+
 function fitChunksToJsonBudget(frame, name, imgName, chunks, budget) {
   const limit = budget > 0 ? budget : OPENINTENT_JSON_BUDGET;
   const src = [];
@@ -3177,6 +3254,7 @@ function dropPassengerCarsFromPlan(plan) {
 }
 
 function buildClutter({
+  palmPoints,
   frame,
   footprintsGeojson,
   treePoints,
@@ -3217,6 +3295,9 @@ function buildClutter({
   jsonBudget,
   foliagePack,
   outdoorPlan,
+  aerialOpenShare,
+  leafOnGreenShare,
+  leafOnSource,
 }) {
   const featureList = footprintsGeojson?.features || [];
   if (Array.isArray(warnings)) {
@@ -3273,6 +3354,7 @@ function buildClutter({
           chmRequired: chmRequired === true,
           maxPolygons: maxFoliagePolygons,
           woodRings,
+          palmPoints,
         }))
       : {
         oiAreas: [],
@@ -3522,6 +3604,72 @@ function buildClutter({
       cursor++;
     }
   }
+  // A lone tree the aerial shows only as lawn, paving or bare ground is a
+  // stale or stray height return. Its crown and stem are dropped together.
+  // An estimated canopy height map smears a row of trees, a hedge line or a
+  // building's shadow into a long thin wall. No crown is a wall: on an
+  // estimated canopy such a shape is dropped. Measured lidar rows stay.
+  // A grid fused with lidar keeps its source name, so the lidar stats decide.
+  const canopyEstimated = !!chmGrid && chmGrid.source !== "lidar" && !(footprintMeta && footprintMeta.lidarCanopyStats);
+  let wallCrownsDropped = 0;
+  if (canopyEstimated && treePieces.length) {
+    const mx = frame.mpuX || 1;
+    const my = frame.mpuY || mx;
+    for (let i = treePieces.length - 1; i >= 0; i--) {
+      const crown = (treePieces[i].areas || []).find((a) => a && !isTrunkArea(a));
+      const coords = crown && crown.area && crown.area.coordinates;
+      if (!coords || coords.length < 4) continue;
+      const ring = coords.map((c) => [c.coordinate_xyz.x * mx, c.coordinate_xyz.y * my]);
+      const w = crownAxesM(ring);
+      if (w && w.minor < WALL_CROWN_MAX_W_M && w.major >= WALL_CROWN_MIN_L_M && w.major >= WALL_CROWN_RATIO * w.minor) {
+        treePieces.splice(i, 1);
+        wallCrownsDropped++;
+      }
+    }
+    if (footprintMeta) footprintMeta.wallCrownsDropped = wallCrownsDropped;
+    if (wallCrownsDropped && Array.isArray(warnings)) {
+      warnings.push("Left out " + wallCrownsDropped + " long thin canopy strips the canopy height map drew along streets and walls.");
+    }
+  }
+  let openTreesDropped = 0;
+  if (typeof aerialOpenShare === "function" && treePieces.length) {
+    for (let i = treePieces.length - 1; i >= 0; i--) {
+      const piece = treePieces[i];
+      if (!piece.discrete || !piece.areas || piece.areas.length < 2) continue;
+      const crown = piece.areas[0];
+      const coords = crown && crown.area && crown.area.coordinates;
+      if (!coords || coords.length < 3) continue;
+      const ring = coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
+      let a = 0;
+      for (let k = 0, m = ring.length - 1; k < ring.length; m = k++) a += (ring[m][0] + ring[k][0]) * (ring[m][1] - ring[k][1]);
+      const m2 = Math.abs(a / 2) * (frame.mpuX || 1) * (frame.mpuY || frame.mpuX || 1);
+      if (!(m2 > 0) || m2 > OPEN_TREE_MAX_M2) continue;
+      const share = aerialOpenShare(ring);
+      if (share >= OPEN_TREE_SHARE) {
+        treePieces.splice(i, 1);
+        openTreesDropped++;
+      }
+    }
+  }
+  // On an estimated canopy, a crown the national summer photo shows as roof,
+  // shadow or paving is dropped with its stem. Measured lidar crowns stay.
+  let leafOnDropped = 0;
+  if (typeof leafOnGreenShare === "function" && canopyEstimated && treePieces.length) {
+    for (let i = treePieces.length - 1; i >= 0; i--) {
+      const crown = (treePieces[i].areas || []).find((a) => a && !isTrunkArea(a));
+      const coords = crown && crown.area && crown.area.coordinates;
+      if (!coords || coords.length < 3) continue;
+      const share = leafOnGreenShare(coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]));
+      if (share !== null && share < LEAF_ON_MIN_GREEN) {
+        treePieces.splice(i, 1);
+        leafOnDropped++;
+      }
+    }
+    if (footprintMeta) footprintMeta.leafOnDropped = leafOnDropped;
+    if (leafOnDropped && Array.isArray(warnings)) {
+      warnings.push("Left out " + leafOnDropped + " canopy pieces with no summer foliage on the " + (leafOnSource || "leaf-on orthophoto") + ".");
+    }
+  }
   const deckPieces = [];
   const waterPieces = [];
   const rvPieces = [];
@@ -3540,6 +3688,12 @@ function buildClutter({
   for (let i = 0; i < waterPieces.length; i++) chunks.push(waterPieces[i]);
   for (let i = 0; i < deckPieces.length; i++) chunks.push(deckPieces[i]);
   for (let i = 0; i < rvPieces.length; i++) chunks.push(rvPieces[i]);
+  // When the scene will not fit the byte budget, the trim drops the tail.
+  // The trees are then ranked by the canopy each one covers per byte, so a
+  // crowd of small stemmed trees cannot push large stands out of the scene.
+  if (treePieces.length > 1 && overJsonBudget(frame, name, imgName, chunks.concat(treePieces, latePieces), jsonByteBudget)) {
+    rankPiecesByCover(treePieces);
+  }
   for (let i = 0; i < treePieces.length; i++) chunks.push(treePieces[i]);
   for (let i = 0; i < latePieces.length; i++) chunks.push(latePieces[i]);
   const fitted = require("./stage-clock").timeSpanSync("jsonBuild", () =>
@@ -3660,6 +3814,8 @@ function buildClutter({
     trees: treeGroupsKept,
     treesMeasured: veg.count,
     discreteTrees: discreteKept,
+    trunks: areas.filter(isTrunkArea).length,
+    palms: foliagePack && Number(foliagePack.palms) > 0 ? Number(foliagePack.palms) : 0,
     treesSource: omitFoliage
       ? "none"
       : foliageOn
@@ -3723,6 +3879,7 @@ function buildClutter({
     arcgisFootprints: footprintMeta && footprintMeta.arcgisFootprints ? footprintMeta.arcgisFootprints : 0,
     usaFootprints: footprintMeta && footprintMeta.usaFootprints ? footprintMeta.usaFootprints : 0,
     imageryRoofs: footprintMeta && footprintMeta.imageryRoofs ? footprintMeta.imageryRoofs : 0,
+    droppedShadow: footprintMeta && footprintMeta.droppedShadow ? footprintMeta.droppedShadow : 0,
     droppedPavement: footprintMeta && footprintMeta.droppedPavement ? footprintMeta.droppedPavement : 0,
     medianTrees: footprintMeta && footprintMeta.medianTrees ? footprintMeta.medianTrees : 0,
     overtureFootprints: footprintMeta && footprintMeta.overtureFootprints ? footprintMeta.overtureFootprints : 0,

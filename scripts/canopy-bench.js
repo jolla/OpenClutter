@@ -258,6 +258,181 @@ function shapeOfAreas(areas, mpuX, mpuY) {
   return { heights, gapErrs, largestCrownM2: Math.round(largestCrownM2) };
 }
 
+
+/**
+ * Realism: treetops, top height, and crown size against the lidar canopy.
+ * The emitted crowns are painted as a top-height raster (crown top above the
+ * ground under its stack). Treetops are local maxima at least 5 m tall; a
+ * flat plateau is one top. A predicted top matches a lidar top within 3 m.
+ * Crown radius is where the height first falls below 60% of the top, the
+ * median of 8 directions. A prism slab has one top for many trees, so it
+ * scores badly here even when its footprint covers the canopy.
+ */
+function realismOf(areas, frame, refGrid, bldMask, step, imgW, imgH) {
+  const cellM = 1.5;
+  const mpu = frame.mpuX || 0.3;
+  const pxPerCell = cellM / mpu;
+  const W = Math.max(8, Math.floor(imgW / pxPerCell));
+  const H = Math.max(8, Math.floor(imgH / pxPerCell));
+  const pred = new Float32Array(W * H);
+  const ref = new Float32Array(W * H);
+  const parts = [];
+  for (const area of areas || []) {
+    const material = area.area_material || {};
+    const kind = partKind(material.name || "");
+    const coords = area.area && area.area.coordinates;
+    if (!kind || !coords || coords.length < 4) continue;
+    const span = materialSpan(material);
+    if (!span) continue;
+    const ring = coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
+    const c = centroid(ring);
+    if (!c) continue;
+    parts.push({ kind, span, ring, area: ringAreaM2(ring, mpu, mpu), cx: c[0], cy: c[1] });
+  }
+  const groundOf = (part, depth) => {
+    const sup = supportUnder(part, parts, mpu);
+    if (sup) return sup.span.bottom;
+    if (depth < 6) {
+      for (let i = 0; i < parts.length; i++) {
+        const o = parts[i];
+        if (o === part || o.kind !== "crown") continue;
+        if (Math.abs(o.span.top - part.span.bottom) > 0.35 || !closePart(part, o, mpu)) continue;
+        return groundOf(o, depth + 1);
+      }
+    }
+    return part.span.bottom;
+  };
+  for (const part of parts) {
+    if (part.kind !== "crown") continue;
+    const hTop = part.span.top - groundOf(part, 0);
+    if (!(hTop > 0.5 && hTop < 80)) continue;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const q of part.ring) {
+      if (q[0] < x0) x0 = q[0];
+      if (q[1] < y0) y0 = q[1];
+      if (q[0] > x1) x1 = q[0];
+      if (q[1] > y1) y1 = q[1];
+    }
+    // Ring y is plate metres-up in OpenIntent px; image row = imgH - y.
+    for (let cy = Math.max(0, Math.floor((imgH - y1) / pxPerCell)); cy <= Math.min(H - 1, Math.floor((imgH - y0) / pxPerCell)); cy++) {
+      for (let cx = Math.max(0, Math.floor(x0 / pxPerCell)); cx <= Math.min(W - 1, Math.floor(x1 / pxPerCell)); cx++) {
+        const pt = [(cx + 0.5) * pxPerCell, imgH - (cy + 0.5) * pxPerCell];
+        if (!pointInPxRing(pt, part.ring)) continue;
+        const k = cy * W + cx;
+        if (hTop > pred[k]) pred[k] = hTop;
+      }
+    }
+  }
+  const bw = Math.ceil(imgW / step);
+  for (let cy = 0; cy < H; cy++) {
+    for (let cx = 0; cx < W; cx++) {
+      const xx = (cx + 0.5) * pxPerCell;
+      const yy = (cy + 0.5) * pxPerCell;
+      const bi = Math.floor(yy / step) * bw + Math.floor(xx / step);
+      if (bldMask && bldMask[bi]) {
+        pred[cy * W + cx] = 0;
+        continue;
+      }
+      const [lon, lat] = imagePxToLl(Math.min(imgW - 1, xx), Math.min(imgH - 1, yy), frame);
+      ref[cy * W + cx] = chmAt(refGrid, lon, lat);
+    }
+  }
+  const tops = (g) => {
+    const cand = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const v = g[y * W + x];
+        if (!(v >= 5)) continue;
+        let ok = true;
+        for (let dy = -2; dy <= 2 && ok; dy++) {
+          for (let dx = -2; dx <= 2; dx++) {
+            const xx = x + dx, yy = y + dy;
+            if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+            if (g[yy * W + xx] > v + 1e-3) { ok = false; break; }
+          }
+        }
+        if (ok) cand[y * W + x] = 1;
+      }
+    }
+    const out = [];
+    const seen = new Uint8Array(W * H);
+    for (let k = 0; k < cand.length; k++) {
+      if (!cand[k] || seen[k]) continue;
+      const st = [k];
+      seen[k] = 1;
+      let sx = 0, sy = 0, n = 0, hv = 0;
+      while (st.length) {
+        const q = st.pop();
+        const x = q % W, y = (q / W) | 0;
+        sx += x; sy += y; n++; hv = Math.max(hv, g[q]);
+        for (const r of [q - 1, q + 1, q - W, q + W]) {
+          if (r < 0 || r >= W * H || seen[r] || !cand[r]) continue;
+          if (Math.abs(g[r] - g[q]) > 0.05) continue;
+          seen[r] = 1;
+          st.push(r);
+        }
+      }
+      out.push({ x: sx / n, y: sy / n, h: hv });
+    }
+    return out;
+  };
+  const radius = (g, t) => {
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1], [0.71, 0.71], [-0.71, 0.71], [0.71, -0.71], [-0.71, -0.71]];
+    const rs = [];
+    for (const d of dirs) {
+      let r = 0;
+      for (let s = 1; s <= 16; s++) {
+        const x = Math.round(t.x + d[0] * s), y = Math.round(t.y + d[1] * s);
+        if (x < 0 || y < 0 || x >= W || y >= H || g[y * W + x] < 0.6 * t.h) break;
+        r = s;
+      }
+      rs.push((r + 0.5) * cellM);
+    }
+    rs.sort((a, b) => a - b);
+    return (rs[3] + rs[4]) / 2;
+  };
+  const tp = tops(pred);
+  const tr = tops(ref);
+  const used = new Uint8Array(tr.length);
+  const grid = new Map();
+  tr.forEach((t, i) => {
+    const key = Math.floor(t.x / 4) + "," + Math.floor(t.y / 4);
+    if (!grid.has(key)) grid.set(key, []);
+    grid.get(key).push(i);
+  });
+  const maxD = 3 / cellM;
+  let matched = 0;
+  const hErr = [];
+  const rErr = [];
+  for (const p of tp) {
+    let best = -1, bd = Infinity;
+    const gx = Math.floor(p.x / 4), gy = Math.floor(p.y / 4);
+    for (let ix = gx - 1; ix <= gx + 1; ix++) for (let iy = gy - 1; iy <= gy + 1; iy++) {
+      for (const i of grid.get(ix + "," + iy) || []) {
+        if (used[i]) continue;
+        const d = Math.hypot(tr[i].x - p.x, tr[i].y - p.y);
+        if (d <= maxD && d < bd) { bd = d; best = i; }
+      }
+    }
+    if (best < 0) continue;
+    used[best] = 1;
+    matched++;
+    hErr.push(Math.abs(p.h - tr[best].h));
+    rErr.push(Math.abs(radius(pred, p) - radius(ref, tr[best])));
+  }
+  const mean = (a) => (a.length ? Math.round((a.reduce((s, v) => s + v, 0) / a.length) * 10) / 10 : null);
+  return {
+    topsRef: tr.length,
+    topsPred: tp.length,
+    topsMatched: matched,
+    treetopRecall: pct(matched, tr.length),
+    treetopPrecision: pct(matched, tp.length),
+    treetopF1: tr.length + tp.length ? Math.round((2000 * matched) / (tr.length + tp.length)) / 10 : null,
+    topHeightMae: mean(hErr),
+    crownRadiusMae: mean(rErr),
+  };
+}
+
 function pct(hit, tot) {
   if (!tot) return null;
   return Math.round((1000 * hit) / tot) / 10;
@@ -551,6 +726,12 @@ async function scoreSite(site, zipPath) {
   const precision = pct(wholeTp, pred);
   const rf = rfLinkErrors(site.id, frame, foliageSlabs(areas), refGrid);
   const openLeak = pct(openN, pred);
+  let realism = {};
+  try {
+    realism = refSource === "lidar" ? realismOf(areas, frame, refGrid, bld.mask, step, raw.width, raw.height) : {};
+  } catch (e) {
+    console.log(site.id, "realism", e && e.message);
+  }
   const result = {
     id: site.id,
     name: site.name,
@@ -591,6 +772,7 @@ async function scoreSite(site, zipPath) {
     rfMedianDb: rf.median,
     rfP90Db: rf.p90,
     rfLinks: rf.n,
+    ...realism,
     pass: recall != null && precision != null && recall >= 85 && precision >= 85,
   };
   fs.mkdirSync(path.join(OUT, "results"), { recursive: true });
@@ -726,13 +908,32 @@ async function exportSite(site) {
   return zipPath;
 }
 
+const LIDAR_REF_RETRY_CELLS = 5000;
+
 async function lidarReference(frame) {
   const ranked = rankProjects(frame).slice(0, 4);
   for (let i = 0; i < ranked.length; i++) {
     const lidar = await fetchUsgsLidar(frame, { maxMs: 45000, index: [ranked[i]] });
     const kept = lidar && lidar.grid ? lidar.grid.kept : 0;
     const raster = lidar && !lidar.skipped && kept > 500 ? canopyRaster(lidar.grid) : null;
+    // Tower, facade, and deck returns are not canopy in the reference either.
+    if (raster && raster.values) {
+      const { clearStructuresRaster } = require("../netlify/lib/lidar-canopy");
+      clearStructuresRaster(raster.values, raster.width, raster.height);
+      let nz = 0;
+      for (let k = 0; k < raster.values.length; k++) if (raster.values[k] > 0) nz++;
+      raster.nonzero = nz;
+    }
     if (raster && raster.nonzero >= 40) {
+      // A slow tile server can hand back part of the survey. A thin
+      // reference is fetched once more and the fuller one is kept.
+      if (raster.nonzero < LIDAR_REF_RETRY_CELLS && !frame.__lidarRetried) {
+        const again = await lidarReference(Object.assign({}, frame, { __lidarRetried: true }));
+        if (again && again.raster.nonzero > raster.nonzero) {
+          console.log("lidar reference retry", raster.nonzero, "->", again.raster.nonzero);
+          return again;
+        }
+      }
       return { raster, project: lidar.project, spacingM: lidar.spacingM };
     }
   }

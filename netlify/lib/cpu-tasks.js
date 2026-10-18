@@ -89,6 +89,9 @@ function canopyTile(payload) {
     seedY1: payload.seedY1,
     halo: payload.overlap,
     noCap: true,
+    segment: payload.segment === true,
+    segMinM2: Number(payload.segMinM2) || 0,
+    segBase: payload.segBase | 0,
   });
   return { crowns: crowns || [] };
 }
@@ -105,6 +108,7 @@ function foliageAssemble(payload) {
     maskRings: payload.maskRings,
     maskPolygons: payload.maskPolygons,
     buildingBufferM: payload.buildingBufferM,
+    palmPoints: payload.palmPoints || [],
     skipWood: true,
     slopeTop,
     heightSample: grid ? (lon, lat) => sampleChmGrid(grid, lon, lat) : null,

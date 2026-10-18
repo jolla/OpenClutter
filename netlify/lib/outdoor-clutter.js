@@ -113,6 +113,8 @@ function wantAny(want) {
   return !!(want && (want.water || want.parking || want.walls || want.poles || want.rvs || want.cars));
 }
 
+const PALM_GENUS_RE = "phoenix|washingtonia|syagrus|roystonea|sabal|cocos|trachycarpus|butia|livistona|chamaerops|brahea|archontophoenix|dypsis|bismarckia|areca";
+
 function overpassQuery(bbox, want) {
   const s = +bbox.south;
   const w = +bbox.west;
@@ -152,6 +154,19 @@ function overpassQuery(bbox, want) {
     parts.push('way["mooring"](' + box + ");");
     parts.push('node["seamark:type"="mooring"](' + box + ");");
     parts.push('way["residential"="mobile_home"](' + box + ");");
+  }
+  if (want.trees) {
+    // Palm-tagged trees only: a stem with a small crown, not a broadleaf.
+    parts.push('node["natural"="tree"]["leaf_type"="palm"](' + box + ");");
+    parts.push('node["natural"="tree"]["genus"~"' + PALM_GENUS_RE + '",i](' + box + ");");
+    parts.push('node["natural"="tree"]["species"~"' + PALM_GENUS_RE + '|palm",i](' + box + ");");
+    parts.push('node["natural"="tree"]["taxon"~"' + PALM_GENUS_RE + '|palm",i](' + box + ");");
+    parts.push('way["highway"~"^(motorway|trunk|primary|secondary|tertiary)(_link)?$"](' + box + ");");
+    // Town streets and squares: no tree grows out of the paving, whatever an
+    // estimated canopy height map smears over them.
+    parts.push('way["highway"~"^(residential|unclassified|living_street|pedestrian|service)$"](' + box + ");");
+    parts.push('way["area:highway"](' + box + ");");
+    parts.push('way["place"="square"](' + box + ");");
   }
   parts.push('way["railway"~"^(monorail|light_rail|subway|rail|tram)$"](' + box + ");");
   parts.push('way["highway"]["bridge"~"^(yes|viaduct|covered)$"](' + box + ");");
@@ -1100,6 +1115,10 @@ function parseOverpass(payload, want, bbox, deckCap) {
       const lat = +el.lat;
       if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
       if (bbox && !inBox(lon, lat, bbox)) continue;
+      if (on.trees && tags.natural === "tree" && require("./vegetation").isPalmTags(tags)) {
+        features.push({ kind: "palm-tag", coords: [[lon, lat]], closed: false, heightM: 0, explicitHeight: false, rank: 0 });
+        continue;
+      }
       if (on.poles && isPoleNode(tags)) {
         const h = heightFor("pole", tags);
         features.push({
@@ -1339,7 +1358,67 @@ function parseOverpass(payload, want, bbox, deckCap) {
     features: plain.concat(boxes, boats, guides, bridges),
     openWater,
     places: placesFromElements(elements),
+    corridors: corridorLines(railRecords),
   };
+}
+
+// Carriageway width by road class when OSM gives neither width nor lanes.
+const ROAD_WIDTH_M = { motorway: 11, trunk: 10, primary: 10, secondary: 8, tertiary: 7 };
+// Town streets: these cut only an estimated canopy, never measured lidar.
+const STREET_WIDTH_M = { residential: 6, unclassified: 5.5, living_street: 5, pedestrian: 5, service: 4 };
+const LANE_M = 3.5;
+const CORRIDOR_CAP = 6000;
+
+/**
+ * Road carriageways, rail beds and elevated decks that no tree grows out of.
+ * Only the paved or tracked width itself: a median or verge between two
+ * one-way carriageways is a separate strip and keeps its trees.
+ */
+function isPavedArea(tags) {
+  if (tags["area:highway"]) return true;
+  if (tags.place === "square") return true;
+  return tags.highway === "pedestrian" && tags.area === "yes";
+}
+
+function corridorLines(records) {
+  const out = [];
+  for (let i = 0; i < (records || []).length && out.length < CORRIDOR_CAP; i++) {
+    const tags = records[i].tags || {};
+    const coords = records[i].coords;
+    if (!coords || coords.length < 2) continue;
+    if (tags.tunnel && tags.tunnel !== "no") continue;
+    if (/^-/.test(String(tags.layer || ""))) continue;
+    let widthM = 0;
+    let elevated = false;
+    const rail = String(tags.railway || "");
+    const hw = String(tags.highway || "");
+    const raised = (tags.bridge && tags.bridge !== "no") || /^[1-9]/.test(String(tags.layer || ""));
+    if (RAIL_TYPES[rail]) {
+      if (rail === "subway" && !raised) continue;
+      widthM = rail === "monorail" ? 4 : 5;
+      // A monorail or a rail line on a viaduct is a structure in the air; the
+      // lidar returns off its beam are not a crown.
+      elevated = rail === "monorail" || raised || (tags.elevated && tags.elevated !== "no");
+    } else if (isPavedArea(tags) && isClosed(coords)) {
+      out.push({ coords, area: true, street: true });
+      continue;
+    } else if (hw && STREET_WIDTH_M[hw] && !raised) {
+      if (tags.service && /^(parking_aisle|driveway)$/.test(String(tags.service))) continue;
+      const w = parseMeters(tags.width);
+      out.push({ coords, widthM: w >= 2 && w <= 30 ? w : STREET_WIDTH_M[hw], street: true });
+      continue;
+    } else if (hw) {
+      const cls = hw.replace(/_link$/, "");
+      if (!ROAD_WIDTH_M[cls] && !raised) continue;
+      const w = parseMeters(tags.width);
+      const lanes = parseFloat(tags.lanes);
+      if (w >= 2 && w <= 60) widthM = w;
+      else if (lanes >= 1 && lanes <= 12) widthM = lanes * LANE_M;
+      else widthM = /_link$/.test(hw) ? 5 : ROAD_WIDTH_M[cls] || 7;
+    } else continue;
+    out.push(elevated ? { coords, widthM, elevated: true } : { coords, widthM });
+  }
+  return out;
 }
 
 function ringAreaAbs(coords) {
@@ -1580,7 +1659,7 @@ function elementsFromMapXml(xml, bbox) {
     if (isRvSiteTags(tags) || isRvPitchTags(tags) || isRvRoadTags(tags)) pushWay(tags, pts);
   }
   for (const node of nodes.values()) {
-    if (isPoleNode(node.tags) || isRvPitchTags(node.tags)) {
+    if (isPoleNode(node.tags) || isRvPitchTags(node.tags) || (node.tags && node.tags.natural === "tree" && require("./vegetation").isPalmTags(node.tags))) {
       elements.push({ type: "node", lon: node.lon, lat: node.lat, tags: node.tags });
     }
   }
@@ -1876,22 +1955,25 @@ async function fetchOutdoorClutter(bbox, want, opts) {
       const limited = limitFeatures(dedupeOutdoor(parsed.features || []), bbox, deckCap);
       if (parsed.openWater) limited.notes.push("Open water lines were left out.");
       for (let i = 0; i < maps.notes.length; i++) limited.notes.push(maps.notes[i]);
-      return { ok: true, features: limited.features, notes: limited.notes, places: parsed.places || [] };
+      return { ok: true, features: limited.features, notes: limited.notes, places: parsed.places || [], palms: palmPointsOf(parsed.features), corridors: parsed.corridors || [] };
     }
     if (maps.xmls.length) {
       let features = [];
       let openWater = false;
       const places = [];
+      const corridors = [];
       for (let i = 0; i < maps.xmls.length; i++) {
         const parsed = featuresFromMapXml(maps.xmls[i], want, bbox, deckCap);
         features = features.concat(parsed.features || []);
         if (parsed.places) places.push.apply(places, parsed.places);
         if (parsed.openWater) openWater = true;
+        if (parsed.corridors) corridors.push.apply(corridors, parsed.corridors);
       }
+      const palms = palmPointsOf(features);
       const limited = limitFeatures(dedupeOutdoor(features), bbox, deckCap);
       if (openWater) limited.notes.push("Open water lines were left out.");
       for (let i = 0; i < maps.notes.length; i++) limited.notes.push(maps.notes[i]);
-      return { ok: true, features: limited.features, notes: limited.notes, places };
+      return { ok: true, features: limited.features, notes: limited.notes, places, palms, corridors };
     }
     if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
       return { ok: true, features: [], notes: maps.notes };
@@ -1909,15 +1991,26 @@ async function fetchOutdoorClutter(bbox, want, opts) {
     if (!r.ok) return { ok: false, features: [], notes: [] };
     const json = await r.json();
     const parsed = parseOverpass(json, want, bbox, deckCap);
+    const palms = palmPointsOf(parsed.features);
     const limited = limitFeatures(parsed.features, bbox, deckCap);
     if (parsed.openWater) limited.notes.push("Open water lines were left out.");
-    return { ok: true, features: limited.features, notes: limited.notes, places: parsed.places || [] };
+    return { ok: true, features: limited.features, notes: limited.notes, places: parsed.places || [], palms, corridors: parsed.corridors || [] };
   } catch {
     return { ok: false, features: [], notes: [] };
   } finally {
     clearTimeout(timer);
     if (parent) parent.removeEventListener("abort", onAbort);
   }
+}
+
+/** Palm-tagged OSM trees as [lon, lat], capped so a palm grove cannot bloat the job. */
+function palmPointsOf(features) {
+  const out = [];
+  for (let i = 0; i < (features || []).length && out.length < 5000; i++) {
+    const f = features[i];
+    if (f && f.kind === "palm-tag" && f.coords && f.coords[0]) out.push([+f.coords[0][0], +f.coords[0][1]]);
+  }
+  return out;
 }
 
 function closePx(ring) {
@@ -2588,6 +2681,7 @@ module.exports = {
   RV_CAP,
   OUTDOOR_MISS,
   overpassQuery,
+  corridorLines,
   rvBoxes,
   parseOverpass,
   featuresFromMapXml,

@@ -147,8 +147,95 @@ function geometryHitsBbox(geometry, bbox) {
   return false;
 }
 
+function segsCross(a, b, c, d) {
+  const o = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  const d1 = o(c, d, a);
+  const d2 = o(c, d, b);
+  const d3 = o(a, b, c);
+  const d4 = o(a, b, d);
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+}
+
+/**
+ * A traced roof is a simple ring. Global ML sometimes follows a tower's cast
+ * shadow across a whole block and returns a bow-tie ring with long spikes.
+ * Clipping later splits that into slabs that cover the courtyard and cut the
+ * trees under it, so a crossing ring is dropped at the source.
+ */
+function ringSelfIntersects(ring) {
+  if (!Array.isArray(ring)) return false;
+  let pts = ring;
+  const n0 = pts.length;
+  if (n0 > 1 && pts[0][0] === pts[n0 - 1][0] && pts[0][1] === pts[n0 - 1][1]) pts = pts.slice(0, -1);
+  const n = pts.length;
+  if (n < 4 || n > 600) return false;
+  for (let i = 0; i < n; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % n];
+    for (let j = i + 2; j < n; j++) {
+      if (i === 0 && j === n - 1) continue;
+      if (segsCross(a, b, pts[j], pts[(j + 1) % n])) return true;
+    }
+  }
+  return false;
+}
+
+function geometrySelfIntersects(geometry) {
+  const rings = exteriorRings(geometry);
+  for (let i = 0; i < rings.length; i++) {
+    if (ringSelfIntersects(rings[i])) return true;
+  }
+  return false;
+}
+
+/** Over this a Global ML ring with several needle corners is a shadow trace. */
+const SPIDER_MIN_M2 = 20000;
+const SPIDER_ACUTE_DEG = 30;
+const SPIDER_MIN_ACUTE = 3;
+
+/**
+ * Global ML sometimes traces a tower's cast shadow and the plazas around it
+ * into one block-sized ring with needle spikes (Wynn west podium: 208,000 m²,
+ * four corners under 30°). A real roof that large is drawn with square
+ * corners. Small rings keep their acute corners; Boston row houses have them.
+ */
+function isSpiderRing(ring) {
+  if (!Array.isArray(ring) || ring.length < 5) return false;
+  let pts = ring;
+  const n0 = pts.length;
+  if (pts[0][0] === pts[n0 - 1][0] && pts[0][1] === pts[n0 - 1][1]) pts = pts.slice(0, -1);
+  const lat0 = +pts[0][1];
+  const kx = 111320 * Math.cos((lat0 * Math.PI) / 180);
+  const ky = 110950;
+  const m = pts.map((p) => [+p[0] * kx, +p[1] * ky]);
+  const n = m.length;
+  let a = 0;
+  for (let i = 0, j = n - 1; i < n; j = i++) a += m[j][0] * m[i][1] - m[i][0] * m[j][1];
+  if (Math.abs(a) / 2 < SPIDER_MIN_M2) return false;
+  let acute = 0;
+  for (let i = 0; i < n; i++) {
+    const p = m[(i + n - 1) % n];
+    const b = m[i];
+    const c = m[(i + 1) % n];
+    const ux = p[0] - b[0];
+    const uy = p[1] - b[1];
+    const vx = c[0] - b[0];
+    const vy = c[1] - b[1];
+    const den = Math.hypot(ux, uy) * Math.hypot(vx, vy);
+    if (!(den > 0)) continue;
+    const cos = Math.max(-1, Math.min(1, (ux * vx + uy * vy) / den));
+    if ((Math.acos(cos) * 180) / Math.PI < SPIDER_ACUTE_DEG) acute++;
+  }
+  return acute >= SPIDER_MIN_ACUTE;
+}
+
 function normalizeFeature(obj) {
   if (!obj || !obj.geometry) return null;
+  if (geometrySelfIntersects(obj.geometry)) return null;
+  const rings = exteriorRings(obj.geometry);
+  for (let i = 0; i < rings.length; i++) {
+    if (isSpiderRing(rings[i])) return null;
+  }
   const height = usableHeight(obj.properties);
   const properties = { geomSource: "ms-global" };
   if (height) {
@@ -390,6 +477,10 @@ function globalSkipWarning(pack) {
 }
 
 module.exports = {
+  isSpiderRing,
+  ringSelfIntersects,
+  geometrySelfIntersects,
+  normalizeFeature,
   QUADKEY_ZOOM,
   lonLatToTile,
   tileToQuadkey,

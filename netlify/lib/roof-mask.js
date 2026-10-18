@@ -659,6 +659,90 @@ function darkPanelsWhenRoofFillSkipped(decoded, roofRaw, frame, features) {
   return darkRectRoofs(roofRaw, frame, features);
 }
 
+/**
+ * Deep cast shadow is unknown ground, not a roof. A Global ML outline that no
+ * other source confirmed, sitting mostly on shadow, is a trace of the shadow
+ * (a tower's shade across a plaza or courtyard). Dropping it keeps that ground
+ * open, so trees under the shade survive and no flat slab is invented there.
+ * Outlines from Overture, MSBFP2, or USA Structures are kept whatever the
+ * pixels look like; so is any outline carrying a non-ML height.
+ */
+const SHADOW_Y = 55;
+const SHADOW_MIN_FRAC = 0.7;
+const SHADOW_MIN_M2 = 400;
+
+function shadowPixel(r, g, b) {
+  if (luma(r, g, b) >= SHADOW_Y) return false;
+  // A dark crown is canopy, not shade.
+  if (g > r + 6 && g > b + 6) return false;
+  return true;
+}
+
+function unconfirmedMl(feature) {
+  const p = (feature && feature.properties) || {};
+  if (p.geomSource !== "ms-global") return false;
+  if (p.heightSource && p.heightSource !== "ms-global") return false;
+  return true;
+}
+
+function shadowFraction(raw, frame, ringLonLat) {
+  const px = ringLonLat.map((q) => llToImage(q[0], q[1], frame));
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < px.length; i++) {
+    if (px[i][0] < minX) minX = px[i][0];
+    if (px[i][1] < minY) minY = px[i][1];
+    if (px[i][0] > maxX) maxX = px[i][0];
+    if (px[i][1] > maxY) maxY = px[i][1];
+  }
+  const sx = raw.width / frame.imgW;
+  const sy = raw.height / frame.imgH;
+  const span = Math.max(maxX - minX, maxY - minY);
+  const step = Math.max(1, span / 40);
+  let inside = 0;
+  let dark = 0;
+  for (let y = minY + step / 2; y < maxY; y += step) {
+    for (let x = minX + step / 2; x < maxX; x += step) {
+      if (!pointInRing([x, y], px)) continue;
+      const ix = Math.floor(x * sx);
+      const iy = Math.floor(y * sy);
+      if (ix < 0 || iy < 0 || ix >= raw.width || iy >= raw.height) continue;
+      const i = (iy * raw.width + ix) * 4;
+      inside++;
+      if (shadowPixel(raw.data[i], raw.data[i + 1], raw.data[i + 2])) dark++;
+    }
+  }
+  return inside >= 12 ? dark / inside : 0;
+}
+
+function rejectShadowFootprints(raw, frame, features) {
+  const list = features || [];
+  if (!raw || !raw.data || !frame || !frame.mpd || !(frame.imgW > 0)) return { features: list, dropped: 0 };
+  const out = [];
+  let dropped = 0;
+  for (let i = 0; i < list.length; i++) {
+    const f = list[i];
+    if (unconfirmedMl(f)) {
+      const rings = featureExteriorRings(f.geometry);
+      let area = 0;
+      let shade = 0;
+      for (let r = 0; r < rings.length; r++) {
+        const a = ringAreaM2(rings[r], frame.mpd);
+        area += a;
+        shade += a * shadowFraction(raw, frame, rings[r]);
+      }
+      if (area >= SHADOW_MIN_M2 && shade / area >= SHADOW_MIN_FRAC) {
+        dropped++;
+        continue;
+      }
+    }
+    out.push(f);
+  }
+  return { features: out, dropped };
+}
+
 function supplementFootprints(raw, frame, features) {
   const found = imageryRoofFeatures(raw, frame, features || []);
   const drop = new Set(found.dropIndexes || []);
@@ -675,8 +759,10 @@ function supplementFootprints(raw, frame, features) {
     if (!membraneDrop.has(i)) afterMembrane.push(withBright[i]);
   }
   const dark = darkRectRoofs(raw, frame, afterMembrane);
+  const unshaded = rejectShadowFootprints(raw, frame, afterMembrane);
   return {
-    features: afterMembrane.concat(membrane.features, dark.features),
+    features: unshaded.features.concat(membrane.features, dark.features),
+    droppedShadow: unshaded.dropped,
     imageryRoofs: found.features.length + membrane.features.length + dark.features.length,
     droppedStubs: (found.dropIndexes || []).length + membraneDrop.size,
   };
@@ -689,6 +775,8 @@ module.exports = {
   darkRectRoofs,
   darkPanelsWhenRoofFillSkipped,
   supplementFootprints,
+  rejectShadowFootprints,
+  shadowFraction,
   imagePxToLl,
   pointInRing,
 };

@@ -95,7 +95,7 @@ describe("outdoor clutter materials", () => {
       ["fence", 1.8, "Fence 2.1", 1, "#9AA3AD", false],
       ["retaining", 3, "Retaining wall 3.0", 6, "#7A736C", false],
       ["hedge", 2.1, "Hedge 2.1", 1, "#6FA84A", true],
-      ["pole", 9, "Light pole 9.0", 10, "#6E7378", false],
+      ["pole", 9, "Light pole 9.0", 10, "#FFC20E", false],
       ["water", 0, "Water 0.1", 0.1, "#3D7EA6", false],
       ["guideway", 4.5, "Guideway 4.5", 9, "#6A6560", false],
       ["bridge", 2.1, "Bridge 2.1", 9, "#736E68", false],

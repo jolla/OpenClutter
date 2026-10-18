@@ -24,6 +24,12 @@ const MIN_PIECE_M2 = 25;
 const M_PER_DEG_LAT = 110540;
 
 const DOME_SHAPES = new Set(["dome", "onion"]);
+const SPHERE_SHAPES = new Set(["sphere", "spherical", "globe", "ball"]);
+const SPHERE_MIN_SLICES = 8;
+const SPHERE_MAX_SLICES = 16;
+const SPHERE_SLICE_M = 7;
+/** Area / (pi * r_max^2) of a footprint drawn as a circle. A square is 0.64. */
+const ROUND_MIN_FILL = 0.85;
 const SLOPE_SHAPES = new Set(["shed", "skillion", "lean_to"]);
 
 function roofShapeOf(props) {
@@ -201,25 +207,113 @@ function pieceFeature(feature, geometry, height, levelBase) {
   return { type: "Feature", properties: props, geometry };
 }
 
+/**
+ * A dome roof is the top of the mass, not the whole mass. A clock tower or a
+ * church drum tagged roof:shape=dome keeps straight walls up to the dome,
+ * which is a hemisphere about as tall as the plan's radius. Only a mass at
+ * least as tall as it is wide is a tower; a wide dome (the Sphere, a
+ * stadium) is still drawn over the whole span. Small towers
+ * keep thinner top rings (DOME_MIN_PIECE_M2) so the apex is not cut off.
+ */
+const DOME_MIN_PIECE_M2 = 4;
+
 function domePieces(feature) {
   const props = (feature && feature.properties) || {};
   if (!DOME_SHAPES.has(roofShapeOf(props))) return null;
   const span = spanOf(props);
   if (!span || !feature.geometry) return null;
-  const n = bandCount(span.span, DOME_BANDS);
-  if (!n) return null;
   const ground = ringAreaM2(largestExterior(feature.geometry));
   if (!(ground >= MIN_PIECE_M2)) return null;
+  const radius = Math.sqrt(ground / Math.PI);
+  let domeH = span.span;
+  let wallTop = span.base;
+  if (span.span >= 2 * radius && radius >= MIN_BAND_M) {
+    domeH = radius;
+    wallTop = Math.round((span.top - domeH) * 10) / 10;
+  }
+  const n = bandCount(domeH, DOME_BANDS) || (wallTop > span.base ? 1 : 0);
+  if (!n) return null;
   const pieces = [];
+  if (wallTop > span.base) pieces.push(pieceFeature(feature, feature.geometry, wallTop, span.base));
   for (let i = 0; i < n; i++) {
     const z = i >= n - 1 ? (n - 0.5) / n : i / n;
-    const scale = domeScale(z);
-    if (ground * scale * scale < MIN_PIECE_M2) break;
+    const scale = n === 1 ? domeScale(0.5) : domeScale(z);
+    if (ground * scale * scale < DOME_MIN_PIECE_M2) break;
     const geometry = scaleGeometry(feature.geometry, scale);
     if (!geometry) break;
-    const bottom = span.base + (span.span * i) / n;
-    const top = i === n - 1 ? span.top : span.base + (span.span * (i + 1)) / n;
+    const bottom = wallTop + (domeH * i) / n;
+    const top = i === n - 1 ? span.top : wallTop + (domeH * (i + 1)) / n;
     pieces.push(pieceFeature(feature, geometry, top, bottom));
+  }
+  return pieces.length >= 2 ? pieces : null;
+}
+
+function buildingShapeOf(props) {
+  return String((props && props.buildingShape) || "")
+    .trim()
+    .toLowerCase();
+}
+
+/** Equivalent radius of a footprint that reads as a circle, else 0. */
+function roundRadiusM(ring) {
+  const c = centroid(ring);
+  if (!c) return 0;
+  const area = ringAreaM2(ring);
+  if (!(area > 0)) return 0;
+  const mLon = mPerDegLon(c[1]);
+  let rMax = 0;
+  const n = openCount(ring);
+  if (n < 12) return 0;
+  for (let i = 0; i < n; i++) {
+    const dx = (ring[i][0] - c[0]) * mLon;
+    const dy = (ring[i][1] - c[1]) * M_PER_DEG_LAT;
+    rMax = Math.max(rMax, Math.hypot(dx, dy));
+  }
+  if (!(rMax > 0) || area / (Math.PI * rMax * rMax) < ROUND_MIN_FILL) return 0;
+  return Math.sqrt(area / Math.PI);
+}
+
+/**
+ * A sphere taller than its radius (the Las Vegas Sphere: about 157 m wide,
+ * 112 m tall) is a ball cut off at the ground. The footprint is its widest
+ * ring (the equator). Each slice is a round object sized from the sphere's
+ * profile at the slice's middle height, so the side view is round on top
+ * and pulls back in under the equator to the truncated base.
+ *
+ * Read when building:shape is a sphere, or when a dome roof sits on a round
+ * plan taller than its radius (a hemisphere would top out at the radius).
+ */
+function spherePieces(feature) {
+  const props = (feature && feature.properties) || {};
+  if (!feature || !feature.geometry) return null;
+  const tagged = SPHERE_SHAPES.has(buildingShapeOf(props)) || SPHERE_SHAPES.has(roofShapeOf(props));
+  const domed = DOME_SHAPES.has(roofShapeOf(props));
+  if (!tagged && !domed) return null;
+  const span = spanOf(props);
+  if (!span) return null;
+  const ring = largestExterior(feature.geometry);
+  const R = roundRadiusM(ring);
+  if (!(R > 4)) return null;
+  if (!tagged && !(span.span >= R * 1.1)) return null;
+  if (span.span > R * 2.1) return null;
+  const centerZ = Math.max(0, span.span - R);
+  const n = Math.max(SPHERE_MIN_SLICES, Math.min(SPHERE_MAX_SLICES, Math.round(span.span / SPHERE_SLICE_M)));
+  const ground = ringAreaM2(ring);
+  const pieces = [];
+  for (let i = 0; i < n; i++) {
+    const z0 = (span.span * i) / n;
+    const z1 = i === n - 1 ? span.span : (span.span * (i + 1)) / n;
+    const zm = (z0 + z1) / 2;
+    const dz = zm - centerZ;
+    const scale = Math.sqrt(Math.max(0, R * R - dz * dz)) / R;
+    if (ground * scale * scale < MIN_PIECE_M2) break;
+    const geometry = scaleGeometry(feature.geometry, Math.min(1, scale));
+    if (!geometry) break;
+    const top = i === n - 1 ? span.top : Math.round((span.base + z1) * 10) / 10;
+    const bottom = Math.round((span.base + z0) * 10) / 10;
+    const piece = pieceFeature(feature, geometry, top, bottom);
+    piece.properties.sphereSlice = i;
+    pieces.push(piece);
   }
   return pieces.length >= 2 ? pieces : null;
 }
@@ -299,6 +393,8 @@ function slopePieces(feature) {
 
 /** One feature, or several shape pieces. The original is unchanged. */
 function piecesForFeature(feature) {
+  const sphere = spherePieces(feature);
+  if (sphere) return sphere;
   const dome = domePieces(feature);
   if (dome) return dome;
   const slope = slopePieces(feature);
@@ -312,5 +408,8 @@ module.exports = {
   SLOPE_MIN_DELTA_M,
   piecesForFeature,
   domePieces,
+  spherePieces,
+  SPHERE_MIN_SLICES,
+  SPHERE_MAX_SLICES,
   slopePieces,
 };
