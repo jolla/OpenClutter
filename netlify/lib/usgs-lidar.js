@@ -1126,6 +1126,9 @@ async function readProject(name, frame, caps, fetchImpl) {
   };
 }
 
+const NEED_POINTS_PER_KM2 = 400000;
+const MAX_SURVEYS_TRIED = 6;
+
 async function fetchUsgsLidar(frame, opts) {
   const { timeSpan } = require("./stage-clock");
   return timeSpan("lidar", () => fetchUsgsLidarWork(frame, opts));
@@ -1153,8 +1156,11 @@ async function fetchUsgsLidarWork(frame, opts) {
   }
   let plan = null;
   const tried = [];
-  const need = Math.max(5000, Math.min(80000, Math.round((km2 > 0 ? km2 : 0.1) * 40000)));
-  for (let i = 0; i < ranked.length && i < 4; i++) {
+  // A survey that only clips the edge of the draw is a few thousand points.
+  // Enough for the draw is about 0.4 points per m2; short of that the next
+  // survey over the draw is read and the fullest one wins.
+  const need = Math.max(5000, Math.min(80000, Math.round((km2 > 0 ? km2 : 0.1) * NEED_POINTS_PER_KM2)));
+  for (let i = 0; i < ranked.length && i < MAX_SURVEYS_TRIED; i++) {
     // The two newest surveys over the draw are always read, so the clock
     // cannot change which survey a draw gets between runs.
     if (i >= 2 && Date.now() - started > caps.maxMs) break;

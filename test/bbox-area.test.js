@@ -45,8 +45,8 @@ describe("bbox width × length in feet", () => {
     assert.ok(Math.abs(feet.widthFt - 328.0839895) < 1e-6);
     assert.ok(Math.abs(feet.lengthFt - 164.04199475) < 1e-6);
     const line = bboxReadout(bbox);
-    assert.equal(line.text, "5,000 m² · 53,820 ft²");
-    assert.match(line.html, /^5,000 m² · <span class="area-quiet">53,820 ft²<\/span>$/);
+    assert.equal(line.text, "5,000 m² · 53,820 ft² · 1.2 acres");
+    assert.match(line.html, /^5,000 m² · <span class="area-quiet">53,820 ft² · 1\.2 acres<\/span>$/);
     assert.equal(/\d m ·/.test(line.text), false);
   });
 
@@ -85,7 +85,7 @@ describe("bbox width × length in feet", () => {
       north: lat + spanM / 2 / mpd.lat,
     };
     const line = bboxReadout(bbox);
-    assert.equal(line.text, "1,600 m² · 17,222 ft²");
+    assert.equal(line.text, "1,600 m² · 17,222 ft² · 0.4 acres");
     assert.equal(line.text.includes("km"), false);
     assert.equal(/\d m ·/.test(line.text), false);
   });
@@ -98,17 +98,17 @@ describe("bbox width × length in feet", () => {
   });
 });
 
-describe("area readout stays in square meters and square feet", () => {
+describe("area readout stays in square meters, square feet and acres", () => {
   it("reads a Wynn-sized site as square meters and square feet", () => {
     const sides = bboxSidesM(WYNN);
     const span = Math.max(sides.widthM, sides.lengthM);
     assert.ok(span > 2000 && span < 2500, span);
     const line = bboxReadout(WYNN);
-    assert.equal(line.text, "3,682,408 m² · 39,637,114 ft²");
-    assert.match(line.text, /ft²$/);
-    assert.equal(/\bkm\b|\bmi\b|\bha\b|acres/.test(line.text), false);
+    assert.equal(line.text, "3,682,408 m² · 39,637,114 ft² · 910 acres");
+    assert.match(line.text, /acres$/);
+    assert.equal(/\bkm\b|\bmi\b|\bha\b/.test(line.text), false);
     assert.equal(/\d m ·/.test(line.text), false);
-    assert.match(line.html, /<span class="area-quiet">[^<]+ ft²<\/span>/);
+    assert.match(line.html, /<span class="area-quiet">[^<]+ ft² · [\d,]+ acres<\/span>/);
   });
 
   it("keeps a few-hundred-meter site in square meters and square feet", () => {
@@ -120,7 +120,7 @@ describe("area readout stays in square meters and square feet", () => {
       south: lat - 150 / mpd.lat,
       north: lat + 150 / mpd.lat,
     };
-    assert.equal(bboxReadout(bbox).text, "120,000 m² · 1,291,669 ft²");
+    assert.equal(bboxReadout(bbox).text, "120,000 m² · 1,291,669 ft² · 30 acres");
   });
 
   it("does not lead a campus with the side length", () => {
@@ -151,7 +151,7 @@ describe("polygon area readout", () => {
     const box = bboxReadout({ west: west, south: south, east: east, north: north });
     const ring = polygonReadout(rect);
     assert.equal(ring.text, box.text);
-    assert.equal(ring.text, "5,000 m² · 53,820 ft²");
+    assert.equal(ring.text, "5,000 m² · 53,820 ft² · 1.2 acres");
     assert.equal(ring.text.startsWith("5,000 m²"), true);
   });
 
