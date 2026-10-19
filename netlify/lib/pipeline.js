@@ -3642,7 +3642,11 @@ function buildClutter({
   if (typeof aerialOpenShare === "function" && treePieces.length) {
     for (let i = treePieces.length - 1; i >= 0; i--) {
       const piece = treePieces[i];
-      if (!piece.discrete || !piece.areas || piece.areas.length < 2) continue;
+      if (!piece.areas || !piece.areas.length) continue;
+      // A lone crown piece with no stem, a few cells of lidar over a road,
+      // lawn or lot, is held to the same photo test as a stemmed tree.
+      const lone = !piece.discrete && piece.areas.length === 1 && !isTrunkArea(piece.areas[0]);
+      if (!lone && (!piece.discrete || piece.areas.length < 2)) continue;
       const crown = piece.areas[0];
       const coords = crown && crown.area && crown.area.coordinates;
       if (!coords || coords.length < 3) continue;
