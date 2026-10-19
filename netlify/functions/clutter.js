@@ -133,7 +133,6 @@ const BACKGROUND_CHM_MS = 180 * 1000;
 const BACKGROUND_COVER_MS = 60 * 1000;
 const BACKGROUND_LIDAR_MS = 45 * 1000;
 // Lidar canopy on openclutter.com. Flip to true when dev is promoted.
-const LIDAR_CANOPY_ALL_HOSTS = false;
 // The aerial stage budget lives in aerial-fetch.js. A single 10 MP export
 // used to hold the job for 90s, then a one-pixel-different cap held it again.
 const { AsyncLocalStorage } = require("node:async_hooks");
@@ -235,7 +234,7 @@ const { createWaterTest, clearWaterCanopy, dropWaterPoints } = require("../lib/w
 const { rejectPavementFootprints } = require("../lib/pavement");
 const POLE_SHADOW_MIN = 0.2;
 // Taller lone returns are masts, towers or flags, not light poles.
-const POLE_MAX_H_M = 20;
+const POLE_MAX_H_M = 40;
 // A tall lone return this close to a building outline is a roof edge, parapet or sign.
 const POLE_BUILDING_GAP_M = 3;
 function nearBuilding(lon, lat, buildings, gapM) {
@@ -1502,13 +1501,10 @@ async function handleClutter(event) {
   const includeFoliage = wantFoliage(event, body);
   const lidarOn =
     devHost && (body.lidar === true || body.lidar === "true" || body.lidar === 1 || body.lidar === "1");
-  // Where a USGS 3DEP cloud covers the draw, tree canopy is traced from it.
-  // Building heights from that cloud stay on the dev request above.
-  // The Fly export server also serves openclutter.com, so this stays on the
-  // dev hosts until LIDAR_CANOPY_ALL_HOSTS is set for a production release.
+  // Where a USGS 3DEP cloud covers the draw, tree canopy is traced from it,
+  // on every host. Building heights from that cloud stay on the dev request above.
   let lidarCanopyOn = false;
   if (
-    (testHost || LIDAR_CANOPY_ALL_HOSTS) &&
     includeFoliage &&
     needImage &&
     body.lidarCanopy !== false &&
@@ -2388,17 +2384,28 @@ async function handleClutter(event) {
       if (lst) delete lst.poleSpots;
       const mpp = frame && frame.imgW ? (frame.widthM || 0) / frame.imgW : 0;
       let drawn = 0;
+      let measuredMapped = 0;
       const hs = [];
       if (includePoles && spots.length && decoded && decoded.width === frame.imgW && decoded.height === frame.imgH) {
-        const have = outdoorFeatures.filter((f) => f && f.kind === "pole").map((f) => f.coords[0]);
+        const have = outdoorFeatures.filter((f) => f && f.kind === "pole" && f.coords && f.coords[0]);
         for (const p of spots) {
           if (!(p.heightM <= POLE_MAX_H_M)) continue;
           if (nearBuilding(p.lon, p.lat, features, POLE_BUILDING_GAP_M)) continue;
           const [px, py] = llToPx(p.lon, p.lat, frame);
           const c = poleShadowContrast(decoded, px, py, p.heightM, mpp);
           if (!(c >= POLE_SHADOW_MIN)) continue;
-          // A mapped street lamp at the same spot is the same pole.
-          if (have.some((q) => Math.hypot((q[0] - p.lon) * 81000, (q[1] - p.lat) * 111000) < 3)) continue;
+          // A mapped street lamp at the same spot is the same pole. The lidar
+          // measures it, unless the map tags its own height.
+          const mx = 111320 * Math.cos((p.lat * Math.PI) / 180);
+          const same = have.find((q) => Math.hypot((q.coords[0][0] - p.lon) * mx, (q.coords[0][1] - p.lat) * 111320) < 3);
+          if (same) {
+            if (!same.explicitHeight) {
+              same.heightM = p.heightM;
+              same.explicitHeight = true;
+              measuredMapped++;
+            }
+            continue;
+          }
           outdoorFeatures.push({ kind: "pole", coords: [[p.lon, p.lat]], closed: false, heightM: p.heightM, explicitHeight: true, rank: 3 });
           drawn++;
           hs.push(p.heightM);
@@ -2406,6 +2413,7 @@ async function handleClutter(event) {
       }
       footprintMeta.lidarPoleSpots = spots.length;
       footprintMeta.lidarPolesDrawn = drawn;
+      footprintMeta.mappedPolesMeasured = measuredMapped;
       if (drawn) {
         hs.sort((a, b) => a - b);
         warnings.push("Light poles from lidar: " + drawn + " (" + Math.round(hs[0]) + " to " + Math.round(hs[hs.length - 1]) + " m tall), each with a pole shadow on the photo.");

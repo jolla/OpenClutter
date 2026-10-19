@@ -86,14 +86,25 @@
     const metric = formatCount(m2);
     const imperial = formatCount(m2 * FEET_PER_M * FEET_PER_M);
     if (!metric || !imperial) return null;
-    return { metric: metric + " m²", imperial: imperial + " ft²" };
+    return { metric: metric + " m²", imperial: imperial + " ft²", acres: formatAcres(m2) };
+  }
+
+  const M2_PER_ACRE = 4046.8564224;
+
+  /** One decimal under 10 acres, whole acres above. */
+  function formatAcres(m2) {
+    if (!(m2 > 0)) return "";
+    const ac = m2 / M2_PER_ACRE;
+    const n = ac < 9.95 ? formatOneDecimal(ac) : formatCount(ac);
+    return n ? n + " acres" : "";
   }
 
   function areaLine(area) {
     if (!area) return null;
+    const acres = area.acres ? " · " + area.acres : "";
     return {
-      text: area.metric + " · " + area.imperial,
-      html: area.metric + ' · <span class="area-quiet">' + area.imperial + "</span>",
+      text: area.metric + " · " + area.imperial + acres,
+      html: area.metric + ' · <span class="area-quiet">' + area.imperial + acres + "</span>",
     };
   }
 
@@ -149,6 +160,7 @@
     formatFeet: formatFeet,
     formatSpan: formatSpan,
     formatArea: formatArea,
+    formatAcres: formatAcres,
     bboxReadout: bboxReadout,
     ringAreaM2: ringAreaM2,
     polygonReadout: polygonReadout,
