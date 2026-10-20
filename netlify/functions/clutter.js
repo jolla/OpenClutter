@@ -1584,7 +1584,7 @@ async function handleClutter(event) {
   let overtureFrame = null;
   try {
     reportProgress({ stage: "Fetching aerial" });
-    imageryCtx = needImage ? imagerySource.createImageryContext(devHost ? body.imagerySource : "esri", body) : null;
+    imageryCtx = needImage ? imagerySource.createImageryContext(testHost ? body.imagerySource : "esri", body) : null;
     // JPEG and Overture together. Meta may confirm the footprint query, but it
     // must not gate the image or the Overture read — the Las Vegas row group
     // loses if it starts only after metadata, behind the Global ML gzip.
@@ -1832,7 +1832,7 @@ async function handleClutter(event) {
       imgBuf = locked.jpegBuf;
       if (devHost && imageryPlate) warnings.push(mapImageNote(imageryPlate, frame, imgBuf));
       const aerialInfo = imageryCtx ? imagerySource.imageryInfo(imageryCtx) : null;
-      if (devHost && aerialInfo && aerialInfo.requested !== "esri") warnings.push(imagerySource.imageryLine(aerialInfo));
+      if (testHost && aerialInfo && aerialInfo.requested !== "esri") warnings.push(imagerySource.imageryLine(aerialInfo));
       const side = Math.max(+frame.imgW || 0, +frame.imgH || 0);
       const srcTag = aerialInfo && aerialInfo.requested !== "esri" ? " · " + (aerialInfo.id === "esri" ? "Esri" : imagerySource.sourceShort(aerialInfo.id)) : "";
       reportProgress({ step: { id: "aerial", detail: side > 0 ? side + " px" + srcTag : "" } });
