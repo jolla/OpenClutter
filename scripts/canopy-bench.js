@@ -867,6 +867,7 @@ async function exportSite(site) {
     terrainResolution: "auto",
     terrainStyle: "sloped",
     imageryQuality: "auto",
+    imagerySource: process.env.CANOPY_BENCH_SOURCE || undefined,
     mapNotes: false,
     format: "bundle",
     async: false,

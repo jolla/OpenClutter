@@ -182,6 +182,7 @@ function exportBody(bbox, body) {
   });
   if (o.terrainResolution != null) out.terrainResolution = String(o.terrainResolution);
   if (o.imageryQuality != null && o.imageryQuality !== "auto") out.imageryQuality = String(o.imageryQuality);
+  if (o.imagerySource != null && o.imagerySource !== "esri") out.imagerySource = String(o.imagerySource);
   if (bool(o.lidarHeights, false)) out.lidar = true;
   return out;
 }

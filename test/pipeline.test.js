@@ -1290,7 +1290,9 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.equal(/id="copy-terrain"/.test(html), false);
     assert.equal(/id="copy-terrain"/.test(app), false);
     assert.match(app, /Copy terrain/);
-    assert.equal((html.match(/<select/gi) || []).length, 1);
+    // Map quality, plus the dev-only aerial Source picker (hidden off dev).
+    assert.equal((html.match(/<select/gi) || []).length, 2);
+    assert.match(html, /id="map-source-row"[^>]*hidden/);
     assert.match(html, /id="map-quality"/);
     assert.match(html, /value="auto" selected>Auto</);
     assert.match(html, /value="low">Low · 256 px</);
@@ -1460,7 +1462,9 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(html, /src="\/site-draw\.js"/);
     assert.equal(/leaflet-draw/.test(html), false);
     assert.equal(/<dialog/i.test(html), false);
-    assert.equal((html.match(/<select/gi) || []).length, 1);
+    // Map quality, plus the dev-only aerial Source picker (hidden off dev).
+    assert.equal((html.match(/<select/gi) || []).length, 2);
+    assert.match(html, /id="map-source-row"[^>]*hidden/);
     assert.match(html, /id="map-quality"/);
     assert.match(app, /bboxReadout/);
     assert.match(app, /polygonReadout/);
