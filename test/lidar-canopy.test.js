@@ -103,3 +103,35 @@ test("an unclassified flat 12 m deck is not a crown", () => {
   const deck = share(out.grid, (u) => u < 0.15, (v) => v > 0.85);
   assert.ok(deck < 0.05, "deck " + deck);
 });
+
+function lampGrid(cellM, tall) {
+  const cells = new Map();
+  for (let iy = 0; iy < 14; iy++) {
+    for (let ix = 0; ix < 14; ix++) {
+      const t = tall[ix + "," + iy];
+      cells.set(ix + "," + iy, { ix, iy, n: 8, g: 100, tMax: t ? 100 + t : 100.2, tc: 4, mr: t ? 1 : 0, lr: t ? 1 : 0, vegN: 0, fc: 0 });
+    }
+  }
+  return { cells, counts: {}, kept: 14 * 14 * 8, cellGroundM: cellM };
+}
+
+test("a flat lamp bank alone in the open is a pole, not a crown", () => {
+  const { lidarCells } = require("../netlify/lib/lidar-canopy");
+  const read = lidarCells(lampGrid(1.6, { "6,6": 15.2, "7,6": 15.4, "6,7": 15, "7,7": 15.3 }), { leafOff: true });
+  assert.equal(read.lampBlocks, 1);
+  for (const k of ["6,6", "7,6", "6,7", "7,7"]) assert.equal(read.cells.get(k).h, 0);
+  assert.equal([...read.cells.values()].filter((c) => c.pole).length, 1);
+});
+
+test("a narrow conifer cone stays a crown", () => {
+  const { lidarCells } = require("../netlify/lib/lidar-canopy");
+  const read = lidarCells(lampGrid(1.6, { "6,6": 18, "7,6": 15.5, "6,7": 15.8, "7,7": 14.9 }), { leafOff: true });
+  assert.equal(read.lampBlocks, 0);
+  assert.ok(read.cells.get("6,6").h > 10 || read.cells.get("6,6").pole);
+});
+
+test("coarse lidar cells cannot read a lamp bank", () => {
+  const { lidarCells } = require("../netlify/lib/lidar-canopy");
+  const read = lidarCells(lampGrid(5.4, { "6,6": 15.2, "7,6": 15.4 }), { leafOff: true });
+  assert.equal(read.lampBlocks, 0);
+});
