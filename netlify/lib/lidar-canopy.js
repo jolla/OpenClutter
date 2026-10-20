@@ -36,6 +36,7 @@ const LAMP_MIN_M = 10;
 const LAMP_MAX_M2 = 20;
 const LAMP_MAX_SPAN_M = 5;
 const LAMP_FLAT_M = 1;
+const LAMP_MAX_M = 40;
 // The tallest a dropped wall cell may stand when the canopy height map
 // refills it: new planting since the flight, not a mature crown.
 const REFILL_MAX_M = 6;
@@ -181,11 +182,15 @@ function lidarCells(grid, opts) {
   // No crown is that flat: even a narrow conifer drops a metre or more per
   // cell from its tip. Such a block is a pole, not a column of foliage.
   const cellM = grid.cellGroundM > 0 ? grid.cellGroundM : 1.5;
-  const lampMaxCells = Math.max(2, Math.floor(LAMP_MAX_M2 / (cellM * cellM)));
-  const lampMaxSpan = Math.max(2, Math.round(LAMP_MAX_SPAN_M / cellM));
+  // Coarse cells cannot tell a lamp bank from a crown: two cells must fit
+  // inside the lamp limits in ground metres.
+  const lampMaxCells = Math.floor(LAMP_MAX_M2 / (cellM * cellM));
+  const lampMaxSpan = Math.floor(LAMP_MAX_SPAN_M / cellM);
+  const lampsReadable = lampMaxCells >= 2 && lampMaxSpan >= 2;
   const seen = new Set();
   for (const [key, c] of out) {
-    if (seen.has(key) || c.pole || !(c.h >= LAMP_MIN_M)) continue;
+    if (!lampsReadable) break;
+    if (seen.has(key) || c.pole || !(c.h >= LAMP_MIN_M) || c.h > LAMP_MAX_M) continue;
     const block = [];
     const queue = [c];
     seen.add(key);
