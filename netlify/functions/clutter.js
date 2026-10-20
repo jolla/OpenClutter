@@ -161,6 +161,7 @@ async function runBackgroundExport(event, onProgress) {
   if (ctx.tail) await ctx.tail;
   return result;
 }
+const imagerySource = require("../lib/imagery-source");
 const { geoFrame, capEsriExportFrame, llToPx, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings, parseAreaCapOverride, parseJsonBudgetOverride, raisedDeckCap, MAX_BUILDINGS, MAX_ATTENUATION_AREAS, DEFAULT_AREA_CAP } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
@@ -453,7 +454,7 @@ function imageryStepBudget(elapsed, attemptMs) {
  * Same drawn box, smaller image when the first one misses. There is no
  * third fetch after the plan. That extra wait ran into the gateway.
  */
-async function fetchImageryStepped(bbox, steps) {
+async function fetchImageryStepped(bbox, steps, srcCtx) {
   let last;
   const started = Date.now();
   let askedSide = 0;
@@ -467,7 +468,7 @@ async function fetchImageryStepped(bbox, steps) {
   }
   const sharpCapped = !!(prepared[0] && prepared[0].step.sharpCapped);
   if (isBackgroundExport()) {
-    return fetchImageryWithinBudget(prepared, askedSide, sharpCapped);
+    return fetchImageryWithinBudget(prepared, askedSide, sharpCapped, srcCtx);
   }
   for (let n = 0; n < prepared.length; n++) {
     const entry = prepared[n];
@@ -479,7 +480,7 @@ async function fetchImageryStepped(bbox, steps) {
       if (!(attemptMs >= 1500)) break;
     }
     try {
-      const got = await tryImageryPlate(entry.plate, attemptMs);
+      const got = await tryImageryPlate(entry.plate, attemptMs, srcCtx);
       return plateResult(got, askedSide, n > 0, sharpCapped);
     } catch (e) {
       last = e;
@@ -494,7 +495,7 @@ async function fetchImageryStepped(bbox, steps) {
  * near the Esri pixel cap is fetched as tiles so one request cannot sit
  * for 90s.
  */
-async function fetchImageryWithinBudget(prepared, askedSide, sharpCapped) {
+async function fetchImageryWithinBudget(prepared, askedSide, sharpCapped, srcCtx) {
   let unitTotal = 0;
   let unitDone = 0;
   function noteAerial() {
@@ -523,7 +524,9 @@ async function fetchImageryWithinBudget(prepared, askedSide, sharpCapped) {
             noteAerial();
           },
           fetchImage: (frame, signal) =>
-            fetchImageryJpegBody(esriImageryUrl(frame), aerialFetch.aerialBudgetMs(), signal),
+            imagerySource.fetchPlateWith(srcCtx, frame, aerialFetch.aerialBudgetMs(), signal, (f, ms, sig) =>
+              fetchImageryJpegBody(esriImageryUrl(f), ms, sig)
+            ),
         }
       )
     );
@@ -554,9 +557,16 @@ function plateResult(got, askedSide, stepped, sharpCapped) {
   };
 }
 
-async function tryImageryPlate(plate, attemptMs) {
+async function tryImageryPlate(plate, attemptMs, srcCtx) {
   try {
-    const buf = await fetchImageryJpeg(esriImageryUrl(plate), attemptMs);
+    const buf =
+      srcCtx && srcCtx.source !== imagerySource.ESRI
+        ? await stageClock.timeSpan("aerialFetch", () =>
+            imagerySource.fetchPlateWith(srcCtx, plate, attemptMs, null, (f, ms, sig) =>
+              fetchImageryJpegBody(esriImageryUrl(f), ms, sig)
+            )
+          )
+        : await fetchImageryJpeg(esriImageryUrl(plate), attemptMs);
     return { buf, plate };
   } catch (err) {
     const safe = capEsriExportFrame(plate);
@@ -1546,6 +1556,7 @@ async function handleClutter(event) {
 
   let imgBuf = null;
   let imageryPlate = null;
+  let imageryCtx = null;
   let gj;
   let imgMeta = null;
   let globalFeatures = [];
@@ -1573,6 +1584,7 @@ async function handleClutter(event) {
   let overtureFrame = null;
   try {
     reportProgress({ stage: "Fetching aerial" });
+    imageryCtx = needImage ? imagerySource.createImageryContext(testHost ? body.imagerySource : "esri", body) : null;
     // JPEG and Overture together. Meta may confirm the footprint query, but it
     // must not gate the image or the Overture read — the Las Vegas row group
     // loses if it starts only after metadata, behind the Global ML gzip.
@@ -1639,7 +1651,7 @@ async function handleClutter(event) {
     }
     let imagerySettled = !needImage;
     const imageryJob = needImage
-      ? fetchImageryStepped(requestBbox, steps).then((got) => {
+      ? fetchImageryStepped(requestBbox, steps, imageryCtx).then((got) => {
           imagerySettled = true;
           imageryPlate = got;
           return got && got.buf;
@@ -1819,8 +1831,11 @@ async function handleClutter(event) {
       frame = locked.frame;
       imgBuf = locked.jpegBuf;
       if (devHost && imageryPlate) warnings.push(mapImageNote(imageryPlate, frame, imgBuf));
+      const aerialInfo = imageryCtx ? imagerySource.imageryInfo(imageryCtx) : null;
+      if (testHost && aerialInfo && aerialInfo.requested !== "esri") warnings.push(imagerySource.imageryLine(aerialInfo));
       const side = Math.max(+frame.imgW || 0, +frame.imgH || 0);
-      reportProgress({ step: { id: "aerial", detail: side > 0 ? side + " px" : "" } });
+      const srcTag = aerialInfo && aerialInfo.requested !== "esri" ? " · " + (aerialInfo.id === "esri" ? "Esri" : imagerySource.sourceShort(aerialInfo.id)) : "";
+      reportProgress({ step: { id: "aerial", detail: side > 0 ? side + " px" + srcTag : "" } });
     } else {
       reportProgress({ step: { id: "aerial", skipped: true, detail: "no image" } });
     }
@@ -2377,7 +2392,8 @@ async function handleClutter(event) {
     }
     // Poles the lidar found (one tall cell, far lower around it) are drawn as
     // light poles only where the photo shows a pole's thin shadow too; the
-    // rest stay out. Either way they are not trees.
+    // rest stay out. A flat lamp bank is drawn on the lidar alone. Either way
+    // they are not trees.
     {
       const lst = footprintMeta.lidarCanopyStats;
       const spots = (lst && lst.poleSpots) || [];
@@ -2385,6 +2401,7 @@ async function handleClutter(event) {
       const mpp = frame && frame.imgW ? (frame.widthM || 0) / frame.imgW : 0;
       let drawn = 0;
       let measuredMapped = 0;
+      let lampsDrawn = 0;
       const hs = [];
       if (includePoles && spots.length && decoded && decoded.width === frame.imgW && decoded.height === frame.imgH) {
         const have = outdoorFeatures.filter((f) => f && f.kind === "pole" && f.coords && f.coords[0]);
@@ -2392,8 +2409,13 @@ async function handleClutter(event) {
           if (!(p.heightM <= POLE_MAX_H_M)) continue;
           if (nearBuilding(p.lon, p.lat, features, POLE_BUILDING_GAP_M)) continue;
           const [px, py] = llToPx(p.lon, p.lat, frame);
-          const c = poleShadowContrast(decoded, px, py, p.heightM, mpp);
-          if (!(c >= POLE_SHADOW_MIN)) continue;
+          // A lamp bank the lidar measured as a flat block alone in the open
+          // is a pole on its own evidence. A field light stands on grass, and
+          // the shadow test reads grass beside the spot as a tree.
+          if (!p.lamp) {
+            const c = poleShadowContrast(decoded, px, py, p.heightM, mpp);
+            if (!(c >= POLE_SHADOW_MIN)) continue;
+          }
           // A mapped street lamp at the same spot is the same pole. The lidar
           // measures it, unless the map tags its own height.
           const mx = 111320 * Math.cos((p.lat * Math.PI) / 180);
@@ -2408,15 +2430,17 @@ async function handleClutter(event) {
           }
           outdoorFeatures.push({ kind: "pole", coords: [[p.lon, p.lat]], closed: false, heightM: p.heightM, explicitHeight: true, rank: 3 });
           drawn++;
+          if (p.lamp) lampsDrawn++;
           hs.push(p.heightM);
         }
       }
       footprintMeta.lidarPoleSpots = spots.length;
       footprintMeta.lidarPolesDrawn = drawn;
       footprintMeta.mappedPolesMeasured = measuredMapped;
+      footprintMeta.lidarLampPoles = lampsDrawn;
       if (drawn) {
         hs.sort((a, b) => a - b);
-        warnings.push("Light poles from lidar: " + drawn + " (" + Math.round(hs[0]) + " to " + Math.round(hs[hs.length - 1]) + " m tall), each with a pole shadow on the photo.");
+        warnings.push("Light poles from lidar: " + drawn + " (" + Math.round(hs[0]) + " to " + Math.round(hs[hs.length - 1]) + " m tall), " + (lampsDrawn === drawn ? "each a lamp bank alone in the open." : lampsDrawn ? lampsDrawn + " of them lamp banks alone in the open, the rest with a pole shadow on the photo." : "each with a pole shadow on the photo."));
       }
     }
     const parallelTasks = [];
@@ -2590,6 +2614,7 @@ async function handleClutter(event) {
           : null,
       leafOnGreenShare: leafOnPhoto ? leafOnGreenSampler(leafOnPhoto, frame.mpuX) : null,
       leafOnSource: leafOnPhoto ? leafOnPhoto.source : "",
+      imagery: imageryCtx ? imagerySource.imageryInfo(imageryCtx) : null,
     });
   }
 

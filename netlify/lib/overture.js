@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Overture Maps buildings (release 2026-08-19.0), free Azure GeoParquet.
+ * Overture Maps buildings (release 2026-09-23.1), free Azure GeoParquet.
  *
  * The theme is ~277 GB across 512 files. A committed row-group bbox index
  * (parquet footer stats) selects the one or two groups that cover the export
@@ -13,7 +13,7 @@
 const zlib = require("node:zlib");
 const { FLOOR_HEIGHT_M } = require("./conflate");
 
-const RELEASE = "2026-08-19.0";
+const RELEASE = "2026-09-23.1";
 const AZURE_PREFIX =
   "https://overturemapswestus2.blob.core.windows.net/release/" +
   RELEASE +
@@ -259,6 +259,21 @@ function featuresFromRows(rows, bbox, keep) {
   return cap ? keepLargestFootprints(features, cap) : features;
 }
 
+/**
+ * Overture deletes old releases from Azure. A 404 on a file named by the
+ * committed index means the pinned release is gone, not that the site has no
+ * roofs: every Overture-only ring (the Las Vegas Sphere) leaves the export
+ * until the index is rebuilt with scripts/fetch-overture-index.js.
+ */
+function releaseGoneError(err) {
+  const msg = String((err && err.message) || err || "");
+  if (!/\b404\b/.test(msg)) return err;
+  const out = new Error("release " + RELEASE + " is no longer published (404)");
+  out.code = "OVERTURE_RELEASE_GONE";
+  out.cause = err;
+  return out;
+}
+
 function failAborted() {
   const err = new Error("The operation was aborted due to timeout");
   err.name = "AbortError";
@@ -325,10 +340,15 @@ async function fetchOvertureFootprintsWork(frame, opts) {
         break;
       }
       const url = AZURE_PREFIX + file;
-      const source = await reader.asyncBufferFromUrl({
-        url,
-        requestInit: { signal },
-      });
+      let source;
+      try {
+        source = await reader.asyncBufferFromUrl({
+          url,
+          requestInit: { signal },
+        });
+      } catch (e) {
+        throw releaseGoneError(e);
+      }
       // Same-file row groups in parallel. A south-heavy Vegas box reads the
       // southern neighbor first; waiting for it to finish before the Sphere
       // group is how a late abort drops the dome. A group that aborts does
@@ -393,6 +413,7 @@ async function fetchOvertureFootprintsWork(frame, opts) {
 
 module.exports = {
   RELEASE,
+  releaseGoneError,
   AZURE_PREFIX,
   GROUP_STRIDE,
   MAX_GROUPS,

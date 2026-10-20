@@ -152,6 +152,20 @@ function selectedImageryQuality() {
   return "auto";
 }
 
+// Aerial source picker. Dev only: production exports stay on Esri.
+function selectedImagerySource() {
+  if (!devPage()) return undefined;
+  const sel = document.getElementById("map-source");
+  const value = sel ? String(sel.value || "") : "";
+  if (value === "auto" || value === "naip" || value === "national") return value;
+  return undefined;
+}
+
+(function showSourcePicker() {
+  const row = document.getElementById("map-source-row");
+  if (row) row.hidden = !devPage();
+})();
+
 function clutterChecked(id) {
   const input = document.getElementById(id);
   if (!input) return true;
@@ -1588,6 +1602,7 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
       terrainResolution: terrain ? "auto" : undefined,
       terrainStyle: terrain ? "sloped" : undefined,
       imageryQuality: qualityPage() ? selectedImageryQuality() : undefined,
+      imagerySource: selectedImagerySource(),
       areaCap: areaCapOverride(),
       jsonBudget: jsonBudgetOverride(),
       terrainFloors: terrainFloorsOverride(),
@@ -1693,6 +1708,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       liftSamples,
       liftKind: liftSamples && terrainPaste.liftKind ? terrainPaste.liftKind : undefined,
       imageryQuality: qualityPage() ? selectedImageryQuality() : undefined,
+      imagerySource: selectedImagerySource(),
       areaCap: areaCapOverride(),
       jsonBudget: jsonBudgetOverride(),
       terrainFloors: terrainFloorsOverride(),

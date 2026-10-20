@@ -30,6 +30,13 @@ const CANOPY_MAX_M = 75;
 const POLE_MIN_M = 8;
 // A pole cell's neighbours stand under this share of its height.
 const SPIKE_SHARE = 0.5;
+// A lamp bank: a flat block of at most LAMP_MAX_M2 and LAMP_MAX_SPAN_M
+// across, at least LAMP_MIN_M up, its cells within LAMP_FLAT_M of each other.
+const LAMP_MIN_M = 10;
+const LAMP_MAX_M2 = 20;
+const LAMP_MAX_SPAN_M = 5;
+const LAMP_FLAT_M = 1;
+const LAMP_MAX_M = 40;
 // The tallest a dropped wall cell may stand when the canopy height map
 // refills it: new planting since the flight, not a mature crown.
 const REFILL_MAX_M = 6;
@@ -132,6 +139,7 @@ function lidarCells(grid, opts) {
   const jagged = classified ? 0 : dropJaggedTops(out);
   // A lone tall cell with almost no split returns is a pole, mast, or lamp.
   let poles = 0;
+  let lampBlocks = 0;
   for (const c of out.values()) {
     if (!(c.h >= POLE_MIN_M)) continue;
     let near = 0;
@@ -169,6 +177,80 @@ function lidarCells(grid, opts) {
       c.spike = true;
     }
   }
+  // A field or high-mast light carries a bank of lamps a few metres wide.
+  // It reads as a small block of cells at one height, alone in the open.
+  // No crown is that flat: even a narrow conifer drops a metre or more per
+  // cell from its tip. Such a block is a pole, not a column of foliage.
+  const cellM = grid.cellGroundM > 0 ? grid.cellGroundM : 1.5;
+  // Coarse cells cannot tell a lamp bank from a crown: two cells must fit
+  // inside the lamp limits in ground metres.
+  const lampMaxCells = Math.floor(LAMP_MAX_M2 / (cellM * cellM));
+  const lampMaxSpan = Math.floor(LAMP_MAX_SPAN_M / cellM);
+  const lampsReadable = lampMaxCells >= 2 && lampMaxSpan >= 2;
+  const seen = new Set();
+  for (const [key, c] of out) {
+    if (!lampsReadable) break;
+    if (seen.has(key) || c.pole || !(c.h >= LAMP_MIN_M) || c.h > LAMP_MAX_M) continue;
+    const block = [];
+    const queue = [c];
+    seen.add(key);
+    let big = false;
+    while (queue.length) {
+      const q = queue.pop();
+      block.push(q);
+      if (block.length > lampMaxCells) big = true;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const k = q.ix + dx + "," + (q.iy + dy);
+          const n = out.get(k);
+          if (!n || seen.has(k) || n.pole || !(n.h >= CANOPY_MIN_M)) continue;
+          seen.add(k);
+          queue.push(n);
+        }
+      }
+    }
+    if (big || block.length < 2) continue;
+    let lo = Infinity;
+    let hi = -Infinity;
+    let x0 = Infinity;
+    let x1 = -Infinity;
+    let y0 = Infinity;
+    let y1 = -Infinity;
+    for (const b of block) {
+      if (b.h < lo) lo = b.h;
+      if (b.h > hi) hi = b.h;
+      if (b.ix < x0) x0 = b.ix;
+      if (b.ix > x1) x1 = b.ix;
+      if (b.iy < y0) y0 = b.iy;
+      if (b.iy > y1) y1 = b.iy;
+    }
+    if (hi - lo > LAMP_FLAT_M || x1 - x0 + 1 > lampMaxSpan || y1 - y0 + 1 > lampMaxSpan) continue;
+    // Open ground around the block: no other canopy within two cells.
+    let crowded = false;
+    for (let iy = y0 - 2; iy <= y1 + 2 && !crowded; iy++) {
+      for (let ix = x0 - 2; ix <= x1 + 2; ix++) {
+        if (ix >= x0 && ix <= x1 && iy >= y0 && iy <= y1) continue;
+        const n = out.get(ix + "," + iy);
+        if (n && !n.pole && n.h >= CANOPY_MIN_M && block.indexOf(n) < 0) {
+          crowded = true;
+          break;
+        }
+      }
+    }
+    if (crowded) continue;
+    let top = block[0];
+    for (const b of block) if (b.h > top.h) top = b;
+    for (const b of block) {
+      if (b !== top) b.h = 0;
+    }
+    top.poleH = top.h;
+    top.h = 0;
+    top.pole = true;
+    top.lamp = true;
+    poles++;
+    lampBlocks++;
+  }
   const poleSpots = [];
   for (const c of out.values()) {
     if (!c.pole) continue;
@@ -185,7 +267,9 @@ function lidarCells(grid, opts) {
     }
     if (grid.originX != null) {
       const ll = require("./usgs-lidar").cellCenter(grid, c);
-      poleSpots.push({ lon: ll[0], lat: ll[1], heightM: Math.round(c.poleH * 10) / 10 });
+      const spot = { lon: ll[0], lat: ll[1], heightM: Math.round(c.poleH * 10) / 10 };
+      if (c.lamp) spot.lamp = true;
+      poleSpots.push(spot);
     }
   }
   // The thin-line rule runs on the fused grid only (clearThinLinesGrid); on
@@ -212,7 +296,7 @@ function lidarCells(grid, opts) {
       closed++;
     }
   }
-  return { cells: out, classified, splitKnown, nMed, minN, poles, poleSpots, closed, flat, jagged, lines };
+  return { cells: out, classified, splitKnown, nMed, minN, poles, lampBlocks, poleSpots, closed, flat, jagged, lines };
 }
 
 /**

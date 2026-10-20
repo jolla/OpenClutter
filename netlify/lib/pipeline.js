@@ -619,6 +619,7 @@ function zipReadme(stats) {
     "\n" +
     terrainReadme(c) +
     nlsZipCredit(c) +
+    aerialZipCredit(stats) +
     "\n" +
     `buildingsKept: ${c.buildingsKept}\n` +
     `includeFoliage: ${c.includeFoliage ? "true" : "false"}\n` +
@@ -640,6 +641,24 @@ function zipReadme(stats) {
     `droppedVerts: ${c.droppedVerts}\n` +
     `droppedAreasCap: ${c.droppedAreasCap}\n` +
     zipTroubleshoot(c)
+  );
+}
+
+/** Source, capture date, and attribution of the map image when the source was chosen. */
+function aerialZipCredit(stats) {
+  const im = stats && stats.imagery;
+  if (!im || !im.name) return "";
+  return (
+    "\nMap image: " +
+    im.name +
+    (im.captureDate ? ", captured " + im.captureDate : "") +
+    ".\n" +
+    "Credit: " +
+    im.attribution +
+    (im.license ? " (" + im.license + ")" : "") +
+    ".\n" +
+    (im.fallback && im.reason ? "Requested " + im.requested + "; used Esri World Imagery: " + im.reason + ".\n" : "") +
+    (im.mixed ? "Part of the map is Esri World Imagery: " + (im.reason || "source miss") + ".\n" : "")
   );
 }
 
@@ -3305,6 +3324,7 @@ function buildClutter({
   aerialOpenShare,
   leafOnGreenShare,
   leafOnSource,
+  imagery,
 }) {
   const featureList = footprintsGeojson?.features || [];
   if (Array.isArray(warnings)) {
@@ -3822,6 +3842,7 @@ function buildClutter({
   const oiJson = packed.oiJson;
   const stats = {
     ...fp.stats,
+    imagery: imagery || undefined,
     trees: treeGroupsKept,
     treesMeasured: veg.count,
     discreteTrees: discreteKept,

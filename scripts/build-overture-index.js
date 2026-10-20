@@ -5,17 +5,19 @@
  *
  * Input CSV columns: file_name,row_group_id,nrows,xmin,xmax,ymin,ymax
  * Produced from DuckDB parquet_metadata on
- * s3://overturemaps-us-west-2/release/2026-08-19.0/theme=buildings/type=building/*.parquet
- * (footer stats only). The runtime reader is netlify/lib/overture.js.
+ * s3://overturemaps-us-west-2/release/<release>/theme=buildings/type=building/*.parquet
+ * (footer stats only), or by scripts/fetch-overture-index.js straight from the
+ * Azure parquet footers. The runtime reader is netlify/lib/overture.js.
  */
 
 const fs = require("node:fs");
 const path = require("node:path");
 const zlib = require("node:zlib");
 
-const RELEASE = "2026-08-19.0";
+const RELEASE = require("../netlify/lib/overture").RELEASE;
 
-function pack(csvPath, outPath) {
+function pack(csvPath, outPath, releaseName) {
+  const rel = releaseName || RELEASE;
   const text = fs.readFileSync(csvPath, "utf8").trim().split("\n");
   const header = text[0].split(",");
   const col = Object.fromEntries(header.map((h, i) => [h, i]));
@@ -43,7 +45,7 @@ function pack(csvPath, outPath) {
       rowStart += g.n;
     }
   }
-  const release = Buffer.from(RELEASE, "utf8");
+  const release = Buffer.from(rel, "utf8");
   const nameBufs = files.map((f) => Buffer.from(f, "utf8"));
   let size = 4 + 2 + 2 + 4 + 2 + release.length;
   for (const n of nameBufs) size += 2 + n.length;
@@ -90,7 +92,7 @@ function pack(csvPath, outPath) {
   const js =
     '"use strict";\n' +
     "// Generated Overture buildings row-group index, release " +
-    RELEASE +
+    rel +
     ". Do not edit.\n" +
     "module.exports = " +
     JSON.stringify(b64) +
