@@ -11,7 +11,8 @@
     "eval:compare": "node scripts/eval-sites.js --compare-legacy",
     "eval:live": "node scripts/eval-sites.js --live",
     "fixtures:fetch": "node scripts/fetch-eval-fixtures.js",
-    "verify:oak-creek": "node scripts/verify-oak-creek.js"
+    "verify:oak-creek": "node scripts/verify-oak-creek.js",
+    "overture:index": "node scripts/fetch-overture-index.js"
   },
   "dependencies": {
     "@netlify/blobs": "^10.7.13",

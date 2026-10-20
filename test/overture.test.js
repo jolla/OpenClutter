@@ -9,7 +9,9 @@ const {
   featureFromRow,
   featuresFromRows,
   fetchOvertureFootprints,
+  releaseGoneError,
   RELEASE,
+  AZURE_PREFIX,
 } = require("../netlify/lib/overture");
 
 const OAK = {
@@ -22,11 +24,11 @@ const OAK = {
 describe("Overture buildings", () => {
   it("selects the single Oak Creek row group from the committed index", () => {
     const groups = groupsForBbox(OAK.west, OAK.south, OAK.east, OAK.north);
-    assert.equal(RELEASE, "2026-08-19.0");
+    assert.equal(RELEASE, "2026-09-23.1");
     assert.equal(groups.length, 1);
     assert.match(groups[0].file, /^part-00060-/);
-    assert.equal(groups[0].rowStart, 1265190);
-    assert.equal(groups[0].rowCount, 22200);
+    assert.equal(groups[0].rowStart, 1275180);
+    assert.equal(groups[0].rowCount, 22351);
     assert.ok(groups[0].xmin < OAK.west && groups[0].xmax > OAK.east);
   });
 
@@ -240,5 +242,54 @@ describe("Overture buildings", () => {
     assert.deepEqual(keys, ["bbox.xmax", "bbox.xmin", "bbox.ymax", "bbox.ymin"]);
     assert.equal(filter.$and[0]["bbox.xmax"].$gte, -115.17);
     assert.equal(filter.$and[2]["bbox.ymax"].$gte, 36.11);
+  });
+  it("the committed index is for the release the reader fetches", () => {
+    // 2026-08-19.0 was deleted from Azure. Every read was a 404 and the Las
+    // Vegas Sphere (only in Overture) left the export on every host. The index
+    // and the URL prefix have to name the same release.
+    const zlib = require("node:zlib");
+    const buf = zlib.gunzipSync(Buffer.from(require("../netlify/lib/overture-rg-data"), "base64"));
+    const relLen = buf.readUInt16LE(12);
+    assert.equal(buf.toString("utf8", 14, 14 + relLen), RELEASE);
+    assert.ok(AZURE_PREFIX.includes("/release/" + RELEASE + "/theme=buildings/"));
+  });
+
+  it("a 404 on the pinned release names the release as gone, not a missing roof", async () => {
+    const frame = { west: -115.164, south: 36.1195, east: -115.1605, north: 36.1225 };
+    const reader = {
+      compressors: {},
+      asyncBufferFromUrl: async () => {
+        throw new Error("fetch head failed 404");
+      },
+      parquetReadObjects: async () => [],
+    };
+    await assert.rejects(
+      fetchOvertureFootprints(frame, { reader, signal: new AbortController().signal }),
+      (e) => e.code === "OVERTURE_RELEASE_GONE" && e.message.includes(RELEASE) && /no longer published/.test(e.message)
+    );
+    const timeout = new Error("The operation was aborted due to timeout");
+    assert.equal(releaseGoneError(timeout), timeout);
+  });
+
+  it("keeps the Las Vegas Sphere as a tall attenuating building from the live release", { skip: !process.env.OC_LIVE }, async () => {
+    // OC_LIVE=1 npm test reads the real row group. The Sphere ring is only in
+    // Overture, so this fails the day the pinned release leaves Azure.
+    const { footprintsToClutter } = require("../netlify/lib/pipeline");
+    const { geoFrame } = require("../netlify/lib/geo-frame");
+    const frame = { west: -115.164, south: 36.1195, east: -115.1605, north: 36.1225 };
+    const pack = await fetchOvertureFootprints(frame, { signal: AbortSignal.timeout(60000) });
+    const sphere = pack.features.find((f) => {
+      const ring = f.geometry.type === "Polygon" ? f.geometry.coordinates[0] : f.geometry.coordinates[0][0];
+      const xs = ring.map((p) => p[0]);
+      const ys = ring.map((p) => p[1]);
+      return Math.min(...xs) < -115.1621 && Math.max(...xs) > -115.1621 && Math.min(...ys) < 36.1212 && Math.max(...ys) > 36.1212;
+    });
+    assert.ok(sphere, "Sphere ring missing from Overture " + RELEASE);
+    assert.ok(sphere.properties.height >= 100 && sphere.properties.height <= 125, "Sphere height " + sphere.properties.height);
+    const grid = geoFrame(frame, { imgW: 800, imgH: 850, maxSpanM: 10000, minSpanM: 1 });
+    const out = footprintsToClutter([sphere], grid, null);
+    assert.equal(out.stats.droppedMega, 0);
+    const tops = out.oiAreas.map((a) => a.area_material.top_height);
+    assert.ok(Math.max(...tops) >= 100, "Sphere is not a tall attenuating building: " + Math.max(...tops));
   });
 });

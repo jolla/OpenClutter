@@ -371,7 +371,7 @@ function classifyFetch(url, init) {
   if (u.includes("blob.core.windows.net/release") || u.includes("overturemaps")) {
     return {
       source: "overture",
-      resolution: "2026-08-19.0",
+      resolution: (/\/release\/([^/]+)\//.exec(u) || [, "release"])[1],
       tile: hashTile(u + "|" + range),
       contentType: "application/octet-stream",
     };
