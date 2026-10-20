@@ -2377,7 +2377,8 @@ async function handleClutter(event) {
     }
     // Poles the lidar found (one tall cell, far lower around it) are drawn as
     // light poles only where the photo shows a pole's thin shadow too; the
-    // rest stay out. Either way they are not trees.
+    // rest stay out. A flat lamp bank is drawn on the lidar alone. Either way
+    // they are not trees.
     {
       const lst = footprintMeta.lidarCanopyStats;
       const spots = (lst && lst.poleSpots) || [];
@@ -2385,6 +2386,7 @@ async function handleClutter(event) {
       const mpp = frame && frame.imgW ? (frame.widthM || 0) / frame.imgW : 0;
       let drawn = 0;
       let measuredMapped = 0;
+      let lampsDrawn = 0;
       const hs = [];
       if (includePoles && spots.length && decoded && decoded.width === frame.imgW && decoded.height === frame.imgH) {
         const have = outdoorFeatures.filter((f) => f && f.kind === "pole" && f.coords && f.coords[0]);
@@ -2392,8 +2394,13 @@ async function handleClutter(event) {
           if (!(p.heightM <= POLE_MAX_H_M)) continue;
           if (nearBuilding(p.lon, p.lat, features, POLE_BUILDING_GAP_M)) continue;
           const [px, py] = llToPx(p.lon, p.lat, frame);
-          const c = poleShadowContrast(decoded, px, py, p.heightM, mpp);
-          if (!(c >= POLE_SHADOW_MIN)) continue;
+          // A lamp bank the lidar measured as a flat block alone in the open
+          // is a pole on its own evidence. A field light stands on grass, and
+          // the shadow test reads grass beside the spot as a tree.
+          if (!p.lamp) {
+            const c = poleShadowContrast(decoded, px, py, p.heightM, mpp);
+            if (!(c >= POLE_SHADOW_MIN)) continue;
+          }
           // A mapped street lamp at the same spot is the same pole. The lidar
           // measures it, unless the map tags its own height.
           const mx = 111320 * Math.cos((p.lat * Math.PI) / 180);
@@ -2408,15 +2415,17 @@ async function handleClutter(event) {
           }
           outdoorFeatures.push({ kind: "pole", coords: [[p.lon, p.lat]], closed: false, heightM: p.heightM, explicitHeight: true, rank: 3 });
           drawn++;
+          if (p.lamp) lampsDrawn++;
           hs.push(p.heightM);
         }
       }
       footprintMeta.lidarPoleSpots = spots.length;
       footprintMeta.lidarPolesDrawn = drawn;
       footprintMeta.mappedPolesMeasured = measuredMapped;
+      footprintMeta.lidarLampPoles = lampsDrawn;
       if (drawn) {
         hs.sort((a, b) => a - b);
-        warnings.push("Light poles from lidar: " + drawn + " (" + Math.round(hs[0]) + " to " + Math.round(hs[hs.length - 1]) + " m tall), each with a pole shadow on the photo.");
+        warnings.push("Light poles from lidar: " + drawn + " (" + Math.round(hs[0]) + " to " + Math.round(hs[hs.length - 1]) + " m tall), " + (lampsDrawn === drawn ? "each a lamp bank alone in the open." : lampsDrawn ? lampsDrawn + " of them lamp banks alone in the open, the rest with a pole shadow on the photo." : "each with a pole shadow on the photo."));
       }
     }
     const parallelTasks = [];
