@@ -162,6 +162,7 @@ async function runBackgroundExport(event, onProgress) {
   return result;
 }
 const imagerySource = require("../lib/imagery-source");
+const { normalizeAerial } = require("../lib/aerial-normalize");
 const { geoFrame, capEsriExportFrame, llToPx, esriImageryUrl, esriImageryMetaUrl, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings, parseAreaCapOverride, parseJsonBudgetOverride, raisedDeckCap, MAX_BUILDINGS, MAX_ATTENUATION_AREAS, DEFAULT_AREA_CAP } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
@@ -1008,6 +1009,11 @@ function parseFormat(body) {
   if (body.format === "zip" || body.output === "zip") return "zip";
   if (body.format === "site-v1") return "site-v1";
   return "bundle";
+}
+
+/** True when every plate of this export came from a non-Esri source. */
+function levelForAnalysis(ctx) {
+  return !!(ctx && ctx.source !== imagerySource.ESRI && !ctx.failed && ctx.altPlates > 0 && !ctx.esriPlates);
 }
 
 function decodeImagery(imgBuf) {
@@ -2065,6 +2071,10 @@ async function handleClutter(event) {
   // A plate near 10 MP is past the 6 MP roof decode. Canopy color still
   // needs those pixels, and the roof path already accepts that size.
   if (!decoded && needImage && imgBuf && includeFoliage) decoded = decodeRoofImagery(imgBuf);
+  // The photo checks were tuned on Esri. A NAIP or national plate is levelled
+  // to Esri's colour range first so its haze does not read as water or paving.
+  const levelPhoto = levelForAnalysis(imageryCtx);
+  if (decoded && levelPhoto) decoded = normalizeAerial(decoded);
   if (skipRoofFill) {
     warnings.push("Imagery roof fill omitted: this draw already has a full set of building footprints.");
   }
@@ -2105,7 +2115,7 @@ async function handleClutter(event) {
       bridgeFeatures = pack.bridges || [];
       osmWater = pack.water || [];
       try {
-        const roofRaw = decoded || decodeRoofImagery(imgBuf);
+        const roofRaw = decoded || (levelPhoto ? normalizeAerial(decodeRoofImagery(imgBuf)) : decodeRoofImagery(imgBuf));
         const shaped = shapeBuildings(features, Object.assign({}, pack, {
           imagery: roofRaw
             ? { data: roofRaw.data, width: roofRaw.width, height: roofRaw.height, frame }
