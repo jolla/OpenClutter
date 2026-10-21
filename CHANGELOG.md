@@ -1,0 +1,261 @@
+# Changelog
+
+Newest first. Version numbers come from `package.json` (`npm run bump`). Before 1.2, every 1.1.x number was a /dev build; production took selected builds. Since 1.2.1, /dev and production share one numbering, and production is promoted from /dev with a matching tag.
+
+## Production releases
+
+- **v1.2.10** (Oct 20, 2026) production promotion of /dev v1.2.10.
+- **v1.2.6** (Oct 19, 2026) production promotion of /dev v1.2.6.
+- **v1.2.1** (Oct 18, 2026) production promotion of /dev v1.2.1.
+- **v1.2.0** (Oct 17, 2026) production promotion of /dev v1.1.219.
+- **/dev v1.1.163 to v1.1.189** (Oct 13 to 15, 2026) went to production in steps. From v1.1.172, production exports at /dev quality.
+- **v1.0.0** (Sep 22, 2026) production freeze of the buildings to Hamina OpenIntent import.
+
+## 1.2
+
+- **1.2.12** NAIP and national aerial plates are color-leveled toward the Esri range before the photo checks, so haze no longer clears real canopy (Auto bench 69.4 to 75.2, Esri unchanged). Detection only; the image in the zip is untouched.
+- **1.2.11** Every data source is credited in the zip (`ATTRIBUTION.txt`) and on the page (`/licenses.html`), and sources whose terms do not fit are dropped. See [DATA-LICENSES.md](DATA-LICENSES.md).
+- **1.2.10** Overture buildings read release 2026-09-23.1. Overture deleted 2026-08-19.0, every read was a 404, and Overture-only roofs (the Las Vegas Sphere) were missing from every export.
+- **1.2.9** The aerial Source choice is read only on /dev hosts; production always uses Esri. The canopy bench takes `CANOPY_BENCH_SOURCE`.
+- **1.2.8** /dev aerial Source picker: Esri (default), Auto, NAIP (US), or National (swisstopo, PDOK, NLS, IGN). A source that misses the area falls back to Esri, and the source, capture date and credit are in Details and the zip.
+- **1.2.7** A flat block of lidar cells a few meters across, alone in the open, is a field light's lamp bank, drawn as a pole at the lidar height. Read only where two lidar cells fit inside 20 m2 and 5 m, and under 40 m, so coarse surveys keep their crowns.
+- **1.2.6** A lone stemless crown piece that the aerial shows as open ground is dropped (lidar specks over streets and lots).
+- **1.2.5** A crown piece cut at a roof edge under the 3 m floor is dropped instead of grown to a 3 m square.
+- **1.2.4** Poles keep a measured or tagged height from 3 to 45 m. A mapped pole on a lidar spike takes the lidar height.
+- **1.2.3** Lidar canopy on every host. A survey that clips the draw edge does not win over a full one, and stands up to 10 ha split per tree instead of 42 m blocks.
+- **1.2.2** The area readout adds acres (one decimal under 10).
+- **1.2.1** /dev moves to 1.2.1 to match the next production release. `npm run bump` moves the 1.2.x patch number.
+- **1.2.0** Production release of /dev v1.1.219: improved tree modeling, light poles, towers and domes at real height, Download again for 24 hours, place suggestions, and on-page instructions.
+
+## 1.1
+
+One line per /dev build. 1.1.43 was never shipped (PR #81 stayed open).
+
+- **1.1.224** What's new: a shorter 1.2 list.
+- **1.1.223** What's new lists 1.2 above 1.1.
+- **1.1.222** How it works drops the repeated import steps so the open panel fits a laptop screen.
+- **1.1.221** API v1: footprint tiers, a ground offset per feature, and more crowns than the zip allows.
+- **1.1.220** Direct API v1 prototype on /dev: POST /v1/sites, job status, structured results, API keys and rate limits.
+- **1.1.219** Details, Instructions and How it works headings share one style, with no colon.
+- **1.1.218** Instructions collapse from the heading and open on the first visit. The page remembers the state.
+- **1.1.217** Map notes name restroom buildings the local way by country (Restrooms, Washrooms, Toilets).
+- **1.1.216** Instructions are shown above How it works.
+- **1.1.215** Download again: the finished zip and terrain stay for 24 hours, and the link survives a reload.
+- **1.1.214** Estimated canopy blobs of 150 to 2000 m2 are split per tree along height valleys. Lidar crowns are unchanged.
+- **1.1.213** Finland: estimated crowns with no summer foliage on the NLS orthophoto are left out.
+- **1.1.212** Town streets and squares cut an estimated canopy. Long thin estimated crowns are dropped where there is no lidar.
+- **1.1.211** Light poles from lidar spikes are drawn as yellow poles only when the photo shows a thin pole shadow. No palm detection outside deserts and subtropics.
+- **1.1.210** How it works: a short summary of what OpenClutter builds and the data it uses.
+- **1.1.209** Towers rise above their roof: small mapped building:part towers stay upper masses, dome towers keep straight walls, and Finland laser data finds unmapped towers and drums.
+- **1.1.208** Elevated guideways cut measured lidar crowns. One-cell level lines are dropped from the fused canopy.
+- **1.1.207** Search suggests places as you type (Esri suggest plus Photon, ranked near the map).
+- **1.1.206** Narrower crown bands are rounded into clipped ellipses.
+- **1.1.205** Ignore OSM woods where measured canopy height covers the draw.
+- **1.1.204** Drop lone trees whose aerial footprint is open lawn or paving.
+- **1.1.203** Pavement masks clip canopy, each kept aligned to its outline. Road corridors block tree seeds without cutting measured crowns. The two newest lidar surveys are always read, so the survey is fixed per draw.
+- **1.1.202** Desert palm groves are guarded against skirted conifers, lone desert crowns stay about 0.6x their width, and Street View reference tops are measured above the terrain.
+- **1.1.201** Desert palm rows and groves split into stems, wide stands are tiled so no slab ships, and lone desert crowns are capped by width. Full 18-site scoreboard and close-view regression renders.
+- **1.1.200** Road, rail and monorail corridors are cut from canopy. Desert and dense-city trees are capped, segmented lidar trees are on by default, and lidar palms are a stem and a crown.
+- **1.1.199** Lone crowns by walls are kept, stale lidar is dropped against new buildings, crowns lifted by spikes are capped, and segmented trees are a stem and a crown (opt-in).
+- **1.1.198** Facade, deck and wall returns are cleared from lidar canopy, flat crown bands are tapered, and Street View tree references are added.
+- **1.1.197** Report trunk and palm counts in export stats.
+- **1.1.196** Dense crowns are rounded from measured height bands. Opt-in lidar tree segmentation and a realism bench are added.
+- **1.1.195** Drop only clearly non-tree spires: over 40 m tall and under 25 m2.
+- **1.1.194** Model palms as a stem and a small crown and shape canopy bands from measured height.
+- **1.1.193** Treat dev.openclutter.com as the dev host.
+- **1.1.192** Model a sphere as round slices cut off at the ground.
+- **1.1.191** Keep tower shadow from inventing building slabs.
+- **1.1.190** Trace tree canopy from USGS 3DEP lidar where it covers the draw.
+- **1.1.189** Read packed trailer rows and give sparse sites more canopy outlines.
+- **1.1.188** Keep trees off open water.
+- **1.1.187** Keep large Fly exports off the Netlify fallback.
+- **1.1.186** Allow draws up to 15 km with a coarser map and clearer size errors.
+- **1.1.185** Label the export as OpenIntent and hide zip wording from users.
+- **1.1.184** Crisp SVG chevron and Settings cog on the panel footer.
+- **1.1.183** Tighten the map-corner credit and panel footer controls.
+- **1.1.182** Move version What's new and GitHub to the map corner with an update toast.
+- **1.1.181** Show a live step checklist during export.
+- **1.1.180** Ease the starting zoom and pan with the middle mouse button.
+- **1.1.179** Start the map closer and make the scroll wheel zoom only.
+- **1.1.178** Make the Advanced version label open What's new.
+- **1.1.177** Make How it works and Advanced mutually exclusive tabs.
+- **1.1.176** Put Advanced and How it works on one row (follow-up to 1.1.175).
+- **1.1.175** Put Advanced and How it works on one row.
+- **1.1.174** Add How it works guide and Hamina import tip after export.
+- **1.1.173** Remove the Free preview tag and Classic v1.0 link.
+- **1.1.172** Production gets the /dev export quality (sharp aerial plan, longer terrain wait, Copy terrain). Testing overrides stay on /dev.
+- **1.1.171** Run one export per Fly machine and retry Fly when every machine is busy.
+- **1.1.170** Show the export elapsed time on the button and in the summary.
+- **1.1.169** Move the aerial percent and keep Trees inside the earlier pace.
+- **1.1.168** Seat objects on flat ground when terrain is off or left out.
+- **1.1.167** Turn Export into Copy terrain after a finished terrain export.
+- **1.1.166** Keep measured crowns on lawn and search trailer yards inside a warehouse outline.
+- **1.1.165** Bound the aerial fetch at 36 s and move export progress.
+- **1.1.164** Label production as a free preview with a link to classic v1.0.
+- **1.1.163** Report the live export stage and keep a finer map plate.
+- **1.1.162** Leave passenger cars out of the export unless Cars is on.
+- **1.1.161** Index roof samples so Trees skips untouched buildings.
+- **1.1.160** Draw on the map without a Draw button.
+- **1.1.159** Search on Enter, tuck the version label, and drop suggested map notes.
+- **1.1.158** Show the export percent on the Export button.
+- **1.1.157** Keep mapped decks and large roofs at a sane height.
+- **1.1.156** Fall back to an eventual job read when strong consistency is unavailable.
+- **1.1.155** Queue small canopy tiles and keep a finished export terminal.
+- **1.1.154** Size the Fly pool from the CPU env and prefetch canopy rasters.
+- **1.1.153** Run Trees on one worker thread per CPU.
+- **1.1.152** Accept requests on a busy Fly export and exit when the worker is idle.
+- **1.1.151** Fall back when the Fly export worker stops heartbeating.
+- **1.1.150** Run heavy exports on a Fly worker when it is configured.
+- **1.1.149** Time export stages and cache raw map tiles.
+- **1.1.148** Add canopy RF link error to the scoreboard.
+- **1.1.147** Score leaf-off, orchard, palm, shadow and RV-park canopy sites.
+- **1.1.146** Re-score the canopy benchmark on the current tree detector.
+- **1.1.145** Keep the Lebanon IN warehouse in the export.
+- **1.1.144** Keep RV boxes on roofs that run along the pad.
+- **1.1.143** Keep the Oak Creek multi-level parking deck.
+- **1.1.142** Seat Citrus Gardens boxes on pure white roofs.
+- **1.1.141** Count brighter Wentworth hulls without filling open water.
+- **1.1.140** Keep the car layer on parked rows and off empty stalls.
+- **1.1.139** Score the Walmart lot as one 1.5 m car layer.
+- **1.1.138** Score semis at Iowa 80 from trailer shadows.
+- **1.1.137** Score manufactured homes at Citrus Gardens as 4 m buildings.
+- **1.1.136** Score white hulls at Wentworth marina.
+- **1.1.135** Require an RV roof to sit on the pad.
+- **1.1.134** Keep packed RV roofs at Mesa and raise Rogers recall.
+- **1.1.133** Score RVs at Rogers and merge surface lots into a 1.5 m car layer.
+- **1.1.132** Give a background export 15 minutes and cap each slow source.
+- **1.1.131** Budget the compact OpenIntent JSON at 4.9 MB.
+- **1.1.130** Show a compact summary when an export finishes.
+- **1.1.129** Show export stage progress on the dev panel.
+- **1.1.128** Score canopy against USGS lidar where 3DEP covers the site.
+- **1.1.127** Score canopy height, the understory gap and preview slabs.
+- **1.1.126** Score canopy precision against open lawns and pitches.
+- **1.1.125** Seat woods on the ground and split a large stand into two layers.
+- **1.1.124** Keep measured woods beside a mapped ski run.
+- **1.1.123** Keep shrub flats and meadow lawns out of the canopy.
+- **1.1.122** Keep dark conifer stands and the campground tree row.
+- **1.1.121** Mark a shipped tall canopy on the map note paste.
+- **1.1.120** Add Hamina map notes on the terrain paste.
+- **1.1.119** Keep a trailer on every mapped pitch.
+- **1.1.118** Add street-map buildings the other footprints missed.
+- **1.1.117** Draw surface parking lots as a short car layer.
+- **1.1.116** Seat a two-point fence on the slope.
+- **1.1.115** Add a Lidar heights toggle.
+- **1.1.114** Keep the panel options behind Advanced.
+- **1.1.113** Simplify the dev panel.
+- **1.1.112** Keep the Wynn solar block in the export.
+- **1.1.111** Read USGS 3DEP lidar behind a dev flag.
+- **1.1.110** Replace a diagonal podium slab with the retail ring.
+- **1.1.109** Keep the retail ring whole instead of a diagonal wedge.
+- **1.1.108** Stop inventing buildings from dark pixels.
+- **1.1.107** Emit the dark panel block after coarse outlines are cut back.
+- **1.1.106** Keep water off roofs, including dark panel roofs.
+- **1.1.105** Read dark panel roofs from the 4K plate.
+- **1.1.104** Add a dark panel rectangle when footprints miss that roof.
+- **1.1.103** Color a tower's low base as Building - Podium.
+- **1.1.102** Seat slope canopy on local ground and keep ski runs open.
+- **1.1.101** Keep the retail podium when roof cores replace a coarse triangle.
+- **1.1.100** Raise the terrain paste cap to 1500 floors and 400 KB.
+- **1.1.99** Cap the terrain paste at 400 floors, raised and sloped together.
+- **1.1.98** Add RV boxes, seat water as a thin sheet, and close terrain tip gaps.
+- **1.1.97** Cut sloped terrain into an adaptive mesh with watertight edges.
+- **1.1.96** Replace a sprawling low-rise outline with its two rectangular roofs instead of a triangle.
+- **1.1.95** Slim OpenIntent rings to one pixel vertex and stop at a 3.8 MB JSON budget.
+- **1.1.94** Count only the roofs that shipped when the area cap is raised.
+- **1.1.93** Let a dev page raise the area cap above 982.
+- **1.1.92** Finish a 10 km export inside the page wait.
+- **1.1.91** Keep the largest roofs on a 10 km draw.
+- **1.1.90** Read a 10 km street map as Overpass tiles.
+- **1.1.89** Keep the monorail and add road bridges.
+- **1.1.88** Raise the draw limit to 10 km.
+- **1.1.87** Model elevated rail guideways.
+- **1.1.86** Seat the Wynn garage on the ground.
+- **1.1.85** Download a 4K zip on the first click.
+- **1.1.84** Keep the export summary after Copy terrain.
+- **1.1.83** Open pool decks and keep detailed building footprints.
+- **1.1.82** Paste planar pit ramps Hamina accepts.
+- **1.1.81** Keep golf-course trees and one roof outline.
+- **1.1.80** Keep Copy terrain after a background export.
+- **1.1.79** Draw pasted pits as holes in Hamina.
+- **1.1.78** Export runs as a background job, so a Sharp or 4K plate is no longer cut off at about 10 seconds. The page shows the stage and downloads the zip when it is ready.
+- **1.1.77** Stack crown layers into a dome instead of a flat slab.
+- **1.1.76** Add water, parking, walls and light poles.
+- **1.1.75** Stack tree crowns into inward steps so they read as domes.
+- **1.1.74** Retry an empty first export once in the same click.
+- **1.1.73** Tune outdoor canopy attenuation and narrow round trunks.
+- **1.1.72** Add two GPS tie points to the Planner Plus paste.
+- **1.1.71** Keep buildings and a sharper plate on a downtown Sharp export.
+- **1.1.70** Seat buildings on the pasted terrain mesh.
+- **1.1.69** Keep the first terrain paste when bare earth is slow.
+- **1.1.68** Give the Vegas building read the rest of the answer clock.
+- **1.1.67** Read elevation on its own request so Terrain is not omitted.
+- **1.1.66** Start the elevation read with the map so Terrain is not omitted.
+- **1.1.65** Pan with Space and lead the draw label with area.
+- **1.1.64** Collapse the export note and turn Foliage on by default.
+- **1.1.63** Let High and Sharp keep a larger aerial plate.
+- **1.1.62** Add a dev map quality menu and keep terrain sloped.
+- **1.1.61** Keep the tree-covered Pointe-Claire convent roof.
+- **1.1.60** Resolve venue names when OpenStreetMap has no point.
+- **1.1.59** Return Quebec roofs a sharper aerial and Copernicus terrain.
+- **1.1.58** Trace canopy outlines again instead of squares.
+- **1.1.57** Ship only the OpenIntent files in the export zip.
+- **1.1.56** Return the dev zip before the 10 s gateway.
+- **1.1.55** Return the zip before the gateway times out.
+- **1.1.54** Return a zip on the first export click.
+- **1.1.53** Return a zip when the canopy read would stall the export.
+- **1.1.52** Keep measured tree crowns the foliage export was missing.
+- **1.1.51** Return a zip when the sharp aerial is still out.
+- **1.1.50** Return the zip before the gateway closes the export.
+- **1.1.49** Finish a slow export instead of stopping on an empty failure.
+- **1.1.48** Quiet building grays and retry a stalled export.
+- **1.1.47** Color buildings by height and show the draw span in scale-appropriate units.
+- **1.1.46** The draw readout leads with the site span in m and ft, or km and miles on a large campus, then the area.
+- **1.1.45** Let a slow Wynn export finish.
+- **1.1.44** Sharpen the dev aerial map.
+- **1.1.42** Cut sloped buildings into the hill.
+- **1.1.41** A compact measured crown is one tree: a stem under a raised crown. A continuous canopy stays one mass.
+- **1.1.40** Canopy and tree objects export with Hamina's Transparent in 3D flag. Buildings stay opaque.
+- **1.1.39** A recorded dome, such as the Las Vegas Sphere at 112 m, is stacked rings that shrink toward the top. A roof with a high and a low side is split into pieces.
+- **1.1.38** Keep measured tower heights and stack a podium.
+- **1.1.37** Remove the Finish shape button.
+- **1.1.36** Lift buildings onto every pasted hill.
+- **1.1.35** Recover missing canopy and fill the terrain paste budget.
+- **1.1.34** Keep buildings above sloped floors and stack stepped plans.
+- **1.1.33** Pan the map with a right-drag or Space.
+- **1.1.32** Make canopy see-through in Hamina 3D.
+- **1.1.31** Trace canopy outlines instead of grid squares.
+- **1.1.30** Read foliage from canopy height and keep it off roofs and pavement.
+- **1.1.29** Keep campus terrain when the full elevation read is slow.
+- **1.1.28** Compare Sloped and Raised terrain layers.
+- **1.1.27** Cap the Auto terrain paste at 20x20.
+- **1.1.26** Finish polygons without a right-click.
+- **1.1.25** Remove the Terrain resolution control; terrain uses the densest mesh that fits when on.
+- **1.1.24** Tag foliage Experimental and add a Terrain toggle.
+- **1.1.23** Clarify the Hamina zip subtitle.
+- **1.1.22** Quiet the address panel.
+- **1.1.21** Plan Finland terrain paste in ground meters so quads stay square.
+- **1.1.20** Keep a coarser Finland GLO-30 grid after the aerial budget.
+- **1.1.19** Resample Finland aerials onto ground meters so Hamina scale matches.
+- **1.1.18** Package the Hamina laser grid so Finland export does not 502.
+- **1.1.17** Keep large terrain pastes inside the export response.
+- **1.1.16** Coarsen oversized terrain paste so Copy terrain still has a payload.
+- **1.1.15** Add 20 to 1 m terrain resolution stops.
+- **1.1.14** Sharper Esri aerials on /dev.
+- **1.1.13** Fail 3DEP fast outside coverage so Finland gets GLO-30.
+- **1.1.12** Give Hamina buildings measured NLS lidar heights.
+- **1.1.11** Sit surface-DEM attenuating objects on the slope.
+- **1.1.10** Fall back to Copernicus GLO-30 when 3DEP misses.
+- **1.1.9** Pick the steeper ramp axis by rise/run.
+- **1.1.8** Lock CCW sloped-floor rings on all four grades.
+- **1.1.7** Auto terrain resolution from the draw box.
+- **1.1.6** Dev terrain resolution slider.
+- **1.1.5** CHM canopy crowns and solid terrain floors.
+- **1.1.4** Lift ski-hill foliage onto the slope.
+- **1.1.3** Lift ski-hill buildings onto the slope and refine terrain quads.
+- **1.1.2** Finish Universal Hollywood-scale exports without a 504.
+- **1.1.1** Keep Sphere-area roofs dropped by the Overture abort and conflation.
+- **1.1.0** Show OpenClutter v1.1.0 in the title and export zip.
+
+## 1.0
+
+- **1.0.0** Stable buildings to Hamina OpenIntent import: search an address, draw a box, export one OpenIntent zip with the map and Building - One/Two/Five/Ten Floor areas. Production freeze; the long-lived `dev` branch starts.
