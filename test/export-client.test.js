@@ -16,6 +16,8 @@ const {
   exportSummaryLines,
   finishedExportButton,
   appendTerrainOmitted,
+  watchSettingsChanges,
+  SETTINGS_CHANGED_NOTE,
   steepestGrade,
 } = require("../public/export-client");
 const { steepestClipboardGrade } = require("../netlify/lib/terrain");
@@ -346,6 +348,68 @@ describe("Copy terrain after a background result", () => {
     assert.equal(/setStatus\(/.test(copy), false);
     assert.equal(/status-more|status-line|status-body/.test(copy), false);
     assert.match(app, /if \(exportCopyReady && !drawHidesCopy\) setCopyNote\("Paste terrain separately in Hamina\."\)/);
+  });
+
+  it("any settings change returns the button to Export, opening the panel does not", () => {
+    const listeners = {};
+    const panel = {
+      addEventListener(type, fn) {
+        (listeners[type] = listeners[type] || []).push(fn);
+      },
+      removeEventListener(type, fn) {
+        listeners[type] = (listeners[type] || []).filter((f) => f !== fn);
+      },
+    };
+    const fire = (type, target) => (listeners[type] || []).forEach((fn) => fn({ type, target }));
+    let changes = 0;
+    const stop = watchSettingsChanges(panel, () => {
+      changes += 1;
+    });
+    assert.deepEqual(Object.keys(listeners).sort(), ["change", "input"]);
+    // Opening or closing the details fires toggle, which is not watched.
+    fire("toggle", { tagName: "DETAILS" });
+    fire("change", { tagName: "SUMMARY" });
+    assert.equal(changes, 0);
+    // Any control inside, including ones added later, counts.
+    fire("change", { tagName: "INPUT", id: "include-water" });
+    fire("change", { tagName: "SELECT", id: "map-quality" });
+    fire("input", { tagName: "INPUT", id: "some-future-setting" });
+    assert.equal(changes, 3);
+    stop();
+    fire("change", { tagName: "INPUT" });
+    assert.equal(changes, 3);
+    assert.equal(typeof watchSettingsChanges(null, () => {}), "function");
+    assert.equal(/\u2014/.test(SETTINGS_CHANGED_NOTE), false);
+
+    const app = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
+    assert.match(app, /watchSettingsChanges\(document\.getElementById\("advanced"\), noteSettingsChanged\)/);
+    const changed = app.slice(app.indexOf("function noteSettingsChanged"), app.indexOf("function rememberTerrain"));
+    assert.match(changed, /settingsEpoch \+= 1/);
+    assert.match(changed, /exportCopyReady = false/);
+    assert.match(changed, /syncIdleExportLabel\(\)/);
+    // A change during a live export keeps the finished button on Export.
+    assert.match(app, /settingsEpoch === exportSettingsEpoch/);
+    assert.equal((app.match(/exportSettingsEpoch = settingsEpoch;/g) || []).length, 2);
+    // Every export setting lives inside the watched panel.
+    const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+    const start = html.indexOf('<details id="advanced">');
+    const panelHtml = html.slice(start, html.indexOf("</details>", start));
+    for (const id of [
+      "include-foliage",
+      "include-water",
+      "include-parking",
+      "include-cars",
+      "include-walls",
+      "include-poles",
+      "include-rvs",
+      "include-terrain",
+      "include-lidar",
+      "include-map-notes",
+      "map-quality",
+      "map-source",
+    ]) {
+      assert.ok(panelHtml.includes('id="' + id + '"'), id + " is inside the settings panel");
+    }
   });
 
   it("still copies GPS points when Terrain is off", () => {

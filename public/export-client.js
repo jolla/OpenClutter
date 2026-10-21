@@ -109,6 +109,31 @@
     };
   }
 
+  const SETTINGS_CHANGED_NOTE = "Settings changed. Export again.";
+
+  /**
+   * Any change to a control inside the settings panel calls onChange, so
+   * controls added later are covered without wiring each one. Opening or
+   * closing the panel fires toggle, not change or input, so it does not count.
+   */
+  function watchSettingsChanges(container, onChange) {
+    if (!container || typeof container.addEventListener !== "function" || typeof onChange !== "function") {
+      return function () {};
+    }
+    const handler = function (ev) {
+      const t = ev && ev.target;
+      if (t && t.tagName && /^(SUMMARY|DETAILS)$/i.test(String(t.tagName))) return;
+      onChange(ev);
+    };
+    container.addEventListener("change", handler);
+    container.addEventListener("input", handler);
+    return function () {
+      if (typeof container.removeEventListener !== "function") return;
+      container.removeEventListener("change", handler);
+      container.removeEventListener("input", handler);
+    };
+  }
+
   function appendTerrainOmitted(lines, button) {
     const next = lines.slice();
     const line = button && !button.copyReady ? button.omittedLine : "";
@@ -382,6 +407,8 @@
     chooseTerrainPaste: chooseTerrainPaste,
     finishedExportButton: finishedExportButton,
     appendTerrainOmitted: appendTerrainOmitted,
+    watchSettingsChanges: watchSettingsChanges,
+    SETTINGS_CHANGED_NOTE: SETTINGS_CHANGED_NOTE,
     exportSummaryLines: exportSummaryLines,
     steepestGrade: steepestGrade,
     formatExportElapsed: formatExportElapsed,

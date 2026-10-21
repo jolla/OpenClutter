@@ -298,6 +298,8 @@ let exportCopyReady = false;
 let drawHidesCopy = false;
 let drawEpoch = 0;
 let exportEpoch = 0;
+let settingsEpoch = 0;
+let exportSettingsEpoch = 0;
 
 function chipBbox(bounds) {
   return {
@@ -1301,13 +1303,31 @@ function noteAreaReplaced() {
   clearCopyNote();
 }
 
+// A change to any setting after an export means the finished result no
+// longer matches, so the button goes back to Export and the next click
+// re-runs it. The summary and Download again stay for the last file.
+function noteSettingsChanged() {
+  settingsEpoch += 1;
+  let live = false;
+  try {
+    live = exportLive;
+  } catch {}
+  if (live) return;
+  const hadResult = !!(exportCopyReady || lastExport);
+  exportCopyReady = false;
+  syncIdleExportLabel();
+  if (hadResult) setCopyNote(OpenClutterExport.SETTINGS_CHANGED_NOTE);
+}
+
+OpenClutterExport.watchSettingsChanges(document.getElementById("advanced"), noteSettingsChanged);
+
 function rememberTerrain(data, includeTerrain) {
   const choice = OpenClutterExport.chooseTerrainPaste(data, includeTerrain);
   terrainPasteJson = choice.json;
   terrainPasteGpsOnly = choice.gpsOnly;
   if (data && includeTerrain !== false && !choice.json) data.terrainStatus = choice.status;
   const button = OpenClutterExport.finishedExportButton(choice);
-  exportCopyReady = !!(button.copyReady && drawEpoch === exportEpoch);
+  exportCopyReady = !!(button.copyReady && drawEpoch === exportEpoch && settingsEpoch === exportSettingsEpoch);
   return button;
 }
 
@@ -1800,6 +1820,7 @@ document.getElementById("export").onclick = async () => {
   }
   if (!bbox) return;
   exportEpoch = drawEpoch;
+  exportSettingsEpoch = settingsEpoch;
   exportCopyReady = false;
   forgetExport();
   exportBtn.disabled = true;
@@ -1933,6 +1954,7 @@ document.getElementById("export").onclick = async () => {
     map.fitBounds(bounds);
   } catch {}
   exportEpoch = drawEpoch;
+  exportSettingsEpoch = settingsEpoch;
   showExportResult(data, saved.includeFoliage, saved.includeTerrain, "");
   syncIdleExportLabel();
   rememberExport(Object.assign({}, saved, { blob: null, bytes: saved.bytes || data.zipBytes || 0 }));

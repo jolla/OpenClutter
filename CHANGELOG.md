@@ -13,6 +13,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.2
 
+- **1.2.13** Changing any setting after an export returns the button from Copy terrain to Export, so the next click re-runs the export with the new settings. Opening or closing Settings does not.
 - **1.2.12** NAIP and national aerial plates are color-leveled toward the Esri range before the photo checks, so haze no longer clears real canopy (Auto bench 69.4 to 75.2, Esri unchanged). Detection only; the image in the zip is untouched.
 - **1.2.11** Every data source is credited in the zip (`ATTRIBUTION.txt`) and on the page (`/licenses.html`), and sources whose terms do not fit are dropped. See [DATA-LICENSES.md](DATA-LICENSES.md).
 - **1.2.10** Overture buildings read release 2026-09-23.1. Overture deleted 2026-08-19.0, every read was a 404, and Overture-only roofs (the Las Vegas Sphere) were missing from every export.
