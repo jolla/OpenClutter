@@ -1,0 +1,17 @@
+{
+  "href": "imagery.jpg",
+  "width": 568,
+  "height": 741,
+  "extent": {
+    "xmin": -87.93499999999999,
+    "ymin": 43.16678397887323,
+    "xmax": -87.92799999999998,
+    "ymax": 43.17591602112675,
+    "spatialReference": {
+      "wkid": 4326,
+      "latestWkid": 4326
+    }
+  },
+  "scale": 5185.105093139186,
+  "source": "USDA NAIP 2022-06-23 (public domain), rendered on the Esri export extent and pixel size this fixture was first cut from"
+}

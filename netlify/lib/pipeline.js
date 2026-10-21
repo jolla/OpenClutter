@@ -651,6 +651,7 @@ function aerialZipCredit(stats) {
   return (
     "\nMap image: " +
     im.name +
+    (im.provider ? " (" + im.provider + ")" : "") +
     (im.captureDate ? ", captured " + im.captureDate : "") +
     ".\n" +
     "Credit: " +
@@ -660,6 +661,50 @@ function aerialZipCredit(stats) {
     (im.fallback && im.reason ? "Requested " + im.requested + "; used Esri World Imagery: " + im.reason + ".\n" : "") +
     (im.mixed ? "Part of the map is Esri World Imagery: " + (im.reason || "source miss") + ".\n" : "")
   );
+}
+
+/** The map image a buildClutter call shipped. Callers without a router context used Esri. */
+function shippedImagery(stats) {
+  const im = stats && stats.imagery;
+  if (im && im.name) return im;
+  const { ESRI } = require("./imagery-source");
+  return { id: ESRI.id, name: ESRI.name, attribution: ESRI.attribution, license: ESRI.license, requested: "esri" };
+}
+
+/**
+ * ATTRIBUTION.txt, the one note beside the OpenIntent JSON and the aerial.
+ * Hamina imported zips with README.txt and VERIFY.txt beside those two files
+ * through v1.1.56, so a small text file does not change the import.
+ */
+function attributionTxt(stats) {
+  const c = stats || {};
+  const credits = require("./data-credits");
+  const im = shippedImagery(stats);
+  const esri = im.id === "esri" || im.mixed;
+  const lines = [
+    "OpenClutter " + (c.openclutterVersion || require("./version").version) + " export: data credits and licenses",
+    "OpenClutter's MIT license covers its code only. The data below keeps its own license.",
+    "",
+    "MAP IMAGE (images/)",
+    im.name + (im.provider ? " (" + im.provider + ")" : ""),
+    "Captured: " + (im.captureDate || (im.id === "esri" ? "not published for this area" : "latest published")),
+    "Credit: " + im.attribution,
+  ];
+  if (im.license) lines.push("License: " + im.license);
+  if (esri) lines.push(credits.ESRI_POWERED + ". " + credits.ESRI_SOURCE + ".");
+  if (im.mixed) lines.push("Part of the map is Esri World Imagery: " + (im.reason || "source miss") + ".");
+  if (im.fallback && im.requested && im.requested !== "esri") {
+    lines.push("Requested " + im.requested + "; used Esri World Imagery" + (im.reason ? ": " + im.reason : "") + ".");
+  }
+  lines.push("", "OPEN DATABASE LICENSE", credits.ODBL_NOTICE, "", "SOURCES (each is used where it covers the area)");
+  for (const src of credits.SOURCES) {
+    lines.push("- " + src.name + " (" + src.role + "): " + src.credit + ". License: " + src.license + ". " + src.url);
+  }
+  if (c.demKind === "surface") lines.push("", "Terrain on this export: Copernicus DEM GLO-30. " + GLO30_CREDIT + ".");
+  else if (c.demKind) lines.push("", "Terrain on this export: USGS 3DEP.");
+  if (c.nlsHeights > 0) lines.push("Building heights on this export: " + NLS_CREDIT);
+  lines.push("", "Full list: https://openclutter.com/licenses.html");
+  return lines.join("\n") + "\n";
 }
 
 function nlsZipCredit(c) {
@@ -3951,13 +3996,15 @@ function buildClutter({
   Object.assign(stats, coverageStats(stats));
   let zip = null;
   if (imgBuf) {
-    // Hamina OpenIntent import reads the JSON and the aerial. Clipboard JSON,
-    // the terrain paste, and the debug notes stay out of this zip.
+    // Hamina OpenIntent import reads the JSON and the aerial. ATTRIBUTION.txt
+    // credits the map image. Clipboard JSON, the terrain paste, and the debug
+    // notes stay out of this zip.
     zip = require("./stage-clock").timeSpanSync("zip", () =>
       zipUnderLimit(
         [
           { name: `openIntent_${slug}.json`, data: Buffer.from(oiJson) },
           { name: "images/" + imgName, data: imgBuf },
+          { name: "ATTRIBUTION.txt", data: Buffer.from(attributionTxt(stats)) },
         ],
         ZIP_DOWNLOAD_MAX
       )
@@ -3978,6 +4025,7 @@ function buildClutter({
 }
 
 module.exports = {
+  attributionTxt,
   ALIGNMENT,
   ZIP_README,
   ZIP_TROUBLESHOOT,

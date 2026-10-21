@@ -1,15 +1,13 @@
 "use strict";
 
 /**
- * Place search for the search box. Esri World Geocoding /suggest is free and
- * answers addresses and named places worldwide. Photon (komoot, OpenStreetMap)
- * is fuzzy and catches typos such as "caesers palace" and "golden gate brige".
- * Both are asked in parallel, biased to the map center, then merged and ranked
- * by how well the label matches the typed words plus distance from the view.
- * Esri results are display only (forStorage=false); nothing is stored.
+ * Place search for the search box. Photon (komoot, OpenStreetMap data) is
+ * fuzzy and catches typos such as "caesers palace" and "golden gate brige".
+ * It is asked once, biased to the map center, and ranked by how well the
+ * label matches the typed words plus distance from the view. The anonymous
+ * Esri World Geocoding calls were removed: that service needs an ArcGIS
+ * token under Esri's terms. Search results (c) OpenStreetMap contributors.
  */
-
-const ESRI = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer";
 
 function norm(s) {
   return String(s || "")
@@ -77,45 +75,6 @@ function validView(view) {
     Math.abs(view.lat) <= 90 && Math.abs(view.lon) <= 180 ? view : null;
 }
 
-async function esriSuggest(q, view, fetchFn, signal) {
-  let url = `${ESRI}/suggest?f=json&maxSuggestions=6&text=${encodeURIComponent(q)}`;
-  if (view) url += `&location=${view.lon},${view.lat}`;
-  const r = await fetchFn(url, { signal });
-  if (!r.ok) return [];
-  const j = await r.json();
-  return (j.suggestions || [])
-    .filter((s) => s && s.text && s.magicKey && !s.isCollection)
-    .map((s, i) => {
-      const parts = s.text.split(", ");
-      return {
-        label: parts[0],
-        detail: parts.slice(1).join(", "),
-        text: s.text,
-        magicKey: s.magicKey,
-        source: "esri",
-        rank: i,
-      };
-    });
-}
-
-async function esriFind(q, view, fetchFn, signal) {
-  let url = `${ESRI}/findAddressCandidates?f=json&maxLocations=3&forStorage=false` +
-    `&outFields=PlaceName,Place_addr&SingleLine=${encodeURIComponent(q)}`;
-  if (view) url += `&location=${view.lon},${view.lat}`;
-  const r = await fetchFn(url, { signal });
-  if (!r.ok) return [];
-  const j = await r.json();
-  return (j.candidates || [])
-    .filter((c) => c && c.location && c.score >= 80)
-    .map((c, i) => {
-      const a = c.attributes || {};
-      const label = a.PlaceName || String(c.address || "").split(", ")[0];
-      const detail = a.Place_addr && a.Place_addr !== label ? a.Place_addr : String(c.address || "").split(", ").slice(1).join(", ");
-      return { label, detail, text: [label, detail].filter(Boolean).join(", "),
-        lat: c.location.y, lon: c.location.x, source: "esri-find", rank: i };
-    });
-}
-
 function photonDetail(p) {
   const street = [p.housenumber, p.street].filter(Boolean).join(" ");
   return [street, p.city || p.district || p.county, p.state, p.country]
@@ -150,7 +109,7 @@ async function photonSearch(q, view, fetchFn, signal, userAgent) {
 
 /** Merge, score, and dedupe. Exported for tests. */
 function rankPlaces(q, view, esri, photon) {
-  const all = [...esri, ...photon].map((c) => {
+  const all = [...(esri || []), ...(photon || [])].map((c) => {
     const match = Math.max(textScore(q, c.text), 0.7 * textScore(q, c.text) + 0.3 * textScore(q, c.label));
     const named = 0.7 * textScore(q, c.text) + 0.3 * textScore(q, c.label);
     const extra = Math.max(0, norm(c.label).split(" ").length - norm(q).split(" ").length);
@@ -177,36 +136,19 @@ function rankPlaces(q, view, esri, photon) {
   return out;
 }
 
-async function suggestPlaces(q, viewIn, { fetchFn = fetch, userAgent = "openclutter", timeoutMs = 4000, full = false } = {}) {
+async function suggestPlaces(q, viewIn, { fetchFn = fetch, userAgent = "openclutter", timeoutMs = 4000 } = {}) {
   const view = validView(viewIn);
-  const safe = (p) => p.catch(() => []);
-  const sig = () => AbortSignal.timeout(timeoutMs);
-  const [esri, photon, found] = await Promise.all([
-    safe(esriSuggest(q, view, fetchFn, sig())),
-    safe(photonSearch(q, view, fetchFn, sig(), userAgent)),
-    full ? safe(esriFind(q, view, fetchFn, sig())) : [],
-  ]);
-  return rankPlaces(q, view, [...found, ...esri], photon).slice(0, 6).map((c) => ({
+  const photon = await photonSearch(q, view, fetchFn, AbortSignal.timeout(timeoutMs), userAgent).catch(() => []);
+  return rankPlaces(q, view, [], photon).slice(0, 6).map((c) => ({
     label: c.label,
     detail: c.detail,
     text: c.text,
     source: c.source,
     match: Math.round(c.match * 100) / 100,
     exact: Math.round(c.exact * 100) / 100,
-    ...(Number.isFinite(c.lat) ? { lat: c.lat, lon: c.lon } : { magicKey: c.magicKey }),
+    lat: c.lat,
+    lon: c.lon,
   }));
-}
-
-/** One Esri suggestion to a point. */
-async function resolveMagicKey(text, magicKey, { fetchFn = fetch, timeoutMs = 5000 } = {}) {
-  const url = `${ESRI}/findAddressCandidates?f=json&maxLocations=1&forStorage=false` +
-    `&magicKey=${encodeURIComponent(magicKey)}&SingleLine=${encodeURIComponent(text || "")}`;
-  const r = await fetchFn(url, { signal: AbortSignal.timeout(timeoutMs) });
-  if (!r.ok) return null;
-  const j = await r.json();
-  const c = (j.candidates || [])[0];
-  if (!c || !c.location) return null;
-  return { lat: c.location.y, lon: c.location.x, display_name: c.address };
 }
 
 /**
@@ -214,15 +156,12 @@ async function resolveMagicKey(text, magicKey, { fetchFn = fetch, timeoutMs = 50
  * when nothing matches most of the typed words, so the caller can fall back.
  */
 async function bestPlace(q, view, opts = {}) {
-  const list = await suggestPlaces(q, view, { ...opts, full: true });
+  const list = await suggestPlaces(q, view, opts);
   for (const c of list.slice(0, 3)) {
     if (c.match < 0.6) break;
-    const meta = { match: c.match, exact: c.exact };
-    if (Number.isFinite(c.lat)) return { lat: c.lat, lon: c.lon, display_name: c.text, ...meta };
-    const p = await resolveMagicKey(c.text, c.magicKey, opts).catch(() => null);
-    if (p) return { ...p, ...meta };
+    if (Number.isFinite(c.lat)) return { lat: c.lat, lon: c.lon, display_name: c.text, match: c.match, exact: c.exact };
   }
   return null;
 }
 
-module.exports = { suggestPlaces, resolveMagicKey, bestPlace, rankPlaces, textScore, norm };
+module.exports = { suggestPlaces, bestPlace, rankPlaces, textScore, norm };

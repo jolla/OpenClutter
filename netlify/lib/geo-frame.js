@@ -8,7 +8,7 @@
  * (from export?f=json) is the frame — not the rectangle the user drew.
  * World Imagery often pads north/south (~1/cos(lat)) so a geodesic-aspect
  * size= request still covers more latitude than asked. Mapping footprints
- * with the drawn bbox then stretches buildings off rooftops (Long Meadow).
+ * with the drawn bbox then stretches buildings off rooftops (wooded residential fixture).
  *
  * Clipboard meters use that same actual widthM × lengthM — never a second
  * auto-scale. After the Esri snap, lockIsotropicImagery keeps the Esri JPEG
