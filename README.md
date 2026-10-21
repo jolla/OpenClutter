@@ -1,448 +1,70 @@
 # OpenClutter
 
-**OpenClutter** turns a map box into clutter that lines up with the map in [Hamina Planner](https://hamina.com): one georeferenced [OpenIntent](https://github.com/google/openintent) zip. Import the zip for the map and **buildings**. The panel stays the address, a short hint, Export, and the status line. Advanced, closed until you open it, holds foliage, water, parking, cars, walls, poles, RVs, terrain, lidar heights, map notes, and map quality. Water, cars, and lidar heights start off. Foliage, parking, walls, poles, RVs, terrain, and map notes start on, and the map starts on Auto. Auto asks for an 8192 px plate first, scaled to the site, and steps down only when that plate or the time budget misses. The page remembers whether Advanced is open. After an export that includes terrain, Export becomes Copy terrain and pastes that mesh separately in Hamina. The zip is that OpenIntent JSON and the aerial.
-
-**v1.0.0** — stable buildings → Hamina OpenIntent import (production freeze).
-
-**v1.1.96** on `dev` — A triangular copy of a concave building takes that building's street-map outline. A roof that still has more corners than the import cap within about 2 m is split into pieces instead of collapsed to a triangle. A split piece that is itself a large triangle is left out. A campus outline that tapers to a point over open ground is cut back to its thick body, and that low-rise body is seated at 18 m when the source height is lower. A sprawling low-rise outline with a dark rectangular roof and a separate warm rectangular roof in the aerial is replaced by those two blocks, seated at 18 m when the source height is lower. Open ground outside the blocks stays empty. A triangle that blankets other roofs, pools, or roads is left out. Building simplification no longer falls back to a convex hull. The badge stays (`dev · v1.1.96`).
-
-**v1.1.97** on `dev` — Sloped terrain is an adaptive mesh, not a fixed 20×20 grid. The paste spends its budget on the worst saddles, keeps a planar fit near half a meter, and merges a flat bench into one raised floor. Neighboring ramps share an edge height, and a coarse piece is split where it meets a finer one so the seam has no gap. A pure north-south or east-west grade stays one ramp per cell. The badge stays (`dev · v1.1.97`).
-
-**v1.1.172** on `dev` and production. openclutter.com exports at the same quality as /dev: the sharp aerial plan, the longer terrain wait and Copy terrain. The areaCap, jsonBudget and terrainFloors testing overrides stay on /dev and deploy previews only. The badge stays (`dev · v1.1.172`).
-
-**v1.1.171** on `dev`. Several exports can run at once on the Fly worker, one per machine. When every machine is busy, Netlify retries Fly a few times before it runs the export itself. The badge stays (`dev · v1.1.171`).
-
-**v1.1.169** on `dev`. The export percent moves during Fetching aerial, in the status the page polls and on the Export button. It leaves 0 as soon as tiles, bytes, or time inside that stage arrive. The aerial stage stops at about 36 seconds, including download, decode, and stitch, and keeps the sharpest plate already in hand. Trees on a large course no longer waits behind the yard scan. A measured crown still stays when the aerial shows a crown in that cell, and crown growth still stops at about 8 m. The badge stays (`dev · v1.1.169`).
-
-**v1.1.168** on `dev`. When Terrain is off, or the terrain mesh is left out, buildings, parts, trees, trunks, vehicles, and stacks sit on flat ground at 0. Bridges, skywalks, elevated rail, and overpasses keep the clearance the map recorded. A pasted mesh still seats those objects on the slope. The badge stays (`dev · v1.1.168`).
-
-**v1.1.167** on `dev`. After an export that includes terrain, the Export button becomes Copy terrain. Drawing a new area, or changing the drawn area, switches it back to Export. An export with terrain off, or with terrain left out, leaves the button as Export and the summary says terrain was not included. The summary and Details stay after a copy. The badge stays (`dev · v1.1.167`).
-
-**v1.1.166** on `dev`. A measured tree stays when the aerial shows a crown in that cell, even if the cell center is lawn. Crown growth stops at about 8 m so open ground is not painted, and a crown outline stays closer to the height cells. A trailer yard inside a warehouse outline is searched when the aerial shows trailer bodies beside a shadow. A white panel roof is not searched. An empty lot stays empty. The badge stays (`dev · v1.1.166`).
-
-**v1.1.165** on `dev`. The aerial stage stops at about 36 seconds and keeps the sharpest plate that arrived. A large plate is fetched as parallel tiles and stitched, and a near-duplicate size is not requested again. The export percent moves during that fetch. The badge stays (`dev · v1.1.165`).
-
-**v1.1.164** on `dev`. Export status follows the stage the worker is on, including the heartbeat, and Trees still moves by tiles finished. A map plate Esri does not return is not requested twice, and the next plate stays finer than the coarse step when it fits. Trailer yards beside a large warehouse are searched past the first dock row. An empty lot stays empty. Stacked yard storage stays out unless lidar measures a yard. The badge stays (`dev · v1.1.164`).
-
-**v1.1.162** on `dev`. Passenger cars, car-lot stalls, and the car parking layer stay out of an export unless Cars is on. Cars sits under Advanced and starts off. A request that leaves the flag out exports no passenger cars. Semi-trailers, trucks, RVs, boats, and mobile homes stay on. The badge stays (`dev · v1.1.162`).
-
-**v1.1.161** on `dev`. A crown checks the roof samples inside its own box, and clipping runs only for roofs that touch that box. A large draw spends less time in Trees. Set OPENCLUTTER_PROFILE=1 to log each tile, the thread that ran it, and CPU use. The badge stays (`dev · v1.1.161`).
-
-**v1.1.160** on `dev`. The map is always ready to draw. There is no Draw button. Drag a box, or click corners and click the first point or double-click to close a polygon. A drag under 8 px stays a click. Esc cancels an open polygon. A small x beside the area label clears a finished shape, and a new box replaces the old one. Trackpad scroll, two-finger drag, Space, the right mouse button, and the arrow keys pan. Pinch and the mouse wheel still zoom. One finger draws on touch. Two fingers pan and zoom. Export stays off until a shape exists. The badge stays (`dev · v1.1.160`).
-
-**v1.1.159** on `dev`. The address box is full width and searches on Enter. The version label sits at the bottom of Advanced and hides when Advanced is closed. Map notes keep obstructions and key structures. They no longer suggest an AP or a gateway, and they no longer state GPS coordinates. The two GPS tie points stay. The badge stays (`dev · v1.1.159`).
-
-**v1.1.158** on `dev`. The Export button fills from left to right while an export runs. The label reads Exporting with the real percent. Trees moves by tiles finished, and the bar reaches 100% when the zip is ready. The stage name stays on the status line. Copy terrain and the finished summary stay as they are. The badge stays (`dev · v1.1.158`).
-
-**v1.1.157** on `dev`. A mapped multi-storey garage stays a building at about 3 m per deck, or 9 m when the deck count is missing. A large roof with no measured height, from about 20,000 m² up to 400,000 m², stays seated at 12 m instead of the ten-floor area guess. Dock trailers still use the 16.2 by 2.6 m semi, 4.1 m tall, at 12 dB/m, and that scan follows the trailer size on a 1 m plate. Empty pavement stays empty. The badge stays (`dev · v1.1.157`).
-
-**v1.1.154** on `dev`. The Fly pool uses 4 workers on performance-4x when `OPENCLUTTER_CPU_COUNT` is set, and `fly logs` shows `os.cpus().length` plus one timing line per canopy tile. Canopy strips are read together and the height raster is cached for 14 days. The heartbeat still fires every 10 seconds. The badge stays (`dev · v1.1.154`).
-
-**v1.1.153** on `dev`. Trees, canopy outlines, and vehicle scans run on one worker thread per CPU, split by tile, so the export heartbeat keeps firing every 10 seconds during Trees. The Fly machine is performance-4x with 8 GB. Autostop stays off, and the process still exits after 5 minutes with no export. The badge stays (`dev · v1.1.153`).
-
-**v1.1.152** on `dev`. A busy Fly export machine still accepts another request. The concurrency soft limit is 200 and the hard limit is 250, so one open export does not block a status check. Fly autostop is off, so it does not stop the machine for excess capacity while a job is in memory. The worker exits on its own after 5 minutes with no export running, and the next export starts it again. The badge stays (`dev · v1.1.152`).
-
-**v1.1.151** on `dev`. The Fly worker writes a heartbeat on the job about every 10 seconds, with the stage name and the time. If that heartbeat is missing for 45 seconds, the export runs on the Netlify background path and the job says "The export worker stopped. The job was run here instead." If the page or the function has under 2 minutes left, the job fails instead, with "The export worker stopped during Trees. Export again." and the last stage name. `fly logs` shows when each stage starts and finishes. A worker that does not write heartbeats yet still falls back after 45 seconds. The badge stays (`dev · v1.1.151`).
-
-**v1.1.150** on `dev`. A heavy export can run on a Fly.io machine when FLY_WORKER_URL and FLY_WORKER_SECRET are both set. That machine runs the same export as the Netlify background job and writes the zip and the status to the same job. If either value is missing, the export stays on the Netlify background path. If the machine does not accept the job, the export uses that path and the job says so. The badge stays (`dev · v1.1.150`).
-
-**v1.1.149** on `dev`. An export records how long each stage took and stores those times on the job. Raw map tiles are cached by source, resolution, and snapped tile. Each source expires on its own clock. Final geometry is not cached, so a later detector change cannot replay an old roof or tree. Missing tiles are fetched at most 4 at a time, and a background export can split that work across up to 3 background functions. A repeat of the same draw can say which sources were cached. The badge stays (`dev · v1.1.149`).
-
-**v1.1.148** on `dev`. The canopy scoreboard adds RF error for fifty random links at 4 m, 40 to 100 m long. Predicted loss follows the exported foliage. Reference loss is 1.5 dB/m where the canopy reference is at least 4 m. The new columns are the median and the 90th percentile of the absolute error in dB. Manuel Antonio stays the only site at 85% recall and 85% precision. The badge stays (`dev · v1.1.148`).
-
-**v1.1.147** on `dev`. The canopy scoreboard adds a leaf-off woods, an apple orchard, a date grove, a tower shadow, and an RV resort. Each one is scored the same way as the earlier sites, against USGS lidar. None of them passes 85% recall and 85% precision. Manuel Antonio stays the only pass. The badge stays (`dev · v1.1.147`).
-
-**v1.1.146** on `dev`. The canopy scoreboard was re-run on the current tree detector. Manuel Antonio passes at 98.5% recall and 92.4% precision. The other eleven sites stay under 85% on recall or precision. USGS lidar is the reference where 3DEP covers the draw. The badge stays (`dev · v1.1.146`).
-
-**v1.1.145** on `dev`. The Lebanon IN distribution warehouse stays in the export. OpenStreetMap and Overture both have the rectangle, about 84,000 m², and Microsoft has a smaller piece of the same roof. None of those sources has a height. The gray membrane was dropped as pavement because a smooth roof larger than 25,000 m² looked like empty asphalt. It is kept, clipped to the draw, and seated at 12 m, the height mapped on the warehouse next door. Lidar replaces that 12 m when lidar heights are on. A coarse building that is mostly inside the draw and covers a large share of it is clipped, not dropped as a campus blob. Anything above 400,000 m² is still a campus blob. Dock doors reuse the Iowa 80 semi, about 16.2 by 2.6 m and 4.1 m tall, at 12 dB/m, only where the aerial shows a trailer. Empty pavement stays empty. A stacked storage yard is a low block at the lidar height when that cloud shows one. With lidar heights off and no mapped yard, the yard is left out. The badge stays (`dev · v1.1.145`).
-
-**v1.1.144** on `dev`. An RV stays when its white roof is long and narrow and runs along the pad, including a roof about 2.5 m off the spur. A wide sheet from the next roof, or a short blob that cuts across the pad, no longer lights an empty pad. Metal RV boxes stay about 12 by 2.6 m and 3.5 m tall at 12 dB/m. Rogers campground stays at 90% recall. Mesa RV resorts stay at 100% recall. The badge stays (`dev · v1.1.144`).
-
-**v1.1.143** on `dev`. The Oak Creek parking deck west of S Howell Ave stays a building. Overture counts 4 floors, about 12 m, so it ships as Building - Five Floor. Cars on that roof no longer make it a surface lot. A lot without a floor count stays a lot. A mapped multi-storey garage uses about 3 m per deck. The badge stays (`dev · v1.1.143`).
-
-**v1.1.142** on `dev` — Citrus Gardens also keeps a manufactured home when the roof clips to pure white. Dirt and the roads stay empty. The badge stays (`dev · v1.1.142`).
-
-**v1.1.141** on `dev` — More white hulls at Wentworth count, including hulls that clip to pure white. Open water stays empty. The badge stays (`dev · v1.1.141`).
-
-**v1.1.140** on `dev` — A surface lot's 1.5 m car layer follows the rows where cars sit. Empty stalls stay out. The Davenport Walmart parked row stays covered, and the store roof stays out. The badge stays (`dev · v1.1.140`).
-
-**v1.1.139** on `dev` — A large surface lot is one 1.5 m car layer, not one box per car. The scoreboard checks that layer against a parked row and against empty stalls at a Davenport Walmart. The store roof stays out of the layer. The badge stays (`dev · v1.1.139`).
-
-**v1.1.138** on `dev` — A truck stop keeps a metal semi where the aerial shows a trailer, about 16 by 2.6 m and 4.1 m tall, at 12 dB/m. Empty stalls stay empty. The scoreboard adds Iowa 80 in Walcott. The badge stays (`dev · v1.1.138`).
-
-**v1.1.137** on `dev` — A manufactured-home park gets each white roof as a building about 4 m tall. The scoreboard adds Citrus Gardens in Mesa. The badge stays (`dev · v1.1.137`).
-
-**v1.1.136** on `dev` — A marina gets a boat from the white hulls on the water, about 3.5 m tall, even when OSM has no slip nodes. The scoreboard adds Wentworth By The Sea. The badge stays (`dev · v1.1.136`).
-
-**v1.1.135** on `dev` — An RV box needs a white roof on that pad. A light roof a few meters away stays on the next site, so an empty Rogers pad no longer takes the neighbor's camper. The badge stays (`dev · v1.1.135`).
-
-**v1.1.134** on `dev` — A packed RV resort keeps a metal box when the pad itself is a light roof, including a roof larger than a single New Hampshire pitch. A vehicle just beside an empty pad still counts. A bright row outside the pad does not. The scoreboard adds Mesa RV resorts next to Rogers campground. The badge stays (`dev · v1.1.134`).
-
-**v1.1.133** on `dev` — RVs and travel trailers are a second training track beside the canopy scoreboard. A mapped RV pad gets a metal box, about 12 by 2.6 m and 3.5 m tall, at 12 dB/m, and the aerial can move that box onto a light vehicle beside the pad. A tent pad stays empty unless that aerial shows a light vehicle, which is then a travel trailer at the same 12 dB/m. A surface parking lot is one 1.5 m car layer, not one area per car. A mobile home is a building at about 4 m. The badge stays (`dev · v1.1.133`).
-
-**v1.1.132** on `dev` — A background export waits 15 minutes, the same clock as the Netlify function. Canopy height, world cover, and lidar each start with the map and stop on their own clock. A miss keeps the buildings. The progress bar names the stage that is still running, including canopy height and world cover. The badge stays (`dev · v1.1.132`).
-
-**v1.1.131** on `dev` — The export budget is the compact OpenIntent JSON, aimed at 4.9 MB, under Hamina's about 5 MiB GraphQL limit. The aerial uploads on its own and does not count, so Auto asks for an 8192 px plate and steps down only when that plate misses. The area sanity cap is 8000. Details shows the JSON size against the 4.9 MB budget. The badge stays (`dev · v1.1.131`).
-
-**v1.1.130** on `dev` — When an export finishes, the one-line headline stays up and Details holds a compact summary: counts by type, terrain minimum, maximum, and elevation change in m and ft, the steepest slope, the number of terrain pieces, the zip size against the 3.8 MB budget, and the map resolution. Details starts closed and stays after Copy terrain. The badge stays (`dev · v1.1.130`).
-
-**v1.1.129** on `dev` — A background export shows a slim progress bar, the stage it is on, and the elapsed time. The bar follows the real stages: the map, footprints, terrain, buildings, trees, and the zip. It keeps moving while that stage is still running. The badge stays (`dev · v1.1.129`).
-
-**v1.1.128** on `dev` — Where USGS 3DEP covers a benchmark site, canopy recall, precision, and height error use the lidar cloud: first returns minus ground, counted at 3 m. A site outside that coverage keeps the canopy-height model. The badge stays (`dev · v1.1.128`).
-
-**v1.1.127** on `dev` — Canopy height error uses the top of the stack above the ground, including a trunk or understory. The scoreboard also records the understory gap under large stands, and the preview counts floating pieces and flat slabs on its own. The badge stays (`dev · v1.1.127`).
-
-**v1.1.126** on `dev` — Canopy precision samples the whole draw. An emitted cell counts only when the canopy-height model is at least 3 m and the aerial is not an open lawn, mown field, RV pitch, or road. The badge stays (`dev · v1.1.126`).
-
-**v1.1.125** on `dev` — A large woods is two layers seated on the terrain: a light understory from the ground to about 3 m (30–40% of the height on a tall conifer) and a foliage crown from there to the measured top. A single tree stays a trunk and a raised crown. Pitches, lawns, and roads stay open, and a hillside stand sits on the ground under it instead of one sheet. The badge stays (`dev · v1.1.125`).
-
-**v1.1.124** on `dev` — A mapped ski run stays open where the height model has no crown. The run no longer cuts the measured woods beside it. The badge stays (`dev · v1.1.124`).
-
-**v1.1.123** on `dev` — Canopy outlines follow the measured crowns. A shrub label or a green meadow is not a woods. A WorldCover tree cell still fills a gap, including beside a crown the height model already measured. Dark conifer stands and unmapped woods still stay in the canopy. The badge stays (`dev · v1.1.123`).
-
-**v1.1.122** on `dev` — Dark conifer stands and unmapped woods stay in the canopy. The mask treats dark green, including a shadowed crown, as trees, and a free canopy-height or WorldCover tree cell fills a stand the aerial color missed. A mapped wood or forest is kept and simplified instead of dropped when it is large. A small site no longer asks Esri for a plate it rejects, so the map stays sharper than the old step-down. The badge stays (`dev · v1.1.122`).
-
-**v1.1.121** on `dev` — A map note for a tall obstruction uses the canopy or building that shipped. A crown at least 15 m thick is marked, including one that only has a height once it is seated on the terrain. A one-floor or two-floor camp building is not marked as tall. The badge stays (`dev · v1.1.121`).
-
-**v1.1.120** on `dev` — Advanced has a Map notes toggle, on until you turn it off. Copy terrain then includes Hamina map notes for a suggested gateway, suggested AP spots, an office or clubhouse, tall obstructions, terrain high points, and the two AFC GPS corners. OpenIntent still has no map notes Hamina will import, so they stay on that paste. The badge stays (`dev · v1.1.120`).
-
-**v1.1.119** on `dev` — A mapped campground keeps a trailer at every pitch, including a park with more than 400 sites. The last row is no longer dropped. The badge stays (`dev · v1.1.119`).
-
-**v1.1.118** on `dev` — A street-map building the other footprint sources missed is added at one floor when no emitted roof covers it. A cabin or a bathhouse shows up. A roof that is already drawn is not drawn again. The badge stays (`dev · v1.1.118`).
-
-**v1.1.117** on `dev` — A mapped surface parking lot is a 2.1 m car layer. A multi-storey garage stays about 9 m. An underground lot stays out. The surface lot does not repaint a building that sits in it. The badge stays (`dev · v1.1.117`).
-
-**v1.1.116** on `dev` — A two-point fence or wall sits on the slope with the other outdoor objects. It used to stay on the floor, because a line of two points was not a ring the terrain seat would read. The badge stays (`dev · v1.1.116`).
-
-**v1.1.115** on `dev` — Advanced has a Lidar heights toggle, off until you check it. When it is on, building heights come from USGS 3DEP lidar where that cloud covers the draw, and the other heights stay where it does not. The status line says whether lidar heights were used. The badge stays (`dev · v1.1.115`).
-
-**v1.1.114** on `dev` — Advanced sits at the bottom of the panel, closed until you open it. It holds foliage, water, parking, walls, poles, RVs, terrain, and map quality. Water starts off. Foliage, parking, walls, poles, RVs, and terrain start on, and the map starts on Auto. Auto asks for a 4K-class plate first, scaled to the site, then Sharp and coarser plates only when that plate or the time budget misses. The status line says when the map stepped down. The page remembers whether Advanced is open. The rest of the panel stays the address, Draw, Export, and the status line. The badge stays (`dev · v1.1.114`).
-
-**v1.1.113** on `dev` — The dev panel is the title, the address, Draw, Export, one short hint, and the status line. Foliage, water, parking, walls, poles, and RVs stay on, with no checkboxes. Terrain stays on. Copy terrain shows after export, with a note to paste it separately in Hamina. The map stays Auto and steps down on its own. Details still folds the rest of the export note. The badge stays (`dev · v1.1.113`).
-
-**v1.1.112** on `dev` — The solar block south of the Wynn podium stays in the export. That outline is OSM way 111413431. It has more corners than the import cap, and cutting it in half made each piece look just triangular enough to throw away, so the whole roof was dropped. Those pieces are the roof, seated at 18 m. The badge stays (`dev · v1.1.112`).
-
-**v1.1.111** on `dev` — A dev page can pass `?lidar=1` to read USGS 3DEP lidar for that draw. Building heights come from the cloud, and a roof the street map missed can be added when the returns cover more than 200 m². The sample stays inside the export budget, so a large draw is coarser than 1 m. A draw outside 3DEP, including Montreal, skips the pass. The badge stays (`dev · v1.1.111`).
-
-**v1.1.110** on `dev` — A diagonal podium slab over the retail ring is replaced by that street-map outline, seated at 18 m. The solar wing of the outline stays covered, and the slab is not drawn. The badge stays (`dev · v1.1.110`).
-
-**v1.1.109** on `dev` — The retail podium keeps the street-map ring, seated at 18 m, instead of a roof-core carve that cuts a diagonal wedge. A diagonal slab in the notch beside that ring is left out. The solar wing of the ring stays covered. Dark pixels still do not become a building. The badge stays (`dev · v1.1.109`).
-
-**v1.1.108** on `dev` — Dark pixels no longer become a building. That pass was drawing a roof over tower shadow, trees, and a road. Water is still cut back where an emitted building covers it. The badge stays (`dev · v1.1.108`).
-
-**v1.1.107** on `dev` — The dark panel rectangle is read again after coarse outlines are cut back. A footprint that still covers the panels was rejecting the west solar block; the trimmed podium only touches it, so the block is emitted. The badge stays (`dev · v1.1.107`).
-
-**v1.1.106** on `dev` — Water is cut back where an emitted building covers it, including a dark panel roof, so the sheet does not sit on that roof. A charcoal panel roof is not read as water from the aerial. A real pond beside the roof stays water. The badge stays (`dev · v1.1.106`).
-
-**v1.1.105** on `dev` — A 4K map plate is larger than the 6 MP roof-fill decode, so that pass was skipping the plate entirely. Dark panel rectangles now use the same plate as the roof cores. A panel block that touches a building already on the map is still seated at 18 m. The badge stays (`dev · v1.1.105`).
-
-**v1.1.104** on `dev` — A dark panel roof that the footprint layers miss is added as a rectangle along the panels, between about 4,500 and 20,000 m². It has to sit against a building already on the map, and the middle of the rectangle has to be that dark panel tone. Roads, open water, and bright roofs stay on their own paths. The height is 18 m. This is the west solar block between the curved road and the convention hall. The badge stays (`dev · v1.1.104`).
-
-**v1.1.103** on `dev` — A low-rise base under a tower is Building - Podium, a warm light gray (`#D8D2C4`), at the same 5 dB/m as other buildings. Towers stay the cool gray, and a taller tower is a step darker. A base qualifies when it is about 30 m or less, or under 40 percent of the tallest tower it touches, and that tower is at least 2.5 times as tall. A low building:part under a tall building is the same. A plain low-rise with no tower stays cool gray. A traced podium outline replaces a Microsoft fragment when that fragment is one piece of the same roof, up to 16 times smaller, so the west solar block stays between the podium and the convention hall. A tower inside that outline is kept. The export fills areas until the OpenIntent JSON reaches 3.8 MB. There is no 982 count cap unless a dev page sets ?areaCap=. The sanity cap is 5000. Details names the byte budget, that sanity cap, and each building over 1000 m2 that a count cap leaves out. The badge stays (`dev · v1.1.103`).
-
-**v1.1.102** on `dev` — A large canopy on a slope is cut along the terrain mesh and each piece sits on the local ground, with the crown thickness above that ground. Downhill ski runs stay open. The same local seat applies to a building or other large clutter that climbs the hill. The badge stays (`dev · v1.1.102`).
-
-**v1.1.101** on `dev` — The retail podium between the towers and the golf course stays when two roof cores replace a coarse triangle. If that outline is only a triangle, the street-map ring is the fallback, then a cleaned copy of the source that is not a convex hull. A pool cut keeps the remaining pieces of a large building, and a piece over 1000 m2 is not dropped as a sliver. Details names every dropped building over 1000 m2 and the reason. The badge stays (`dev · v1.1.101`).
-
-**v1.1.100** on `dev` — Terrain paste default is 1500 floors and about 400 KB. Hamina accepted the Hollywood probe at 1408 floors and 351 KB. Raised and sloped floors share that cap. A shared edge stays one height. Steps of 6 to 8 m sit between the 5 m and 10 m bands so a higher probe can spend its budget. On the dev page, `?terrainFloors=` from 100 to 6000 sets the floor cap. The badge stays (`dev · v1.1.100`).
-
-**v1.1.99** on `dev` — Terrain paste stays the size Hamina already accepted: at most 400 floors and about 300 KB. Contour bands start at 3 to 5 m, and extra splits stop when that budget is spent. A shared edge stays one height. Coordinates are rounded to a centimeter. Details reports `Terrain paste: N floors, X KB`. On the dev page, `?terrainFloors=` from 100 to 3000 raises the floor cap. The badge stays (`dev · v1.1.99`).
-
-**v1.1.98** on `dev` — An RV park gets a metal box on each mapped pitch, or a row along both sides of the internal roads when pitches are not mapped. The box is about 12 by 2.6 m and 3.5 m tall, at 18 dB/m. RVs is on by default and counts in Details, after buildings and before extra trees. A static caravan stays a building, including a narrow one. Water is a 0.1 m sheet at 0.1 dB/m. OpenIntent heights cannot be negative, and a zero bottom does not import, so the sheet sits 0.1 m above the terrain seat instead of a 2.1 m block. A pond that covers a terrain cell lowers the mesh inside it to the shoreline. A triangle tip in the terrain paste is covered, and a corner that lands on a neighbor edge keeps that edge's height, so a hillside mesh does not leave a white pinhole. The badge stays (`dev · v1.1.98`).
-
-**v1.1.95** on `dev` — OpenIntent rings use one in-bounds pixel vertex, rounded to 2 decimals, so the JSON stays under Hamina's request limit. The export fills areas until that JSON reaches 3.8 MB or the area cap, whichever comes first. Details names the JSON size and which limit stopped it. A dev page can raise the byte budget with ?jsonBudget= up to 5000000. ?areaCap= stays the upper count. The badge stays (`dev · v1.1.95`).
-
-**v1.1.94** on `dev` — Details counts only the roofs that shipped when a dev page raises the area cap. Tree slots are not counted as buildings. The badge stays (`dev · v1.1.94`).
-
-**v1.1.93** on `dev` — A dev page can raise the area cap with ?areaCap= from 982 up to 5000. Details names the cap. Extra slots go to buildings, trees, bridges, and guideways. The zip stays under the download limit. The badge stays (`dev · v1.1.93`).
-
-**v1.1.92** on `dev` — A large draw reads a few Overture row groups at once, and a street-map tile that does not answer is dropped after 10 seconds. The badge stays (`dev · v1.1.92`).
-
-**v1.1.91** on `dev` — A 10 km draw keeps the largest roofs from the Microsoft tile and from Overture, instead of holding every roof in memory. The export can finish and write the zip. The badge stays (`dev · v1.1.91`).
-
-**v1.1.90** on `dev` — A draw up to 10 km asks the street map one tile at a time, for roofs, water, rail, and road bridges, instead of downloading the whole map. A canopy tile that fails is read once more. The badge stays (`dev · v1.1.90`).
-
-**v1.1.89** on `dev` — The Las Vegas Monorail stays in the zip when trees would otherwise use every remaining area slot. A road overpass is a raised deck: a highway with bridge=yes or viaduct, about 6.5 m of clearance per layer, about 2.1 m thick, concrete at 9 dB/m. Details counts Bridges. A culvert and a span under 10 m stay out. A footbridge is thin. The badge stays (`dev · v1.1.89`).
-
-**v1.1.88** on `dev` — A draw can be up to 10 km on a side. The background export tiles the street map, keeps the largest and tallest roofs and the densest canopy inside the 982 area cap, and says what was left out. The aerial stays under the download limit, and the status names the map size. Auto terrain covers that draw inside the paste budget and names the cell size. The short path, when background export is unavailable, keeps a smaller set instead of failing. The badge stays (`dev · v1.1.88`).
-
-**v1.1.87** on `dev` — An elevated rail guideway is a raised strip. The Las Vegas Monorail is included, and so is other rail on a bridge or an upper layer. A beam on the ground is not. The deck sits on the terrain. A monorail with no height tag is about 6.5 m at the beam and about 4.5 m taller for the train. Details counts the guideways. The badge stays (`dev · v1.1.87`).
-
-**v1.1.86** on `dev` — The Wynn employee garage sits on the ground. A second height for the same roof no longer lifts the whole footprint, and a part floats only when the source says it is a small bridge, skywalk, roof, or canopy. A parent stays when its parts do not reach the ground. A tower on a podium that is still in the draw stays on that podium. The badge stays (`dev · v1.1.86`).
-
-**v1.1.84** on `dev` — Copy terrain and Copy GPS points leave the export summary and Details as they were. The copy result is its own line under the button. A new export replaces that summary and clears the copy line. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.84`).
-
-**v1.1.83** on `dev` — A large roof keeps the most detailed footprint. An OSM building part is drawn with its own height and min_height. A pool, a lake, or a courtyard inside a complex outline is cut out of that roof, because OpenIntent cannot store a hole. A parent that still covers that water is left out when a part already describes the building. Simplification on a large roof stays near half a metre, and a convex hull that would cover the open deck is not used. The 40 vertex limit and the 982 area limit are unchanged. The extra vertices go to the large roofs. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.83`).
-
-**v1.1.82** on `dev` — Copy terrain pastes a pit as a hole that Planner Plus accepts. Each sloped floor is a planar ramp: four points, the low edge first, both corners of that edge at one z, the opposite edge at a higher z. z is meters above the lowest sample, so the pit floor is the small z and the rim is the large z. A cell that is nearly level is a raised pad. A twisted cell uses the ramp axis whose corners already agree, and the status names the largest step left on a shared edge. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.82`).
-
-**v1.1.81** on `dev` — A 4K background export keeps the golf-course trees and does not stack a second copy of a big roof. The old “so this zip can download” trim was a synchronous response limit: on a background job the zip is stored aside, so roofs are not cut to a few hundred and canopy is not reduced to the largest outlines. A crowd of discrete trees uses two crown layers. Water and parking take their slots before those crowns, and poles and walls take whatever is left, so the pond is not dropped to make room for another canopy. A parent outline is left out when the parts already cover that roof. A same-seat outline inside a larger roof is left out; a taller tower on that roof is seated on it. A tower on a podium stays its own level. The status counts the trees that shipped, and a water, wall, or pole note matches the number that shipped. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.81`).
-
-**v1.1.80** on `dev` — Copy terrain stays on the button after a background export. A 4K plate used to drop a finished 20×20 mesh with “will not fit in the export response,” and the button then copied only the two GPS points. The job stores the zip and the paste separately, so that response-size guard does not run there. Terrain on copies the sloped floors and those two points. If the elevation read fails, the status says so. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.80`).
-
-**v1.1.79** on `dev` — Copy terrain draws a pit as a hole. Hamina shows a sloped floor upside down from meters above the lowest sample, so the pit floor is stored as the largest z and the rim as the smaller z. Each corner keeps that node's height, and a corner shared with the next quad is the same number, so the white walls between slopes are gone. A grade that rises north is high on the north side in Planner Plus. Building bottoms stay meters above the lowest sample, which is the ground Hamina shows. The badge stays (`dev · v1.1.79`).
-
-**v1.1.78** on `dev` — Export runs as a background job, so a Sharp or 4K plate is no longer cut off at about 10 seconds. The page shows the stage (Fetching aerial, Buildings, Trees, Packing zip) and downloads the zip when it is ready. Copy terrain uses the mesh from that same job. That job keeps the planned elevation samples, about 576 on a 20×20 paste, instead of cutting the read to 4.5 seconds. The short path still uses that cap. The terrain line says how many DEM samples the mesh used. If background export is unavailable, the short path still returns the zip. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.78`).
-
-**v1.1.77** on `dev` — A tree crown is at least three layers when the crown is tall enough to hold them: a narrower bottom, the full traced outline through the lower middle, and a top about a third of that area, so the side view reads as a dome. A woods keeps the traced outline on the ground and insets each upper layer from the edge, so the perimeter rolls off instead of standing up as a wall. A crowded draw keeps that shape and leaves extra trees out rather than flattening every crown to one slab. The stem stays about 1 m across, round, at 3 dB/m. Dense canopy stays 1.5 dB/m. Light foliage stays 1. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.77`).
-
-**v1.1.76** on `dev` — Water, parking structures, walls, and light poles can be included with the buildings. Parking is an open structure at 2 dB/m in the cool gray family. A wall is 8 dB/m, a retaining wall is 6, a fence and a hedge are 1, and a light pole is 10. Water is a shallow ground footprint at 0.1 dB/m. OpenIntent has no reflection field, so water is not a mirror. A fence in the field is about 1.8 m, and a custom at or under 2 m does not import, so the fence and the water sheet are 2.1 m. A light pole is a thin round post, about 9 m tall, and the count is capped. These are 5 GHz per-meter figures. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.76`).
-
-**v1.1.75** on `dev` — A tree crown is stacked attenuating layers that step inward with height, so it reads as a rounded crown instead of a flat cylinder. A small stand uses more layers; a woods uses two; a crowd of trees stays at two so the first export still returns a zip. The stem stays about 1 m across, round, at 3 dB/m. Dense canopy stays 1.5 dB/m. Light foliage stays 1. Buildings stay 5. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.75`).
-
-**v1.1.74** on `dev` — The first Export tries once more in that same click when the gateway returns an empty response, and the status says the first export did not return a zip while that second try is still working. If that try is also empty, the status stays “The export did not return a zip.” A discrete-tree stem stays about 1 m across and round. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.74`).
-
-**v1.1.73** on `dev` — Dense canopy (Foliage - Heavy, and a measured canopy at or above 12 m) is 1.5 dB/m. A discrete-tree stem is 3 dB/m and about 1 m across, a round footprint under the crown, so it stays thinner than the canopy. Light foliage stays 1 dB/m. Buildings stay 5 dB/m. Terrain paste stays 0. These are 5 GHz per-meter figures. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.73`).
-
-**v1.1.72** on `dev` — Copy terrain now includes two Hamina GPS tie points, the southwest and northeast corners of the imported map. OpenIntent has no GPS field, so they stay on that Planner Plus paste. Northeast is local (0, 0) and southwest is (−width, −height), with the corner latitude and longitude. Terrain off still offers Copy GPS points, with no mesh and no DEM on the zip. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.72`).
-
-**v1.1.71** on `dev` — On a large downtown Sharp draw, a 2048 px plate that cannot finish no longer burns the clock. Sharp asks for 1040 px first when that 2048 frame is over about 3.2 million pixels, and buildings and canopy height start with the map, so a missed plate still leaves roofs and trees in the zip. A smaller Sharp draw still asks for 2048. Copy terrain stays the separate paste. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.71`).
-
-**v1.1.70** on `dev` — Buildings sit on the pasted mesh again. Taking the elevation read off the zip had left every building bottom on the floor, so the sloped paste buried them. The elevation response now includes the samples that mesh used, and the zip sets each building bottom to the downhill ground under that piece. The mesh stays out of the zip. Copy terrain is still the separate paste. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.70`).
-
-**v1.1.69** on `dev` — Copy terrain on a US draw no longer comes back empty when the first bare-earth read misses the clock. That request starts Copernicus beside USGS, and if bare earth is still out the paste is the surface grid that already finished. A USGS grid that returns in time is still the one copied. The page tries the elevation request once more in the same export before it asks you to export again. The zip stays the OpenIntent JSON and the aerial JPEG, and the mesh stays off that clock. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.69`).
-
-**v1.1.68** on `dev` — On a long Vegas draw, building footprints and measured heights start with the map and keep the rest of the answer clock. Towers cut by the edge stay in the zip at their measured height instead of falling back to a short stock floor while the trees export. The Sphere south of this golf polygon is outside the draw and is not added. Copy terrain is still the separate paste. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.68`).
-
-**v1.1.67** on `dev` — Terrain on reads elevation in its own request, so the map and foliage cannot spend that clock. Copy terrain still pastes in Planner Plus when that read returns. If it does not, the page says to export again. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.67`).
-
-**v1.1.66** on `dev` — Terrain on starts the elevation read with the map, including High and Sharp, so a slow plate does not omit the paste. Copy terrain still pastes in Planner Plus. The zip stays the OpenIntent JSON and the aerial JPEG. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.66`).
-
-**v1.1.65** on `dev` — The draw label leads with area, such as `5,000 m² · 53,820 ft²`, and leaves the side lengths off that line. Space pans the map while a site is being drawn, and it does not toggle the last checkbox or button. The Map note says Auto is fast and High and Sharp wait for a bigger plate. Terrain has a short note: copy and paste in Planner Plus, and do not import it as OpenIntent. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.65`).
-
-**v1.1.64** on `dev` — The export note is one line, with the rest under Details. The foliage control is labeled **Foliage**, on by default, with no Experimental tag. Terrain and the Map menu stay as they are. Include foliage stays a request flag on the API. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.64`).
-
-**v1.1.63** on `dev` — High on the ~850 m draw was the same 400 px plate as Auto, because that 1040 px request was cut off at 2.5 s and the zip stepped down. High now waits for the 1040 px plate, and Sharp asks for 2048 px. Buildings and terrain start after that plate is in hand. The status names the pixels that landed, and says when a plate was still out. A 4K plate does not come back inside the gateway, so it is not a choice. Auto is unchanged. Terrain on still pastes the sloped mesh. Include foliage stays off and Experimental. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.63`).
-
-**v1.1.62** on `dev` — The dev page has a Map menu: Auto, Low · 256 px, Standard · 640 px, or High · 1040 px. Auto is the same plate as before: a short draw at half a meter, a long draw at 400 px. High asks for a 1040 px plate and steps down to 400 px when that plate is still out. The status names the plate that landed. Terrain is on or off, and Terrain on pastes the sloped mesh. Include foliage stays off and Experimental. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.62`).
-
-**v1.1.61** on `dev` — The white-roof convent at the south tip of the Pointe-Claire peninsula stays in the zip. OpenStreetMap already had that roof, and the export was dropping it because the trees on it looked like a parking lot. A measured building with trees on the roof is kept. A gray parking lot is still dropped. The ~850 m draw stays on the workable aerial so the zip still returns inside the gateway. Include foliage stays off and Experimental. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.61`).
-
-**v1.1.60** on `dev` — A venue name that is not an OpenStreetMap point can still land on the building when a public search snippet prints the street. `Casa Evexia` and `Casa Evexía` resolve to 298 Lakeshore, Pointe-Claire. The typed address, including the bilingual Chem. street, still goes straight to Nominatim. A name with no street in that snippet stays empty, and the page says to try the street address. This is not a places directory. Include foliage stays off and Experimental. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.60`).
-
-**v1.1.59** on `dev` — A short draw, including the Pointe-Claire peninsula, exports a sharper aerial (half a meter, capped at 1040 px). A long campus stays on the coarser plate so the zip still returns inside the gateway. Terrain on starts the elevation read with that aerial. In southern Canada, where USGS 3DEP has no grid, the paste comes from Copernicus and Copy terrain is on the page when that grid returns. A short draw also starts building footprints with the aerial, so a Quebec site is not left at zero roofs when Overture can answer. Search accepts the bilingual street `298 Chem. du Bord-du-Lac-Lakeshore, Pointe-Claire, QC H9S 4L3`. The map no longer paints the CARTO “API KEY REQUIRED” tiles through the aerial. The zip is still only the OpenIntent JSON and the aerial JPEG. Include foliage stays off and Experimental. Buildings stay the quiet cool gray from v1.1.48. The badge stays (`dev · v1.1.59`).
-
-**v1.1.58** on `dev` — Include foliage draws traced canopy outlines again, across the whole draw. A tree is a trunk under a raised crown, and a wider canopy keeps the measured outline. A crown that is small on the coarse aerial is scaled up to Hamina's minimum span instead of being replaced with a square. Canopy height starts with the aerial: one full-site read first, then finer strips, and peaks already read stay if the clock runs out. A miss leaves foliage out of the zip instead of drawing grid squares. The zip is still only the OpenIntent JSON and the aerial JPEG. Include foliage stays off and Experimental. Buildings stay the quiet cool gray from v1.1.48. There is no new control. The badge stays (`dev · v1.1.58`).
-
-**v1.1.57** on `dev` — The export zip is the OpenIntent JSON and the aerial JPEG. Clipboard JSON, the terrain paste, and the debug notes stay out of that zip. Copy terrain still pastes from the page when Terrain is on. Include foliage stays off and Experimental. The measured crowns from v1.1.52 stay. Buildings stay the quiet cool gray from v1.1.48. There is no new control. The badge stays (`dev · v1.1.57`).
-
-**v1.1.56** on `dev` — The first Export returns a zip inside the platform timeout. The dev image starts at 400 px and steps down to 256 px in that same request. Buildings and that aerial are sent as soon as they are ready. A slow terrain, foliage, or Overture read is left out instead of holding the function until the gateway answers 504. If the buildings still cannot finish, the function returns JSON “Export timed out. Retry the export.” in that same window, instead of an empty 504. An empty gateway response is still one try, and the page says “The export did not return a zip.” Include foliage stays off and Experimental. The measured crowns from v1.1.52 stay. Buildings stay the quiet cool gray from v1.1.48. There is no new control. The badge stays (`dev · v1.1.56`).
-
-**v1.1.55** on `dev` — The first Export returns a zip before the gateway closes the request. The dev image starts at 640 px and steps down to 400 px in that same request, and it does not keep fetching after that plan. Terrain, foliage, and a still-running building read stop by 10 seconds so the buildings zip can be sent. A gateway timeout is one try, and the page says “The export did not return a zip.” Include foliage stays off and Experimental. The measured crowns from v1.1.52 stay. Buildings stay the quiet cool gray from v1.1.48. There is no new control. The badge stays (`dev · v1.1.55`).
-
-**v1.1.54** on `dev` — One Export click returns a zip or one clear sentence. The export image starts at the production size (1040 px) and steps down to 640 px in that same request, including one more try while the function clock is still open. A 502 is not sent three times, and the page does not go quiet after “Aerial imagery timed out.” It says “The export did not return a zip.” A slow terrain read stops at 12s so the buildings zip can still download. Include foliage stays off and Experimental. The measured crowns from v1.1.52 stay. Buildings stay the quiet cool gray from v1.1.48. There is no new control. The badge stays (`dev · v1.1.54`).
-
-**v1.1.53** on `dev` — The first Export returns a zip. The canopy-height read is taken in short strips and stops when the export clock runs out, so that read cannot hold the function until the gateway answers with an empty 502. Foliage is left out of that zip when the height read does not finish; buildings still download. An empty 502 is one try, and the page says “The export did not return a zip.” It is not asked for three times with no sentence. Include foliage stays off and Experimental. The measured crowns from v1.1.52 stay. Buildings stay the quiet cool gray from v1.1.48. There is no new control. The badge stays (`dev · v1.1.53`).
-
-**v1.1.52** on `dev` — Include foliage stays off and Experimental. When it is on, a measured crown is kept even when it is one tree: the canopy grid keeps the peak instead of averaging it into the grass, and the extra foliage budget is used for those compact crowns. The larger canopy masses stay. Roofs, pavement, water, and ground under 3 m stay clear. A one-pixel spike is not a tree. Buildings stay the quiet cool gray from v1.1.48. There is no new control. The badge stays (`dev · v1.1.52`).
-
-**v1.1.51** on `dev` — A slow sharp aerial steps down to the production-size image in that same request, and the zip comes back on the first try. The page does not stop on “Aerial imagery timed out” or “The export stopped before a zip was ready.” The status line says the export is working only while Export is in progress. Buildings stay the quiet cool gray from v1.1.48. There is no new control. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.51`).
-
-**v1.1.50** on `dev` — A drawn site returns a zip before the gateway closes the request. A sharp aerial that is still out steps down and the export finishes in that same request. The status line says the export is working only while Export is in progress. It does not stay on that line after the button is idle, and the page does not send the same long request three times. Buildings stay the quiet cool gray from v1.1.48. There is no new control. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.50`).
-
-**v1.1.49** on `dev` — A drawn site exports. A slow aerial still finishes, and the status line keeps saying the export is working. An empty gateway or platform response is tried again and a later zip is the download. The page does not stop on “Export failed. Retry.” Buildings stay the quiet cool gray from v1.1.48. There is no new control. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.49`).
-
-**v1.1.48** on `dev` — Buildings are one cool gray. A short floor is slightly lighter (`#C5CBD1`) and a tall tower, including 187 m, is slightly darker (`#A2A8AE`). A missing height number is the middle gray (`#B4BAC0`). The footprint size is not turned into a height for that color. Trees and foliage stay the same greens. A gateway timeout retries the export while the status line still says the export is working, instead of stopping on “Export did not finish.” There is no new control and no legend. Address, draw, and export stay the same. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.48`).
-
-**v1.1.47** on `dev` — Buildings take their color from vertical height, so a short building and a tall tower are easy to tell apart. One Floor is blue (`#377EB8`), Two Floor is orange (`#FF7F00`), Five Floor is purple (`#984EA3`), Ten Floor is red (`#E41A1C`), and a measured tower above that stock height, including a 187 m tower, is yellow (`#F0E442`). A height we do not have stays a quiet gray (`#8B949E`). Trees and foliage stay the same greens. There is no new control and no legend. Address, draw, and export stay the same. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.47`).
-
-**v1.1.46** on `dev` — The draw readout leads with how far across the site is. A small draw uses meters and feet. A campus on the order of a kilometer, such as Wynn at about 2 km, uses kilometers and miles. Area follows on the same line in square meters, with square feet quieter beside it, and steps up to hectares and acres when that number is huge. There is no unit toggle. Address, draw, and export stay the same. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.46`).
-
-**v1.1.45** on `dev` — A Wynn-sized draw exports again. The finer aerial (0.5 m pixels, up to a 2048 px long side) is kept when that image is slow. While the zip is still running, the status line says the export is still working. A slow export is not reported as an area that is too large. A smaller site still gets that finer image. There is no resolution slider. The map still follows Esri tiles through level 23. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.45`).
-
-**v1.1.44** on `dev` — The aerial on /dev is sharper. The map follows Esri World Imagery tiles through level 23, and a drawn site’s export asks for 0.5 m pixels up to a 2048 px long side. A slow or failed image steps down to the previous size instead of dropping the map. There is no resolution slider. Address, draw, and export stay the same. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.44`).
-
-**v1.1.42** on `dev` — A building on a slope is cut into the hill. Bottom height from floor is the downhill ground under that piece, and top height from floor is that bottom plus the building height, so the footprint meets the slope on the uphill side and continues down into the hillside on the downhill side. The roof stays the measured height above that ground. A footprint that climbs more than about 2.5 m is split so each piece keeps that height. A building on flat ground stays on the floor. Terrain paste stays a separate paste. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.42`).
-
-**v1.1.41** on `dev` — Include foliage stays off and Experimental. When it is on, a compact measured crown is one tree: a stem under the crown, the crown bottom above the ground, and the crown top still at the measured height. A continuous canopy stays one mass on the ground. Tree points are not turned into trees. Buildings stay as they are. There is no extra switch on the page. The badge stays (`dev · v1.1.41`).
-
-**v1.1.40** on `dev` — Include foliage stays off and Experimental. When it is on, canopy and tree attenuating objects export with Hamina’s Transparent in 3D flag (`transparencyEnabled: true`), so they are see-through in 3D. Buildings omit that flag and stay opaque. There is no extra switch on the page. Hamina still draws that transparency only when Transparency effects are on in Settings. The badge stays (`dev · v1.1.40`).
-
-**v1.1.39** on `dev` — A recorded dome, including the MSG Sphere at its measured 112 m, is stacked rings that shrink toward that top, so the plan stays round and the height is a dome. A roof that records both a high side and a low side is several pieces whose tops follow those two heights. A plain box stays one object. The curved Wynn tower still has one measured height and no low side in the source, so it stays one flat top; a second height is not invented. Finish shape stays gone. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.39`).
-
-**v1.1.38** on `dev` — A measured tower taller than Hamina’s Ten Floor stock keeps that height. A wider lower footprint with a taller inset inside it is two attenuating objects: the podium on its own plan, and the tower on its plan at the measured height. A plain box stays one object. A height no source recorded is not invented. Finish shape stays gone. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.38`).
-
-**v1.1.37** on `dev` — Finish shape is gone. Click the map to place corners; there is no extra close button. Click the first corner to close a shape of 3 or more corners. Export commits an open polygon of 3 or more corners and refuses one or two. Right-drag or a two-finger drag pans and does not finish the shape or open a menu. Hold Space and drag to pan, including while a polygon is open. The badge stays (`dev · v1.1.37`).
-
-**v1.1.36** on `dev` — A pasted hill lifts every building, including a US bare-earth slope under 20 m and a raised-layer stack. The bottom is the high edge of each slope cell the footprint sits in, so the low side of a ramp does not leave the building under the floor. A shared cell edge still uses the height at that edge. Pieces of a steep footprint and a tower on a podium each use the slope under their own outline. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.36`).
-
-**v1.1.35** on `dev` — Include foliage stays off and Experimental. A measured canopy cell that is a real tree is kept, including a tall crown only one or two cells wide. Roofs, roads, pavement, and water stay clear, and a percent reading does not invent a tree where the canopy-height model is empty. Terrain on still has no resolution slider. Auto fills the 20×20 paste budget on a mild hill as well as a ski hill; a larger draw stays coarse because that cap is what Planner Plus accepts. Raised layers use the same plan. The badge stays (`dev · v1.1.35`).
-
-**v1.1.34** on `dev` — On a sloped site, each building’s bottom height from floor is the top of the slope under that footprint, including a cell edge the outline only shares. A footprint that climbs more than about 8 m is split so each piece sits on its own slope. A taller plan inside a shorter one (a tower on a podium) is two attenuating objects; a single simple box stays one. Include foliage stays off and Experimental. The badge stays (`dev · v1.1.34`).
-
-**v1.1.33** on `dev` — Left click still draws; Draw is optional. A right-drag pans the map and does not finish the shape or open a menu. Hold Space and drag to pan, including while a polygon is open. Click the first corner to close a shape of 3 or more corners. Finish shape stays optional. Export still commits an open polygon of 3 or more corners and still refuses one or two. The badge stays (`dev · v1.1.33`).
-
-**v1.1.32** on `dev` — Include foliage stays off unless checked, and it still wears the Experimental tag. Canopy is still a traced outline, not a grid square. Foliage attenuating objects set Hamina’s Transparent in 3D flag (`transparencyEnabled: true`) on the OpenIntent material and on the clipboard zone type. Buildings omit that flag and stay opaque. Turn on Transparency effects in Hamina settings to see through the canopy. The badge stays (`dev · v1.1.32`).
-
-**v1.1.31** on `dev` — The map starts ready to draw. Click it to place corners; Draw is optional. A shape with 3 or more corners closes when you click the first corner again, including a click that comes back near the start. Double-click still finishes. Finish shape stays optional. A two-corner line does not close. Export still commits an open polygon of 3 or more corners and still refuses one or two. The badge stays (`dev · v1.1.31`).
-
-**v1.1.30** on `dev` — Include foliage stays off unless checked, and it still wears the Experimental tag. When it is on, canopy extent and height come from the Meta/WRI canopy height model. US tree-canopy percent can add cells only where that cover is denser and a measured height is already known. Canopy is kept off building footprints and pavement, so it does not sit on roofs or parking. Bottom height from floor is the terrain under the footprint. Top height from floor is that bottom plus the measured canopy height. If the canopy-height read times out, foliage is left out of the zip and the status says so. Buildings still download. The badge stays (`dev · v1.1.30`).
-
-**v1.1.29** on `dev` — A large campus with Terrain on still returns **Copy terrain** for **Sloped** and **Raised layers**. Both styles use the same elevation read. When the full grid does not come back, a coarser grid is pasted instead (still at most 20×20, and at most 400 raised floors). The status still starts with `Terrain sloped` or `Terrain raised layers`. The OpenIntent zip is unchanged. The badge stays (`dev · v1.1.29`).
-
-**v1.1.28** on `dev` — With Terrain on, the page offers **Sloped** (the default ramp mesh, one quad per cell) and **Raised layers** (stacked height-band rectangles, 1 m bands, at most 400 floors). The style radios appear only when Terrain is on. Status names the mode (`Terrain sloped 20×20` or `Terrain raised layers 12×8`). Terrain stays a checkbox, on by default, with no resolution control. When it is off, that export skips the DEM and Copy terrain. The badge stays (`dev · v1.1.28`).
-
-**v1.1.27** on `dev` — Terrain stays a checkbox, on by default, with no resolution control. When it is on, Auto sizes cells from the draw: about 1 m on a small hill and coarser on a large one, at most 20×20 quads, so Copy terrain stays a paste Planner Plus can take. When it is off, that export skips the DEM and Copy terrain. The badge stays (`dev · v1.1.27`).
-
-**v1.1.26** on `dev` — A polygon closes without a right-click. After three corners, double-click, click the first corner, or **Finish shape**. Export commits that open polygon. A ring of one or two corners blocks export instead of sending the previous outline. Esc still drops only the open corners. The badge stays (`dev · v1.1.26`).
-
-**v1.1.25** on `dev` — The Terrain resolution control is gone. Terrain stays a checkbox, on by default. When it is on, export uses the densest mesh that still fits (about 1 m cells, stepped coarser only when that grid will not fit the response). When it is off, that export skips the DEM and Copy terrain. The subtitle and muted badge stay (`dev · v1.1.25`).
-
-**v1.1.24** on `dev` — Include foliage wears an Experimental tag and stays off unless checked. A Terrain checkbox sits next to it, on by default. Turn it off and that export skips the DEM and Copy terrain. Terrain resolution stays hidden while Terrain is off. The subtitle and muted badge stay (`dev · v1.1.24`).
-
-**v1.1.23** on `dev` — The subtitle under the title says what Export does: a zip you import in Hamina for the aerial map and buildings. The small muted build label stays (`dev · v1.1.23`).
-
-**v1.1.22** on `dev` — The address panel drops “One zip.” The build label sits in the corner in small muted type (`dev · v1.1.22`). Address, draw, and export stay the same.
-
-**v1.1.21** on `dev` — Finland terrain paste uses the same ground-meter frame as the aerial, so the quads are roughly square and the status shows that cell size. A 1 m or Auto paste on a town is meter-scale: the mesh steps coarser only when the draw will not fit, and the readout names that size instead of a 500×500 label on a stretched slab. GLO-30 is still about 30 m native; a finer cell is interpolated. A Finland town export still offers **Copy terrain** after the ground-meter aerial resample. When little time is left, the elevation grid steps down to a coarser lattice and still pastes, instead of omitting terrain with a timeout. A Finland town import keeps the shape and the ground scale of the map you drew. The aerial is resampled so east–west and north–south pixels are ground meters, and buildings and terrain paste use that same frame. A US site keeps the existing aerial grid. A Finland export finishes. The Hamina NLS laser grid is packaged with the function, so measured building heights still apply, and a grid that cannot be read omits those heights inside a successful zip instead of Export failed (502). Buildings and canopy sit on the pasted slope: bottom height from floor is the higher of the DEM under the footprint and the pasted floor there, and top height from floor is that bottom plus the object height. A US bare-earth hill still lifts the same way; a US site under 20 m of relief still stays on the floor. Terrain resolution on the dev host adds **20, 15, 10, 5, and 1 m** past Finest (~25 m). Auto, Default, and Fine stay. Those finer stops can paste denser than the old 20×20 Hamina expectation so a ski hill can keep that cell size (mesh cap 500 quads on a side, enough for about 5 m on a 2.5 km draw). The readout shows the cell size and the ground that mesh covers. A paste past 20×20 is listed in `export-warnings.json`. A mesh that will not fit beside the zip in one response is coarsened until Copy terrain still returns with the download. The status names that reduction. If it still cannot, Copy terrain is left out and the OpenIntent zip still downloads. DEM samples for those stops step down when time is short. The dev host still keeps the v1.1.14 sharper Esri World Imagery JPEG (1600 px on the long side instead of 1040); production keeps the 1040 cap, and there is no imagery-quality control on the page. Outside USGS 3DEP coverage the dev host still gives up on that request quickly and reads Copernicus DEM GLO-30, including a coarser grid when the aerial has already used the export clock. Building and foliage objects sit on that surface. A US 3DEP hit is unchanged. Production stays 3DEP only. The page title and the export zip (`openclutter_version`) both read this from `package.json`.
-
-Live: https://openclutter.netlify.app · Dev: https://openclutter.netlify.app/dev · Source: https://github.com/jolla/OpenClutter
-
-## Production vs Dev
-
-| | Production | Dev |
-|---|---|---|
-| URL | https://openclutter.netlify.app | https://openclutter.netlify.app/dev → https://dev--openclutter.netlify.app |
-| Git branch | `main` | `dev` |
-| Purpose | Frozen **v1.0** buildings OpenIntent import — address, draw, export | Experiments (trees-in-OI, terrain, etc.) without breaking production |
-
-- Use **production** for the known-good 1.0 buildings workflow.
-- Hack on **https://openclutter.netlify.app/dev**. The panel corner shows a small muted build label (`dev · v1.1.148`). The panel is the title, address, one short hint, Export, and the status line. Advanced is a small link at the bottom, closed until you open it, and the page remembers that. Inside it: foliage, water, parking, walls, poles, RVs, terrain, lidar heights, map notes, and map quality. Map notes start on. Water and lidar heights start off. Foliage, parking, walls, poles, RVs, and terrain start on, and the map starts on Auto. Copy terrain shows after export and is pasted separately in Hamina. Space pans the map. The draw label shows area in m² and ft². After export, the panel shows one line; Details holds the rest. The lattice is Auto: about 1 m on a small hill, coarser on a large one, at most 20×20. There is no resolution control.
-- Workflow: open feature PRs against `dev`. Promote with a PR `dev` → `main` only for a production release; then tag (e.g. `v1.1.0`).
-
-
-## Exact alignment (every site)
-
-Hamina **2026-09-01** (docs.hamina.com release notes): “OpenIntent import and export now supports attenuating objects!” The [support matrix](https://docs.hamina.com/hamina/live/openintent) shows Attenuating Objects ✅ import/export. Buildings use Hamina’s Building - One/Two/Five/Ten Floor catalog (Jerry’s gold export). When Include foliage is on, canopy uses the picker types **Foliage - Heavy** (19.68 ft, 1.5 dB/m) and **Foliage - Light** (19.68 ft, 1 dB/m), same object shape. A measured height that is not 19.68 ft is a custom `Foliage - Heavy H.H` / `Foliage - Light H.H`. A discrete tree adds `Foliage - Trunk H.H` (3 dB/m, about 1 m across, a round footprint). There is no Tree type. `Tree Trunk` and per-metre `Foliage N.N m` stay off the OpenIntent catalog.
-
-One bbox drives everything:
-
-1. Esri World Imagery for that bbox (`bboxSR=4326`, `imageSR=4326`). **The frame is the JPEG’s actual `extent`**, which is often taller than the drawn box. After that snap, meters are unified to the JPEG pixel aspect (`lengthM = imgH * widthM/imgW`) so Hamina’s isotropic map scale matches. In the continental US the aerial content grid is kept. At high latitude (Finland), that degree grid is resampled so pixels are square in ground meters, and buildings, the aerial, and terrain paste use that frame.
-2. Building footprints mapped through that actual extent: Microsoft Global ML (height used when the tile has one), Overture Buildings (`height` or `num_floors`), then FEMA USA Structures. The Esri-hosted MSBFP2 copy is no longer read (v1.2.11). One ring per roof; the best measured height wins.
-3. **Include foliage** (off unless checked, still marked Experimental). When on, canopy extent and height come from the Meta/WRI canopy height model. Each polygon is the traced outline of a connected canopy, simplified so it follows that edge instead of a grid square, at the measured height. US tree-canopy percent can add a cell only where that cover is denser and a measured height is already known. It does not replace the height. Cells on building footprints and on pavement or roads are cleared, and rings are cut around footprints (0.25 m buffer) and water, so canopy does not sit on roofs, parking, or ponds. If the canopy-height read times out, foliage is left out of the zip and the status says so. Buildings still export. Individual tree-point circles are not emitted. A compact crown is one tree: a round stem about 1 m across under a raised crown. A wider canopy stays one mass, with no stem.
-4. lon/lat → JPEG pixels with the actual west/south/east/north (OpenIntent Y-up / JPEG Y-down).
-5. OpenIntent `attenuation_areas` are **buildings** by default. Buildings use Building - One/Two/Five/Ten Floor. With Include foliage on, canopy uses Foliage - Heavy or Foliage - Light. A measured canopy height that is not the stock 19.68 ft uses `Foliage - Heavy H.H` or `Foliage - Light H.H` at that height. Bottom height from floor is the terrain under the footprint (the same rule as buildings). Top height from floor is that bottom plus the measured canopy height. A lone tree point is not a circle.
-
-**Import this zip in Hamina (Projects → Import → OpenIntent)** for the map and buildings. Check Include foliage before export when the site should include canopy. Do not use a GE screenshot as the map.
-
-### Materials that import
-
-Building `area_material` objects keep exactly these keys: `name`, `rf_properties.attenuation_per_m`, `top_height`, `display_color`. Foliage adds `transparencyEnabled: true`, the flag Hamina already uses for Transparent in 3D on an attenuating zone type. Buildings omit that key. No `itu_material_type`, no `bottom_height` on a flat site. The object deep-equals its catalog entry (a stock name with a different `top_height` is rejected). Buildings are always the gold prefix. A vegetation material is added only when an area uses it, and Building - Podium is added only when a base uses it, so a buildings-only zip with no podium stays the four gold objects. Clipboard foliage types set the same `transparencyEnabled` flag; building types leave it false. Hamina only draws that transparency when Transparency effects are on in Settings.
-
-| Name | Color | Top height | dB/m | Used for |
-|---|---|---|---|---|
-| Building - One Floor | `#C5CBD1` | 4.5 | 5 | buildings under 6 m |
-| Building - Two Floor | `#BDC3C9` | 7.620092660326749 | 5 | buildings under 11 m |
-| Building - Five Floor | `#B4BAC0` | 15.240185320653499 | 5 | buildings under 24 m |
-| Building - Ten Floor | `#ABB1B7` | 32 | 5 | buildings through 32 m |
-| Building - Podium | `#D8D2C4` | same top as the floor it replaced | 5 | a low base that touches or contains a tower at least 2.5 times as tall. On a slope the name is `Building - Podium B.B` |
-| Building - H.H | same gray, by height | measured metres | 5 | a measured height. Above 32.25 m, including a 187 m tower, the color is `#A2A8AE`. No height number is the middle gray `#B4BAC0` |
-| Foliage - Heavy | `#3F7D2A` | 19.68 ft | 1.5 | stock canopy, and measured heights within 0.25 m of that |
-| Foliage - Light | `#6FA84A` | 19.68 ft | 1 | lighter stock canopy |
-| Foliage - Heavy H.H | `#3F7D2A` | measured metres | 1.5 | measured canopy at or above 12 m |
-| Foliage - Light H.H | `#6FA84A` | measured metres | 1 | measured canopy under 12 m |
-| Foliage - Trunk H.H | `#8B6B4F` | stem height | 3 | discrete-tree stem, about 1 m across, round |
-
-These names emptied every `attenuation_area` when they were in the catalog, and they are not emitted: `Tree Trunk`, `Foliage N.N m`, `Tree Trunk N.N m`, `Hotel podium`, `Building N.N m`. With Include foliage on, measured canopy metres stay on the old clipboard download as `foliage-m-*` for the canopy polygons (not trunks, not tree-point circles, and not a file in the OpenIntent zip). Building metres stay on `bldg-m-*`. The stock names above are the picker types, emitted as full material objects (not a name string, and not with `itu_material_type` or `bottom_height`). Foliage materials are added only when Include foliage is on.
-
-Rings over 40 vertices, or thinner than 4 px on either axis, are omitted. They do not drop the buildings. `stats.openIntentBuildingAreas` and `stats.openIntentTreeAreas` count what the OpenIntent JSON kept.
-
-A/B from the gold schema: the default zip is the four gold objects. Include foliage adds an unmeasured canopy polygon as the exact `Foliage - Heavy` or `Foliage - Light` object (19.68 ft, 1.5 or 1 dB/m) and leaves the building `area_material` unchanged. A 14.2 m canopy adds `Foliage - Heavy 14.2` (top_height 14.2, 1.5 dB/m, `#3F7D2A`) instead of a 9 m or 15 m bucket. A discrete tree also adds `Foliage - Trunk H.H` at 3 dB/m. OpenIntent 2.0.1 does not enum-restrict material names. `Foliage - Heavy 14.2` is not `Foliage 14.2 m`. Each area deep-equals its catalog entry. Rings stay at ≤40 vertices. Buildings and canopy masses stay at ≥4 px on both axes. A discrete stem keeps its ~1 m circle instead of growing to that floor. NLCD patches of two or more cells are the cell outline. A lone tree point is omitted. If a Hamina import still drops every area, the next step is binning every canopy polygon into the two stock objects.
-
-OpenIntent pixels (unit-tested; Y-up from SW, matching oiconvert / Hamina OI):
-
-```
-SW (west, south) → (0, 0) px
-SE (east, south) → (imgW, 0) px
-NW (west, north) → (0, imgH) px
-NE (east, north) → (imgW, imgH) px
-
-JPEG Y-down:  y_img from NW
-OpenIntent Y-up: y_up from SW
-y_up + y_img = imgH
-```
-
-Clipboard meters (silent fallback JSON inside the zip, same frame):
-
-```
-SW → (−widthM, −lengthM)   NE → (0, 0)
-JPEG Y-down:  x_clip = x_img * mpuX − widthM ;  y_clip = −y_img * mpuY
-```
-
-With **Include foliage** checked, canopy extent and height come from the **Meta/WRI canopy height** window on the same extent. Each polygon is the traced canopy outline at that measured height, not a grid square, not a circle, and not a percent bucket. USFS/NLCD percent tree canopy (threshold ≥18%) can add a cell only where that cover is denser and a measured height is already known. A single NLCD cell, a placed tree point, and a parking-median dot are not emitted as circles. Aerial color is not used to place canopy. If the canopy-height read times out, foliage is omitted and the status says so. OSM tree *nodes* and `controlPoints` calibration are API-only (not on the default page). OSM tree rings are never emitted. An OSM building part is emitted only after the same OpenIntent ring checks as every other roof. A raw OSM building outline is not added on its own. Polygons are clipped to the JPEG and invalid rings are dropped so one bad ring cannot wipe the import.
-
-`stats.includeFoliage` is `false` by default. `stats.treesSource` is `"none"` unless foliage is on, then `"nlcd-canopy"` or `"none"`. A canopy-height timeout keeps `includeFoliage` true and sets the status to foliage omitted.
+OpenClutter turns a box drawn on a map into outdoor clutter for Wi-Fi planning in [Hamina Planner](https://hamina.com). It builds buildings, trees, water, parking, walls, poles, vehicles and terrain from free public data, lines them up with an aerial image, and exports one georeferenced [OpenIntent](https://github.com/google/openintent) zip that Hamina imports as the map plus attenuating objects. Terrain, two GPS tie points and map notes go into Hamina through a separate Copy terrain paste, because OpenIntent cannot carry them.
 
 ## Use
 
-1. Search an address.
-2. Drag a box on the map, or click corners and click the first to close (up to 10 km on a side).
-3. **Include foliage** — leave unchecked for buildings only. Check it to add canopy polygons.
-4. **Export** — `{site}-openintent.zip` only. When USGS 3DEP returns a grid, **Copy terrain** pastes pads and slopes into Planner Plus. A DEM miss does not block the zip. Inside:
-   - `openIntent_<slug>.json` — OpenIntent 2.0.1 with building `attenuation_areas` (gold Building materials). With Include foliage on, canopy polygons use Foliage - Heavy / Light, or a measured-height custom. Floorplan height 2.5 m (Hamina outdoor default)
-   - `images/<slug>.jpg` — Esri aerial
-5. Hamina: **Projects → Import → OpenIntent**.
-6. The zip has those two files. `stats.attenuationAreasEmitted` matches the OpenIntent `attenuation_areas` length. `openIntentTreeAreas` is 0 unless Include foliage was on. Copy terrain is the page paste, not a file in the zip.
+1. Search an address or place.
+2. Drag a box on the map, or click corners and click the first one to close a polygon (up to 15 km on a side).
+3. Optional: open Advanced to turn foliage, water, parking, cars, walls, poles, RVs, terrain, lidar heights, map notes and map quality on or off.
+4. Click Export. The zip holds the OpenIntent JSON, the aerial image and `ATTRIBUTION.txt`.
+5. In Hamina: Projects, Import, OpenIntent, then pick the zip.
+6. If the export included terrain, the button becomes Copy terrain. Paste that into Planner Plus to add the terrain mesh, GPS points and map notes.
 
-### Sloped sites (Granite Peak)
+Finished exports stay available for 24 hours through Download again.
 
-Terrain still cannot go in the OpenIntent zip. **Copy terrain** pastes open quads into Planner Plus. **Auto** fills the paste budget on a flat lot and on a hill: about 1 m cells, at most 20×20 quads. A larger draw is coarser because that cap is what Planner Plus accepts, not because relief under 20 m drops to 6×5. The 3DEP sample count is denser than that mesh and stays at most 576. **Default** is about 80 m quads, at most 12×12 (144 DEM samples) — the same mesh as v1.1.5. **Fine** is about 40 m, at most 16×16 (324 samples). **Finest** is about 25 m, at most 20×20 (576 samples). The page always uses that Auto and pastes one ramp per cell. Default, Fine, and Finest stay available on the API and stay inside 20×20 quads. Quads stay Jerry’s open-quad schema: four corners, ring not closed. Sloped z is meters above the lowest sample, and a larger z is higher ground: the low edge is first and both corners of an edge share that z. A nearly level cell is a raised pad. The grade axis is the one whose opposite corners already agree. The ring is counterclockwise in clipboard meters. `slabOnly` stays false.
+## Sites
 
-Hamina’s attenuating-object fields are **bottom height from floor** and **top height from floor**. On a ski-hill DEM those are OpenIntent `bottom_height` and `top_height` (clipboard `bottomEdge` and `topEdge`):
+| | Production | Dev |
+|---|---|---|
+| URL | https://openclutter.com | https://dev.openclutter.com |
+| Branch | `main` | `dev` |
+| Purpose | Stable release | New work and experiments, shown with a `dev` badge |
 
-- Bottom height from floor = the downhill ground under that piece (meters above the lowest DEM sample). That is the low end of the ramp Hamina shows under the piece. The uphill side of the piece is cut into the hill.
-- Top height from floor = that bottom + the building height, so the roof stays the measured height above that ground. With Include foliage on, a canopy that climbs more than a couple of meters is cut along the terrain mesh. Each piece sits on the local downhill ground, and its top is that ground plus the canopy height. A mild rise still uses the uphill slope under that canopy. Downhill ski runs stay open.
-
-The building material name is `Building - One Floor 86.4` (the number is the bottom). A lifted canopy is `Foliage - Heavy @ 86.4`, or `Foliage - Heavy 14.2 @ 86.4` when 14.2 m is the canopy thickness. Those are not the poisoned `Building N.N m` / `Foliage N.N m` forms, and they are not `bottom_height: 0` on a gold object. A pasted mesh sets that bottom on bare earth and on a surface DEM, including Oak Creek (~6 m), Wooded Lot (~15 m), and the Las Vegas Sphere box (~17 m). On a slope the bottom is the downhill end of the ramp under that piece, so the downhill face meets the hill instead of hanging above it. A shared cell edge uses the height at that edge. A level pad keeps the building on the pad. Ground under 1 m still omits `bottom_height`. Foliage stays on unless Advanced turns it off.
-
-Retest Granite Peak / Rib Mountain, Wausau WI: draw the ski hill (under ~2 km on a side), Export, Import the zip, Copy terrain and paste it in Planner Plus, then check 3D. A building on the hill should meet the slope on the uphill side and run down into the hill on the downhill side, with the roof still the measured height above that ground. It should not float with a gap under the downhill face, and it should not hang past the slope. A building on flat ground stays on the floor. Export again, Import and Copy terrain: foliage should be visible on the slope in 3D. A valley object whose ground is under 1 m stays on the floor.
-
-Advanced, closed until you open it, holds foliage, water, parking, walls, poles, RVs, terrain, lidar heights, map notes, and map quality. Water and lidar heights start off. Foliage, parking, walls, poles, RVs, and terrain start on, and the map starts on Auto. The page remembers whether Advanced is open. Copy terrain shows after export. Export uses Auto for the lattice: about 1 m cells on a small hill, coarser on a large one, at most 20×20 quads. There is no resolution control. Tree source (NLCD canopy polygons), OSM, and calibration stay automatic or API-only.
+The /dev site also has an aerial Source picker (Esri, Auto, NAIP in the US, or national orthophotos) and testing overrides. Production always uses Esri World Imagery.
 
 ## API
 
-`POST /api/clutter`
+`POST /api/clutter` with a bbox in WGS84:
 
 ```json
-{
-  "west": -115.1735, "south": 36.1205, "east": -115.1488, "north": 36.1355,
-  "name": "Site",
-  "includeFoliage": false,
-  "terrainResolution": "auto",
-  "trees": [{ "lon": -115.16, "lat": 36.128 }],
-  "treesSource": "nlcd-canopy",
-  "osmTrees": false,
-  "format": "bundle"
-}
+{ "west": -115.1735, "south": 36.1205, "east": -115.1488, "north": 36.1355,
+  "name": "Site", "includeFoliage": true, "format": "bundle" }
 ```
 
-- `includeFoliage` — default `false`. `false` exports buildings only (tree points and canopy hits are ignored). `true` adds connected canopy polygons and skips individual tree-point circles. Query `includeFoliage=true` is the same switch.
-- `terrainResolution` — `auto` (omit it, or send an unknown value, and the server uses this), `default`, `fine`, `finest`, `20`, `15`, `10`, `5`, or `1` (`20m` is the same as `20`). Query `terrainResolution=` is the same switch; a non-empty body value wins. On a ski hill (DEM relief at least 20 m) Auto sizes cells from the draw, about 1 m on a small hill and coarser on a large one, and stays at most 20×20 quads. Its 3DEP `sampleCount` is denser than that mesh and stays at most 576. The named manuals stay fixed: Default ~80 m / max 12×12 / 144 samples, Fine ~40 m / max 16×16 / 324, Finest ~25 m / max 20×20 / 576. The meter stops aim at that cell size and may pass 20×20, up to 500 quads on a side, so a 2.5 km draw can still fill at about 5 m. A 1 m mesh on that draw is capped and the warning says how much ground 1 m would cover. A paste that will not fit beside the zip in one response is coarsened until Copy terrain still returns with the download, and that reduction is named in the export status. If it still cannot, Copy terrain is left out and the zip still downloads. DEM samples for the meter stops step down when the budget is short (at most 2500). Relief under 20 m keeps the 2×2, 4×3, or 6×5 ladder for Auto and every manual. The dev page sends `auto` when Terrain is checked and skips the DEM when Terrain is off. The older Hamina paste expectation is about 20×20 quads.
-- `format: "bundle"` (default) — JSON with `zipBase64`, `frame`, `stats`, `alignment`, `terrainStatus`, and `gpsClipboard`. `gpsClipboard` is a HaminaClipboard paste whose `tiePoints` are the southwest and northeast corners of the imported aerial (northeast local x/y is 0, 0). OpenIntent does not carry those points. When 3DEP returns a grid, `terrainClipboard` is the Planner Plus paste (**Copy terrain**) and includes the same two tie points. `terrainFilename` names that paste. The zip does not contain it. The page downloads only the OpenIntent zip. When the DEM is omitted, `terrainClipboard` is null and `terrainStatus` says so; `gpsClipboard` is still the two corners. `stats` includes `includeFoliage`, `buildingsKept`, `treesKept`, `treesSource`, `fetched`, and drop reasons. With foliage off, `treesSource` is `"none"` and `treesKept` is 0.
-- `format: "zip"` — same OpenIntent zip bytes
-- `format: "hamina-clipboard"` — clipboard JSON only (skips imagery fetch; old-Hamina fallback)
-
-Calibration (API only): `"controlPoints": [{ "lon", "lat", "xM", "yM" }, …]` (3+). Not shown in the UI.
+- `includeFoliage` is off unless set. `includeTerrain` and `mapNotes` are on unless set to `false`.
+- `format`: `bundle` (default, JSON with `zipBase64`, `stats`, `terrainClipboard` and `gpsClipboard`), `zip` (the zip bytes), or `hamina-clipboard` (clipboard JSON only).
+- A draft structured API (`/v1/sites`, API key required) runs as a prototype on /dev only. See [docs/api/openclutter-api-v1.md](docs/api/openclutter-api-v1.md).
 
 ## Limits
 
-Global ML (zoom-9 quadkey, clipped to the JPEG) is the base polygon. Overture Buildings release `2026-09-23.1` is read from one or two Azure GeoParquet row groups (committed bbox index, not a full scan). FEMA USA Structures fills centroids still uncovered (the Esri-hosted MSBFP2 copy is no longer read). A candidate is the same roof when its centroid sits inside a kept ring or within 11 m of that ring’s centroid. Geometry is replaced only for a single exterior that is more detailed at a similar area, or when the kept ring is a stub inside a fuller outline. Height rank: Overture explicit height, then Microsoft Global ML `height` (values ≤ 2 m and −1 ignored), then FEMA `HEIGHT`, then Overture `num_floors` × 3 m, then the nearest measured neighbor within 120 m, then stock One Floor / Five Floor / Hotel bins. Ties keep the height already on the ring. A stub whose area is outside 0.4–2.5× does not overwrite a larger footprint’s height. OpenIntent building `area_materials` stay the four Hamina outdoor Building - One/Two/Five/Ten Floor objects. Tree attenuation areas add stock Foliage - Heavy / Light, or `Foliage - Heavy H.H` / `Foliage - Light H.H` at a measured height (`compatibilityMode` `stock-foliage`). The old clipboard download still carries foliage zone names and exact metres. It is not in the zip. OSM building ways are not read.
-
-A large smooth bright roof that none of those layers contain is filled from the Esri JPEG (connected membrane pixels, ≥2500 m², skipped when a vector already covers it). A draw up to 10 km on a side exports. The background job tiles the street map and keeps the largest, tallest roofs inside the download limit. The short path keeps a smaller set and says so. A Microsoft footprint tile larger than 80 MB (the Los Angeles quadkey is well over that; Oak Creek and Las Vegas are not) is left out of that one export. The zip still includes the other building sources, and the page status says the tile was omitted. If the campus still will not fit in one download, the zip keeps the largest roofs and says so. A draw that already has more than 1500 building footprints skips imagery roof fill, and that skip is the same kind of note. Campus-merge blobs &gt; 150,000 m² are dropped. When Include foliage is on, canopy comes from the Meta/WRI canopy height model and is cleared off building footprints and pavement. Individual tree points and median dots are not emitted. A canopy-height timeout leaves foliage out of the zip. The status says so, and buildings still export. On a large draw, canopy cells are merged until the zip still downloads. USGS 3DEP `getSamples` (no API key; Auto scales with the draw, at most 576 points; Default 144, Fine 324, Finest 576; 20/15/10/5/1 m step down from at most 2500 when the budget is short) becomes the Copy terrain paste only. That paste is not a file in the zip. On the dev host, a 3DEP miss reads Copernicus DEM GLO-30 for that same box (surface model; `bottom_height` stays off). Production does not. Flat pads are used when a cell’s corner relief is under 0.5 m, otherwise one open sloped quad (low edge, then the opposite high edge). OpenIntent stays free of raised and sloped floors. The DEM request starts after imagery metadata snaps the extent and overlaps the JPEG, so a long aerial download does not skip it. Overture starts with the aerial JPEG, before the Global ML download, on its own abort. A finished read is kept even if the core phase has passed 5 seconds. A read still in flight may run until 23 seconds from the start (about 4.5 seconds of grace after a slow map). The row group that contains the site center is read first, and only GeoParquet pages whose bbox stats hit the site are fetched. The Las Vegas Sphere is in that center row group and missing from Microsoft and USA Structures; aborting the read at 9 seconds dropped it on the live dev export. If the canopy-height read does not finish, foliage is left out and the page status says so. The OpenIntent zip still exports. A 3DEP miss is recorded the same way. The page does not ask for a smaller box when a source times out. FEMA, NLCD, and 3DEP are United States sources.
+- A draw can be up to 15 km on a side. Large draws get a coarser map and keep the largest and tallest roofs.
+- The OpenIntent JSON is budgeted at about 4.9 MB, under Hamina's import limit. The aerial uploads separately and does not count.
+- OpenIntent has no terrain, GPS or map note fields, so those stay on the Copy terrain paste.
+- USGS 3DEP lidar and elevation, FEMA structures and NLCD canopy cover the United States only. Outside 3DEP coverage, terrain comes from Copernicus DEM GLO-30.
+- Heavy exports run on a Fly.io worker when one is configured, and fall back to a Netlify background function.
 
 ## Development
 
-Feature work targets the long-lived **`dev`** branch (see [Production vs Dev](#production-vs-dev)). Promote `dev` → `main` only for production releases.
+Open feature work against `dev`. Promote `dev` to `main` only for a production release, keep the version numbers in sync with `npm run bump`, and tag the release.
 
 ```bash
-npm test
+npm install
+npm test              # unit tests
 npm run eval          # image-space quality gate on cached fixtures
-npx netlify dev
+npx netlify dev       # local site and functions
+npm run bump          # bump the patch version
+npm run overture:index  # rebuild the Overture buildings index for a new release
 ```
 
-`npm run eval` scores the default export (Include foliage off) against cached aerial fixtures: buildings only, no foliage attenuation areas. It fails if rooftops are missed, large footprints are dropped, the default zip emits foliage, measured building heights collapse back to stock bins, Overture does not add or upgrade a footprint, the terrain clipboard is empty on a sloped DEM, or the imagery mask cannot restore the Oak Creek white retail roof after that polygon is removed. Foliage-on coverage (canopy polygons only, no tree-point circles, foliage/building and foliage/foliage overlap) is in the test suite. Optional: `npm run eval -- --live` to refresh against live imagery.
+More detail on the pipeline and the Fly worker is in [HANDOFF.md](HANDOFF.md) and [docs/fly-worker.md](docs/fly-worker.md). Release history is in [CHANGELOG.md](CHANGELOG.md).
 
+## Data credits
+
+Map images: Powered by Esri (Source: Esri, Vantor, Earthstar Geographics, and the GIS User Community), or USDA NAIP and national orthophotos on /dev. Vector data from OpenStreetMap, Microsoft Global ML Building Footprints and Overture Maps Foundation is available under the Open Database License (ODbL) 1.0. Canopy, elevation and other sources keep their own licenses.
+
+The full list is in [DATA-LICENSES.md](DATA-LICENSES.md), on the site at `/licenses.html` ([dev](https://dev.openclutter.com/licenses.html); production gets it with the next release), and in `ATTRIBUTION.txt` inside every export zip.
 
 ## License
 
-MIT, for the code only. Data keeps its source license: see [DATA-LICENSES.md](DATA-LICENSES.md), `/licenses.html` on the site, and `ATTRIBUTION.txt` in every export zip. Map images: Powered by Esri (Source: Esri, Vantor, Earthstar Geographics, and the GIS User Community), or USDA NAIP and national orthophotos on /dev. Vector data from OpenStreetMap, Microsoft Global ML Building Footprints, and Overture Maps Foundation is ODbL 1.0.
+MIT, for the code only (see [LICENSE](LICENSE)). Data keeps its source license.
