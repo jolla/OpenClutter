@@ -10,12 +10,14 @@ const { conflateFootprints } = require("../netlify/lib/conflate");
 const { featureExteriorRings, footprintsToClutter } = require("../netlify/lib/pipeline");
 const { rejectPavementFootprints, pavementEvidence, evidenceIsPavement } = require("../netlify/lib/pavement");
 const { pointInRing } = require("./eval/score");
+const { esriPixels, SKIP_NOTE } = require("./esri-pixels");
 
 function loadOak() {
   const dir = path.join(__dirname, "fixtures/oak-creek-commercial");
   const bbox = JSON.parse(fs.readFileSync(path.join(dir, "bbox.json"), "utf8"));
   const meta = JSON.parse(fs.readFileSync(path.join(dir, "imagery-meta.json"), "utf8"));
-  const jpegBuf = fs.readFileSync(path.join(dir, "imagery.jpg"));
+  const jpegBuf = esriPixels("oak-creek-commercial/imagery.jpg");
+  if (!jpegBuf) return null;
   const fp = JSON.parse(fs.readFileSync(path.join(dir, "footprints.geojson"), "utf8"));
   const ov = JSON.parse(fs.readFileSync(path.join(dir, "overture.geojson"), "utf8"));
   const locked = lockIsotropicImagery(applyImageryMeta(geoFrame(bbox), meta, jpegSize(jpegBuf)), jpegBuf);
@@ -40,7 +42,8 @@ function ringBox(ring, frame) {
 }
 
 describe("pavement footprints", () => {
-  it("drops Oak Creek rings that sit on asphalt and keeps bright roofs", () => {
+  it("drops Oak Creek rings that sit on asphalt and keeps bright roofs", (t) => {
+    if (!loadOak()) return t.skip(SKIP_NOTE);
     const { frame, raw, features } = loadOak();
     const before = rejectPavementFootprints(raw, frame, features);
     assert.ok(before.dropped >= 4, "dropped " + before.dropped);
@@ -91,7 +94,8 @@ describe("pavement footprints", () => {
     }
   });
 
-  it("keeps the Oak Creek parking deck as a multi-level building and drops a surface lot", () => {
+  it("keeps the Oak Creek parking deck as a multi-level building and drops a surface lot", (t) => {
+    if (!loadOak()) return t.skip(SKIP_NOTE);
     const { frame, raw, features } = loadOak();
     const deckPt = [-87.9198, 42.89908];
     const kept = rejectPavementFootprints(raw, frame, features);
@@ -134,7 +138,8 @@ describe("pavement footprints", () => {
     assert.equal(droppedLot.features.length, 0);
   });
 
-  it("does not drop an imagery roof fill or a Wooded Lot house", () => {
+  it("does not drop an imagery roof fill or a wooded-lot house", (t) => {
+    if (!loadOak() || !esriPixels("residential-woods-wi/imagery.jpg")) return t.skip(SKIP_NOTE);
     const { frame, raw, features } = loadOak();
     const tagged = {
       type: "Feature",
@@ -146,10 +151,10 @@ describe("pavement footprints", () => {
     assert.equal(keptRoof.features.length, 1);
     assert.equal(keptRoof.features[0].properties.source, "imagery-roof");
 
-    const dir = path.join(__dirname, "fixtures/wooded-lot-old");
+    const dir = path.join(__dirname, "fixtures/residential-woods-wi");
     const bbox = JSON.parse(fs.readFileSync(path.join(dir, "bbox.json"), "utf8"));
     const meta = JSON.parse(fs.readFileSync(path.join(dir, "imagery-meta.json"), "utf8"));
-    const jpegBuf = fs.readFileSync(path.join(dir, "imagery.jpg"));
+    const jpegBuf = esriPixels("residential-woods-wi/imagery.jpg");
     const fp = JSON.parse(fs.readFileSync(path.join(dir, "footprints.geojson"), "utf8"));
     const locked = lockIsotropicImagery(applyImageryMeta(geoFrame(bbox), meta, jpegSize(jpegBuf)), jpegBuf);
     const houseRaw = jpeg.decode(locked.jpegBuf, { useTArray: true, maxResolutionInMP: 20, formatAsRGBA: true });

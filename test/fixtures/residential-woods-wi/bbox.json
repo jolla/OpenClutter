@@ -1,0 +1,9 @@
+{
+  "id": "residential-woods-wi",
+  "name": "Wisconsin wooded residential (large lots / woods)",
+  "west": -87.935,
+  "south": 43.168,
+  "east": -87.928,
+  "north": 43.1747,
+  "note": "Drawn bbox. Eval snaps the frame to imagery-meta.json extent + imagery.jpg size (same as production)."
+}

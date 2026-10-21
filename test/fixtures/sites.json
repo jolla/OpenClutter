@@ -9,12 +9,12 @@
       "north": 42.90325386116256
     },
     {
-      "id": "wooded-lot-old",
-      "name": "Wooded Lot (residential / woods)",
-      "west": -87.0005,
-      "south": 42.0035,
-      "east": -87.0015,
-      "north": 42.9002
+      "id": "residential-woods-wi",
+      "name": "Wisconsin wooded residential (large lots / woods)",
+      "west": -87.935,
+      "south": 43.168,
+      "east": -87.928,
+      "north": 43.1747
     }
   ]
 }

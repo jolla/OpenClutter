@@ -162,7 +162,7 @@ async function runBackgroundExport(event, onProgress) {
   return result;
 }
 const imagerySource = require("../lib/imagery-source");
-const { geoFrame, capEsriExportFrame, llToPx, esriImageryUrl, esriImageryMetaUrl, fetchMsFootprints, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
+const { geoFrame, capEsriExportFrame, llToPx, esriImageryUrl, esriImageryMetaUrl, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings, parseAreaCapOverride, parseJsonBudgetOverride, raisedDeckCap, MAX_BUILDINGS, MAX_ATTENUATION_AREAS, DEFAULT_AREA_CAP } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { buildSiteV1 } = require("../lib/site-v1");
@@ -1585,6 +1585,13 @@ async function handleClutter(event) {
   try {
     reportProgress({ stage: "Fetching aerial" });
     imageryCtx = needImage ? imagerySource.createImageryContext(testHost ? body.imagerySource : "esri", body) : null;
+    // Capture date and vendor of the Esri mosaics, for ATTRIBUTION.txt. Read
+    // beside the map, never in front of it: a miss only leaves the date out.
+    if (imageryCtx) {
+      imagerySource.readEsriCitation(imageryCtx, frame, {
+        level: imagerySource.esriLevelFor(frame, frame.imgW > 0 ? frame.widthM / frame.imgW : 1),
+      });
+    }
     // JPEG and Overture together. Meta may confirm the footprint query, but it
     // must not gate the image or the Overture read — the Las Vegas row group
     // loses if it starts only after metadata, behind the Global ML gzip.
@@ -1771,7 +1778,9 @@ async function handleClutter(event) {
     ]);
     coreWatch.tick();
     const core = Promise.all([
-      fetchMsFootprints(frame, (url) => fetchOk(url, "footprints", coreBudget), { pad: false, budgetMs: coreBudget }),
+      // Microsoft footprints are read from Microsoft's own Global ML release
+      // (globalJob, ODbL). The Esri-hosted MSBFP2 copy is no longer read.
+      Promise.resolve({ type: "FeatureCollection", features: [] }),
       globalJob,
       usaJob,
       imageryJob,
@@ -2565,6 +2574,9 @@ async function handleClutter(event) {
     if (parallelTasks.length) await Promise.all(parallelTasks);
     if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage build-clutter\n");
     const leafOnPhoto = leafOnJob ? await leafOnJob : null;
+    if (imageryCtx && imageryCtx.esriCitationJob && imageryCtx.esriCitation === undefined) {
+      await Promise.race([imageryCtx.esriCitationJob, new Promise((r) => setTimeout(r, 300))]);
+    }
     return buildClutter({
       palmPoints,
       frame,

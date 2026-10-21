@@ -1,19 +1,15 @@
 "use strict";
 
 /**
- * Download cached eval fixtures (Esri JPEG + meta, MSBFP2, NLCD TCC).
+ * Download cached eval fixtures (USDA NAIP plate + meta, Microsoft Global ML
+ * and FEMA footprints, NLCD TCC). Esri imagery is never written to the repo:
+ * its terms do not allow redistributing it, and the repo is public.
  * Run: node scripts/fetch-eval-fixtures.js
  */
 const fs = require("node:fs");
 const path = require("node:path");
-const {
-  geoFrame,
-  esriImageryUrl,
-  esriImageryMetaUrl,
-  fetchMsFootprints,
-  applyImageryMeta,
-  jpegSize,
-} = require("../netlify/lib/geo-frame");
+const { geoFrame, esriContentExtent, applyImageryMeta, jpegSize } = require("../netlify/lib/geo-frame");
+const imagery = require("../netlify/lib/imagery-source");
 const { canopySamplesUrl } = require("../netlify/lib/tree-source");
 const { fetchMsGlobalFootprints, mergeFootprintFeatures } = require("../netlify/lib/ms-global");
 const { fetchUsaStructures } = require("../netlify/lib/usa-structures");
@@ -37,13 +33,22 @@ async function main() {
     const drawn = geoFrame(bbox);
     console.log(site.id, "drawn", Math.round(drawn.widthM) + "×" + Math.round(drawn.lengthM) + " m", drawn.imgW + "×" + drawn.imgH);
 
-    const metaRes = await fetchOk(esriImageryMetaUrl(drawn));
-    const meta = await metaRes.json();
-    const imgRes = await fetchOk(esriImageryUrl(drawn));
-    const jpeg = Buffer.from(await imgRes.arrayBuffer());
+    const ext = esriContentExtent(drawn, drawn.imgW, drawn.imgH);
+    const plate = Object.assign({}, ext, { imgW: drawn.imgW, imgH: drawn.imgH });
+    const ctx = imagery.createImageryContext("naip", plate);
+    await ctx.ready;
+    if (ctx.failed) throw new Error(site.id + ": " + ctx.failReason);
+    const jpeg = await ctx.render(plate, AbortSignal.timeout(60000));
+    const meta = {
+      href: "imagery.jpg",
+      width: drawn.imgW,
+      height: drawn.imgH,
+      extent: { xmin: ext.west, ymin: ext.south, xmax: ext.east, ymax: ext.north, spatialReference: { wkid: 4326 } },
+      source: "USDA NAIP " + ctx.dates.join(",") + " (public domain)",
+    };
     const frame = applyImageryMeta(drawn, meta, jpegSize(jpeg));
     console.log("  snapped", Math.round(frame.widthM) + "×" + Math.round(frame.lengthM) + " m", frame.imgW + "×" + frame.imgH);
-    const arcgis = await fetchMsFootprints(frame, (url) => fetchOk(url), { pad: false });
+    const arcgis = { features: [] };
     const globalPack = await fetchMsGlobalFootprints(frame, (url) => fetchOk(url)).catch((e) => {
       console.warn("  global footprints skipped:", e.message || e);
       return { features: [] };

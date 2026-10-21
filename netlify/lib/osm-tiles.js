@@ -2,7 +2,8 @@
 
 /**
  * Street-map reads for a draw. A box about 2.2 km on a side is one map
- * extract. A larger background draw is cut into tiles and each tile is a
+ * extract from Overpass's map call (the same OSM XML the editing API
+ * returns; OSMF policy keeps the editing API for editors, not data reads). A larger background draw is cut into tiles and each tile is a
  * selective Overpass query (parts, water, parking, barriers, lamps, rail),
  * not a full map extract. The short export does not tile: one map request,
  * then stop. A map body too large to scan is left unread.
@@ -14,7 +15,11 @@ const OVERPASS_CONCURRENCY = 3;
 const TILE_FETCH_MS = 10000;
 const MAP_XML_CAP = 6000000;
 const TILE_CACHE_MS = 120000;
-const OSM_MAP_URL = "https://www.openstreetmap.org/api/0.6/map";
+const OSM_MAP_URLS = [
+  "https://overpass-api.de/api/map",
+  "https://overpass.kumi.systems/api/map",
+];
+const OSM_MAP_URL = OSM_MAP_URLS[0];
 const TILE_OVERPASS_URLS = [
   "https://overpass-api.de/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
@@ -66,9 +71,9 @@ function planTiles(bbox) {
   return tileBbox(bbox, cols, rows);
 }
 
-function mapUrl(bbox) {
+function mapUrl(bbox, base) {
   return (
-    OSM_MAP_URL +
+    (base || OSM_MAP_URL) +
     "?bbox=" +
     [bbox.west, bbox.south, bbox.east, bbox.north].map((n) => +n).join(",")
   );
@@ -105,8 +110,25 @@ async function fetchOne(bbox, opts) {
 }
 
 async function fetchOneWork(bbox, opts) {
+  let last = null;
+  for (let u = 0; u < OSM_MAP_URLS.length; u++) {
+    if (opts && opts.signal && opts.signal.aborted) break;
+    try {
+      last = await fetchMapFrom(OSM_MAP_URLS[u], bbox, opts);
+    } catch (e) {
+      if (opts && opts.signal && opts.signal.aborted) throw e;
+      last = null;
+      continue;
+    }
+    // A box too large to answer is too large on the mirror as well.
+    if (last.ok || last.tooBig) return last;
+  }
+  return last || { ok: false, status: 0, xml: "", tooBig: false };
+}
+
+async function fetchMapFrom(base, bbox, opts) {
   const fetchImpl = (opts && opts.fetchImpl) || fetch;
-  const r = await fetchImpl(mapUrl(bbox), {
+  const r = await fetchImpl(mapUrl(bbox, base), {
     headers: { "user-agent": (opts && opts.ua) || "openclutter", accept: "application/xml,text/xml,*/*" },
     signal: opts && opts.signal,
   });
@@ -359,6 +381,7 @@ module.exports = {
   bboxSpanM,
   planTiles,
   mapUrl,
+  OSM_MAP_URLS,
   ringKey,
   fetchOsmMaps,
 };

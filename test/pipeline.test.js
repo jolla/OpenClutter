@@ -271,7 +271,13 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.ok(built.zip.length > 100);
     assert.equal(built.openintent.openintent_version, "2.0.1");
     const zipped = unzipStore(built.zip);
-    assert.deepEqual(Object.keys(zipped).sort(), [`images/${built.slug}.jpg`, `openIntent_${built.slug}.json`].sort());
+    assert.deepEqual(
+      Object.keys(zipped).sort(),
+      ["ATTRIBUTION.txt", `images/${built.slug}.jpg`, `openIntent_${built.slug}.json`].sort()
+    );
+    const credit = zipped["ATTRIBUTION.txt"].toString();
+    assert.match(credit, /MAP IMAGE \(images\/\)\nEsri World Imagery/);
+    assert.match(credit, /Credit: Esri, Vantor, Earthstar Geographics, and the GIS User Community/);
     assert.equal(built.clipboard.header.type, "HaminaClipboard");
     assert.ok(built.clipboard.attenuatingZones.length >= 1);
     assert.match(built.alignment, /Import this zip in Hamina \(Projects → Import → OpenIntent\)/);
@@ -855,23 +861,23 @@ describe("OpenIntent attenuation_areas", () => {
 
   it("matches building + canopy/trunk counts on a snapped JPEG frame", () => {
     const drawn = geoFrame({
-      west: -87.0005,
-      south: 42.0035,
-      east: -87.0015,
-      north: 42.9002,
+      west: -87.935,
+      south: 43.168,
+      east: -87.928,
+      north: 43.1747,
     });
     const { applyImageryMeta } = require("../netlify/lib/geo-frame");
     const frame = applyImageryMeta(drawn, {
-      width: 571,
+      width: 568,
       height: 741,
       extent: {
-        xmin: -87.0005,
-        ymin: 42.0023,
-        xmax: -87.0015,
-        ymax: 42.0014,
+        xmin: -87.935,
+        ymin: 43.16678397887323,
+        xmax: -87.928,
+        ymax: 43.17591602112675,
         spatialReference: { wkid: 4326 },
       },
-    }, { width: 571, height: 741 });
+    }, { width: 568, height: 741 });
     const dLon = (frame.east - frame.west) * 0.04;
     const dLat = (frame.north - frame.south) * 0.04;
     const lon0 = frame.west + (frame.east - frame.west) * 0.3;
@@ -891,7 +897,7 @@ describe("OpenIntent attenuation_areas", () => {
         { lon: frame.west + (frame.east - frame.west) * 0.18, lat: frame.south + (frame.north - frame.south) * 0.2 },
         { lon: frame.west + (frame.east - frame.west) * 0.85, lat: frame.south + (frame.north - frame.south) * 0.8 },
       ],
-      name: "Wooded Lot",
+      name: "Wooded residential",
       imgBuf: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
     });
     const oi = built.openintent.floorplans[0];

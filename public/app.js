@@ -208,9 +208,54 @@ const imageryTiles = L.tileLayer(
     opacity: 1,
     maxZoom: qualityPage() ? ESRI_TILE_MAX_ZOOM : 19,
     maxNativeZoom: qualityPage() ? ESRI_TILE_MAX_ZOOM : 19,
-    attribution: "Tiles &copy; Esri",
+    attribution:
+      'Powered by <a href="https://www.esri.com" target="_blank" rel="noopener noreferrer">Esri</a>. ' +
+      "Source: Esri, Vantor, Earthstar Geographics, and the GIS User Community",
   }
 ).addTo(map);
+// The draw map is always Esri tiles. The credit beside them also names the
+// aerial an export uses: the Source pick before an export, and the image the
+// zip shipped (vendor and capture date when known) after one.
+const EXPORT_SOURCE_CREDIT = {
+  auto: "Auto (NAIP, national, or Esri)",
+  naip: "USDA NAIP",
+  national: "national orthophoto (swisstopo, PDOK, NLS, or IGN)",
+};
+let exportCredit = "";
+if (map.attributionControl) {
+  map.attributionControl.addAttribution(
+    'Data &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors (ODbL) and others: ' +
+      '<a href="/licenses.html" target="_blank" rel="noopener">data licenses</a>'
+  );
+}
+function creditText(s) {
+  return String(s || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+}
+function setExportCredit(text) {
+  const ctl = map.attributionControl;
+  if (!ctl) return;
+  if (exportCredit) ctl.removeAttribution(exportCredit);
+  exportCredit = text ? "Export aerial: " + creditText(text) : "";
+  if (exportCredit) ctl.addAttribution(exportCredit);
+}
+function creditForPick() {
+  const pick = selectedImagerySource();
+  setExportCredit(pick ? EXPORT_SOURCE_CREDIT[pick] || "" : "");
+}
+function creditForExport(stats) {
+  const im = stats && stats.imagery;
+  if (!im || !im.name) return;
+  let text = im.name;
+  if (im.provider) text += " (" + im.provider + ")";
+  if (im.captureDate) text += ", " + im.captureDate;
+  if (im.mixed) text += ", part Esri";
+  setExportCredit(text);
+}
+(function watchSourcePick() {
+  const sel = document.getElementById("map-source");
+  if (sel) sel.addEventListener("change", creditForPick);
+  creditForPick();
+})();
 if (qualityPage()) {
   imageryTiles.on("tileerror", function (ev) {
     const z = ev.coords && ev.coords.z;
@@ -1317,6 +1362,7 @@ async function fetchTerrainPaste() {
 }
 
 function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
+  creditForExport(data && data.stats);
   const terrainOff = includeTerrain === false;
   const button = rememberTerrain(data, includeTerrain);
   const summary = (data.stats && data.stats.summary) || "";

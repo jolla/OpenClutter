@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenClutter data licenses</title>
+  <style>
+    body { margin: 0 auto; max-width: 1100px; padding: 24px; font: 15px/1.5 ui-sans-serif, system-ui, sans-serif; background: #0e1116; color: #e8eaed; }
+    a { color: #58a6ff; }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td { border: 1px solid #30363d; padding: 6px 8px; text-align: left; vertical-align: top; }
+    th { background: #161b22; }
+  </style>
+</head>
+<body>
+  <h1>Data licenses</h1>
+  <p>OpenClutter's code is MIT licensed. The MIT license covers the code only. Map images, vectors, heights, and test fixtures keep the license of their source, listed here. Every export zip carries the same list in ATTRIBUTION.txt.</p>
+  <h2>Open Database License</h2>
+  <p>Contains information from OpenStreetMap (c) OpenStreetMap contributors, Microsoft Global ML Building Footprints, and Overture Maps Foundation, available under the Open Database License (ODbL) 1.0. The vector data in this file (the attenuation areas in the OpenIntent JSON) is made available under the ODbL: https://opendatacommons.org/licenses/odbl/1-0/</p>
+  <h2>Map images</h2>
+  <ul>
+      <li><strong>Esri World Imagery</strong> (draw map, and the export image when Esri is the source): Powered by Esri. Source: Esri, Vantor, Earthstar Geographics, and the GIS User Community. Esri terms of use.</li>
+      <li><strong>USDA NAIP</strong>: USDA Farm Production and Conservation Business Center, NAIP (public domain), via Microsoft Planetary Computer. Public domain.</li>
+      <li><strong>swisstopo SWISSIMAGE</strong>: Federal Office of Topography swisstopo. OGD, free commercial use with attribution.</li>
+      <li><strong>PDOK Luchtfoto (Netherlands)</strong>: Beeldmateriaal Nederland / PDOK, CC BY 4.0. CC BY 4.0.</li>
+      <li><strong>NLS Finland orthophoto</strong>: National Land Survey of Finland, CC BY 4.0. CC BY 4.0.</li>
+      <li><strong>IGN BD ORTHO (France)</strong>: IGN, Licence Ouverte Etalab 2.0. Licence Ouverte 2.0.</li>
+  </ul>
+  <p>Each zip names the image it shipped, with the capture date when the source publishes one.</p>
+  <h2>Data sources</h2>
+  <table>
+    <thead><tr><th>Source</th><th>Used for</th><th>Credit</th><th>License</th><th>Terms</th></tr></thead>
+    <tbody>
+      <tr><td>OpenStreetMap</td><td>building parts, poles, lamps, water, parking, walls, rail, map notes, place search</td><td>(c) OpenStreetMap contributors</td><td>ODbL 1.0</td><td><a href="https://www.openstreetmap.org/copyright" rel="noopener noreferrer">www.openstreetmap.org/copyright</a></td></tr>
+      <tr><td>Microsoft Global ML Building Footprints</td><td>building footprints and heights</td><td>Microsoft Global ML Building Footprints, ODbL</td><td>ODbL 1.0</td><td><a href="https://github.com/microsoft/GlobalMLBuildingFootprints" rel="noopener noreferrer">github.com/microsoft/GlobalMLBuildingFootprints</a></td></tr>
+      <tr><td>Overture Maps Foundation buildings</td><td>building footprints and heights</td><td>Overture Maps Foundation, buildings theme (ODbL), which includes (c) OpenStreetMap contributors, Microsoft (ODbL), Esri Community Maps contributors (CC BY 4.0), and Google Open Buildings (CC BY 4.0); see https://docs.overturemaps.org/attribution/</td><td>ODbL 1.0</td><td><a href="https://docs.overturemaps.org/attribution/" rel="noopener noreferrer">docs.overturemaps.org/attribution/</a></td></tr>
+      <tr><td>FEMA USA Structures</td><td>US building footprints</td><td>Courtesy of FEMA USA Structures (US government work, public domain)</td><td>Public domain</td><td><a href="https://gis-fema.hub.arcgis.com/pages/usa-structures" rel="noopener noreferrer">gis-fema.hub.arcgis.com/pages/usa-structures</a></td></tr>
+      <tr><td>Meta / WRI Canopy Height Maps v2 (CHMv2)</td><td>tree canopy outlines and heights</td><td>Meta and World Resources Institute (WRI) - 2026. Version 2 High Resolution Canopy Height Maps (CHMv2). Source imagery for CHM (c) 2016 Vantor. CC BY 4.0 (AWS Open Data Registry listing). The CHMv2 paper also names the DINOv3 License (https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md), which restricts some end uses; OpenClutter follows the CC BY 4.0 listing while that is unresolved</td><td>CC BY 4.0</td><td><a href="https://registry.opendata.aws/dataforgood-fb-forestsv2/" rel="noopener noreferrer">registry.opendata.aws/dataforgood-fb-forestsv2/</a></td></tr>
+      <tr><td>ESA WorldCover 2021</td><td>tree cover gap fill</td><td>(c) ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium</td><td>CC BY 4.0</td><td><a href="https://esa-worldcover.org/en/data-access" rel="noopener noreferrer">esa-worldcover.org/en/data-access</a></td></tr>
+      <tr><td>USFS NLCD Tree Canopy Cover</td><td>US canopy percent</td><td>Courtesy of the USDA Forest Service, NLCD Tree Canopy Cover (public domain)</td><td>Public domain</td><td><a href="https://data.fs.usda.gov/geodata/rastergateway/treecanopycover/" rel="noopener noreferrer">data.fs.usda.gov/geodata/rastergateway/treecanopycover/</a></td></tr>
+      <tr><td>USGS 3D Elevation Program</td><td>terrain and lidar heights (US)</td><td>Courtesy of the U.S. Geological Survey, 3D Elevation Program (3DEP) (public domain)</td><td>Public domain</td><td><a href="https://www.usgs.gov/3d-elevation-program" rel="noopener noreferrer">www.usgs.gov/3d-elevation-program</a></td></tr>
+      <tr><td>Copernicus DEM GLO-30</td><td>terrain outside the US</td><td>Produced using Copernicus WorldDEM-30 (c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved</td><td>Copernicus DEM licence</td><td><a href="https://spacedata.copernicus.eu/collections/copernicus-digital-elevation-model" rel="noopener noreferrer">spacedata.copernicus.eu/collections/copernicus-digital-elevation-model</a></td></tr>
+      <tr><td>National Land Survey of Finland laser scanning</td><td>building heights (one Finnish tile)</td><td>Contains data from the National Land Survey of Finland Laser scanning data 2008-2019, CC BY 4.0</td><td>CC BY 4.0</td><td><a href="https://www.maanmittauslaitos.fi/en/opendata-licence-cc40" rel="noopener noreferrer">www.maanmittauslaitos.fi/en/opendata-licence-cc40</a></td></tr>
+    </tbody>
+  </table>
+  <h2>Place search</h2>
+  <p>Search results (c) OpenStreetMap contributors, via Photon (komoot) and Nominatim (OpenStreetMap Foundation), ODbL 1.0.</p>
+  <h2>Software</h2>
+  <p>Leaflet (BSD-2-Clause). <a href="https://github.com/jolla/OpenClutter">OpenClutter source</a> (MIT, code only).</p>
+  <p><a href="/">Back to OpenClutter</a></p>
+</body>
+</html>

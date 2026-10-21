@@ -1,5 +1,5 @@
 {
-  "href": "repro-export-oak-creek.jpg",
+  "href": "imagery.jpg",
   "width": 877,
   "height": 1046,
   "extent": {
@@ -12,5 +12,6 @@
       "latestWkid": 4326
     }
   },
-  "note": "JPEG extent from the Oak Creek OpenIntent export (877x1046, 876.7 x 1417.3 m). MSBFP2 returnCountOnly for this extent is 49."
+  "note": "JPEG extent from the Oak Creek OpenIntent export (877x1046, 876.7 x 1417.3 m). MSBFP2 returnCountOnly for this extent is 49.",
+  "source": "USDA NAIP 2022-06-23 (public domain), rendered on the Esri export extent and pixel size this fixture was first cut from"
 }

@@ -388,8 +388,8 @@ describe("canopy height grid", () => {
     assert.equal(bare.oiAreas.length, 0, "percent without a measured height does not invent canopy");
   });
 
-  it("traces Oak Creek and Wooded Lot canopy as simplified outlines, not grid squares", () => {
-    for (const id of ["oak-creek-commercial", "wooded-lot-old"]) {
+  it("traces Oak Creek and wooded residential canopy as simplified outlines, not grid squares", () => {
+    for (const id of ["oak-creek-commercial", "residential-woods-wi"]) {
       const grid = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", id, "chm-grid.json"), "utf8"));
       const crowns = crownsFromChm(grid);
       assert.ok(crowns.length >= 40, id + " outlines " + crowns.length);
