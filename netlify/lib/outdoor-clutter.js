@@ -22,9 +22,9 @@
  * A truck lot keeps a metal semi where the aerial shows a trailer, about
  * 16 by 2.6 m and 4.1 m tall, at 12 dB/m. Empty stalls stay empty.
  * Dock doors on a large warehouse use that same box, only where the aerial
- * shows a trailer. A stacked storage yard is a low block at the lidar
- * height when that cloud is on. With no lidar height and no mapped yard,
- * the yard is left out.
+ * shows a trailer. A stacked storage yard is a block at the lidar height
+ * where lidar measured one, else at the height its shadows read on the photo
+ * (yard-stacks.js). With neither, the yard is left out.
  * A marina slip is a boat. A multi-storey garage
  * or building=parking stays about 9 m and can recolor a footprint that already
  * covers it. An underground lot is left out.
@@ -2528,6 +2528,27 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       const material = materialForKind(f.kind, f.heightM || RV_HEIGHT_M, f.coords, slopeTop, 0);
       if (!material || ringPx.length < 4) continue;
       items.push({ ringPx, material, kind: f.kind, thin: true });
+      continue;
+    }
+    // A stacked storage block (lidar or photo shadows) at its measured
+    // height, cut back where an emitted roof covers it.
+    if (f.kind === "storage") {
+      if (!(f.heightM > 0) || !f.coords || f.coords.length < 4) continue;
+      const cuts = buildingRingsPx(buildings, frame);
+      const parts = slopeAreaParts(slopeTop, f.coords);
+      for (let p = 0; p < parts.length; p++) {
+        const basePx = lonLatRingToPx(parts[p], frame);
+        const pieces = cuts ? ringsMinus(basePx, cuts) : [basePx];
+        const untouched = pieces.length === 1 && pieces[0] === basePx;
+        for (let s = 0; s < pieces.length; s++) {
+          const ringPx = pieces[s];
+          if (!ringPx || ringPx.length < 4) continue;
+          const lonlat = untouched ? parts[p] : pxRingToLonLat(ringPx, frame);
+          const material = materialForKind("storage", f.heightM, lonlat, slopeTop, 0);
+          if (!material) continue;
+          items.push({ ringPx, material, kind: "storage", thin: false });
+        }
+      }
       continue;
     }
     if (f.kind === "water" || f.kind === "parking" || f.kind === "car") {

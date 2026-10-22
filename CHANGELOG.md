@@ -13,6 +13,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.2
 
+- **1.2.14** Building outlines with no roof shadow on the photo are left out (stale footprints of demolished buildings), when the sun direction and shadow scale are read confidently from surveyed roofs and the outline shows no edge, roof or raised surface. Stacked outdoor storage is read from wide shadow runs on paved yards beside large roofs and drawn as Storage blocks 2.5 to 9 m tall; empty pavement, rail ballast and car lots stay empty. Lidar storage yards are now drawn (they were dropped before). Lidar crowns over ground the leaf-on photo shows as open are dropped when the flight is 4 or more years old. Bench adds home-depot-fdc-tx, a marina and a state fairground outside the gate mean.
 - **1.2.13** Changing any setting after an export returns the button from Copy terrain to Export, so the next click re-runs the export with the new settings. Opening or closing Settings does not.
 - **1.2.12** NAIP and national aerial plates are color-leveled toward the Esri range before the photo checks, so haze no longer clears real canopy (Auto bench 69.4 to 75.2, Esri unchanged). Detection only; the image in the zip is untouched.
 - **1.2.11** Every data source is credited in the zip (`ATTRIBUTION.txt`) and on the page (`/licenses.html`), and sources whose terms do not fit are dropped. See [DATA-LICENSES.md](DATA-LICENSES.md).
