@@ -3246,6 +3246,14 @@ function crownAxesM(ring) {
 const OPEN_TREE_SHARE = 0.85;
 /** An estimated crown with less foliage than this on a leaf-on summer photo is not a tree. */
 const LEAF_ON_MIN_GREEN = 0.05;
+// A lidar flight this many years old may predate clearing. The photo must
+// be leaf-on (median measured crown at least this green) before a crown it
+// shows as open, foliage-free ground is dropped.
+const STALE_LIDAR_YEARS = 4;
+const STALE_MIN_CROWNS = 8;
+const STALE_LEAF_ON_GREEN = 0.5;
+const STALE_MAX_GREEN = 0.05;
+const STALE_OPEN_SHARE = 0.85;
 
 function fitChunksToJsonBudget(frame, name, imgName, chunks, budget) {
   const limit = budget > 0 ? budget : OPENINTENT_JSON_BUDGET;
@@ -3367,6 +3375,7 @@ function buildClutter({
   foliagePack,
   outdoorPlan,
   aerialOpenShare,
+  aerialGreenShare,
   leafOnGreenShare,
   leafOnSource,
   imagery,
@@ -3725,6 +3734,54 @@ function buildClutter({
         treePieces.splice(i, 1);
         openTreesDropped++;
       }
+    }
+  }
+  // Lidar flown years before the photo can still carry trees that were
+  // cleared for a lot or a yard. When the photo is leaf-on (most measured
+  // crowns show foliage on it), a measured crown that the photo shows as
+  // open ground with no foliage at all is a tree that is gone.
+  let staleDropped = 0;
+  const lidarYear = /^(\d{4})/.exec(String((footprintMeta && footprintMeta.lidarCollected) || ""));
+  if (
+    !canopyEstimated &&
+    typeof aerialOpenShare === "function" &&
+    typeof aerialGreenShare === "function" &&
+    lidarYear &&
+    new Date().getUTCFullYear() - +lidarYear[1] >= STALE_LIDAR_YEARS &&
+    treePieces.length
+  ) {
+    const rows = [];
+    const greens = [];
+    for (let i = 0; i < treePieces.length; i++) {
+      const crown = (treePieces[i].areas || []).find((a) => a && !isTrunkArea(a));
+      const coords = crown && crown.area && crown.area.coordinates;
+      if (!coords || coords.length < 3) continue;
+      const ring = coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
+      const green = aerialGreenShare(ring);
+      if (green === null) continue;
+      greens.push(green);
+      rows.push({ i, ring, green });
+    }
+    greens.sort((a, b) => a - b);
+    const leafOn = greens.length >= STALE_MIN_CROWNS && greens[greens.length >> 1] >= STALE_LEAF_ON_GREEN;
+    if (leafOn) {
+      const drop = new Set();
+      for (const r of rows) {
+        if (r.green > STALE_MAX_GREEN) continue;
+        if (aerialOpenShare(r.ring) >= STALE_OPEN_SHARE) drop.add(r.i);
+      }
+      for (let i = treePieces.length - 1; i >= 0; i--) {
+        if (drop.has(i)) {
+          treePieces.splice(i, 1);
+          staleDropped++;
+        }
+      }
+    }
+    if (footprintMeta) footprintMeta.staleCrownsDropped = staleDropped;
+    if (staleDropped && Array.isArray(warnings)) {
+      warnings.push(
+        "Left out " + staleDropped + " lidar canopy piece" + (staleDropped === 1 ? "" : "s") + " that the photo shows as open ground: the " + lidarYear[1] + " flight predates the clearing."
+      );
     }
   }
   // On an estimated canopy, a crown the national summer photo shows as roof,

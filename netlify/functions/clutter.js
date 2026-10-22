@@ -170,7 +170,7 @@ const { buildSiteV1 } = require("../lib/site-v1");
 const { fetchSlopeForest } = require("../lib/slope-forest");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
-const { fetchUsgsLidar, applyLidarSample, lidarNote, lidarStatusLine, rankProjects } = require("../lib/usgs-lidar");
+const { fetchUsgsLidar, applyLidarSample, lidarNote, lidarStatusLine, rankProjects, heightForRing } = require("../lib/usgs-lidar");
 const { fuseLidarCanopy, keepLidarOpen, clearInside, clearThinLinesGrid, vehicleFeatures, lidarCanopyNote } = require("../lib/lidar-canopy");
 const exportJobs = require("../lib/export-jobs");
 const stageClock = require("../lib/stage-clock");
@@ -234,6 +234,8 @@ const { surfaceMasksFromImage, openShareSampler, poleShadowContrast } = require(
 const { fetchLeafOnPhoto, leafOnGreenSampler } = require("../lib/leaf-on-photo");
 const { createWaterTest, clearWaterCanopy, dropWaterPoints } = require("../lib/water-mask");
 const { rejectPavementFootprints } = require("../lib/pavement");
+const { rejectShadowless } = require("../lib/cast-shadow");
+const { aerialStorageYards } = require("../lib/yard-stacks");
 const POLE_SHADOW_MIN = 0.2;
 // Taller lone returns are masts, towers or flags, not light poles.
 const POLE_MAX_H_M = 40;
@@ -2169,6 +2171,9 @@ async function handleClutter(event) {
   }
   let lidarYards = [];
   let lidarCanopy = null;
+  // The canopy lidar, kept so its roof heights can scale photo shadows even
+  // when lidar heights are off.
+  let scaleLidar = null;
   if (lidarCanopyOn && !lidarOn && !chmTimedOut) {
     try {
       if (!lidarSettled) {
@@ -2176,6 +2181,7 @@ async function handleClutter(event) {
         await flushProgress();
       }
       const lidar = await lidarPromise;
+      scaleLidar = lidar;
       lidarCanopy = fuseCanopyFromLidar(lidar);
     } catch {
       lidarCanopy = null;
@@ -2234,6 +2240,43 @@ async function handleClutter(event) {
       }
     } catch {
       warnings.push("Lidar heights not used.");
+    }
+  }
+
+  // Cast shadows on the photo. A vector outline with no shadow on lit bare
+  // ground was torn down after it was traced; stacked goods in a yard throw
+  // shadows as long as they are tall. The plate is decoded once for both.
+  let shadowPlate = null;
+  let shadowScene = null;
+  if (imgBuf && frame && features.length) {
+    try {
+      shadowPlate = decoded && decoded.width === frame.imgW && decoded.height === frame.imgH ? decoded : decodeRoofImagery(imgBuf);
+      if (shadowPlate) {
+        // Lidar roof heights scale the shadows. Only the scale is read here;
+        // outlines keep their source heights when lidar heights are off.
+        let heights = null;
+        if (!lidarOn && scaleLidar && !scaleLidar.skipped && scaleLidar.grid) {
+          heights = features.map((f) => {
+            const rings = featureExteriorRings(f && f.geometry);
+            for (let r = 0; r < rings.length; r++) {
+              const h = heightForRing(scaleLidar.grid, rings[r]);
+              if (h != null) return h;
+            }
+            return null;
+          });
+        }
+        const ghost = rejectShadowless(shadowPlate, frame, features, { heights });
+        shadowScene = ghost.scene;
+        if (ghost.dropped) {
+          features = ghost.features;
+          footprintMeta.droppedShadowless = ghost.dropped;
+          warnings.push(
+            "Left out " + ghost.dropped + " building outline" + (ghost.dropped === 1 ? "" : "s") + " with no roof shadow on the photo: bare ground where the source still maps a building."
+          );
+        }
+      }
+    } catch {
+      shadowPlate = null;
     }
   }
 
@@ -2635,6 +2678,10 @@ async function handleClutter(event) {
           ? openShareSampler(decoded)
           : null,
       leafOnGreenShare: leafOnPhoto ? leafOnGreenSampler(leafOnPhoto, frame.mpuX) : null,
+      aerialGreenShare:
+        decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH && footprintMeta.lidarCanopyStats
+          ? leafOnGreenSampler({ data: decoded.data, width: decoded.width, height: decoded.height, have: new Uint8Array(decoded.width * decoded.height).fill(1) }, frame.mpuX)
+          : null,
       leafOnSource: leafOnPhoto ? leafOnPhoto.source : "",
       imagery: imageryCtx ? imagerySource.imageryInfo(imageryCtx) : null,
     });
@@ -2676,10 +2723,42 @@ async function handleClutter(event) {
   }
 
   if (lidarYards.length) outdoorFeatures = outdoorFeatures.concat(lidarYards);
-  if (warehouseMembranes && !lidarYards.length) {
+  // Where lidar did not measure a yard (off, or flown before the yard was
+  // built), read stacks from their shadows on the photo. Mapped car parks
+  // are left out: parked cars throw the same wide shadows.
+  let aerialYards = [];
+  if (!lidarYards.length && shadowPlate && features.length) {
+    try {
+      const avoid = [];
+      for (let i = 0; i < outdoorFeatures.length; i++) {
+        const f = outdoorFeatures[i];
+        if (f && f.kind === "parking" && f.structure !== true && Array.isArray(f.coords)) avoid.push(f.coords);
+      }
+      const got = aerialStorageYards(shadowPlate, frame, features, { scene: shadowScene || undefined, avoid });
+      aerialYards = got.yards || [];
+    } catch {
+      aerialYards = [];
+    }
+  }
+  shadowPlate = null;
+  if (aerialYards.length) {
+    outdoorFeatures = outdoorFeatures.concat(aerialYards);
+    let m2 = 0;
+    let lo = Infinity;
+    let hi = 0;
+    for (const y of aerialYards) {
+      m2 += y.areaM2 || 0;
+      if (y.heightM < lo) lo = y.heightM;
+      if (y.heightM > hi) hi = y.heightM;
+    }
+    warnings.push(
+      "Stacked storage from the photo: " + aerialYards.length + " block" + (aerialYards.length === 1 ? "" : "s") + ", " + Math.round(m2) + " m², " + (lo === hi ? lo + " m" : lo + " to " + hi + " m") + " tall, read from their shadows."
+    );
+  }
+  if (warehouseMembranes && !lidarYards.length && !aerialYards.length) {
     const storageNote = lidarOn
-      ? "Stacked storage was left out. Lidar did not show a yard."
-      : "Stacked storage was left out. Lidar heights are off, and the street map has no yard.";
+      ? "Stacked storage was left out. Lidar did not show a yard, and the photo showed no stack shadows."
+      : "Stacked storage was left out. Lidar heights are off, the street map has no yard, and the photo showed no stack shadows.";
     if (warnings.indexOf(storageNote) < 0) warnings.push(storageNote);
   }
 
