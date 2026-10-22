@@ -274,15 +274,16 @@ function groundSampler(t) {
 
 const PROVENANCE = [
   { id: "osm", role: "buildings-parts-poles-notes", licence: "ODbL", attribution: "© OpenStreetMap contributors", commercialUseAllowed: true },
-  { id: "ms-global", role: "building-footprints", licence: "ODbL", attribution: "© Microsoft", commercialUseAllowed: true },
-  { id: "overture", role: "building-footprints-heights", licence: "CDLA Permissive 2.0 / ODbL", attribution: "Overture Maps Foundation", commercialUseAllowed: true },
+  { id: "ms-global", role: "building-footprints", licence: "ODbL", attribution: "Microsoft Global ML Building Footprints, ODbL", commercialUseAllowed: true },
+  { id: "overture", role: "building-footprints-heights", licence: "ODbL", attribution: "Overture Maps Foundation (buildings theme, ODbL); includes © OpenStreetMap contributors, Microsoft, Esri Community Maps contributors, Google Open Buildings", commercialUseAllowed: true },
   { id: "usa-structures", role: "building-footprints-us", licence: "public-domain", attribution: "FEMA USA Structures", commercialUseAllowed: true },
   { id: "nls-laser", role: "building-heights-finland", licence: "CC BY 4.0", attribution: "National Land Survey of Finland", commercialUseAllowed: true },
   { id: "usgs-3dep", role: "terrain-lidar-us", licence: "public-domain", attribution: "USGS 3DEP", commercialUseAllowed: true },
   { id: "nlcd-tcc", role: "canopy-us", licence: "public-domain", attribution: "USFS / MRLC NLCD Tree Canopy Cover", commercialUseAllowed: true },
-  { id: "meta-chm", role: "canopy-height", licence: "CC BY 4.0", attribution: "Meta / WRI canopy height", commercialUseAllowed: true },
+  { id: "meta-chm", role: "canopy-height", licence: "CC BY 4.0", attribution: "Meta and World Resources Institute (WRI) CHMv2. Source imagery for CHM © 2016 Vantor", commercialUseAllowed: true },
+  { id: "esa-worldcover", role: "canopy-gap-fill", licence: "CC BY 4.0", attribution: "© ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium", commercialUseAllowed: true },
   { id: "copernicus-glo30", role: "terrain-fallback", licence: "Copernicus DEM licence", attribution: "Copernicus DEM GLO-30", commercialUseAllowed: true },
-  { id: "esri-world-imagery", role: "aerial-and-detection", licence: "Esri proprietary", attribution: "Esri World Imagery", commercialUseAllowed: false },
+  { id: "esri-world-imagery", role: "aerial-and-detection", licence: "Esri proprietary", attribution: "Powered by Esri. Source: Esri, Vantor, Earthstar Geographics, and the GIS User Community", commercialUseAllowed: false },
 ];
 
 /**
@@ -527,7 +528,7 @@ function buildSiteV1(p) {
         commercialUseAllowed: false,
         note: "Esri World Imagery needs a commercial licence inside a paid product. The prototype does not serve the image.",
       },
-      attribution: "Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+      attribution: "Esri, Vantor, Earthstar Geographics, and the GIS User Community",
     },
     provenance: { sources: PROVENANCE },
     stats,

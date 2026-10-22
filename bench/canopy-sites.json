@@ -178,5 +178,41 @@
     "south": 40.026,
     "east": -86.484,
     "north": 40.034
+  },
+  {
+    "id": "home-depot-fdc-tx",
+    "name": "Distribution yard with outdoor stacks",
+    "place": "Grand Prairie, Texas",
+    "kind": "warehouse yard, stacked storage, stale footprints",
+    "gate": false,
+    "category": "warehouse",
+    "west": -96.9775,
+    "south": 32.7378,
+    "east": -96.972,
+    "north": 32.7458
+  },
+  {
+    "id": "miami-marine-stadium-marina",
+    "name": "Marine Stadium marina",
+    "place": "Virginia Key, Florida",
+    "kind": "marina, dry-stack boat racks",
+    "gate": false,
+    "category": "marina",
+    "west": -80.1745,
+    "south": 25.7425,
+    "east": -80.1695,
+    "north": 25.746
+  },
+  {
+    "id": "iowa-state-fairgrounds",
+    "name": "State fairgrounds",
+    "place": "Des Moines, Iowa",
+    "kind": "fairgrounds, barns, midway, parking fields",
+    "gate": false,
+    "category": "fairground",
+    "west": -93.56,
+    "south": 41.5925,
+    "east": -93.547,
+    "north": 41.599
   }
 ]

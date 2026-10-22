@@ -338,23 +338,9 @@ function parseBboxParam(url) {
 function classifyFetch(url, init) {
   const u = String(url || "");
   const range = headerValue(init, "range");
-  if (u.includes("World_Imagery/MapServer/export") && /[?&]f=image\b/.test(u)) {
-    const bbox = parseBboxParam(u);
-    if (!bbox) return null;
-    const size = /[?&]size=(\d+),(\d+)/.exec(u);
-    const imgW = size ? +size[1] : 0;
-    const lat = (bbox.south + bbox.north) / 2;
-    const mLon = 111320 * Math.cos((lat * Math.PI) / 180);
-    const widthM = Math.abs(bbox.east - bbox.west) * (mLon || 1);
-    const mpp = imgW > 0 ? widthM / imgW : 0;
-    return {
-      source: "aerial",
-      resolution: (mpp > 0 ? mpp.toFixed(3) : "jpg") + "m",
-      tile: tileId(bbox),
-      contentType: "image/jpeg",
-    };
-  }
-  if (u.includes("openstreetmap.org/api/0.6/map")) {
+  // Esri World Imagery exports are never written to the blob store. The
+  // export fetches its plate fresh and the image only leaves in the zip.
+  if (/\/api\/map\?/.test(u) && u.includes("overpass")) {
     const bbox = parseBboxParam(u);
     if (!bbox) return null;
     return { source: "osm", resolution: "map", tile: tileId(bbox), contentType: "application/xml" };
@@ -588,7 +574,7 @@ function planSourceTiles(bbox) {
     source: "osm",
     resolution: "map",
     tile: tileId(box),
-    url: "https://www.openstreetmap.org/api/0.6/map?bbox=" + [box.west, box.south, box.east, box.north].join(","),
+    url: require("./osm-tiles").mapUrl(box),
     bbox: box,
   });
   return tiles;

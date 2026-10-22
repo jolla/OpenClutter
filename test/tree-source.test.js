@@ -31,12 +31,12 @@ const {
   RGB_POLICY_FORCE_RGB,
 } = require("../netlify/lib/tree-source");
 
-const WOODED_LOT = {
-  west: -87.0005,
-  south: 42.0035,
-  east: -87.0015,
-  north: 42.9002,
-  name: "Wooded Lot",
+const WOODS_WI = {
+  west: -87.935,
+  south: 43.168,
+  east: -87.928,
+  north: 43.1747,
+  name: "Wooded residential WI",
 };
 
 function makeRgba(w, h, fn) {
@@ -62,8 +62,8 @@ function sampleGrid(n, valueFn) {
     const row = Math.floor(i / cols);
     samples.push({
       location: {
-        x: WOODED_LOT.west + ((col + 0.5) / cols) * (WOODED_LOT.east - WOODED_LOT.west),
-        y: WOODED_LOT.south + ((row + 0.5) / Math.ceil(n / cols)) * (WOODED_LOT.north - WOODED_LOT.south),
+        x: WOODS_WI.west + ((col + 0.5) / cols) * (WOODS_WI.east - WOODS_WI.west),
+        y: WOODS_WI.south + ((row + 0.5) / Math.ceil(n / cols)) * (WOODS_WI.north - WOODS_WI.south),
       },
       value: String(valueFn(row, col, i)),
     });
@@ -73,15 +73,15 @@ function sampleGrid(n, valueFn) {
 
 describe("NLCD / USFS canopy source", () => {
   it("builds an unauthenticated CONUS getSamples URL for the shared bbox", () => {
-    const url = canopySamplesUrl(WOODED_LOT);
+    const url = canopySamplesUrl(WOODS_WI);
     assert.match(url, /^https:\/\/imagery\.geoplatform\.gov\/iipp\/rest\/services\/Vegetation\/USFS_EDW_NLCD_TCC_CONUS\/ImageServer\/getSamples\?/);
     assert.ok(url.includes("geometryType=esriGeometryEnvelope"));
     assert.ok(url.includes("beginyear"));
     assert.ok(url.includes("sortAscending"));
     assert.ok(url.includes("f=json"));
     assert.equal(TCC_IMAGESERVER.endsWith("USFS_EDW_NLCD_TCC_CONUS/ImageServer"), true);
-    assert.ok(canopySampleCount(WOODED_LOT) >= 64);
-    assert.ok(canopySampleCount(WOODED_LOT) <= 1600);
+    assert.ok(canopySampleCount(WOODS_WI) >= 64);
+    assert.ok(canopySampleCount(WOODS_WI) <= 1600);
     const wynnCount = canopySampleCount({
       west: -115.1735,
       south: 36.1205,
@@ -129,23 +129,23 @@ describe("NLCD / USFS canopy source", () => {
     const hits = [];
     for (let i = 0; i < 200; i++) {
       hits.push({
-        lon: WOODED_LOT.west + 0.001 + (i % 10) * 0.0002,
-        lat: WOODED_LOT.north - 0.0003,
+        lon: WOODS_WI.west + 0.001 + (i % 10) * 0.0002,
+        lat: WOODS_WI.north - 0.0003,
         score: 0.9,
         pct: 90,
       });
     }
     for (let i = 0; i < 40; i++) {
       hits.push({
-        lon: WOODED_LOT.west + 0.002 + (i % 8) * 0.0003,
-        lat: WOODED_LOT.south + 0.0004,
+        lon: WOODS_WI.west + 0.002 + (i % 8) * 0.0003,
+        lat: WOODS_WI.south + 0.0004,
         score: 0.7,
         pct: 70,
       });
     }
-    const picked = pickCanopyTrees(hits, WOODED_LOT, { maxTrees: 64, cell: 0.00005 });
+    const picked = pickCanopyTrees(hits, WOODS_WI, { maxTrees: 64, cell: 0.00005 });
     assert.ok(picked.length <= 64);
-    const mid = (WOODED_LOT.north + WOODED_LOT.south) / 2;
+    const mid = (WOODS_WI.north + WOODS_WI.south) / 2;
     const south = picked.filter((p) => p.lat < mid);
     assert.ok(south.length >= 4, `expected southern woods in the sample, got ${south.length} of ${picked.length}`);
   });
@@ -153,7 +153,7 @@ describe("NLCD / USFS canopy source", () => {
   it("does not plant an orchard grid on NLCD sample centers", () => {
     const payload = sampleGrid(196, (row) => (row < 8 ? 82 : 6));
     const parsed = treesFromCanopySamples(payload);
-    const trees = pickCanopyTrees(parsed.hits, WOODED_LOT, { maxTrees: 80 });
+    const trees = pickCanopyTrees(parsed.hits, WOODS_WI, { maxTrees: 80 });
     assert.ok(trees.length >= 8, `expected woods trees, got ${trees.length}`);
     assert.ok(trees.length < parsed.hits.length, "must subsample the 30 m lattice");
     let onCenter = 0;
@@ -168,7 +168,7 @@ describe("NLCD / USFS canopy source", () => {
       `trees still on sample centers: ${onCenter}/${trees.length}`
     );
     const mpdLat = 110540;
-    const mpdLon = 111320 * Math.cos(((WOODED_LOT.south + WOODED_LOT.north) / 2) * Math.PI / 180);
+    const mpdLon = 111320 * Math.cos(((WOODS_WI.south + WOODS_WI.north) / 2) * Math.PI / 180);
     let minD = Infinity;
     for (let i = 0; i < trees.length; i++) {
       for (let j = i + 1; j < trees.length; j++) {
@@ -179,7 +179,7 @@ describe("NLCD / USFS canopy source", () => {
       }
     }
     assert.ok(minD >= 5, `NMS spacing too tight: ${minD} m`);
-    const mid = (WOODED_LOT.north + WOODED_LOT.south) / 2;
+    const mid = (WOODS_WI.north + WOODS_WI.south) / 2;
     const south = trees.filter((t) => t.lat < mid);
     const north = trees.filter((t) => t.lat >= mid);
     assert.ok(south.length > north.length, `woods should dominate lawns: south ${south.length} north ${north.length}`);
@@ -190,17 +190,17 @@ describe("NLCD / USFS canopy source", () => {
     for (let row = 0; row < 6; row++) {
       for (let col = 0; col < 6; col++) {
         hits.push({
-          lon: WOODED_LOT.west + 0.001 + col * 0.00035,
-          lat: WOODED_LOT.south + 0.001 + row * 0.00035,
+          lon: WOODS_WI.west + 0.001 + col * 0.00035,
+          lat: WOODS_WI.south + 0.001 + row * 0.00035,
           pct: 72,
           score: 0.72,
         });
       }
     }
-    const reject = (lon, lat) => lon < WOODED_LOT.west + 0.0022;
-    const trees = pickCanopyTrees(hits, WOODED_LOT, { maxTrees: 40, reject });
+    const reject = (lon, lat) => lon < WOODS_WI.west + 0.0022;
+    const trees = pickCanopyTrees(hits, WOODS_WI, { maxTrees: 40, reject });
     assert.ok(trees.length >= 4, `expected off-roof trees, got ${trees.length}`);
-    assert.ok(trees.every((t) => t.lon >= WOODED_LOT.west + 0.0022));
+    assert.ok(trees.every((t) => t.lon >= WOODS_WI.west + 0.0022));
   });
 
   it("fills continuous high canopy instead of only isolated yard peaks", () => {
@@ -208,8 +208,8 @@ describe("NLCD / USFS canopy source", () => {
     // Isolated landscaping trees (peaks) along the west edge.
     for (let i = 0; i < 12; i++) {
       hits.push({
-        lon: WOODED_LOT.west + 0.0004,
-        lat: WOODED_LOT.south + 0.0004 + i * 0.0004,
+        lon: WOODS_WI.west + 0.0004,
+        lat: WOODS_WI.south + 0.0004 + i * 0.0004,
         pct: 88,
         score: 0.88,
       });
@@ -218,16 +218,16 @@ describe("NLCD / USFS canopy source", () => {
     for (let row = 0; row < 14; row++) {
       for (let col = 0; col < 12; col++) {
         hits.push({
-          lon: WOODED_LOT.west + 0.0035 + col * 0.00022,
-          lat: WOODED_LOT.south + 0.0005 + row * 0.00035,
+          lon: WOODS_WI.west + 0.0035 + col * 0.00022,
+          lat: WOODS_WI.south + 0.0005 + row * 0.00035,
           pct: 70 + ((row + col) % 8),
           score: 0.75,
         });
       }
     }
-    const trees = pickCanopyTrees(hits, WOODED_LOT, { maxTrees: 120 });
+    const trees = pickCanopyTrees(hits, WOODS_WI, { maxTrees: 120 });
     assert.ok(trees.length >= 40, `expected woods to fill, got ${trees.length}`);
-    const midLon = (WOODED_LOT.west + WOODED_LOT.east) / 2;
+    const midLon = (WOODS_WI.west + WOODS_WI.east) / 2;
     const east = trees.filter((t) => t.lon > midLon);
     assert.ok(
       east.length >= trees.length * 0.5,
@@ -236,16 +236,16 @@ describe("NLCD / USFS canopy source", () => {
   });
 
   it("merges RGB supplements without snapping onto a lattice", () => {
-    const nlcd = [{ lon: WOODED_LOT.west + 0.002, lat: WOODED_LOT.south + 0.002, pct: 70 }];
+    const nlcd = [{ lon: WOODS_WI.west + 0.002, lat: WOODS_WI.south + 0.002, pct: 70 }];
     const rgb = [];
     for (let i = 0; i < 20; i++) {
       rgb.push({
-        lon: WOODED_LOT.west + 0.004 + i * 0.00008,
-        lat: WOODED_LOT.south + 0.004,
+        lon: WOODS_WI.west + 0.004 + i * 0.00008,
+        lat: WOODS_WI.south + 0.004,
         score: 0.6,
       });
     }
-    const merged = mergeTreePoints(nlcd, rgb, WOODED_LOT, { maxTrees: 12 });
+    const merged = mergeTreePoints(nlcd, rgb, WOODS_WI, { maxTrees: 12 });
     assert.ok(merged.length >= 2 && merged.length <= 12);
     assert.ok(merged.some((t) => Math.abs(t.lon - nlcd[0].lon) < 1e-6));
   });
@@ -264,7 +264,7 @@ describe("pickStratified does not north-fill", () => {
   });
 
   it("scales MAX_TREES with bbox area for golf/campus maps", () => {
-    const small = maxTreesForBbox(WOODED_LOT);
+    const small = maxTreesForBbox(WOODS_WI);
     const large = maxTreesForBbox({
       west: -115.1735,
       south: 36.1205,
@@ -342,7 +342,7 @@ describe("treesSource labels", () => {
 });
 
 describe("RGB fill policy", () => {
-  const bbox = WOODED_LOT;
+  const bbox = WOODS_WI;
   const rgb = [
     { lon: bbox.west + 0.001, lat: bbox.south + 0.001, score: 0.7 },
     { lon: bbox.west + 0.002, lat: bbox.south + 0.002, score: 0.6 },

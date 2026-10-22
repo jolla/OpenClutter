@@ -18,6 +18,22 @@ const WYNN = {
 
 const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.alloc(120, 1), Buffer.from([0xff, 0xd9])]);
 
+/** MSBFP2 (Esri-hosted Microsoft) is no longer read; mocked roofs come from FEMA USA Structures. */
+function usaStructuresMock(u, features) {
+  if (u.includes("returnIdsOnly=true")) {
+    return { ok: true, json: async () => ({ objectIds: features.map((_, i) => i + 1) }) };
+  }
+  return {
+    ok: true,
+    json: async () => ({
+      features: features.map((f, i) => ({
+        attributes: { OBJECTID: i + 1, HEIGHT: (f.properties && f.properties.height) || null },
+        geometry: { rings: f.geometry.coordinates },
+      })),
+    }),
+  };
+}
+
 describe("HaminaClipboard types vs working geo paste", () => {
   it("are byte-identical in the schema fields", () => {
     assert.deepEqual(ZONE_TYPES, [
@@ -53,11 +69,8 @@ describe("clutter handler (mocked Esri)", () => {
           json: async () => ({ elements: [{ type: "node", lon: -115.16, lat: 36.128 }] }),
         };
       }
-      if (String(url).includes("MSBFP2")) {
-        return {
-          ok: true,
-          json: async () => ({
-            features: [{
+      if (String(url).includes("USA_Structures")) {
+        return usaStructuresMock(String(String(url)), [{
               type: "Feature",
               properties: {},
               geometry: {
@@ -66,9 +79,7 @@ describe("clutter handler (mocked Esri)", () => {
                   [-115.165, 36.126], [-115.164, 36.126], [-115.164, 36.127], [-115.165, 36.127], [-115.165, 36.126],
                 ]],
               },
-            }],
-          }),
-        };
+            }]);
       }
       if (String(url).includes("World_Imagery")) {
         if (String(url).includes("f=json")) {
@@ -127,7 +138,7 @@ describe("clutter handler (mocked Esri)", () => {
     assert.equal(body.terrainClipboard.tiePoints[0].lon, body.frame.west);
     assert.match(body.zipFilename, /\.zip$/);
     const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
-    assert.deepEqual(Object.keys(files).sort(), ["images/Wynn-Golf.jpg", "openIntent_Wynn-Golf.json"]);
+    assert.deepEqual(Object.keys(files).sort(), ["ATTRIBUTION.txt", "images/Wynn-Golf.jpg", "openIntent_Wynn-Golf.json"]);
     const exportStats = body.stats;
     assert.equal(typeof exportStats.buildingsKept, "number");
     assert.equal(typeof exportStats.treesKept, "number");
@@ -161,9 +172,8 @@ describe("clutter handler (mocked Esri)", () => {
     assert.ok(detailCalls.length >= 1, "building parts and pools are read from OSM");
     assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("bboxSR=4326") && u.includes("imageSR=4326")));
     assert.ok(urls.some((u) => u.includes("World_Imagery") && u.includes("f=json")));
-    assert.ok(urls.some((u) => u.includes("MSBFP2")));
-    assert.ok(urls.some((u) => u.includes("MSBFP2") && u.includes("orderByFields=OBJECTID")));
-    assert.ok(urls.some((u) => u.includes("MSBFP2") && u.includes("resultOffset=")));
+    assert.equal(urls.some((u) => u.includes("MSBFP2")), false, "the Esri-hosted MSBFP2 copy is not read");
+    assert.ok(urls.some((u) => u.includes("USA_Structures")));
     assert.equal(body.stats.trees, 0);
     assert.ok(body.stats.fetched >= 1);
     assert.match(body.stats.summary, /Buildings /);
@@ -283,7 +293,7 @@ describe("clutter handler (mocked Esri)", () => {
     assert.equal(res.statusCode, 200);
     assert.equal(res.headers["content-type"], "application/zip");
     const files = unzipStore(Buffer.from(res.body, "base64"));
-    assert.deepEqual(Object.keys(files).sort(), ["images/Wynn-Golf.jpg", "openIntent_Wynn-Golf.json"]);
+    assert.deepEqual(Object.keys(files).sort(), ["ATTRIBUTION.txt", "images/Wynn-Golf.jpg", "openIntent_Wynn-Golf.json"]);
     assert.ok(files["openIntent_Wynn-Golf.json"]);
   });
 
@@ -394,11 +404,8 @@ describe("dev foliage traces canopy height", () => {
   before(() => {
     global.fetch = async (url) => {
       const u = String(url);
-      if (u.includes("MSBFP2")) {
-        return {
-          ok: true,
-          json: async () => ({
-            features: [{
+      if (u.includes("USA_Structures")) {
+        return usaStructuresMock(String(u), [{
               type: "Feature",
               properties: {},
               geometry: {
@@ -407,9 +414,7 @@ describe("dev foliage traces canopy height", () => {
                   [-115.165, 36.126], [-115.164, 36.126], [-115.164, 36.127], [-115.165, 36.127], [-115.165, 36.126],
                 ]],
               },
-            }],
-          }),
-        };
+            }]);
       }
       if (u.includes("World_Imagery")) {
         if (u.includes("f=json")) {
@@ -476,7 +481,7 @@ describe("dev foliage traces canopy height", () => {
     assert.equal(body.stats.foliageGeometry, "chm-contour");
     assert.ok(body.stats.openIntentTreeAreas >= 1);
     const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
-    assert.deepEqual(Object.keys(files).sort(), ["images/Wynn-Golf.jpg", "openIntent_Wynn-Golf.json"]);
+    assert.deepEqual(Object.keys(files).sort(), ["ATTRIBUTION.txt", "images/Wynn-Golf.jpg", "openIntent_Wynn-Golf.json"]);
     const oi = JSON.parse(files["openIntent_Wynn-Golf.json"].toString());
     const areas = oi.floorplans[0].attenuation_areas;
     const crowns = areas.filter((a) => isVegetationOiName(a.area_material.name));
@@ -522,7 +527,7 @@ describe("dev foliage traces canopy height", () => {
     assert.equal(body.stats.foliageGeometry, "omitted");
     assert.ok(body.stats.openIntentBuildingAreas >= 1);
     const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
-    assert.deepEqual(Object.keys(files).sort(), ["images/Wynn-Golf.jpg", "openIntent_Wynn-Golf.json"]);
+    assert.deepEqual(Object.keys(files).sort(), ["ATTRIBUTION.txt", "images/Wynn-Golf.jpg", "openIntent_Wynn-Golf.json"]);
     const oi = JSON.parse(files["openIntent_Wynn-Golf.json"].toString());
     assert.equal(
       oi.floorplans[0].attenuation_areas.some((a) => /foliage|tree trunk/i.test(String(a.area_material && a.area_material.name))),
@@ -572,21 +577,16 @@ describe("optional sources cannot fail the export", () => {
       }
       return Promise.resolve({ ok: true, arrayBuffer: async () => jpeg });
     }
-    if (u.includes("MSBFP2")) {
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({
-          features: [{
+    if (u.includes("USA_Structures")) {
+        return usaStructuresMock(String(u), [{
             type: "Feature",
             properties: {},
             geometry: {
               type: "Polygon",
               coordinates: [[[-115.165, 36.126], [-115.164, 36.126], [-115.164, 36.127], [-115.165, 36.127], [-115.165, 36.126]]],
             },
-          }],
-        }),
-      });
-    }
+          }]);
+      }
     return Promise.resolve({ ok: true, json: async () => ({ features: [] }), arrayBuffer: async () => new ArrayBuffer(0) });
   }
 
@@ -1088,20 +1088,15 @@ describe("oversized Microsoft footprint tile", () => {
         };
       }
       if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
-      if (u.includes("MSBFP2")) {
-        return {
-          ok: true,
-          json: async () => ({
-            features: [{
+      if (u.includes("USA_Structures")) {
+        return usaStructuresMock(String(u), [{
               type: "Feature",
               properties: {},
               geometry: {
                 type: "Polygon",
                 coordinates: [[[-115.165, 36.126], [-115.164, 36.126], [-115.164, 36.127], [-115.165, 36.127], [-115.165, 36.126]]],
               },
-            }],
-          }),
-        };
+            }]);
       }
       if (u.includes("USA_Structures") || u.includes("services2.arcgis.com")) {
         return { ok: true, json: async () => ({ objectIds: [], features: [] }) };
@@ -2075,11 +2070,8 @@ describe("dev-host Copernicus fallback", () => {
         }
         return { ok: true, arrayBuffer: async () => jpeg };
       }
-      if (u.includes("MSBFP2")) {
-        return {
-          ok: true,
-          json: async () => ({
-            features: [{
+      if (u.includes("USA_Structures")) {
+        return usaStructuresMock(String(u), [{
               type: "Feature",
               properties: { height: 12 },
               geometry: {
@@ -2088,9 +2080,7 @@ describe("dev-host Copernicus fallback", () => {
                   [-0.1288, 51.5072], [-0.1282, 51.5072], [-0.1282, 51.5078], [-0.1288, 51.5078], [-0.1288, 51.5072],
                 ]],
               },
-            }],
-          }),
-        };
+            }]);
       }
       return { ok: true, json: async () => ({ features: [], objectIds: [] }), arrayBuffer: async () => new ArrayBuffer(0) };
     };
@@ -2292,20 +2282,15 @@ describe("dev-host Copernicus fallback", () => {
           }
           return { ok: true, arrayBuffer: async () => jpeg };
         }
-        if (u.includes("MSBFP2")) {
-          return {
-            ok: true,
-            json: async () => ({
-              features: [
+        if (u.includes("USA_Structures")) {
+        return usaStructuresMock(String(u), [
                 {
                   type: "Feature",
                   properties: {},
                   geometry: { type: "Polygon", coordinates: [fixture.ring] },
                 },
-              ],
-            }),
-          };
-        }
+              ]);
+      }
         return { ok: true, json: async () => ({ features: [], objectIds: [] }), arrayBuffer: async () => new ArrayBuffer(0) };
       };
     }
@@ -2859,7 +2844,7 @@ describe("Pointe-Claire dev export", () => {
     assert.ok(body.terrainClipboard, body.terrainStatus);
     assert.match(body.terrainStatus, /Copy terrain/);
     const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
-    assert.deepEqual(Object.keys(files).sort(), ["images/Pointe-Claire.jpg", "openIntent_Pointe-Claire.json"]);
+    assert.deepEqual(Object.keys(files).sort(), ["ATTRIBUTION.txt", "images/Pointe-Claire.jpg", "openIntent_Pointe-Claire.json"]);
     assert.equal(files["terrain-clipboard.json"], undefined);
     const oi = JSON.parse(files["openIntent_Pointe-Claire.json"].toString());
     assert.ok(oi.floorplans[0].attenuation_areas.length >= 1);
@@ -3193,11 +3178,8 @@ describe("background foliage sources", () => {
         }
         return { ok: true, arrayBuffer: async () => jpeg };
       }
-      if (u.includes("MSBFP2")) {
-        return {
-          ok: true,
-          json: async () => ({
-            features: [{
+      if (u.includes("USA_Structures")) {
+        return usaStructuresMock(String(u), [{
               type: "Feature",
               properties: {},
               geometry: {
@@ -3206,9 +3188,7 @@ describe("background foliage sources", () => {
                   [-115.165, 36.126], [-115.164, 36.126], [-115.164, 36.127], [-115.165, 36.127], [-115.165, 36.126],
                 ]],
               },
-            }],
-          }),
-        };
+            }]);
       }
       return { ok: true, json: async () => ({ features: [] }), arrayBuffer: async () => new ArrayBuffer(0) };
     };

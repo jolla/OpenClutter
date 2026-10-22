@@ -34,9 +34,94 @@ const ESRI = {
   id: "esri",
   name: "Esri World Imagery",
   short: "Esri",
-  attribution: "Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+  attribution: "Esri, Vantor, Earthstar Geographics, and the GIS User Community",
   license: "Esri terms of use",
 };
+
+/**
+ * World Imagery's citation layer: one polygon per source mosaic with its
+ * capture date (SRC_DATE2), vendor (NICE_DESC), and product (NICE_NAME).
+ * It answers in well under a second and is read beside the map, never in
+ * front of it, so a slow or missing answer only leaves the date out.
+ */
+const ESRI_CITATION_URL = "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/0/query";
+const ESRI_CITATION_MS = 2500;
+
+/** Web Mercator level whose ground pixel matches the export's meters per pixel. */
+function esriLevelFor(bbox, mPerPx) {
+  const lat = ((+bbox.south + +bbox.north) / 2) * (Math.PI / 180);
+  const m = +mPerPx > 0 ? +mPerPx : 1;
+  const z = Math.round(Math.log2((156543.03392 * Math.cos(lat)) / m));
+  return Math.max(0, Math.min(23, z));
+}
+
+function esriCitationUrl(bbox) {
+  const q = new URLSearchParams({
+    where: "1=1",
+    outFields: "SRC_DATE2,NICE_NAME,NICE_DESC,SRC_RES,MinMapLevel,MaxMapLevel",
+    geometry: [bbox.west, bbox.south, bbox.east, bbox.north].map(Number).join(","),
+    geometryType: "esriGeometryEnvelope",
+    inSR: "4326",
+    spatialRel: "esriSpatialRelIntersects",
+    returnGeometry: "false",
+    f: "json",
+  });
+  return ESRI_CITATION_URL + "?" + q.toString();
+}
+
+function isoDay(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  return new Date(n).toISOString().slice(0, 10);
+}
+
+/** Dates and vendors of the World Imagery mosaics drawn at the export's level. */
+function parseEsriCitation(body, level) {
+  const rows = body && Array.isArray(body.features) ? body.features.map((f) => f && f.attributes).filter(Boolean) : [];
+  const atLevel = rows.filter((a) => {
+    const lo = Number(a.MinMapLevel);
+    const hi = Number(a.MaxMapLevel);
+    if (!Number.isFinite(level) || !Number.isFinite(lo) || !Number.isFinite(hi)) return true;
+    return level >= lo && level <= hi;
+  });
+  const use = atLevel.length ? atLevel : rows;
+  const dates = Array.from(new Set(use.map((a) => isoDay(a.SRC_DATE2)).filter(Boolean))).sort();
+  const providers = Array.from(
+    new Set(
+      use
+        .map((a) => [String(a.NICE_DESC || "").trim(), String(a.NICE_NAME || "").trim()].filter(Boolean).join(" "))
+        .filter(Boolean)
+    )
+  );
+  return { dates, providers };
+}
+
+/** Never throws. Null when the citation layer did not answer in time. */
+async function fetchEsriCitation(bbox, opts) {
+  const o = opts || {};
+  const fetchImpl = o.fetch || fetch;
+  try {
+    const r = await fetchImpl(esriCitationUrl(bbox), {
+      headers: { "user-agent": UA },
+      signal: o.signal || AbortSignal.timeout(ESRI_CITATION_MS),
+    });
+    if (!r || !r.ok) return null;
+    const got = parseEsriCitation(await r.json(), o.level);
+    return got.dates.length || got.providers.length ? got : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Start the citation read for an export context; the result lands on ctx.esriCitation. */
+function readEsriCitation(ctx, bbox, opts) {
+  if (!ctx || !bbox) return Promise.resolve(null);
+  ctx.esriCitationJob = fetchEsriCitation(bbox, opts).then((got) => {
+    ctx.esriCitation = got;
+    return got;
+  });
+  return ctx.esriCitationJob;
+}
 
 const NAIP = {
   id: "naip",
@@ -563,13 +648,16 @@ function imageryInfo(ctx) {
   const dates = usedAlt ? c.dates.slice().sort() : [];
   let reason = c.reason || "";
   if (!usedAlt && c.source !== ESRI) reason = c.failReason || reason || c.source.short + " was not used";
+  const esriCite = !usedAlt && c.esriCitation ? c.esriCitation : null;
+  const dayList = esriCite ? esriCite.dates : dates;
   return {
     requested: c.requested,
     id: src.id,
     name: src.name,
     attribution: src.attribution,
     license: src.license,
-    captureDate: dates.length ? (dates.length === 1 ? dates[0] : dates[0] + " to " + dates[dates.length - 1]) : "",
+    provider: esriCite && esriCite.providers.length ? esriCite.providers.join(", ") : "",
+    captureDate: dayList.length ? (dayList.length === 1 ? dayList[0] : dayList[0] + " to " + dayList[dayList.length - 1]) : "",
     fallback: c.requested !== "esri" && !usedAlt,
     mixed: mixed,
     reason: reason,
@@ -580,6 +668,7 @@ function imageryInfo(ctx) {
 function imageryLine(info) {
   if (!info) return "";
   let s = "Aerial: " + info.name;
+  if (info.provider) s += " (" + info.provider + ")";
   if (info.captureDate) s += ", captured " + info.captureDate;
   else if (info.id !== "esri") s += ", latest published";
   s += ". " + info.attribution + ".";
@@ -608,6 +697,11 @@ module.exports = {
   fetchPlateWith,
   imageryInfo,
   imageryLine,
+  esriLevelFor,
+  esriCitationUrl,
+  parseEsriCitation,
+  fetchEsriCitation,
+  readEsriCitation,
   itemCovers,
   wmsUrl,
   naipBboxUrl,

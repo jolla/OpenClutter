@@ -186,6 +186,7 @@ describe("OSM tiles for a large draw", () => {
     assert.equal(detail.ok, true);
     assert.equal(detail.parts.length, 0);
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].includes("openstreetmap.org"), true);
+    assert.equal(calls[0].includes("overpass-api.de/api/map?bbox="), true);
+    assert.equal(calls.some((u) => u.includes("openstreetmap.org/api/0.6")), false);
   });
 });

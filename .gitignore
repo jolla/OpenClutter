@@ -1,3 +1,34 @@
-node_modules/
+node_modules
 test/eval/out/
+# Local-only Esri crops for Esri-calibrated tests (never commit Esri imagery)
+test/fixtures-esri/
 jerry-oak-export/
+
+# Secrets and credentials: never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.secret
+*.secrets
+.secrets/
+secrets/
+*.token
+.netlify/
+.npmrc
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Local exports, zips and bench output
+*.zip
+exports/
+out/
+bench/out/
+bench/runs/
+*.log
+.DS_Store

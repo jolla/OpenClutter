@@ -1,7 +1,7 @@
 const { userAgent: UA } = require("../lib/version");
 const { geocodeQueries } = require("../lib/geocode-query");
-const { looksLikeVenueName, addressFromVenueText } = require("../lib/venue-address");
-const { bestPlace, resolveMagicKey } = require("../lib/place-search");
+const { bestPlace } = require("../lib/place-search");
+const { nominatimSearch } = require("../lib/nominatim");
 
 function viewFrom(params) {
   const lat = parseFloat(params.lat);
@@ -9,26 +9,8 @@ function viewFrom(params) {
   return Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon } : null;
 }
 
-async function nominatim(q) {
-  const url =
-    "https://nominatim.openstreetmap.org/search?format=json&limit=5&q=" + encodeURIComponent(q);
-  const r = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) });
-  if (!r.ok) return { ok: false, status: r.status, data: [] };
-  const data = await r.json();
-  return { ok: true, status: 200, data: Array.isArray(data) ? data : [] };
-}
-
-/** Public search page. Used only after Nominatim has no point for a venue name. */
-async function venueSnippet(q) {
-  const url = "https://lite.duckduckgo.com/lite/?q=" + encodeURIComponent(q);
-  const r = await fetch(url, {
-    headers: {
-      "user-agent": "Mozilla/5.0 (compatible; OpenClutter; +https://github.com/jolla/OpenClutter)",
-    },
-    signal: AbortSignal.timeout(5000),
-  });
-  if (!r.ok) return "";
-  return r.text();
+function nominatim(q) {
+  return nominatimSearch(q, { userAgent: UA });
 }
 
 exports.handler = async (event) => {
@@ -51,14 +33,8 @@ async function geocodeHandler(event) {
     headers: { ...cors, "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  // A picked Esri suggestion carries its magicKey.
-  if (params.magicKey && params.magicKey.length < 400) {
-    const p = await resolveMagicKey(q, params.magicKey).catch(() => null);
-    if (p) return json([p]);
-  }
-  // Esri + Photon, ranked near the map view. A clean word-for-word match wins.
-  // A typo-only match lets a venue name try its search snippet first, so
-  // "Casa Evexia" is not swapped for a similarly spelled place abroad.
+  // Photon (OpenStreetMap), ranked near the map view. A clean word-for-word
+  // match wins. Otherwise Nominatim, paced to 1 request per second app-wide.
   let ranked = null;
   try {
     ranked = await bestPlace(q, viewFrom(params), { userAgent: UA });
@@ -78,16 +54,6 @@ async function geocodeHandler(event) {
     }
     return null;
   }
-  if (ranked && looksLikeVenueName(q)) {
-    try {
-      const address = addressFromVenueText(q, await venueSnippet(q));
-      const placed = address ? await firstHit(geocodeQueries(address)) : null;
-      if (placed) return json(placed);
-    } catch {
-      // Keep the ranked place.
-    }
-    return json([ranked]);
-  }
   if (ranked) return json([ranked]);
   const found = await firstHit(queries);
   if (found) {
@@ -96,26 +62,6 @@ async function geocodeHandler(event) {
       headers: { ...cors, "content-type": "application/json" },
       body: JSON.stringify(found),
     };
-  }
-  // Casa Evexia is not an OpenStreetMap point. A snippet that prints
-  // "298 Lakeshore, Pointe-Claire, QC" is geocoded with the address path.
-  if (looksLikeVenueName(q)) {
-    try {
-      const snippet = await venueSnippet(q);
-      const address = addressFromVenueText(q, snippet);
-      if (address) {
-        const placed = await firstHit(geocodeQueries(address));
-        if (placed) {
-          return {
-            statusCode: 200,
-            headers: { ...cors, "content-type": "application/json" },
-            body: JSON.stringify(placed),
-          };
-        }
-      }
-    } catch {
-      // A missed snippet still returns the empty Nominatim result.
-    }
   }
   if (!sawOk) {
     return {

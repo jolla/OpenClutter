@@ -352,21 +352,21 @@ describe("calibration affine (legacy maps only)", () => {
   });
 });
 
-/** Actual Esri World Imagery export?f=json for the Wooded Lot fixture. */
-const WOODED_LOT_DRAWN = {
-  west: -87.0005,
-  south: 42.0035,
-  east: -87.0015,
-  north: 42.9002,
+/** Actual Esri World Imagery export?f=json for the wooded residential fixture. */
+const WOODS_WI_DRAWN = {
+  west: -87.935,
+  south: 43.168,
+  east: -87.928,
+  north: 43.1747,
 };
-const WOODED_LOT_EXPORT = {
-  width: 571,
+const WOODS_WI_EXPORT = {
+  width: 568,
   height: 741,
   extent: {
-    xmin: -87.0005,
-    ymin: 42.0023,
-    xmax: -87.0015,
-    ymax: 42.0014,
+    xmin: -87.935,
+    ymin: 43.16678397887323,
+    xmax: -87.928,
+    ymax: 43.17591602112675,
     spatialReference: { wkid: 4326, latestWkid: 4326 },
   },
 };
@@ -408,52 +408,52 @@ describe("Hamina image vs OpenIntent pixel conventions", () => {
   });
 });
 
-describe("Esri export extent snap (Wooded Lot rooftop lock)", () => {
+describe("Esri export extent snap (wooded residential rooftop lock)", () => {
   it("does not treat the drawn south edge as y=0 on the JPEG when Esri pads latitude", () => {
-    const drawn = geoFrame(WOODED_LOT_DRAWN);
-    const [ , yDrawnSouth] = llToPx(-87.005, WOODED_LOT_DRAWN.south, drawn);
+    const drawn = geoFrame(WOODS_WI_DRAWN);
+    const [ , yDrawnSouth] = llToPx(-87.9315, WOODS_WI_DRAWN.south, drawn);
     assert.ok(Math.abs(yDrawnSouth) < 1e-6, "drawn-bbox mapping puts user south at JPEG south");
 
-    const live = applyImageryMeta(drawn, WOODED_LOT_EXPORT, { width: 571, height: 741 });
-    assert.equal(live.imgW, 571);
+    const live = applyImageryMeta(drawn, WOODS_WI_EXPORT, { width: 568, height: 741 });
+    assert.equal(live.imgW, 568);
     assert.equal(live.imgH, 741);
-    assert.ok(live.south < WOODED_LOT_DRAWN.south);
-    assert.ok(live.north > WOODED_LOT_DRAWN.north);
+    assert.ok(live.south < WOODS_WI_DRAWN.south);
+    assert.ok(live.north > WOODS_WI_DRAWN.north);
     assert.ok(live.lengthM > drawn.lengthM + 200);
 
-    const [, yUp] = llToPx(-87.005, WOODED_LOT_DRAWN.south, live);
-    const [, yImg] = llToImagePx(-87.005, WOODED_LOT_DRAWN.south, live);
+    const [, yUp] = llToPx(-87.9315, WOODS_WI_DRAWN.south, live);
+    const [, yImg] = llToImagePx(-87.9315, WOODS_WI_DRAWN.south, live);
     assert.ok(yUp > 80, `user south must sit inset on the padded JPEG, got y_up=${yUp}`);
     assert.ok(yImg > 80 && yImg < live.imgH - 80);
     assert.ok(Math.abs(yUp + yImg - live.imgH) < 1e-6);
 
-    const clipSouth = llToClipboard(-87.005, WOODED_LOT_DRAWN.south, live);
-    const clipNorth = llToClipboard(-87.005, WOODED_LOT_DRAWN.north, live);
+    const clipSouth = llToClipboard(-87.9315, WOODS_WI_DRAWN.south, live);
+    const clipNorth = llToClipboard(-87.9315, WOODS_WI_DRAWN.north, live);
     assert.ok(clipSouth[1] < clipNorth[1]);
     assert.ok(clipSouth[1] > -live.lengthM + 50);
     assert.ok(clipNorth[1] < -50);
   });
 
   it("infers the Esri content extent when export metadata never arrives", () => {
-    const drawn = geoFrame(WOODED_LOT_DRAWN);
-    const content = applyImageryMeta(drawn, null, { width: 571, height: 741 }, {
-      requestBbox: WOODED_LOT_DRAWN,
+    const drawn = geoFrame(WOODS_WI_DRAWN);
+    const content = applyImageryMeta(drawn, null, { width: 568, height: 741 }, {
+      requestBbox: WOODS_WI_DRAWN,
     });
-    const live = applyImageryMeta(drawn, WOODED_LOT_EXPORT, { width: 571, height: 741 });
+    const live = applyImageryMeta(drawn, WOODS_WI_EXPORT, { width: 568, height: 741 });
     assert.ok(Math.abs(content.south - live.south) < 1e-9, content.south + " vs " + live.south);
     assert.ok(Math.abs(content.north - live.north) < 1e-9, content.north + " vs " + live.north);
     assert.equal(content.west, live.west);
     assert.equal(content.east, live.east);
-    assert.equal(content.imgW, 571);
+    assert.equal(content.imgW, 568);
     assert.equal(content.imgH, 741);
-    const direct = esriContentExtent(WOODED_LOT_DRAWN, 571, 741);
+    const direct = esriContentExtent(WOODS_WI_DRAWN, 568, 741);
     assert.ok(Math.abs(direct.south - live.south) < 1e-9);
     assert.ok(Math.abs(direct.north - live.north) < 1e-9);
   });
 
   it("reads JPEG SOF size without jpeg-js", () => {
-    const buf = tinyJpeg(571, 741);
-    assert.deepEqual(jpegSize(buf), { width: 571, height: 741 });
+    const buf = tinyJpeg(568, 741);
+    assert.deepEqual(jpegSize(buf), { width: 568, height: 741 });
     assert.equal(jpegSize(Buffer.from([0xff, 0xd8, 0xff, 0xd9])), null);
   });
 });
