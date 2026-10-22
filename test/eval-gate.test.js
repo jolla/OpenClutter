@@ -72,8 +72,9 @@ describe("eval gate (cached fixtures, no Hamina)", () => {
         assert.equal(next.exportStats.imageryRecovery.hit, true);
         assert.ok(next.exportStats.contentGrid.ok, next.exportStats.contentGrid.drift.failures.join("; "));
         assert.ok(next.exportStats.contentGrid.geodesicMismatchPx > 40);
+        // 4 on the Esri crop the gate was calibrated on, 3 on the committed NAIP crop.
         assert.ok(
-          next.exportStats.pavementFootprints.dropped >= 4,
+          next.exportStats.pavementFootprints.dropped >= (loaded.esriPixels ? 4 : 3),
           "pavement dropped " + next.exportStats.pavementFootprints.dropped
         );
         assert.equal(next.exportStats.pavementFootprints.kept, 0);
@@ -82,13 +83,15 @@ describe("eval gate (cached fixtures, no Hamina)", () => {
     }
   });
 
-  it("writes only the OpenIntent JSON and the aerial", () => {
+  it("writes only the OpenIntent JSON, the aerial, and its credit", () => {
     const site = loadSitesIndex()[0];
     const result = runLoaded(loadFixture(site), { rgbPolicy: T.RGB_POLICY_PREFER_NLCD });
     const { unzipStore } = require("../netlify/lib/zip-store");
     const files = unzipStore(result.built.zip);
     const names = Object.keys(files);
-    assert.equal(names.length, 2);
+    assert.equal(names.length, 3);
+    assert.ok(names.includes("ATTRIBUTION.txt"));
+    assert.match(files["ATTRIBUTION.txt"].toString(), /Esri World Imagery/);
     assert.ok(names.some((name) => name.startsWith("openIntent_") && name.endsWith(".json")));
     assert.ok(names.some((name) => name.startsWith("images/") && name.endsWith(".jpg")));
     assert.equal(result.built.stats.includeFoliage, false);

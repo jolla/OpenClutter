@@ -1298,6 +1298,8 @@ module.exports = {
   unmercator,
   applyLidarSample,
   storageYards,
+  traceComponent,
+  heightForRing,
   lidarStatusLine,
   lidarNote,
   fetchUsgsLidar,

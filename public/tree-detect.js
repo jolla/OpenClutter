@@ -5,7 +5,7 @@
  * 2. Fallback: Esri aerial RGB — textured woody canopy, not smooth lawn.
  *
  * Sampling never fills MAX_TREES in scan order (that parked every icon on the
- * north lawn at 8121 S Long Meadow Dr). Collect the whole frame, score, then
+ * north lawn of a wooded residential test site). Collect the whole frame, score, then
  * spatially stratify.
  */
 (function (root, factory) {
@@ -318,7 +318,7 @@
 
   /**
    * NLCD getSamples (and RGB step lattices) are regular grids. Do not plant a
-   * tree on every cell center — that is the Long Meadow orchard.
+   * tree on every cell center — that is the wooded-lot orchard.
    *
    * Treat canopy % as a density field: local-maxima get a tree, woods get a
    * few jittered points with non-max suppression, lawns (low %) get few/none.

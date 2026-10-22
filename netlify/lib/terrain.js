@@ -450,7 +450,7 @@ function formatCellM(m) {
 /**
  * Relief at or above this is a ski hill for grid notes, and for a DEM that
  * was not pasted. A pasted mesh lifts buildings at any relief. Oak Creek
- * (~6 m), Long Meadow (~15 m), and the Las Vegas Sphere box (~17 m) used to
+ * (~6 m), a wooded residential lot (~15 m), and the Las Vegas Sphere box (~17 m) used to
  * stay at bottom 0 while the hill was still pasted, which put them under it.
  */
 const LIFT_RELIEF_M = 20;

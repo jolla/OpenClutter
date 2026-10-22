@@ -23,7 +23,7 @@ Do **not** use an X Grok bot. It cannot push to GitHub.
 | Piece | Source | Frame |
 |---|---|---|
 | Map image | Esri World Imagery export | `bboxSR=4326` `imageSR=4326`; **snap frame to the export’s actual `extent` + JPEG size** (Esri often pads N/S) |
-| Buildings | Microsoft **Global ML** (zoom-9 quadkey gzip, bbox-clipped, `height` when above 2 m) then **Overture Buildings** `2026-09-23.1` (`height`, else `num_floors` × 3 m), then Esri MSBFP2, then FEMA **USA Structures**. One ring per roof. MSBFP2 paginated to 2000 | same **actual** west/south/east/north as the JPEG |
+| Buildings | Microsoft **Global ML** (zoom-9 quadkey gzip, bbox-clipped, `height` when above 2 m) then **Overture Buildings** `2026-09-23.1` (`height`, else `num_floors` × 3 m), then FEMA **USA Structures**. One ring per roof. Esri-hosted MSBFP2 is no longer read (v1.2.11) | same **actual** west/south/east/north as the JPEG |
 | Trees | **Off unless Include foliage is checked.** Still Experimental. When on: **Meta/WRI CHM v2** extent and measured height. NLCD percent supplements only where it is denser and a measured height already exists. Building footprints and pavement/roads are masked. A CHM timeout omits foliage; buildings still export. Not circles, not trunks, not an aerial-color guess. | same extent. Bottom height from floor is the DEM under the footprint. Top is that bottom plus the measured canopy height. |
 | Map size | OpenIntent zip `dimensions` meters | `widthM` × `lengthM` from the **snapped JPEG extent**. High latitude resamples that JPEG so those meters are ground meters, not degree-pixels. |
 | Objects | OpenIntent buildings on Building - One/Two/Five/Ten Floor. Foliage only when Include foliage is on: canopy polygons on Foliage - Heavy / Light, with `transparencyEnabled: true`. Buildings omit that key. | clipboard matches the toggle. Foliage zone types are `transparencyEnabled: true`. Building types stay false. No trunks. Foliage off: buildings only |
@@ -46,7 +46,7 @@ OpenIntent (Y-up from SW): x_clip = x_up * mpuX − widthM ; y_clip = y_up * mpu
 y_up + y_img = imgH
 ```
 
-`widthM`×`lengthM` are the **JPEG’s actual Esri extent**, not the rectangle the user drew. World Imagery `imageSR=4326` routinely returns a taller lat span than requested (~1/cos φ). Mapping footprints with the drawn box was the Long Meadow rooftop miss.
+`widthM`×`lengthM` are the **JPEG’s actual Esri extent**, not the rectangle the user drew. World Imagery `imageSR=4326` routinely returns a taller lat span than requested (~1/cos φ). Mapping footprints with the drawn box was the residential woods (WI) rooftop miss.
 
 Zip also contains `alignment-overlay.svg` (buildings+trees on the exact Esri JPEG) and `frame-lock.json`. Open the SVG after unzip to verify image-space lock before blaming Hamina.
 
@@ -83,7 +83,7 @@ Do **not** inject OSM building or tree **rings** (broke v8 — Hamina dropped al
 
 ## Tree source (do not re-learn)
 
-**Bug (8121 S Long Meadow Dr, Oak Creek WI):** buildings aligned; trees were a dense band of foliage on the **north lawn** with almost none on the **south winter woods**.
+**Bug (wooded residential lot, Wisconsin):** buildings aligned; trees were a dense band of foliage on the **north lawn** with almost none on the **south winter woods**.
 
 Root cause of the old RGB path: `isVeg` matched olive lawn and missed brown canopy, and hits were scanned top→bottom then capped at 180 — northern grass filled the quota.
 
@@ -91,7 +91,7 @@ Root cause of the old RGB path: `isVeg` matched olive lawn and missed brown cano
 
 `https://imagery.geoplatform.gov/iipp/rest/services/Vegetation/USFS_EDW_NLCD_TCC_CONUS/ImageServer/getSamples`
 
-Same west/south/east/north as the Esri map (`sr=4326`), latest `beginyear`, values 0–100 percent (254/255 nodata). Threshold **≥ 18%**. **Do not place a tree on every sample center** — `getSamples` is a regular grid (the Long Meadow orchard). `placeTreesFromCanopy` treats % as density: local maxima, jitter inside the cell, NMS spacing ~7–16 m (tighter in continuous woods), lawns/low % get few/none. Cap `maxTreesForBbox` (180 small maps, 600–800 large golf/campus). Server still drops points inside building AABBs. Stratified bins fill woods, not just building-yard peaks.
+Same west/south/east/north as the Esri map (`sr=4326`), latest `beginyear`, values 0–100 percent (254/255 nodata). Threshold **≥ 18%**. **Do not place a tree on every sample center** — `getSamples` is a regular grid (the wooded-lot orchard). `placeTreesFromCanopy` treats % as density: local maxima, jitter inside the cell, NMS spacing ~7–16 m (tighter in continuous woods), lawns/low % get few/none. Cap `maxTreesForBbox` (180 small maps, 600–800 large golf/campus). Server still drops points inside building AABBs. Stratified bins fill woods, not just building-yard peaks.
 
 **Fallback to imagery RGB** only when canopy fetch fails **or** fewer than `MIN_VALID_SAMPLES` (20) valid 0–100 pixels (empty raster / outside CONUS). A site that truly has 0–7 trees above threshold stays `nlcd-canopy` — do **not** RGB-paint the lawn or parking lot (PR #8’s “RGB when NLCD=0” did that).
 
@@ -99,7 +99,7 @@ RGB fallback: reject smooth lawn and gray pavement (low local luma variance, hig
 
 `stats.treesSource`: `"nlcd-canopy" | "imagery-rgb" | "none"` in the API/stats payload — **never a UI picker**. Shared logic: `public/tree-detect.js` (`resolveTrees` / `rgbFillNeeded`) used by the browser, eval, and Node tests. Foliage geometry when the CHM resolves is `chm-contour`: connected canopy, simplified to the edge, not a peak grid and not max-pooled cells.
 
-**Eval (no Hamina, no Jerry):** `npm run eval` scores cached fixtures in `test/fixtures/` (Oak Creek commercial + Long Meadow). Image-space overlay + `export-stats.json`. `--legacy` / `--compare-legacy` replays RGB-carpet. `--live` hits Esri/NLCD. Exit non-zero on over-trees or dropped large roofs.
+**Eval (no Hamina, no Jerry):** `npm run eval` scores cached fixtures in `test/fixtures/` (Oak Creek commercial + `residential-woods-wi`). Image-space overlay + `export-stats.json`. `--legacy` / `--compare-legacy` replays RGB-carpet. `--live` hits Esri/NLCD. Exit non-zero on over-trees or dropped large roofs.
 
 **UX (Jerry):** super simple tool. Search → Draw → Export → **one `.zip`**. One checkbox: **Include foliage**, default off (buildings only). Hide OSM checkbox, control-points textarea, format choosers. One status line (“Export is still working.”). After export: “Import this zip in Hamina (Projects → Import → OpenIntent).” plus coverage stats (buildings kept/fetched/drops, foliage on/off, trees kept). OSM/`controlPoints` remain API escape hatches for tests only.
 

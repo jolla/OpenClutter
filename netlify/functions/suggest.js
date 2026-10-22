@@ -3,7 +3,7 @@
 const { userAgent: UA } = require("../lib/version");
 const { suggestPlaces } = require("../lib/place-search");
 
-/** Autocomplete for the search box: Esri suggest + Photon, ranked near the view. */
+/** Autocomplete for the search box: Photon (OpenStreetMap), ranked near the view. */
 exports.handler = async (event) => {
   const cors = {
     "access-control-allow-origin": "*",
