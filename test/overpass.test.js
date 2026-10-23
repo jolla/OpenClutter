@@ -183,3 +183,14 @@ describe("overpass client", () => {
     assert.equal(hit, 1);
   });
 });
+
+describe("area cache classifier", () => {
+  const cache = require("../netlify/lib/area-cache");
+  it("never treats a blob store request as a source read", () => {
+    assert.equal(cache.classifyFetch("https://api.netlify.com/api/v1/blobs/site/openclutter-exports/raw/overpass/interpreter/abc/body"), null);
+    assert.equal(cache.classifyFetch("https://netlify-blobs.s3.us-east-1.amazonaws.com/raw/overpass/interpreter/abc"), null);
+    assert.equal(cache.classifyFetch("https://overpass-api.de/api/map?bbox=1,2,3,4").source, "osm");
+    assert.equal(cache.classifyFetch("https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/chm/tile.tif").source, "canopy");
+    assert.equal(cache.classifyFetch("https://maps.mail.ru/osm/tools/overpass/api/interpreter", { body: "data=x" }).source, "overpass");
+  });
+});
