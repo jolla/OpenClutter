@@ -1582,7 +1582,9 @@ function chamferOutside(mask, w, h) {
  * long axis. A longer blob is a row of boats moored side by side and is cut
  * along that row into pieces about a beam apart, each kept only where the
  * photo shows hull. A mapped roof is never a boat. Nothing is drawn on open
- * water or on a dock with no boat beside it.
+ * water or on a dock with no boat beside it. A main walkway, a light band
+ * at least 20 m long and at most 3.5 m wide, is cleared before hulls are
+ * read, and a row-length blob needs open water on two sides.
  */
 function boatsOnWaterWork(ring, frame, plate, holes, piers) {
   if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return [];
@@ -1648,6 +1650,18 @@ function boatsOnWaterWork(ring, frame, plate, holes, piers) {
     }
   }
   const hullFloor = Math.max(HULL_MIN_Y, Math.min(175, wMed + HULL_OVER_WATER));
+  // Open water near this marina's own median. Dark pavement on the shore
+  // passes the loose water test but not this one.
+  const deep = new Uint8Array(bw * bh);
+  const deepMax = wMed + DEEP_OVER_WATER;
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
+      const k = y * bw + x;
+      if (!water[k]) continue;
+      const i = ((y + y0) * plate.width + (x + x0)) * 4;
+      if (0.299 * plate.data[i] + 0.587 * plate.data[i + 1] + 0.114 * plate.data[i + 2] <= deepMax) deep[k] = 1;
+    }
+  }
   for (let y = 0; y < bh; y++) {
     for (let x = 0; x < bw; x++) {
       const k = y * bw + x;
@@ -1660,8 +1674,10 @@ function boatsOnWaterWork(ring, frame, plate, holes, piers) {
       if (yl >= hullFloor && Math.max(r, g, b) - Math.min(r, g, b) <= 40) boat[k] = 1;
     }
   }
-  // Opening: strip walkways narrower than about 2.4 m, keep hulls.
   const mpu = Math.min(mpuX, mpuY);
+  // Long thin light bands (a walkway seen on the photo) are not hulls.
+  maskWalkways(boat, bw, bh, mpu);
+  // Opening: strip walkways narrower than about 2.4 m, keep hulls.
   const rPx = Math.max(1, Math.round(DOCK_STRIP_M / mpu));
   const din = chamferInside(boat, bw, bh);
   const core = new Uint8Array(bw * bh);
@@ -1705,7 +1721,12 @@ function boatsOnWaterWork(ring, frame, plate, holes, piers) {
     if (pierLines && !nearPier(ext.cx, ext.cy, pierLines, PIER_NEAR_M)) continue;
     // A hull floats: open water shows around it. Pavement or a roof edge on
     // the shore touches water on one side only.
-    if (waterAround(ext, water, x0, y0, bw, bh, frame) < BOAT_WATER_AROUND) continue;
+    const around = waterAround(ext, water, x0, y0, bw, bh, frame);
+    if (around.share < BOAT_WATER_AROUND) continue;
+    // A blob long enough to be a row needs open water on at least two
+    // sides. A strip along the shore has it on one; dark pavement does not
+    // count as open water.
+    if (ext.len > BOAT_ONE_MAX_M && waterAround(ext, deep, x0, y0, bw, bh, frame).sides < 2) continue;
     const pieces = boatPieces(cells, x0, y0, bw, frame, ext);
     for (let p = 0; p < pieces.length && out.length < BOAT_CAP; p++) out.push(pieces[p]);
   }
@@ -1743,6 +1764,76 @@ function nearPier(x, y, lines, limit) {
 
 /** Share of the 0.5 to 2.5 m band around a hull's box that is open water. */
 const BOAT_WATER_AROUND = 0.2;
+/** A side of a hull counts as wet when this share of its band is water. */
+const SIDE_WET = 0.25;
+/** Open water is at most this much brighter than the marina's median water. */
+const DEEP_OVER_WATER = 25;
+/** A light band at least this long and at most this wide is a walkway. */
+const WALKWAY_MIN_LEN_M = 20;
+const WALKWAY_MAX_WID_M = 3.5;
+
+/** Light run length through each pixel along one direction, capped at 255. */
+function runLengths(mask, w, h, sx, sy) {
+  const run = new Uint8Array(w * h);
+  const starts = [];
+  if (sy === 0) for (let y = 0; y < h; y++) starts.push([sx > 0 ? 0 : w - 1, y]);
+  else if (sx === 0) for (let x = 0; x < w; x++) starts.push([x, 0]);
+  else {
+    for (let x = 0; x < w; x++) starts.push([x, 0]);
+    for (let y = 1; y < h; y++) starts.push([sx > 0 ? 0 : w - 1, y]);
+  }
+  const idx = [];
+  for (let s = 0; s < starts.length; s++) {
+    let x = starts[s][0];
+    let y = starts[s][1];
+    idx.length = 0;
+    while (x >= 0 && y >= 0 && x < w && y < h) {
+      const k = y * w + x;
+      if (mask[k]) idx.push(k);
+      else if (idx.length) {
+        const v = Math.min(255, idx.length);
+        for (let q = 0; q < idx.length; q++) run[idx[q]] = v;
+        idx.length = 0;
+      }
+      x += sx;
+      y += sy;
+    }
+    if (idx.length) {
+      const v = Math.min(255, idx.length);
+      for (let q = 0; q < idx.length; q++) run[idx[q]] = v;
+    }
+  }
+  return run;
+}
+
+/**
+ * A walkway on the photo is a light band that runs on and on but stays
+ * narrow across. A hull is short along its row, and a yacht long enough to
+ * pass the length test is wider than a walkway.
+ */
+function maskWalkways(mask, w, h, mpu) {
+  const minLen = WALKWAY_MIN_LEN_M / mpu;
+  const maxWid = WALKWAY_MAX_WID_M / mpu;
+  const diag = Math.SQRT2;
+  const pairs = [
+    [1, 0, 0, 1, 1],
+    [1, 1, 1, -1, diag],
+  ];
+  const clear = new Uint8Array(w * h);
+  for (let p = 0; p < pairs.length; p++) {
+    const [ax, ay, bx, by, step] = pairs[p];
+    const a = runLengths(mask, w, h, ax, ay);
+    const b = runLengths(mask, w, h, bx, by);
+    const lenPx = minLen / step;
+    const widPx = maxWid / step;
+    if (lenPx > 255) continue;
+    for (let k = 0; k < mask.length; k++) {
+      if (!mask[k]) continue;
+      if ((a[k] >= lenPx && b[k] <= widPx) || (b[k] >= lenPx && a[k] <= widPx)) clear[k] = 1;
+    }
+  }
+  for (let k = 0; k < mask.length; k++) if (clear[k]) mask[k] = 0;
+}
 
 function waterAround(ext, water, x0, y0, bw, bh, frame) {
   const hl = ext.len / 2;
@@ -1762,19 +1853,30 @@ function waterAround(ext, water, x0, y0, bw, bh, frame) {
   const ry = Math.ceil(R / mpy);
   let n = 0;
   let wet = 0;
+  const sideN = [0, 0, 0, 0];
+  const sideW = [0, 0, 0, 0];
   for (let py = Math.max(y0, Math.floor(cy - ry)); py <= Math.min(y0 + bh - 1, Math.ceil(cy + ry)); py++) {
     for (let px = Math.max(x0, Math.floor(cx - rx)); px <= Math.min(x0 + bw - 1, Math.ceil(cx + rx)); px++) {
       const dx = (px + 0.5 - cx) * mpx;
       const dy = -(py + 0.5 - cy) * mpy;
-      const u = Math.abs(dx * ext.ux + dy * ext.uy);
-      const v = Math.abs(dx * vx + dy * vy);
+      const su = dx * ext.ux + dy * ext.uy;
+      const sv = dx * vx + dy * vy;
+      const u = Math.abs(su);
+      const v = Math.abs(sv);
       if (u > hl + outer || v > hw + outer) continue;
       if (u <= hl + inner && v <= hw + inner) continue;
       n++;
-      if (water[(py - y0) * bw + (px - x0)]) wet++;
+      const isWet = water[(py - y0) * bw + (px - x0)] ? 1 : 0;
+      wet += isWet;
+      // The side this sample faces: the two ends, then the two flanks.
+      const side = u - hl > v - hw ? (su > 0 ? 0 : 1) : sv > 0 ? 2 : 3;
+      sideN[side]++;
+      sideW[side] += isWet;
     }
   }
-  return n ? wet / n : 0;
+  let sides = 0;
+  for (let k = 0; k < 4; k++) if (sideN[k] && sideW[k] / sideN[k] >= SIDE_WET) sides++;
+  return { share: n ? wet / n : 0, sides };
 }
 
 /**
@@ -3189,6 +3291,7 @@ module.exports = {
   finishCarLayer,
   boatsOnWaterWork,
   boatsOnWaterLegacy,
+  maskWalkways,
   mobileHomesInRingWork,
   semisInLotWork,
   semisAtDocksWork,

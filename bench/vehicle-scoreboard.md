@@ -6,7 +6,7 @@ Recall and precision use the hand-checked pads only. A pad that was not reviewed
 | --- | --- | ---: | ---: | ---: | ---: | --- | --- | ---: | --- |
 | Rogers campground | rv | 90.0% | 84.6% | 10 | 13 | manual image labels | no | 33393 / 4900000 | no |
 | Mesa RV resorts | rv | 100.0% | 85.7% | 12 | 14 | manual image labels | no | 56244 / 4900000 | yes |
-| Wentworth marina | boat | 83.3% | 100.0% | 24 | 35 | manual image labels | no | 43017 / 4900000 | no |
+| Wentworth marina | boat | 75.0% | 100.0% | 24 | 32 | manual image labels | no | 41684 / 4900000 | no |
 | Citrus Gardens | mobile-home | 100.0% | 100.0% | 24 | 38 | manual image labels | no | 133545 / 4900000 | yes |
 | Iowa 80 truck stop | semi | 73.3% | 100.0% | 15 | 22 | manual image labels | no | 47566 / 4900000 | no |
 | Walmart Davenport lot | car | 100.0% | 98.1% | 1 | 8 | manual image labels | yes | 1119 / 4900000 | yes |

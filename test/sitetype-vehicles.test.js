@@ -148,4 +148,32 @@ describe("site-type vehicles", () => {
     }
     assert.equal(finalizeVehicles([road], null, null).length, 0);
   });
+
+  it("clears a long narrow walkway and keeps a hull beside it", () => {
+    const { maskWalkways } = require("../netlify/lib/vehicle-track");
+    const w = 200;
+    const h = 60;
+    const mask = new Uint8Array(w * h);
+    // 0.3 m pixels: a 45 m by 2.4 m walkway and a 10 by 4 m hull.
+    for (let y = 10; y < 18; y++) for (let x = 20; x < 170; x++) mask[y * w + x] = 1;
+    for (let y = 30; y < 43; y++) for (let x = 40; x < 73; x++) mask[y * w + x] = 1;
+    maskWalkways(mask, w, h, 0.3);
+    let walk = 0;
+    let hull = 0;
+    for (let y = 10; y < 18; y++) for (let x = 20; x < 170; x++) walk += mask[y * w + x];
+    for (let y = 30; y < 43; y++) for (let x = 40; x < 73; x++) hull += mask[y * w + x];
+    assert.equal(walk, 0);
+    assert.equal(hull, 13 * 33);
+  });
+
+  it("draws no boats on a light strip between pavement and water", () => {
+    const f = frame();
+    const plate = plateOf(f, [20, 30, 45]);
+    // Dark pavement on the shore, a 40 m by 5 m light strip along it, open
+    // water below.
+    paint(plate, 0, 0, f.imgW, 117, [70, 72, 78]);
+    paint(plate, 40, 100, 175, 117, [200, 198, 190]);
+    const boats = boatsOnWater(ringPx(f, 10, 60, 330, 200), f, plate, [], null);
+    assert.equal(boats.length, 0);
+  });
 });
