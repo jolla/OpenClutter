@@ -22,7 +22,7 @@ const {
   semisAtDocks,
 } = require("../netlify/lib/vehicle-track");
 const { geoFrame } = require("../netlify/lib/geo-frame");
-const { outdoorMaterial } = require("../netlify/lib/materials");
+const { outdoorMaterial, liftedOutdoorMaterial, canonicalAreaMaterial } = require("../netlify/lib/materials");
 
 describe("vehicle track", () => {
   it("reads an RV pad and a tent pad from the mapped name", () => {
@@ -32,14 +32,31 @@ describe("vehicle track", () => {
     assert.equal(pitchClass(""), "");
   });
 
-  it("keeps a metal RV at 12 dB/m and a trailer at the same rate", () => {
+  it("keeps a metal RV at 12 dB/m and a trailer at the same rate off /dev", () => {
+    setSiteTypes(false);
     const rv = outdoorMaterial("rv", 3.5);
     const trailer = outdoorMaterial("trailer", 3.2);
+    setSiteTypes(true);
     assert.equal(rv.rf_properties.attenuation_per_m, RV_DB);
     assert.equal(trailer.rf_properties.attenuation_per_m, TRAILER_DB);
     assert.equal(rv.transparencyEnabled, undefined);
     assert.equal(trailer.transparencyEnabled, undefined);
     assert.ok(RV_DB >= 10 && RV_DB <= 15);
+  });
+
+  it("puts an RV and a trailer at 9 dB/m on /dev hosts, 23 to 29 dB across the box", () => {
+    const rv = outdoorMaterial("rv", 3.5);
+    const trailer = outdoorMaterial("trailer", 3.2);
+    assert.equal(rv.rf_properties.attenuation_per_m, 9);
+    assert.equal(trailer.rf_properties.attenuation_per_m, 9);
+    assert.equal(outdoorMaterial("semi", 4.1).rf_properties.attenuation_per_m, 12);
+    const across = (w) => rv.rf_properties.attenuation_per_m * w;
+    assert.ok(across(2.6) >= 20 && across(3.2) <= 30);
+    // A lifted RV on a slope keeps the same rate and still validates.
+    const lifted = liftedOutdoorMaterial(rv, 6);
+    assert.equal(lifted.rf_properties.attenuation_per_m, 9);
+    assert.ok(canonicalAreaMaterial(lifted));
+    assert.ok(canonicalAreaMaterial(rv));
   });
 
   it("drops an empty tent pad and keeps a light vehicle on it as a trailer", () => {
