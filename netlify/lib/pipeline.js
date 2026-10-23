@@ -3129,7 +3129,19 @@ function isTrunkArea(a) {
 
 function buildOpenIntent(frame, name, imgName, areas, materials) {
   const mpu = frame.mpuX || frame.mpu || frame.widthM / frame.imgW;
-  return {
+  let wallSegments = null;
+  let wallMaterials = [];
+  let areaMaterials = null;
+  if (require("./export-mode").isRvShell()) {
+    const shell = require("./rv-shell").shellRvAreas(areas);
+    if (shell.shells) {
+      areaMaterials = documentMaterials(shell.areas).concat(shell.roofMaterials);
+      areas = shell.areas;
+      wallSegments = shell.walls;
+      wallMaterials = shell.wallMaterials;
+    }
+  }
+  const oi = {
     floorplans: [
       {
         name,
@@ -3163,11 +3175,13 @@ function buildOpenIntent(frame, name, imgName, areas, materials) {
         closets: [],
       },
     ],
-    wall_materials: [],
+    wall_materials: wallMaterials,
     switches: [],
-    area_materials: documentMaterials(areas),
+    area_materials: areaMaterials || documentMaterials(areas),
     openintent_version: OPENINTENT_VERSION,
   };
+  if (wallSegments && wallSegments.length) oi.floorplans[0].wall_segments = wallSegments;
+  return oi;
 }
 
 /**
@@ -4034,6 +4048,7 @@ function buildClutter({
     guidewayAreas,
     bridgeAreas,
     rvAreas,
+    rvShellWalls: (oi.floorplans[0].wall_segments || []).length,
     trailerAreas,
     semiAreas,
     storageAreas,

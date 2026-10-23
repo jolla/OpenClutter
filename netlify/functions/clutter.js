@@ -1501,6 +1501,9 @@ async function handleClutter(event) {
   exportMode.setResilient(!(testHost && body.legacyFetch === true));
   // The 1.2.18 RV park and marina rules run on /dev hosts only.
   exportMode.setSiteTypes(testHost);
+  // From 1.2.25 /dev RVs and trailers are hollow shells (four walls and a
+  // roof slab). rvShell:false on a /dev host exports the solid 9 dB/m block.
+  exportMode.setRvShell(exportMode.rvShellWanted(testHost, body));
   const areaCapOverride = testHost ? parseAreaCapOverride(body.areaCap) : 0;
   const jsonBudgetOverride = testHost ? parseJsonBudgetOverride(body.jsonBudget) : 0;
   const terrainFloors = testHost ? parseTerrainFloorOverride(body.terrainFloors) : 0;
