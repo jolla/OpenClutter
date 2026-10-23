@@ -49,4 +49,33 @@ function rvShellWanted(testHost, body) {
   return !!testHost && !(body && body.rvShell === false);
 }
 
-module.exports = { setResilient, isResilient, setSiteTypes, isSiteTypes, setRvShell, isRvShell, rvShellWanted };
+// Worst-case pads learn the pad pattern from the whole mapped park, read on
+// a second photo past the draw (1.2.26). On for /dev hosts unless the request
+// sends parkContext:false; production never reads past the draw.
+let parkContext = false;
+
+function setParkContext(on) {
+  parkContext = !!on;
+}
+
+function isParkContext() {
+  return parkContext;
+}
+
+/** Park context on /dev hosts unless the request says parkContext:false. Never on production. */
+function parkContextWanted(testHost, body) {
+  return !!testHost && !(body && body.parkContext === false);
+}
+
+module.exports = {
+  setResilient,
+  isResilient,
+  setSiteTypes,
+  isSiteTypes,
+  setRvShell,
+  isRvShell,
+  rvShellWanted,
+  setParkContext,
+  isParkContext,
+  parkContextWanted,
+};

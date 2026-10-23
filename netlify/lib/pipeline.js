@@ -3093,9 +3093,32 @@ function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
   return { areas, kinds, droppedInvalid };
 }
 
+/** OpenIntent pixel centres of the pad-fill areas in a converted outdoor plan. */
+function padFillCentres(converted) {
+  const out = [];
+  if (!converted || !converted.fills) return out;
+  for (let i = 0; i < converted.areas.length; i++) {
+    if (!converted.fills[i]) continue;
+    const c = converted.areas[i] && converted.areas[i].area && converted.areas[i].area.coordinates;
+    if (!c || c.length < 4) continue;
+    let x = 0;
+    let y = 0;
+    const last = c[c.length - 1].coordinate_xyz;
+    const first = c[0].coordinate_xyz;
+    const n = last.x === first.x && last.y === first.y ? c.length - 1 : c.length;
+    for (let k = 0; k < n; k++) {
+      x += c[k].coordinate_xyz.x;
+      y += c[k].coordinate_xyz.y;
+    }
+    out.push([Math.round((x / n) * 100) / 100, Math.round((y / n) * 100) / 100]);
+  }
+  return out;
+}
+
 function outdoorToOi(items, imgW, imgH, mpuX) {
   const areas = [];
   const kinds = [];
+  const fills = [];
   const droppedByKind = {};
   for (const t of items || []) {
     const opts = { keepShape: true };
@@ -3114,8 +3137,9 @@ function outdoorToOi(items, imgW, imgH, mpuX) {
     }
     areas.push(area);
     kinds.push(t.kind);
+    fills.push(t.padFill === true);
   }
-  return { areas, kinds, droppedByKind };
+  return { areas, kinds, fills, droppedByKind };
 }
 
 /** Hamina outdoor OpenIntent floorplan height (gold export + after-paste re-export). */
@@ -3353,17 +3377,20 @@ function dropPassengerCarsFromPlan(plan) {
     }
     const srcKinds = plan.converted.kinds || [];
     const srcAreas = plan.converted.areas || [];
+    const srcFills = plan.converted.fills || [];
     const areas = [];
     const kinds = [];
+    const fills = [];
     for (let i = 0; i < srcKinds.length; i++) {
       if (srcKinds[i] === "car") continue;
       kinds.push(srcKinds[i]);
       areas.push(srcAreas[i]);
+      fills.push(srcFills[i] === true);
     }
     if (items.length === srcItems.length && kinds.length === srcKinds.length) return plan;
     return {
       planned: Object.assign({}, plan.planned, { items: items }),
-      converted: Object.assign({}, plan.converted, { areas: areas, kinds: kinds }),
+      converted: Object.assign({}, plan.converted, { areas: areas, kinds: kinds, fills: fills }),
     };
   }
   if (plan.items) {
@@ -4049,6 +4076,9 @@ function buildClutter({
     bridgeAreas,
     rvAreas,
     rvShellWalls: (oi.floorplans[0].wall_segments || []).length,
+    // Worst-case pad fills (rv-pads.js) by OpenIntent pixel centre, for the
+    // site-type bench only (OC_BENCH_PAD_FILLS), so it can score them apart.
+    ...(process.env.OC_BENCH_PAD_FILLS ? { padFills: padFillCentres(converted) } : {}),
     trailerAreas,
     semiAreas,
     storageAreas,
@@ -4199,6 +4229,7 @@ module.exports = {
   thinTreeOutlines,
   treesToOi,
   outdoorToOi,
+  padFillCentres,
   emitIfValid,
   capAttenuationAreas,
   capBuildingsAndTrees,
