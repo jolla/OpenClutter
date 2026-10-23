@@ -249,7 +249,8 @@ function runOn(workerIndex, task, payload, hooks) {
   const job = new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject, onTime });
     try {
-      worker.postMessage({ id, task, payload });
+      // Threads keep their own module state: carry the export's rule set.
+      worker.postMessage({ id, task, payload, siteTypes: require("./export-mode").isSiteTypes() });
     } catch (err) {
       pending.delete(id);
       reject(err);

@@ -65,7 +65,7 @@ const { placesFromElements } = require("./map-notes");
 
 const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
 const overpass = require("./overpass");
-const { isResilient } = require("./export-mode");
+const { isResilient, isSiteTypes } = require("./export-mode");
 const FETCH_MS = 3200;
 const POLE_CAP = 48;
 const WALL_CAP = 80;
@@ -105,6 +105,10 @@ const RV_PAD_FAR_M = 17;
 const RV_DEDUPE_M = 8;
 /** A mapped campground can pass 400 pitches. The cap used to drop the last row. */
 const RV_CAP = 2400;
+const RV_CAP_LEGACY = 800;
+function rvCap() {
+  return isSiteTypes() ? RV_CAP : RV_CAP_LEGACY;
+}
 const RV_ROAD_SEARCH_M = 40;
 const RV_ROADS = { service: true, track: true, living_street: true, residential: true, unclassified: true };
 
@@ -160,7 +164,7 @@ function overpassQuery(bbox, want) {
     parts.push('way["mooring"](' + box + ");");
     parts.push('node["seamark:type"="mooring"](' + box + ");");
     parts.push('way["residential"="mobile_home"](' + box + ");");
-    parts.push('way["man_made"="pier"](' + box + ");");
+    if (isSiteTypes()) parts.push('way["man_made"="pier"](' + box + ");");
   }
   if (want.trees) {
     // Palm-tagged trees only: a stem with a small crown, not a broadleaf.
@@ -967,7 +971,7 @@ function tooNear(x, y, placed) {
 }
 
 function pushRv(out, placed, proj, x, y, heading, extra) {
-  if (out.length >= RV_CAP) return false;
+  if (out.length >= rvCap()) return false;
   if (tooNear(x, y, placed)) return false;
   const spec = extra && extra.spec;
   const ring = rvRect(proj, x, y, heading.ux, heading.uy, spec && spec.length, spec && spec.width);
@@ -1028,7 +1032,7 @@ function rvBoxes(features) {
   const boxes = [];
   if (!sites.length) return boxes;
   const usedPitch = new Set();
-  for (let s = 0; s < sites.length && boxes.length < RV_CAP; s++) {
+  for (let s = 0; s < sites.length && boxes.length < rvCap(); s++) {
     const site = sites[s];
     const origin = ringCentroidLL(site.coords);
     if (!origin) continue;
@@ -1054,7 +1058,7 @@ function rvBoxes(features) {
     }
     const placed = [];
     if (insidePitches.length) {
-      for (let p = 0; p < insidePitches.length && boxes.length < RV_CAP; p++) {
+      for (let p = 0; p < insidePitches.length && boxes.length < rvCap(); p++) {
         const item = insidePitches[p];
         const xy = proj.to(item.center[0], item.center[1]);
         let heading = nearestRoadHeading(xy[0], xy[1], siteRoads);
@@ -1078,9 +1082,9 @@ function rvBoxes(features) {
       }
       continue;
     }
-    for (let r = 0; r < siteRoads.length && boxes.length < RV_CAP; r++) {
+    for (let r = 0; r < siteRoads.length && boxes.length < rvCap(); r++) {
       const stations = roadStations(siteRoads[r], RV_SPACING_M);
-      for (let i = 0; i < stations.length && boxes.length < RV_CAP; i++) {
+      for (let i = 0; i < stations.length && boxes.length < rvCap(); i++) {
         const st = stations[i];
         const heading = { ux: st.ux, uy: st.uy };
         const ox = -st.uy * RV_ROAD_OFFSET_M;
@@ -1089,7 +1093,7 @@ function rvBoxes(features) {
           [st.x + ox, st.y + oy],
           [st.x - ox, st.y - oy],
         ];
-        for (let side = 0; side < sides.length && boxes.length < RV_CAP; side++) {
+        for (let side = 0; side < sides.length && boxes.length < rvCap(); side++) {
           const ll = proj.from(sides[side][0], sides[side][1]);
           if (!pointInSite(ll, site)) continue;
           // The strip beside this stretch of road where a parked RV would
@@ -1113,7 +1117,7 @@ function rvBoxes(features) {
             kind: "rv",
             spec: VEHICLE_BOX.rv,
             pitchUse: "road",
-            pad,
+            pad: isSiteTypes() ? pad : undefined,
           });
         }
       }
@@ -1316,7 +1320,7 @@ function parseOverpass(payload, want, bbox, deckCap) {
     if (coords.length < 2) continue;
     if (bbox && !anyInBox(coords, bbox)) continue;
     railRecords.push({ tags, coords });
-    if (on.rvs && tags.man_made === "pier" && piers.length < PIER_CAP) piers.push(coords);
+    if (on.rvs && isSiteTypes() && tags.man_made === "pier" && piers.length < PIER_CAP) piers.push(coords);
     if ((on.parking || on.rvs) && isParkingWay(tags) && isClosed(coords) && isTruckLotTags(tags)) {
       features.push({
         kind: "truck-lot",
@@ -1666,8 +1670,8 @@ function limitFeatures(features, bbox, deckCap) {
   if (pole.capped) notes.push("Light poles capped at " + POLE_CAP + ".");
   if (guideSorted.length > guideKept.length) notes.push("Guideways capped at " + guideLimit + ".");
   if (bridges.length > bridgeKept.length) notes.push("Bridges capped at " + bridgeLimit + ".");
-  const rvKept = rvs.slice(0, RV_CAP);
-  if (rvs.length > rvKept.length) notes.push("RVs capped at " + RV_CAP + ".");
+  const rvKept = rvs.slice(0, rvCap());
+  if (rvs.length > rvKept.length) notes.push("RVs capped at " + rvCap() + ".");
   return {
     features: w.kept.concat(p.kept, wallKept, pole.kept, guideKept, bridgeKept, rvKept),
     notes,
@@ -1793,10 +1797,10 @@ function elementsFromMapXml(xml, bbox) {
     if (isRvSiteTags(tags) || isRvPitchTags(tags) || isRvRoadTags(tags)) pushWay(tags, pts);
     // The interpreter query asks for marinas, moorings, and mobile-home
     // parks. The map read has to keep them too, or a marina gets no boats.
-    if (isMarinaTags(tags) || isMooringTags(tags) || tags.residential === "mobile_home" || tags.man_made === "pier") pushWay(tags, pts);
+    if (isSiteTypes() && (isMarinaTags(tags) || isMooringTags(tags) || tags.residential === "mobile_home" || tags.man_made === "pier")) pushWay(tags, pts);
   }
   for (const node of nodes.values()) {
-    if (isPoleNode(node.tags) || isRvPitchTags(node.tags) || isMooringTags(node.tags) || (node.tags && node.tags.natural === "tree" && require("./vegetation").isPalmTags(node.tags))) {
+    if (isPoleNode(node.tags) || isRvPitchTags(node.tags) || (isSiteTypes() && isMooringTags(node.tags)) || (node.tags && node.tags.natural === "tree" && require("./vegetation").isPalmTags(node.tags))) {
       elements.push({ type: "node", lon: node.lon, lat: node.lat, tags: node.tags });
     }
   }
@@ -1840,7 +1844,7 @@ function elementsFromMapXml(xml, bbox) {
       if (members.length) elements.push({ type: "relation", tags, members });
       continue;
     }
-    if (isMarinaTags(tags) && !water) {
+    if (isSiteTypes() && isMarinaTags(tags) && !water) {
       // A marina mapped as a multipolygon: each closed outer ring is the area
       // boats are read in.
       const parts = [];
@@ -2530,7 +2534,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       : null;
   const roadsideMap = scanned && scanned.roadside;
   const roadsideFor =
-    vehiclePlate && frame
+    vehiclePlate && frame && isSiteTypes()
       ? function (ring) {
           if (roadsideMap) {
             const key = ringKey(ring);
@@ -2758,7 +2762,9 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       const found =
         scanned && scanned.boats && Object.prototype.hasOwnProperty.call(scanned.boats, ringKey(f.coords))
           ? scanned.boats[ringKey(f.coords)] || []
-          : boatsOnWater(f.coords, frame, vehiclePlate, roofRingsLL(), f.piers);
+          : isSiteTypes()
+            ? boatsOnWater(f.coords, frame, vehiclePlate, roofRingsLL(), f.piers)
+            : boatsOnWater(f.coords, frame, vehiclePlate);
       for (let b = 0; b < found.length; b++) {
         const ringPx = lonLatRingToPx(found[b].coords, frame);
         const material = materialForKind("boat", found[b].heightM || 3.5, found[b].coords, slopeTop, 0);

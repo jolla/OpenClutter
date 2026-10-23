@@ -1499,6 +1499,8 @@ async function handleClutter(event) {
   // Overpass retries and fallback, and the sharper-plate wait, run on every
   // host. On /dev hosts legacyFetch:true replays the earlier paths.
   exportMode.setResilient(!(testHost && body.legacyFetch === true));
+  // The 1.2.18 RV park and marina rules run on /dev hosts only.
+  exportMode.setSiteTypes(testHost);
   const areaCapOverride = testHost ? parseAreaCapOverride(body.areaCap) : 0;
   const jsonBudgetOverride = testHost ? parseJsonBudgetOverride(body.jsonBudget) : 0;
   const terrainFloors = testHost ? parseTerrainFloorOverride(body.terrainFloors) : 0;

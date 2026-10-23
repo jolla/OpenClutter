@@ -13,7 +13,10 @@ parentPort.on("message", (msg) => {
   const cpu0 = profiling ? process.cpuUsage() : null;
   if (profiling) profile.reset();
   Promise.resolve()
-    .then(() => runTask(msg.task, msg.payload))
+    .then(() => {
+      require("./export-mode").setSiteTypes(msg.siteTypes !== false);
+      return runTask(msg.task, msg.payload);
+    })
     .then(
       (result) => {
         if (profiling) {

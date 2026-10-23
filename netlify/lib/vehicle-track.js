@@ -1,5 +1,7 @@
 "use strict";
 
+const { isSiteTypes } = require("./export-mode");
+
 /**
  * Vehicles and mobile structures.
  *
@@ -62,6 +64,7 @@ const DOCK_DEPTH_M = 96;
 const DOCK_MIN_EDGE_M = 28;
 const DOCK_MIN_ROOF_M2 = 8000;
 const BOAT_CAP = 1500;
+const BOAT_CAP_LEGACY = 200;
 /** A marina larger than this many plate pixels is not scanned. */
 const BOAT_SCAN_MAX_PX = 40000000;
 /** Walkways narrower than twice this are stripped before hulls are read. */
@@ -788,7 +791,7 @@ function finalizeVehiclesWork(features, fractionFor, roadsideFor) {
       continue;
     }
     const use = f.pitchUse || "";
-    if (f.kind === "rv" && use === "road") {
+    if (f.kind === "rv" && use === "road" && isSiteTypes()) {
       // A road with no mapped pitches is not evidence of an RV. Only a
       // roof the photo shows beside the road becomes a box.
       if (typeof roadsideFor !== "function" || !f.pad) continue;
@@ -797,7 +800,7 @@ function finalizeVehiclesWork(features, fractionFor, roadsideFor) {
       for (let b = 0; b < boxes.length; b++) out.push(boxes[b]);
       continue;
     }
-    if (f.kind === "rv" && use === "") {
+    if (f.kind === "rv" && (use === "" || use === "road")) {
       out.push(f);
       continue;
     }
@@ -843,7 +846,8 @@ function needsPitchImage(features) {
     if (!f) continue;
     if (f.kind === "trailer-candidate") return true;
     if (f.kind === "marina" || f.kind === "mobile-park" || f.kind === "truck-lot" || f.kind === "car") return true;
-    if (f.kind === "rv" && (f.pitchUse === "rv" || f.pitchUse === "tent" || f.pitchUse === "pitch" || f.pitchUse === "road")) return true;
+    if (f.kind === "rv" && (f.pitchUse === "rv" || f.pitchUse === "tent" || f.pitchUse === "pitch")) return true;
+    if (f.kind === "rv" && f.pitchUse === "road" && isSiteTypes()) return true;
   }
   return false;
 }
@@ -972,7 +976,8 @@ function boatBoxes(features) {
   }
   const out = [];
   const spec = BOX.boat;
-  for (let i = 0; i < moorings.length && out.length < BOAT_CAP; i++) {
+  const cap = isSiteTypes() ? BOAT_CAP : BOAT_CAP_LEGACY;
+  for (let i = 0; i < moorings.length && out.length < cap; i++) {
     const m = moorings[i];
     const center = m.coords.length === 1 ? m.coords[0] : centroidLL(m.coords);
     if (!center) continue;
@@ -1367,8 +1372,140 @@ function nearLabel(pred, label, matchM) {
  * set by the caller at about 3.5 m.
  */
 function boatsOnWater(ring, frame, plate, holes, piers) {
+  if (!isSiteTypes()) return require("./stage-clock").timeSpanSync("vehicle", () => boatsOnWaterLegacy(ring, frame, plate));
   return require("./stage-clock").timeSpanSync("vehicle", () => boatsOnWaterWork(ring, frame, plate, holes, piers));
 }
+
+/** The 1.2.17 boat scan, kept for production hosts until 1.2.18 is promoted. */
+function boatsOnWaterLegacy(ring, frame, plate) {
+  if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return [];
+  const poly = [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const xy = llToImagePx(ring[i][0], ring[i][1], frame);
+    if (!Number.isFinite(xy[0]) || !Number.isFinite(xy[1])) continue;
+    poly.push(xy);
+    if (xy[0] < minX) minX = xy[0];
+    if (xy[1] < minY) minY = xy[1];
+    if (xy[0] > maxX) maxX = xy[0];
+    if (xy[1] > maxY) maxY = xy[1];
+  }
+  if (poly.length < 3) return [];
+  const mpuX = frame.mpuX > 0 ? frame.mpuX : 0.3;
+  const mpuY = frame.mpuY > 0 ? frame.mpuY : 0.3;
+  const x0 = Math.max(0, Math.floor(minX));
+  const y0 = Math.max(0, Math.floor(minY));
+  const x1 = Math.min(plate.width - 1, Math.ceil(maxX));
+  const y1 = Math.min(plate.height - 1, Math.ceil(maxY));
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  if (bw < 4 || bh < 4 || bw * bh > 2000000) return [];
+  const water = new Uint8Array(bw * bh);
+  const boat = new Uint8Array(bw * bh);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      if (!pointInRing([x + 0.5, y + 0.5], poly)) continue;
+      const i = (y * plate.width + x) * 4;
+      const r = plate.data[i];
+      const g = plate.data[i + 1];
+      const b = plate.data[i + 2];
+      const yl = 0.299 * r + 0.587 * g + 0.114 * b;
+      const k = (y - y0) * bw + (x - x0);
+      if (yl < 90 && b + 15 >= r) water[k] = 1;
+      else if (yl >= 175 && Math.max(r, g, b) - Math.min(r, g, b) <= 40) boat[k] = 1;
+    }
+  }
+  const seen = new Uint8Array(bw * bh);
+  const stack = [];
+  const out = [];
+  const areaPx = mpuX * mpuY;
+  for (let i = 0; i < boat.length; i++) {
+    if (!boat[i] || seen[i]) continue;
+    const cells = [];
+    stack.push(i);
+    seen[i] = 1;
+    while (stack.length) {
+      const k = stack.pop();
+      cells.push(k);
+      const x = k % bw;
+      const y = (k / bw) | 0;
+      const nbrs = [
+        [x - 1, y],
+        [x + 1, y],
+        [x, y - 1],
+        [x, y + 1],
+      ];
+      for (let q = 0; q < nbrs.length; q++) {
+        const nx = nbrs[q][0];
+        const ny = nbrs[q][1];
+        if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
+        const j = ny * bw + nx;
+        if (!boat[j] || seen[j]) continue;
+        seen[j] = 1;
+        stack.push(j);
+      }
+    }
+    let wet = false;
+    for (let c = 0; c < cells.length && !wet; c++) {
+      const x = cells[c] % bw;
+      const y = (cells[c] / bw) | 0;
+      for (let dy = -3; dy <= 3 && !wet; dy++) {
+        for (let dx = -3; dx <= 3; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
+          if (water[ny * bw + nx]) wet = true;
+        }
+      }
+    }
+    const m2 = cells.length * areaPx;
+    if (!wet || m2 < 6 || m2 > 160) continue;
+    const copies = m2 <= 50 ? 1 : m2 <= 100 ? 2 : 3;
+    let sx = 0;
+    let sy = 0;
+    let minx = 1e9;
+    let miny = 1e9;
+    let maxx = -1e9;
+    let maxy = -1e9;
+    for (let c = 0; c < cells.length; c++) {
+      const x = x0 + (cells[c] % bw) + 0.5;
+      const y = y0 + ((cells[c] / bw) | 0) + 0.5;
+      sx += x;
+      sy += y;
+      if (x < minx) minx = x;
+      if (y < miny) miny = y;
+      if (x > maxx) maxx = x;
+      if (y > maxy) maxy = y;
+    }
+    const dx = (maxx - minx) * mpuX;
+    const dy = (maxy - miny) * mpuY;
+    const alongX = dx >= dy;
+    for (let n = 0; n < copies && out.length < 200; n++) {
+      const t = (n + 0.5) / copies;
+      const cx = alongX ? minx + (maxx - minx) * t : sx / cells.length;
+      const cy = alongX ? sy / cells.length : miny + (maxy - miny) * t;
+      const lon = frame.west + (cx / frame.imgW) * (frame.east - frame.west);
+      const lat = frame.north - (cy / frame.imgH) * (frame.north - frame.south);
+      const proj = projectAt(lat);
+      const heading = alongX ? { ux: 1, uy: 0 } : { ux: 0, uy: 1 };
+      const xy = proj.to(lon, lat);
+      out.push({
+        kind: "boat",
+        coords: orientedRing(proj, xy[0], xy[1], heading, BOX.boat.length, BOX.boat.width),
+        closed: true,
+        heightM: BOX.boat.height,
+        explicitHeight: true,
+        center: [lon, lat],
+        rank: 0,
+      });
+    }
+  }
+  return out;
+}
+
 
 /** Pixels inside a polygon, row by row (even-odd), clipped to the window. */
 function fillPolygon(poly, x0, y0, bw, bh, mask, value) {
@@ -3051,6 +3188,7 @@ module.exports = {
   carHitRows,
   finishCarLayer,
   boatsOnWaterWork,
+  boatsOnWaterLegacy,
   mobileHomesInRingWork,
   semisInLotWork,
   semisAtDocksWork,
