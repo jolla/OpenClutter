@@ -176,4 +176,53 @@ describe("site-type vehicles", () => {
     const boats = boatsOnWater(ringPx(f, 10, 60, 330, 200), f, plate, [], null);
     assert.equal(boats.length, 0);
   });
+  it("reads an RV-sized footprint inside a campground as an RV", () => {
+    const { planOutdoor } = require("../netlify/lib/outdoor-clutter");
+    const mode = require("../netlify/lib/export-mode");
+    const f = frame();
+    const zone = {
+      kind: "camp-zone",
+      coords: ringPx(f, 20, 20, 300, 300),
+      closed: true,
+    };
+    // Footprint pixels count up from the bottom edge. A 10 by 3 m footprint
+    // inside, a 20 by 12 m hall inside, and an RV-sized footprint outside.
+    const up = (x, y) => [x, f.imgH - y];
+    const buildings = [
+      {
+        index: 0,
+        ringPx: [up(50, 50), up(83, 50), up(83, 60), up(50, 60)],
+        material: "x",
+      },
+      {
+        index: 1,
+        ringPx: [up(100, 100), up(167, 100), up(167, 140), up(100, 140)],
+        material: "x",
+      },
+      {
+        index: 2,
+        ringPx: [up(400, 50), up(433, 50), up(433, 60), up(400, 60)],
+        material: "x",
+      },
+    ];
+    const plan = (on) => {
+      mode.setSiteTypes(on);
+      try {
+        return planOutdoor({
+          features: [zone],
+          frame: f,
+          slopeTop: null,
+          buildings,
+          parkingRings: [],
+        });
+      } finally {
+        mode.setSiteTypes(true);
+      }
+    };
+    const on = plan(true);
+    const rv = on.updates.filter((u) => u.kind === "rv").map((u) => u.index);
+    assert.deepEqual(rv, [0]);
+    assert.ok(!on.items.some((it) => it && it.kind === "camp-zone"));
+    assert.equal(plan(false).updates.filter((u) => u.kind === "rv").length, 0);
+  });
 });

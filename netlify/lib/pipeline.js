@@ -3916,7 +3916,7 @@ function buildClutter({
   }
   if (planned) {
     for (let i = 0; i < planned.updates.length; i++) {
-      if (planned.updates[i].index < buildingEmitted) parkingAreas++;
+      if (planned.updates[i].index < buildingEmitted && planned.updates[i].kind !== "rv") parkingAreas++;
     }
   }
   const roofsLeftOut = fp.oiAreas.length - buildingEmitted;
