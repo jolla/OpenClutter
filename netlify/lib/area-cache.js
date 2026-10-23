@@ -335,17 +335,29 @@ function parseBboxParam(url) {
   return { west: p[0], south: p[1], east: p[2], north: p[3] };
 }
 
+function urlHost(u) {
+  const m = /^[a-z]+:\/\/([^/?#]+)/i.exec(u);
+  return m ? m[1].toLowerCase() : "";
+}
+
 function classifyFetch(url, init) {
   const u = String(url || "");
+  const host = urlHost(u);
+  // The blob store's own requests carry cache keys such as raw/overpass/...
+  // in their path. They are never a source read; classifying one recursed
+  // through this wrapper until the stack overflowed.
+  if (!host || host.includes("netlify")) return null;
+  if (/\/(raw|partial)\/(osm|overpass|overture|microsoft|dem|canopy|worldcover|lidar|aerial)\b/.test(u)) return null;
   const range = headerValue(init, "range");
   // Esri World Imagery exports are never written to the blob store. The
   // export fetches its plate fresh and the image only leaves in the zip.
-  if (/\/api\/map\?/.test(u) && u.includes("overpass")) {
+  const overpassHost = host.includes("overpass") || host === "maps.mail.ru";
+  if (/\/api\/map\?/.test(u) && overpassHost) {
     const bbox = parseBboxParam(u);
     if (!bbox) return null;
     return { source: "osm", resolution: "map", tile: tileId(bbox), contentType: "application/xml" };
   }
-  if (u.includes("overpass")) {
+  if (overpassHost) {
     const body = init && init.body ? String(init.body) : u;
     return {
       source: "overpass",
