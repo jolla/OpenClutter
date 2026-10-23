@@ -1583,6 +1583,7 @@ function crownsForExport(grid, opts) {
 
 module.exports = {
   CHM_ZOOM,
+  dpClosed,
   MAX_DIM,
   chmUrl,
   mercator,
