@@ -63,6 +63,8 @@ const { outdoorMaterial, liftedOutdoorMaterial, measuredOiBuildingMaterial } = r
 const { placesFromElements } = require("./map-notes");
 
 const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
+const overpass = require("./overpass");
+const { isResilient } = require("./export-mode");
 const FETCH_MS = 3200;
 const POLE_CAP = 48;
 const WALL_CAP = 80;
@@ -1932,6 +1934,7 @@ function dedupeOutdoor(features) {
 async function fetchOutdoorClutter(bbox, want, opts) {
   if (!wantAny(want)) return { ok: true, features: [], notes: [] };
   const timeoutMs = (opts && opts.timeoutMs) || FETCH_MS;
+  const startedAt = Date.now();
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   const parent = opts && opts.signal;
@@ -1949,6 +1952,7 @@ async function fetchOutdoorClutter(bbox, want, opts) {
       ua,
       tile,
       fetchImpl: opts && opts.fetchImpl,
+      deadlineMs: Math.round(timeoutMs * 0.7),
     });
     if (maps.elements && maps.elements.length) {
       const parsed = parseOverpass({ elements: maps.elements }, want, bbox, deckCap);
@@ -1980,16 +1984,26 @@ async function fetchOutdoorClutter(bbox, want, opts) {
     }
     if (ctrl.signal.aborted) return { ok: false, features: [], notes: [] };
     const q = overpassQuery(bbox, want);
-    const r = await require("./stage-clock").timeSpan("overpass", () =>
-      fetch(OVERPASS_URL, {
-        method: "POST",
-        headers: { "user-agent": ua, "content-type": "application/x-www-form-urlencoded" },
-        body: "data=" + encodeURIComponent(q),
-        signal: ctrl.signal,
-      })
-    );
-    if (!r.ok) return { ok: false, features: [], notes: [] };
-    const json = await r.json();
+    let json;
+    if (isResilient() && !(opts && opts.fetchImpl)) {
+      json = await require("./stage-clock").timeSpan("overpass", () =>
+        overpass.requestJson(q, { signal: ctrl.signal, ua, deadlineMs: Math.max(1000, startedAt + timeoutMs - Date.now() - 500) })
+      );
+      if (!json) return { ok: false, features: [], notes: [] };
+    } else {
+      const t0 = Date.now();
+      const r = await require("./stage-clock").timeSpan("overpass", () =>
+        fetch(OVERPASS_URL, {
+          method: "POST",
+          headers: { "user-agent": ua, "content-type": "application/x-www-form-urlencoded" },
+          body: "data=" + encodeURIComponent(q),
+          signal: ctrl.signal,
+        })
+      );
+      overpass.logLegacy(OVERPASS_URL, "interpreter", r.status, Date.now() - t0);
+      if (!r.ok) return { ok: false, features: [], notes: [] };
+      json = await r.json();
+    }
     const parsed = parseOverpass(json, want, bbox, deckCap);
     const palms = palmPointsOf(parsed.features);
     const limited = limitFeatures(parsed.features, bbox, deckCap);

@@ -17,6 +17,8 @@
 const polygonClipping = require("polygon-clipping");
 const { guidewaysFromElements, guidewaysFromParsedWays, bridgesFromElements, bridgesFromParsedWays } = require("./outdoor-clutter");
 const { fetchOsmMaps, ringKey, bboxSpanM, TILE_SPAN_M } = require("./osm-tiles");
+const overpass = require("./overpass");
+const { isResilient } = require("./export-mode");
 const { placesFromElements } = require("./map-notes");
 
 const OVERPASS_URLS = [
@@ -613,6 +615,7 @@ async function fetchBuildingDetail(bbox, opts) {
   const empty = { ok: false, parts: [], openings: [], buildings: [], structures: [], roads: [], guideways: [], bridges: [] };
   if (!bbox) return empty;
   const timeoutMs = (opts && opts.timeoutMs) || 4500;
+  const startedAt = Date.now();
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   const parent = opts && opts.signal;
@@ -633,6 +636,7 @@ async function fetchBuildingDetail(bbox, opts) {
           ua,
           tile,
           fetchImpl: opts && opts.fetchImpl,
+          deadlineMs: Math.round(timeoutMs * 0.7),
         });
         if (maps.elements && maps.elements.length) {
           const parsed = parseBuildingDetail({ elements: maps.elements }, bbox);
@@ -678,17 +682,30 @@ async function fetchBuildingDetail(bbox, opts) {
     if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
       return { ok: true, parts: [], openings: [], buildings: [], structures: [], roads: [], guideways: [], bridges: [], notes: [] };
     }
-    for (let u = 0; u < OVERPASS_URLS.length; u++) {
+    const resilient = isResilient() && !(opts && opts.fetchImpl);
+    for (let u = 0; u < (resilient ? 1 : OVERPASS_URLS.length); u++) {
       if (ctrl.signal.aborted) return empty;
       try {
-        const r = await fetch(OVERPASS_URLS[u], {
-          method: "POST",
-          headers: { "user-agent": ua, "content-type": "application/x-www-form-urlencoded" },
-          body: "data=" + encodeURIComponent(q),
-          signal: ctrl.signal,
-        });
-        if (!r.ok) continue;
-        const json = await r.json();
+        let json;
+        if (resilient) {
+          json = await overpass.requestJson(q, {
+            signal: ctrl.signal,
+            ua,
+            deadlineMs: Math.max(1000, startedAt + timeoutMs - Date.now() - 500),
+          });
+          if (!json) return empty;
+        } else {
+          const t0 = Date.now();
+          const r = await fetch(OVERPASS_URLS[u], {
+            method: "POST",
+            headers: { "user-agent": ua, "content-type": "application/x-www-form-urlencoded" },
+            body: "data=" + encodeURIComponent(q),
+            signal: ctrl.signal,
+          });
+          overpass.logLegacy(OVERPASS_URLS[u], "interpreter", r.status, Date.now() - t0);
+          if (!r.ok) continue;
+          json = await r.json();
+        }
         const parsed = parseBuildingDetail(json, bbox);
         return {
           ok: true,
