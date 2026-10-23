@@ -108,6 +108,7 @@ const RV_CAP = 2400;
 const RV_CAP_LEGACY = 800;
 /** RV park and campground outlines kept to read footprints inside them. */
 const CAMP_ZONE_CAP = 60;
+const CAMP_ROAD_CAP = 400;
 /** A footprint this size inside a camp or mobile-home park is a vehicle. */
 const CAMP_RV_LEN_M = [5, 14];
 const CAMP_RV_WID_M = [2, 4];
@@ -827,8 +828,26 @@ function isRvSiteTags(tags) {
   return tourism === "caravan_site" || tourism === "camp_site";
 }
 
+/** A campground mapped for tents only takes no RVs. */
+function tentOnlySite(tags) {
+  if (!tags) return false;
+  if (tags.tourism === "caravan_site") return false;
+  return tags.caravans === "no" && tags.motorhome !== "yes";
+}
+
 function isRvPitchTags(tags) {
   return !!(tags && tags.tourism === "camp_pitch");
+}
+
+/** Half the paved width of a road, from its width or lanes tags or its class. */
+function roadHalfWidthM(tags) {
+  const w = parseFloat(tags && tags.width);
+  if (Number.isFinite(w) && w > 1 && w < 40) return w / 2;
+  const lanes = parseInt(tags && tags.lanes, 10);
+  if (Number.isFinite(lanes) && lanes > 0 && lanes < 10) return lanes * 1.75;
+  const hw = tags && tags.highway;
+  if (hw === "service" || hw === "track") return tags.service === "parking_aisle" ? 3 : 2;
+  return 3.5;
 }
 
 function isRvRoadTags(tags) {
@@ -1069,7 +1088,7 @@ function rvBoxes(features) {
         const xy = proj.to(item.center[0], item.center[1]);
         let heading = nearestRoadHeading(xy[0], xy[1], siteRoads);
         if (!heading) heading = pitchHeading(item.pitch.coords, proj);
-        const use = pitchClass(item.pitch.name, item.pitch.tags);
+        const use = site.tentOnly && isSiteTypes() ? "tent" : pitchClass(item.pitch.name, item.pitch.tags);
         if (use === "tent") {
           pushRv(boxes, placed, proj, xy[0], xy[1], heading, {
             kind: "trailer-candidate",
@@ -1088,6 +1107,7 @@ function rvBoxes(features) {
       }
       continue;
     }
+    if (site.tentOnly && isSiteTypes()) continue;
     for (let r = 0; r < siteRoads.length && boxes.length < rvCap(); r++) {
       const stations = roadStations(siteRoads[r], RV_SPACING_M);
       for (let i = 0; i < stations.length && boxes.length < rvCap(); i++) {
@@ -1310,6 +1330,7 @@ function parseOverpass(payload, want, bbox, deckCap) {
           if (bbox && !anyInBox(outers[o], bbox)) continue;
           features.push({
             kind: "rv-site",
+            tentOnly: tentOnlySite(tags),
             coords: outers[o],
             holes: inners,
             closed: true,
@@ -1403,6 +1424,7 @@ function parseOverpass(payload, want, bbox, deckCap) {
     if (on.rvs && isRvSiteTags(tags) && isClosed(coords)) {
       features.push({
         kind: "rv-site",
+        tentOnly: tentOnlySite(tags),
         coords,
         holes: [],
         closed: true,
@@ -1468,6 +1490,7 @@ function parseOverpass(payload, want, bbox, deckCap) {
       if (line.length >= 2) {
         features.push({
           kind: "rv-road",
+          halfWidthM: roadHalfWidthM(tags),
           coords: line,
           closed: false,
           heightM: 0,
@@ -1489,7 +1512,12 @@ function parseOverpass(payload, want, bbox, deckCap) {
     if (kind === "rv-site" && isSiteTypes() && features[i].coords && features[i].coords.length >= 4) {
       // The site outline is kept (never drawn) so a footprint inside it
       // that is sized like an RV can be read as one.
-      plain.push({ kind: "camp-zone", coords: features[i].coords, closed: true, heightM: 0, explicitHeight: false, rank: 0 });
+      plain.push({ kind: "camp-zone", tentOnly: features[i].tentOnly === true, coords: features[i].coords, closed: true, heightM: 0, explicitHeight: false, rank: 0 });
+      continue;
+    }
+    if (kind === "rv-road" && isSiteTypes() && features[i].coords && features[i].coords.length >= 2) {
+      // Internal roads are kept (never drawn) to find the pads along them.
+      plain.push({ kind: "camp-road", halfWidthM: features[i].halfWidthM || 0, coords: features[i].coords, closed: false, heightM: 0, explicitHeight: false, rank: 0 });
       continue;
     }
     if (
@@ -1653,11 +1681,16 @@ function limitFeatures(features, bbox, deckCap) {
   const bridges = [];
   const rvs = [];
   const zones = [];
+  const campRoads = [];
   for (let i = 0; i < (features || []).length; i++) {
     const f = features[i];
     if (!f) continue;
     if (f.kind === "camp-zone") {
       if (zones.length < CAMP_ZONE_CAP) zones.push(f);
+      continue;
+    }
+    if (f.kind === "camp-road") {
+      if (campRoads.length < CAMP_ROAD_CAP) campRoads.push(f);
       continue;
     }
     if (f.kind === "water") water.push(f);
@@ -1690,7 +1723,7 @@ function limitFeatures(features, bbox, deckCap) {
   const rvKept = rvs.slice(0, rvCap());
   if (rvs.length > rvKept.length) notes.push("RVs capped at " + rvCap() + ".");
   return {
-    features: w.kept.concat(p.kept, wallKept, pole.kept, guideKept, bridgeKept, rvKept, zones),
+    features: w.kept.concat(p.kept, wallKept, pole.kept, guideKept, bridgeKept, rvKept, zones, campRoads),
     notes,
   };
 }
@@ -2569,6 +2602,47 @@ function campFootprints(buildings, zoneRings, frame, slopeTop) {
   return { updates };
 }
 
+/**
+ * Worst case for an RF plan: an RV on every pad of an RV park, campground,
+ * or mobile-home park, occupied or not (see rv-pads.js). Adds RV items.
+ */
+function worstCasePads({ campZones, campRoads, features, items, updates, buildings, frame, plate, slopeTop }) {
+  const zones = [];
+  for (let i = 0; i < campZones.length; i++) if (!campZones[i].tentOnly) zones.push(lonLatRingToPx(campZones[i].coords, frame));
+  for (let i = 0; i < (features || []).length; i++) {
+    const f = features[i];
+    if (f && f.kind === "mobile-park" && f.coords && f.coords.length >= 4) zones.push(lonLatRingToPx(f.coords, frame));
+  }
+  if (!zones.length || !campRoads.length) return 0;
+  // A road is an open line: never close it back to its start.
+  const roads = campRoads.map((r) => ({ line: r.coords.map((c) => llToPx(c[0], c[1], frame)), halfWidthM: r.halfWidthM || 0 }));
+  const rvIdx = new Set();
+  for (let i = 0; i < updates.length; i++) if (updates[i].kind === "rv") rvIdx.add(updates[i].index);
+  const evidence = [];
+  const obstacles = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (!it || !it.ringPx) continue;
+    if (it.kind === "rv" || it.kind === "trailer" || it.kind === "mobile-home") evidence.push(it.ringPx);
+    else if (it.kind === "water" || it.kind === "boat" || it.kind === "semi" || it.kind === "storage") obstacles.push(it.ringPx);
+  }
+  for (let b = 0; b < (buildings || []).length; b++) {
+    const px = buildings[b] && buildings[b].ringPx;
+    if (!px || px.length < 3) continue;
+    if (rvIdx.has(buildings[b].index)) evidence.push(px);
+    else obstacles.push(px);
+  }
+  const filled = require("./rv-pads").fillPads({ zones, roads, evidence, obstacles, frame, plate });
+  for (let i = 0; i < filled.rings.length; i++) {
+    const ringPx = filled.rings[i].slice();
+    ringPx.push(ringPx[0].slice());
+    const ll = pxRingToLonLat(ringPx, frame);
+    const material = materialForKind("rv", RV_HEIGHT_M, ll, slopeTop, 0);
+    if (material) items.push({ ringPx, material, kind: "rv", thin: true, padFill: true });
+  }
+  return filled.added;
+}
+
 /** Area and minimum-rectangle sides of a pixel ring, in metres. */
 function rectDims(px, mx, my) {
   const pts = px.map((p) => [p[0] * mx, p[1] * my]);
@@ -2613,10 +2687,12 @@ function rectDims(px, mx, my) {
  */
 function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segmentCaps, vehiclePlate, scanned }) {
   const campZones = [];
-  if (features && features.some((f) => f && f.kind === "camp-zone")) {
+  const campRoads = [];
+  if (features && features.some((f) => f && (f.kind === "camp-zone" || f.kind === "camp-road"))) {
     const rest = [];
     for (let i = 0; i < features.length; i++) {
       if (features[i] && features[i].kind === "camp-zone") campZones.push(features[i]);
+      else if (features[i] && features[i].kind === "camp-road") campRoads.push(features[i]);
       else rest.push(features[i]);
     }
     features = rest;
@@ -2698,7 +2774,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
   }
   if (isSiteTypes() && frame && buildings && buildings.length) {
     const zoneRings = [];
-    for (let i = 0; i < campZones.length; i++) zoneRings.push(lonLatRingToPx(campZones[i].coords, frame));
+    for (let i = 0; i < campZones.length; i++) if (!campZones[i].tentOnly) zoneRings.push(lonLatRingToPx(campZones[i].coords, frame));
     for (let i = 0; i < (features || []).length; i++) {
       const f = features[i];
       if (f && f.kind === "mobile-park" && f.coords && f.coords.length >= 4) zoneRings.push(lonLatRingToPx(f.coords, frame));
@@ -2946,6 +3022,10 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
   }
   const notes = [];
   if (shortWalls) notes.push("Short walls were left out.");
+  if (isSiteTypes() && frame && campZones.length) {
+    const padded = worstCasePads({ campZones, campRoads, features, items, updates, buildings, frame, plate: vehiclePlate, slopeTop });
+    if (padded) notes.push("RVs modeled on all pads (worst case): " + padded + " added on open pads.");
+  }
   return { items, updates, notes, reclass };
 }
 
