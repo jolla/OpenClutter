@@ -18,4 +18,17 @@ function isResilient() {
   return resilient;
 }
 
-module.exports = { setResilient, isResilient };
+// RV park and marina rules from 1.2.18 (road RVs only on photo roofs,
+// marinas and piers kept from the map read, the wider boat scan). On for
+// /dev hosts; production keeps the 1.2.17 rules until it is promoted.
+let siteTypes = true;
+
+function setSiteTypes(on) {
+  siteTypes = !!on;
+}
+
+function isSiteTypes() {
+  return siteTypes;
+}
+
+module.exports = { setResilient, isResilient, setSiteTypes, isSiteTypes };

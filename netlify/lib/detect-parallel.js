@@ -524,11 +524,12 @@ async function scanVehicles(features, frame, buildings, imgBuf) {
   const jobs = [];
   const carPlans = [];
   const holeBoxes = boxRings(holes);
+  const siteTypes = require("./export-mode").isSiteTypes();
   for (let i = 0; i < list.length; i++) {
     const feature = list[i];
     if (!feature) continue;
     const kind = feature.kind;
-    if (kind === "rv" && feature.pitchUse === "road" && feature.pad && feature.pad.length >= 3) {
+    if (siteTypes && kind === "rv" && feature.pitchUse === "road" && feature.pad && feature.pad.length >= 3) {
       jobs.push({
         op: "roadside",
         key: ringKey(feature.pad),
@@ -572,8 +573,9 @@ async function scanVehicles(features, frame, buildings, imgBuf) {
         key: ringKey(feature.coords),
         ring: feature.coords,
         frame,
-        holes: holesNear(holeBoxes, feature.coords),
-        piers: feature.piers,
+        holes: siteTypes ? holesNear(holeBoxes, feature.coords) : undefined,
+        piers: siteTypes ? feature.piers : undefined,
+        legacy: !siteTypes,
         buffer: shared.buffer,
         width: shared.width,
         height: shared.height,

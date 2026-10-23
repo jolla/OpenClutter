@@ -124,4 +124,28 @@ describe("site-type vehicles", () => {
     assert.equal(zones.length, 1);
     assert.equal(zones[0].piers.length, 2);
   });
+
+  it("keeps the 1.2.17 rules when the export is not on a /dev host", () => {
+    const mode = require("../netlify/lib/export-mode");
+    const f = frame();
+    const road = { kind: "rv", pitchUse: "road", coords: ringPx(f, 70, 60, 80, 66), heightM: 3.5 };
+    const xml = [
+      "<osm>",
+      '<node id="1" lat="35.0002" lon="-100.0012"/>',
+      '<node id="2" lat="35.0002" lon="-100.0003"/>',
+      '<node id="3" lat="35.0010" lon="-100.0003"/>',
+      '<node id="4" lat="35.0010" lon="-100.0012"/>',
+      '<way id="10"><nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="4"/><nd ref="1"/>',
+      '<tag k="leisure" v="marina"/></way>',
+      "</osm>",
+    ].join("");
+    mode.setSiteTypes(false);
+    try {
+      assert.equal(finalizeVehicles([road], null, null).length, 1);
+      assert.equal(featuresFromMapXml(xml, { rvs: true }, BOX).features.filter((x) => x.kind === "marina").length, 0);
+    } finally {
+      mode.setSiteTypes(true);
+    }
+    assert.equal(finalizeVehicles([road], null, null).length, 0);
+  });
 });
