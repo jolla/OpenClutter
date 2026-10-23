@@ -13,6 +13,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.2
 
+- **1.2.24** RV and Trailer attenuation on /dev hosts is 9 dB/m at 5 GHz (was 12), which gives 22 to 29 dB across a 2.4 to 3.2 m wide RV, in line with measured van and semi trailer blocking loss (about 20 and 27 dB) and twice the 3GPP car entry loss. Semi stays 12, Boat and Car stay 6. Production exports keep 12.
 - **1.2.23** Worst-case RVs on /dev hosts: inside mapped RV parks, campgrounds, and mobile-home parks, every pad gets an RV, occupied or not: mapped RV pitches keep their RV when empty, and open gravel or paved slots along internal roads at the spacing and setback of the RVs already found there are filled (never on roads, roofs, water, grass, tree crowns, or tent-only sites), with a map note. Production exports keep the 1.2.17 rules.
 - **1.2.22** Building heights on /dev hosts: where USGS lidar covers the draw, a roof with no height or a model height the lidar reads far lower (a park model at 20 m) takes the lidar height, and a large roof with no height at all defaults to Two Floor (Five Floor past 6000 m2) instead of Five or Ten Floor. Production exports keep the 1.2.17 rules.
 - **1.2.21** On /dev hosts, a footprint inside a mapped RV park, campground, or mobile-home park that is sized like an RV (5 to 14 m by 2 to 4 m) is exported as an RV; the canopy bench now ignores lidar over every solid roof class, not only buildings. Production exports keep the 1.2.17 rules.
