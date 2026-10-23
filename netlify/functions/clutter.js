@@ -174,6 +174,7 @@ const { fetchUsgsLidar, applyLidarSample, lidarNote, lidarStatusLine, rankProjec
 const { fuseLidarCanopy, keepLidarOpen, clearInside, clearThinLinesGrid, vehicleFeatures, lidarCanopyNote } = require("../lib/lidar-canopy");
 const exportJobs = require("../lib/export-jobs");
 const stageClock = require("../lib/stage-clock");
+const exportMode = require("../lib/export-mode");
 const aerialFetch = require("../lib/aerial-fetch");
 const areaCache = require("../lib/area-cache");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
@@ -499,6 +500,7 @@ async function fetchImageryStepped(bbox, steps, srcCtx) {
  * for 90s.
  */
 async function fetchImageryWithinBudget(prepared, askedSide, sharpCapped, srcCtx) {
+  const resilient = exportMode.isResilient();
   let unitTotal = 0;
   let unitDone = 0;
   function noteAerial() {
@@ -514,10 +516,14 @@ async function fetchImageryWithinBudget(prepared, askedSide, sharpCapped, srcCtx
       aerialFetch.racePlates(
         prepared.map((entry, i) => ({
           plate: entry.plate,
-          tile: i === 0 && aerialFetch.shouldTilePlate(entry.plate),
+          tile: resilient
+            ? aerialFetch.shouldTilePlate(entry.plate, aerialFetch.AERIAL_TILE_MIN_SIDE_RESILIENT)
+            : i === 0 && aerialFetch.shouldTilePlate(entry.plate),
         })),
         {
           budgetMs: aerialFetch.aerialBudgetMs(),
+          tileMinSide: resilient ? aerialFetch.AERIAL_TILE_MIN_SIDE_RESILIENT : 0,
+          sharperGraceMs: resilient ? aerialFetch.AERIAL_SHARPER_GRACE_MS : 0,
           onUnits: (total) => {
             unitTotal = total;
             noteAerial();
@@ -538,6 +544,14 @@ async function fetchImageryWithinBudget(prepared, askedSide, sharpCapped, srcCtx
     throw fail("imagery", "The operation was aborted due to timeout");
   }
   const plate = prepared[got.index] ? prepared[got.index].plate : prepared[0].plate;
+  try {
+    console.log(
+      "aerial plates " + prepared.map((e) => Math.max(e.plate.imgW, e.plate.imgH)).join(",") +
+        " kept " + Math.max(plate.imgW, plate.imgH) + " index " + got.index + (resilient ? " resilient" : " legacy")
+    );
+  } catch {
+    /* logging is optional */
+  }
   return plateResult({ buf: got.buf, plate }, askedSide, got.index > 0, sharpCapped);
 }
 
@@ -1482,6 +1496,9 @@ async function handleClutter(event) {
   // gates the testing overrides, which stay off the public site.
   const devHost = isQualityHost(event);
   const testHost = isDevTestHost(event);
+  // Overpass retries and fallback, and the sharper-plate wait, are on
+  // trial on /dev. legacyFetch:true replays the earlier paths there.
+  exportMode.setResilient(testHost && body.legacyFetch !== true);
   const areaCapOverride = testHost ? parseAreaCapOverride(body.areaCap) : 0;
   const jsonBudgetOverride = testHost ? parseJsonBudgetOverride(body.jsonBudget) : 0;
   const terrainFloors = testHost ? parseTerrainFloorOverride(body.terrainFloors) : 0;
@@ -1614,7 +1631,11 @@ async function handleClutter(event) {
       north: frame.north,
     };
     if (areaCache.enabled() && background) {
-      const work = areaCache.planSourceTiles(requestBbox);
+      // The resilient Overpass client reads the street map itself, through
+      // the same cache key, so the fan-out does not send a second request.
+      const work = areaCache
+        .planSourceTiles(requestBbox)
+        .filter((spec) => !(exportMode.isResilient() && spec.source === "osm"));
       areaCache
         .fanOut(work, { parentId: "export", invokeUrl: backgroundInvokeUrl(event) })
         .catch(() => {});

@@ -390,3 +390,78 @@ describe("aerial budget", () => {
     assert.ok(exportPercent({ stage: "Fetching aerial", state: "running", aerialElapsedMs: 8000 }, 0) >= 1);
   });
 });
+
+describe("aerial race, resilient wait for a sharper plate", () => {
+  const jpeg = require("jpeg-js");
+  function jpg(w, h) {
+    const data = Buffer.alloc(w * h * 4, 120);
+    return Buffer.from(jpeg.encode({ data, width: w, height: h }, 80).data);
+  }
+  it("keeps the sharper plate that arrives after a coarser one", async () => {
+    const got = await racePlates(
+      [
+        { plate: { imgW: 64, imgH: 64 }, tile: false },
+        { plate: { imgW: 32, imgH: 32 }, tile: false },
+        { plate: { imgW: 8, imgH: 8 }, tile: false },
+      ],
+      {
+        budgetMs: 3000,
+        sharperGraceMs: 1500,
+        fetchImage: async (frame) => {
+          if (frame.imgW === 64) throw new Error("Error: bytes");
+          if (frame.imgW === 32) await new Promise((r) => setTimeout(r, 120));
+          return jpg(frame.imgW, frame.imgH);
+        },
+      }
+    );
+    assert.equal(got.index, 1);
+  });
+  it("earlier behaviour without the grace keeps the first plate in hand", async () => {
+    const got = await racePlates(
+      [
+        { plate: { imgW: 64, imgH: 64 }, tile: false },
+        { plate: { imgW: 32, imgH: 32 }, tile: false },
+        { plate: { imgW: 8, imgH: 8 }, tile: false },
+      ],
+      {
+        budgetMs: 3000,
+        fetchImage: async (frame) => {
+          if (frame.imgW === 64) throw new Error("Error: bytes");
+          if (frame.imgW === 32) await new Promise((r) => setTimeout(r, 120));
+          return jpg(frame.imgW, frame.imgH);
+        },
+      }
+    );
+    assert.equal(got.index, 2);
+  });
+  it("stops waiting at the grace when the sharper plate hangs", async () => {
+    const t0 = Date.now();
+    const got = await racePlates(
+      [
+        { plate: { imgW: 64, imgH: 64 }, tile: false },
+        { plate: { imgW: 32, imgH: 32 }, tile: false },
+        { plate: { imgW: 8, imgH: 8 }, tile: false },
+      ],
+      {
+        budgetMs: 5000,
+        sharperGraceMs: 300,
+        fetchImage: (frame, signal) => {
+          if (frame.imgW === 64) return Promise.reject(new Error("Error: bytes"));
+          if (frame.imgW === 32) {
+            return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+          }
+          return Promise.resolve(jpg(8, 8));
+        },
+      }
+    );
+    assert.equal(got.index, 2);
+    assert.ok(Date.now() - t0 < 2000, String(Date.now() - t0));
+  });
+  it("tiles a 2000 px plate only when asked", () => {
+    const { tilePlan, AERIAL_TILE_MIN_SIDE_RESILIENT } = require("../netlify/lib/aerial-fetch");
+    const plate = { west: -115.164, south: 36.1195, east: -115.1605, north: 36.1225, imgW: 2098, imgH: 2211 };
+    assert.equal(tilePlan(plate), null);
+    const plan = tilePlan(plate, AERIAL_TILE_MIN_SIDE_RESILIENT);
+    assert.ok(plan && plan.tiles.length === 4, JSON.stringify(plan && plan.tiles.length));
+  });
+});

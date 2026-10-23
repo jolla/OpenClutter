@@ -63,6 +63,7 @@ describe("imagery stepdown", () => {
           includeTerrain: false,
           includeRvs: false,
           format: "bundle",
+          legacyFetch: true,
         }),
       },
       () => {}
@@ -79,5 +80,54 @@ describe("imagery stepdown", () => {
     const big = images.filter((side) => side > 3000);
     assert.equal(new Set(big).size, big.length > 0 ? 1 : 0);
     assert.ok(images.some((side) => side === kept || (side > 1800 && side < 3000)), images.join(","));
+  });
+
+  it("resilient /dev path tiles the next plate and keeps it", async () => {
+    const jpegJs = require("jpeg-js");
+    setFetchOvertureForTests(async () => ({ features: [] }));
+    setFetchTerrainDemForTests(async () => null);
+    setFetchChmGridForTests(async () => null);
+    setFetchWorldCoverForTests(async () => null);
+    const images = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("World_Imagery") && u.includes("f=image")) {
+        const m = /size=(\d+),(\d+)/.exec(u);
+        const w = +m[1];
+        const h = +m[2];
+        images.push(Math.max(w, h));
+        // Esri answers 500 "Error: bytes" for a pitch finer than it holds.
+        const bb = /bbox=([^&]+)/.exec(u)[1].split(",").map(Number);
+        if (((bb[3] - bb[1]) * 110540) / h < 0.25) return { ok: false, status: 500, arrayBuffer: async () => new ArrayBuffer(0) };
+        const data = Buffer.alloc(w * h * 4, 90);
+        const buf = Buffer.from(jpegJs.encode({ data, width: w, height: h }, 50).data);
+        return { ok: true, arrayBuffer: async () => buf };
+      }
+      if (u.includes("World_Imagery") && u.includes("f=json")) {
+        return { ok: true, json: async () => ({ width: 64, height: 64 }) };
+      }
+      return { ok: true, json: async () => ({ features: [] }), arrayBuffer: async () => new ArrayBuffer(0) };
+    };
+    const res = await runBackgroundExport(
+      {
+        httpMethod: "POST",
+        headers: { host: "dev--openclutter.netlify.app" },
+        body: JSON.stringify({
+          ...tallBox(),
+          includeFoliage: false,
+          includeTerrain: false,
+          includeRvs: false,
+          format: "bundle",
+        }),
+      },
+      () => {}
+    );
+    assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
+    const body = JSON.parse(res.body);
+    const note = (body.warnings || []).find((line) => /^Map stepped down/.test(String(line))) || "";
+    const stepped = /stepped down to (\d+) px from (\d+) px/.exec(note);
+    assert.ok(stepped, note || (body.warnings || []).join(" | "));
+    assert.ok(+stepped[1] > 1800 && +stepped[1] < +stepped[2], note);
+    assert.ok(images.some((side) => side < 2000 && side > 900), images.join(","));
   });
 });

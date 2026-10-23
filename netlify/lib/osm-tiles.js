@@ -9,7 +9,14 @@
  * then stop. A map body too large to scan is left unread.
  */
 
+const overpass = require("./overpass");
+const { isResilient } = require("./export-mode");
+
 const TILE_SPAN_M = 2200;
+/** Resilient tile read: retries and fallback inside this window. */
+const TILE_RESILIENT_MS = 45000;
+/** Resilient map read when the caller names no window. */
+const MAP_RESILIENT_MS = 100000;
 const MAX_TILES = 16;
 const OVERPASS_CONCURRENCY = 3;
 const TILE_FETCH_MS = 10000;
@@ -110,6 +117,7 @@ async function fetchOne(bbox, opts) {
 }
 
 async function fetchOneWork(bbox, opts) {
+  if (isResilient() && !(opts && opts.fetchImpl)) return fetchOneResilient(bbox, opts);
   let last = null;
   for (let u = 0; u < OSM_MAP_URLS.length; u++) {
     if (opts && opts.signal && opts.signal.aborted) break;
@@ -126,13 +134,39 @@ async function fetchOneWork(bbox, opts) {
   return last || { ok: false, status: 0, xml: "", tooBig: false };
 }
 
+async function fetchOneResilient(bbox, opts) {
+  const o = opts || {};
+  const res = await overpass.request({
+    kind: "map",
+    bbox,
+    signal: o.signal,
+    ua: o.ua,
+    deadlineMs: o.deadlineMs > 0 ? o.deadlineMs : MAP_RESILIENT_MS,
+    tag: o.tag,
+  });
+  if (res.ok) {
+    if (res.text.length > MAP_XML_CAP) return { ok: false, status: res.status, xml: "", tooBig: true };
+    return { ok: true, status: res.status, xml: res.text, tooBig: false };
+  }
+  const status = typeof res.status === "number" ? res.status : 0;
+  return { ok: false, status, xml: "", tooBig: status === 400 && responseTooBig(400, res.text) };
+}
+
 async function fetchMapFrom(base, bbox, opts) {
   const fetchImpl = (opts && opts.fetchImpl) || fetch;
-  const r = await fetchImpl(mapUrl(bbox, base), {
-    headers: { "user-agent": (opts && opts.ua) || "openclutter", accept: "application/xml,text/xml,*/*" },
-    signal: opts && opts.signal,
-  });
+  const t0 = Date.now();
+  let r;
+  try {
+    r = await fetchImpl(mapUrl(bbox, base), {
+      headers: { "user-agent": (opts && opts.ua) || "openclutter", accept: "application/xml,text/xml,*/*" },
+      signal: opts && opts.signal,
+    });
+  } catch (e) {
+    overpass.logLegacy(base, "map", "neterr", Date.now() - t0);
+    throw e;
+  }
   const text = await r.text();
+  overpass.logLegacy(base, "map", r.status, Date.now() - t0);
   if (text && text.length > MAP_XML_CAP) {
     return { ok: false, status: r.status, xml: "", tooBig: true };
   }
@@ -195,6 +229,21 @@ async function fetchOverpassTile(bbox, opts) {
 }
 
 async function fetchOverpassTileWork(bbox, opts) {
+  if (isResilient() && !(opts && opts.fetchImpl)) {
+    const res = await overpass.request({
+      kind: "interpreter",
+      query: tileQuery(bbox),
+      ua: opts && opts.ua,
+      deadlineMs: TILE_RESILIENT_MS,
+    });
+    if (!res.ok) return null;
+    try {
+      const json = JSON.parse(res.text);
+      return json && Array.isArray(json.elements) ? json.elements : null;
+    } catch {
+      return null;
+    }
+  }
   const fetchImpl = (opts && opts.fetchImpl) || fetch;
   const body = "data=" + encodeURIComponent(tileQuery(bbox));
   const headers = {

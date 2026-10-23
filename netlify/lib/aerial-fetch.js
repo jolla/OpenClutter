@@ -18,6 +18,20 @@ const AERIAL_STAGE_BUDGET_MS = 36000;
 const AERIAL_TILE_MIN_SIDE = 2800;
 const AERIAL_TILE_LONG_SIDE = 1280;
 const AERIAL_TILE_POOL = 6;
+/**
+ * Resilient mode tiles every plate from this long side. A single 2211 px
+ * request on a 330 m Las Vegas draw sat past 40 s; the same plate as four
+ * tiles returned in 11 s.
+ */
+const AERIAL_TILE_MIN_SIDE_RESILIENT = 2000;
+/**
+ * Resilient mode: after the first plate fails, a coarser plate in hand
+ * waits this long for a sharper plate still on the wire. The 0.075 m
+ * plate of a small draw fails in under a second (Esri "Error: bytes"),
+ * and the 663 px fallback used to win the race against the 1326 px and
+ * 2211 px plates by a few hundred milliseconds.
+ */
+const AERIAL_SHARPER_GRACE_MS = 20000;
 
 let budgetOverride = 0;
 
@@ -30,9 +44,9 @@ function aerialBudgetMs() {
   return budgetOverride > 0 ? budgetOverride : AERIAL_STAGE_BUDGET_MS;
 }
 
-function shouldTilePlate(plate) {
+function shouldTilePlate(plate, minSide) {
   if (!plate || !(plate.imgW > 0) || !(plate.imgH > 0)) return false;
-  return Math.max(plate.imgW, plate.imgH) >= AERIAL_TILE_MIN_SIDE;
+  return Math.max(plate.imgW, plate.imgH) >= (minSide > 0 ? minSide : AERIAL_TILE_MIN_SIDE);
 }
 
 /** A 1 px cap rounding is the same Esri plate. Do not fetch it twice. */
@@ -45,8 +59,8 @@ function sameExportPlate(a, b) {
   return Math.abs(pa - pb) / Math.max(pa, pb) <= 0.02;
 }
 
-function tilePlan(plate) {
-  if (!shouldTilePlate(plate)) return null;
+function tilePlan(plate, minSide) {
+  if (!shouldTilePlate(plate, minSide)) return null;
   const extent = esriContentExtent(plate, plate.imgW, plate.imgH);
   const cols = Math.max(1, Math.ceil(plate.imgW / AERIAL_TILE_LONG_SIDE));
   const rows = Math.max(1, Math.ceil(plate.imgH / AERIAL_TILE_LONG_SIDE));
@@ -171,7 +185,7 @@ async function mapPool(items, limit, fn) {
 }
 
 async function fetchTiled(plate, opts) {
-  const plan = tilePlan(plate);
+  const plan = tilePlan(plate, opts.tileMinSide);
   if (!plan) {
     const buf = await opts.fetchImage(plate, opts.signal);
     if (opts.onUnit) opts.onUnit();
@@ -233,9 +247,11 @@ async function racePlates(entries, opts) {
   const timer = setTimeout(() => ctrl.abort(), budgetMs);
   if (typeof timer.unref === "function") timer.unref();
 
+  const tileMinSide = opts && opts.tileMinSide > 0 ? opts.tileMinSide : 0;
+  const graceMs = opts && opts.sharperGraceMs > 0 ? opts.sharperGraceMs : 0;
   const unitCounts = list.map((entry) => {
     if (entry && entry.tile) {
-      const plan = tilePlan(entry.plate);
+      const plan = tilePlan(entry.plate, tileMinSide);
       if (plan) return plan.tiles.length;
     }
     return 1;
@@ -269,10 +285,20 @@ async function racePlates(entries, opts) {
     return -1;
   }
 
+  /** Every plate sharper than idx has failed, so nothing better can come. */
+  function sharperSettled(idx) {
+    for (let i = 0; i < idx; i++) {
+      if (!errors[i] && !(results[i] && results[i].length > 100)) return false;
+    }
+    return true;
+  }
+  let fallbackAt = 0;
+
   const jobs = list.map((entry, i) => {
     const run =
       entry && entry.tile
         ? fetchTiled(entry.plate, {
+            tileMinSide,
             fetchImage: opts.fetchImage,
             signal: ctrl.signal,
             deadlineAt: deadlineAt,
@@ -308,9 +334,20 @@ async function racePlates(entries, opts) {
   try {
     while (Date.now() - started < budgetMs) {
       if (results[0]) break;
-      if (errors[0] && bestIndex() >= 0) break;
       if (settled >= list.length) break;
-      const left = budgetMs - (Date.now() - started);
+      let left = budgetMs - (Date.now() - started);
+      if (graceMs > 0) {
+        const best = bestIndex();
+        if (errors[0] && best >= 0) {
+          if (sharperSettled(best)) break;
+          if (!fallbackAt) fallbackAt = Date.now();
+          const graceLeft = graceMs - (Date.now() - fallbackAt);
+          if (!(graceLeft > 0)) break;
+          left = Math.min(left, graceLeft);
+        }
+      } else if (errors[0] && bestIndex() >= 0) {
+        break;
+      }
       if (!(left > 0)) break;
       await waitChange(left);
     }
@@ -332,6 +369,8 @@ module.exports = {
   AERIAL_STAGE_BUDGET_MS,
   AERIAL_TILE_MIN_SIDE,
   AERIAL_TILE_LONG_SIDE,
+  AERIAL_TILE_MIN_SIDE_RESILIENT,
+  AERIAL_SHARPER_GRACE_MS,
   setAerialBudgetForTests,
   aerialBudgetMs,
   shouldTilePlate,
