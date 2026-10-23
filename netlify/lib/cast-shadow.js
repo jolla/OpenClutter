@@ -50,10 +50,10 @@ const BRIGHT_MAX = 1.35;
 const GHOST_MAX_MPP = 0.5;
 /** Sources that measured a height. A guessed or default height does not vote. */
 /** Sources whose height is a survey of the roof itself. */
-const SURVEYED = { "usgs-lidar": true, nls: true };
+const SURVEYED = { "usgs-lidar": true, "lidar-check": true, nls: true };
 /** Source-height scales agree when the upper quartile is within this factor of the lower. */
 const K_AGREE = 1.35;
-const MEASURED = { "usgs-lidar": true, overture: true, "overture-floors": true, osm: true, "osm-part": true, fema: true, nls: true, "ms-global": true };
+const MEASURED = { "usgs-lidar": true, "lidar-check": true, overture: true, "overture-floors": true, osm: true, "osm-part": true, fema: true, nls: true, "ms-global": true };
 
 function luma(d, i) {
   return 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];

@@ -170,7 +170,7 @@ const { buildSiteV1 } = require("../lib/site-v1");
 const { fetchSlopeForest } = require("../lib/slope-forest");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
-const { fetchUsgsLidar, applyLidarSample, lidarNote, lidarStatusLine, rankProjects, heightForRing } = require("../lib/usgs-lidar");
+const { fetchUsgsLidar, applyLidarSample, checkSourceHeights, lidarNote, lidarStatusLine, rankProjects, heightForRing } = require("../lib/usgs-lidar");
 const { fuseLidarCanopy, keepLidarOpen, clearInside, clearThinLinesGrid, vehicleFeatures, lidarCanopyNote } = require("../lib/lidar-canopy");
 const exportJobs = require("../lib/export-jobs");
 const stageClock = require("../lib/stage-clock");
@@ -2205,6 +2205,15 @@ async function handleClutter(event) {
       }
       const lidar = await lidarPromise;
       scaleLidar = lidar;
+      if (exportMode.isSiteTypes() && lidar && !lidar.skipped && lidar.grid) {
+        // Model heights the lidar contradicts (a park model at 20 m) take the lidar height.
+        const checked = checkSourceHeights(features, lidar.grid);
+        if (checked.fixed) {
+          features = checked.features;
+          footprintMeta.lidarHeightFixes = checked.fixed;
+          warnings.push("Took " + checked.fixed + " roof height" + (checked.fixed === 1 ? "" : "s") + " from the lidar under the roof where the model height was missing or far too tall.");
+        }
+      }
       lidarCanopy = fuseCanopyFromLidar(lidar);
     } catch {
       lidarCanopy = null;

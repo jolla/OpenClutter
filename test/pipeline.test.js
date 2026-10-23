@@ -1205,12 +1205,26 @@ describe("building type pick", () => {
 
   it("buckets OpenIntent buildings into the gold One/Two/Five/Ten set", () => {
     const { pickOiBuildingTypeId } = require("../netlify/lib/materials");
+    const mode = require("../netlify/lib/export-mode");
+    mode.setSiteTypes(false);
+    try {
+      assert.equal(pickOiBuildingTypeId(80, 0), "bldg-one");
+      assert.equal(pickOiBuildingTypeId(80, 6.4), "bldg-two");
+      assert.equal(pickOiBuildingTypeId(2000, 0), "bldg-five");
+      assert.equal(pickOiBuildingTypeId(80, 18), "bldg-five");
+      assert.equal(pickOiBuildingTypeId(9000, 0), "bldg-ten");
+      assert.equal(pickOiBuildingTypeId(80, 32), "bldg-ten");
+    } finally {
+      mode.setSiteTypes(true);
+    }
+  });
+
+  it("keeps a large footprint with no height low on /dev hosts", () => {
+    const { pickOiBuildingTypeId } = require("../netlify/lib/materials");
     assert.equal(pickOiBuildingTypeId(80, 0), "bldg-one");
-    assert.equal(pickOiBuildingTypeId(80, 6.4), "bldg-two");
-    assert.equal(pickOiBuildingTypeId(2000, 0), "bldg-five");
+    assert.equal(pickOiBuildingTypeId(2000, 0), "bldg-two");
+    assert.equal(pickOiBuildingTypeId(9000, 0), "bldg-five");
     assert.equal(pickOiBuildingTypeId(80, 18), "bldg-five");
-    assert.equal(pickOiBuildingTypeId(9000, 0), "bldg-ten");
-    assert.equal(pickOiBuildingTypeId(80, 32), "bldg-ten");
   });
 });
 
