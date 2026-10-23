@@ -1496,9 +1496,9 @@ async function handleClutter(event) {
   // gates the testing overrides, which stay off the public site.
   const devHost = isQualityHost(event);
   const testHost = isDevTestHost(event);
-  // Overpass retries and fallback, and the sharper-plate wait, are on
-  // trial on /dev. legacyFetch:true replays the earlier paths there.
-  exportMode.setResilient(testHost && body.legacyFetch !== true);
+  // Overpass retries and fallback, and the sharper-plate wait, run on every
+  // host. On /dev hosts legacyFetch:true replays the earlier paths.
+  exportMode.setResilient(!(testHost && body.legacyFetch === true));
   const areaCapOverride = testHost ? parseAreaCapOverride(body.areaCap) : 0;
   const jsonBudgetOverride = testHost ? parseJsonBudgetOverride(body.jsonBudget) : 0;
   const terrainFloors = testHost ? parseTerrainFloorOverride(body.terrainFloors) : 0;
