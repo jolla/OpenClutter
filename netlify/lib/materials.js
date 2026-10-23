@@ -882,21 +882,26 @@ function foliageTier(heightM, kind) {
   return "heavy";
 }
 
+/** 1.2.17 area bins for a roof with no height: a big hall became a tower. */
+function legacyUnmeasuredHeightM(areaM2) {
+  return areaM2 >= 6000 ? 40 : areaM2 >= 1200 ? 16 : areaM2 >= 400 ? 8 : 4.5;
+}
+
+/**
+ * A large footprint with no height is far more often a hall, store, or
+ * warehouse than a tower: past 1200 m2 it is Two Floor, past 6000 m2 Five
+ * Floor. Towers carry a source or lidar height.
+ */
+function unmeasuredHeightM(areaM2) {
+  return areaM2 >= 6000 ? 12 : areaM2 >= 400 ? 8 : 4.5;
+}
+
 /**
  * Bucket measured/estimated height into Hamina's four outdoor building materials.
  * Clipboard still uses ZONE_TYPES (incl. foliage / Hotel podium) via pickBuildingTypeId.
  */
 function pickOiBuildingTypeId(areaM2, heightM) {
-  const h =
-    heightM > 2
-      ? heightM
-      : areaM2 >= 6000
-        ? 40
-        : areaM2 >= 1200
-          ? 16
-          : areaM2 >= 400
-            ? 8
-            : 4.5;
+  const h = heightM > 2 ? heightM : require("./export-mode").isSiteTypes() ? unmeasuredHeightM(areaM2) : legacyUnmeasuredHeightM(areaM2);
   if (h >= 24) return "bldg-ten";
   if (h >= 11) return "bldg-five";
   if (h >= 6) return "bldg-two";

@@ -13,6 +13,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.2
 
+- **1.2.22** Building heights on /dev hosts: where USGS lidar covers the draw, a roof with no height or a model height the lidar reads far lower (a park model at 20 m) takes the lidar height, and a large roof with no height at all defaults to Two Floor (Five Floor past 6000 m2) instead of Five or Ten Floor. Production exports keep the 1.2.17 rules.
 - **1.2.21** On /dev hosts, a footprint inside a mapped RV park, campground, or mobile-home park that is sized like an RV (5 to 14 m by 2 to 4 m) is exported as an RV; the canopy bench now ignores lidar over every solid roof class, not only buildings. Production exports keep the 1.2.17 rules.
 - **1.2.20** On /dev hosts, a scene over the OpenIntent byte budget first simplifies tree outlines (up to 0.8 m) and only then drops trees, so large campgrounds keep their canopy. Production exports keep the 1.2.17 rules.
 - **1.2.19** Marinas on /dev hosts: long narrow light walkways are cleared before boats are read, so main docks between moored boats no longer get boat boxes, and a row-length blob needs open water on two sides, so a light strip along the shore by a parking lot is no longer read as boats. Production exports keep the 1.2.17 rules.

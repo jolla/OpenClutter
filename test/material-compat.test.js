@@ -6,6 +6,7 @@ const { geoFrame } = require("../netlify/lib/geo-frame");
 const { buildClutter, validateOiArea, MAX_ATTENUATION_AREAS } = require("../netlify/lib/pipeline");
 const fs = require("node:fs");
 const path = require("node:path");
+const { setSiteTypes } = require("../netlify/lib/export-mode");
 const {
   catalogMaterials,
   buildingCatalog,
@@ -535,11 +536,16 @@ describe("Hamina OpenIntent material compatibility", () => {
     assert.equal(exactTower.material.display_color, "#A2A8AE");
     assert.equal(exactTower.material.name, "Building - 187.0");
     const unknownSmall = materialForBuilding(0, 80);
+    setSiteTypes(false);
     const unknownLarge = materialForBuilding(0, 9000);
+    setSiteTypes(true);
     assert.equal(unknownSmall.material.name, "Building - One Floor");
     assert.equal(unknownSmall.material.top_height, 4.5);
     assert.equal(unknownLarge.material.name, "Building - Ten Floor");
     assert.equal(unknownLarge.material.top_height, 32);
+    // /dev hosts: a big roof with no height is a tall single hall, not a tower.
+    assert.equal(materialForBuilding(0, 9000).material.name, "Building - Five Floor");
+    assert.equal(materialForBuilding(0, 1500).material.name, "Building - Two Floor");
     // No measured height does not invent a metre value for the color.
     // The stock floor keeps its own gray. A 40 m area guess is not a tower.
     assert.equal(unknownSmall.material.display_color, buildingColor(unknownSmall.material.top_height));
