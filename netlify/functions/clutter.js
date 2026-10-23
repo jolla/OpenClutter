@@ -169,6 +169,8 @@ const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { buildSiteV1 } = require("../lib/site-v1");
 const { fetchSlopeForest } = require("../lib/slope-forest");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
+/** Wait for the park-context photo (park-context.js); a miss keeps the draw-only pads. */
+const PARK_CONTEXT_MS = 20000;
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
 const { fetchUsgsLidar, applyLidarSample, checkSourceHeights, lidarNote, lidarStatusLine, rankProjects, heightForRing } = require("../lib/usgs-lidar");
 const { fuseLidarCanopy, keepLidarOpen, clearInside, clearThinLinesGrid, vehicleFeatures, lidarCanopyNote } = require("../lib/lidar-canopy");
@@ -1504,6 +1506,9 @@ async function handleClutter(event) {
   // From 1.2.25 /dev RVs and trailers are hollow shells (four walls and a
   // roof slab). rvShell:false on a /dev host exports the solid 9 dB/m block.
   exportMode.setRvShell(exportMode.rvShellWanted(testHost, body));
+  // From 1.2.26 /dev worst-case pads learn the pad pattern from the whole
+  // park when a mapped park runs past the draw. Production never reads it.
+  exportMode.setParkContext(exportMode.parkContextWanted(testHost, body));
   const areaCapOverride = testHost ? parseAreaCapOverride(body.areaCap) : 0;
   const jsonBudgetOverride = testHost ? parseJsonBudgetOverride(body.jsonBudget) : 0;
   const terrainFloors = testHost ? parseTerrainFloorOverride(body.terrainFloors) : 0;
@@ -1609,6 +1614,7 @@ async function handleClutter(event) {
   let terrainJob = null;
   let chmJob = null;
   let outdoorJob = null;
+  let parkContextJob = null;
   let forestJob = null;
   let detailJob = null;
   let overtureFrame = null;
@@ -1657,6 +1663,21 @@ async function handleClutter(event) {
           trees: includeFoliage,
         }, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background, deckCap })
       );
+    }
+    if (outdoorJob && includeRvs === true && exportMode.isParkContext()) {
+      // A mapped park that runs past the draw: read its roads and pitches
+      // over the whole park while the rest of the export runs.
+      const outdoorWork = outdoorJob.work;
+      parkContextJob = Promise.resolve(outdoorWork)
+        .then((pack) => {
+          if (!pack || pack === TIMED_OUT || pack.ok === false) return null;
+          const box = require("../lib/park-context").contextBox(pack.features, requestBbox);
+          if (!box) return null;
+          return fetchOutdoorClutter(box, { rvs: true }, { ua: UA, timeoutMs: background ? 90000 : 4500, tile: background }).then(
+            (got) => (got && got.ok ? got.features || [] : null)
+          );
+        })
+        .catch(() => null);
     }
     if (includeFoliage) {
       forestJob = beginOptional((signal) =>
@@ -2797,6 +2818,39 @@ async function handleClutter(event) {
     if (warnings.indexOf(storageNote) < 0) warnings.push(storageNote);
   }
 
+  let parkContextStats = null;
+  // A small draw in a big RV park learns the park's pad pattern from the
+  // whole park, not only the RVs inside the draw (park-context.js, 1.2.26).
+  if (exportMode.isParkContext() && includeRvs === true && outdoorOn && outdoorMiss !== true && imgBuf && frame) {
+    try {
+      const parkFeatures = parkContextJob ? await parkContextJob : null;
+      const ctx = await stageClock.timeSpan("parkContext", () =>
+        require("../lib/park-context").readParkContext({
+          features: outdoorFeatures,
+          frame,
+          ctxFeatures: parkFeatures,
+          fetchPlate: (f) =>
+            imagerySource.fetchPlateWith(imageryCtx, f, PARK_CONTEXT_MS, null, (pf, ms, sig) =>
+              fetchImageryJpegBody(esriImageryUrl(pf), ms, sig)
+            ),
+          placePlate: (f, buf) => {
+            const placed = applyImageryMeta(f, null, jpegSize(buf), {
+              requestBbox: { west: f.west, south: f.south, east: f.east, north: f.north },
+            });
+            const locked = lockIsotropicImagery(placed, buf, { maxSide: Math.max(f.imgW, f.imgH) });
+            return { frame: locked.frame, buf: locked.jpegBuf };
+          },
+        })
+      );
+      parkContextStats = { candidates: ctx.candidates, rvs: ctx.rvs || 0, roads: ctx.roads || 0 };
+      if (ctx.frame) parkContextStats.photoPx = [ctx.frame.imgW, ctx.frame.imgH];
+      if (ctx.photoMiss) parkContextStats.photoMiss = ctx.photoMiss;
+      if (ctx.features.length) outdoorFeatures = outdoorFeatures.concat(ctx.features);
+    } catch (err) {
+      parkContextStats = { candidates: 0, rvs: 0, failed: String((err && err.message) || err).slice(0, 80) };
+    }
+  }
+
   let exportFeatures = features;
   const shortLarge = !background && Math.max(frame.widthM, frame.lengthM) > SYNC_LARGE_DRAW_M;
   if (shortLarge) {
@@ -2811,6 +2865,7 @@ async function handleClutter(event) {
   }
   if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage emit " + (Date.now() - started) + "\n");
   let built = await emitClutter(exportFeatures);
+  if (parkContextStats && built && built.stats) built.stats.parkContext = parkContextStats;
   if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage emitted " + (Date.now() - started) + "\n");
   // The image does not count toward Hamina's JSON limit. Compress it only
   // when the zip itself cannot fit in Netlify's function response.

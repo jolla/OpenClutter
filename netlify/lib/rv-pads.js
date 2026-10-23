@@ -250,6 +250,8 @@ function clamp(v, r) {
  * @param {Array} o.roads pixel polylines of internal roads
  * @param {Array} o.evidence pixel rings of RVs already placed (boxes and RV footprints)
  * @param {Array} o.obstacles pixel rings never covered (roofs, water)
+ * @param {object} [o.context] the rest of the park read past the draw:
+ *   {evidence, roads}, used only when the draw holds too few RVs
  * @returns {{rings: Array, added: number}} new RV rings in pixels
  */
 function fillPads(o) {
@@ -259,6 +261,25 @@ function fillPads(o) {
   const zones = (o.zones || []).filter((z) => z && z.length >= 3).map((z) => toM(z, mx, my));
   if (!zones.length) return { rings: [], added: 0 };
   const inZone = (x, y) => zones.some((z) => pointInRing(x, y, z));
+  // A draw that holds too few RVs to learn its park's pads borrows the
+  // whole park's RVs and roads (park-context.js), the way a road side with
+  // too few RVs borrows its park's pattern.
+  const ctx = o.context;
+  if (ctx && ((ctx.evidence && ctx.evidence.length) || (ctx.roads && ctx.roads.length))) {
+    let own = 0;
+    for (const ring of o.evidence || []) {
+      if (!ring || ring.length < 3) continue;
+      const b = boxOf(toM(ring, mx, my));
+      if (b && b.len >= 4 && b.len <= 16 && inZone(b.cx, b.cy)) own++;
+    }
+    if (own < ZONE_MIN_EVIDENCE) {
+      o = Object.assign({}, o, {
+        roads: (o.roads || []).concat(ctx.roads || []),
+        evidence: (o.evidence || []).concat(ctx.evidence || []),
+        context: null,
+      });
+    }
+  }
   // Every road keeps pads clear of its pavement; pads are only looked for
   // along roads that run mostly inside a park.
   const roads = [];

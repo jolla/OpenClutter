@@ -20,6 +20,15 @@
  * and imagery are years apart, so a parked vehicle or a moored boat can
  * move between them. The lidar survey is named on every row.
  *
+ * Worst-case pad fills (rv-pads.js: an RV drawn on an RV pad the photo
+ * shows empty, so a coverage plan sees the full park) are not detections.
+ * They are left out of object recall and precision and scored on their own:
+ * how many, and what the lidar shows under them (a solid object, tree
+ * crown, a building, or nothing within 2 m, which is a gravel pad, bare
+ * ground, a road or water). The export lists them by OpenIntent pixel
+ * centre in stats.padFills when OC_BENCH_PAD_FILLS is set, which this
+ * script sets.
+ *
  * Site score = mean of canopy recall (when the site has canopy), the small
  * object F1, and the big object F1. The set score is the mean of the sites.
  *
@@ -317,6 +326,35 @@ function dilate(mask, w, h, r) {
   return out;
 }
 
+function ringCentre(ring) {
+  let n = ring.length;
+  if (n > 1 && ring[0][0] === ring[n - 1][0] && ring[0][1] === ring[n - 1][1]) n--;
+  let x = 0;
+  let y = 0;
+  for (let i = 0; i < n; i++) {
+    x += ring[i][0];
+    y += ring[i][1];
+  }
+  return [x / n, y / n];
+}
+
+/** Pad-fill centres the export listed (stats.padFills), else none. */
+function padFillCentres(site) {
+  const p = path.join(OUT, site.id + "-stats.json");
+  if (!fs.existsSync(p)) return null;
+  const st = JSON.parse(fs.readFileSync(p, "utf8")).stats || {};
+  return Array.isArray(st.padFills) ? st.padFills : null;
+}
+
+function isPadFill(ring, centres) {
+  if (!centres || !centres.length) return false;
+  const c = ringCentre(ring);
+  for (const q of centres) {
+    if (Math.abs(q[0] - c[0]) <= 0.6 && Math.abs(q[1] - c[1]) <= 0.6) return true;
+  }
+  return false;
+}
+
 async function scoreObjects(site, zipPath) {
   const loaded = loadZip(zipPath, path.join(OUT, "obj-" + site.id));
   const fp = loaded.json.floorplans[0];
@@ -329,13 +367,21 @@ async function scoreObjects(site, zipPath) {
   const frame = geoFrame(ext, { imgW, imgH, maxSpanM: 8000, minSpanM: 1 });
   const small = [];
   const big = [];
+  const pads = [];
+  const water = [];
   const kinds = {};
+  const centres = padFillCentres(site);
   for (const a of fp.attenuation_areas || []) {
     const name = (a.area_material && a.area_material.name) || "";
-    if (!solidName(name)) continue;
     const coords = a.area && a.area.coordinates;
     if (!coords || coords.length < 3) continue;
     const ring = coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
+    if (/water/i.test(name)) water.push(ring);
+    if (!solidName(name)) continue;
+    if (isPadFill(ring, centres)) {
+      pads.push(ring);
+      continue;
+    }
     let acc = 0;
     for (let i = 0; i < ring.length; i++) {
       const p = ring[i];
@@ -348,7 +394,7 @@ async function scoreObjects(site, zipPath) {
     kinds[kind] = (kinds[kind] || 0) + 1;
   }
   const ref = await objectReference(site, frame);
-  if (!ref) return { objRef: "none", kinds };
+  if (!ref) return { objRef: "none", kinds, padFills: centres ? centres.length : null };
   const step = Math.max(1, Math.round(1 / mpu));
   const sm = rasterRings(small, imgW, imgH, step);
   const bg = rasterRings(big, imgW, imgH, step);
@@ -414,6 +460,31 @@ async function scoreObjects(site, zipPath) {
       }
     }
   }
+  // Pad fills: what the lidar shows under each emitted sample.
+  const pad = { n: 0, object: 0, building: 0, crown: 0, near: 0, empty: 0, water: 0, out: 0 };
+  if (pads.length) {
+    const pm = rasterRings(pads, imgW, imgH, step);
+    const wm = water.length ? rasterRings(water, imgW, imgH, step).mask : null;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (!pm.mask[i]) continue;
+        const [lon, lat] = imagePxToLl(x * step + step / 2, y * step + step / 2, frame);
+        const k = refIndex(ref, lon, lat);
+        if (k < 0) {
+          pad.out++;
+          continue;
+        }
+        pad.n++;
+        if (wm && wm[i]) pad.water++;
+        if (ref.obj[k] === 2) pad.building++;
+        else if (ref.obj[k] === 1) pad.object++;
+        else if (ref.high[k]) pad.crown++;
+        else if (highNear[k] === 1 || objNear[k] === 1) pad.near++;
+        else pad.empty++;
+      }
+    }
+  }
   const smallRecall = pct(hitS, refS);
   const bigRecall = pct(hitB, refB);
   const smallPrecision = pct(tpS, predS);
@@ -432,6 +503,12 @@ async function scoreObjects(site, zipPath) {
     bigPrecision,
     bigF1: refB >= 30 ? f1(bigRecall, bigPrecision == null ? 0 : bigPrecision) : null,
     kinds,
+    padFills: centres ? pads.length : null,
+    padOnObjectPct: pad.n ? pct(pad.object + pad.near, pad.n) : null,
+    padLidarEmptyPct: pad.n ? pct(pad.empty, pad.n) : null,
+    padOnBuildingPct: pad.n ? pct(pad.building, pad.n) : null,
+    padOnCrownPct: pad.n ? pct(pad.crown, pad.n) : null,
+    padOnWaterPct: pad.n ? pct(pad.water, pad.n) : null,
   };
 }
 
@@ -454,15 +531,15 @@ function writeBoard() {
   const lines = [
     "# Site-type scoreboard",
     "",
-    "RV parks, campgrounds, marinas, and fairgrounds, exported with the page defaults. Canopy recall is the canopy bench measure. Small and big objects are solid USGS 3DEP lidar cells (class-6 or flat single-return patches at least 1.5 m over ground or water), split at 150 m² connected size. Recall is the share an emitted non-vegetation area covers within 2 m; precision is the share of emitted solid area with a lidar return of at least 1.5 m within 2 m. Lidar predates the imagery, so moved vehicles and boats count against both. Site score is the mean of canopy recall (sites with canopy), small F1, and big F1.",
+    "RV parks, campgrounds, marinas, and fairgrounds, exported with the page defaults. Canopy recall is the canopy bench measure. Small and big objects are solid USGS 3DEP lidar cells (class-6 or flat single-return patches at least 1.5 m over ground or water), split at 150 m² connected size. Recall is the share an emitted non-vegetation area covers within 2 m; precision is the share of emitted solid area with a lidar return of at least 1.5 m within 2 m. Lidar predates the imagery, so moved vehicles and boats count against both. Site score is the mean of canopy recall (sites with canopy), small F1, and big F1. Worst-case pad fills (RVs drawn on pads the photo shows empty) are not in recall or precision; the pad columns count them and give the share of their area over a lidar solid object (within 2 m), over nothing within 2 m (gravel pad, bare ground, road or water), on a building roof, on a tree crown, and on mapped water.",
     "",
-    "| Site | Kind | Canopy recall | Small recall | Small precision | Big recall | Big precision | Score | Lidar |",
-    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+    "| Site | Kind | Canopy recall | Small recall | Small precision | Big recall | Big precision | Score | Pad fills | Pad on object % | Pad lidar-empty % | Pad on roof % | Pad on crown % | Pad on water % | Lidar |",
+    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
   ];
   const f = (v) => (v == null ? "n/a" : String(v));
   for (const r of rows) {
     lines.push(
-      "| " + [r.name, r.kind, f(r.canopyRecall), f(r.smallRecall), f(r.smallPrecision), f(r.bigRecall), f(r.bigPrecision), f(r.score), r.objRef || "none"].join(" | ") + " |"
+      "| " + [r.name, r.kind, f(r.canopyRecall), f(r.smallRecall), f(r.smallPrecision), f(r.bigRecall), f(r.bigPrecision), f(r.score), f(r.padFills), f(r.padOnObjectPct), f(r.padLidarEmptyPct), f(r.padOnBuildingPct), f(r.padOnCrownPct), f(r.padOnWaterPct), r.objRef || "none"].join(" | ") + " |"
     );
   }
   for (const r of rows) if (r.objRefStale) lines.push("", r.name + ": " + r.objRefStale);
@@ -477,6 +554,7 @@ function writeBoard() {
 }
 
 async function main() {
+  process.env.OC_BENCH_PAD_FILLS = "1";
   const only = arg("--site");
   const sites = SITES.filter((s) => !only || s.id === only);
   if (!sites.length) throw new Error("no site " + only);
@@ -526,4 +604,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { solidName, siteScore, f1 };
+module.exports = { solidName, siteScore, f1, isPadFill, ringCentre };

@@ -99,5 +99,25 @@
   "south": 32.9712,
   "east": -117.2563,
   "north": 32.9803
+ },
+ {
+  "id": "silver-view-rv",
+  "name": "Silver View RV resort",
+  "place": "Bullhead City, Arizona",
+  "kind": "hillside rv park",
+  "west": -114.5776,
+  "south": 35.1131,
+  "east": -114.5715,
+  "north": 35.1171
+ },
+ {
+  "id": "silver-view-sw",
+  "name": "Silver View RV resort, south-west 150 m",
+  "place": "Bullhead City, Arizona",
+  "kind": "hillside rv park, small draw",
+  "west": -114.5776,
+  "south": 35.1131,
+  "east": -114.57595,
+  "north": 35.114457
  }
 ]
