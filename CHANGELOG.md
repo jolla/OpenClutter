@@ -13,6 +13,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.2
 
+- **1.2.20** On /dev hosts, a scene over the OpenIntent byte budget first simplifies tree outlines (up to 0.8 m) and only then drops trees, so large campgrounds keep their canopy. Production exports keep the 1.2.17 rules.
 - **1.2.19** Marinas on /dev hosts: long narrow light walkways are cleared before boats are read, so main docks between moored boats no longer get boat boxes, and a row-length blob needs open water on two sides, so a light strip along the shore by a parking lot is no longer read as boats. Production exports keep the 1.2.17 rules.
 - **1.2.18** RV parks and marinas: a road with no mapped pitches gets RV boxes only on roofs the photo shows beside it, marinas mapped in the street-map extract or only by their piers get boats, and long boat rows are split along the row; adds a 10-site RV park, campground, marina, and fairground bench (`scripts/sitetype-bench.js`). These rules run on /dev hosts only; production exports keep the 1.2.17 rules until promoted.
 - **1.2.17** Production exports use the 1.2.15 and 1.2.16 fetch paths too: Overpass retries and fallback across public servers, and the map waits for a sharper plate and tiles large plates. On /dev, `legacyFetch: true` still replays the earlier paths.

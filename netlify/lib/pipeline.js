@@ -3210,6 +3210,34 @@ function rankPiecesByCover(pieces) {
   return pieces;
 }
 
+/** Crown outline tolerances tried, in metres, before trees are dropped for bytes. */
+const TREE_THIN_STEPS_M = [0.25, 0.5, 0.8];
+
+/** Douglas-Peucker each crown and foliage ring in place; returns vertices removed. */
+function thinTreeOutlines(pieces, epsPx) {
+  const { dpClosed } = require("./canopy-height");
+  let removed = 0;
+  for (let i = 0; i < pieces.length; i++) {
+    const areas = pieces[i].areas || [];
+    for (let j = 0; j < areas.length; j++) {
+      const a = areas[j];
+      if (!a || isTrunkArea(a) || !a.area || !a.area.coordinates) continue;
+      const coords = a.area.coordinates;
+      if (coords.length < 6) continue;
+      const closed = coords[0].coordinate_xyz.x === coords[coords.length - 1].coordinate_xyz.x && coords[0].coordinate_xyz.y === coords[coords.length - 1].coordinate_xyz.y;
+      const open = (closed ? coords.slice(0, -1) : coords).map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
+      const thin = dpClosed(open, epsPx);
+      if (thin.length < 3 || thin.length >= open.length) continue;
+      const unit = coords[0].coordinate_xyz.unit;
+      const next = thin.map((p) => ({ coordinate_xyz: { x: p[0], y: p[1], unit } }));
+      if (closed) next.push({ coordinate_xyz: { x: thin[0][0], y: thin[0][1], unit } });
+      removed += coords.length - next.length;
+      a.area = Object.assign({}, a.area, { coordinates: next });
+    }
+  }
+  return removed;
+}
+
 const OPEN_TREE_MAX_M2 = 400;
 const WALL_CROWN_MAX_W_M = 6;
 const WALL_CROWN_MIN_L_M = 18;
@@ -3803,6 +3831,8 @@ function buildClutter({
       warnings.push("Left out " + leafOnDropped + " canopy pieces with no summer foliage on the " + (leafOnSource || "leaf-on orthophoto") + ".");
     }
   }
+  let treeThinned = 0;
+  let treeThinStep = 0;
   const deckPieces = [];
   const waterPieces = [];
   const rvPieces = [];
@@ -3825,6 +3855,19 @@ function buildClutter({
   // The trees are then ranked by the canopy each one covers per byte, so a
   // crowd of small stemmed trees cannot push large stands out of the scene.
   if (treePieces.length > 1 && overJsonBudget(frame, name, imgName, chunks.concat(treePieces, latePieces), jsonByteBudget)) {
+    // First thin the crown outlines a little at a time, so the trim drops
+    // fewer trees. Stems keep their shape.
+    if (require("./export-mode").isSiteTypes()) {
+      const mpu = frame.mpuX || frame.mpu || frame.widthM / frame.imgW;
+      for (let s = 0; s < TREE_THIN_STEPS_M.length; s++) {
+        treeThinned = thinTreeOutlines(treePieces, TREE_THIN_STEPS_M[s] / mpu);
+        treeThinStep = TREE_THIN_STEPS_M[s];
+        if (!overJsonBudget(frame, name, imgName, chunks.concat(treePieces, latePieces), jsonByteBudget)) break;
+      }
+      if (treeThinned && Array.isArray(warnings)) {
+        warnings.push("Simplified tree outlines to within " + treeThinStep + " m to fit more of the canopy in the OpenIntent byte budget.");
+      }
+    }
     rankPiecesByCover(treePieces);
   }
   for (let i = 0; i < treePieces.length; i++) chunks.push(treePieces[i]);
@@ -3970,6 +4013,7 @@ function buildClutter({
     droppedTreeRings: treeOi.droppedInvalid,
     droppedAreasCap: roofsLeftOut,
     droppedTreeAreas: treeOi.areas.length - treeEmitted,
+    ...(treeThinned ? { treeVerticesThinned: treeThinned, treeThinM: treeThinStep } : {}),
     attenuationAreasEmitted: areas.length,
     openIntentBuildingAreas: buildingEmitted,
     openIntentTreeAreas: treeEmitted,
@@ -4137,6 +4181,7 @@ module.exports = {
   expandOiCoordTriples,
   emitPixelVertex,
   fitChunksToJsonBudget,
+  thinTreeOutlines,
   treesToOi,
   outdoorToOi,
   emitIfValid,
