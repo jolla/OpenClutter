@@ -106,6 +106,12 @@ const RV_DEDUPE_M = 8;
 /** A mapped campground can pass 400 pitches. The cap used to drop the last row. */
 const RV_CAP = 2400;
 const RV_CAP_LEGACY = 800;
+/** RV park and campground outlines kept to read footprints inside them. */
+const CAMP_ZONE_CAP = 60;
+/** A footprint this size inside a camp or mobile-home park is a vehicle. */
+const CAMP_RV_LEN_M = [5, 14];
+const CAMP_RV_WID_M = [2, 4];
+const CAMP_RV_MAX_M2 = 55;
 function rvCap() {
   return isSiteTypes() ? RV_CAP : RV_CAP_LEGACY;
 }
@@ -1480,6 +1486,12 @@ function parseOverpass(payload, want, bbox, deckCap) {
   const plain = [];
   for (let i = 0; i < features.length; i++) {
     const kind = features[i] && features[i].kind;
+    if (kind === "rv-site" && isSiteTypes() && features[i].coords && features[i].coords.length >= 4) {
+      // The site outline is kept (never drawn) so a footprint inside it
+      // that is sized like an RV can be read as one.
+      plain.push({ kind: "camp-zone", coords: features[i].coords, closed: true, heightM: 0, explicitHeight: false, rank: 0 });
+      continue;
+    }
     if (
       kind === "rv-site" ||
       kind === "rv-pitch" ||
@@ -1640,9 +1652,14 @@ function limitFeatures(features, bbox, deckCap) {
   const guideways = [];
   const bridges = [];
   const rvs = [];
+  const zones = [];
   for (let i = 0; i < (features || []).length; i++) {
     const f = features[i];
     if (!f) continue;
+    if (f.kind === "camp-zone") {
+      if (zones.length < CAMP_ZONE_CAP) zones.push(f);
+      continue;
+    }
     if (f.kind === "water") water.push(f);
     else if (f.kind === "parking" || f.kind === "car") parking.push(f);
     else if (f.kind === "pole") poles.push(f);
@@ -1673,7 +1690,7 @@ function limitFeatures(features, bbox, deckCap) {
   const rvKept = rvs.slice(0, rvCap());
   if (rvs.length > rvKept.length) notes.push("RVs capped at " + rvCap() + ".");
   return {
-    features: w.kept.concat(p.kept, wallKept, pole.kept, guideKept, bridgeKept, rvKept),
+    features: w.kept.concat(p.kept, wallKept, pole.kept, guideKept, bridgeKept, rvKept, zones),
     notes,
   };
 }
@@ -2516,11 +2533,94 @@ function dropRoadsideUnderRoofs(features, buildings, frame) {
 }
 
 /**
+ * Footprints inside an RV park, campground, or mobile-home park that are
+ * sized like an RV are RVs: they take the RV material. Footprints are never
+ * dropped: an empty-pad test lost real objects against lidar.
+ */
+function campFootprints(buildings, zoneRings, frame, slopeTop) {
+  const updates = [];
+  if (!zoneRings.length) return { updates };
+  const mx = frame.mpuX > 0 ? frame.mpuX : 0.3;
+  const my = frame.mpuY > 0 ? frame.mpuY : mx;
+  for (let b = 0; b < buildings.length; b++) {
+    const building = buildings[b];
+    const px = building && building.ringPx;
+    if (!px || px.length < 3) continue;
+    let cx = 0;
+    let cy = 0;
+    for (let k = 0; k < px.length; k++) {
+      cx += px[k][0];
+      cy += px[k][1];
+    }
+    cx /= px.length;
+    cy /= px.length;
+    let inside = false;
+    for (let z = 0; z < zoneRings.length && !inside; z++) if (zoneRings[z] && zoneRings[z].length >= 3 && pointInRing([cx, cy], zoneRings[z])) inside = true;
+    if (!inside) continue;
+    const d = rectDims(px, mx, my);
+    if (!d) continue;
+    if (d.len < CAMP_RV_LEN_M[0] || d.len > CAMP_RV_LEN_M[1]) continue;
+    if (d.wid < CAMP_RV_WID_M[0] || d.wid > CAMP_RV_WID_M[1]) continue;
+    if (d.area > CAMP_RV_MAX_M2 || d.area < 0.6 * d.len * d.wid) continue;
+    const ll = pxRingToLonLat(px, frame);
+    const material = materialForKind("rv", RV_HEIGHT_M, ll, slopeTop, 0);
+    if (material) updates.push({ index: building.index, material, kind: "rv" });
+  }
+  return { updates };
+}
+
+/** Area and minimum-rectangle sides of a pixel ring, in metres. */
+function rectDims(px, mx, my) {
+  const pts = px.map((p) => [p[0] * mx, p[1] * my]);
+  const n = pts.length;
+  let area = 0;
+  for (let i = 0; i < n; i++) {
+    const a = pts[i];
+    const c = pts[(i + 1) % n];
+    area += a[0] * c[1] - c[0] * a[1];
+  }
+  area = Math.abs(area) / 2;
+  let best = null;
+  for (let i = 0; i < n; i++) {
+    const a = pts[i];
+    const c = pts[(i + 1) % n];
+    const L = Math.hypot(c[0] - a[0], c[1] - a[1]);
+    if (L < 1e-6) continue;
+    const ux = (c[0] - a[0]) / L;
+    const uy = (c[1] - a[1]) / L;
+    let u0 = Infinity;
+    let u1 = -Infinity;
+    let v0 = Infinity;
+    let v1 = -Infinity;
+    for (let k = 0; k < n; k++) {
+      const u = pts[k][0] * ux + pts[k][1] * uy;
+      const v = -pts[k][0] * uy + pts[k][1] * ux;
+      if (u < u0) u0 = u;
+      if (u > u1) u1 = u;
+      if (v < v0) v0 = v;
+      if (v > v1) v1 = v;
+    }
+    const box = (u1 - u0) * (v1 - v0);
+    if (!best || box < best.box) best = { box, len: Math.max(u1 - u0, v1 - v0), wid: Math.min(u1 - u0, v1 - v0) };
+  }
+  return best ? { area, len: best.len, wid: best.wid } : null;
+}
+
+/**
  * Pixel rings plus a parking recolor of buildings that already cover a garage.
  * A matched garage is not drawn a second time. Water is cut against those
  * same roofs so a pond or a mis-tagged panel block does not cover them.
  */
 function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segmentCaps, vehiclePlate, scanned }) {
+  const campZones = [];
+  if (features && features.some((f) => f && f.kind === "camp-zone")) {
+    const rest = [];
+    for (let i = 0; i < features.length; i++) {
+      if (features[i] && features[i].kind === "camp-zone") campZones.push(features[i]);
+      else rest.push(features[i]);
+    }
+    features = rest;
+  }
   const pitchMap = scanned && scanned.pitch;
   const fractionFor =
     vehiclePlate && frame
@@ -2595,6 +2695,16 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
     if (match.coords && parkingFeats.indexOf(match) >= 0) consumed.add(match);
     updates.push({ index: building.index, material: mat });
     reclass++;
+  }
+  if (isSiteTypes() && frame && buildings && buildings.length) {
+    const zoneRings = [];
+    for (let i = 0; i < campZones.length; i++) zoneRings.push(lonLatRingToPx(campZones[i].coords, frame));
+    for (let i = 0; i < (features || []).length; i++) {
+      const f = features[i];
+      if (f && f.kind === "mobile-park" && f.coords && f.coords.length >= 4) zoneRings.push(lonLatRingToPx(f.coords, frame));
+    }
+    const camp = campFootprints(buildings, zoneRings, frame, slopeTop);
+    for (let i = 0; i < camp.updates.length; i++) updates.push(camp.updates[i]);
   }
   const items = [];
   if (vehiclePlate && frame && buildings && buildings.length) {
