@@ -2,6 +2,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
+const { setSiteTypes } = require("../netlify/lib/export-mode");
 const {
   pitchClass,
   isTruckLotTags,
@@ -45,7 +46,11 @@ describe("vehicle track", () => {
     assert.equal(decidePitch("tent", null), "");
     assert.equal(decidePitch("tent", 2), "");
     assert.equal(decidePitch("tent", 12), "trailer");
+    setSiteTypes(false);
     assert.equal(decidePitch("rv", 2), "");
+    setSiteTypes(true);
+    // /dev hosts model the worst case: an empty RV pitch keeps its RV.
+    assert.equal(decidePitch("rv", 2), "rv");
     assert.equal(decidePitch("rv", null), "rv");
     assert.equal(decidePitch("rv", 200), "");
     assert.equal(decidePitch("road", 2), "rv");

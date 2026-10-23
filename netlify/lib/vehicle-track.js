@@ -739,7 +739,9 @@ function decidePitch(use, fraction) {
   const occupied = occupiedCall(fraction);
   if (use === "road" || use === "") return "rv";
   if (use === "tent") return occupied === true ? "trailer" : "";
-  if (occupied === false) return "";
+  // Worst case on /dev hosts: an empty mapped RV pitch keeps its RV. A pitch
+  // filled past the vehicle range (a roof or slab) still drops it.
+  if (occupied === false) return isSiteTypes() && fraction < OCCUPIED_LO ? "rv" : "";
   return "rv";
 }
 
@@ -848,6 +850,7 @@ function needsPitchImage(features) {
     if (f.kind === "marina" || f.kind === "mobile-park" || f.kind === "truck-lot" || f.kind === "car") return true;
     if (f.kind === "rv" && (f.pitchUse === "rv" || f.pitchUse === "tent" || f.pitchUse === "pitch")) return true;
     if (f.kind === "rv" && f.pitchUse === "road" && isSiteTypes()) return true;
+    if (f.kind === "camp-zone" && isSiteTypes()) return true;
   }
   return false;
 }
