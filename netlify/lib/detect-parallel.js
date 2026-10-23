@@ -452,9 +452,50 @@ function pitchRingOf(feature) {
   return feature && feature.coords;
 }
 
+function boxRings(rings) {
+  const out = [];
+  for (let i = 0; i < (rings || []).length; i++) {
+    const r = rings[i];
+    let w = Infinity;
+    let s = Infinity;
+    let e = -Infinity;
+    let n = -Infinity;
+    for (let k = 0; k < r.length; k++) {
+      if (r[k][0] < w) w = r[k][0];
+      if (r[k][0] > e) e = r[k][0];
+      if (r[k][1] < s) s = r[k][1];
+      if (r[k][1] > n) n = r[k][1];
+    }
+    out.push({ ring: r, w, s, e, n });
+  }
+  return out;
+}
+
+/** Building rings within about 10 m of a roadside pad. */
+function holesNear(boxes, pad) {
+  let w = Infinity;
+  let s = Infinity;
+  let e = -Infinity;
+  let n = -Infinity;
+  for (let k = 0; k < pad.length; k++) {
+    if (pad[k][0] < w) w = pad[k][0];
+    if (pad[k][0] > e) e = pad[k][0];
+    if (pad[k][1] < s) s = pad[k][1];
+    if (pad[k][1] > n) n = pad[k][1];
+  }
+  const m = 0.0001;
+  const out = [];
+  for (let i = 0; i < boxes.length; i++) {
+    const b = boxes[i];
+    if (b.e < w - m || b.w > e + m || b.n < s - m || b.s > n + m) continue;
+    out.push(b.ring);
+  }
+  return out;
+}
+
 async function scanVehicles(features, frame, buildings, imgBuf) {
   const list = features || [];
-  const scanned = { pitch: {}, cars: {}, boats: {}, homes: {}, semis: {}, docks: [], docksReady: false };
+  const scanned = { pitch: {}, roadside: {}, cars: {}, boats: {}, homes: {}, semis: {}, docks: [], docksReady: false };
   let wantPlate = needsPitchImage(list);
   const dockRings = [];
   const holes = [];
@@ -482,11 +523,23 @@ async function scanVehicles(features, frame, buildings, imgBuf) {
   if (!shared) return { scanned, plate: null };
   const jobs = [];
   const carPlans = [];
+  const holeBoxes = boxRings(holes);
   for (let i = 0; i < list.length; i++) {
     const feature = list[i];
     if (!feature) continue;
     const kind = feature.kind;
-    if (kind === "rv" || kind === "trailer-candidate") {
+    if (kind === "rv" && feature.pitchUse === "road" && feature.pad && feature.pad.length >= 3) {
+      jobs.push({
+        op: "roadside",
+        key: ringKey(feature.pad),
+        ring: feature.pad,
+        frame,
+        holes: holesNear(holeBoxes, feature.pad),
+        buffer: shared.buffer,
+        width: shared.width,
+        height: shared.height,
+      });
+    } else if (kind === "rv" || kind === "trailer-candidate") {
       const ring = pitchRingOf(feature);
       if (ring && ring.length >= 3) {
         jobs.push({ op: "pitch", key: ringKey(ring), ring, frame, buffer: shared.buffer, width: shared.width, height: shared.height });
@@ -514,7 +567,17 @@ async function scanVehicles(features, frame, buildings, imgBuf) {
         carPlans.push({ key, plan, start, count: chunks.length });
       }
     } else if (kind === "marina" && feature.coords) {
-      jobs.push({ op: "boats", key: ringKey(feature.coords), ring: feature.coords, frame, buffer: shared.buffer, width: shared.width, height: shared.height });
+      jobs.push({
+        op: "boats",
+        key: ringKey(feature.coords),
+        ring: feature.coords,
+        frame,
+        holes: holesNear(holeBoxes, feature.coords),
+        piers: feature.piers,
+        buffer: shared.buffer,
+        width: shared.width,
+        height: shared.height,
+      });
     } else if (kind === "mobile-park" && feature.coords) {
       jobs.push({ op: "homes", key: ringKey(feature.coords), ring: feature.coords, frame, buffer: shared.buffer, width: shared.width, height: shared.height });
     } else if (kind === "truck-lot" && feature.coords) {
@@ -550,6 +613,7 @@ async function scanVehicles(features, frame, buildings, imgBuf) {
     const job = jobs[i];
     const value = results[i] && results[i].value;
     if (job.op === "pitch") scanned.pitch[job.key] = value == null ? null : value;
+    else if (job.op === "roadside") scanned.roadside[job.key] = value || [];
     else if (job.op === "boats") scanned.boats[job.key] = value || [];
     else if (job.op === "homes") scanned.homes[job.key] = value || [];
     else if (job.op === "semis") scanned.semis[job.key] = value || [];

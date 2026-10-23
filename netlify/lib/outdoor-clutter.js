@@ -47,6 +47,7 @@ const {
   isMarinaTags,
   isMooringTags,
   pitchVehicle,
+  roadsideVehicles,
   boatsOnWater,
   mobileHomesInRing,
   semisInLot,
@@ -98,9 +99,12 @@ const RV_WIDTH_M = 2.6;
 const RV_HEIGHT_M = 3.5;
 const RV_SPACING_M = 12;
 const RV_ROAD_OFFSET_M = 4;
+/** The roadside strip searched for a parked RV, metres from the road centre. */
+const RV_PAD_NEAR_M = 3;
+const RV_PAD_FAR_M = 17;
 const RV_DEDUPE_M = 8;
 /** A mapped campground can pass 400 pitches. The cap used to drop the last row. */
-const RV_CAP = 800;
+const RV_CAP = 2400;
 const RV_ROAD_SEARCH_M = 40;
 const RV_ROADS = { service: true, track: true, living_street: true, residential: true, unclassified: true };
 
@@ -156,6 +160,7 @@ function overpassQuery(bbox, want) {
     parts.push('way["mooring"](' + box + ");");
     parts.push('node["seamark:type"="mooring"](' + box + ");");
     parts.push('way["residential"="mobile_home"](' + box + ");");
+    parts.push('way["man_made"="pier"](' + box + ");");
   }
   if (want.trees) {
     // Palm-tagged trees only: a stem with a small crown, not a broadleaf.
@@ -1087,10 +1092,28 @@ function rvBoxes(features) {
         for (let side = 0; side < sides.length && boxes.length < RV_CAP; side++) {
           const ll = proj.from(sides[side][0], sides[side][1]);
           if (!pointInSite(ll, site)) continue;
+          // The strip beside this stretch of road where a parked RV would
+          // sit. The photo decides later whether one is there.
+          const sgn = side === 0 ? 1 : -1;
+          const nx = -st.uy * sgn;
+          const ny = st.ux * sgn;
+          const half = RV_SPACING_M / 2;
+          const pad = [];
+          const corners = [
+            [-half, RV_PAD_NEAR_M],
+            [half, RV_PAD_NEAR_M],
+            [half, RV_PAD_FAR_M],
+            [-half, RV_PAD_FAR_M],
+          ];
+          for (let c = 0; c < corners.length; c++) {
+            pad.push(proj.from(st.x + st.ux * corners[c][0] + nx * corners[c][1], st.y + st.uy * corners[c][0] + ny * corners[c][1]));
+          }
+          pad.push(pad[0]);
           pushRv(boxes, placed, proj, sides[side][0], sides[side][1], heading, {
             kind: "rv",
             spec: VEHICLE_BOX.rv,
             pitchUse: "road",
+            pad,
           });
         }
       }
@@ -1099,11 +1122,115 @@ function rvBoxes(features) {
   return boxes;
 }
 
+const PIER_CAP = 2000;
+/** Slip length read beside a pier for a moored boat, metres. */
+const PIER_REACH_M = 16;
+const PIER_LINK_M = 40;
+const PIER_ZONE_CAP = 40;
+
+/**
+ * Piers outside any mapped marina still have boats beside them. Nearby
+ * piers are grouped and the group's outline, grown by a slip length, is
+ * read for hulls the same way a marina is. A hull also has to lie within
+ * a slip length of one of those piers.
+ */
+function pierMarinas(piers, features) {
+  const marinas = [];
+  for (let i = 0; i < (features || []).length; i++) {
+    const f = features[i];
+    if (f && f.kind === "marina" && f.coords && f.coords.length >= 4) marinas.push(f.coords);
+  }
+  const loose = [];
+  for (let i = 0; i < piers.length; i++) {
+    const c = ringCentroidLL(piers[i]) || piers[i][0];
+    let inside = false;
+    for (let m = 0; m < marinas.length && !inside; m++) if (pointInRing(c, marinas[m])) inside = true;
+    if (!inside) loose.push(piers[i]);
+  }
+  if (!loose.length) return [];
+  const lat = loose[0][0][1];
+  const proj = rvProject(lat);
+  const lines = loose.map((l) => l.map((p) => proj.to(p[0], p[1])));
+  const boxes = lines.map((l) => {
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (let k = 0; k < l.length; k++) {
+      if (l[k][0] < x0) x0 = l[k][0];
+      if (l[k][1] < y0) y0 = l[k][1];
+      if (l[k][0] > x1) x1 = l[k][0];
+      if (l[k][1] > y1) y1 = l[k][1];
+    }
+    return [x0, y0, x1, y1];
+  });
+  const group = new Int32Array(lines.length).fill(-1);
+  let groups = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (group[i] >= 0) continue;
+    group[i] = groups;
+    const queue = [i];
+    while (queue.length) {
+      const a = queue.pop();
+      for (let b = 0; b < lines.length; b++) {
+        if (group[b] >= 0) continue;
+        const A = boxes[a];
+        const B = boxes[b];
+        if (B[0] > A[2] + PIER_LINK_M || B[2] < A[0] - PIER_LINK_M || B[1] > A[3] + PIER_LINK_M || B[3] < A[1] - PIER_LINK_M) continue;
+        group[b] = groups;
+        queue.push(b);
+      }
+    }
+    groups++;
+  }
+  const out = [];
+  for (let g = 0; g < groups && out.length < PIER_ZONE_CAP; g++) {
+    const pts = [];
+    const members = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (group[i] !== g) continue;
+      members.push(loose[i]);
+      for (let k = 0; k < lines[i].length; k++) {
+        for (let a = 0; a < 8; a++) {
+          const t = (a * Math.PI) / 4;
+          pts.push([lines[i][k][0] + Math.cos(t) * PIER_REACH_M, lines[i][k][1] + Math.sin(t) * PIER_REACH_M]);
+        }
+      }
+    }
+    const hull = convexHull(pts);
+    if (hull.length < 3) continue;
+    const ring = hull.map((p) => proj.from(p[0], p[1]));
+    ring.push(ring[0]);
+    out.push({ kind: "marina", coords: ring, closed: true, heightM: 0, explicitHeight: false, rank: 0, piers: members, reachM: PIER_REACH_M });
+  }
+  return out;
+}
+
+function convexHull(points) {
+  const p = points.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (p.length < 3) return p;
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [];
+  for (let i = 0; i < p.length; i++) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p[i]) <= 0) lower.pop();
+    lower.push(p[i]);
+  }
+  const upper = [];
+  for (let i = p.length - 1; i >= 0; i--) {
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p[i]) <= 0) upper.pop();
+    upper.push(p[i]);
+  }
+  upper.pop();
+  lower.pop();
+  return lower.concat(upper);
+}
+
 /**
  * Overpass elements to clutter features. `want` drops types the page turned off.
  * `bbox` drops a way that never touches the drawn box.
  */
 function parseOverpass(payload, want, bbox, deckCap) {
+  const piers = [];
   const on = want || { water: true, parking: true, walls: true, poles: true };
   const elements = (payload && payload.elements) || [];
   const features = [];
@@ -1189,6 +1316,7 @@ function parseOverpass(payload, want, bbox, deckCap) {
     if (coords.length < 2) continue;
     if (bbox && !anyInBox(coords, bbox)) continue;
     railRecords.push({ tags, coords });
+    if (on.rvs && tags.man_made === "pier" && piers.length < PIER_CAP) piers.push(coords);
     if ((on.parking || on.rvs) && isParkingWay(tags) && isClosed(coords) && isTruckLotTags(tags)) {
       features.push({
         kind: "truck-lot",
@@ -1341,6 +1469,10 @@ function parseOverpass(payload, want, bbox, deckCap) {
   }
   const boxes = on.rvs ? rvBoxes(features) : [];
   const boats = on.rvs ? boatBoxes(features) : [];
+  if (on.rvs && piers.length) {
+    const zones = pierMarinas(piers, features);
+    for (let z = 0; z < zones.length; z++) features.push(zones[z]);
+  }
   const plain = [];
   for (let i = 0; i < features.length; i++) {
     const kind = features[i] && features[i].kind;
@@ -1659,9 +1791,12 @@ function elementsFromMapXml(xml, bbox) {
     }
     if (barrierKind(tags)) pushWay(tags, pts);
     if (isRvSiteTags(tags) || isRvPitchTags(tags) || isRvRoadTags(tags)) pushWay(tags, pts);
+    // The interpreter query asks for marinas, moorings, and mobile-home
+    // parks. The map read has to keep them too, or a marina gets no boats.
+    if (isMarinaTags(tags) || isMooringTags(tags) || tags.residential === "mobile_home" || tags.man_made === "pier") pushWay(tags, pts);
   }
   for (const node of nodes.values()) {
-    if (isPoleNode(node.tags) || isRvPitchTags(node.tags) || (node.tags && node.tags.natural === "tree" && require("./vegetation").isPalmTags(node.tags))) {
+    if (isPoleNode(node.tags) || isRvPitchTags(node.tags) || isMooringTags(node.tags) || (node.tags && node.tags.natural === "tree" && require("./vegetation").isPalmTags(node.tags))) {
       elements.push({ type: "node", lon: node.lon, lat: node.lat, tags: node.tags });
     }
   }
@@ -1703,6 +1838,24 @@ function elementsFromMapXml(xml, bbox) {
         members.push({ type: "way", role: "inner", geometry });
       }
       if (members.length) elements.push({ type: "relation", tags, members });
+      continue;
+    }
+    if (isMarinaTags(tags) && !water) {
+      // A marina mapped as a multipolygon: each closed outer ring is the area
+      // boats are read in.
+      const parts = [];
+      for (let m = 0; m < rel.members.length; m++) {
+        const member = rel.members[m];
+        if (member.type !== "way" || (member.role && member.role !== "outer")) continue;
+        const way = ways.get(member.ref);
+        if (!way) continue;
+        const pts = wayPoints(way);
+        if (pts.length >= 2) parts.push(pts);
+      }
+      const chains = stitchChains(parts);
+      for (let c = 0; c < chains.length; c++) {
+        if (isClosed(chains[c])) pushWay({ leisure: "marina" }, chains[c]);
+      }
       continue;
     }
     if (!water && !parking) continue;
@@ -2301,6 +2454,64 @@ function pxRingToLonLat(ring, frame) {
 }
 
 /**
+ * A roof the photo found beside a road that a building footprint already
+ * covers is that building (a park model or a cabin), not a second RV.
+ */
+function dropRoadsideUnderRoofs(features, buildings, frame) {
+  const list = features || [];
+  let any = false;
+  for (let i = 0; i < list.length && !any; i++) if (list[i] && list[i].pitchUse === "roadside") any = true;
+  if (!any || !frame) return list;
+  const roofs = buildingRingsPx(buildings, frame);
+  if (!roofs.length) return list;
+  const boxes = roofs.map(function (r) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let k = 0; k < r.length; k++) {
+      if (r[k][0] < minX) minX = r[k][0];
+      if (r[k][1] < minY) minY = r[k][1];
+      if (r[k][0] > maxX) maxX = r[k][0];
+      if (r[k][1] > maxY) maxY = r[k][1];
+    }
+    return [minX, minY, maxX, maxY];
+  });
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const f = list[i];
+    if (!f || f.pitchUse !== "roadside") {
+      out.push(f);
+      continue;
+    }
+    const px = lonLatRingToPx(f.coords, frame);
+    if (!px || px.length < 4) continue;
+    let a = 0;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let k = 0; k < px.length - 1; k++) {
+      a += px[k][0] * px[k + 1][1] - px[k + 1][0] * px[k][1];
+      if (px[k][0] < minX) minX = px[k][0];
+      if (px[k][1] < minY) minY = px[k][1];
+      if (px[k][0] > maxX) maxX = px[k][0];
+      if (px[k][1] > maxY) maxY = px[k][1];
+    }
+    const area = Math.abs(a) / 2;
+    let covered = 0;
+    for (let b = 0; b < roofs.length && covered < area * 0.3; b++) {
+      const bb = boxes[b];
+      if (bb[0] > maxX || bb[2] < minX || bb[1] > maxY || bb[3] < minY) continue;
+      covered += intersectionAreaPx(px, roofs[b]);
+    }
+    if (area > 0 && covered >= area * 0.3) continue;
+    out.push(f);
+  }
+  return out;
+}
+
+/**
  * Pixel rings plus a parking recolor of buildings that already cover a garage.
  * A matched garage is not drawn a second time. Water is cut against those
  * same roofs so a pond or a mis-tagged panel block does not cover them.
@@ -2317,7 +2528,26 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
           return pitchVehicle(ring, frame, vehiclePlate);
         }
       : null;
-  features = finalizeVehicles(features, fractionFor);
+  const roadsideMap = scanned && scanned.roadside;
+  const roadsideFor =
+    vehiclePlate && frame
+      ? function (ring) {
+          if (roadsideMap) {
+            const key = ringKey(ring);
+            if (Object.prototype.hasOwnProperty.call(roadsideMap, key)) return roadsideMap[key];
+          }
+          return roadsideVehicles(ring, frame, vehiclePlate, roofRingsLL());
+        }
+      : null;
+  let roofLL = null;
+  function roofRingsLL() {
+    if (roofLL) return roofLL;
+    roofLL = [];
+    const px = buildingRingsPx(buildings, frame);
+    for (let i = 0; i < px.length; i++) roofLL.push(pxRingToLonLat(px[i], frame));
+    return roofLL;
+  }
+  features = dropRoadsideUnderRoofs(finalizeVehicles(features, fractionFor, roadsideFor), buildings, frame);
   const guideCap = segmentCaps && segmentCaps.guideway > 0 ? segmentCaps.guideway | 0 : GUIDEWAY_SEGMENT_CAP;
   const bridgeCap = segmentCaps && segmentCaps.bridge > 0 ? segmentCaps.bridge | 0 : BRIDGE_SEGMENT_CAP;
   const footCap = segmentCaps && segmentCaps.footbridge > 0 ? segmentCaps.footbridge | 0 : FOOTBRIDGE_SEGMENT_CAP;
@@ -2528,7 +2758,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       const found =
         scanned && scanned.boats && Object.prototype.hasOwnProperty.call(scanned.boats, ringKey(f.coords))
           ? scanned.boats[ringKey(f.coords)] || []
-          : boatsOnWater(f.coords, frame, vehiclePlate);
+          : boatsOnWater(f.coords, frame, vehiclePlate, roofRingsLL(), f.piers);
       for (let b = 0; b < found.length; b++) {
         const ringPx = lonLatRingToPx(found[b].coords, frame);
         const material = materialForKind("boat", found[b].heightM || 3.5, found[b].coords, slopeTop, 0);
