@@ -1,0 +1,103 @@
+[
+ {
+  "id": "westwind-rv",
+  "name": "Westwind RV resort",
+  "place": "Yuma, Arizona",
+  "kind": "desert rv park",
+  "west": -114.4656,
+  "south": 32.663,
+  "east": -114.4608,
+  "north": 32.6703
+ },
+ {
+  "id": "fort-wilderness",
+  "name": "Fort Wilderness campground",
+  "place": "Bay Lake, Florida",
+  "kind": "leafy campground",
+  "west": -81.562,
+  "south": 28.4,
+  "east": -81.554,
+  "north": 28.407
+ },
+ {
+  "id": "pismo-coast-rv",
+  "name": "Pismo Coast Village RV resort",
+  "place": "Pismo Beach, California",
+  "kind": "coastal rv park",
+  "west": -120.6398,
+  "south": 35.131,
+  "east": -120.6346,
+  "north": 35.137
+ },
+ {
+  "id": "marina-del-rey",
+  "name": "Marina del Rey basins",
+  "place": "Marina del Rey, California",
+  "kind": "coastal marina",
+  "west": -118.452,
+  "south": 33.976,
+  "east": -118.444,
+  "north": 33.983
+ },
+ {
+  "id": "sunrise-cove",
+  "name": "Sunrise Cove marina",
+  "place": "Lake Lanier, Georgia",
+  "kind": "leafy lake marina, covered slips",
+  "west": -83.9405,
+  "south": 34.2335,
+  "east": -83.9323,
+  "north": 34.2424
+ },
+ {
+  "id": "pleasant-harbor",
+  "name": "Pleasant Harbor marina",
+  "place": "Lake Pleasant, Arizona",
+  "kind": "desert lake marina",
+  "west": -112.266,
+  "south": 33.846,
+  "east": -112.254,
+  "north": 33.856,
+  "objRefStale": "The only lidar (2020) shows an older slip layout than the imagery, so object scores are shown but not counted."
+ },
+ {
+  "id": "mn-state-fair",
+  "name": "Minnesota State Fairgrounds",
+  "place": "Falcon Heights, Minnesota",
+  "kind": "state fairgrounds",
+  "west": -93.179,
+  "south": 44.978,
+  "east": -93.169,
+  "north": 44.987
+ },
+ {
+  "id": "iowa-state-fair",
+  "name": "Iowa State Fairgrounds",
+  "place": "Des Moines, Iowa",
+  "kind": "state fairgrounds",
+  "west": -93.5583,
+  "south": 41.5907,
+  "east": -93.546,
+  "north": 41.6005
+ },
+ {
+  "id": "erie-county-fair",
+  "name": "Erie County Fairgrounds",
+  "place": "Hamburg, New York",
+  "kind": "county fairgrounds",
+  "west": -78.8251,
+  "south": 42.7326,
+  "east": -78.8127,
+  "north": 42.7407
+ },
+ {
+  "id": "del-mar-fair",
+  "name": "Del Mar Fairgrounds",
+  "place": "Del Mar, California",
+  "kind": "coastal county fairgrounds",
+  "west": -117.2678,
+  "south": 32.9712,
+  "east": -117.2563,
+  "north": 32.9803
+ }
+]

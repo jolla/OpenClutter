@@ -25,3 +25,9 @@ Baseline from v1.2.15 (Oct 22, 2026): **75.11** over 18 sites. The previous base
 | vegas-tower-shadow | 73.7 | 73.7 |
 | wynn-golf | 74.5 | 75.2 |
 | mean | 75.72 | 75.11 |
+
+## Site-type set (v1.2.18)
+
+`node scripts/sitetype-bench.js` exports 10 RV parks, campgrounds, marinas, and fairgrounds (`bench/sitetype-sites.json`) with the page defaults and scores them against USGS 3DEP lidar (`bench/sitetype-scoreboard.md`). Set mean on v1.2.17 code: **63.48**. On v1.2.18: **63.74**. The lidar is two to eleven years older than the imagery, so parked vehicles and boats that moved count against both recall and precision; small-object numbers at marinas are a rough guide only. Pleasant Harbor's lidar predates its current slip layout, so its object scores are not counted.
+
+v1.2.18 on the 18-site canopy set: 74.88 (same-day v1.2.17 reruns of the sites that moved: lebanon-dc 41.9, syracuse-leafoff 36.6, chicago-streets 78.3; v1.2.18 reads 41.9, 36.6, 78.0). The drift from 75.11 is upstream data, not the change.

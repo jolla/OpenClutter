@@ -61,7 +61,22 @@ const SEMI_CAP = 320;
 const DOCK_DEPTH_M = 96;
 const DOCK_MIN_EDGE_M = 28;
 const DOCK_MIN_ROOF_M2 = 8000;
-const BOAT_CAP = 200;
+const BOAT_CAP = 1500;
+/** A marina larger than this many plate pixels is not scanned. */
+const BOAT_SCAN_MAX_PX = 40000000;
+/** Walkways narrower than twice this are stripped before hulls are read. */
+const DOCK_STRIP_M = 1.0;
+/** A hull has to sit within this many metres of open water. */
+const WET_NEAR_M = 1.5;
+const BOAT_MIN_M2 = 6;
+const HULL_MIN_Y = 140;
+const HULL_OVER_WATER = 110;
+const BOAT_ONE_MAX_M = 30;
+const BOAT_BEAM_MAX_M = 9;
+const BOAT_MAX_LEN_M = 40;
+const BOAT_ROW_MIN_WID_M = 5;
+const BOAT_ROW_PITCH_M = 4.5;
+const BOAT_PIECE_FILL = 0.35;
 
 const BOX = {
   rv: { kind: "rv", length: RV_LENGTH_M, width: RV_WIDTH_M, height: RV_HEIGHT_M },
@@ -540,6 +555,159 @@ function vehicleNear(ring, frame, plate, radiusM) {
   return { m2: bestN * area, lon, lat: lat2 };
 }
 
+/** A roadside RV roof: about 2.3 to 4 m wide and 5.5 to 14 m long. */
+const ROADSIDE_MIN_M2 = 9;
+const ROADSIDE_MAX_M2 = 52;
+const ROADSIDE_LEN = [5.5, 14];
+const ROADSIDE_WID = [1.6, 4.2];
+const ROADSIDE_ASPECT = 1.9;
+const ROADSIDE_FILL = 0.5;
+const ROADSIDE_GROW_M = 6;
+const ROADSIDE_CONTRAST = 30;
+const ROADSIDE_CHROMA = 30;
+
+/**
+ * Light vehicle roofs beside an internal road of an RV park with no mapped
+ * pitches. The pad is the strip of ground beside one stretch of road. Each
+ * roof whose centre falls in the pad is returned with its own long axis and
+ * length. A roof is read with a margin past the pad, so a building roof
+ * that only clips the pad is too large and is left out. Nothing is
+ * returned for empty ground: a road with no parked RV gets no box.
+ * @returns {Array<{lon:number,lat:number,ux:number,uy:number,len:number,wid:number}>|null}
+ */
+function roadsideVehicles(pad, frame, plate, holes) {
+  if (!pad || pad.length < 3 || !frame || !plate || !(plate.width > 1)) return null;
+  const poly = [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < pad.length; i++) {
+    const xy = llToImagePx(pad[i][0], pad[i][1], frame);
+    if (!Number.isFinite(xy[0]) || !Number.isFinite(xy[1])) continue;
+    poly.push(xy);
+    if (xy[0] < minX) minX = xy[0];
+    if (xy[1] < minY) minY = xy[1];
+    if (xy[0] > maxX) maxX = xy[0];
+    if (xy[1] > maxY) maxY = xy[1];
+  }
+  if (poly.length < 3) return [];
+  const lat0 = ((+frame.south || 0) + (+frame.north || 0)) / 2;
+  const mLon = 111320 * Math.cos((lat0 * Math.PI) / 180);
+  const mpuX = frame.mpuX > 0 ? frame.mpuX : (Math.abs(+frame.east - +frame.west) * mLon) / frame.imgW;
+  const mpuY = frame.mpuY > 0 ? frame.mpuY : (Math.abs(+frame.north - +frame.south) * 110540) / frame.imgH;
+  // A photo coarser than about 0.6 m cannot separate one RV roof.
+  if (!(Math.max(mpuX, mpuY) <= 0.6)) return [];
+  const grow = Math.round(ROADSIDE_GROW_M / Math.min(mpuX, mpuY));
+  const x0 = Math.max(0, Math.floor(minX) - grow);
+  const y0 = Math.max(0, Math.floor(minY) - grow);
+  const x1 = Math.min(plate.width - 1, Math.ceil(maxX) + grow);
+  const y1 = Math.min(plate.height - 1, Math.ceil(maxY) + grow);
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  if (bw < 4 || bh < 4 || bw * bh > 400000) return [];
+  // Light concrete pads read as white too. A roof has to stand out from
+  // the ground around it: brighter than the window's median by a margin.
+  const hist = new Uint32Array(256);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = (y * plate.width + x) * 4;
+      hist[Math.max(0, Math.min(255, Math.round(0.299 * plate.data[i] + 0.587 * plate.data[i + 1] + 0.114 * plate.data[i + 2])))]++;
+    }
+  }
+  let med = 0;
+  for (let acc = 0, half = (bw * bh) / 2; med < 255; med++) {
+    acc += hist[med];
+    if (acc >= half) break;
+  }
+  const floor = Math.max(165, Math.min(228, med + ROADSIDE_CONTRAST));
+  const mask = new Uint8Array(bw * bh);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = (y * plate.width + x) * 4;
+      const r = plate.data[i];
+      const g = plate.data[i + 1];
+      const b = plate.data[i + 2];
+      if (0.299 * r + 0.587 * g + 0.114 * b < floor) continue;
+      // Painted RV and trailer roofs are near-white. Tan concrete, sand,
+      // and gravel are warm: red well above blue.
+      if (Math.max(r, g, b) - Math.min(r, g, b) > ROADSIDE_CHROMA || r > b + 18) continue;
+      if (isWhiteRoofPixel(r, g, b)) mask[(y - y0) * bw + (x - x0)] = 1;
+    }
+  }
+  // A mapped roof (a park model, a cabin, a shower house) is not an RV, and
+  // masking it keeps an RV parked against it from merging into it.
+  for (let h = 0; h < (holes || []).length; h++) {
+    const hp = [];
+    let hx0 = Infinity;
+    let hy0 = Infinity;
+    let hx1 = -Infinity;
+    let hy1 = -Infinity;
+    for (let k = 0; k < holes[h].length; k++) {
+      const xy = llToImagePx(holes[h][k][0], holes[h][k][1], frame);
+      hp.push(xy);
+      if (xy[0] < hx0) hx0 = xy[0];
+      if (xy[1] < hy0) hy0 = xy[1];
+      if (xy[0] > hx1) hx1 = xy[0];
+      if (xy[1] > hy1) hy1 = xy[1];
+    }
+    if (hp.length < 3 || hx1 < x0 || hx0 > x1 || hy1 < y0 || hy0 > y1) continue;
+    for (let y = Math.max(y0, Math.floor(hy0)); y <= Math.min(y1, Math.ceil(hy1)); y++) {
+      for (let x = Math.max(x0, Math.floor(hx0)); x <= Math.min(x1, Math.ceil(hx1)); x++) {
+        if (pointInRing([x + 0.5, y + 0.5], hp)) mask[(y - y0) * bw + (x - x0)] = 0;
+      }
+    }
+  }
+  const seen = new Uint8Array(bw * bh);
+  const stack = [];
+  const out = [];
+  const pxM2 = mpuX * mpuY;
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i] || seen[i]) continue;
+    const cells = [];
+    let edge = false;
+    stack.push(i);
+    seen[i] = 1;
+    while (stack.length) {
+      const k = stack.pop();
+      cells.push(k);
+      const x = k % bw;
+      const y = (k / bw) | 0;
+      if (x === 0 || y === 0 || x === bw - 1 || y === bh - 1) edge = true;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
+          const j = ny * bw + nx;
+          if (!mask[j] || seen[j]) continue;
+          seen[j] = 1;
+          stack.push(j);
+        }
+      }
+      if (cells.length * pxM2 > ROADSIDE_MAX_M2 * 2) break;
+    }
+    while (stack.length) stack.pop();
+    // A roof that runs off the read window is larger than the window.
+    if (edge) continue;
+    const m2 = cells.length * pxM2;
+    if (m2 < ROADSIDE_MIN_M2) continue;
+    if (m2 > ROADSIDE_MAX_M2) continue;
+    const ext = roofExtent(cells, x0, y0, bw, frame);
+    if (ext.len < ROADSIDE_LEN[0] || ext.len > ROADSIDE_LEN[1]) continue;
+    if (ext.wid < ROADSIDE_WID[0] || ext.wid > ROADSIDE_WID[1]) continue;
+    if (ext.len / Math.max(0.1, ext.wid) < ROADSIDE_ASPECT) continue;
+    if (m2 / (ext.len * ext.wid) < ROADSIDE_FILL) continue;
+    const lon = ext.cx / ext.mLon;
+    const lat = ext.cy / 110540;
+    const c = llToImagePx(lon, lat, frame);
+    if (!pointInRing(c, poly)) continue;
+    out.push({ lon, lat, ux: ext.ux, uy: ext.uy, len: ext.len, wid: ext.wid });
+  }
+  return out;
+}
+
 function recenterBox(feature, lon, lat) {
   if (!feature || !feature.coords || !Number.isFinite(lon) || !Number.isFinite(lat)) return feature;
   const spec = feature.kind === "trailer-candidate" || feature.kind === "trailer" ? BOX.trailer : BOX.rv;
@@ -572,13 +740,46 @@ function decidePitch(use, fraction) {
   return "rv";
 }
 
-function finalizeVehicles(features, fractionFor) {
-  return require("./stage-clock").timeSpanSync("vehicle", () => finalizeVehiclesWork(features, fractionFor));
+function finalizeVehicles(features, fractionFor, roadsideFor) {
+  return require("./stage-clock").timeSpanSync("vehicle", () => finalizeVehiclesWork(features, fractionFor, roadsideFor));
 }
 
-function finalizeVehiclesWork(features, fractionFor) {
+/**
+ * One RV box on a roof the photo shows beside the road. The box takes the
+ * roof's long axis and length, held to an RV's 6 to 13 m.
+ */
+function roadsideBoxes(f, found, placed) {
+  const out = [];
+  for (let k = 0; k < (found || []).length; k++) {
+    const v = found[k];
+    if (!v || !Number.isFinite(v.lon) || !Number.isFinite(v.lat)) continue;
+    const proj = projectAt(v.lat);
+    const xy = proj.to(v.lon, v.lat);
+    let dup = false;
+    for (let p = 0; p < placed.length && !dup; p++) {
+      if (Math.hypot(placed[p][0] - xy[0], placed[p][1] - xy[1]) < 3) dup = true;
+    }
+    if (dup) continue;
+    placed.push(xy);
+    const len = Math.max(6, Math.min(13, v.len || RV_LENGTH_M));
+    const wid = Math.max(2.3, Math.min(3, v.wid || RV_WIDTH_M));
+    const heading = { ux: v.ux, uy: v.uy };
+    out.push(
+      Object.assign({}, f, {
+        kind: "rv",
+        coords: orientedRing(proj, xy[0], xy[1], heading, len, wid),
+        pitchUse: "roadside",
+        pad: undefined,
+      })
+    );
+  }
+  return out;
+}
+
+function finalizeVehiclesWork(features, fractionFor, roadsideFor) {
   const out = [];
   const list = features || [];
+  const placed = [];
   for (let i = 0; i < list.length; i++) {
     const f = list[i];
     if (!f) continue;
@@ -587,7 +788,16 @@ function finalizeVehiclesWork(features, fractionFor) {
       continue;
     }
     const use = f.pitchUse || "";
-    if (f.kind === "rv" && (use === "" || use === "road")) {
+    if (f.kind === "rv" && use === "road") {
+      // A road with no mapped pitches is not evidence of an RV. Only a
+      // roof the photo shows beside the road becomes a box.
+      if (typeof roadsideFor !== "function" || !f.pad) continue;
+      const found = roadsideFor(f.pad);
+      const boxes = roadsideBoxes(f, found, placed);
+      for (let b = 0; b < boxes.length; b++) out.push(boxes[b]);
+      continue;
+    }
+    if (f.kind === "rv" && use === "") {
       out.push(f);
       continue;
     }
@@ -633,7 +843,7 @@ function needsPitchImage(features) {
     if (!f) continue;
     if (f.kind === "trailer-candidate") return true;
     if (f.kind === "marina" || f.kind === "mobile-park" || f.kind === "truck-lot" || f.kind === "car") return true;
-    if (f.kind === "rv" && (f.pitchUse === "rv" || f.pitchUse === "tent" || f.pitchUse === "pitch")) return true;
+    if (f.kind === "rv" && (f.pitchUse === "rv" || f.pitchUse === "tent" || f.pitchUse === "pitch" || f.pitchUse === "road")) return true;
   }
   return false;
 }
@@ -1156,11 +1366,88 @@ function nearLabel(pred, label, matchM) {
  * required. A shore roof with no water beside it is left out. Height is
  * set by the caller at about 3.5 m.
  */
-function boatsOnWater(ring, frame, plate) {
-  return require("./stage-clock").timeSpanSync("vehicle", () => boatsOnWaterWork(ring, frame, plate));
+function boatsOnWater(ring, frame, plate, holes, piers) {
+  return require("./stage-clock").timeSpanSync("vehicle", () => boatsOnWaterWork(ring, frame, plate, holes, piers));
 }
 
-function boatsOnWaterWork(ring, frame, plate) {
+/** Pixels inside a polygon, row by row (even-odd), clipped to the window. */
+function fillPolygon(poly, x0, y0, bw, bh, mask, value) {
+  const xs = [];
+  for (let y = 0; y < bh; y++) {
+    const scan = y0 + y + 0.5;
+    xs.length = 0;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const a = poly[i];
+      const b = poly[j];
+      if ((a[1] <= scan && b[1] > scan) || (b[1] <= scan && a[1] > scan)) {
+        xs.push(a[0] + ((scan - a[1]) / (b[1] - a[1])) * (b[0] - a[0]));
+      }
+    }
+    if (xs.length < 2) continue;
+    xs.sort((p, q) => p - q);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const from = Math.max(0, Math.ceil(xs[k] - 0.5 - x0));
+      const to = Math.min(bw - 1, Math.floor(xs[k + 1] - 0.5 - x0));
+      for (let x = from; x <= to; x++) mask[y * bw + x] = value;
+    }
+  }
+}
+
+/** Chamfer distance (in pixels) from each set pixel to the nearest unset one. */
+function chamferInside(mask, w, h) {
+  const big = 1 << 20;
+  const d = new Int32Array(w * h);
+  for (let i = 0; i < d.length; i++) d[i] = mask[i] ? big : 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!d[i]) continue;
+      let v = d[i];
+      if (x > 0) v = Math.min(v, d[i - 1] + 3);
+      else v = Math.min(v, 3);
+      if (y > 0) {
+        v = Math.min(v, d[i - w] + 3);
+        if (x > 0) v = Math.min(v, d[i - w - 1] + 4);
+        if (x < w - 1) v = Math.min(v, d[i - w + 1] + 4);
+      } else v = Math.min(v, 3);
+      d[i] = v;
+    }
+  }
+  for (let y = h - 1; y >= 0; y--) {
+    for (let x = w - 1; x >= 0; x--) {
+      const i = y * w + x;
+      if (!d[i]) continue;
+      let v = d[i];
+      if (x < w - 1) v = Math.min(v, d[i + 1] + 3);
+      else v = Math.min(v, 3);
+      if (y < h - 1) {
+        v = Math.min(v, d[i + w] + 3);
+        if (x < w - 1) v = Math.min(v, d[i + w + 1] + 4);
+        if (x > 0) v = Math.min(v, d[i + w - 1] + 4);
+      } else v = Math.min(v, 3);
+      d[i] = v;
+    }
+  }
+  return d;
+}
+
+/** Chamfer distance (in pixels x3) from each pixel to the nearest set one. */
+function chamferOutside(mask, w, h) {
+  const inv = new Uint8Array(w * h);
+  for (let i = 0; i < inv.length; i++) inv[i] = mask[i] ? 0 : 1;
+  return chamferInside(inv, w, h);
+}
+
+/**
+ * Light hulls and covers on the water of a marina. Docks and finger piers
+ * are light too, but narrow: an opening at about 1.2 m strips a walkway and
+ * keeps a hull. A hull blob up to about 30 by 9 m is one boat on its own
+ * long axis. A longer blob is a row of boats moored side by side and is cut
+ * along that row into pieces about a beam apart, each kept only where the
+ * photo shows hull. A mapped roof is never a boat. Nothing is drawn on open
+ * water or on a dock with no boat beside it.
+ */
+function boatsOnWaterWork(ring, frame, plate, holes, piers) {
   if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return [];
   const poly = [];
   let minX = Infinity;
@@ -1185,106 +1472,259 @@ function boatsOnWaterWork(ring, frame, plate) {
   const y1 = Math.min(plate.height - 1, Math.ceil(maxY));
   const bw = x1 - x0 + 1;
   const bh = y1 - y0 + 1;
-  if (bw < 4 || bh < 4 || bw * bh > 2000000) return [];
+  if (bw < 4 || bh < 4 || bw * bh > BOAT_SCAN_MAX_PX) return [];
+  const inside = new Uint8Array(bw * bh);
+  fillPolygon(poly, x0, y0, bw, bh, inside, 1);
+  for (let h = 0; h < (holes || []).length; h++) {
+    const hp = [];
+    for (let k = 0; k < holes[h].length; k++) hp.push(llToImagePx(holes[h][k][0], holes[h][k][1], frame));
+    if (hp.length >= 3) fillPolygon(hp, x0, y0, bw, bh, inside, 0);
+  }
   const water = new Uint8Array(bw * bh);
   const boat = new Uint8Array(bw * bh);
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
-      if (!pointInRing([x + 0.5, y + 0.5], poly)) continue;
-      const i = (y * plate.width + x) * 4;
+  // A hull is light against this marina's own water. Dark lake water lets
+  // a grey hull count; a bright harbour keeps the old white floor.
+  const wHist = new Uint32Array(91);
+  let wN = 0;
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
+      const k = y * bw + x;
+      if (!inside[k]) continue;
+      const i = ((y + y0) * plate.width + (x + x0)) * 4;
       const r = plate.data[i];
       const g = plate.data[i + 1];
       const b = plate.data[i + 2];
       const yl = 0.299 * r + 0.587 * g + 0.114 * b;
-      const k = (y - y0) * bw + (x - x0);
-      if (yl < 90 && b + 15 >= r) water[k] = 1;
-      else if (yl >= 175 && Math.max(r, g, b) - Math.min(r, g, b) <= 40) boat[k] = 1;
+      if (yl < 90 && b + 15 >= r) {
+        water[k] = 1;
+        wHist[Math.floor(yl)]++;
+        wN++;
+      }
     }
   }
+  let wMed = 60;
+  for (let v = 0, acc = 0; v <= 90 && wN; v++) {
+    acc += wHist[v];
+    if (acc >= wN / 2) {
+      wMed = v;
+      break;
+    }
+  }
+  const hullFloor = Math.max(HULL_MIN_Y, Math.min(175, wMed + HULL_OVER_WATER));
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
+      const k = y * bw + x;
+      if (!inside[k] || water[k]) continue;
+      const i = ((y + y0) * plate.width + (x + x0)) * 4;
+      const r = plate.data[i];
+      const g = plate.data[i + 1];
+      const b = plate.data[i + 2];
+      const yl = 0.299 * r + 0.587 * g + 0.114 * b;
+      if (yl >= hullFloor && Math.max(r, g, b) - Math.min(r, g, b) <= 40) boat[k] = 1;
+    }
+  }
+  // Opening: strip walkways narrower than about 2.4 m, keep hulls.
+  const mpu = Math.min(mpuX, mpuY);
+  const rPx = Math.max(1, Math.round(DOCK_STRIP_M / mpu));
+  const din = chamferInside(boat, bw, bh);
+  const core = new Uint8Array(bw * bh);
+  for (let i = 0; i < core.length; i++) if (din[i] > rPx * 3) core[i] = 1;
+  const dout = chamferOutside(core, bw, bh);
+  const hull = new Uint8Array(bw * bh);
+  for (let i = 0; i < hull.length; i++) if (boat[i] && dout[i] <= (rPx + 1) * 3) hull[i] = 1;
+  const wetPx = Math.max(2, Math.round(WET_NEAR_M / mpu));
+  // Read beside piers only: a hull has to lie within a slip length of one.
+  let pierLines = null;
+  if (piers && piers.length) {
+    const lat0 = ((+frame.south || 0) + (+frame.north || 0)) / 2;
+    const mLon = 111320 * Math.cos((lat0 * Math.PI) / 180);
+    pierLines = piers.map((l) => l.map((p) => [p[0] * mLon, p[1] * 110540]));
+  }
+  const dwater = chamferOutside(water, bw, bh);
   const seen = new Uint8Array(bw * bh);
   const stack = [];
   const out = [];
   const areaPx = mpuX * mpuY;
-  for (let i = 0; i < boat.length; i++) {
-    if (!boat[i] || seen[i]) continue;
+  for (let i = 0; i < hull.length && out.length < BOAT_CAP; i++) {
+    if (!hull[i] || seen[i]) continue;
     const cells = [];
     stack.push(i);
     seen[i] = 1;
+    let wet = false;
     while (stack.length) {
       const k = stack.pop();
       cells.push(k);
+      if (dwater[k] <= wetPx * 3) wet = true;
       const x = k % bw;
       const y = (k / bw) | 0;
-      const nbrs = [
-        [x - 1, y],
-        [x + 1, y],
-        [x, y - 1],
-        [x, y + 1],
-      ];
-      for (let q = 0; q < nbrs.length; q++) {
-        const nx = nbrs[q][0];
-        const ny = nbrs[q][1];
-        if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
-        const j = ny * bw + nx;
-        if (!boat[j] || seen[j]) continue;
-        seen[j] = 1;
-        stack.push(j);
-      }
-    }
-    let wet = false;
-    for (let c = 0; c < cells.length && !wet; c++) {
-      const x = cells[c] % bw;
-      const y = (cells[c] / bw) | 0;
-      for (let dy = -3; dy <= 3 && !wet; dy++) {
-        for (let dx = -3; dx <= 3; dx++) {
-          const nx = x + dx;
-          const ny = y + dy;
-          if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
-          if (water[ny * bw + nx]) wet = true;
-        }
-      }
+      if (x > 0 && hull[k - 1] && !seen[k - 1]) { seen[k - 1] = 1; stack.push(k - 1); }
+      if (x < bw - 1 && hull[k + 1] && !seen[k + 1]) { seen[k + 1] = 1; stack.push(k + 1); }
+      if (y > 0 && hull[k - bw] && !seen[k - bw]) { seen[k - bw] = 1; stack.push(k - bw); }
+      if (y < bh - 1 && hull[k + bw] && !seen[k + bw]) { seen[k + bw] = 1; stack.push(k + bw); }
     }
     const m2 = cells.length * areaPx;
-    if (!wet || m2 < 6 || m2 > 160) continue;
-    const copies = m2 <= 50 ? 1 : m2 <= 100 ? 2 : 3;
-    let sx = 0;
-    let sy = 0;
-    let minx = 1e9;
-    let miny = 1e9;
-    let maxx = -1e9;
-    let maxy = -1e9;
+    if (!wet || m2 < BOAT_MIN_M2) continue;
+    const ext = roofExtent(cells, x0, y0, bw, frame);
+    if (pierLines && !nearPier(ext.cx, ext.cy, pierLines, PIER_NEAR_M)) continue;
+    // A hull floats: open water shows around it. Pavement or a roof edge on
+    // the shore touches water on one side only.
+    if (waterAround(ext, water, x0, y0, bw, bh, frame) < BOAT_WATER_AROUND) continue;
+    const pieces = boatPieces(cells, x0, y0, bw, frame, ext);
+    for (let p = 0; p < pieces.length && out.length < BOAT_CAP; p++) out.push(pieces[p]);
+  }
+  return out;
+}
+
+/** A boat centre within this many metres of a pier line counts as moored there. */
+const PIER_NEAR_M = 16;
+
+function nearPier(x, y, lines, limit) {
+  const lim2 = limit * limit;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    for (let k = 0; k + 1 < l.length; k++) {
+      const ax = l[k][0];
+      const ay = l[k][1];
+      const dx = l[k + 1][0] - ax;
+      const dy = l[k + 1][1] - ay;
+      const len2 = dx * dx + dy * dy;
+      let t = len2 > 0 ? ((x - ax) * dx + (y - ay) * dy) / len2 : 0;
+      if (t < 0) t = 0;
+      else if (t > 1) t = 1;
+      const ex = x - (ax + t * dx);
+      const ey = y - (ay + t * dy);
+      if (ex * ex + ey * ey <= lim2) return true;
+    }
+    if (l.length === 1) {
+      const ex = x - l[0][0];
+      const ey = y - l[0][1];
+      if (ex * ex + ey * ey <= lim2) return true;
+    }
+  }
+  return false;
+}
+
+/** Share of the 0.5 to 2.5 m band around a hull's box that is open water. */
+const BOAT_WATER_AROUND = 0.2;
+
+function waterAround(ext, water, x0, y0, bw, bh, frame) {
+  const hl = ext.len / 2;
+  const hw = ext.wid / 2;
+  const inner = 0.5;
+  const outer = 2.5;
+  const vx = -ext.uy;
+  const vy = ext.ux;
+  const R = hl + outer;
+  const lonC = ext.cx / ext.mLon;
+  const latC = ext.cy / 110540;
+  const cx = ((lonC - frame.west) / (frame.east - frame.west)) * frame.imgW;
+  const cy = ((frame.north - latC) / (frame.north - frame.south)) * frame.imgH;
+  const mpx = (Math.abs(frame.east - frame.west) * ext.mLon) / frame.imgW;
+  const mpy = (Math.abs(frame.north - frame.south) * 110540) / frame.imgH;
+  const rx = Math.ceil(R / mpx);
+  const ry = Math.ceil(R / mpy);
+  let n = 0;
+  let wet = 0;
+  for (let py = Math.max(y0, Math.floor(cy - ry)); py <= Math.min(y0 + bh - 1, Math.ceil(cy + ry)); py++) {
+    for (let px = Math.max(x0, Math.floor(cx - rx)); px <= Math.min(x0 + bw - 1, Math.ceil(cx + rx)); px++) {
+      const dx = (px + 0.5 - cx) * mpx;
+      const dy = -(py + 0.5 - cy) * mpy;
+      const u = Math.abs(dx * ext.ux + dy * ext.uy);
+      const v = Math.abs(dx * vx + dy * vy);
+      if (u > hl + outer || v > hw + outer) continue;
+      if (u <= hl + inner && v <= hw + inner) continue;
+      n++;
+      if (water[(py - y0) * bw + (px - x0)]) wet++;
+    }
+  }
+  return n ? wet / n : 0;
+}
+
+/**
+ * Oriented boxes for one hull blob. A blob up to BOAT_ONE_MAX long and
+ * BOAT_BEAM_MAX wide is one boat. A longer one is cut along its long axis
+ * into pieces about BOAT_ROW_PITCH_M apart when it is a row of boats side by
+ * side (the beam runs along the row), or into BOAT_ONE_MAX pieces when it is
+ * one long line of hulls. A piece is kept only where hull covers at least
+ * BOAT_PIECE_FILL of it.
+ */
+function boatPieces(cells, x0, y0, bw, frame, ext) {
+  const out = [];
+  const ux = ext.ux;
+  const uy = ext.uy;
+  const vx = -uy;
+  const vy = ux;
+  const pts = new Float64Array(cells.length * 2);
+  let minU = Infinity;
+  let maxU = -Infinity;
+  for (let c = 0; c < cells.length; c++) {
+    const x = x0 + (cells[c] % bw) + 0.5;
+    const y = y0 + ((cells[c] / bw) | 0) + 0.5;
+    const lon = frame.west + (x / frame.imgW) * (frame.east - frame.west);
+    const lat = frame.north - (y / frame.imgH) * (frame.north - frame.south);
+    const dx = lon * ext.mLon - ext.cx;
+    const dy = lat * 110540 - ext.cy;
+    const u = dx * ux + dy * uy;
+    const v = dx * vx + dy * vy;
+    pts[2 * c] = u;
+    pts[2 * c + 1] = v;
+    if (u < minU) minU = u;
+    if (u > maxU) maxU = u;
+  }
+  const len = maxU - minU;
+  let n = 1;
+  if (len > BOAT_ONE_MAX_M || ext.wid > BOAT_BEAM_MAX_M) {
+    // Side by side: the row runs along u and each boat lies across it.
+    const pitch = ext.wid >= BOAT_ROW_MIN_WID_M ? BOAT_ROW_PITCH_M : BOAT_ONE_MAX_M;
+    n = Math.max(1, Math.round(len / pitch));
+  }
+  const step = len / n;
+  const areaPx = (frame.mpuX > 0 ? frame.mpuX : 0.3) * (frame.mpuY > 0 ? frame.mpuY : 0.3);
+  for (let k = 0; k < n; k++) {
+    const lo = minU + k * step;
+    const hi = lo + step;
+    let cnt = 0;
+    let minV = Infinity;
+    let maxV = -Infinity;
+    let pMinU = Infinity;
+    let pMaxU = -Infinity;
     for (let c = 0; c < cells.length; c++) {
-      const x = x0 + (cells[c] % bw) + 0.5;
-      const y = y0 + ((cells[c] / bw) | 0) + 0.5;
-      sx += x;
-      sy += y;
-      if (x < minx) minx = x;
-      if (y < miny) miny = y;
-      if (x > maxx) maxx = x;
-      if (y > maxy) maxy = y;
+      const u = pts[2 * c];
+      if (u < lo || (u >= hi && k < n - 1)) continue;
+      const v = pts[2 * c + 1];
+      cnt++;
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+      if (u < pMinU) pMinU = u;
+      if (u > pMaxU) pMaxU = u;
     }
-    const dx = (maxx - minx) * mpuX;
-    const dy = (maxy - miny) * mpuY;
-    const alongX = dx >= dy;
-    for (let n = 0; n < copies && out.length < 200; n++) {
-      const t = (n + 0.5) / copies;
-      const cx = alongX ? minx + (maxx - minx) * t : sx / cells.length;
-      const cy = alongX ? sy / cells.length : miny + (maxy - miny) * t;
-      const lon = frame.west + (cx / frame.imgW) * (frame.east - frame.west);
-      const lat = frame.north - (cy / frame.imgH) * (frame.north - frame.south);
-      const proj = projectAt(lat);
-      const heading = alongX ? { ux: 1, uy: 0 } : { ux: 0, uy: 1 };
-      const xy = proj.to(lon, lat);
-      out.push({
-        kind: "boat",
-        coords: orientedRing(proj, xy[0], xy[1], heading, BOX.boat.length, BOX.boat.width),
-        closed: true,
-        heightM: BOX.boat.height,
-        explicitHeight: true,
-        center: [lon, lat],
-        rank: 0,
-      });
-    }
+    if (!cnt) continue;
+    const pu = Math.max(1.8, pMaxU - pMinU);
+    const pv = Math.max(1.8, maxV - minV);
+    const m2 = cnt * areaPx;
+    if (m2 < BOAT_MIN_M2 || m2 / (pu * pv) < BOAT_PIECE_FILL) continue;
+    const cu = (pMinU + pMaxU) / 2;
+    const cv = (minV + maxV) / 2;
+    const cxm = ext.cx + ux * cu + vx * cv;
+    const cym = ext.cy + uy * cu + vy * cv;
+    const lon = cxm / ext.mLon;
+    const lat = cym / 110540;
+    const proj = projectAt(lat);
+    const xy = proj.to(lon, lat);
+    // The box's long side follows the longer of the two piece extents.
+    const along = pu >= pv;
+    const heading = along ? { ux, uy } : { ux: vx, uy: vy };
+    const length = Math.min(BOAT_MAX_LEN_M, along ? pu : pv);
+    const width = Math.min(BOAT_BEAM_MAX_M, along ? pv : pu);
+    out.push({
+      kind: "boat",
+      coords: orientedRing(proj, xy[0], xy[1], heading, length, width),
+      closed: true,
+      heightM: BOX.boat.height,
+      explicitHeight: true,
+      center: [lon, lat],
+      rank: 0,
+    });
   }
   return out;
 }
@@ -2606,6 +3046,7 @@ module.exports = {
   vehicleBlobM2,
   vehicleNear,
   pitchVehicle,
+  roadsideVehicles,
   occupiedCarLayerWork,
   carHitRows,
   finishCarLayer,

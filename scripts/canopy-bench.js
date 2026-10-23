@@ -1084,4 +1084,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { plateScale, shapeOfAreas, writeBoard, rfLinkErrors };
+module.exports = { plateScale, shapeOfAreas, writeBoard, rfLinkErrors, rasterRings, loadZip, scoreSite };
