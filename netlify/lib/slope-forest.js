@@ -9,6 +9,8 @@
  */
 
 const polygonClipping = require("polygon-clipping");
+const overpass = require("./overpass");
+const { isResilient } = require("./export-mode");
 
 const OVERPASS_URLS = [
   "https://overpass-api.de/api/interpreter",
@@ -347,6 +349,11 @@ async function fetchSlopeForest(bbox, opts) {
   const q = queryFor(bbox);
   try {
     let last = null;
+    if (isResilient()) {
+      const json = await overpass.requestJson(q, { signal: ctrl.signal, ua, deadlineMs: Math.max(1000, timeoutMs - 500) });
+      if (!json) return { ok: false, wood: [], pistes: [], notes: [] };
+      return forestFromElements(json, bbox);
+    }
     for (let i = 0; i < OVERPASS_URLS.length; i++) {
       if (ctrl.signal.aborted) return { ok: false, wood: [], pistes: [], notes: [] };
       try {

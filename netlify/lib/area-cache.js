@@ -682,7 +682,13 @@ async function readPartial(parentId, batchId) {
   }
 }
 
+/** The fetch underneath the cache wrapper, for callers that cache on their own. */
+function rawFetch() {
+  return originalFetch || fetch;
+}
+
 module.exports = {
+  rawFetch,
   FETCH_CONCURRENCY,
   MAX_BACKGROUND_FUNCTIONS,
   AERIAL_STEP_DEG,
