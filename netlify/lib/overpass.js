@@ -24,8 +24,9 @@
  * limit, allows commercial use, and asks for fewer than 10 requests at a
  * time; VK Maps states no limits. overpass.openstreetmap.fr serves the
  * whole planet but its copy can be weeks behind, so it is a last resort:
- * asked only when every other server is refused, paused or backing off for
- * longer than LAST_RESORT_WAIT_MS.
+ * asked once two regular servers have failed in the same read, or when
+ * every other server is refused, paused or backing off for longer than
+ * LAST_RESORT_WAIT_MS.
  *
  * A server that refuses the connection outright (a firewall on one egress
  * address answers ECONNREFUSED in under a second) is skipped for
@@ -201,10 +202,12 @@ async function slotWaitMs(ep, ua) {
 /** Overpass can answer 200 with a runtime error remark and no data. */
 function bodyOk(kind, text) {
   const t = String(text || "");
-  if (kind === "map") return t.indexOf("<osm") >= 0 && !/<remark>\s*runtime error/i.test(t);
+  // A body cut off mid-stream (one server closes long chunked answers early) has no </osm>.
+  if (kind === "map") return t.indexOf("<osm") >= 0 && t.lastIndexOf("</osm>") > 0 && !/<remark>\s*runtime error/i.test(t);
   const head = t.slice(0, 400);
   if (!/"elements"\s*:/.test(head) && !/"elements"\s*:/.test(t.slice(0, 4000))) return false;
   const tail = t.slice(-600);
+  if (!/\}\s*$/.test(tail)) return false;
   return !/"remark"\s*:\s*"[^"]*runtime error/i.test(tail);
 }
 
@@ -363,10 +366,30 @@ function backoffMs(fails) {
   return Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * Math.pow(2, n - 1)) + jitter();
 }
 
-function nextEndpoint(skip) {
+/** Regular servers that failed in this read. */
+function regularFails(failed) {
+  if (!failed) return 0;
+  let n = 0;
+  for (const ep of ENDPOINTS) if (!ep.lastResort && failed.has(ep.id)) n++;
+  return n;
+}
+
+function nextEndpoint(skip, failed) {
   const now = nowFn();
   let best = null;
   let soonest = Infinity;
+  // Two regular servers failed this read: a regular one not tried yet,
+  // then the last resort, before waiting on a server that already failed.
+  if (regularFails(failed) >= 2) {
+    for (const ep of ENDPOINTS) {
+      if (ep.lastResort || (skip && skip.has(ep.id)) || failed.has(ep.id)) continue;
+      if (endpointState(ep).pausedUntil <= now) return { ep, waitMs: 0 };
+    }
+    for (const ep of ENDPOINTS) {
+      if (!ep.lastResort || (skip && skip.has(ep.id)) || failed.has(ep.id)) continue;
+      if (endpointState(ep).pausedUntil <= now) return { ep, waitMs: 0 };
+    }
+  }
   for (let i = 0; i < ENDPOINTS.length; i++) {
     const ep = ENDPOINTS[i];
     if (ep.lastResort || (skip && skip.has(ep.id))) continue;
@@ -411,9 +434,15 @@ async function fetchAcross(kind, payload, opts) {
   if (typeof deadlineTimer.unref === "function") deadlineTimer.unref();
   let n = 0;
   let lastStatus = 0;
+  const failed = new Set();
+  const tracked = (ep) =>
+    attempt(ep, kind, payload, opts, n, outer.signal).then((r) => {
+      if (r && !r.ok && !r.final && r.status !== "aborted") failed.add(ep.id);
+      return r;
+    });
   try {
     while (!outer.signal.aborted && nowFn() < opts.deadlineAt) {
-      const pick = nextEndpoint(null);
+      const pick = nextEndpoint(null, failed);
       if (!pick) break;
       if (pick.waitMs > 0) {
         if (nowFn() + pick.waitMs >= opts.deadlineAt) break;
@@ -422,7 +451,7 @@ async function fetchAcross(kind, payload, opts) {
       }
       n += 1;
       const running = new Set([pick.ep.id]);
-      const races = [attempt(pick.ep, kind, payload, opts, n, outer.signal)];
+      const races = [tracked(pick.ep)];
       let settledFirst = false;
       const hedgeWait = new AbortController();
       const onOuterStop = () => hedgeWait.abort();
@@ -432,14 +461,19 @@ async function fetchAcross(kind, payload, opts) {
         hedgeWait.abort();
         outer.signal.removeEventListener("abort", onOuterStop);
       });
-      // Hedge: one more endpoint beside a slow first answer.
-      const hedge = sleep(HEDGE_MS, hedgeWait.signal).then(() => {
-        if (settledFirst || outer.signal.aborted) return null;
-        const other = nextEndpoint(running);
-        if (!other || other.waitMs > 0) return null;
-        running.add(other.ep.id);
-        n += 1;
-        return attempt(other.ep, kind, payload, opts, n, outer.signal);
+      // Hedge: one more endpoint beside a slow first answer, and the next
+      // one in turn while the first is still out and the hedge failed.
+      const hedge = sleep(HEDGE_MS, hedgeWait.signal).then(async () => {
+        let last = null;
+        while (!settledFirst && !outer.signal.aborted) {
+          const other = nextEndpoint(running, failed);
+          if (!other || other.waitMs > 0) break;
+          running.add(other.ep.id);
+          n += 1;
+          last = await tracked(other.ep);
+          if (last && (last.ok || last.final)) break;
+        }
+        return last;
       });
       const winner = await firstOk([races[0], hedge]);
       if (winner && winner.ok) return winner;

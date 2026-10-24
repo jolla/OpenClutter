@@ -140,10 +140,51 @@ describe("overpass client", () => {
     assert.deepEqual(hosts, ["overpass-api.de", "overpass.private.coffee", "maps.mail.ru", "overpass.openstreetmap.fr"]);
   });
 
+  it("moves to the last resort once two regular servers fail in one read", async () => {
+    const refused = () => {
+      const e = new TypeError("fetch failed");
+      e.cause = Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+      throw e;
+    };
+    setup((url) => {
+      const h = hostOf(url);
+      if (h === "overpass-api.de") refused();
+      if (h === "overpass.openstreetmap.fr") return res(200, JSON_OK);
+      return res(504, "busy");
+    });
+    const got = await overpass.request({ kind: "interpreter", query: "q-two", deadlineMs: 5000 });
+    assert.equal(got.ok, true);
+    const hosts = calls.map((c) => hostOf(c.url));
+    assert.deepEqual(hosts, ["overpass-api.de", "overpass.private.coffee", "maps.mail.ru", "overpass.openstreetmap.fr"]);
+  });
+
+  it("keeps hedging past a failed hedge while the first answer hangs", async () => {
+    setup((url, init) => {
+      const h = hostOf(url);
+      if (h === "overpass-api.de") {
+        return new Promise((resolve, reject) => {
+          init.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+        });
+      }
+      if (h === "overpass.openstreetmap.fr") return res(200, JSON_OK);
+      return res(504, "busy");
+    });
+    const got = await overpass.request({ kind: "interpreter", query: "q-hang", deadlineMs: 5000 });
+    assert.equal(got.ok, true);
+    assert.deepEqual(calls.map((c) => hostOf(c.url)), ["overpass-api.de", "overpass.private.coffee", "maps.mail.ru", "overpass.openstreetmap.fr"]);
+  });
+
   it("never asks the last-resort server while a regular one answers", async () => {
     setup((url) => (hostOf(url) === "overpass-api.de" ? res(504, "busy") : res(200, JSON_OK)));
     await overpass.request({ kind: "interpreter", query: "q-reg", deadlineMs: 5000 });
     assert.ok(!calls.some((c) => hostOf(c.url) === "overpass.openstreetmap.fr"));
+  });
+
+  it("rejects a body cut off mid-stream", () => {
+    assert.equal(overpass.bodyOk("map", MAP_XML), true);
+    assert.equal(overpass.bodyOk("map", MAP_XML.slice(0, -10)), false);
+    assert.equal(overpass.bodyOk("interpreter", JSON_OK), true);
+    assert.equal(overpass.bodyOk("interpreter", JSON_OK.slice(0, -5)), false);
   });
 
   it("reads the socket code under a nested fetch error", () => {
