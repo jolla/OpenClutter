@@ -22,7 +22,15 @@
  * overpass-api.de is overloaded, asks for no parallel scripts and a 30 s
  * pause after 429; private.coffee (formerly kumi.systems) has no rate
  * limit, allows commercial use, and asks for fewer than 10 requests at a
- * time; VK Maps states no limits.
+ * time; VK Maps states no limits. overpass.openstreetmap.fr serves the
+ * whole planet but its copy can be weeks behind, so it is a last resort:
+ * asked only when every other server is refused, paused or backing off for
+ * longer than LAST_RESORT_WAIT_MS.
+ *
+ * A server that refuses the connection outright (a firewall on one egress
+ * address answers ECONNREFUSED in under a second) is skipped for
+ * REFUSED_PAUSE_MS, so the read moves on at once instead of retrying it
+ * every backoff step.
  */
 
 const crypto = require("node:crypto");
@@ -31,7 +39,30 @@ const ENDPOINTS = [
   { id: "overpass-api.de", base: "https://overpass-api.de/api", slots: 2, pause429Ms: 30000, status: true },
   { id: "private.coffee", base: "https://overpass.private.coffee/api", slots: 3, pause429Ms: 10000, status: true },
   { id: "maps.mail.ru", base: "https://maps.mail.ru/osm/tools/overpass/api", slots: 2, pause429Ms: 10000, status: false },
+  { id: "openstreetmap.fr", base: "https://overpass.openstreetmap.fr/api", slots: 1, pause429Ms: 30000, status: false, lastResort: true },
 ];
+
+/** Skip a server that refused the connection for this long. */
+const REFUSED_PAUSE_MS = 10 * 60 * 1000;
+/** A refusal answers fast; a slow connect error is a timeout, not a firewall. */
+const REFUSED_MAX_MS = 5000;
+/** Ask a last-resort server only when no other one is free this soon. */
+const LAST_RESORT_WAIT_MS = 8000;
+const REFUSED_CODES = new Set(["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "ENOTFOUND", "EAI_FAIL"]);
+
+/** The socket error code under a fetch failure (undici nests it). */
+function errorCode(e) {
+  let cur = e;
+  for (let depth = 0; cur && depth < 4; depth++) {
+    if (cur.code && typeof cur.code === "string" && !/^UND_ERR/.test(cur.code)) return cur.code;
+    if (Array.isArray(cur.errors) && cur.errors.length) {
+      const inner = errorCode(cur.errors[0]);
+      if (inner) return inner;
+    }
+    cur = cur.cause;
+  }
+  return "";
+}
 
 /** Start the next endpoint beside a first answer this slow. */
 const HEDGE_MS = 15000;
@@ -306,11 +337,16 @@ async function attempt(ep, kind, payload, opts, n, outer) {
   } catch (e) {
     const ms = nowFn() - t0;
     const aborted = !!(outer && outer.aborted);
-    if (!aborted) {
+    const code = errorCode(e);
+    if (!aborted && !ctrl.signal.aborted && REFUSED_CODES.has(code) && ms < REFUSED_MAX_MS) {
+      s.fails += 1;
+      s.pausedUntil = Math.max(s.pausedUntil, nowFn() + REFUSED_PAUSE_MS);
+      log(opts.tag, ep, kind, "refused", ms, n, "code=" + code + " pause=" + REFUSED_PAUSE_MS);
+    } else if (!aborted) {
       s.fails += 1;
       const wait = backoffMs(s.fails);
       s.pausedUntil = Math.max(s.pausedUntil, nowFn() + wait);
-      log(opts.tag, ep, kind, ctrl.signal.aborted ? "timeout" : "neterr", ms, n, "backoff=" + wait);
+      log(opts.tag, ep, kind, ctrl.signal.aborted ? "timeout" : "neterr", ms, n, "backoff=" + wait + (code ? " code=" + code : ""));
     } else {
       log(opts.tag, ep, kind, "cancelled", ms, n);
     }
@@ -333,12 +369,26 @@ function nextEndpoint(skip) {
   let soonest = Infinity;
   for (let i = 0; i < ENDPOINTS.length; i++) {
     const ep = ENDPOINTS[i];
-    if (skip && skip.has(ep.id)) continue;
+    if (ep.lastResort || (skip && skip.has(ep.id))) continue;
     const s = endpointState(ep);
     if (s.pausedUntil <= now) return { ep, waitMs: 0 };
     if (s.pausedUntil < soonest) {
       soonest = s.pausedUntil;
       best = ep;
+    }
+  }
+  // Every regular server is busy or refused: a last resort that is free
+  // now beats a wait longer than LAST_RESORT_WAIT_MS.
+  if (!best || soonest - now > LAST_RESORT_WAIT_MS) {
+    for (let i = 0; i < ENDPOINTS.length; i++) {
+      const ep = ENDPOINTS[i];
+      if (!ep.lastResort || (skip && skip.has(ep.id))) continue;
+      const s = endpointState(ep);
+      if (s.pausedUntil <= now) return { ep, waitMs: 0 };
+      if (s.pausedUntil < soonest) {
+        soonest = s.pausedUntil;
+        best = ep;
+      }
     }
   }
   if (!best) return null;
@@ -557,6 +607,9 @@ function resetForTests(opts) {
 
 module.exports = {
   ENDPOINTS,
+  REFUSED_PAUSE_MS,
+  LAST_RESORT_WAIT_MS,
+  errorCode,
   HEDGE_MS,
   ATTEMPT_MS,
   MEMO_MS,
