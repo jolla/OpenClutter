@@ -112,6 +112,46 @@ describe("overpass client", () => {
     assert.equal(lines.filter((l) => /status=504 .*backoff=\d+/.test(l)).length, 2);
   });
 
+  it("skips a server that refuses the connection and keeps it skipped", async () => {
+    const refused = () => {
+      const e = new TypeError("fetch failed");
+      e.cause = Object.assign(new Error("connect ECONNREFUSED 65.109.112.52:443"), { code: "ECONNREFUSED" });
+      throw e;
+    };
+    setup((url) => {
+      if (hostOf(url) === "overpass-api.de") refused();
+      return res(200, JSON_OK);
+    });
+    const a = await overpass.request({ kind: "interpreter", query: "qa", deadlineMs: 5000 });
+    const b = await overpass.request({ kind: "interpreter", query: "qb", deadlineMs: 5000 });
+    assert.equal(a.ok && b.ok, true);
+    assert.deepEqual(calls.map((c) => hostOf(c.url)), ["overpass-api.de", "overpass.private.coffee", "overpass.private.coffee"]);
+    assert.ok(lines.some((l) => /status=refused .*code=ECONNREFUSED pause=600000/.test(l)), lines.join("\n"));
+  });
+
+  it("asks the last-resort server only when every other one is out", async () => {
+    setup((url) => {
+      if (hostOf(url) === "overpass.openstreetmap.fr") return res(200, JSON_OK);
+      return res(429, "", { "retry-after": "60" });
+    });
+    const got = await overpass.request({ kind: "interpreter", query: "q-last", deadlineMs: 5000 });
+    assert.equal(got.ok, true);
+    const hosts = calls.filter((c) => !c.url.includes("/status")).map((c) => hostOf(c.url));
+    assert.deepEqual(hosts, ["overpass-api.de", "overpass.private.coffee", "maps.mail.ru", "overpass.openstreetmap.fr"]);
+  });
+
+  it("never asks the last-resort server while a regular one answers", async () => {
+    setup((url) => (hostOf(url) === "overpass-api.de" ? res(504, "busy") : res(200, JSON_OK)));
+    await overpass.request({ kind: "interpreter", query: "q-reg", deadlineMs: 5000 });
+    assert.ok(!calls.some((c) => hostOf(c.url) === "overpass.openstreetmap.fr"));
+  });
+
+  it("reads the socket code under a nested fetch error", () => {
+    const agg = Object.assign(new Error("agg"), { errors: [Object.assign(new Error("x"), { code: "ECONNREFUSED" })] });
+    assert.equal(overpass.errorCode(Object.assign(new TypeError("fetch failed"), { cause: agg })), "ECONNREFUSED");
+    assert.equal(overpass.errorCode(new Error("plain")), "");
+  });
+
   it("returns ok:false at the deadline so the export keeps its warning", async () => {
     let t = 1000;
     overpass.resetForTests({
