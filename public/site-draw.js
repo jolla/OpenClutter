@@ -227,7 +227,7 @@
 
   /**
    * Wheel and trackpad scroll always zoom (Leaflet centers on the cursor).
-   * Pan stays on middle-drag, right-drag, Space plus drag, and touch — never on scroll.
+   * Pan stays on middle-drag, right-drag, holding Space (moving the mouse pans, no click), and touch, never on scroll.
    */
   function wheelAction(ev) {
     return "zoom";

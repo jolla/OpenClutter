@@ -1509,6 +1509,19 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(spaceBody, /releaseDrawPress/);
     assert.match(app, /ev\.code === "Space"/);
     assert.match(app, /ev\.button === 2/);
+    // Holding Space pans on plain mouse movement, no click; release, blur or leaving the map stops it.
+    assert.match(app, /function moveHoverPan/);
+    const hoverAt = app.indexOf('"pointermove"');
+    const hoverBody = app.slice(hoverAt, app.indexOf("let blockMapDblClick"));
+    assert.match(hoverBody, /spacePan && panPointer == null && activePointer == null && hoverPanPointer\(ev\)/);
+    assert.match(hoverBody, /moveHoverPan\(ev\)/);
+    assert.match(hoverBody, /"pointerleave"/);
+    assert.match(app, /window\.addEventListener\("blur"/);
+    const upAt = app.indexOf('window.addEventListener("keyup"');
+    assert.match(app.slice(upAt, upAt + 160), /stopSpacePan\(\)/);
+    const stopFn = app.slice(app.indexOf("function stopSpacePan"), app.indexOf("const mapEl"));
+    assert.match(stopFn, /spacePan = false/);
+    assert.match(stopFn, /hoverPanLast = null/);
     assert.match(app, /function panGesture/);
     const panFn = app.slice(app.indexOf("function panGesture"), app.indexOf("function committedExportBlocked"));
     assert.match(panFn, /ev\.button === 1 \|\| ev\.button === 2/);

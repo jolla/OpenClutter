@@ -331,10 +331,10 @@ describe("Copy terrain after a background result", () => {
     const app = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     assert.equal(/id="copy-terrain"/.test(html + app), false);
-    // Export is the only action button; the map-corner version link (What's new, v1.1.182) is the one other button.
+    // Export is the only action button; the map-corner version link (What's new, v1.1.182) and the Lidar heights info tip (1.2.35) are the others.
     const buttonIds = [...html.matchAll(/<button\b[^>]*\bid="([^"]+)"/gi)].map((m) => m[1]).sort();
     assert.equal((html.match(/<button/gi) || []).length, buttonIds.length);
-    assert.deepEqual(buttonIds, ["app-version", "export"]);
+    assert.deepEqual(buttonIds, ["app-version", "export", "lidar-tip-btn"]);
     const drag = app.slice(app.indexOf("function showDragPreview"), app.indexOf("function showVertexPreview"));
     const vertex = app.slice(app.indexOf("function showVertexPreview"), app.indexOf("function handleDraw"));
     assert.match(drag, /noteDrawInProgress\(\)/);
@@ -410,6 +410,29 @@ describe("Copy terrain after a background result", () => {
     ]) {
       assert.ok(panelHtml.includes('id="' + id + '"'), id + " is inside the settings panel");
     }
+  });
+
+  it("locks drawing while an export runs and offers Cancel on the Exporting button", () => {
+    const app = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
+    const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+    assert.match(html, /<span id="export-cancel" aria-hidden="true">Cancel<\/span>/);
+    assert.match(html, /#export\.exporting:hover #export-cancel \{ display: inline; \}/);
+    assert.match(html, /#export\.exporting\.cancel-armed #export-cancel \{ display: inline; \}/);
+    const down = app.slice(app.indexOf('"pointerdown",'), app.indexOf('"pointermove",'));
+    // Pan gestures run before the lock check, so the map still pans during an export.
+    assert.ok(down.indexOf("panGesture(ev)") < down.indexOf("if (exportLocked()) return;"));
+    const click = app.slice(app.indexOf('document.getElementById("export").onclick'), app.indexOf("if (copyTerrainLabelReady())"));
+    assert.match(click, /if \(exportLocked\(\)\)/);
+    assert.match(click, /how === "mouse" \|\| exportBtn\.classList\.contains\("cancel-armed"\)/);
+    assert.match(click, /cancelExport\(\)/);
+    const cancel = app.slice(app.indexOf("function cancelExport"), app.indexOf("async function enqueueExport"));
+    assert.match(cancel, /controller\.abort\(\)/);
+    assert.match(cancel, /exportRun = null/);
+    assert.match(cancel, /Export cancelled\./);
+    assert.equal(app.split("signal: exportSignal()").length - 1, 4);
+    const fly = app.slice(app.indexOf("function flyToHit"), app.indexOf("async function runSearch"));
+    assert.match(fly, /if \(exportLocked\(\)\) return;/);
+    assert.equal(/\u2014/.test(app + html), false);
   });
 
   it("still copies GPS points when Terrain is off", () => {

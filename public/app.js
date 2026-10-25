@@ -184,6 +184,14 @@ function terrainExportEnabled() {
   syncDevPanel();
   restoreAdvanced();
   setupWhatsNew();
+  const lidarTipBtn = document.getElementById("lidar-tip-btn");
+  const lidarTip = document.getElementById("lidar-tip");
+  if (lidarTipBtn && lidarTip) {
+    lidarTipBtn.addEventListener("click", () => {
+      lidarTip.hidden = !lidarTip.hidden;
+      lidarTipBtn.setAttribute("aria-expanded", lidarTip.hidden ? "false" : "true");
+    });
+  }
   const lidarBox = document.getElementById("include-lidar");
   if (lidarBox && qualityPage() && lidarQueryOn()) lidarBox.checked = true;
   const ver = document.getElementById("app-version");
@@ -287,9 +295,14 @@ let rubber = null;
 let closeHint = null;
 let vertexMarks = [];
 let activePointer = null;
+/** The export in flight: { controller, cancelled }. While set, drawing and a second Export are locked. */
+let exportRun = null;
 let spacePan = false;
 let panPointer = null;
 let panLast = null;
+/** Last mouse point over the map while Space is held; Space plus mouse move pans with no click. */
+let hoverPanLast = null;
+let lastMapMouse = null;
 const drawSession = OpenClutterDraw.createSession();
 const statusEl = document.getElementById("status");
 const exportBtn = document.getElementById("export");
@@ -448,7 +461,7 @@ function syncDrawMode() {
     container.style.cursor = "grabbing";
     return;
   }
-  container.style.cursor = spacePan ? "grab" : "crosshair";
+  container.style.cursor = spacePan ? "grab" : exportLocked() ? "default" : "crosshair";
 }
 
 function typingTarget(el) {
@@ -780,6 +793,28 @@ function endPan() {
   syncDrawMode();
 }
 
+function hoverPanPointer(ev) {
+  return ev.pointerType === "mouse" || ev.pointerType === "pen";
+}
+
+/** Space held: plain mouse movement pans the map by the mouse delta, no button needed. */
+function moveHoverPan(ev) {
+  const at = { x: ev.clientX, y: ev.clientY };
+  const last = hoverPanLast;
+  hoverPanLast = at;
+  if (!last) return;
+  const dx = at.x - last.x;
+  const dy = at.y - last.y;
+  if (!dx && !dy) return;
+  map.panBy(L.point(-dx, -dy), { animate: false });
+}
+
+function stopSpacePan() {
+  spacePan = false;
+  hoverPanLast = null;
+  if (panPointer == null) syncDrawMode();
+}
+
 const mapEl = map.getContainer();
 const touchIds = new Set();
 let pinchGesture = false;
@@ -845,6 +880,7 @@ mapEl.addEventListener(
       return;
     }
     releasePanelFocus();
+    if (exportLocked()) return;
     if (activePointer != null) return;
     if (ev.button !== 0) return;
     if (!drawSession.armed) {
@@ -872,12 +908,25 @@ mapEl.addEventListener(
       movePan(ev);
       return;
     }
+    if (hoverPanPointer(ev)) lastMapMouse = { x: ev.clientX, y: ev.clientY };
+    if (spacePan && panPointer == null && activePointer == null && hoverPanPointer(ev)) {
+      ev.preventDefault();
+      moveHoverPan(ev);
+      return;
+    }
     if (ev.pointerId !== activePointer) return;
     ev.preventDefault();
     handleDraw(OpenClutterDraw.pointerMove(drawSession, pointFromEvent(ev)));
   },
   { passive: false }
 );
+
+// Leaving the map stops a Space hover pan; coming back starts again from the entry point, with no jump.
+mapEl.addEventListener("pointerleave", (ev) => {
+  if (!hoverPanPointer(ev)) return;
+  hoverPanLast = null;
+  lastMapMouse = null;
+});
 
 let blockMapDblClick = false;
 let blockMapDblClickTimer = 0;
@@ -940,6 +989,7 @@ mapEl.addEventListener("click", (ev) => {
   if (!btn) return;
   ev.preventDefault();
   ev.stopPropagation();
+  if (exportLocked()) return;
   clearFinishedShape();
 });
 
@@ -978,6 +1028,11 @@ mapEl.addEventListener(
   "dblclick",
   (ev) => {
     if (ev.button === 2) return;
+    if (exportLocked()) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      return;
+    }
     if (!drawSession.armed && !blockMapDblClick) return;
     ev.preventDefault();
     ev.stopPropagation();
@@ -991,9 +1046,10 @@ mapEl.addEventListener(
 window.addEventListener("keydown", (ev) => {
   if (ev.code === "Space" && !typingTarget(ev.target)) {
     releasePanelFocus();
-    spacePan = true;
     ev.preventDefault();
     if (panPointer == null) releaseDrawPress();
+    if (!spacePan) hoverPanLast = lastMapMouse;
+    spacePan = true;
     syncDrawMode();
   }
   const arrow = ARROW_PAN[ev.key];
@@ -1033,8 +1089,15 @@ window.addEventListener("keydown", (ev) => {
 
 window.addEventListener("keyup", (ev) => {
   if (ev.code !== "Space") return;
-  spacePan = false;
-  if (panPointer == null) syncDrawMode();
+  stopSpacePan();
+});
+
+// A Space release outside the page never arrives, so losing focus ends the pan.
+window.addEventListener("blur", () => {
+  if (spacePan) stopSpacePan();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && spacePan) stopSpacePan();
 });
 
 map.on("zoomend moveend", refreshVertexPixels);
@@ -1124,6 +1187,8 @@ searchInput.addEventListener("blur", () => setTimeout(closeSuggest, 100));
 
 function flyToHit(hit) {
   map.setView([+hit.lat, +hit.lon], 17);
+  // A search only moves the map; during an export it leaves the selection and the progress line alone.
+  if (exportLocked()) return;
   if (!bbox) setStatus("");
   else if (exportBtn.disabled) setStatus(areaLimitMessage() || "Area is outside the export size limits.", true);
   else setStatus("Ready to export.");
@@ -1133,7 +1198,7 @@ async function runSearch(q, extra) {
   suggestSeq++;
   clearTimeout(suggestTimer);
   closeSuggest();
-  setStatus("Searching…");
+  if (!exportLocked()) setStatus("Searching…");
   try {
     const r = await fetch("/api/geocode?q=" + encodeURIComponent(q) + viewParams() + (extra || ""));
     const hits = await r.json();
@@ -1141,7 +1206,7 @@ async function runSearch(q, extra) {
     if (!hits.length) throw new Error("No results. Try the street address.");
     flyToHit(hits[0]);
   } catch (err) {
-    setStatus(err.message, true);
+    if (!exportLocked()) setStatus(err.message, true);
   }
 }
 
@@ -1550,7 +1615,8 @@ function hideExportProgress() {
   if (fill) fill.style.width = "0";
   syncIdleExportLabel();
   if (exportBtn) {
-    exportBtn.classList.remove("exporting");
+    exportBtn.classList.remove("exporting", "cancel-armed");
+    exportBtn.removeAttribute("title");
     exportBtn.removeAttribute("role");
     exportBtn.removeAttribute("aria-valuemin");
     exportBtn.removeAttribute("aria-valuemax");
@@ -1590,6 +1656,7 @@ function showExportProgress(job) {
   if (label) label.textContent = "Exporting " + pct + "%";
   if (exportBtn) {
     exportBtn.classList.add("exporting");
+    if (exportRun) exportBtn.title = "Cancel export";
     exportBtn.setAttribute("role", "progressbar");
     exportBtn.setAttribute("aria-valuemin", "0");
     exportBtn.setAttribute("aria-valuemax", "100");
@@ -1647,11 +1714,60 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function exportLocked() {
+  return exportRun != null;
+}
+
+function exportSignal() {
+  return exportRun ? exportRun.controller.signal : undefined;
+}
+
+function cancelledError() {
+  const err = new Error("Export cancelled.");
+  err.cancelled = true;
+  err.noRetry = true;
+  return err;
+}
+
+/** Throws once the running export was cancelled, so no later step downloads or paints a result. */
+function checkExportRun(run) {
+  if (!run || run.cancelled || exportRun !== run) throw cancelledError();
+}
+
+function syncExportLock() {
+  const locked = exportLocked();
+  document.body.classList.toggle("export-locked", locked);
+  if (!locked) disarmExportCancel();
+  syncDrawMode();
+}
+
+function disarmExportCancel() {
+  if (exportBtn) exportBtn.classList.remove("cancel-armed");
+}
+
+/** Hovering the Exporting button shows Cancel; a click there stops waiting and unlocks drawing. */
+function cancelExport() {
+  const run = exportRun;
+  if (!run) return;
+  run.cancelled = true;
+  exportRun = null;
+  try {
+    run.controller.abort();
+  } catch (e) {
+    /* already aborted */
+  }
+  endExportProgress();
+  syncExportLock();
+  syncExportReady();
+  setStatus("Export cancelled.");
+}
+
 async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, includeTerrain) {
   const foliage = includeFoliage === true;
   const terrain = includeTerrain !== false;
   const r = await fetch("/api/clutter", {
     method: "POST",
+    signal: exportSignal(),
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       ...bbox,
@@ -1687,31 +1803,36 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
 }
 
 async function pollExport(jobId) {
+  const run = exportRun;
   const started = Date.now();
   const ceiling = 15 * 60 * 1000;
   let misses = 0;
   while (Date.now() - started < ceiling) {
     let data = null;
     try {
-      const r = await fetch("/api/export-status?job=" + encodeURIComponent(jobId), { cache: "no-store" });
+      const r = await fetch("/api/export-status?job=" + encodeURIComponent(jobId), { cache: "no-store", signal: exportSignal() });
       data = await r.json().catch(() => ({}));
       if (r.status === 404) throw new Error(data.error || "This export expired. Export again.");
       if (!r.ok) throw new Error(data.error || "Could not read export status.");
       misses = 0;
     } catch (err) {
+      if (err && (err.name === "AbortError" || !exportLocked())) throw cancelledError();
       if (err && /expired|Export id/i.test(err.message || "")) throw err;
       misses += 1;
       if (misses >= 4) throw new Error("Could not read export status. Export again.");
       await sleep(1500);
+      checkExportRun(run);
       continue;
     }
     if (data.state === "error") {
       endExportProgress();
       throw new Error(data.error || "Export failed.");
     }
+    checkExportRun(run);
     showExportProgress(data);
     if (data.state === "done") return data;
     await sleep(1500);
+    checkExportRun(run);
   }
   throw new Error("Export timed out after 15 minutes. Draw a smaller area and try again.");
 }
@@ -1725,12 +1846,14 @@ function downloadFailure(status, data) {
 }
 
 async function downloadJobZip(jobId, filename) {
+  const run = exportRun;
   let lastStatus = 0;
   let lastData = {};
   for (let attempt = 0; attempt < 4; attempt++) {
-    const r = await fetch("/api/export-file?job=" + encodeURIComponent(jobId), { cache: "no-store" });
+    const r = await fetch("/api/export-file?job=" + encodeURIComponent(jobId), { cache: "no-store", signal: exportSignal() });
     if (r.ok) {
       const blob = await r.blob();
+      checkExportRun(run);
       const disp = r.headers.get("content-disposition") || "";
       const named = disp.match(/filename="([^"]+)"/);
       const name = (named && named[1]) || filename || "openintent.zip";
@@ -1755,6 +1878,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       : undefined;
   const r = await fetch("/api/clutter", {
     method: "POST",
+    signal: exportSignal(),
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       // A polygon exports as this axis-aligned box. The API frame is west/south/east/north.
@@ -1803,7 +1927,23 @@ function openRingExportStatus(count) {
   );
 }
 
+exportBtn.addEventListener("pointerdown", (ev) => {
+  exportBtn.dataset.pointer = ev.pointerType || "";
+});
+exportBtn.addEventListener("pointerleave", (ev) => {
+  if (ev.pointerType === "mouse") disarmExportCancel();
+});
+exportBtn.addEventListener("blur", disarmExportCancel);
+
 document.getElementById("export").onclick = async () => {
+  if (exportLocked()) {
+    // Mouse: the hover already reads Cancel, so a click cancels. Touch, pen and keys: the first tap shows Cancel, the second cancels.
+    const how = exportBtn.dataset.pointer || "";
+    exportBtn.dataset.pointer = "";
+    if (how === "mouse" || exportBtn.classList.contains("cancel-armed")) cancelExport();
+    else exportBtn.classList.add("cancel-armed");
+    return;
+  }
   if (copyTerrainLabelReady()) {
     await copyFinishedTerrain();
     return;
@@ -1823,7 +1963,9 @@ document.getElementById("export").onclick = async () => {
   exportSettingsEpoch = settingsEpoch;
   exportCopyReady = false;
   forgetExport();
-  exportBtn.disabled = true;
+  const run = { controller: new AbortController(), cancelled: false };
+  exportRun = run;
+  syncExportLock();
   const includeFoliage = clutterChecked("include-foliage");
   const includeTerrain = terrainExportEnabled();
   try {
@@ -1840,6 +1982,7 @@ document.getElementById("export").onclick = async () => {
       } catch (e) {
         canopy = { trees: [], source: null, reason: "fetch-failed", parsed: { samples: 0, validCount: 0, hits: [] } };
       }
+      checkExportRun(run);
       // Canopy extent and height come from the height model on export.
       // Aerial color is not a tree source. NLCD hits only supplement dense cells.
       const resolved = T.resolveTrees(bbox, canopy, [], { maxTrees: budget });
@@ -1854,6 +1997,7 @@ document.getElementById("export").onclick = async () => {
     try {
       queued = await enqueueExport(trees, treesSource, canopyHits, includeFoliage, includeTerrain);
     } catch (err) {
+      checkExportRun(run);
       if (err && err.noRetry) throw err;
       queued = {
         fallback: true,
@@ -1886,12 +2030,15 @@ document.getElementById("export").onclick = async () => {
     const terrainPromise = includeTerrain && qualityPage() ? fetchTerrainPaste() : null;
     if (terrainPromise) terrainPromise.catch(() => {});
     const paste = terrainPromise ? await terrainPromise : null;
+    checkExportRun(run);
     const data = await OpenClutterExport.runExportAttempts((attempt) => {
+      checkExportRun(run);
       if (attempt > 1) {
         setStatus("The first export did not return an OpenIntent file. Export is still working.");
       }
       return exportOnce(trees, treesSource, canopyHits, includeFoliage, includeTerrain, paste);
     });
+    checkExportRun(run);
     const shortBlob = b64ToBlob(data.zipBase64, "application/zip");
     downloadBlob(shortBlob, data.zipFilename || "openintent.zip");
     rememberExport({ filename: data.zipFilename || "openintent.zip", bytes: shortBlob.size, blob: shortBlob, at: Date.now() });
@@ -1914,10 +2061,16 @@ document.getElementById("export").onclick = async () => {
     }
     showExportResult(data, includeFoliage, includeTerrain, fallbackNote);
   } catch (err) {
+    // A cancelled run was already closed by cancelExport; a newer export may own the page now.
+    if (run.cancelled || exportRun !== run) return;
     setStatus(OpenClutterExport.idleStatus(err), true);
   } finally {
-    endExportProgress();
-    exportBtn.disabled = false;
+    if (!run.cancelled && exportRun === run) {
+      exportRun = null;
+      endExportProgress();
+      syncExportLock();
+      exportBtn.disabled = false;
+    }
   }
 };
 
