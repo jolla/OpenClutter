@@ -190,11 +190,12 @@ describe("1.2.31 tiled street-map read", () => {
     assert.equal(got.osmTiles.retried, 0);
   });
 
-  it("is a dev-host switch, off by default", () => {
+  it("is on for every host, off by default, with the tile stat on dev hosts only", () => {
     assert.equal(exportMode.isTiledOsm(), false);
-    assert.equal(exportMode.tiledOsmWanted(false), false);
+    assert.equal(exportMode.tiledOsmWanted(false), true);
     assert.equal(exportMode.tiledOsmWanted(true), true);
     const src = fs.readFileSync(path.join(__dirname, "../netlify/functions/clutter.js"), "utf8");
     assert.match(src, /exportMode\.setTiledOsm\(exportMode\.tiledOsmWanted\(testHost\)\);/);
+    assert.match(src, /pack\.osmTiles && exportMode\.isTiledOsm\(\) && testHost\)/);
   });
 });

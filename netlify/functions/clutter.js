@@ -2773,7 +2773,7 @@ async function handleClutter(event) {
   let osmTilesStats = null;
   if (outdoorJob) {
     const pack = await outdoorJob.work;
-    if (pack && pack !== TIMED_OUT && pack.osmTiles && exportMode.isTiledOsm()) osmTilesStats = pack.osmTiles;
+    if (pack && pack !== TIMED_OUT && pack.osmTiles && exportMode.isTiledOsm() && testHost) osmTilesStats = pack.osmTiles;
     if (!pack || pack === TIMED_OUT || pack.ok === false) {
       outdoorMiss = true;
       warnings.push(OUTDOOR_MISS);

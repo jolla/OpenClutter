@@ -83,7 +83,8 @@ function isBigBudget() {
 // Large-draw street-map reads (1.2.31): one shared window across the
 // Overpass tiles, two tiles at a time, a 20 s slow-fail to the next server
 // and the last resort, a retry pass and a 2x2 split for missing tiles, and a
-// plain note naming what is missing. Off by default; set per export.
+// plain note naming what is missing. Off by default; set per export (on for
+// every host since 1.2.32; the tile stat stays on /dev hosts).
 let tiledOsm = false;
 
 function setTiledOsm(on) {
@@ -94,9 +95,9 @@ function isTiledOsm() {
   return tiledOsm;
 }
 
-/** Hosts that get the tiled street-map reads. */
+/** Hosts that get the tiled street-map reads: every host since 1.2.32. */
 function tiledOsmWanted(testHost) {
-  return !!testHost;
+  return true;
 }
 
 module.exports = {
