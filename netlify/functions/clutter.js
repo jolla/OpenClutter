@@ -1509,6 +1509,9 @@ async function handleClutter(event) {
   // From 1.2.26 /dev worst-case pads learn the pad pattern from the whole
   // park when a mapped park runs past the draw. Production never reads it.
   exportMode.setParkContext(exportMode.parkContextWanted(testHost, body));
+  // From 1.2.29 /dev exports use the raised Hamina budget: 5.8 MB of JSON and
+  // 9.7 MB of JSON plus map image. Production keeps the 4.9 MB JSON budget.
+  exportMode.setBigBudget(testHost);
   const areaCapOverride = testHost ? parseAreaCapOverride(body.areaCap) : 0;
   const jsonBudgetOverride = testHost ? parseJsonBudgetOverride(body.jsonBudget) : 0;
   const terrainFloors = testHost ? parseTerrainFloorOverride(body.terrainFloors) : 0;
@@ -2870,7 +2873,10 @@ async function handleClutter(event) {
   // The image does not count toward Hamina's JSON limit. Compress it only
   // when the zip itself cannot fit in Netlify's function response.
   if (background && built.zip && !exportJobs.zipDownloadFits(built.zip.length) && imgBuf) {
-    const room = exportJobs.ZIP_DOWNLOAD_MAX - (built.zip.length - imgBuf.length);
+    // On /dev (1.2.29) a smaller image frees JSON room under the 9.7 MB
+    // total, so the rebuilt JSON can grow; keep 200 KB spare for it.
+    const room =
+      exportJobs.ZIP_DOWNLOAD_MAX - (built.zip.length - imgBuf.length) - (exportMode.isBigBudget() ? 200000 : 0);
     const smaller = compressJpegToMax(imgBuf, Math.max(180000, room));
     if (smaller && smaller.length < imgBuf.length) {
       imgBuf = smaller;

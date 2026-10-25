@@ -81,6 +81,31 @@ const DEFAULT_AREA_CAP = AREA_CAP_MAX;
  */
 const OPENINTENT_JSON_BUDGET = 4900000;
 const JSON_BUDGET_MAX = 5242880;
+/**
+ * /dev budget from 1.2.29 (export-mode bigBudget). Hamina test-eu, Oct 24
+ * 2026, with a 3,865,174-byte map image in every file: JSON 5,999,442
+ * imported, 6,248,068 was refused at once as too large. The cap is either
+ * about 6,000,000 bytes of JSON or about 10 MB of JSON plus image, so /dev
+ * keeps under both: 5.8 MB of JSON and 9.7 MB of JSON plus map image.
+ */
+const DEV_JSON_BUDGET = 5800000;
+const DEV_TOTAL_BUDGET = 9700000;
+/** Lowest JSON budget the image rule can leave; a bigger image is the user's map choice. */
+const DEV_JSON_FLOOR = 1000000;
+
+/**
+ * JSON byte budget for one export. Production (bigBudget off) is the 1.2.17
+ * rule: the dev override or 4.9 MB, image not counted. On /dev the JSON
+ * budget is 5.8 MB (or the override), and JSON plus map image stays at or
+ * under 9.7 MB.
+ */
+function effectiveJsonBudget(override, imageBytes) {
+  const base = override > 0 ? override | 0 : 0;
+  if (!require("./export-mode").isBigBudget()) return base || OPENINTENT_JSON_BUDGET;
+  const json = base || DEV_JSON_BUDGET;
+  const img = imageBytes > 0 ? imageBytes : 0;
+  return Math.min(json, Math.max(DEV_JSON_FLOOR, DEV_TOTAL_BUDGET - img));
+}
 /** In-bounds pixel vertices. Two decimals is 0.01 px. Meters and feet are not repeated. */
 const OI_PIXEL_DECIMALS = 2;
 const OPENINTENT_VERSION = "2.0.1";
@@ -359,6 +384,15 @@ function coverageSummary(stats) {
     line += " Area cap " + cap + " (test override).";
   } else if (countOverride) {
     line += " Area cap " + cap + ".";
+  } else if (stats && stats.totalBudget > 0) {
+    line +=
+      " Byte budget " +
+      ((stats.jsonBudget > 0 ? stats.jsonBudget : DEV_JSON_BUDGET) / 1e6).toFixed(2) +
+      " MB of JSON (" +
+      (stats.totalBudget / 1e6).toFixed(2) +
+      " MB with the map image). Sanity cap " +
+      DEFAULT_AREA_CAP +
+      ".";
   } else {
     line +=
       " Byte budget " +
@@ -376,6 +410,14 @@ function coverageSummary(stats) {
     if (stats.stoppedBy === "bytes") {
       const budget = stats.jsonBudget > 0 ? stats.jsonBudget : OPENINTENT_JSON_BUDGET;
       line += " Stopped at the " + (budget / 1e6).toFixed(2) + " MB byte budget.";
+      if (stats.totalBudget > 0 && stats.imageBytes > 0 && budget < DEV_JSON_BUDGET) {
+        line +=
+          " The " +
+          (stats.imageBytes / 1e6).toFixed(2) +
+          " MB map image counts toward the " +
+          (stats.totalBudget / 1e6).toFixed(2) +
+          " MB Hamina total.";
+      }
     } else if (stats.stoppedBy === "count") {
       line += countOverride
         ? " Stopped at area cap " + cap + "."
@@ -3481,7 +3523,9 @@ function buildClutter({
   }
   const slopeTop = demUnderFootprint(terrain);
   const areaCap = maxAttenuationAreas > 0 ? maxAttenuationAreas | 0 : DEFAULT_AREA_CAP;
-  const jsonByteBudget = jsonBudget > 0 ? jsonBudget | 0 : OPENINTENT_JSON_BUDGET;
+  const bigBudget = require("./export-mode").isBigBudget();
+  const imageBytes = imgBuf && imgBuf.length > 0 ? imgBuf.length : 0;
+  const jsonByteBudget = effectiveJsonBudget(jsonBudget, imageBytes);
   const capIsOverride = areaCapOverride === true;
   const buildingCeiling =
     areaCap > MAX_ATTENUATION_AREAS ? Math.max(MAX_BUILDINGS, areaCap) : MAX_BUILDINGS;
@@ -4090,6 +4134,7 @@ function buildClutter({
     openIntentJsonBytes: Buffer.byteLength(oiJson),
     jsonBudget: jsonByteBudget,
     stoppedBy,
+    ...(bigBudget ? { totalBudget: DEV_TOTAL_BUDGET, imageBytes } : {}),
     openintentVersion: OPENINTENT_VERSION,
     openclutterVersion: OPENCLUTTER_VERSION,
     coordinateUnit: "pixels",
@@ -4183,6 +4228,10 @@ module.exports = {
   AREA_CAP_MAX,
   OPENINTENT_JSON_BUDGET,
   JSON_BUDGET_MAX,
+  DEV_JSON_BUDGET,
+  DEV_TOTAL_BUDGET,
+  DEV_JSON_FLOOR,
+  effectiveJsonBudget,
   OI_PIXEL_DECIMALS,
   ZIP_DOWNLOAD_MAX,
   parseAreaCapOverride,

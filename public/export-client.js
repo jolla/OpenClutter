@@ -336,6 +336,11 @@
     if (jsonBytes > 0) lines.push("OpenIntent " + formatBytes(jsonBytes) + " of " + budgetText);
     if (stats.stoppedBy === "bytes") {
       lines.push("Some buildings or trees left out for the " + budgetText + " limit.");
+      const total = +stats.totalBudget || 0;
+      const img = +stats.imageBytes || 0;
+      if (total > 0 && img > 0 && budget < 5800000) {
+        lines.push("The " + formatBytes(img) + " map image counts toward the " + (total / 1e6).toFixed(2) + " MB total.");
+      }
     }
     const mapLine = mapResolutionLine(data);
     if (mapLine) lines.push(mapLine);

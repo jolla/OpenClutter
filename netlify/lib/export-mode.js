@@ -67,7 +67,22 @@ function parkContextWanted(testHost, body) {
   return !!testHost && !(body && body.parkContext === false);
 }
 
+// Hamina import budget (1.2.29): 5.8 MB of OpenIntent JSON and at most
+// 9.7 MB of JSON plus map image. On for /dev hosts; production keeps the
+// 1.2.17 4.9 MB JSON-only budget until it is promoted.
+let bigBudget = false;
+
+function setBigBudget(on) {
+  bigBudget = !!on;
+}
+
+function isBigBudget() {
+  return bigBudget;
+}
+
 module.exports = {
+  setBigBudget,
+  isBigBudget,
   setResilient,
   isResilient,
   setSiteTypes,
