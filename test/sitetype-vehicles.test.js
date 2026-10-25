@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const { geoFrame, imagePxToLl } = require("../netlify/lib/geo-frame");
 const { roadsideVehicles, finalizeVehicles, boatsOnWater } = require("../netlify/lib/vehicle-track");
 const { featuresFromMapXml, parseOverpass } = require("../netlify/lib/outdoor-clutter");
+const { setSiteTypes } = require("../netlify/lib/export-mode");
 
 const BOX = { west: -100.0015, south: 35.0, east: -100.0, north: 35.0012 };
 
@@ -58,6 +59,24 @@ describe("site-type vehicles", () => {
     assert.ok(found[0].len > 8 && found[0].len < 12, "len " + found[0].len);
     const tan = roadsideVehicles(ringPx(f, 40, 130, 120, 180), f, plate, []);
     assert.equal(tan.length, 0);
+  });
+
+  it("keeps a roof whole where the sun clips part of it to full white", () => {
+    const f = frame();
+    const plate = plateOf(f, [120, 118, 112]);
+    paint(plate, 60, 60, 93, 69, [235, 236, 238]);
+    paint(plate, 70, 60, 82, 69, [255, 255, 255]);
+    const pad = ringPx(f, 40, 40, 120, 90);
+    const found = roadsideVehicles(pad, f, plate, []);
+    assert.equal(found.length, 1);
+    assert.ok(found[0].len > 8 && found[0].len < 12, "len " + found[0].len);
+    setSiteTypes(false);
+    try {
+      const old = roadsideVehicles(pad, f, plate, []) || [];
+      assert.ok(old.every((v) => v.len < 8));
+    } finally {
+      setSiteTypes(true);
+    }
   });
 
   it("leaves out a roof that is a mapped building", () => {

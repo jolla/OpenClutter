@@ -709,6 +709,7 @@ function roadsideVehicles(pad, frame, plate, holes) {
     if (acc >= half) break;
   }
   const floor = Math.max(165, Math.min(228, med + ROADSIDE_CONTRAST));
+  const clipWhite = isSiteTypes();
   const mask = new Uint8Array(bw * bh);
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
@@ -720,7 +721,9 @@ function roadsideVehicles(pad, frame, plate, holes) {
       // Painted RV and trailer roofs are near-white. Tan concrete, sand,
       // and gravel are warm: red well above blue.
       if (Math.max(r, g, b) - Math.min(r, g, b) > ROADSIDE_CHROMA || r > b + 18) continue;
-      if (isWhiteRoofPixel(r, g, b)) mask[(y - y0) * bw + (x - x0)] = 1;
+      // Site types: a white roof in sun clips to full white on a bright
+      // photo; those pixels are roof too, or the roof breaks into pieces.
+      if (isWhiteRoofPixel(r, g, b) || (clipWhite && 0.299 * r + 0.587 * g + 0.114 * b > 252)) mask[(y - y0) * bw + (x - x0)] = 1;
     }
   }
   // A mapped roof (a park model, a cabin, a shower house) is not an RV, and

@@ -1,6 +1,6 @@
 {
   "name": "openclutter",
-  "version": "1.2.33",
+  "version": "1.2.34",
   "private": true,
   "scripts": {
     "test": "node --test test/*.test.js",

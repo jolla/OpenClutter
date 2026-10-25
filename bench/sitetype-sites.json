@@ -24,6 +24,7 @@
   "name": "Pismo Coast Village RV resort",
   "place": "Pismo Beach, California",
   "kind": "coastal rv park",
+  "handLabels": "pismo-rv",
   "west": -120.6398,
   "south": 35.131,
   "east": -120.6346,

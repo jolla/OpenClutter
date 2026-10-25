@@ -1004,7 +1004,7 @@ function tooNear(x, y, placed) {
 
 function pushRv(out, placed, proj, x, y, heading, extra) {
   if (out.length >= rvCap()) return false;
-  if (tooNear(x, y, placed)) return false;
+  if (!(extra && extra.readOnly) && tooNear(x, y, placed)) return false;
   const spec = extra && extra.spec;
   const ring = rvRect(proj, x, y, heading.ux, heading.uy, spec && spec.length, spec && spec.width);
   placed.push({ x, y });
@@ -1201,12 +1201,54 @@ function interiorTiles(boxes, placed, proj, site, siteRoads) {
   if (!Number.isFinite(x0) || ((x1 - x0) * (y1 - y0)) / (RV_TILE_M * RV_TILE_M) > RV_TILE_CAP * 4) return;
   const half = RV_TILE_M / 2;
   const heading = { ux: 1, uy: 0 };
+  // Site types read the ground the strips leave; production keeps 1.2.17.
+  const v2 = isSiteTypes();
+  const strips = [];
+  for (let i = 0; v2 && i < boxes.length; i++) {
+    const pad = boxes[i] && boxes[i].pad;
+    if (!pad || pad.length < 4) continue;
+    const ring = pad.map((c) => proj.to(c[0], c[1]));
+    let a = Infinity;
+    let b = Infinity;
+    let c = -Infinity;
+    let d = -Infinity;
+    for (const p of ring) {
+      a = Math.min(a, p[0]);
+      b = Math.min(b, p[1]);
+      c = Math.max(c, p[0]);
+      d = Math.max(d, p[1]);
+    }
+    strips.push({ ring, a, b, c, d });
+  }
+  const covered = (x, y) => {
+    let hit = 0;
+    let n = 0;
+    for (let i = -2; i <= 2; i++) {
+      for (let j = -2; j <= 2; j++) {
+        const px = x + (i * half) / 2.5;
+        const py = y + (j * half) / 2.5;
+        n++;
+        for (let k = 0; k < strips.length; k++) {
+          const s = strips[k];
+          if (px < s.a || px > s.c || py < s.b || py > s.d) continue;
+          if (pointInRing([px, py], s.ring)) {
+            hit++;
+            break;
+          }
+        }
+      }
+    }
+    return hit >= n * 0.9;
+  };
   let n = 0;
   for (let y = y0 + half; y < y1 && n < RV_TILE_CAP; y += RV_TILE_M) {
     for (let x = x0 + half; x < x1 && n < RV_TILE_CAP && boxes.length < rvCap(); x += RV_TILE_M) {
       if (!pointInSite(proj.from(x, y), site)) continue;
-      // The strip beside a mapped road is read already.
-      if (roadDistance(x, y, siteRoads) < RV_PAD_FAR_M) continue;
+      // The strips beside the mapped roads are read already. A tile is
+      // read wherever they leave ground uncovered: a strip can stop short
+      // (a station held off by another road's) and a tile kept off for its
+      // centre alone left whole rows unread.
+      if (v2 ? covered(x, y) : roadDistance(x, y, siteRoads) < RV_PAD_FAR_M) continue;
       const pad = [
         proj.from(x - half, y - half),
         proj.from(x + half, y - half),
@@ -1214,7 +1256,9 @@ function interiorTiles(boxes, placed, proj, site, siteRoads) {
         proj.from(x - half, y + half),
       ];
       pad.push(pad[0]);
-      if (pushRv(boxes, placed, proj, x, y, heading, { kind: "rv", spec: VEHICLE_BOX.rv, pitchUse: "road", pad })) n++;
+      // A tile is only a window for the photo, never a box of its own, so
+      // it is not held off by the road boxes near it.
+      if (pushRv(boxes, placed, proj, x, y, heading, { kind: "rv", spec: VEHICLE_BOX.rv, pitchUse: "road", pad, readOnly: v2 })) n++;
     }
   }
 }
@@ -1522,7 +1566,7 @@ function parseOverpass(payload, want, bbox, deckCap) {
         rank: 0,
       });
     }
-    if (on.rvs && tags.building && isClosed(coords) && !isParkingWay(tags)) {
+    if (on.rvs && tags.building && !(isSiteTypes() && String(tags.building).trim().toLowerCase() === "no") && isClosed(coords) && !isParkingWay(tags)) {
       features.push({
         kind: "building-hole",
         coords,

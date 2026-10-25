@@ -18,6 +18,8 @@
  * Everything works in pixel rings (y up, as the planner uses).
  */
 
+const { isSiteTypes } = require("./export-mode");
+
 const SIDE_MIN_EVIDENCE = 3;
 const ZONE_MIN_EVIDENCE = 6;
 const SETBACK_M = [2, 18];
@@ -28,6 +30,7 @@ const ROAD_CLEAR_M = 2.5;
 /** Pads on a side with no RV need this many open slots in a row. */
 const RUN_MIN = 3;
 const GREEN_MAX = 0.3;
+const GREEN_MAX_SITE = 0.1;
 const OPEN_MIN = 0.55;
 /**
  * A pad is the park's own pad surface. The ground right around the RVs
@@ -37,6 +40,8 @@ const OPEN_MIN = 0.55;
 const PAD_GROUND_MIN = 80;
 const PAD_MATCH_DIST = 40;
 const PAD_MATCH_MIN = 0.5;
+/** RVs found per 100 m of a park's own roads before its empty pads are filled. */
+const PAD_DENSITY_MIN = 2;
 const FILL_CAP = 1500;
 const ROAD_CAP = 400;
 
@@ -284,6 +289,7 @@ function fillPads(o) {
   const zones = (o.zones || []).filter((z) => z && z.length >= 3).map((z) => toM(z, mx, my));
   if (!zones.length) return { rings: [], added: 0 };
   const inZone = (x, y) => zones.some((z) => pointInRing(x, y, z));
+  const zoneOf = (x, y) => zones.findIndex((z) => pointInRing(x, y, z));
   // A draw that holds too few RVs to learn its park's pads borrows the
   // whole park's RVs and roads (park-context.js), the way a road side with
   // too few RVs borrows its park's pattern.
@@ -306,6 +312,7 @@ function fillPads(o) {
   // Every road keeps pads clear of its pavement; pads are only looked for
   // along roads that run mostly inside a park.
   const roads = [];
+  const zoneRoadM = zones.map(() => 0);
   const clear = [];
   const clearRoads = [];
   for (const r of (o.roads || []).concat(o.clearRoads || [])) {
@@ -322,6 +329,8 @@ function fillPads(o) {
     for (const p of m) if (inZone(p[0], p[1])) inside++;
     if (inside * 2 < m.length || tab.length < 10 || roads.length >= ROAD_CAP) continue;
     roads.push(tab);
+    const zi = zoneOf(m[Math.floor(m.length / 2)][0], m[Math.floor(m.length / 2)][1]);
+    if (zi >= 0) zoneRoadM[zi] += tab.length;
   }
   const clearOf = (k) => clear[k];
   if (!roads.length) return { rings: [], added: 0 };
@@ -332,6 +341,15 @@ function fillPads(o) {
     if (b && b.len >= 4 && b.len <= 16 && inZone(b.cx, b.cy)) boxes.push(b);
   }
   if (boxes.length < ZONE_MIN_EVIDENCE) return { rings: [], added: 0 };
+  // Site types: worst-case pads only in a park the photo shows packed with
+  // RVs. A campground with an RV every few hundred metres of road (tent and
+  // grass sites, RVs on paved spurs) has no pad pattern to repeat.
+  const zoneDense = zones.map((z, i) => {
+    if (!isSiteTypes()) return true;
+    let n = 0;
+    for (const b of boxes) if (zoneOf(b.cx, b.cy) === i) n++;
+    return zoneRoadM[i] > 0 && (n * 100) / zoneRoadM[i] >= PAD_DENSITY_MIN;
+  });
   // Each RV votes for the road side it faces.
   const sides = new Map();
   const zoneVotes = { spacing: [], setback: [], cross: [], len: [], wid: [] };
@@ -390,8 +408,13 @@ function fillPads(o) {
     20
   );
   // Pad ground colour: a band one to three metres around each RV found in
-  // the photo, off any roof, road, lawn or crown.
+  // the photo, off any roof, road, lawn or crown. Each park learns its own
+  // (site types): a resort's gravel says nothing about the grass sites of
+  // the campground next door.
   let padGround = null;
+  const perZone = isSiteTypes();
+  const zoneGround = [];
+  const zoneSamples = zones.map(() => [[], [], []]);
   if (o.plate) {
     const rs = [];
     const gs = [];
@@ -426,10 +449,20 @@ function fillPads(o) {
           rs.push(px[0]);
           gs.push(px[1]);
           bs.push(px[2]);
+          const zi = perZone ? zoneOf(p[0], p[1]) : -1;
+          if (zi >= 0) {
+            zoneSamples[zi][0].push(px[0]);
+            zoneSamples[zi][1].push(px[1]);
+            zoneSamples[zi][2].push(px[2]);
+          }
         }
       }
     }
     if (rs.length >= PAD_GROUND_MIN) padGround = [median(rs), median(gs), median(bs)];
+    for (let z = 0; z < zones.length; z++) {
+      const q = zoneSamples[z];
+      zoneGround.push(q[0].length >= PAD_GROUND_MIN ? [median(q[0]), median(q[1]), median(q[2])] : null);
+    }
   }
   const out = [];
   const tryPlace = (tab, sign, t, pat, dry) => {
@@ -441,6 +474,7 @@ function fillPads(o) {
     const cx = st.x + nx * pat.setback;
     const cy = st.y + ny * pat.setback;
     if (!inZone(cx, cy)) return false;
+    if (!zoneDense[zoneOf(cx, cy)]) return false;
     // Long axis: across the road for a back-in pad, along it for a parallel one.
     const across = pat.cross >= 0.5;
     const ux = across ? nx : st.ux;
@@ -455,15 +489,21 @@ function fillPads(o) {
       }
     }
     const shares = photoShares(pts, o.plate, frame, mx, my);
-    if (shares.green > GREEN_MAX || shares.open < OPEN_MIN) return false;
-    if (padGround) {
+    // Site types: a slot that reaches onto a lawn or a planted median is
+    // not a pad; a gravel or paved pad has next to no green in it.
+    if (shares.green > (isSiteTypes() ? GREEN_MAX_SITE : GREEN_MAX) || shares.open < OPEN_MIN) return false;
+    // A park with too few RVs of its own to learn its pad colour gets no
+    // fill: a missed pad is better than an RV on ground that is no pad.
+    const ground = perZone ? zoneGround[zoneOf(cx, cy)] || null : padGround;
+    if (perZone && padGround && !ground) return false;
+    if (ground) {
       let n = 0;
       let match = 0;
       for (const p of pts) {
         const px = pixelAt(p, o.plate, frame, mx, my);
         if (!px) continue;
         n++;
-        if (groundDistance(px, padGround) < PAD_MATCH_DIST) match++;
+        if (groundDistance(px, ground) < PAD_MATCH_DIST) match++;
       }
       if (n && match < n * PAD_MATCH_MIN) return false;
     }
@@ -481,6 +521,11 @@ function fillPads(o) {
       if (!Number.isFinite(pat.spacing) || !Number.isFinite(pat.setback)) continue;
       const tab = roads[r];
       const ts = s ? s.items.map((it) => it.t).sort((a, b) => a - b) : [];
+      // Site types: only gaps between two RVs found on the same road side
+      // are filled. Past the last RV of a row, or along a side with none,
+      // the slot can as well be a lane, a lawn or a patio.
+      const between = isSiteTypes();
+      if (!ts.length && between) continue;
       if (!ts.length) {
         // No RV on this side: the park's pattern, only where the photo shows
         // a run of RUN_MIN or more open pads at that spacing in a row.
@@ -496,14 +541,14 @@ function fillPads(o) {
         flush();
         continue;
       }
-      for (let k = 1; ts[0] - k * pat.spacing >= 0; k++) tryPlace(tab, sign, ts[0] - k * pat.spacing, pat);
+      if (!between) for (let k = 1; ts[0] - k * pat.spacing >= 0; k++) tryPlace(tab, sign, ts[0] - k * pat.spacing, pat);
       for (let i = 1; i < ts.length; i++) {
         const gap = ts[i] - ts[i - 1];
         const n = Math.round(gap / pat.spacing) - 1;
         for (let k = 1; k <= n; k++) tryPlace(tab, sign, ts[i - 1] + (gap * k) / (n + 1), pat);
       }
       const last = ts[ts.length - 1];
-      for (let k = 1; last + k * pat.spacing <= tab.length; k++) tryPlace(tab, sign, last + k * pat.spacing, pat);
+      if (!between) for (let k = 1; last + k * pat.spacing <= tab.length; k++) tryPlace(tab, sign, last + k * pat.spacing, pat);
     }
   }
   return { rings: out, added: out.length };
