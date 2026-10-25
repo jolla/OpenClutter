@@ -462,6 +462,7 @@ function imageryStepBudget(elapsed, attemptMs) {
  */
 async function fetchImageryStepped(bbox, steps, srcCtx) {
   let last;
+  let refusedAll = true;
   const started = Date.now();
   let askedSide = 0;
   const prepared = [];
@@ -479,7 +480,10 @@ async function fetchImageryStepped(bbox, steps, srcCtx) {
   for (let n = 0; n < prepared.length; n++) {
     const entry = prepared[n];
     const elapsed = Date.now() - started;
-    if (!isBackgroundExport() && n > 0 && elapsed >= IMAGERY_STEPDOWN_QUICK_MS && entry.step.maxSide > 1040) continue;
+    if (!isBackgroundExport() && n > 0 && elapsed >= IMAGERY_STEPDOWN_QUICK_MS && entry.step.maxSide > 1040) {
+      refusedAll = false;
+      continue;
+    }
     let attemptMs = entry.step.attemptMs;
     if (n > 0) {
       attemptMs = imageryStepBudget(elapsed, entry.step.attemptMs);
@@ -487,9 +491,10 @@ async function fetchImageryStepped(bbox, steps, srcCtx) {
     }
     try {
       const got = await tryImageryPlate(entry.plate, attemptMs, srcCtx);
-      return plateResult(got, askedSide, n > 0, sharpCapped);
+      return plateResult(got, askedSide, n > 0, sharpCapped, n > 0 && refusedAll);
     } catch (e) {
       last = e;
+      if (!aerialFetch.refusedBySource(e)) refusedAll = false;
     }
   }
   throw last;
@@ -554,7 +559,7 @@ async function fetchImageryWithinBudget(prepared, askedSide, sharpCapped, srcCtx
   } catch {
     /* logging is optional */
   }
-  return plateResult({ buf: got.buf, plate }, askedSide, got.index > 0, sharpCapped);
+  return plateResult({ buf: got.buf, plate }, askedSide, got.index > 0, sharpCapped, !!got.noFiner);
 }
 
 function imageryFrame(bbox, step) {
@@ -565,10 +570,11 @@ function imageryFrame(bbox, step) {
   });
 }
 
-function plateResult(got, askedSide, stepped, sharpCapped) {
+function plateResult(got, askedSide, stepped, sharpCapped, noFiner) {
   return {
     buf: got.buf,
     stepped: !!stepped,
+    noFiner: !!(stepped && noFiner),
     imgW: got.plate.imgW,
     imgH: got.plate.imgH,
     askedSide: askedSide,
@@ -1210,6 +1216,11 @@ function mapImageNote(plate, frame, jpegBuf) {
   const capped = plate.sharpCapped ? " A 2048 px plate does not fit this draw." : "";
   if (plate.stepped) {
     const asked = plate.askedSide > 0 ? plate.askedSide : side;
+    // Esri refused every sharper plate: this is the finest imagery it has
+    // here, not a slow fetch. Site types (/dev) say so.
+    if (plate.noFiner && exportMode.isSiteTypes()) {
+      return "Map image " + side + " px" + mpp + ": the finest Esri imagery here (sharper plates up to " + asked + " px are not served for this spot)." + capped;
+    }
     return "Map stepped down to " + side + " px from " + asked + " px." + capped;
   }
   return "Map image " + side + " px" + mpp + "." + capped;

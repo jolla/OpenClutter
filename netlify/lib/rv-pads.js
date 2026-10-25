@@ -29,6 +29,14 @@ const ROAD_CLEAR_M = 2.5;
 const RUN_MIN = 3;
 const GREEN_MAX = 0.3;
 const OPEN_MIN = 0.55;
+/**
+ * A pad is the park's own pad surface. The ground right around the RVs
+ * already found gives that surface's colour; a slot whose ground does not
+ * match it (open desert, sand or dirt past the pads) is not a pad.
+ */
+const PAD_GROUND_MIN = 80;
+const PAD_MATCH_DIST = 40;
+const PAD_MATCH_MIN = 0.5;
 const FILL_CAP = 1500;
 const ROAD_CAP = 400;
 
@@ -240,6 +248,21 @@ function photoShares(pts, plate, frame, mx, my) {
   return { open: open / n, green: green / n };
 }
 
+function pixelAt(p, plate, frame, mx, my) {
+  const x = Math.floor(p[0] / mx);
+  const y = Math.floor(frame.imgH - p[1] / my);
+  if (x < 0 || y < 0 || x >= plate.width || y >= plate.height) return null;
+  const i = (y * plate.width + x) * 4;
+  return [plate.data[i], plate.data[i + 1], plate.data[i + 2]];
+}
+
+/** Colour distance with hue (red and blue against green) weighted over brightness. */
+function groundDistance(c, q) {
+  const hue = Math.abs(c[0] - c[1] - (q[0] - q[1])) + Math.abs(c[2] - c[1] - (q[2] - q[1]));
+  const luma = Math.abs(0.299 * (c[0] - q[0]) + 0.587 * (c[1] - q[1]) + 0.114 * (c[2] - q[2]));
+  return 1.5 * hue + 0.8 * luma;
+}
+
 function clamp(v, r) {
   return Math.max(r[0], Math.min(r[1], v));
 }
@@ -366,6 +389,48 @@ function fillPads(o) {
     (o.obstacles || []).filter((r) => r && r.length >= 3).map((r) => toM(r, mx, my)),
     20
   );
+  // Pad ground colour: a band one to three metres around each RV found in
+  // the photo, off any roof, road, lawn or crown.
+  let padGround = null;
+  if (o.plate) {
+    const rs = [];
+    const gs = [];
+    const bs = [];
+    for (const b of boxes) {
+      for (const grow of [2, 4, 6]) {
+        const L = b.len + grow;
+        const W = b.wid + grow;
+        const per = Math.max(8, Math.round((L + W) * 2));
+        for (let k = 0; k < per; k++) {
+          const f = k / per;
+          let a;
+          let c;
+          const e = f * 2 * (L + W);
+          if (e < L) [a, c] = [e - L / 2, W / 2];
+          else if (e < L + W) [a, c] = [L / 2, W / 2 - (e - L)];
+          else if (e < 2 * L + W) [a, c] = [L / 2 - (e - L - W), -W / 2];
+          else [a, c] = [-L / 2, -W / 2 + (e - 2 * L - W)];
+          const p = [b.cx + b.ux * a - b.uy * c, b.cy + b.uy * a + b.ux * c];
+          if (!inZone(p[0], p[1]) || occupied.hit(p[0], p[1]) || blocked.hit(p[0], p[1])) continue;
+          let onRoad = false;
+          for (let r = 0; r < clearRoads.length && !onRoad; r++) {
+            const q = project(clearRoads[r], p[0], p[1]);
+            if (q && q.d < clearOf(r)) onRoad = true;
+          }
+          if (onRoad) continue;
+          const px = pixelAt(p, o.plate, frame, mx, my);
+          if (!px) continue;
+          const luma = 0.299 * px[0] + 0.587 * px[1] + 0.114 * px[2];
+          const veg = (px[1] > px[0] + 6 && px[1] > px[2] + 6) || (2 * px[1] - px[0] - px[2] > 12 && luma < 125);
+          if (veg || luma < 45) continue;
+          rs.push(px[0]);
+          gs.push(px[1]);
+          bs.push(px[2]);
+        }
+      }
+    }
+    if (rs.length >= PAD_GROUND_MIN) padGround = [median(rs), median(gs), median(bs)];
+  }
   const out = [];
   const tryPlace = (tab, sign, t, pat, dry) => {
     if (out.length >= FILL_CAP) return false;
@@ -391,6 +456,17 @@ function fillPads(o) {
     }
     const shares = photoShares(pts, o.plate, frame, mx, my);
     if (shares.green > GREEN_MAX || shares.open < OPEN_MIN) return false;
+    if (padGround) {
+      let n = 0;
+      let match = 0;
+      for (const p of pts) {
+        const px = pixelAt(p, o.plate, frame, mx, my);
+        if (!px) continue;
+        n++;
+        if (groundDistance(px, padGround) < PAD_MATCH_DIST) match++;
+      }
+      if (n && match < n * PAD_MATCH_MIN) return false;
+    }
     const ring = rectM(cx, cy, ux, uy, pat.len, pat.wid);
     if (dry) return true;
     occupied.add(ring);

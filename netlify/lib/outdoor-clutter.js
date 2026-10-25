@@ -103,6 +103,13 @@ const RV_ROAD_OFFSET_M = 4;
 const RV_PAD_NEAR_M = 3;
 const RV_PAD_FAR_M = 17;
 const RV_DEDUPE_M = 8;
+/**
+ * Site types: park ground past every mapped road's strip (internal lanes
+ * OSM does not map) is read in tiles this size. Only a roof the photo
+ * shows there becomes a box; a tile never gets a pad fill.
+ */
+const RV_TILE_M = 20;
+const RV_TILE_CAP = 1500;
 /** A mapped campground can pass 400 pitches. The cap used to drop the last row. */
 const RV_CAP = 2400;
 const RV_CAP_LEGACY = 800;
@@ -1148,8 +1155,68 @@ function rvBoxes(features) {
         }
       }
     }
+    if (isSiteTypes()) interiorTiles(boxes, placed, proj, site, siteRoads);
   }
   return boxes;
+}
+
+/** Distance from a point to the nearest road polyline, metres. */
+function roadDistance(x, y, lines) {
+  let best = Infinity;
+  for (let r = 0; r < lines.length; r++) {
+    const line = lines[r];
+    for (let k = 1; k < line.length; k++) {
+      const ax = line[k - 1][0];
+      const ay = line[k - 1][1];
+      const dx = line[k][0] - ax;
+      const dy = line[k][1] - ay;
+      const L2 = dx * dx + dy * dy;
+      const t = L2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / L2)) : 0;
+      const d = Math.hypot(x - ax - t * dx, y - ay - t * dy);
+      if (d < best) best = d;
+    }
+  }
+  return best;
+}
+
+/**
+ * Site types: tiles over the park ground that no mapped road's strip
+ * reaches. An RV park's lanes are often unmapped, so the rows along them
+ * would otherwise never be read. Each tile is a pad for the photo
+ * (pitchUse "road"): a roof found there becomes a box, empty ground stays
+ * empty, and pad fills (rv-pads.js) still follow mapped roads only.
+ */
+function interiorTiles(boxes, placed, proj, site, siteRoads) {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (let k = 0; k < site.coords.length; k++) {
+    const xy = proj.to(site.coords[k][0], site.coords[k][1]);
+    if (xy[0] < x0) x0 = xy[0];
+    if (xy[1] < y0) y0 = xy[1];
+    if (xy[0] > x1) x1 = xy[0];
+    if (xy[1] > y1) y1 = xy[1];
+  }
+  if (!Number.isFinite(x0) || ((x1 - x0) * (y1 - y0)) / (RV_TILE_M * RV_TILE_M) > RV_TILE_CAP * 4) return;
+  const half = RV_TILE_M / 2;
+  const heading = { ux: 1, uy: 0 };
+  let n = 0;
+  for (let y = y0 + half; y < y1 && n < RV_TILE_CAP; y += RV_TILE_M) {
+    for (let x = x0 + half; x < x1 && n < RV_TILE_CAP && boxes.length < rvCap(); x += RV_TILE_M) {
+      if (!pointInSite(proj.from(x, y), site)) continue;
+      // The strip beside a mapped road is read already.
+      if (roadDistance(x, y, siteRoads) < RV_PAD_FAR_M) continue;
+      const pad = [
+        proj.from(x - half, y - half),
+        proj.from(x + half, y - half),
+        proj.from(x + half, y + half),
+        proj.from(x - half, y + half),
+      ];
+      pad.push(pad[0]);
+      if (pushRv(boxes, placed, proj, x, y, heading, { kind: "rv", spec: VEHICLE_BOX.rv, pitchUse: "road", pad })) n++;
+    }
+  }
 }
 
 const PIER_CAP = 2000;

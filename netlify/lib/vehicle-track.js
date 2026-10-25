@@ -568,6 +568,91 @@ const ROADSIDE_FILL = 0.5;
 const ROADSIDE_GROW_M = 6;
 const ROADSIDE_CONTRAST = 30;
 const ROADSIDE_CHROMA = 30;
+/**
+ * Site types (/dev hosts): RV and park-model roofs that are not white.
+ * Inside the pad strip, a pixel that stands apart from the strip's own
+ * ground colour (blue-grey, tan, dark or two-tone roofs, awnings) joins the
+ * white-roof mask, and a one-pixel closing joins a roof broken up by AC
+ * units, vents or an awning seam. Lawn, tree crown and deep shade stay out.
+ */
+const ROADSIDE_V2 = {
+  groundDist: 50,
+  refs: 2,
+  refShare: 0.12,
+  minLuma: 72,
+  maxM2: 110,
+  len: [5.5, 16.5],
+  wid: [2, 7.5],
+  growM: 9,
+  boxWid: [2.3, 4.3],
+  splitM: 0.75,
+  aroundMin: 0.5,
+  courtMax: 0.06,
+  aspect: 1.6,
+  fill: 0.45,
+  close: 1,
+  openM: 0.5,
+  maxChroma: 60,
+  roofGapM: 1.2,
+  roofTouch: 0.08,
+  roofP90: 230,
+  roofTopGap: 20,
+  tealG: 15,
+  tealB: 10,
+};
+
+const plateTops = new WeakMap();
+
+/** Luma near the top of the photo (99.5th percentile, sampled). */
+function plateTop(plate) {
+  const data = plate.data;
+  if (plateTops.has(data)) return plateTops.get(data);
+  const hist = new Uint32Array(256);
+  let n = 0;
+  for (let i = 0; i < data.length; i += 4 * 7) {
+    hist[Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2])]++;
+    n++;
+  }
+  let v = 255;
+  for (let acc = 0; v > 0; v--) {
+    acc += hist[v];
+    if (acc >= n * 0.005) break;
+  }
+  plateTops.set(data, v);
+  return v;
+}
+
+/**
+ * A unit roof is light metal or membrane (its brightest tenth near the
+ * brightest tone in the photo, which is near white in sun and lower under
+ * a forest canopy or haze) or painted teal. A blob that only differs from
+ * the ground in tone, such as a concrete slab on a gravel pad, a shaded
+ * pad or a parked car in shade, is neither.
+ */
+function roofTone(cells, x0, y0, bw, plate) {
+  const lum = new Float64Array(cells.length);
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  for (let k = 0; k < cells.length; k++) {
+    const x = x0 + (cells[k] % bw);
+    const y = y0 + ((cells[k] / bw) | 0);
+    const i = (y * plate.width + x) * 4;
+    const R = plate.data[i];
+    const G = plate.data[i + 1];
+    const B = plate.data[i + 2];
+    r += R;
+    g += G;
+    b += B;
+    lum[k] = 0.299 * R + 0.587 * G + 0.114 * B;
+  }
+  lum.sort();
+  const n = cells.length;
+  const p90 = lum[Math.floor(0.9 * (n - 1))];
+  const teal = g / n - r / n >= ROADSIDE_V2.tealG && b / n - r / n >= ROADSIDE_V2.tealB;
+  const need = Math.min(ROADSIDE_V2.roofP90, plateTop(plate) - ROADSIDE_V2.roofTopGap);
+  return p90 >= need || teal;
+}
 
 /**
  * Light vehicle roofs beside an internal road of an RV park with no mapped
@@ -601,7 +686,7 @@ function roadsideVehicles(pad, frame, plate, holes) {
   const mpuY = frame.mpuY > 0 ? frame.mpuY : (Math.abs(+frame.north - +frame.south) * 110540) / frame.imgH;
   // A photo coarser than about 0.6 m cannot separate one RV roof.
   if (!(Math.max(mpuX, mpuY) <= 0.6)) return [];
-  const grow = Math.round(ROADSIDE_GROW_M / Math.min(mpuX, mpuY));
+  const grow = Math.round((isSiteTypes() ? ROADSIDE_V2.growM : ROADSIDE_GROW_M) / Math.min(mpuX, mpuY));
   const x0 = Math.max(0, Math.floor(minX) - grow);
   const y0 = Math.max(0, Math.floor(minY) - grow);
   const x1 = Math.min(plate.width - 1, Math.ceil(maxX) + grow);
@@ -661,10 +746,47 @@ function roadsideVehicles(pad, frame, plate, holes) {
       }
     }
   }
+  const v2 = isSiteTypes();
+  const ground = v2 ? addGroundContrast(mask, poly, x0, y0, bw, bh, plate, holes, frame) : null;
+  const nearRoof = ground && ground.nearRoof;
   const seen = new Uint8Array(bw * bh);
   const stack = [];
   const out = [];
   const pxM2 = mpuX * mpuY;
+  const maxM2 = v2 ? ROADSIDE_V2.maxM2 : ROADSIDE_MAX_M2;
+  const widR = v2 ? ROADSIDE_V2.wid : ROADSIDE_WID;
+  const aspectMin = v2 ? ROADSIDE_V2.aspect : ROADSIDE_ASPECT;
+  const fillMin = v2 ? ROADSIDE_V2.fill : ROADSIDE_FILL;
+  const lenR = v2 ? ROADSIDE_V2.len : ROADSIDE_LEN;
+  const judge = (cells) => {
+    const m2 = cells.length * pxM2;
+    if (m2 < ROADSIDE_MIN_M2) return "small";
+    if (m2 > maxM2) return "big";
+    const ext = roofExtent(cells, x0, y0, bw, frame);
+    if (ext.len < lenR[0] || ext.len > lenR[1]) return "len";
+    if (ext.wid < widR[0] || ext.wid > widR[1]) return "wid";
+    if (ext.len / Math.max(0.1, ext.wid) < aspectMin) return "aspect";
+    if (m2 / (ext.len * ext.wid) < fillMin) return "fill";
+    if (v2 && !roofTone(cells, x0, y0, bw, plate)) return "dull";
+    if (nearRoof) {
+      let touch = 0;
+      for (let k = 0; k < cells.length; k++) touch += nearRoof[cells[k]];
+      if (touch > cells.length * ROADSIDE_V2.roofTouch) return "roof";
+    }
+    // A unit stands on open ground: most of a ring just outside it is
+    // pad, road, shade or plants. A piece of a court, a pool deck or a
+    // roof is ringed by more of the same.
+    if (ground && aroundShare(ext, plate, frame, ground.refs) < ROADSIDE_V2.aroundMin) return "ringed";
+    // Painted courts and pools are saturated blue or cyan. A light strip
+    // on a court, its apron, or the lounge row on a pool deck sits right
+    // beside that colour; a parked unit does not.
+    if (ground && courtShare(ext, plate, frame) > ROADSIDE_V2.courtMax) return "court";
+    const lon = ext.cx / ext.mLon;
+    const lat = ext.cy / 110540;
+    const c = llToImagePx(lon, lat, frame);
+    if (!pointInRing(c, poly)) return "outside";
+    return { lon, lat, ux: ext.ux, uy: ext.uy, len: ext.len, wid: ext.wid };
+  };
   for (let i = 0; i < mask.length; i++) {
     if (!mask[i] || seen[i]) continue;
     const cells = [];
@@ -689,26 +811,305 @@ function roadsideVehicles(pad, frame, plate, holes) {
           stack.push(j);
         }
       }
-      if (cells.length * pxM2 > ROADSIDE_MAX_M2 * 2) break;
+      if (cells.length * pxM2 > maxM2 * 2) break;
     }
     while (stack.length) stack.pop();
     // A roof that runs off the read window is larger than the window.
     if (edge) continue;
-    const m2 = cells.length * pxM2;
-    if (m2 < ROADSIDE_MIN_M2) continue;
-    if (m2 > ROADSIDE_MAX_M2) continue;
-    const ext = roofExtent(cells, x0, y0, bw, frame);
-    if (ext.len < ROADSIDE_LEN[0] || ext.len > ROADSIDE_LEN[1]) continue;
-    if (ext.wid < ROADSIDE_WID[0] || ext.wid > ROADSIDE_WID[1]) continue;
-    if (ext.len / Math.max(0.1, ext.wid) < ROADSIDE_ASPECT) continue;
-    if (m2 / (ext.len * ext.wid) < ROADSIDE_FILL) continue;
-    const lon = ext.cx / ext.mLon;
-    const lat = ext.cy / 110540;
-    const c = llToImagePx(lon, lat, frame);
-    if (!pointInRing(c, poly)) continue;
-    out.push({ lon, lat, ux: ext.ux, uy: ext.uy, len: ext.len, wid: ext.wid });
+    const got = judge(cells);
+    if (typeof got === "object") {
+      out.push(got);
+      continue;
+    }
+    // Site types: a unit merged with the awning, car or shed beside it is
+    // split at its narrow necks once and each part judged again.
+    if (!v2 || got === "small" || cells.length * pxM2 > maxM2 * 2) continue;
+    const parts = splitBlob(cells, bw, bh, Math.max(1, Math.round(ROADSIDE_V2.splitM / Math.min(mpuX, mpuY))));
+    for (let p = 0; p < parts.length; p++) {
+      const part = judge(parts[p]);
+      if (typeof part === "object") out.push(part);
+    }
   }
   return out;
+}
+
+/** Share of a ring 1 m outside a roof that reads as open ground, road, shade or plants. */
+function aroundShare(ext, plate, frame, refs) {
+  const L = ext.len + 2;
+  const W = ext.wid + 2;
+  const per = Math.max(12, Math.round((L + W) * 4));
+  let n = 0;
+  let open = 0;
+  for (let k = 0; k < per; k++) {
+    const e = (k / per) * 2 * (L + W);
+    let a;
+    let c;
+    if (e < L) [a, c] = [e - L / 2, W / 2];
+    else if (e < L + W) [a, c] = [L / 2, W / 2 - (e - L)];
+    else if (e < 2 * L + W) [a, c] = [L / 2 - (e - L - W), -W / 2];
+    else [a, c] = [-L / 2, -W / 2 + (e - 2 * L - W)];
+    const xy = llToImagePx((ext.cx + ext.ux * a - ext.uy * c) / ext.mLon, (ext.cy + ext.uy * a + ext.ux * c) / 110540, frame);
+    const x = Math.round(xy[0]);
+    const y = Math.round(xy[1]);
+    if (x < 0 || y < 0 || x >= plate.width || y >= plate.height) continue;
+    const i = (y * plate.width + x) * 4;
+    const r = plate.data[i];
+    const g = plate.data[i + 1];
+    const b = plate.data[i + 2];
+    n++;
+    if (0.299 * r + 0.587 * g + 0.114 * b < ROADSIDE_V2.minLuma || vegPixel(r, g, b)) open++;
+    else if (refs.some((q) => groundDistance(r, g, b, q) < ROADSIDE_V2.groundDist)) open++;
+  }
+  return n ? open / n : 1;
+}
+
+/** Share of rings 1 to 4 m outside a roof that are court or pool blue. */
+function courtShare(ext, plate, frame) {
+  let n = 0;
+  let blue = 0;
+  for (const grow of [2, 5, 8]) {
+    const L = ext.len + grow;
+    const W = ext.wid + grow;
+    const per = Math.max(12, Math.round((L + W) * 2));
+    for (let k = 0; k < per; k++) {
+      const e = (k / per) * 2 * (L + W);
+      let a;
+      let c;
+      if (e < L) [a, c] = [e - L / 2, W / 2];
+      else if (e < L + W) [a, c] = [L / 2, W / 2 - (e - L)];
+      else if (e < 2 * L + W) [a, c] = [L / 2 - (e - L - W), -W / 2];
+      else [a, c] = [-L / 2, -W / 2 + (e - 2 * L - W)];
+      const xy = llToImagePx((ext.cx + ext.ux * a - ext.uy * c) / ext.mLon, (ext.cy + ext.uy * a + ext.ux * c) / 110540, frame);
+      const x = Math.round(xy[0]);
+      const y = Math.round(xy[1]);
+      if (x < 0 || y < 0 || x >= plate.width || y >= plate.height) continue;
+      const i = (y * plate.width + x) * 4;
+      const r = plate.data[i];
+      const g = plate.data[i + 1];
+      const b = plate.data[i + 2];
+      n++;
+      if (b > r + 40 && b >= g - 10 && Math.max(r, g, b) - Math.min(r, g, b) > 60) blue++;
+    }
+  }
+  return n ? blue / n : 0;
+}
+
+/**
+ * Splits one blob at its necks: erode it r pixels, label what is left,
+ * and grow each part back r pixels inside the blob.
+ */
+function splitBlob(cells, bw, bh, r) {
+  const inBlob = new Map();
+  for (let k = 0; k < cells.length; k++) inBlob.set(cells[k], 0);
+  const has = (k, set) => set.has(k);
+  let cur = new Set(cells);
+  for (let it = 0; it < r; it++) {
+    const next = new Set();
+    for (const k of cur) {
+      const x = k % bw;
+      if (x > 0 && x < bw - 1 && k >= bw && k < bw * (bh - 1) && has(k - 1, cur) && has(k + 1, cur) && has(k - bw, cur) && has(k + bw, cur)) next.add(k);
+    }
+    cur = next;
+  }
+  const label = new Map();
+  let n = 0;
+  for (const k0 of cur) {
+    if (label.has(k0)) continue;
+    n++;
+    const st = [k0];
+    label.set(k0, n);
+    while (st.length) {
+      const k = st.pop();
+      for (const j of [k - 1, k + 1, k - bw, k + bw]) {
+        if (cur.has(j) && !label.has(j)) {
+          label.set(j, n);
+          st.push(j);
+        }
+      }
+    }
+  }
+  if (n < 2) return [];
+  // Grow back inside the blob, one ring at a time, first label wins.
+  let front = Array.from(label.keys());
+  for (let it = 0; it < r + 1 && front.length; it++) {
+    const nf = [];
+    for (const k of front) {
+      const l = label.get(k);
+      for (const j of [k - 1, k + 1, k - bw, k + bw]) {
+        if (inBlob.has(j) && !label.has(j)) {
+          label.set(j, l);
+          nf.push(j);
+        }
+      }
+    }
+    front = nf;
+  }
+  const parts = [];
+  for (let l = 1; l <= n; l++) parts.push([]);
+  for (const [k, l] of label) parts[l - 1].push(k);
+  return parts;
+}
+
+/**
+ * How far a pixel stands from a ground colour. Hue (red and blue against
+ * green) counts more than brightness, so darker or lighter patches of the
+ * same gravel stay ground and a blue-grey or dark roof does not.
+ */
+function groundDistance(r, g, b, q) {
+  const hue = Math.abs(r - g - (q[0] - q[1])) + Math.abs(b - g - (q[2] - q[1]));
+  const luma = Math.abs(0.299 * (r - q[0]) + 0.587 * (g - q[1]) + 0.114 * (b - q[2]));
+  return 1.5 * hue + 0.8 * luma;
+}
+
+/** Lawn, crowns and olive dry grass: green over both red and blue. Teal and blue-grey roofs are not. */
+function vegPixel(r, g, b) {
+  if (g > r + 8 && g > b + 16) return true;
+  return 2 * g - r - b > 12 && g > b && 0.299 * r + 0.587 * g + 0.114 * b < 125;
+}
+
+/**
+ * Pixels in the pad strip that differ from the strip's ground colour join
+ * the roof mask (ROADSIDE_V2), then a closing joins broken-up roofs.
+ */
+function addGroundContrast(mask, poly, x0, y0, bw, bh, plate, holes, frame) {
+  const inPad = new Uint8Array(bw * bh);
+  // Ground colours: the one or two commonest colours of the window (gravel
+  // pad, and the road or lawn edge when the strip reaches it), from a
+  // 16-level histogram, each the mean of its bin.
+  const bins = new Map();
+  let total = 0;
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
+      const i = ((y0 + y) * plate.width + (x0 + x)) * 4;
+      const r = plate.data[i];
+      const g = plate.data[i + 1];
+      const b = plate.data[i + 2];
+      const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+      let e = bins.get(key);
+      if (!e) {
+        e = [0, 0, 0, 0];
+        bins.set(key, e);
+      }
+      e[0]++;
+      e[1] += r;
+      e[2] += g;
+      e[3] += b;
+      total++;
+      if (pointInRing([x0 + x + 0.5, y0 + y + 0.5], poly)) inPad[y * bw + x] = 1;
+    }
+  }
+  if (total < 20) return null;
+  const ranked = Array.from(bins.values()).sort((p, q) => q[0] - p[0]);
+  const refs = [];
+  for (const e of ranked) {
+    if (refs.length >= ROADSIDE_V2.refs) break;
+    if (refs.length && e[0] < total * ROADSIDE_V2.refShare) break;
+    const c = [e[1] / e[0], e[2] / e[0], e[3] / e[0]];
+    // Neighbouring bins of one colour count once.
+    if (refs.some((q) => groundDistance(c[0], c[1], c[2], q) < ROADSIDE_V2.groundDist)) continue;
+    refs.push(c);
+  }
+  // Mapped roofs (a park model, a cabin, an RV footprint already drawn)
+  // stay out, as they are out of the white mask.
+  const keepOut = new Uint8Array(bw * bh);
+  for (let h = 0; h < (holes || []).length; h++) {
+    const hp = [];
+    let hx0 = Infinity;
+    let hy0 = Infinity;
+    let hx1 = -Infinity;
+    let hy1 = -Infinity;
+    for (let k = 0; k < holes[h].length; k++) {
+      const xy = llToImagePx(holes[h][k][0], holes[h][k][1], frame);
+      hp.push(xy);
+      hx0 = Math.min(hx0, xy[0]);
+      hy0 = Math.min(hy0, xy[1]);
+      hx1 = Math.max(hx1, xy[0]);
+      hy1 = Math.max(hy1, xy[1]);
+    }
+    if (hp.length < 3) continue;
+    const ya = Math.max(0, Math.floor(hy0) - y0 - 1);
+    const yb = Math.min(bh - 1, Math.ceil(hy1) - y0 + 1);
+    const xa = Math.max(0, Math.floor(hx0) - x0 - 1);
+    const xb = Math.min(bw - 1, Math.ceil(hx1) - x0 + 1);
+    for (let y = ya; y <= yb; y++) {
+      for (let x = xa; x <= xb; x++) {
+        if (pointInRing([x0 + x + 0.5, y0 + y + 0.5], hp)) keepOut[y * bw + x] = 1;
+      }
+    }
+  }
+  const add = new Uint8Array(bw * bh);
+  for (let k = 0; k < add.length; k++) {
+    if (!inPad[k] || mask[k] || keepOut[k]) continue;
+    const x = k % bw;
+    const y = (k / bw) | 0;
+    const i = ((y0 + y) * plate.width + (x0 + x)) * 4;
+    const r = plate.data[i];
+    const g = plate.data[i + 1];
+    const b = plate.data[i + 2];
+    if (0.299 * r + 0.587 * g + 0.114 * b < ROADSIDE_V2.minLuma) continue;
+    if (vegPixel(r, g, b)) continue;
+    // Courts, pools and painted play areas are saturated; RV, trailer and
+    // park-model roofs, even blue-grey or tan ones, are not.
+    if (Math.max(r, g, b) - Math.min(r, g, b) > ROADSIDE_V2.maxChroma) continue;
+    let near = false;
+    for (const q of refs) if (groundDistance(r, g, b, q) < ROADSIDE_V2.groundDist) near = true;
+    if (near) continue;
+    add[k] = 1;
+  }
+  for (let k = 0; k < add.length; k++) if (add[k]) mask[k] = 1;
+  // An opening drops lines one or two pixels wide (painted curbs, pad
+  // edging) that would join a roof to the island border, and thin bridges
+  // between a roof and the car or shed beside it.
+  const open = Math.max(1, Math.round(ROADSIDE_V2.openM / Math.max(0.05, frame.mpuX || 0.25)));
+  const er = (src) => {
+    const dst = new Uint8Array(bw * bh);
+    for (let y = 1; y < bh - 1; y++) {
+      for (let x = 1; x < bw - 1; x++) {
+        const k = y * bw + x;
+        if (src[k] && src[k - 1] && src[k + 1] && src[k - bw] && src[k + bw]) dst[k] = 1;
+      }
+    }
+    return dst;
+  };
+  const di = (src) => {
+    const dst = new Uint8Array(bw * bh);
+    for (let y = 0; y < bh; y++) {
+      for (let x = 0; x < bw; x++) {
+        const k = y * bw + x;
+        if (src[k] || (x > 0 && src[k - 1]) || (x < bw - 1 && src[k + 1]) || (y > 0 && src[k - bw]) || (y < bh - 1 && src[k + bw])) dst[k] = 1;
+      }
+    }
+    return dst;
+  };
+  let m = mask;
+  for (let it = 0; it < open; it++) m = er(m);
+  for (let it = 0; it < open; it++) m = di(m);
+  mask.set(m);
+  for (let it = 0; it < ROADSIDE_V2.close; it++) {
+    const grown = new Uint8Array(bw * bh);
+    for (let y = 0; y < bh; y++) {
+      for (let x = 0; x < bw; x++) {
+        if (mask[y * bw + x]) {
+          grown[y * bw + x] = 1;
+          continue;
+        }
+        let n = 0;
+        if (x > 0 && mask[y * bw + x - 1]) n++;
+        if (x < bw - 1 && mask[y * bw + x + 1]) n++;
+        if (y > 0 && mask[(y - 1) * bw + x]) n++;
+        if (y < bh - 1 && mask[(y + 1) * bw + x]) n++;
+        // A pixel between two roof pixels (a seam or a vent) is closed.
+        if (n >= 2 && inPad[y * bw + x] && !keepOut[y * bw + x]) grown[y * bw + x] = 1;
+      }
+    }
+    mask.set(grown);
+  }
+  // A roof the photo shows past a mapped roof's outline (the outline is
+  // drawn a little off the photo) is that roof, not an RV beside it.
+  const gap = Math.max(1, Math.round(ROADSIDE_V2.roofGapM / Math.max(0.05, frame.mpuX || 0.25)));
+  let near = keepOut;
+  for (let it = 0; it < gap; it++) near = di(near);
+  return { nearRoof: near, refs };
 }
 
 function recenterBox(feature, lon, lat) {
@@ -767,7 +1168,9 @@ function roadsideBoxes(f, found, placed) {
     if (dup) continue;
     placed.push(xy);
     const len = Math.max(6, Math.min(13, v.len || RV_LENGTH_M));
-    const wid = Math.max(2.3, Math.min(3, v.wid || RV_WIDTH_M));
+    // Site types: a park model or a wide unit keeps its width.
+    const widBox = isSiteTypes() ? ROADSIDE_V2.boxWid : [2.3, 3];
+    const wid = Math.max(widBox[0], Math.min(widBox[1], v.wid || RV_WIDTH_M));
     const heading = { ux: v.ux, uy: v.uy };
     out.push(
       Object.assign({}, f, {
@@ -3253,6 +3656,7 @@ function scoreLayerOverlap(labels, predRings, cellM) {
 }
 
 module.exports = {
+  ROADSIDE_V2,
   RV_LENGTH_M,
   RV_WIDTH_M,
   RV_HEIGHT_M,

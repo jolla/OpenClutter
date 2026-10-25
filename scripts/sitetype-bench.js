@@ -30,7 +30,9 @@
  * script sets.
  *
  * Site score = mean of canopy recall (when the site has canopy), the small
- * object F1, and the big object F1. The set score is the mean of the sites.
+ * object F1 (the hand-label RV F1 where a site has hand labels, see
+ * scoreHandLabels), and the big object F1. The set score is the mean of
+ * the sites.
  *
  *   node scripts/sitetype-bench.js [--site id] [--skip-export]
  */
@@ -355,6 +357,167 @@ function isPadFill(ring, centres) {
   return false;
 }
 
+/**
+ * Hand-label RV scoring. Sites whose lidar predates the photo by years
+ * (Silver View: 2018 lidar, 2025 photo) name a hand-label set in
+ * bench/sitetype-sites.json ("handLabels"). The labels are boxes drawn on
+ * the current Esri plate around every RV, trailer and park model in a
+ * label window, plus "uncertain" boxes. They carry Esri imagery, so they
+ * live outside the repo: OC_GT_DIR/<handLabels>/labels.geojson (lon/lat,
+ * window in properties.window). Without them the site falls back to lidar.
+ *
+ * Predictions are the exported RV and trailer areas, pad fills excluded
+ * (they are scored on their own), stacked slabs merged, clipped to the
+ * window. Building areas count only as a match for a park-model label.
+ * Predictions centred in an uncertain box are dropped. Matching is one to
+ * one, greedy by IoU: IoU >= 0.2, or the label holds the centre of a
+ * prediction under 40 m². RV recall = matched labels / labels, RV
+ * precision = matched predictions / RV predictions. The RV F1 replaces the
+ * lidar small-object F1 in the site score; big objects stay on lidar.
+ */
+const HAND_CELL_M = 0.2;
+
+function handLabelSet(site) {
+  if (!site.handLabels || !process.env.OC_GT_DIR) return null;
+  const p = path.join(process.env.OC_GT_DIR, site.handLabels, "labels.geojson");
+  if (!fs.existsSync(p)) return null;
+  return JSON.parse(fs.readFileSync(p, "utf8"));
+}
+
+function polyCells(pts, grid) {
+  // pts: [[mx, my]] in window metres (x east, y south). Returns sorted cell ids.
+  let x0 = Infinity;
+  let x1 = -Infinity;
+  let y0 = Infinity;
+  let y1 = -Infinity;
+  for (const p of pts) {
+    if (p[0] < x0) x0 = p[0];
+    if (p[0] > x1) x1 = p[0];
+    if (p[1] < y0) y0 = p[1];
+    if (p[1] > y1) y1 = p[1];
+  }
+  const c = HAND_CELL_M;
+  const i0 = Math.max(0, Math.floor(x0 / c));
+  const i1 = Math.min(grid.w - 1, Math.ceil(x1 / c));
+  const j0 = Math.max(0, Math.floor(y0 / c));
+  const j1 = Math.min(grid.h - 1, Math.ceil(y1 / c));
+  const out = [];
+  for (let j = j0; j <= j1; j++) {
+    const y = (j + 0.5) * c;
+    for (let i = i0; i <= i1; i++) {
+      const x = (i + 0.5) * c;
+      let inside = false;
+      for (let a = 0, b = pts.length - 1; a < pts.length; b = a++) {
+        const pa = pts[a];
+        const pb = pts[b];
+        if (pa[1] > y !== pb[1] > y && x < ((pb[0] - pa[0]) * (y - pa[1])) / (pb[1] - pa[1]) + pa[0]) inside = !inside;
+      }
+      if (inside) out.push(j * grid.w + i);
+    }
+  }
+  return out;
+}
+
+function cellsInter(a, b) {
+  const s = a.length < b.length ? new Set(a) : new Set(b);
+  const o = a.length < b.length ? b : a;
+  let n = 0;
+  for (const k of o) if (s.has(k)) n++;
+  return n;
+}
+
+function cellsCentre(cells, grid) {
+  let x = 0;
+  let y = 0;
+  for (const k of cells) {
+    x += k % grid.w;
+    y += Math.floor(k / grid.w);
+  }
+  return Math.floor(y / cells.length) * grid.w + Math.floor(x / cells.length);
+}
+
+/** rings: [{ring (OpenIntent px, y up), cls: "rv" | "building"}]. */
+function scoreHandLabels(fc, rings, frame, imgW, imgH) {
+  const win = fc.properties.window;
+  const lat0 = (win.north + win.south) / 2;
+  const mx = 111320 * Math.cos((lat0 * Math.PI) / 180);
+  const my = 110540;
+  const toM = (lon, lat) => [(lon - win.west) * mx, (win.north - lat) * my];
+  const grid = { w: Math.ceil(((win.east - win.west) * mx) / HAND_CELL_M), h: Math.ceil(((win.north - win.south) * my) / HAND_CELL_M) };
+  const cellM2 = HAND_CELL_M * HAND_CELL_M;
+  const labels = [];
+  const unc = new Set();
+  for (const f of fc.features) {
+    const cls = f.properties.class;
+    if (cls !== "rv_trailer" && cls !== "uncertain") continue;
+    const cells = polyCells(f.geometry.coordinates[0].map((c) => toM(c[0], c[1])), grid);
+    if (!cells.length) continue;
+    if (cls === "uncertain") for (const k of cells) unc.add(k);
+    else labels.push({ cells, set: new Set(cells), park: f.properties.subtype === "park_model" });
+  }
+  // Predictions in window cells, stacked slabs of one class merged.
+  const raw = [];
+  for (const r of rings) {
+    const pts = r.ring.map((p) => {
+      const ll = imagePxToLl(p[0], imgH - p[1], frame);
+      return toM(ll[0], ll[1]);
+    });
+    const cells = polyCells(pts, grid);
+    if (cells.length * cellM2 < 0.5) continue;
+    raw.push({ cls: r.cls, cells });
+  }
+  raw.sort((a, b) => b.cells.length - a.cells.length);
+  const used = new Array(raw.length).fill(false);
+  const preds = [];
+  for (let i = 0; i < raw.length; i++) {
+    if (used[i]) continue;
+    used[i] = true;
+    for (let j = i + 1; j < raw.length; j++) {
+      if (used[j] || raw[j].cls !== raw[i].cls) continue;
+      if (cellsInter(raw[i].cells, raw[j].cells) > 0.8 * raw[j].cells.length) used[j] = true;
+    }
+    if (unc.has(cellsCentre(raw[i].cells, grid))) continue;
+    preds.push(raw[i]);
+  }
+  const rv = preds.filter((p) => p.cls === "rv");
+  const alt = preds.filter((p) => p.cls === "building" && labels.some((l) => l.park && cellsInter(l.cells, p.cells) > 0));
+  const cand = rv.concat(alt.map((p) => Object.assign({ alt: true }, p)));
+  const pairs = [];
+  labels.forEach((l, i) => {
+    cand.forEach((p, j) => {
+      if (p.alt && !l.park) return;
+      const inter = cellsInter(l.cells, p.cells);
+      if (!inter) return;
+      const iou = inter / (l.cells.length + p.cells.length - inter);
+      const small = p.cells.length * cellM2 < 40;
+      if (iou >= 0.2 || (small && l.set.has(cellsCentre(p.cells, grid)))) pairs.push([iou, i, j]);
+    });
+  });
+  pairs.sort((a, b) => b[0] - a[0]);
+  const ul = new Set();
+  const up = new Set();
+  let altTp = 0;
+  for (const [, i, j] of pairs) {
+    if (ul.has(i) || up.has(j)) continue;
+    ul.add(i);
+    up.add(j);
+    if (cand[j].alt) altTp++;
+  }
+  const tp = ul.size;
+  const npred = rv.length + altTp;
+  const recall = pct(tp, labels.length);
+  const precision = npred ? pct(tp, npred) : null;
+  return {
+    rvLabels: labels.length,
+    rvPreds: npred,
+    rvTp: tp,
+    rvRecall: recall,
+    rvPrecision: precision,
+    rvF1: labels.length ? f1(recall, precision == null ? 0 : precision) : null,
+    rvRef: "hand labels, " + (fc.properties.imagery && fc.properties.imagery[0] ? fc.properties.imagery[0].vendor + " " + fc.properties.imagery[0].date : "current photo"),
+  };
+}
+
 async function scoreObjects(site, zipPath) {
   const loaded = loadZip(zipPath, path.join(OUT, "obj-" + site.id));
   const fp = loaded.json.floorplans[0];
@@ -371,6 +534,7 @@ async function scoreObjects(site, zipPath) {
   const water = [];
   const kinds = {};
   const centres = padFillCentres(site);
+  const handRings = [];
   for (const a of fp.attenuation_areas || []) {
     const name = (a.area_material && a.area_material.name) || "";
     const coords = a.area && a.area.coordinates;
@@ -382,6 +546,8 @@ async function scoreObjects(site, zipPath) {
       pads.push(ring);
       continue;
     }
+    if (/^(rv|trailer)/i.test(name)) handRings.push({ ring, cls: "rv" });
+    else if (/^building/i.test(name)) handRings.push({ ring, cls: "building" });
     let acc = 0;
     for (let i = 0; i < ring.length; i++) {
       const p = ring[i];
@@ -393,8 +559,10 @@ async function scoreObjects(site, zipPath) {
     const kind = name.split(/[ -]/)[0];
     kinds[kind] = (kinds[kind] || 0) + 1;
   }
+  const fc = handLabelSet(site);
+  const hand = fc ? scoreHandLabels(fc, handRings, frame, imgW, imgH) : site.handLabels ? { rvRef: "hand labels missing (set OC_GT_DIR), lidar used" } : {};
   const ref = await objectReference(site, frame);
-  if (!ref) return { objRef: "none", kinds, padFills: centres ? centres.length : null };
+  if (!ref) return Object.assign({ objRef: "none", kinds, padFills: centres ? centres.length : null }, hand);
   const step = Math.max(1, Math.round(1 / mpu));
   const sm = rasterRings(small, imgW, imgH, step);
   const bg = rasterRings(big, imgW, imgH, step);
@@ -509,13 +677,15 @@ async function scoreObjects(site, zipPath) {
     padOnBuildingPct: pad.n ? pct(pad.building, pad.n) : null,
     padOnCrownPct: pad.n ? pct(pad.crown, pad.n) : null,
     padOnWaterPct: pad.n ? pct(pad.water, pad.n) : null,
+    ...hand,
   };
 }
 
 function siteScore(r) {
   const parts = [];
   if (r.canopyRecall != null && r.canopyRefPx >= 2000) parts.push(r.canopyRecall);
-  if (r.smallF1 != null) parts.push(r.smallF1);
+  if (r.rvF1 != null) parts.push(r.rvF1);
+  else if (r.smallF1 != null) parts.push(r.smallF1);
   if (r.bigF1 != null) parts.push(r.bigF1);
   return parts.length ? Math.round((10 * parts.reduce((s, v) => s + v, 0)) / parts.length) / 10 : null;
 }
@@ -531,7 +701,7 @@ function writeBoard() {
   const lines = [
     "# Site-type scoreboard",
     "",
-    "RV parks, campgrounds, marinas, and fairgrounds, exported with the page defaults. Canopy recall is the canopy bench measure. Small and big objects are solid USGS 3DEP lidar cells (class-6 or flat single-return patches at least 1.5 m over ground or water), split at 150 m² connected size. Recall is the share an emitted non-vegetation area covers within 2 m; precision is the share of emitted solid area with a lidar return of at least 1.5 m within 2 m. Lidar predates the imagery, so moved vehicles and boats count against both. Site score is the mean of canopy recall (sites with canopy), small F1, and big F1. Worst-case pad fills (RVs drawn on pads the photo shows empty) are not in recall or precision; the pad columns count them and give the share of their area over a lidar solid object (within 2 m), over nothing within 2 m (gravel pad, bare ground, road or water), on a building roof, on a tree crown, and on mapped water.",
+    "RV parks, campgrounds, marinas, and fairgrounds, exported with the page defaults. Canopy recall is the canopy bench measure. Small and big objects are solid USGS 3DEP lidar cells (class-6 or flat single-return patches at least 1.5 m over ground or water), split at 150 m² connected size. Recall is the share an emitted non-vegetation area covers within 2 m; precision is the share of emitted solid area with a lidar return of at least 1.5 m within 2 m. Lidar predates the imagery, so moved vehicles and boats count against both. Site score is the mean of canopy recall (sites with canopy), small F1, and big F1. Worst-case pad fills (RVs drawn on pads the photo shows empty) are not in recall or precision; the pad columns count them and give the share of their area over a lidar solid object (within 2 m), over nothing within 2 m (gravel pad, bare ground, road or water), on a building roof, on a tree crown, and on mapped water. Sites marked with hand labels (lidar years older than the photo) score RVs against boxes drawn on the current photo instead of lidar small objects: one-to-one match at IoU 0.2 or a label holding the centre of a prediction under 40 m², pad fills excluded, uncertain boxes ignored, a building area matching a park model counts; the RV F1 replaces the small F1 in the score.",
     "",
     "| Site | Kind | Canopy recall | Small recall | Small precision | Big recall | Big precision | Score | Pad fills | Pad on object % | Pad lidar-empty % | Pad on roof % | Pad on crown % | Pad on water % | Lidar |",
     "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
@@ -541,6 +711,10 @@ function writeBoard() {
     lines.push(
       "| " + [r.name, r.kind, f(r.canopyRecall), f(r.smallRecall), f(r.smallPrecision), f(r.bigRecall), f(r.bigPrecision), f(r.score), f(r.padFills), f(r.padOnObjectPct), f(r.padLidarEmptyPct), f(r.padOnBuildingPct), f(r.padOnCrownPct), f(r.padOnWaterPct), r.objRef || "none"].join(" | ") + " |"
     );
+  }
+  for (const r of rows) {
+    if (r.rvLabels != null) lines.push("", r.name + ": RVs vs " + r.rvRef + ": " + r.rvLabels + " labels, " + r.rvPreds + " predictions, " + r.rvTp + " matched, recall " + r.rvRecall + ", precision " + f(r.rvPrecision) + ", F1 " + f(r.rvF1) + " (replaces the lidar small F1).");
+    else if (r.rvRef) lines.push("", r.name + ": " + r.rvRef + ".");
   }
   for (const r of rows) if (r.objRefStale) lines.push("", r.name + ": " + r.objRefStale);
   lines.push("");
@@ -604,4 +778,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { solidName, siteScore, f1, isPadFill, ringCentre };
+module.exports = { solidName, siteScore, f1, isPadFill, ringCentre, scoreHandLabels };

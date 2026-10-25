@@ -233,6 +233,12 @@ function sleep(ms) {
   });
 }
 
+/** An imagery error that is the server's answer (HTTP 5xx), not a timeout or abort. */
+function refusedBySource(err) {
+  const msg = String((err && (err.message || err.reason)) || err || "");
+  return /HTTP 5\d\d/.test(msg) && !/timeout|abort/i.test(msg);
+}
+
 /**
  * entries are sharpest first. opts.fetchImage(frame, signal) returns a JPEG.
  * The finest plate wins when it arrives inside the budget. Otherwise the
@@ -362,7 +368,12 @@ async function racePlates(entries, opts) {
     if (err) throw err;
     throw Object.assign(new Error("The operation was aborted due to timeout"), { source: "imagery" });
   }
-  return { buf: results[idx], index: idx, stepped: idx > 0 };
+  // Every sharper plate answered with a server error: Esri has no finer
+  // imagery at this spot (its export cannot resample past the source), so
+  // the kept plate is the sharpest there is, not a timeout fallback.
+  let noFiner = idx > 0;
+  for (let i = 0; i < idx && noFiner; i++) noFiner = refusedBySource(errors[i]);
+  return { buf: results[idx], index: idx, stepped: idx > 0, noFiner };
 }
 
 module.exports = {
@@ -378,4 +389,5 @@ module.exports = {
   tilePlan,
   stitchTiles,
   racePlates,
+  refusedBySource,
 };

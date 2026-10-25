@@ -70,8 +70,9 @@ describe("imagery stepdown", () => {
     );
     assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
     const body = JSON.parse(res.body);
-    const note = (body.warnings || []).find((line) => /^Map stepped down/.test(String(line))) || "";
-    const stepped = /stepped down to (\d+) px from (\d+) px/.exec(note);
+    // The sharp plate is refused with HTTP 500, so /dev reports the finest imagery there.
+    const note = (body.warnings || []).find((line) => /^Map (stepped down|image \d+ px.*finest)/.test(String(line))) || "";
+    const stepped = /stepped down to (\d+) px from (\d+) px/.exec(note) || /Map image (\d+) px.*sharper plates up to (\d+) px/.exec(note);
     assert.ok(stepped, note || (body.warnings || []).join(" | "));
     const kept = +stepped[1];
     const asked = +stepped[2];
@@ -124,8 +125,9 @@ describe("imagery stepdown", () => {
     );
     assert.equal(res.statusCode, 200, String(res.body).slice(0, 400));
     const body = JSON.parse(res.body);
-    const note = (body.warnings || []).find((line) => /^Map stepped down/.test(String(line))) || "";
-    const stepped = /stepped down to (\d+) px from (\d+) px/.exec(note);
+    // The sharp plate is refused with HTTP 500, so /dev reports the finest imagery there.
+    const note = (body.warnings || []).find((line) => /^Map (stepped down|image \d+ px.*finest)/.test(String(line))) || "";
+    const stepped = /stepped down to (\d+) px from (\d+) px/.exec(note) || /Map image (\d+) px.*sharper plates up to (\d+) px/.exec(note);
     assert.ok(stepped, note || (body.warnings || []).join(" | "));
     assert.ok(+stepped[1] > 1800 && +stepped[1] < +stepped[2], note);
     assert.ok(images.some((side) => side < 2000 && side > 900), images.join(","));
