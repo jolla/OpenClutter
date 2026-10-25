@@ -4,6 +4,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## Production releases
 
+- **v1.2.36** (Oct 25, 2026) production hotfix: only the 1.2.36 zoom button fix below. Production otherwise keeps the v1.2.17 page and rules; the other /dev changes wait for the next promotion.
 - **v1.2.10** (Oct 20, 2026) production promotion of /dev v1.2.10.
 - **v1.2.6** (Oct 19, 2026) production promotion of /dev v1.2.6.
 - **v1.2.1** (Oct 18, 2026) production promotion of /dev v1.2.1.
@@ -13,6 +14,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.2
 
+- **1.2.36** Bug fix on every host: a small white mark showed at the top-left rounded corner of the panel. Leaflet's +/- zoom buttons sat hidden under the panel, and the corner of the white + button peeked out past the panel's rounded corner. The page no longer adds those buttons (they could not be clicked under the panel); the scroll wheel, pinch, double-click and the keyboard + and - keys still zoom. The bug dates back to v1.0.
 - **1.2.17** Production exports use the 1.2.15 and 1.2.16 fetch paths too: Overpass retries and fallback across public servers, and the map waits for a sharper plate and tiles large plates. On /dev, `legacyFetch: true` still replays the earlier paths.
 - **1.2.16** Fixes a /dev worker crash on the second export per machine: the area cache took its own blob reads (whose keys now name the street-map source) for street-map reads and called itself until the stack overflowed. The cache now matches source hosts only and never wraps Netlify blob traffic.
 - **1.2.15** Street-map reads on /dev go through one Overpass client: overpass-api.de, then private.coffee, then VK Maps, with one extra request beside an answer slower than 15 s, a pause after 429 that honours Retry-After and the /api/status slot time (at least the 30 s the main server asks for), backoff with jitter after 5xx, timeouts and runtime-error answers, at most 2 or 3 requests in flight per server, identical reads merged, and a 10 minute copy beside the 6 h OSM cache. When every server still misses, the outdoor clutter warning stays. The /dev map no longer keeps the coarsest plate when the sharpest fails fast: a coarser plate waits up to 20 s for a sharper one still on the wire, and plates from 2000 px are fetched as tiles (the Las Vegas Sphere draw goes from 663 px to 2211 px). Production keeps the earlier paths until promotion.

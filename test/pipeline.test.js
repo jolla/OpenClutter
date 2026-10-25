@@ -1411,7 +1411,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(clutterSrc, /const terrainFloors = testHost \? parseTerrainFloorOverride\(body\.terrainFloors\) : 0/);
     assert.match(app, /const ESRI_TILE_MAX_ZOOM = 23/);
     assert.match(app, /const mapZoom = qualityPage\(\) \? ESRI_TILE_MAX_ZOOM : 18/);
-    assert.match(app, /L\.map\("map", \{ maxZoom: mapZoom \}\)/);
+    assert.match(app, /L\.map\("map", \{ maxZoom: mapZoom, zoomControl: false \}\)/);
     assert.match(app, /World_Imagery\/MapServer\/tile/);
     assert.match(app, /imageryTiles\.options\.maxNativeZoom = z - 1/);
     assert.match(app, /Export is still working\./);

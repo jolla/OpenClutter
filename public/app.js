@@ -199,7 +199,10 @@ let terrainPasteGpsOnly = false;
 // native zoom down so the last good tiles scale up instead of breaking the map.
 const ESRI_TILE_MAX_ZOOM = 23;
 const mapZoom = qualityPage() ? ESRI_TILE_MAX_ZOOM : 18;
-const map = L.map("map", { maxZoom: mapZoom }).setView([36.128, -115.16], 16);
+// No +/- zoom buttons: the panel covers Leaflet's top-left corner, and the
+// hidden white buttons peeked out past its rounded corner. Wheel, pinch,
+// keys and double-click still zoom.
+const map = L.map("map", { maxZoom: mapZoom, zoomControl: false }).setView([36.128, -115.16], 16);
 // CARTO's keyless dark tiles now paint "API KEY REQUIRED" through the aerial.
 // The draw sits on World Imagery. The page background shows where a tile misses.
 const imageryTiles = L.tileLayer(
