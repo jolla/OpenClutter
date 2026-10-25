@@ -496,7 +496,8 @@ function raisedAreaHolds(areaCap, counts) {
   let treeHold = Math.min(treeAreas, rest, treeWant);
   rest -= treeHold;
   let buildingLimit = Math.min(buildings, base + rest);
-  let spare = (areaCap | 0) - (buildingLimit + treeHold + deckHold + waterHold);
+  // The RV hold is already spoken for, so it is not spare for trees.
+  let spare = (areaCap | 0) - (buildingLimit + treeHold + deckHold + waterHold + rvHold);
   if (spare > 0) {
     const addTrees = Math.min(spare, Math.max(0, treeAreas - treeHold));
     treeHold += addTrees;
@@ -521,6 +522,19 @@ function raisedAreaHolds(areaCap, counts) {
     buildingLimit += Math.min(spare, Math.max(0, buildings - buildingLimit));
   }
   return { buildingLimit, treeHold, deckHold, waterHold, rvHold };
+}
+
+/**
+ * The plain note when the area budget cuts RVs from the vehicle list, so a
+ * cut is never silent. Null when every RV fits.
+ */
+function vehicleCutNote(vehicleList, vehicleRoom) {
+  const list = vehicleList || [];
+  const room = Math.max(0, vehicleRoom | 0);
+  for (let i = room; i < list.length; i++) {
+    if (list[i] && list[i].kind === "rv") return "RVs left out to stay inside the area budget.";
+  }
+  return null;
 }
 
 const TERRAIN_README =
@@ -3747,6 +3761,7 @@ function buildClutter({
     const protectedOutdoor = Math.min(room, deckHold + waterHold);
     const vehicleRoom = Math.min(vehicleList.length, Math.max(0, room - protectedOutdoor));
     const vehicleTake = vehicleList.slice(0, vehicleRoom);
+    const rvCutNote = vehicleCutNote(vehicleList, vehicleRoom);
     const fit = fitOutdoorBudget(
       otherAreas,
       otherKinds,
@@ -3762,6 +3777,7 @@ function buildClutter({
     const wallDrop =
       (drop.wall || 0) + (drop.fence || 0) + (drop.retaining || 0) + (drop.hedge || 0);
     const notes = (outdoorNotes || []).concat(planned.notes || [], fit.notes || []);
+    if (rvCutNote && notes.indexOf(rvCutNote) < 0) notes.push(rvCutNote);
     const shapeNote = (n, label) =>
       n + " " + label + (n === 1 ? " was" : "s were") + " not a valid shape.";
     if (wallDrop) notes.push(shapeNote(wallDrop, "wall"));
@@ -4238,6 +4254,7 @@ module.exports = {
   parseJsonBudgetOverride,
   raisedDeckCap,
   raisedAreaHolds,
+  vehicleCutNote,
   MIN_OI_SPAN_PX,
   MIN_OI_SPAN_M,
   OPENINTENT_VERSION,

@@ -11,7 +11,7 @@ const {
   CLIPBOARD_COLLECTION_KEYS,
   pickBuildingTypeId,
 } = require("../netlify/lib/hamina-clipboard");
-const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, isDrawSubject, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS, capBuildingsAndTrees, dropNestedDuplicateRoofs, parseAreaCapOverride, parseJsonBudgetOverride, raisedAreaHolds, raisedDeckCap, coverageSummary, MAX_ATTENUATION_AREAS, OPENINTENT_JSON_BUDGET, JSON_BUDGET_MAX } = require("../netlify/lib/pipeline");
+const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, isDrawSubject, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS, capBuildingsAndTrees, dropNestedDuplicateRoofs, parseAreaCapOverride, parseJsonBudgetOverride, raisedAreaHolds, vehicleCutNote, raisedDeckCap, coverageSummary, MAX_ATTENUATION_AREAS, OPENINTENT_JSON_BUDGET, JSON_BUDGET_MAX } = require("../netlify/lib/pipeline");
 const { OI_BUILDING_NAMES, isVegetationOiName, isUnderstoryOiName, isPoisonedOiName } = require("../netlify/lib/materials");
 const { zipStore, unzipStore, zipUnderLimit } = require("../netlify/lib/zip-store");
 const { version: APP_VERSION } = require("../netlify/lib/version");
@@ -1757,6 +1757,34 @@ describe("dev area cap override", () => {
     assert.ok(high.deckHold > mid.deckHold);
     assert.equal(low.waterHold, 8);
     assert.equal(MAX_ATTENUATION_AREAS, 982);
+  });
+
+  it("keeps the RV hold when trees could fill the cap", () => {
+    // Widened Fort Wilderness on Oct 25: about 11,000 tree areas, 470 roofs,
+    // 4 road decks and 15 RVs under the 8000 cap. Trees used to take the RV
+    // slots as spare, so every RV was cut without a note.
+    const counts = { buildings: 470, treeAreas: 11163, deckCount: 4, waterParking: 0, rvCount: 15 };
+    const hold = raisedAreaHolds(8000, counts);
+    assert.equal(hold.rvHold, 15);
+    assert.equal(hold.deckHold, 4);
+    const sum = hold.buildingLimit + hold.treeHold + hold.deckHold + hold.waterHold + hold.rvHold;
+    assert.equal(sum, 8000);
+    const room = 8000 - (hold.buildingLimit + hold.treeHold);
+    assert.equal(room - (hold.deckHold + hold.waterHold), 15);
+    // Few trees: the RV hold does not change what roofs and trees get.
+    const light = raisedAreaHolds(8000, { buildings: 627, treeAreas: 1650, deckCount: 2, waterParking: 0, rvCount: 592 });
+    assert.equal(light.treeHold, 1650);
+    assert.equal(light.buildingLimit, 627);
+    assert.equal(light.rvHold, 592);
+  });
+
+  it("names RVs the area budget cuts", () => {
+    const list = [{ kind: "rv" }, { kind: "rv" }, { kind: "boat" }];
+    assert.equal(vehicleCutNote(list, 3), null);
+    assert.equal(vehicleCutNote(list, 0), "RVs left out to stay inside the area budget.");
+    assert.equal(vehicleCutNote(list, 1), "RVs left out to stay inside the area budget.");
+    assert.equal(vehicleCutNote(list, 2), null);
+    assert.equal(vehicleCutNote([], 0), null);
   });
 
   it("stops building pieces at the ceiling the caller sets", () => {
