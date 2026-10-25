@@ -423,6 +423,7 @@ function nextEndpoint(skip, failed) {
  * pauses and backoff, until one answers or the deadline passes.
  */
 async function fetchAcross(kind, payload, opts) {
+  if (opts.slowFailMs > 0) return fetchAcrossSlowFail(kind, payload, opts);
   const outer = new AbortController();
   const parent = opts.signal;
   const onParent = () => outer.abort();
@@ -488,6 +489,88 @@ async function fetchAcross(kind, payload, opts) {
   }
 }
 
+/**
+ * Large-draw tile reads (export-mode tiledOsm, 1.2.31). A server that has
+ * not answered after opts.slowFailMs counts as failed for this read, so the
+ * next regular server starts beside it, and once two regular servers have
+ * failed or gone slow, the last resort (openstreetmap.fr). A slow server
+ * keeps running: whichever answers first with a whole body wins. A cut-off
+ * or empty 200 is a failure of that server, not of the read; only a 400 (the
+ * query itself) ends it. The caller's deadline is final.
+ */
+function fetchAcrossSlowFail(kind, payload, opts) {
+  const outer = new AbortController();
+  const parent = opts.signal;
+  const onParent = () => outer.abort();
+  if (parent) {
+    if (parent.aborted) outer.abort();
+    else parent.addEventListener("abort", onParent, { once: true });
+  }
+  const failed = new Set();
+  const running = new Set();
+  let n = 0;
+  let pending = 0;
+  let waiting = false;
+  let lastStatus = 0;
+  let done = false;
+  return new Promise((resolve) => {
+    const deadlineTimer = setTimeout(() => finish({ ok: false, status: lastStatus || "deadline", text: "" }), Math.max(0, opts.deadlineAt - nowFn()));
+    if (typeof deadlineTimer.unref === "function") deadlineTimer.unref();
+    function finish(res) {
+      if (done) return;
+      done = true;
+      clearTimeout(deadlineTimer);
+      outer.abort();
+      if (parent) parent.removeEventListener("abort", onParent);
+      resolve(res);
+    }
+    outer.signal.addEventListener("abort", () => finish({ ok: false, status: lastStatus || "aborted", text: "" }), { once: true });
+    function launch() {
+      if (done || waiting) return;
+      const pick = nextEndpoint(running, failed);
+      if (!pick) {
+        if (pending === 0) finish({ ok: false, status: lastStatus || "none", text: "" });
+        return;
+      }
+      if (pick.waitMs > 0) {
+        if (pending > 0) return;
+        if (nowFn() + pick.waitMs >= opts.deadlineAt) return finish({ ok: false, status: lastStatus || "deadline", text: "" });
+        waiting = true;
+        sleep(pick.waitMs + jitter(), outer.signal).then(() => {
+          waiting = false;
+          launch();
+        });
+        return;
+      }
+      const ep = pick.ep;
+      running.add(ep.id);
+      n += 1;
+      pending += 1;
+      const slowStop = new AbortController();
+      sleep(opts.slowFailMs, slowStop.signal).then(() => {
+        if (done || slowStop.signal.aborted) return;
+        failed.add(ep.id);
+        log(opts.tag, ep, kind, "slow", opts.slowFailMs, n, "next");
+        launch();
+      });
+      attempt(ep, kind, payload, opts, n, outer.signal).then((r) => {
+        slowStop.abort();
+        pending -= 1;
+        if (done) return;
+        if (r && r.ok) return finish(r);
+        if (r && r.final && r.status === 400) return finish(r);
+        lastStatus = (r && r.status) || lastStatus;
+        if (!r || r.status !== "aborted") failed.add(ep.id);
+        // A server with a backoff may be asked again once it ends; one that
+        // failed without one (an empty or cut-off body) is not asked again.
+        if (endpointState(ep).pausedUntil > nowFn()) running.delete(ep.id);
+        launch();
+      });
+    }
+    launch();
+  });
+}
+
 /** First ok result; otherwise the last one once all settle. */
 function firstOk(promises) {
   return new Promise((resolve) => {
@@ -548,6 +631,7 @@ async function request(opts) {
     tag: o.tag || "",
     deadlineAt,
     signal: null,
+    slowFailMs: o.slowFailMs > 0 ? o.slowFailMs : 0,
   }).then((res) => {
     if (res && res.ok) memoSet(key, { ok: true, status: res.status, text: res.text });
     return res;

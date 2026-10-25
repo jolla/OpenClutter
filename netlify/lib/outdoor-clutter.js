@@ -2233,7 +2233,7 @@ async function fetchOutdoorClutter(bbox, want, opts) {
       const limited = limitFeatures(dedupeOutdoor(parsed.features || []), bbox, deckCap);
       if (parsed.openWater) limited.notes.push("Open water lines were left out.");
       for (let i = 0; i < maps.notes.length; i++) limited.notes.push(maps.notes[i]);
-      return { ok: true, features: limited.features, notes: limited.notes, places: parsed.places || [], palms: palmPointsOf(parsed.features), corridors: parsed.corridors || [] };
+      return { ok: true, features: limited.features, notes: limited.notes, places: parsed.places || [], palms: palmPointsOf(parsed.features), corridors: parsed.corridors || [], ...(maps.osmTiles ? { osmTiles: maps.osmTiles } : {}) };
     }
     if (maps.xmls.length) {
       let features = [];
@@ -2254,6 +2254,8 @@ async function fetchOutdoorClutter(bbox, want, opts) {
       return { ok: true, features: limited.features, notes: limited.notes, places, palms, corridors };
     }
     if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
+      // tiledOsm: no tile loaded at all is a miss, so the export says so.
+      if (maps.osmTiles && maps.osmTiles.missing >= maps.osmTiles.total) return { ok: false, features: [], notes: [], osmTiles: maps.osmTiles };
       return { ok: true, features: [], notes: maps.notes };
     }
     if (ctrl.signal.aborted) return { ok: false, features: [], notes: [] };

@@ -1523,6 +1523,9 @@ async function handleClutter(event) {
   // From 1.2.29 /dev exports use the raised Hamina budget: 5.8 MB of JSON and
   // 9.7 MB of JSON plus map image. Production keeps the 4.9 MB JSON budget.
   exportMode.setBigBudget(testHost);
+  // From 1.2.31 large draws read the street-map tiles in one shared window
+  // with a slow-fail chain, a retry pass and a split (export-mode tiledOsm).
+  exportMode.setTiledOsm(exportMode.tiledOsmWanted(testHost));
   const areaCapOverride = testHost ? parseAreaCapOverride(body.areaCap) : 0;
   const jsonBudgetOverride = testHost ? parseJsonBudgetOverride(body.jsonBudget) : 0;
   const terrainFloors = testHost ? parseTerrainFloorOverride(body.terrainFloors) : 0;
@@ -2767,8 +2770,10 @@ async function handleClutter(event) {
   let outdoorNotes = [];
   let palmPoints = [];
   let outdoorMiss = false;
+  let osmTilesStats = null;
   if (outdoorJob) {
     const pack = await outdoorJob.work;
+    if (pack && pack !== TIMED_OUT && pack.osmTiles && exportMode.isTiledOsm()) osmTilesStats = pack.osmTiles;
     if (!pack || pack === TIMED_OUT || pack.ok === false) {
       outdoorMiss = true;
       warnings.push(OUTDOOR_MISS);
@@ -2880,6 +2885,7 @@ async function handleClutter(event) {
   if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage emit " + (Date.now() - started) + "\n");
   let built = await emitClutter(exportFeatures);
   if (parkContextStats && built && built.stats) built.stats.parkContext = parkContextStats;
+  if (osmTilesStats && built && built.stats) built.stats.osmTiles = osmTilesStats;
   if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage emitted " + (Date.now() - started) + "\n");
   // The image does not count toward Hamina's JSON limit. Compress it only
   // when the zip itself cannot fit in Netlify's function response.
@@ -3085,6 +3091,7 @@ async function handleClutter(event) {
       areaM2: frame && frame.widthM && frame.lengthM ? frame.widthM * frame.lengthM : 0,
     });
     if (built.stats && timings.cached.length) built.stats.cachedSources = timings.cached;
+    if (built.stats && osmTilesStats) built.stats.osmTiles = osmTilesStats;
     reportProgress({ timings });
     return json(200, cors, {
       ok: true,
