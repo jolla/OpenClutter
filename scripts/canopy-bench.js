@@ -9,7 +9,8 @@
  * the canopy-height model is at least 3 m and the aerial is not an open
  * lawn, mown field, RV pitch, or road. Those open surfaces drawn as canopy
  * are false positives even when the height model says 3 m. A green aerial
- * pixel is not a hit by itself. Building footprints are left out of both masks.
+ * pixel is not a hit by itself. Solid roofs (buildings, RVs, trailers, semis,
+ * storage, cars) are left out of both masks.
  * Height error compares the canopy top above local ground with the height
  * model. A crown on a trunk or understory counts the whole stack. The
  * understory gap is that ground-to-crown distance against the intended gap
@@ -557,6 +558,9 @@ function loadZip(zipPath, dir) {
   };
 }
 
+/** A lidar return over one of these roofs is the roof, not canopy. */
+const SOLID_ROOF_NAME = /^(Building|RV|Trailer|Semi|Storage|Car)\b/;
+
 async function scoreSite(site, zipPath) {
   const dir = path.join(OUT, "unzip-" + site.id);
   const loaded = loadZip(zipPath, dir);
@@ -576,7 +580,7 @@ async function scoreSite(site, zipPath) {
     const coords = a.area && a.area.coordinates;
     if (!coords || coords.length < 4) continue;
     const ring = coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
-    if (name.indexOf("Building") === 0) buildings.push(ring);
+    if (SOLID_ROOF_NAME.test(name)) buildings.push(ring);
     else if (isVegetationOiName(name)) foliage.push(ring);
   }
   // geoFrame's north-south metre length follows the geodesic span, which is
@@ -1022,7 +1026,7 @@ function writeBoard() {
   const lines = [
     "# Canopy scoreboard",
     "",
-    "Where USGS 3DEP covers the draw, recall uses lidar: first returns minus ground, and a cell of at least 3 m is canopy. Elsewhere recall uses the Meta/WRI canopy height grid the same way, plus ESA WorldCover tree cover where that grid measured no height. Roof pixels are ignored. Precision samples every emitted canopy cell. The cell counts only when that reference is at least 3 m and the aerial is not an open lawn, mown field, RV pitch, or road. A green aerial pixel is not a hit. A site passes at 85% recall and 85% precision. Green on the overlay is emitted canopy that passes that test. Red is reference canopy still missing. Yellow is emitted canopy that fails it.",
+    "Where USGS 3DEP covers the draw, recall uses lidar: first returns minus ground, and a cell of at least 3 m is canopy. Elsewhere recall uses the Meta/WRI canopy height grid the same way, plus ESA WorldCover tree cover where that grid measured no height. Roof pixels (buildings, RVs, trailers, semis, storage, cars) are ignored. Precision samples every emitted canopy cell. The cell counts only when that reference is at least 3 m and the aerial is not an open lawn, mown field, RV pitch, or road. A green aerial pixel is not a hit. A site passes at 85% recall and 85% precision. Green on the overlay is emitted canopy that passes that test. Red is reference canopy still missing. Yellow is emitted canopy that fails it.",
     "",
     "Height ≥ 3 m is the reference share alone, before the aerial open-ground rejection. Open ground is the share of emitted canopy the aerial reads as lawn or field, pitch, or road. Height error is metres between the canopy top above local ground and the canopy-height sample at that stack. A crown seated on a trunk or understory uses the full stack. Gap is the ground-to-crown distance versus the intended gap (about 3 m, or 30–40% of height on a tall conifer) for stands of at least 800 m². Floating is a preview piece whose base is more than 3 m above the terrain and is not sitting on another canopy piece. A slab is one crown of at least 8,000 m², or a connected sheet of crowns whose tops stay within 2 m and whose area is at least 12,000 m². Where USGS 3DEP covers the draw, recall, precision, and height error use first returns minus ground. A cell counts at 3 m. A site outside that coverage keeps the canopy-height model. RF error compares fifty random 40 to 100 m links at 4 m above the ground. Predicted loss follows the exported foliage. Reference loss is 1.5 dB/m where that reference canopy is at least 4 m. The columns are the median and the 90th percentile of the absolute error.",
     "",
@@ -1084,4 +1088,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { plateScale, shapeOfAreas, writeBoard, rfLinkErrors };
+module.exports = { plateScale, shapeOfAreas, writeBoard, rfLinkErrors, rasterRings, loadZip, scoreSite };

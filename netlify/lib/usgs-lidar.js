@@ -778,6 +778,46 @@ function missingFootprints(grid, rings) {
   return added;
 }
 
+/**
+ * Heights from a model source (Overture, Microsoft global, a borrowed
+ * neighbour) that the lidar under the same roof contradicts are replaced by
+ * the lidar height, and a roof with no height takes the lidar height, so a
+ * neighbour's model height is not borrowed. Only a roof the lidar measures
+ * well below the source is lowered; a roof the flight predates reads as
+ * ground and keeps its height.
+ */
+const CHECKED_SOURCES = { overture: true, "overture-floors": true, "ms-global": true, nearby: true };
+const CHECK_MIN_SOURCE_M = 6;
+const CHECK_RATIO = 0.6;
+const CHECK_MIN_LIDAR_M = 2.5;
+
+function checkSourceHeights(features, grid, measure) {
+  const heightOf = typeof measure === "function" ? measure : heightForRing;
+  const source = Array.isArray(features) ? features : [];
+  let fixed = 0;
+  const next = [];
+  for (let i = 0; i < source.length; i++) {
+    const feature = source[i];
+    const props = (feature && feature.properties) || {};
+    const h = Number(props.height) || 0;
+    const missing = !(h > 2);
+    if (!grid || (!missing && (!CHECKED_SOURCES[props.heightSource] || !(h >= CHECK_MIN_SOURCE_M)))) {
+      next.push(feature);
+      continue;
+    }
+    const list = exteriorRings(feature);
+    let measured = null;
+    for (let k = 0; k < list.length && measured == null; k++) measured = heightOf(grid, list[k]);
+    if (measured == null || measured < CHECK_MIN_LIDAR_M || (!missing && measured >= h * CHECK_RATIO)) {
+      next.push(feature);
+      continue;
+    }
+    fixed++;
+    next.push(Object.assign({}, feature, { properties: Object.assign({}, props, { height: measured, heightSource: "lidar-check" }) }));
+  }
+  return { features: next, fixed };
+}
+
 function applyLidarSample(features, trees, grid) {
   const source = Array.isArray(features) ? features : [];
   const rings = coveredRings(source);
@@ -1297,6 +1337,7 @@ module.exports = {
   groundAt,
   unmercator,
   applyLidarSample,
+  checkSourceHeights,
   storageYards,
   traceComponent,
   heightForRing,

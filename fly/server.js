@@ -13,6 +13,22 @@ const { BODY_MAX, handleWorkerRequest, jobInFlight, createIdleExit } = require("
 
 const IDLE_TICK_MS = 30 * 1000;
 let stopRequested = false;
+const CANCEL_EXIT_MS = 500;
+let cancelExitFn = () => {
+  const t = setTimeout(() => {
+    console.log("export cancelled; worker exits to stop the job");
+    process.exit(0);
+  }, CANCEL_EXIT_MS);
+  if (typeof t.unref === "function") t.unref();
+};
+
+function cancelExit() {
+  cancelExitFn();
+}
+
+function setCancelExitForTests(fn) {
+  cancelExitFn = typeof fn === "function" ? fn : cancelExitFn;
+}
 let idleExit = createIdleExit({ inFlight: jobInFlight });
 
 function useIdleExit(ctrl) {
@@ -93,6 +109,15 @@ async function onRequest(req, res) {
     } finally {
       clearInterval(beat);
     }
+    if (outcome && outcome.cancelled) {
+      // A cancelled pipeline may still hold fetches and CPU threads. Answer,
+      // then exit so all of it stops and the machine is free; a clean exit
+      // is not restarted and the next export starts the machine.
+      const done = () => cancelExit();
+      if (!res.writableEnded) res.end(JSON.stringify(outcome) + "\n", done);
+      else done();
+      return;
+    }
     if (!res.writableEnded) res.end(JSON.stringify(outcome) + "\n");
     if (stopRequested) process.exit(0);
   } finally {
@@ -134,4 +159,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { startServer, requestStop, useIdleExit, IDLE_TICK_MS };
+module.exports = { startServer, requestStop, useIdleExit, setCancelExitForTests, IDLE_TICK_MS };

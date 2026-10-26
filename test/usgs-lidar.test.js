@@ -313,6 +313,13 @@ describe("USGS lidar", () => {
     assert.match(html, /id="include-lidar"/);
     assert.equal(/id="include-lidar"[^>]*checked/.test(html), false);
     assert.match(html, />\s*Lidar heights\s*</);
+    // Info tip: a small (i) beside the toggle; hover shows the title, a tap opens the hint below.
+    const tipAt = html.indexOf('id="lidar-tip-btn"');
+    assert.ok(tipAt > html.indexOf('id="include-lidar"'));
+    assert.match(html, /<button type="button" class="info-tip" id="lidar-tip-btn"[^>]*aria-controls="lidar-tip"[^>]*title="Uses USGS 3DEP lidar/);
+    assert.match(html, /<p id="lidar-tip" class="hint" hidden>Uses USGS 3DEP lidar/);
+    assert.equal(/\u2014/.test(html), false);
+    assert.match(app, /lidarTip\.hidden = !lidarTip\.hidden/);
     assert.match(app, /function lidarEnabled\(\)/);
     assert.match(app, /get\("lidar"\)/);
     assert.match(app, /raw === "1"/);

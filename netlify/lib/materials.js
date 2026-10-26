@@ -782,11 +782,27 @@ function canonicalUnderstory(material) {
  * the stem top are the same clearance. A slope adds that ground under both.
  * Null when the height cannot hold a stem and a crown.
  */
-function individualTreeParts(material, groundM, crownM) {
+/**
+ * Stem height under a crown whose depth is known from its width on the
+ * photo (photo-crowns.js): a crown is about as deep as it is wide, so a
+ * small head on a tall reading (a palm, a lone eucalyptus top) sits on a
+ * long stem instead of a green column to the ground. Never lower than the
+ * usual stem, and the crown stays at least 2.5 m deep.
+ */
+function leafCrownBase(heightM, depthM) {
+  const h = roundHeightM(heightM);
+  const usual = individualTreeCrownBase(h);
+  if (!usual) return 0;
+  const depth = Math.max(2.5, Number(depthM) || 0);
+  const base = roundTenths(Math.max(usual, h - depth));
+  return h - base >= 2.5 ? base : usual;
+}
+
+function individualTreeParts(material, groundM, crownM, depthM) {
   if (!material || !isVegetationOiName(material.name) || isLiftedFoliageName(material.name)) return null;
   const height = roundHeightM(material.top_height);
   if (!height) return null;
-  let clearance = crownM > 0 ? palmCrownBase(height, crownM) : individualTreeCrownBase(height);
+  let clearance = crownM > 0 ? palmCrownBase(height, crownM) : depthM > 0 ? leafCrownBase(height, depthM) : individualTreeCrownBase(height);
   if (!clearance) return null;
   const tier = String(material.name).indexOf(FOLIAGE_LIGHT_NAME) >= 0 ? "light" : "heavy";
   let thickness = roundTenths(height - clearance);
@@ -882,21 +898,26 @@ function foliageTier(heightM, kind) {
   return "heavy";
 }
 
+/** 1.2.17 area bins for a roof with no height: a big hall became a tower. */
+function legacyUnmeasuredHeightM(areaM2) {
+  return areaM2 >= 6000 ? 40 : areaM2 >= 1200 ? 16 : areaM2 >= 400 ? 8 : 4.5;
+}
+
+/**
+ * A large footprint with no height is far more often a hall, store, or
+ * warehouse than a tower: past 1200 m2 it is Two Floor, past 6000 m2 Five
+ * Floor. Towers carry a source or lidar height.
+ */
+function unmeasuredHeightM(areaM2) {
+  return areaM2 >= 6000 ? 12 : areaM2 >= 400 ? 8 : 4.5;
+}
+
 /**
  * Bucket measured/estimated height into Hamina's four outdoor building materials.
  * Clipboard still uses ZONE_TYPES (incl. foliage / Hotel podium) via pickBuildingTypeId.
  */
 function pickOiBuildingTypeId(areaM2, heightM) {
-  const h =
-    heightM > 2
-      ? heightM
-      : areaM2 >= 6000
-        ? 40
-        : areaM2 >= 1200
-          ? 16
-          : areaM2 >= 400
-            ? 8
-            : 4.5;
+  const h = heightM > 2 ? heightM : require("./export-mode").isSiteTypes() ? unmeasuredHeightM(areaM2) : legacyUnmeasuredHeightM(areaM2);
   if (h >= 24) return "bldg-ten";
   if (h >= 11) return "bldg-five";
   if (h >= 6) return "bldg-two";
@@ -1035,6 +1056,20 @@ const OUTDOOR_SPECS = {
   car: { label: "Car", db: 6, color: "#9AA0A6", transparent: false },
 };
 
+/**
+ * RVs and travel trailers on /dev hosts: 9 dB/m at 5 GHz. Across a drawn
+ * width of 2.6 to 3.2 m that is 23 to 29 dB, the range measured for a van
+ * or semi trailer blocking a 5.9 GHz link (about 20 and 27 dB) and twice
+ * the 3GPP car entry loss (9 dB). 12 dB/m gave 31 to 38 dB over the same
+ * widths. Production keeps 12.
+ */
+const RV_DEV_DB = 9;
+
+function specDb(kind, spec) {
+  if ((kind === "rv" || kind === "trailer") && require("./export-mode").isSiteTypes()) return RV_DEV_DB;
+  return spec.db;
+}
+
 /** OpenIntent 2.0.1 material heights are minimum 0. A 0.1 m sheet is the thin water top. */
 const WATER_SHEET_M = 0.1;
 /** A car layer is 1.5 m. A usual custom at or under 2 m does not import, same exception as water. */
@@ -1119,8 +1154,8 @@ function outdoorMaterial(kind, heightM) {
   } else if (!(h > 2)) return null;
   const name = spec.label + " " + h.toFixed(1);
   if (isPoisonedOiName(name) || !isOutdoorOiName(name)) return null;
-  if (spec.transparent) return foliageOiMaterial(name, spec.color, h, spec.db);
-  return oiMaterial(name, spec.color, h, spec.db);
+  if (spec.transparent) return foliageOiMaterial(name, spec.color, h, specDb(kind, spec));
+  return oiMaterial(name, spec.color, h, specDb(kind, spec));
 }
 
 function liftedOutdoorMaterial(base, bottomM) {
@@ -1158,7 +1193,9 @@ function canonicalOutdoor(material) {
   if (!spec) return null;
   const h = Number(parsed[2]);
   const name = spec.label + " " + h.toFixed(1);
-  const canon = spec.transparent ? foliageOiMaterial(name, spec.color, h, spec.db) : oiMaterial(name, spec.color, h, spec.db);
+  const canon = spec.transparent
+    ? foliageOiMaterial(name, spec.color, h, specDb(kind, spec))
+    : oiMaterial(name, spec.color, h, specDb(kind, spec));
   if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
   return cloneMaterial(canon);
 }
@@ -1172,8 +1209,8 @@ function canonicalLiftedOutdoor(material) {
   const spec = OUTDOOR_SPECS[kind];
   if (!spec) return null;
   const base = spec.transparent
-    ? foliageOiMaterial(spec.label + " " + Number(parsed[2]).toFixed(1), spec.color, Number(parsed[2]), spec.db)
-    : oiMaterial(spec.label + " " + Number(parsed[2]).toFixed(1), spec.color, Number(parsed[2]), spec.db);
+    ? foliageOiMaterial(spec.label + " " + Number(parsed[2]).toFixed(1), spec.color, Number(parsed[2]), specDb(kind, spec))
+    : oiMaterial(spec.label + " " + Number(parsed[2]).toFixed(1), spec.color, Number(parsed[2]), specDb(kind, spec));
   const canon = liftedOutdoorMaterial(base, Number(parsed[3]));
   if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
   return cloneMaterial(canon);
@@ -1346,6 +1383,7 @@ module.exports = {
   measuredFoliageMaterial,
   measuredTrunkMaterial,
   individualTreeCrownBase,
+  leafCrownBase,
   palmCrownBase,
   individualTreeParts,
   trunkOiMaterial,

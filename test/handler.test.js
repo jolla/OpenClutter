@@ -1650,7 +1650,8 @@ describe("dev-host Esri long side", () => {
     const body = JSON.parse(res.body);
     assert.ok(body.zipBase64);
     const notes = (body.warnings || []).join("\n");
-    assert.match(notes, /Map stepped down to \d+ px from \d+ px\./);
+    // A plate Esri refuses (HTTP 500) is reported as the finest imagery there.
+    assert.match(notes, /Map stepped down to \d+ px from \d+ px\.|Map image \d+ px: the finest Esri imagery here \(sharper plates up to \d+ px/);
     assert.equal(/did not finish|timed out|too large to finish|stopped before a zip/i.test(notes), false);
   });
 

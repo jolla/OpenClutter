@@ -52,9 +52,12 @@ exports.handler = async (event) => {
   const jobId = payload.jobId;
   const inner = payload.event;
   if (!jobs.validJobId(jobId) || !inner || !inner.body) return { statusCode: 202, body: "" };
+  if (await jobs.jobCancelled(jobId)) return { statusCode: 202, body: "" };
 
   const fly = await handOffExport(jobId, inner);
   if (fly.handed || fly.stay) return { statusCode: 202, body: "" };
+  // Cancelled on the page: never run it again here.
+  if (await jobs.jobCancelled(jobId)) return { statusCode: 202, body: "" };
   if (fly.fallback && fly.reason === "heartbeat-stale") {
     const current = await jobs.readJob(jobId).catch(() => null);
     const stage = fly.stage || (current && (current.heartbeatStage || current.stage)) || "";

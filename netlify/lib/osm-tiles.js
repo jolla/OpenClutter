@@ -10,7 +10,7 @@
  */
 
 const overpass = require("./overpass");
-const { isResilient } = require("./export-mode");
+const { isResilient, isTiledOsm } = require("./export-mode");
 
 const TILE_SPAN_M = 2200;
 /** Resilient tile read: retries and fallback inside this window. */
@@ -18,6 +18,15 @@ const TILE_RESILIENT_MS = 45000;
 /** Resilient map read when the caller names no window. */
 const MAP_RESILIENT_MS = 100000;
 const MAX_TILES = 16;
+/** tiledOsm (1.2.31): one window shared by every tile of a large draw. */
+const TILED_BUDGET_MS = 105000;
+/** tiledOsm: tiles in flight (overpass-api.de gives one caller two slots). */
+const TILED_CONCURRENCY = 2;
+/** tiledOsm: a server silent this long counts as failed for that tile. */
+const TILED_SLOW_FAIL_MS = 20000;
+/** tiledOsm: a retry or split pass starts only with this much window left. */
+const TILED_MIN_LEFT_MS = 8000;
+const TILED_MISSING_NOTE_KINDS = "RVs, parking, walls, light poles, water and bridges";
 const OVERPASS_CONCURRENCY = 3;
 const TILE_FETCH_MS = 10000;
 const MAP_XML_CAP = 6000000;
@@ -229,6 +238,23 @@ async function fetchOverpassTile(bbox, opts) {
 }
 
 async function fetchOverpassTileWork(bbox, opts) {
+  if (opts && opts.slowFailMs > 0 && !opts.fetchImpl) {
+    const res = await overpass.request({
+      kind: "interpreter",
+      query: tileQuery(bbox),
+      ua: opts.ua,
+      deadlineMs: Math.max(1000, opts.deadlineMs | 0),
+      slowFailMs: opts.slowFailMs,
+      tag: opts.tag,
+    });
+    if (!res.ok) return null;
+    try {
+      const json = JSON.parse(res.text);
+      return json && Array.isArray(json.elements) ? json.elements : null;
+    } catch {
+      return null;
+    }
+  }
   if (isResilient() && !(opts && opts.fetchImpl)) {
     const res = await overpass.request({
       kind: "interpreter",
@@ -336,11 +362,90 @@ async function fetchTiledOverpass(bbox, opts) {
   };
 }
 
+/** Four equal sub-tiles of one tile. */
+function splitTile(tile) {
+  return tileBbox(tile, 2, 2);
+}
+
+/**
+ * tiledOsm read of a large draw. Every tile shares one window. Two tiles
+ * run at a time; each read moves to the next server after a 20 s silence and
+ * to the last resort once two regular servers failed or went slow. Tiles
+ * still missing get one retry pass, then a 2x2 split, while the window lasts.
+ */
+async function fetchTiledOverpassShared(bbox, opts) {
+  const o = opts || {};
+  const now = o.now || Date.now;
+  const deadlineAt = now() + (o.budgetMs > 0 ? o.budgetMs : TILED_BUDGET_MS);
+  const slowFailMs = o.slowFailMs > 0 ? o.slowFailMs : TILED_SLOW_FAIL_MS;
+  const minLeft = o.minLeftMs >= 0 ? o.minLeftMs : TILED_MIN_LEFT_MS;
+  const read = o.readTile || ((tile, left) => fetchOverpassTile(tile, { ua: o.ua, deadlineMs: left, slowFailMs, tag: "tile" }));
+  const tiles = planTiles(bbox);
+  const batches = [];
+  const stats = { total: tiles.length, missing: 0, retried: 0, split: 0, splitMissing: 0 };
+  async function runPass(list) {
+    const missed = [];
+    await pool(list, TILED_CONCURRENCY, async (tile) => {
+      const left = deadlineAt - now();
+      if (left < 1000) {
+        missed.push(tile);
+        return;
+      }
+      let elements = null;
+      try {
+        elements = await read(tile, left);
+      } catch {
+        elements = null;
+      }
+      if (elements) batches.push(elements);
+      else missed.push(tile);
+    });
+    return missed;
+  }
+  let missing = await runPass(tiles);
+  if (missing.length && deadlineAt - now() >= minLeft) {
+    stats.retried = missing.length;
+    missing = await runPass(missing);
+  }
+  if (missing.length && deadlineAt - now() >= minLeft) {
+    const parts = [];
+    for (let i = 0; i < missing.length; i++) parts.push.apply(parts, splitTile(missing[i]));
+    stats.split = missing.length;
+    const partMissed = await runPass(parts);
+    stats.splitMissing = partMissed.length;
+    // A split tile counts as missing when any of its quarters is.
+    const still = [];
+    for (let i = 0; i < missing.length; i++) {
+      const quarters = parts.slice(i * 4, i * 4 + 4);
+      if (quarters.some((q) => partMissed.indexOf(q) >= 0)) still.push(missing[i]);
+    }
+    missing = still;
+  }
+  stats.missing = missing.length;
+  const notes = [];
+  if (missing.length) {
+    notes.push(
+      "Street map: " + missing.length + " of " + tiles.length + " map tiles did not load, so " + TILED_MISSING_NOTE_KINDS + " are missing in " + (missing.length === 1 ? "that part" : "those parts") + " of the draw."
+    );
+  }
+  return {
+    xmls: [],
+    elements: dedupeElements(batches),
+    tiled: tiles.length > 1,
+    notes,
+    incomplete: missing.length > 0,
+    osmTiles: stats,
+  };
+}
+
 function sharedTiles(bbox, opts) {
-  const key = cacheKey(bbox, opts && opts.fetchImpl);
+  const key = cacheKey(bbox, opts && opts.fetchImpl) + (isTiledOsm() ? "|tiled" : "");
   const hit = tileCache.get(key);
   if (hit) return hit;
-  const work = fetchTiledOverpass(bbox, { ua: opts && opts.ua, fetchImpl: opts && opts.fetchImpl });
+  const work =
+    isTiledOsm() && !(opts && opts.fetchImpl)
+      ? fetchTiledOverpassShared(bbox, { ua: opts && opts.ua })
+      : fetchTiledOverpass(bbox, { ua: opts && opts.ua, fetchImpl: opts && opts.fetchImpl });
   tileCache.set(key, work);
   const clear = () => {
     const timer = setTimeout(() => {
@@ -426,6 +531,11 @@ async function fetchOsmMaps(bbox, opts) {
 module.exports = {
   TILE_SPAN_M,
   MAX_TILES,
+  TILED_BUDGET_MS,
+  TILED_CONCURRENCY,
+  TILED_SLOW_FAIL_MS,
+  fetchTiledOverpassShared,
+  splitTile,
   MAP_XML_CAP,
   bboxSpanM,
   planTiles,

@@ -1,5 +1,7 @@
 "use strict";
 
+const { isSiteTypes } = require("./export-mode");
+
 /**
  * Vehicles and mobile structures.
  *
@@ -61,7 +63,23 @@ const SEMI_CAP = 320;
 const DOCK_DEPTH_M = 96;
 const DOCK_MIN_EDGE_M = 28;
 const DOCK_MIN_ROOF_M2 = 8000;
-const BOAT_CAP = 200;
+const BOAT_CAP = 1500;
+const BOAT_CAP_LEGACY = 200;
+/** A marina larger than this many plate pixels is not scanned. */
+const BOAT_SCAN_MAX_PX = 40000000;
+/** Walkways narrower than twice this are stripped before hulls are read. */
+const DOCK_STRIP_M = 1.0;
+/** A hull has to sit within this many metres of open water. */
+const WET_NEAR_M = 1.5;
+const BOAT_MIN_M2 = 6;
+const HULL_MIN_Y = 140;
+const HULL_OVER_WATER = 110;
+const BOAT_ONE_MAX_M = 30;
+const BOAT_BEAM_MAX_M = 9;
+const BOAT_MAX_LEN_M = 40;
+const BOAT_ROW_MIN_WID_M = 5;
+const BOAT_ROW_PITCH_M = 4.5;
+const BOAT_PIECE_FILL = 0.35;
 
 const BOX = {
   rv: { kind: "rv", length: RV_LENGTH_M, width: RV_WIDTH_M, height: RV_HEIGHT_M },
@@ -540,6 +558,836 @@ function vehicleNear(ring, frame, plate, radiusM) {
   return { m2: bestN * area, lon, lat: lat2 };
 }
 
+/** A roadside RV roof: about 2.3 to 4 m wide and 5.5 to 14 m long. */
+const ROADSIDE_MIN_M2 = 9;
+const ROADSIDE_MAX_M2 = 52;
+const ROADSIDE_LEN = [5.5, 14];
+const ROADSIDE_WID = [1.6, 4.2];
+const ROADSIDE_ASPECT = 1.9;
+const ROADSIDE_FILL = 0.5;
+const ROADSIDE_GROW_M = 6;
+const ROADSIDE_CONTRAST = 30;
+const ROADSIDE_CHROMA = 30;
+/**
+ * Site types (/dev hosts): RV and park-model roofs that are not white.
+ * Inside the pad strip, a pixel that stands apart from the strip's own
+ * ground colour (blue-grey, tan, dark or two-tone roofs, awnings) joins the
+ * white-roof mask, and a one-pixel closing joins a roof broken up by AC
+ * units, vents or an awning seam. Lawn, tree crown and deep shade stay out.
+ */
+const ROADSIDE_V2 = {
+  groundDist: 50,
+  refs: 2,
+  refShare: 0.12,
+  minLuma: 72,
+  maxM2: 110,
+  len: [5.5, 16.5],
+  wid: [2, 7.5],
+  growM: 9,
+  boxWid: [2.3, 4.3],
+  splitM: 0.75,
+  aroundMin: 0.5,
+  courtMax: 0.06,
+  aspect: 1.6,
+  fill: 0.45,
+  close: 1,
+  openM: 0.5,
+  maxChroma: 60,
+  roofGapM: 1.2,
+  roofTouch: 0.08,
+  roofP90: 230,
+  roofTopGap: 20,
+  roofFloor: 185,
+  tanWarm: 38,
+  tanP90: 230,
+  tealG: 15,
+  tealB: 10,
+  vent: true,
+  ventGapM: 1,
+  ventPieceM2: 0.3,
+  ventLen: [4.5, 10],
+  ventWid: [2.5, 2.9],
+  ventInsetM: 0.3,
+  ventFill: 0.5,
+  ventWhite: 0.75,
+  ventGapM2: [0.03, 1],
+  ventSpan: 0.7,
+  ventMin: 3,
+  ventOutM: 3,
+};
+
+const plateTops = new WeakMap();
+
+/** Luma near the top of the photo (99.5th percentile, sampled). */
+function plateTop(plate) {
+  const data = plate.data;
+  if (plateTops.has(data)) return plateTops.get(data);
+  const hist = new Uint32Array(256);
+  let n = 0;
+  for (let i = 0; i < data.length; i += 4 * 7) {
+    hist[Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2])]++;
+    n++;
+  }
+  let v = 255;
+  for (let acc = 0; v > 0; v--) {
+    acc += hist[v];
+    if (acc >= n * 0.005) break;
+  }
+  plateTops.set(data, v);
+  return v;
+}
+
+/**
+ * A unit roof is light metal or membrane (its brightest tenth near the
+ * brightest tone in the photo, which is near white in sun and lower under
+ * a forest canopy or haze) or painted teal. A blob that only differs from
+ * the ground in tone, such as a concrete slab on a gravel pad, a shaded
+ * pad or a parked car in shade, is neither.
+ */
+function roofTone(cells, x0, y0, bw, plate) {
+  const lum = new Float64Array(cells.length);
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  for (let k = 0; k < cells.length; k++) {
+    const x = x0 + (cells[k] % bw);
+    const y = y0 + ((cells[k] / bw) | 0);
+    const i = (y * plate.width + x) * 4;
+    const R = plate.data[i];
+    const G = plate.data[i + 1];
+    const B = plate.data[i + 2];
+    r += R;
+    g += G;
+    b += B;
+    lum[k] = 0.299 * R + 0.587 * G + 0.114 * B;
+  }
+  lum.sort();
+  const n = cells.length;
+  const p90 = lum[Math.floor(0.9 * (n - 1))];
+  const teal = g / n - r / n >= ROADSIDE_V2.tealG && b / n - r / n >= ROADSIDE_V2.tealB;
+  // Tan sand, dirt, a footpath or a pool deck: warm (red well over blue)
+  // and short of white. A unit roof is near neutral, cool, or bright.
+  if (r / n - b / n >= ROADSIDE_V2.tanWarm && p90 < ROADSIDE_V2.tanP90) return false;
+  // On a dim or hazy photo the brightest tone can be pale ground, so a
+  // roof still has to read light in its own right.
+  const need = Math.min(ROADSIDE_V2.roofP90, Math.max(ROADSIDE_V2.roofFloor, plateTop(plate) - ROADSIDE_V2.roofTopGap));
+  return p90 >= need || teal;
+}
+
+/**
+ * Light vehicle roofs beside an internal road of an RV park with no mapped
+ * pitches. The pad is the strip of ground beside one stretch of road. Each
+ * roof whose centre falls in the pad is returned with its own long axis and
+ * length. A roof is read with a margin past the pad, so a building roof
+ * that only clips the pad is too large and is left out. Nothing is
+ * returned for empty ground: a road with no parked RV gets no box.
+ * @returns {Array<{lon:number,lat:number,ux:number,uy:number,len:number,wid:number}>|null}
+ */
+function roadsideVehicles(pad, frame, plate, holes) {
+  if (!pad || pad.length < 3 || !frame || !plate || !(plate.width > 1)) return null;
+  const poly = [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < pad.length; i++) {
+    const xy = llToImagePx(pad[i][0], pad[i][1], frame);
+    if (!Number.isFinite(xy[0]) || !Number.isFinite(xy[1])) continue;
+    poly.push(xy);
+    if (xy[0] < minX) minX = xy[0];
+    if (xy[1] < minY) minY = xy[1];
+    if (xy[0] > maxX) maxX = xy[0];
+    if (xy[1] > maxY) maxY = xy[1];
+  }
+  if (poly.length < 3) return [];
+  const lat0 = ((+frame.south || 0) + (+frame.north || 0)) / 2;
+  const mLon = 111320 * Math.cos((lat0 * Math.PI) / 180);
+  const mpuX = frame.mpuX > 0 ? frame.mpuX : (Math.abs(+frame.east - +frame.west) * mLon) / frame.imgW;
+  const mpuY = frame.mpuY > 0 ? frame.mpuY : (Math.abs(+frame.north - +frame.south) * 110540) / frame.imgH;
+  // A photo coarser than about 0.6 m cannot separate one RV roof.
+  if (!(Math.max(mpuX, mpuY) <= 0.6)) return [];
+  const grow = Math.round((isSiteTypes() ? ROADSIDE_V2.growM : ROADSIDE_GROW_M) / Math.min(mpuX, mpuY));
+  const x0 = Math.max(0, Math.floor(minX) - grow);
+  const y0 = Math.max(0, Math.floor(minY) - grow);
+  const x1 = Math.min(plate.width - 1, Math.ceil(maxX) + grow);
+  const y1 = Math.min(plate.height - 1, Math.ceil(maxY) + grow);
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  if (bw < 4 || bh < 4 || bw * bh > 400000) return [];
+  // Light concrete pads read as white too. A roof has to stand out from
+  // the ground around it: brighter than the window's median by a margin.
+  const hist = new Uint32Array(256);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = (y * plate.width + x) * 4;
+      hist[Math.max(0, Math.min(255, Math.round(0.299 * plate.data[i] + 0.587 * plate.data[i + 1] + 0.114 * plate.data[i + 2])))]++;
+    }
+  }
+  let med = 0;
+  for (let acc = 0, half = (bw * bh) / 2; med < 255; med++) {
+    acc += hist[med];
+    if (acc >= half) break;
+  }
+  const floor = Math.max(165, Math.min(228, med + ROADSIDE_CONTRAST));
+  const clipWhite = isSiteTypes();
+  const mask = new Uint8Array(bw * bh);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = (y * plate.width + x) * 4;
+      const r = plate.data[i];
+      const g = plate.data[i + 1];
+      const b = plate.data[i + 2];
+      if (0.299 * r + 0.587 * g + 0.114 * b < floor) continue;
+      // Painted RV and trailer roofs are near-white. Tan concrete, sand,
+      // and gravel are warm: red well above blue.
+      if (Math.max(r, g, b) - Math.min(r, g, b) > ROADSIDE_CHROMA || r > b + 18) continue;
+      // Site types: a white roof in sun clips to full white on a bright
+      // photo; those pixels are roof too, or the roof breaks into pieces.
+      if (isWhiteRoofPixel(r, g, b) || (clipWhite && 0.299 * r + 0.587 * g + 0.114 * b > 252)) mask[(y - y0) * bw + (x - x0)] = 1;
+    }
+  }
+  // A mapped roof (a park model, a cabin, a shower house) is not an RV, and
+  // masking it keeps an RV parked against it from merging into it.
+  for (let h = 0; h < (holes || []).length; h++) {
+    const hp = [];
+    let hx0 = Infinity;
+    let hy0 = Infinity;
+    let hx1 = -Infinity;
+    let hy1 = -Infinity;
+    for (let k = 0; k < holes[h].length; k++) {
+      const xy = llToImagePx(holes[h][k][0], holes[h][k][1], frame);
+      hp.push(xy);
+      if (xy[0] < hx0) hx0 = xy[0];
+      if (xy[1] < hy0) hy0 = xy[1];
+      if (xy[0] > hx1) hx1 = xy[0];
+      if (xy[1] > hy1) hy1 = xy[1];
+    }
+    if (hp.length < 3 || hx1 < x0 || hx0 > x1 || hy1 < y0 || hy0 > y1) continue;
+    for (let y = Math.max(y0, Math.floor(hy0)); y <= Math.min(y1, Math.ceil(hy1)); y++) {
+      for (let x = Math.max(x0, Math.floor(hx0)); x <= Math.min(x1, Math.ceil(hx1)); x++) {
+        if (pointInRing([x + 0.5, y + 0.5], hp)) mask[(y - y0) * bw + (x - x0)] = 0;
+      }
+    }
+  }
+  const v2 = isSiteTypes();
+  const core = v2 && ROADSIDE_V2.vent ? mask.slice() : null;
+  const ground = v2 ? addGroundContrast(mask, poly, x0, y0, bw, bh, plate, holes, frame) : null;
+  const nearRoof = ground && ground.nearRoof;
+  const seen = new Uint8Array(bw * bh);
+  const stack = [];
+  const out = [];
+  const pxM2 = mpuX * mpuY;
+  const maxM2 = v2 ? ROADSIDE_V2.maxM2 : ROADSIDE_MAX_M2;
+  const widR = v2 ? ROADSIDE_V2.wid : ROADSIDE_WID;
+  const aspectMin = v2 ? ROADSIDE_V2.aspect : ROADSIDE_ASPECT;
+  const fillMin = v2 ? ROADSIDE_V2.fill : ROADSIDE_FILL;
+  const lenR = v2 ? ROADSIDE_V2.len : ROADSIDE_LEN;
+  const judge = (cells) => {
+    const m2 = cells.length * pxM2;
+    if (m2 < ROADSIDE_MIN_M2) return "small";
+    if (m2 > maxM2) return "big";
+    const ext = roofExtent(cells, x0, y0, bw, frame);
+    if (ext.len < lenR[0] || ext.len > lenR[1]) return "len";
+    if (ext.wid < widR[0] || ext.wid > widR[1]) return "wid";
+    if (ext.len / Math.max(0.1, ext.wid) < aspectMin) return "aspect";
+    if (m2 / (ext.len * ext.wid) < fillMin) return "fill";
+    if (v2 && !roofTone(cells, x0, y0, bw, plate)) return "dull";
+    if (nearRoof) {
+      let touch = 0;
+      for (let k = 0; k < cells.length; k++) touch += nearRoof[cells[k]];
+      if (touch > cells.length * ROADSIDE_V2.roofTouch) return "roof";
+    }
+    // A unit stands on open ground: most of a ring just outside it is
+    // pad, road, shade or plants. A piece of a court, a pool deck or a
+    // roof is ringed by more of the same.
+    if (ground && aroundShare(ext, plate, frame, ground.refs) < ROADSIDE_V2.aroundMin) return "ringed";
+    // Painted courts and pools are saturated blue or cyan. A light strip
+    // on a court, its apron, or the lounge row on a pool deck sits right
+    // beside that colour; a parked unit does not.
+    if (ground && courtShare(ext, plate, frame) > ROADSIDE_V2.courtMax) return "court";
+    const lon = ext.cx / ext.mLon;
+    const lat = ext.cy / 110540;
+    const c = llToImagePx(lon, lat, frame);
+    if (!pointInRing(c, poly)) return "outside";
+    return { lon, lat, ux: ext.ux, uy: ext.uy, len: ext.len, wid: ext.wid };
+  };
+  // Roof pieces no blob test kept, for the vented-roof pass.
+  const left = v2 && ground && ROADSIDE_V2.vent ? new Uint8Array(bw * bh) : null;
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i] || seen[i]) continue;
+    const cells = [];
+    let edge = false;
+    stack.push(i);
+    seen[i] = 1;
+    while (stack.length) {
+      const k = stack.pop();
+      cells.push(k);
+      const x = k % bw;
+      const y = (k / bw) | 0;
+      if (x === 0 || y === 0 || x === bw - 1 || y === bh - 1) edge = true;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
+          const j = ny * bw + nx;
+          if (!mask[j] || seen[j]) continue;
+          seen[j] = 1;
+          stack.push(j);
+        }
+      }
+      if (cells.length * pxM2 > maxM2 * 2) break;
+    }
+    while (stack.length) stack.pop();
+    // A roof that runs off the read window is larger than the window.
+    if (edge) continue;
+    const got = judge(cells);
+    if (typeof got === "object") {
+      out.push(got);
+      continue;
+    }
+    // Site types: a unit merged with the awning, car or shed beside it is
+    // split at its narrow necks once and each part judged again.
+    let kept = false;
+    if (v2 && got !== "small" && cells.length * pxM2 <= maxM2 * 2) {
+      const parts = splitBlob(cells, bw, bh, Math.max(1, Math.round(ROADSIDE_V2.splitM / Math.min(mpuX, mpuY))));
+      for (let p = 0; p < parts.length; p++) {
+        const part = judge(parts[p]);
+        if (typeof part === "object") {
+          out.push(part);
+          kept = true;
+        }
+      }
+    }
+    if (left && !kept && cells.length * pxM2 <= maxM2) for (let k = 0; k < cells.length; k++) left[cells[k]] = 1;
+  }
+  if (left) {
+    const more = ventedRoofs(left, core, x0, y0, bw, bh, plate, frame, mpuX, mpuY, (cells, ext) => {
+      if (!roofTone(cells, x0, y0, bw, plate)) return "dull";
+      if (nearRoof) {
+        let touch = 0;
+        for (let k = 0; k < cells.length; k++) touch += nearRoof[cells[k]];
+        if (touch > cells.length * ROADSIDE_V2.roofTouch) return "roof";
+      }
+      if (aroundShare(ext, plate, frame, ground.refs) < ROADSIDE_V2.aroundMin) return "ringed";
+      if (courtShare(ext, plate, frame) > ROADSIDE_V2.courtMax) return "court";
+      const lon = ext.cx / ext.mLon;
+      const lat = ext.cy / 110540;
+      const at = llToImagePx(lon, lat, frame);
+      if (!pointInRing(at, poly) && ringGapPx(at, poly) * Math.min(mpuX, mpuY) > ROADSIDE_V2.ventOutM) return "outside";
+      return { lon, lat, ux: ext.ux, uy: ext.uy, len: ext.len, wid: ext.wid };
+    });
+    for (let k = 0; k < more.length; k++) out.push(more[k]);
+  }
+  return out;
+}
+
+/**
+ * Site types: a white RV or trailer roof that the photo breaks into small
+ * pieces at its roof vents, AC units and seams. Pieces no blob test kept
+ * are grouped with neighbours less than about 1 m away, but only while the
+ * group still fits one rectangle of an RV's width (2.1 to 2.9 m), so a roof
+ * never merges with the awning, car or roof beside it. A group is a unit
+ * roof only when its rectangle is mostly white and at least three small
+ * gaps (vents, an AC unit, a skylight) sit wholly inside the white with
+ * none crossing the roof. A car or pickup roof is narrower and its
+ * windshield or bed crosses the whole roof; a shed or slab is plain. Each
+ * group then passes the usual roof tests.
+ */
+function ventedRoofs(left, core, x0, y0, bw, bh, plate, frame, mpuX, mpuY, check) {
+  const V = ROADSIDE_V2;
+  const mpu = Math.min(mpuX, mpuY);
+  const pxM2 = mpuX * mpuY;
+  const lat0 = ((+frame.south || 0) + (+frame.north || 0)) / 2;
+  const mLon = 111320 * Math.cos((lat0 * Math.PI) / 180);
+  const toM = (x, y) => [
+    (frame.west + (x / frame.imgW) * (frame.east - frame.west)) * mLon,
+    (frame.north - (y / frame.imgH) * (frame.north - frame.south)) * 110540,
+  ];
+  // Pieces: 8-connected components of the leftover mask.
+  const lab = new Int32Array(bw * bh).fill(-1);
+  const pieces = [];
+  for (let i = 0; i < left.length; i++) {
+    if (!left[i] || lab[i] >= 0) continue;
+    const id = pieces.length;
+    const cells = [];
+    const st = [i];
+    lab[i] = id;
+    while (st.length) {
+      const k = st.pop();
+      cells.push(k);
+      const x = k % bw;
+      const y = (k / bw) | 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
+          const j = ny * bw + nx;
+          if (!left[j] || lab[j] >= 0) continue;
+          lab[j] = id;
+          st.push(j);
+        }
+      }
+    }
+    pieces.push(cells);
+  }
+  if (!pieces.length) return [];
+  // Neighbours: pieces within ventGapM of each other (boundary cells only).
+  const g = Math.max(1, Math.round(V.ventGapM / mpu));
+  const nb = pieces.map(() => new Set());
+  for (let id = 0; id < pieces.length; id++) {
+    if (pieces[id].length * pxM2 < V.ventPieceM2) continue;
+    for (const k of pieces[id]) {
+      const x = k % bw;
+      const y = (k / bw) | 0;
+      if (x > 0 && x < bw - 1 && y > 0 && y < bh - 1 && left[k - 1] && left[k + 1] && left[k - bw] && left[k + bw]) continue;
+      for (let dy = -g; dy <= g; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= bh) continue;
+        for (let dx = -g; dx <= g; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= bw || dx * dx + dy * dy > g * g) continue;
+          const o = lab[ny * bw + nx];
+          if (o >= 0 && o !== id && pieces[o].length * pxM2 >= V.ventPieceM2) nb[id].add(o);
+        }
+      }
+    }
+  }
+  const rectOf = (cells) => {
+    const e = roofExtent(cells, x0, y0, bw, frame);
+    const vx = -e.uy;
+    const vy = e.ux;
+    let a0 = Infinity;
+    let a1 = -Infinity;
+    let c0 = Infinity;
+    let c1 = -Infinity;
+    for (let k = 0; k < cells.length; k++) {
+      const p = toM(x0 + (cells[k] % bw) + 0.5, y0 + ((cells[k] / bw) | 0) + 0.5);
+      const a = (p[0] - e.cx) * e.ux + (p[1] - e.cy) * e.uy;
+      const c = (p[0] - e.cx) * vx + (p[1] - e.cy) * vy;
+      if (a < a0) a0 = a;
+      if (a > a1) a1 = a;
+      if (c < c0) c0 = c;
+      if (c > c1) c1 = c;
+    }
+    return { e, vx, vy, a0, a1, c0, c1, len: a1 - a0 + mpu, wid: c1 - c0 + mpu };
+  };
+  const order = pieces.map((c, id) => id).filter((id) => pieces[id].length * pxM2 >= V.ventPieceM2);
+  order.sort((p, q) => pieces[q].length - pieces[p].length);
+  const used = new Uint8Array(pieces.length);
+  const out = [];
+  for (const seed of order) {
+    if (used[seed]) continue;
+    let cells = pieces[seed].slice();
+    const group = new Set([seed]);
+    let rect = rectOf(cells);
+    // A piece too wide alone (a bent or squarish piece has no stable long
+    // axis) can still join a neighbour's group.
+    if (Math.min(rect.wid, rect.len) > V.ventWid[1] || rect.len > V.ventLen[1]) continue;
+    used[seed] = 1;
+    for (;;) {
+      const cand = new Set();
+      for (const id of group) for (const o of nb[id]) if (!used[o] && !group.has(o)) cand.add(o);
+      const list = [...cand].sort((p, q) => pieces[q].length - pieces[p].length);
+      let added = false;
+      for (const o of list) {
+        const next = cells.concat(pieces[o]);
+        const r = rectOf(next);
+        if (Math.min(r.wid, r.len) > V.ventWid[1] || r.len > V.ventLen[1]) continue;
+        cells = next;
+        rect = r;
+        group.add(o);
+        used[o] = 1;
+        added = true;
+        break;
+      }
+      if (!added) break;
+    }
+    const { e, vx, vy, a0, a1, c0, c1, len, wid } = rect;
+    const cx = e.cx + (e.ux * (a0 + a1)) / 2 + (vx * (c0 + c1)) / 2;
+    const cy = e.cy + (e.uy * (a0 + a1)) / 2 + (vy * (c0 + c1)) / 2;
+    if (len < V.ventLen[0]) continue;
+    if (wid < V.ventWid[0]) continue;
+    // The rectangle, in local pixels: share of it the pieces cover, share
+    // the photo shows white, and the gaps in the white more than
+    // ventInsetM inside its outline.
+    const ins = V.ventInsetM;
+    let bx0 = bw;
+    let by0 = bh;
+    let bx1 = 0;
+    let by1 = 0;
+    for (let k = 0; k < cells.length; k++) {
+      const x = cells[k] % bw;
+      const y = (cells[k] / bw) | 0;
+      if (x < bx0) bx0 = x;
+      if (x > bx1) bx1 = x;
+      if (y < by0) by0 = y;
+      if (y > by1) by1 = y;
+    }
+    const inG = new Set(cells);
+    let nRect = 0;
+    let nIn = 0;
+    let nWhite = 0;
+    let edge = false;
+    const gap = new Map();
+    for (let y = Math.max(0, by0 - 3); y <= Math.min(bh - 1, by1 + 3); y++) {
+      for (let x = Math.max(0, bx0 - 3); x <= Math.min(bw - 1, bx1 + 3); x++) {
+        const p = toM(x0 + x + 0.5, y0 + y + 0.5);
+        const a = (p[0] - e.cx) * e.ux + (p[1] - e.cy) * e.uy;
+        const c = (p[0] - e.cx) * vx + (p[1] - e.cy) * vy;
+        if (a < a0 || a > a1 || c < c0 || c > c1) continue;
+        const k = y * bw + x;
+        if (x === 0 || y === 0 || x === bw - 1 || y === bh - 1) edge = true;
+        nRect++;
+        if (inG.has(k)) nIn++;
+        if (core[k]) nWhite++;
+        else if (a > a0 + ins && a < a1 - ins && c > c0 + ins && c < c1 - ins) gap.set(k, c);
+      }
+    }
+    if (edge) continue;
+    const fill = nIn / Math.max(1, nRect);
+    const whiteShare = nWhite / Math.max(1, nRect);
+    let vents = 0;
+    let span = 0;
+    const gs = new Set();
+    for (const [k0] of gap) {
+      if (gs.has(k0)) continue;
+      const q = [k0];
+      gs.add(k0);
+      let n = 0;
+      let touch = false;
+      let cmin = Infinity;
+      let cmax = -Infinity;
+      while (q.length) {
+        const k = q.pop();
+        n++;
+        const c = gap.get(k);
+        if (c < cmin) cmin = c;
+        if (c > cmax) cmax = c;
+        const x = k % bw;
+        const nbr = [x > 0 ? k - 1 : -1, x < bw - 1 ? k + 1 : -1, k - bw, k + bw];
+        for (const j of nbr) {
+          if (j < 0 || j >= bw * bh) continue;
+          if (gap.has(j)) {
+            if (!gs.has(j)) {
+              gs.add(j);
+              q.push(j);
+            }
+          } else if (!core[j]) touch = true;
+        }
+      }
+      span = Math.max(span, (cmax - cmin + mpu) / Math.max(0.1, wid - 2 * ins));
+      const g2 = n * pxM2;
+      if (!touch && g2 >= V.ventGapM2[0] && g2 <= V.ventGapM2[1]) vents++;
+    }
+    if (fill < V.ventFill) continue;
+    if (whiteShare < V.ventWhite) continue;
+    if (span > V.ventSpan) continue;
+    if (vents < V.ventMin) continue;
+    const ext = { len, wid, ux: e.ux, uy: e.uy, cx, cy, mLon };
+    const res = check(cells, ext);
+    if (typeof res === "object") out.push(res);
+  }
+  return out;
+}
+
+/** Pixel distance from a point to a ring's outline. */
+function ringGapPx(p, ring) {
+  let best = Infinity;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const ax = ring[j][0];
+    const ay = ring[j][1];
+    const dx = ring[i][0] - ax;
+    const dy = ring[i][1] - ay;
+    const l2 = dx * dx + dy * dy;
+    let t = l2 > 0 ? ((p[0] - ax) * dx + (p[1] - ay) * dy) / l2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    best = Math.min(best, Math.hypot(p[0] - (ax + t * dx), p[1] - (ay + t * dy)));
+  }
+  return best;
+}
+
+/** Share of a ring 1 m outside a roof that reads as open ground, road, shade or plants. */
+function aroundShare(ext, plate, frame, refs) {
+  const L = ext.len + 2;
+  const W = ext.wid + 2;
+  const per = Math.max(12, Math.round((L + W) * 4));
+  let n = 0;
+  let open = 0;
+  for (let k = 0; k < per; k++) {
+    const e = (k / per) * 2 * (L + W);
+    let a;
+    let c;
+    if (e < L) [a, c] = [e - L / 2, W / 2];
+    else if (e < L + W) [a, c] = [L / 2, W / 2 - (e - L)];
+    else if (e < 2 * L + W) [a, c] = [L / 2 - (e - L - W), -W / 2];
+    else [a, c] = [-L / 2, -W / 2 + (e - 2 * L - W)];
+    const xy = llToImagePx((ext.cx + ext.ux * a - ext.uy * c) / ext.mLon, (ext.cy + ext.uy * a + ext.ux * c) / 110540, frame);
+    const x = Math.round(xy[0]);
+    const y = Math.round(xy[1]);
+    if (x < 0 || y < 0 || x >= plate.width || y >= plate.height) continue;
+    const i = (y * plate.width + x) * 4;
+    const r = plate.data[i];
+    const g = plate.data[i + 1];
+    const b = plate.data[i + 2];
+    n++;
+    if (0.299 * r + 0.587 * g + 0.114 * b < ROADSIDE_V2.minLuma || vegPixel(r, g, b)) open++;
+    else if (refs.some((q) => groundDistance(r, g, b, q) < ROADSIDE_V2.groundDist)) open++;
+  }
+  return n ? open / n : 1;
+}
+
+/** Share of rings 1 to 4 m outside a roof that are court or pool blue. */
+function courtShare(ext, plate, frame) {
+  let n = 0;
+  let blue = 0;
+  for (const grow of [2, 5, 8]) {
+    const L = ext.len + grow;
+    const W = ext.wid + grow;
+    const per = Math.max(12, Math.round((L + W) * 2));
+    for (let k = 0; k < per; k++) {
+      const e = (k / per) * 2 * (L + W);
+      let a;
+      let c;
+      if (e < L) [a, c] = [e - L / 2, W / 2];
+      else if (e < L + W) [a, c] = [L / 2, W / 2 - (e - L)];
+      else if (e < 2 * L + W) [a, c] = [L / 2 - (e - L - W), -W / 2];
+      else [a, c] = [-L / 2, -W / 2 + (e - 2 * L - W)];
+      const xy = llToImagePx((ext.cx + ext.ux * a - ext.uy * c) / ext.mLon, (ext.cy + ext.uy * a + ext.ux * c) / 110540, frame);
+      const x = Math.round(xy[0]);
+      const y = Math.round(xy[1]);
+      if (x < 0 || y < 0 || x >= plate.width || y >= plate.height) continue;
+      const i = (y * plate.width + x) * 4;
+      const r = plate.data[i];
+      const g = plate.data[i + 1];
+      const b = plate.data[i + 2];
+      n++;
+      if (b > r + 40 && b >= g - 10 && Math.max(r, g, b) - Math.min(r, g, b) > 60) blue++;
+    }
+  }
+  return n ? blue / n : 0;
+}
+
+/**
+ * Splits one blob at its necks: erode it r pixels, label what is left,
+ * and grow each part back r pixels inside the blob.
+ */
+function splitBlob(cells, bw, bh, r) {
+  const inBlob = new Map();
+  for (let k = 0; k < cells.length; k++) inBlob.set(cells[k], 0);
+  const has = (k, set) => set.has(k);
+  let cur = new Set(cells);
+  for (let it = 0; it < r; it++) {
+    const next = new Set();
+    for (const k of cur) {
+      const x = k % bw;
+      if (x > 0 && x < bw - 1 && k >= bw && k < bw * (bh - 1) && has(k - 1, cur) && has(k + 1, cur) && has(k - bw, cur) && has(k + bw, cur)) next.add(k);
+    }
+    cur = next;
+  }
+  const label = new Map();
+  let n = 0;
+  for (const k0 of cur) {
+    if (label.has(k0)) continue;
+    n++;
+    const st = [k0];
+    label.set(k0, n);
+    while (st.length) {
+      const k = st.pop();
+      for (const j of [k - 1, k + 1, k - bw, k + bw]) {
+        if (cur.has(j) && !label.has(j)) {
+          label.set(j, n);
+          st.push(j);
+        }
+      }
+    }
+  }
+  if (n < 2) return [];
+  // Grow back inside the blob, one ring at a time, first label wins.
+  let front = Array.from(label.keys());
+  for (let it = 0; it < r + 1 && front.length; it++) {
+    const nf = [];
+    for (const k of front) {
+      const l = label.get(k);
+      for (const j of [k - 1, k + 1, k - bw, k + bw]) {
+        if (inBlob.has(j) && !label.has(j)) {
+          label.set(j, l);
+          nf.push(j);
+        }
+      }
+    }
+    front = nf;
+  }
+  const parts = [];
+  for (let l = 1; l <= n; l++) parts.push([]);
+  for (const [k, l] of label) parts[l - 1].push(k);
+  return parts;
+}
+
+/**
+ * How far a pixel stands from a ground colour. Hue (red and blue against
+ * green) counts more than brightness, so darker or lighter patches of the
+ * same gravel stay ground and a blue-grey or dark roof does not.
+ */
+function groundDistance(r, g, b, q) {
+  const hue = Math.abs(r - g - (q[0] - q[1])) + Math.abs(b - g - (q[2] - q[1]));
+  const luma = Math.abs(0.299 * (r - q[0]) + 0.587 * (g - q[1]) + 0.114 * (b - q[2]));
+  return 1.5 * hue + 0.8 * luma;
+}
+
+/** Lawn, crowns and olive dry grass: green over both red and blue. Teal and blue-grey roofs are not. */
+function vegPixel(r, g, b) {
+  if (g > r + 8 && g > b + 16) return true;
+  return 2 * g - r - b > 12 && g > b && 0.299 * r + 0.587 * g + 0.114 * b < 125;
+}
+
+/**
+ * Pixels in the pad strip that differ from the strip's ground colour join
+ * the roof mask (ROADSIDE_V2), then a closing joins broken-up roofs.
+ */
+function addGroundContrast(mask, poly, x0, y0, bw, bh, plate, holes, frame) {
+  const inPad = new Uint8Array(bw * bh);
+  // Ground colours: the one or two commonest colours of the window (gravel
+  // pad, and the road or lawn edge when the strip reaches it), from a
+  // 16-level histogram, each the mean of its bin.
+  const bins = new Map();
+  let total = 0;
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
+      const i = ((y0 + y) * plate.width + (x0 + x)) * 4;
+      const r = plate.data[i];
+      const g = plate.data[i + 1];
+      const b = plate.data[i + 2];
+      const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+      let e = bins.get(key);
+      if (!e) {
+        e = [0, 0, 0, 0];
+        bins.set(key, e);
+      }
+      e[0]++;
+      e[1] += r;
+      e[2] += g;
+      e[3] += b;
+      total++;
+      if (pointInRing([x0 + x + 0.5, y0 + y + 0.5], poly)) inPad[y * bw + x] = 1;
+    }
+  }
+  if (total < 20) return null;
+  const ranked = Array.from(bins.values()).sort((p, q) => q[0] - p[0]);
+  const refs = [];
+  for (const e of ranked) {
+    if (refs.length >= ROADSIDE_V2.refs) break;
+    if (refs.length && e[0] < total * ROADSIDE_V2.refShare) break;
+    const c = [e[1] / e[0], e[2] / e[0], e[3] / e[0]];
+    // Neighbouring bins of one colour count once.
+    if (refs.some((q) => groundDistance(c[0], c[1], c[2], q) < ROADSIDE_V2.groundDist)) continue;
+    refs.push(c);
+  }
+  // Mapped roofs (a park model, a cabin, an RV footprint already drawn)
+  // stay out, as they are out of the white mask.
+  const keepOut = new Uint8Array(bw * bh);
+  for (let h = 0; h < (holes || []).length; h++) {
+    const hp = [];
+    let hx0 = Infinity;
+    let hy0 = Infinity;
+    let hx1 = -Infinity;
+    let hy1 = -Infinity;
+    for (let k = 0; k < holes[h].length; k++) {
+      const xy = llToImagePx(holes[h][k][0], holes[h][k][1], frame);
+      hp.push(xy);
+      hx0 = Math.min(hx0, xy[0]);
+      hy0 = Math.min(hy0, xy[1]);
+      hx1 = Math.max(hx1, xy[0]);
+      hy1 = Math.max(hy1, xy[1]);
+    }
+    if (hp.length < 3) continue;
+    const ya = Math.max(0, Math.floor(hy0) - y0 - 1);
+    const yb = Math.min(bh - 1, Math.ceil(hy1) - y0 + 1);
+    const xa = Math.max(0, Math.floor(hx0) - x0 - 1);
+    const xb = Math.min(bw - 1, Math.ceil(hx1) - x0 + 1);
+    for (let y = ya; y <= yb; y++) {
+      for (let x = xa; x <= xb; x++) {
+        if (pointInRing([x0 + x + 0.5, y0 + y + 0.5], hp)) keepOut[y * bw + x] = 1;
+      }
+    }
+  }
+  const add = new Uint8Array(bw * bh);
+  for (let k = 0; k < add.length; k++) {
+    if (!inPad[k] || mask[k] || keepOut[k]) continue;
+    const x = k % bw;
+    const y = (k / bw) | 0;
+    const i = ((y0 + y) * plate.width + (x0 + x)) * 4;
+    const r = plate.data[i];
+    const g = plate.data[i + 1];
+    const b = plate.data[i + 2];
+    if (0.299 * r + 0.587 * g + 0.114 * b < ROADSIDE_V2.minLuma) continue;
+    if (vegPixel(r, g, b)) continue;
+    // Courts, pools and painted play areas are saturated; RV, trailer and
+    // park-model roofs, even blue-grey or tan ones, are not.
+    if (Math.max(r, g, b) - Math.min(r, g, b) > ROADSIDE_V2.maxChroma) continue;
+    let near = false;
+    for (const q of refs) if (groundDistance(r, g, b, q) < ROADSIDE_V2.groundDist) near = true;
+    if (near) continue;
+    add[k] = 1;
+  }
+  for (let k = 0; k < add.length; k++) if (add[k]) mask[k] = 1;
+  // An opening drops lines one or two pixels wide (painted curbs, pad
+  // edging) that would join a roof to the island border, and thin bridges
+  // between a roof and the car or shed beside it.
+  const open = Math.max(1, Math.round(ROADSIDE_V2.openM / Math.max(0.05, frame.mpuX || 0.25)));
+  const er = (src) => {
+    const dst = new Uint8Array(bw * bh);
+    for (let y = 1; y < bh - 1; y++) {
+      for (let x = 1; x < bw - 1; x++) {
+        const k = y * bw + x;
+        if (src[k] && src[k - 1] && src[k + 1] && src[k - bw] && src[k + bw]) dst[k] = 1;
+      }
+    }
+    return dst;
+  };
+  const di = (src) => {
+    const dst = new Uint8Array(bw * bh);
+    for (let y = 0; y < bh; y++) {
+      for (let x = 0; x < bw; x++) {
+        const k = y * bw + x;
+        if (src[k] || (x > 0 && src[k - 1]) || (x < bw - 1 && src[k + 1]) || (y > 0 && src[k - bw]) || (y < bh - 1 && src[k + bw])) dst[k] = 1;
+      }
+    }
+    return dst;
+  };
+  let m = mask;
+  for (let it = 0; it < open; it++) m = er(m);
+  for (let it = 0; it < open; it++) m = di(m);
+  mask.set(m);
+  for (let it = 0; it < ROADSIDE_V2.close; it++) {
+    const grown = new Uint8Array(bw * bh);
+    for (let y = 0; y < bh; y++) {
+      for (let x = 0; x < bw; x++) {
+        if (mask[y * bw + x]) {
+          grown[y * bw + x] = 1;
+          continue;
+        }
+        let n = 0;
+        if (x > 0 && mask[y * bw + x - 1]) n++;
+        if (x < bw - 1 && mask[y * bw + x + 1]) n++;
+        if (y > 0 && mask[(y - 1) * bw + x]) n++;
+        if (y < bh - 1 && mask[(y + 1) * bw + x]) n++;
+        // A pixel between two roof pixels (a seam or a vent) is closed.
+        if (n >= 2 && inPad[y * bw + x] && !keepOut[y * bw + x]) grown[y * bw + x] = 1;
+      }
+    }
+    mask.set(grown);
+  }
+  // A roof the photo shows past a mapped roof's outline (the outline is
+  // drawn a little off the photo) is that roof, not an RV beside it.
+  const gap = Math.max(1, Math.round(ROADSIDE_V2.roofGapM / Math.max(0.05, frame.mpuX || 0.25)));
+  let near = keepOut;
+  for (let it = 0; it < gap; it++) near = di(near);
+  return { nearRoof: near, refs };
+}
+
 function recenterBox(feature, lon, lat) {
   if (!feature || !feature.coords || !Number.isFinite(lon) || !Number.isFinite(lat)) return feature;
   const spec = feature.kind === "trailer-candidate" || feature.kind === "trailer" ? BOX.trailer : BOX.rv;
@@ -568,17 +1416,87 @@ function decidePitch(use, fraction) {
   const occupied = occupiedCall(fraction);
   if (use === "road" || use === "") return "rv";
   if (use === "tent") return occupied === true ? "trailer" : "";
-  if (occupied === false) return "";
+  // Worst case on /dev hosts: an empty mapped RV pitch keeps its RV. A pitch
+  // filled past the vehicle range (a roof or slab) still drops it.
+  if (occupied === false) return isSiteTypes() && fraction < OCCUPIED_LO ? "rv" : "";
   return "rv";
 }
 
-function finalizeVehicles(features, fractionFor) {
-  return require("./stage-clock").timeSpanSync("vehicle", () => finalizeVehiclesWork(features, fractionFor));
+function finalizeVehicles(features, fractionFor, roadsideFor) {
+  return require("./stage-clock").timeSpanSync("vehicle", () => finalizeVehiclesWork(features, fractionFor, roadsideFor));
 }
 
-function finalizeVehiclesWork(features, fractionFor) {
+/**
+ * One RV box on a roof the photo shows beside the road. The box takes the
+ * roof's long axis and length, held to an RV's 6 to 13 m.
+ */
+function roadsideBoxes(f, found, placed) {
+  const out = [];
+  for (let k = 0; k < (found || []).length; k++) {
+    const v = found[k];
+    if (!v || !Number.isFinite(v.lon) || !Number.isFinite(v.lat)) continue;
+    const proj = projectAt(v.lat);
+    const xy = proj.to(v.lon, v.lat);
+    const len = Math.max(6, Math.min(13, v.len || RV_LENGTH_M));
+    // Site types: a park model or a wide unit keeps its width.
+    const widBox = isSiteTypes() ? ROADSIDE_V2.boxWid : [2.3, 3];
+    const wid = Math.max(widBox[0], Math.min(widBox[1], v.wid || RV_WIDTH_M));
+    const heading = { ux: v.ux, uy: v.uy };
+    // One frame for every box (a frame per box latitude shifts east-west
+    // by metres between boxes a few metres apart north-south). A unit seen
+    // from two overlapping pad windows, or a roof and the awning beside it
+    // read as a second roof, is one unit: a box that overlaps one already
+    // placed is the same unit seen again.
+    if (!placed.proj) placed.proj = projectAt(v.lat);
+    const at = placed.proj.to(v.lon, v.lat);
+    const rect = boxRect(at[0], at[1], heading, len, wid);
+    let dup = false;
+    for (let p = 0; p < placed.length && !dup; p++) {
+      const q = placed[p];
+      if (Math.hypot(q.x - at[0], q.y - at[1]) < 3) dup = true;
+      else if (Math.hypot(q.x - at[0], q.y - at[1]) < (q.len + len) / 2 && rectOverlapShare(rect, q.rect) > ROADSIDE_OVERLAP_MAX) dup = true;
+    }
+    if (dup) continue;
+    placed.push({ x: at[0], y: at[1], len, rect });
+    out.push(
+      Object.assign({}, f, {
+        kind: "rv",
+        coords: orientedRing(proj, xy[0], xy[1], heading, len, wid),
+        pitchUse: "roadside",
+        pad: undefined,
+      })
+    );
+  }
+  return out;
+}
+
+/** Share of a roadside box over another before it counts as the same unit. */
+const ROADSIDE_OVERLAP_MAX = 0.1;
+
+/** Corners (metres) of a box centred at x, y along heading. */
+function boxRect(x, y, heading, len, wid) {
+  return { x, y, ux: heading.ux, uy: heading.uy, hl: len / 2, hw: wid / 2 };
+}
+
+/** Share of rect a (sampled on a 0.5 m grid) that lies inside rect b. */
+function rectOverlapShare(a, b) {
+  let n = 0;
+  let hit = 0;
+  for (let i = -a.hl + 0.25; i < a.hl; i += 0.5) {
+    for (let j = -a.hw + 0.25; j < a.hw; j += 0.5) {
+      const px = a.x + a.ux * i - a.uy * j - b.x;
+      const py = a.y + a.uy * i + a.ux * j - b.y;
+      n++;
+      if (Math.abs(px * b.ux + py * b.uy) <= b.hl && Math.abs(-px * b.uy + py * b.ux) <= b.hw) hit++;
+    }
+  }
+  return n ? hit / n : 0;
+}
+
+function finalizeVehiclesWork(features, fractionFor, roadsideFor) {
   const out = [];
   const list = features || [];
+  const placed = [];
   for (let i = 0; i < list.length; i++) {
     const f = list[i];
     if (!f) continue;
@@ -587,6 +1505,15 @@ function finalizeVehiclesWork(features, fractionFor) {
       continue;
     }
     const use = f.pitchUse || "";
+    if (f.kind === "rv" && use === "road" && isSiteTypes()) {
+      // A road with no mapped pitches is not evidence of an RV. Only a
+      // roof the photo shows beside the road becomes a box.
+      if (typeof roadsideFor !== "function" || !f.pad) continue;
+      const found = roadsideFor(f.pad);
+      const boxes = roadsideBoxes(f, found, placed);
+      for (let b = 0; b < boxes.length; b++) out.push(boxes[b]);
+      continue;
+    }
     if (f.kind === "rv" && (use === "" || use === "road")) {
       out.push(f);
       continue;
@@ -634,6 +1561,8 @@ function needsPitchImage(features) {
     if (f.kind === "trailer-candidate") return true;
     if (f.kind === "marina" || f.kind === "mobile-park" || f.kind === "truck-lot" || f.kind === "car") return true;
     if (f.kind === "rv" && (f.pitchUse === "rv" || f.pitchUse === "tent" || f.pitchUse === "pitch")) return true;
+    if (f.kind === "rv" && f.pitchUse === "road" && isSiteTypes()) return true;
+    if (f.kind === "camp-zone" && isSiteTypes()) return true;
   }
   return false;
 }
@@ -762,7 +1691,8 @@ function boatBoxes(features) {
   }
   const out = [];
   const spec = BOX.boat;
-  for (let i = 0; i < moorings.length && out.length < BOAT_CAP; i++) {
+  const cap = isSiteTypes() ? BOAT_CAP : BOAT_CAP_LEGACY;
+  for (let i = 0; i < moorings.length && out.length < cap; i++) {
     const m = moorings[i];
     const center = m.coords.length === 1 ? m.coords[0] : centroidLL(m.coords);
     if (!center) continue;
@@ -1156,11 +2086,13 @@ function nearLabel(pred, label, matchM) {
  * required. A shore roof with no water beside it is left out. Height is
  * set by the caller at about 3.5 m.
  */
-function boatsOnWater(ring, frame, plate) {
-  return require("./stage-clock").timeSpanSync("vehicle", () => boatsOnWaterWork(ring, frame, plate));
+function boatsOnWater(ring, frame, plate, holes, piers) {
+  if (!isSiteTypes()) return require("./stage-clock").timeSpanSync("vehicle", () => boatsOnWaterLegacy(ring, frame, plate));
+  return require("./stage-clock").timeSpanSync("vehicle", () => boatsOnWaterWork(ring, frame, plate, holes, piers));
 }
 
-function boatsOnWaterWork(ring, frame, plate) {
+/** The 1.2.17 boat scan, kept for production hosts until 1.2.18 is promoted. */
+function boatsOnWaterLegacy(ring, frame, plate) {
   if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return [];
   const poly = [];
   let minX = Infinity;
@@ -1285,6 +2217,468 @@ function boatsOnWaterWork(ring, frame, plate) {
         rank: 0,
       });
     }
+  }
+  return out;
+}
+
+
+/** Pixels inside a polygon, row by row (even-odd), clipped to the window. */
+function fillPolygon(poly, x0, y0, bw, bh, mask, value) {
+  const xs = [];
+  for (let y = 0; y < bh; y++) {
+    const scan = y0 + y + 0.5;
+    xs.length = 0;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const a = poly[i];
+      const b = poly[j];
+      if ((a[1] <= scan && b[1] > scan) || (b[1] <= scan && a[1] > scan)) {
+        xs.push(a[0] + ((scan - a[1]) / (b[1] - a[1])) * (b[0] - a[0]));
+      }
+    }
+    if (xs.length < 2) continue;
+    xs.sort((p, q) => p - q);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const from = Math.max(0, Math.ceil(xs[k] - 0.5 - x0));
+      const to = Math.min(bw - 1, Math.floor(xs[k + 1] - 0.5 - x0));
+      for (let x = from; x <= to; x++) mask[y * bw + x] = value;
+    }
+  }
+}
+
+/** Chamfer distance (in pixels) from each set pixel to the nearest unset one. */
+function chamferInside(mask, w, h) {
+  const big = 1 << 20;
+  const d = new Int32Array(w * h);
+  for (let i = 0; i < d.length; i++) d[i] = mask[i] ? big : 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!d[i]) continue;
+      let v = d[i];
+      if (x > 0) v = Math.min(v, d[i - 1] + 3);
+      else v = Math.min(v, 3);
+      if (y > 0) {
+        v = Math.min(v, d[i - w] + 3);
+        if (x > 0) v = Math.min(v, d[i - w - 1] + 4);
+        if (x < w - 1) v = Math.min(v, d[i - w + 1] + 4);
+      } else v = Math.min(v, 3);
+      d[i] = v;
+    }
+  }
+  for (let y = h - 1; y >= 0; y--) {
+    for (let x = w - 1; x >= 0; x--) {
+      const i = y * w + x;
+      if (!d[i]) continue;
+      let v = d[i];
+      if (x < w - 1) v = Math.min(v, d[i + 1] + 3);
+      else v = Math.min(v, 3);
+      if (y < h - 1) {
+        v = Math.min(v, d[i + w] + 3);
+        if (x < w - 1) v = Math.min(v, d[i + w + 1] + 4);
+        if (x > 0) v = Math.min(v, d[i + w - 1] + 4);
+      } else v = Math.min(v, 3);
+      d[i] = v;
+    }
+  }
+  return d;
+}
+
+/** Chamfer distance (in pixels x3) from each pixel to the nearest set one. */
+function chamferOutside(mask, w, h) {
+  const inv = new Uint8Array(w * h);
+  for (let i = 0; i < inv.length; i++) inv[i] = mask[i] ? 0 : 1;
+  return chamferInside(inv, w, h);
+}
+
+/**
+ * Light hulls and covers on the water of a marina. Docks and finger piers
+ * are light too, but narrow: an opening at about 1.2 m strips a walkway and
+ * keeps a hull. A hull blob up to about 30 by 9 m is one boat on its own
+ * long axis. A longer blob is a row of boats moored side by side and is cut
+ * along that row into pieces about a beam apart, each kept only where the
+ * photo shows hull. A mapped roof is never a boat. Nothing is drawn on open
+ * water or on a dock with no boat beside it. A main walkway, a light band
+ * at least 20 m long and at most 3.5 m wide, is cleared before hulls are
+ * read, and a row-length blob needs open water on two sides.
+ */
+function boatsOnWaterWork(ring, frame, plate, holes, piers) {
+  if (!ring || ring.length < 3 || !frame || !plate || !(plate.width > 1)) return [];
+  const poly = [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const xy = llToImagePx(ring[i][0], ring[i][1], frame);
+    if (!Number.isFinite(xy[0]) || !Number.isFinite(xy[1])) continue;
+    poly.push(xy);
+    if (xy[0] < minX) minX = xy[0];
+    if (xy[1] < minY) minY = xy[1];
+    if (xy[0] > maxX) maxX = xy[0];
+    if (xy[1] > maxY) maxY = xy[1];
+  }
+  if (poly.length < 3) return [];
+  const mpuX = frame.mpuX > 0 ? frame.mpuX : 0.3;
+  const mpuY = frame.mpuY > 0 ? frame.mpuY : 0.3;
+  const x0 = Math.max(0, Math.floor(minX));
+  const y0 = Math.max(0, Math.floor(minY));
+  const x1 = Math.min(plate.width - 1, Math.ceil(maxX));
+  const y1 = Math.min(plate.height - 1, Math.ceil(maxY));
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  if (bw < 4 || bh < 4 || bw * bh > BOAT_SCAN_MAX_PX) return [];
+  const inside = new Uint8Array(bw * bh);
+  fillPolygon(poly, x0, y0, bw, bh, inside, 1);
+  for (let h = 0; h < (holes || []).length; h++) {
+    const hp = [];
+    for (let k = 0; k < holes[h].length; k++) hp.push(llToImagePx(holes[h][k][0], holes[h][k][1], frame));
+    if (hp.length >= 3) fillPolygon(hp, x0, y0, bw, bh, inside, 0);
+  }
+  const water = new Uint8Array(bw * bh);
+  const boat = new Uint8Array(bw * bh);
+  // A hull is light against this marina's own water. Dark lake water lets
+  // a grey hull count; a bright harbour keeps the old white floor.
+  const wHist = new Uint32Array(91);
+  let wN = 0;
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
+      const k = y * bw + x;
+      if (!inside[k]) continue;
+      const i = ((y + y0) * plate.width + (x + x0)) * 4;
+      const r = plate.data[i];
+      const g = plate.data[i + 1];
+      const b = plate.data[i + 2];
+      const yl = 0.299 * r + 0.587 * g + 0.114 * b;
+      if (yl < 90 && b + 15 >= r) {
+        water[k] = 1;
+        wHist[Math.floor(yl)]++;
+        wN++;
+      }
+    }
+  }
+  let wMed = 60;
+  for (let v = 0, acc = 0; v <= 90 && wN; v++) {
+    acc += wHist[v];
+    if (acc >= wN / 2) {
+      wMed = v;
+      break;
+    }
+  }
+  const hullFloor = Math.max(HULL_MIN_Y, Math.min(175, wMed + HULL_OVER_WATER));
+  // Open water near this marina's own median. Dark pavement on the shore
+  // passes the loose water test but not this one.
+  const deep = new Uint8Array(bw * bh);
+  const deepMax = wMed + DEEP_OVER_WATER;
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
+      const k = y * bw + x;
+      if (!water[k]) continue;
+      const i = ((y + y0) * plate.width + (x + x0)) * 4;
+      if (0.299 * plate.data[i] + 0.587 * plate.data[i + 1] + 0.114 * plate.data[i + 2] <= deepMax) deep[k] = 1;
+    }
+  }
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
+      const k = y * bw + x;
+      if (!inside[k] || water[k]) continue;
+      const i = ((y + y0) * plate.width + (x + x0)) * 4;
+      const r = plate.data[i];
+      const g = plate.data[i + 1];
+      const b = plate.data[i + 2];
+      const yl = 0.299 * r + 0.587 * g + 0.114 * b;
+      if (yl >= hullFloor && Math.max(r, g, b) - Math.min(r, g, b) <= 40) boat[k] = 1;
+    }
+  }
+  const mpu = Math.min(mpuX, mpuY);
+  // Long thin light bands (a walkway seen on the photo) are not hulls.
+  maskWalkways(boat, bw, bh, mpu);
+  // Opening: strip walkways narrower than about 2.4 m, keep hulls.
+  const rPx = Math.max(1, Math.round(DOCK_STRIP_M / mpu));
+  const din = chamferInside(boat, bw, bh);
+  const core = new Uint8Array(bw * bh);
+  for (let i = 0; i < core.length; i++) if (din[i] > rPx * 3) core[i] = 1;
+  const dout = chamferOutside(core, bw, bh);
+  const hull = new Uint8Array(bw * bh);
+  for (let i = 0; i < hull.length; i++) if (boat[i] && dout[i] <= (rPx + 1) * 3) hull[i] = 1;
+  const wetPx = Math.max(2, Math.round(WET_NEAR_M / mpu));
+  // Read beside piers only: a hull has to lie within a slip length of one.
+  let pierLines = null;
+  if (piers && piers.length) {
+    const lat0 = ((+frame.south || 0) + (+frame.north || 0)) / 2;
+    const mLon = 111320 * Math.cos((lat0 * Math.PI) / 180);
+    pierLines = piers.map((l) => l.map((p) => [p[0] * mLon, p[1] * 110540]));
+  }
+  const dwater = chamferOutside(water, bw, bh);
+  const seen = new Uint8Array(bw * bh);
+  const stack = [];
+  const out = [];
+  const areaPx = mpuX * mpuY;
+  for (let i = 0; i < hull.length && out.length < BOAT_CAP; i++) {
+    if (!hull[i] || seen[i]) continue;
+    const cells = [];
+    stack.push(i);
+    seen[i] = 1;
+    let wet = false;
+    while (stack.length) {
+      const k = stack.pop();
+      cells.push(k);
+      if (dwater[k] <= wetPx * 3) wet = true;
+      const x = k % bw;
+      const y = (k / bw) | 0;
+      if (x > 0 && hull[k - 1] && !seen[k - 1]) { seen[k - 1] = 1; stack.push(k - 1); }
+      if (x < bw - 1 && hull[k + 1] && !seen[k + 1]) { seen[k + 1] = 1; stack.push(k + 1); }
+      if (y > 0 && hull[k - bw] && !seen[k - bw]) { seen[k - bw] = 1; stack.push(k - bw); }
+      if (y < bh - 1 && hull[k + bw] && !seen[k + bw]) { seen[k + bw] = 1; stack.push(k + bw); }
+    }
+    const m2 = cells.length * areaPx;
+    if (!wet || m2 < BOAT_MIN_M2) continue;
+    const ext = roofExtent(cells, x0, y0, bw, frame);
+    if (pierLines && !nearPier(ext.cx, ext.cy, pierLines, PIER_NEAR_M)) continue;
+    // A hull floats: open water shows around it. Pavement or a roof edge on
+    // the shore touches water on one side only.
+    const around = waterAround(ext, water, x0, y0, bw, bh, frame);
+    if (around.share < BOAT_WATER_AROUND) continue;
+    // A blob long enough to be a row needs open water on at least two
+    // sides. A strip along the shore has it on one; dark pavement does not
+    // count as open water.
+    if (ext.len > BOAT_ONE_MAX_M && waterAround(ext, deep, x0, y0, bw, bh, frame).sides < 2) continue;
+    const pieces = boatPieces(cells, x0, y0, bw, frame, ext);
+    for (let p = 0; p < pieces.length && out.length < BOAT_CAP; p++) out.push(pieces[p]);
+  }
+  return out;
+}
+
+/** A boat centre within this many metres of a pier line counts as moored there. */
+const PIER_NEAR_M = 16;
+
+function nearPier(x, y, lines, limit) {
+  const lim2 = limit * limit;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    for (let k = 0; k + 1 < l.length; k++) {
+      const ax = l[k][0];
+      const ay = l[k][1];
+      const dx = l[k + 1][0] - ax;
+      const dy = l[k + 1][1] - ay;
+      const len2 = dx * dx + dy * dy;
+      let t = len2 > 0 ? ((x - ax) * dx + (y - ay) * dy) / len2 : 0;
+      if (t < 0) t = 0;
+      else if (t > 1) t = 1;
+      const ex = x - (ax + t * dx);
+      const ey = y - (ay + t * dy);
+      if (ex * ex + ey * ey <= lim2) return true;
+    }
+    if (l.length === 1) {
+      const ex = x - l[0][0];
+      const ey = y - l[0][1];
+      if (ex * ex + ey * ey <= lim2) return true;
+    }
+  }
+  return false;
+}
+
+/** Share of the 0.5 to 2.5 m band around a hull's box that is open water. */
+const BOAT_WATER_AROUND = 0.2;
+/** A side of a hull counts as wet when this share of its band is water. */
+const SIDE_WET = 0.25;
+/** Open water is at most this much brighter than the marina's median water. */
+const DEEP_OVER_WATER = 25;
+/** A light band at least this long and at most this wide is a walkway. */
+const WALKWAY_MIN_LEN_M = 20;
+const WALKWAY_MAX_WID_M = 3.5;
+
+/** Light run length through each pixel along one direction, capped at 255. */
+function runLengths(mask, w, h, sx, sy) {
+  const run = new Uint8Array(w * h);
+  const starts = [];
+  if (sy === 0) for (let y = 0; y < h; y++) starts.push([sx > 0 ? 0 : w - 1, y]);
+  else if (sx === 0) for (let x = 0; x < w; x++) starts.push([x, 0]);
+  else {
+    for (let x = 0; x < w; x++) starts.push([x, 0]);
+    for (let y = 1; y < h; y++) starts.push([sx > 0 ? 0 : w - 1, y]);
+  }
+  const idx = [];
+  for (let s = 0; s < starts.length; s++) {
+    let x = starts[s][0];
+    let y = starts[s][1];
+    idx.length = 0;
+    while (x >= 0 && y >= 0 && x < w && y < h) {
+      const k = y * w + x;
+      if (mask[k]) idx.push(k);
+      else if (idx.length) {
+        const v = Math.min(255, idx.length);
+        for (let q = 0; q < idx.length; q++) run[idx[q]] = v;
+        idx.length = 0;
+      }
+      x += sx;
+      y += sy;
+    }
+    if (idx.length) {
+      const v = Math.min(255, idx.length);
+      for (let q = 0; q < idx.length; q++) run[idx[q]] = v;
+    }
+  }
+  return run;
+}
+
+/**
+ * A walkway on the photo is a light band that runs on and on but stays
+ * narrow across. A hull is short along its row, and a yacht long enough to
+ * pass the length test is wider than a walkway.
+ */
+function maskWalkways(mask, w, h, mpu) {
+  const minLen = WALKWAY_MIN_LEN_M / mpu;
+  const maxWid = WALKWAY_MAX_WID_M / mpu;
+  const diag = Math.SQRT2;
+  const pairs = [
+    [1, 0, 0, 1, 1],
+    [1, 1, 1, -1, diag],
+  ];
+  const clear = new Uint8Array(w * h);
+  for (let p = 0; p < pairs.length; p++) {
+    const [ax, ay, bx, by, step] = pairs[p];
+    const a = runLengths(mask, w, h, ax, ay);
+    const b = runLengths(mask, w, h, bx, by);
+    const lenPx = minLen / step;
+    const widPx = maxWid / step;
+    if (lenPx > 255) continue;
+    for (let k = 0; k < mask.length; k++) {
+      if (!mask[k]) continue;
+      if ((a[k] >= lenPx && b[k] <= widPx) || (b[k] >= lenPx && a[k] <= widPx)) clear[k] = 1;
+    }
+  }
+  for (let k = 0; k < mask.length; k++) if (clear[k]) mask[k] = 0;
+}
+
+function waterAround(ext, water, x0, y0, bw, bh, frame) {
+  const hl = ext.len / 2;
+  const hw = ext.wid / 2;
+  const inner = 0.5;
+  const outer = 2.5;
+  const vx = -ext.uy;
+  const vy = ext.ux;
+  const R = hl + outer;
+  const lonC = ext.cx / ext.mLon;
+  const latC = ext.cy / 110540;
+  const cx = ((lonC - frame.west) / (frame.east - frame.west)) * frame.imgW;
+  const cy = ((frame.north - latC) / (frame.north - frame.south)) * frame.imgH;
+  const mpx = (Math.abs(frame.east - frame.west) * ext.mLon) / frame.imgW;
+  const mpy = (Math.abs(frame.north - frame.south) * 110540) / frame.imgH;
+  const rx = Math.ceil(R / mpx);
+  const ry = Math.ceil(R / mpy);
+  let n = 0;
+  let wet = 0;
+  const sideN = [0, 0, 0, 0];
+  const sideW = [0, 0, 0, 0];
+  for (let py = Math.max(y0, Math.floor(cy - ry)); py <= Math.min(y0 + bh - 1, Math.ceil(cy + ry)); py++) {
+    for (let px = Math.max(x0, Math.floor(cx - rx)); px <= Math.min(x0 + bw - 1, Math.ceil(cx + rx)); px++) {
+      const dx = (px + 0.5 - cx) * mpx;
+      const dy = -(py + 0.5 - cy) * mpy;
+      const su = dx * ext.ux + dy * ext.uy;
+      const sv = dx * vx + dy * vy;
+      const u = Math.abs(su);
+      const v = Math.abs(sv);
+      if (u > hl + outer || v > hw + outer) continue;
+      if (u <= hl + inner && v <= hw + inner) continue;
+      n++;
+      const isWet = water[(py - y0) * bw + (px - x0)] ? 1 : 0;
+      wet += isWet;
+      // The side this sample faces: the two ends, then the two flanks.
+      const side = u - hl > v - hw ? (su > 0 ? 0 : 1) : sv > 0 ? 2 : 3;
+      sideN[side]++;
+      sideW[side] += isWet;
+    }
+  }
+  let sides = 0;
+  for (let k = 0; k < 4; k++) if (sideN[k] && sideW[k] / sideN[k] >= SIDE_WET) sides++;
+  return { share: n ? wet / n : 0, sides };
+}
+
+/**
+ * Oriented boxes for one hull blob. A blob up to BOAT_ONE_MAX long and
+ * BOAT_BEAM_MAX wide is one boat. A longer one is cut along its long axis
+ * into pieces about BOAT_ROW_PITCH_M apart when it is a row of boats side by
+ * side (the beam runs along the row), or into BOAT_ONE_MAX pieces when it is
+ * one long line of hulls. A piece is kept only where hull covers at least
+ * BOAT_PIECE_FILL of it.
+ */
+function boatPieces(cells, x0, y0, bw, frame, ext) {
+  const out = [];
+  const ux = ext.ux;
+  const uy = ext.uy;
+  const vx = -uy;
+  const vy = ux;
+  const pts = new Float64Array(cells.length * 2);
+  let minU = Infinity;
+  let maxU = -Infinity;
+  for (let c = 0; c < cells.length; c++) {
+    const x = x0 + (cells[c] % bw) + 0.5;
+    const y = y0 + ((cells[c] / bw) | 0) + 0.5;
+    const lon = frame.west + (x / frame.imgW) * (frame.east - frame.west);
+    const lat = frame.north - (y / frame.imgH) * (frame.north - frame.south);
+    const dx = lon * ext.mLon - ext.cx;
+    const dy = lat * 110540 - ext.cy;
+    const u = dx * ux + dy * uy;
+    const v = dx * vx + dy * vy;
+    pts[2 * c] = u;
+    pts[2 * c + 1] = v;
+    if (u < minU) minU = u;
+    if (u > maxU) maxU = u;
+  }
+  const len = maxU - minU;
+  let n = 1;
+  if (len > BOAT_ONE_MAX_M || ext.wid > BOAT_BEAM_MAX_M) {
+    // Side by side: the row runs along u and each boat lies across it.
+    const pitch = ext.wid >= BOAT_ROW_MIN_WID_M ? BOAT_ROW_PITCH_M : BOAT_ONE_MAX_M;
+    n = Math.max(1, Math.round(len / pitch));
+  }
+  const step = len / n;
+  const areaPx = (frame.mpuX > 0 ? frame.mpuX : 0.3) * (frame.mpuY > 0 ? frame.mpuY : 0.3);
+  for (let k = 0; k < n; k++) {
+    const lo = minU + k * step;
+    const hi = lo + step;
+    let cnt = 0;
+    let minV = Infinity;
+    let maxV = -Infinity;
+    let pMinU = Infinity;
+    let pMaxU = -Infinity;
+    for (let c = 0; c < cells.length; c++) {
+      const u = pts[2 * c];
+      if (u < lo || (u >= hi && k < n - 1)) continue;
+      const v = pts[2 * c + 1];
+      cnt++;
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+      if (u < pMinU) pMinU = u;
+      if (u > pMaxU) pMaxU = u;
+    }
+    if (!cnt) continue;
+    const pu = Math.max(1.8, pMaxU - pMinU);
+    const pv = Math.max(1.8, maxV - minV);
+    const m2 = cnt * areaPx;
+    if (m2 < BOAT_MIN_M2 || m2 / (pu * pv) < BOAT_PIECE_FILL) continue;
+    const cu = (pMinU + pMaxU) / 2;
+    const cv = (minV + maxV) / 2;
+    const cxm = ext.cx + ux * cu + vx * cv;
+    const cym = ext.cy + uy * cu + vy * cv;
+    const lon = cxm / ext.mLon;
+    const lat = cym / 110540;
+    const proj = projectAt(lat);
+    const xy = proj.to(lon, lat);
+    // The box's long side follows the longer of the two piece extents.
+    const along = pu >= pv;
+    const heading = along ? { ux, uy } : { ux: vx, uy: vy };
+    const length = Math.min(BOAT_MAX_LEN_M, along ? pu : pv);
+    const width = Math.min(BOAT_BEAM_MAX_M, along ? pv : pu);
+    out.push({
+      kind: "boat",
+      coords: orientedRing(proj, xy[0], xy[1], heading, length, width),
+      closed: true,
+      heightM: BOX.boat.height,
+      explicitHeight: true,
+      center: [lon, lat],
+      rank: 0,
+    });
   }
   return out;
 }
@@ -2571,6 +3965,7 @@ function scoreLayerOverlap(labels, predRings, cellM) {
 }
 
 module.exports = {
+  ROADSIDE_V2,
   RV_LENGTH_M,
   RV_WIDTH_M,
   RV_HEIGHT_M,
@@ -2606,10 +4001,13 @@ module.exports = {
   vehicleBlobM2,
   vehicleNear,
   pitchVehicle,
+  roadsideVehicles,
   occupiedCarLayerWork,
   carHitRows,
   finishCarLayer,
   boatsOnWaterWork,
+  boatsOnWaterLegacy,
+  maskWalkways,
   mobileHomesInRingWork,
   semisInLotWork,
   semisAtDocksWork,
@@ -2622,6 +4020,8 @@ module.exports = {
   decodePlate,
   needsPitchImage,
   projectAt,
+  boxRect,
+  rectOverlapShare,
   centroidLL,
   orientedRing,
   semiBoxes,

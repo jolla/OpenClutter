@@ -128,6 +128,8 @@ async function inspectJob(jobId, startedAt, nowFn, staleMs) {
   if (job && job.worker === "fly" && (job.state === "done" || job.state === "error")) {
     return { action: "finished", job, stage, room };
   }
+  // The page cancelled it: nothing to wait for and nothing to run again.
+  if (job && job.state === "cancelled") return { action: "finished", job, stage, room };
   const beat =
     job && typeof job.heartbeatAt === "number" && Number.isFinite(job.heartbeatAt)
       ? job.heartbeatAt
@@ -183,6 +185,7 @@ async function handOffExport(jobId, inner, fetchImpl) {
   const { sleepFn } = clockFns();
   let result = null;
   for (let attempt = 0; attempt <= BUSY_RETRY_MS.length; attempt++) {
+    if (await jobs.jobCancelled(jobId)) return CANCELLED_RESULT;
     result = await handOffOnce(jobId, inner, fetchImpl, cfg);
     if (!isBusyResult(result) || attempt === BUSY_RETRY_MS.length) break;
     await sleepFn(BUSY_RETRY_MS[attempt]);
@@ -194,6 +197,7 @@ async function handOffExport(jobId, inner, fetchImpl) {
 // machine is at its hard limit or still starting. Each retry lets the proxy
 // start or pick another machine before the job falls back to Netlify.
 const BUSY_STATUSES = [409, 429, 502, 503];
+const CANCELLED_RESULT = { skipped: false, handed: true, fallback: false, stay: false, reason: "cancelled" };
 const BUSY_RETRY_MS = [3000, 6000, 10000];
 
 function isBusyResult(result) {
@@ -298,7 +302,42 @@ async function handOffOnce(jobId, inner, fetchImpl, cfg) {
   return { skipped: false, handed: false, fallback: true, stay: false, reason: "worker-rejected" };
 }
 
+function cancelUrl(base) {
+  const trimmed = String(base || "").replace(/\/$/, "").replace(/\/export$/i, "");
+  return trimmed + "/cancel";
+}
+
+/**
+ * Ask the Fly machine that runs jobId to stop now. Best effort: the job is
+ * already marked cancelled in the store, and the worker also reads that on
+ * its next heartbeat. machineId pins the request to that machine. A short
+ * timeout keeps the page's Cancel quick when the proxy holds the request.
+ * Returns { sent, status }.
+ */
+async function cancelOnWorker(jobId, machineId, fetchImpl, timeoutMs) {
+  const url = String(process.env.FLY_WORKER_URL || "").trim();
+  const secret = String(process.env.FLY_WORKER_SECRET || "").trim();
+  if (!url || !secret || !jobs.validJobId(jobId)) return { sent: false, status: 0 };
+  const fetchFn = fetchImpl || globalThis.fetch;
+  const headers = { "content-type": "application/json", authorization: "Bearer " + secret };
+  const machine = String(machineId || "").trim();
+  if (/^[0-9a-z]{6,32}$/i.test(machine)) headers["fly-force-instance-id"] = machine;
+  try {
+    const res = await fetchFn(cancelUrl(url), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ jobId }),
+      signal: AbortSignal.timeout(timeoutMs == null ? 4000 : timeoutMs),
+    });
+    return { sent: true, status: res && typeof res.status === "number" ? res.status : 0 };
+  } catch {
+    return { sent: false, status: 0 };
+  }
+}
+
 module.exports = {
+  cancelUrl,
+  cancelOnWorker,
   FALLBACK_NOTE,
   RERUN_NOTE,
   HANDOFF_MS,

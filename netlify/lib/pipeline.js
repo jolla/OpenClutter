@@ -81,6 +81,31 @@ const DEFAULT_AREA_CAP = AREA_CAP_MAX;
  */
 const OPENINTENT_JSON_BUDGET = 4900000;
 const JSON_BUDGET_MAX = 5242880;
+/**
+ * /dev budget from 1.2.29 (export-mode bigBudget). Hamina test-eu, Oct 24
+ * 2026, with a 3,865,174-byte map image in every file: JSON 5,999,442
+ * imported, 6,248,068 was refused at once as too large. The cap is either
+ * about 6,000,000 bytes of JSON or about 10 MB of JSON plus image, so /dev
+ * keeps under both: 5.8 MB of JSON and 9.7 MB of JSON plus map image.
+ */
+const DEV_JSON_BUDGET = 5800000;
+const DEV_TOTAL_BUDGET = 9700000;
+/** Lowest JSON budget the image rule can leave; a bigger image is the user's map choice. */
+const DEV_JSON_FLOOR = 1000000;
+
+/**
+ * JSON byte budget for one export. Production (bigBudget off) is the 1.2.17
+ * rule: the dev override or 4.9 MB, image not counted. On /dev the JSON
+ * budget is 5.8 MB (or the override), and JSON plus map image stays at or
+ * under 9.7 MB.
+ */
+function effectiveJsonBudget(override, imageBytes) {
+  const base = override > 0 ? override | 0 : 0;
+  if (!require("./export-mode").isBigBudget()) return base || OPENINTENT_JSON_BUDGET;
+  const json = base || DEV_JSON_BUDGET;
+  const img = imageBytes > 0 ? imageBytes : 0;
+  return Math.min(json, Math.max(DEV_JSON_FLOOR, DEV_TOTAL_BUDGET - img));
+}
 /** In-bounds pixel vertices. Two decimals is 0.01 px. Meters and feet are not repeated. */
 const OI_PIXEL_DECIMALS = 2;
 const OPENINTENT_VERSION = "2.0.1";
@@ -359,6 +384,15 @@ function coverageSummary(stats) {
     line += " Area cap " + cap + " (test override).";
   } else if (countOverride) {
     line += " Area cap " + cap + ".";
+  } else if (stats && stats.totalBudget > 0) {
+    line +=
+      " Byte budget " +
+      ((stats.jsonBudget > 0 ? stats.jsonBudget : DEV_JSON_BUDGET) / 1e6).toFixed(2) +
+      " MB of JSON (" +
+      (stats.totalBudget / 1e6).toFixed(2) +
+      " MB with the map image). Sanity cap " +
+      DEFAULT_AREA_CAP +
+      ".";
   } else {
     line +=
       " Byte budget " +
@@ -376,6 +410,14 @@ function coverageSummary(stats) {
     if (stats.stoppedBy === "bytes") {
       const budget = stats.jsonBudget > 0 ? stats.jsonBudget : OPENINTENT_JSON_BUDGET;
       line += " Stopped at the " + (budget / 1e6).toFixed(2) + " MB byte budget.";
+      if (stats.totalBudget > 0 && stats.imageBytes > 0 && budget < DEV_JSON_BUDGET) {
+        line +=
+          " The " +
+          (stats.imageBytes / 1e6).toFixed(2) +
+          " MB map image counts toward the " +
+          (stats.totalBudget / 1e6).toFixed(2) +
+          " MB Hamina total.";
+      }
     } else if (stats.stoppedBy === "count") {
       line += countOverride
         ? " Stopped at area cap " + cap + "."
@@ -454,7 +496,8 @@ function raisedAreaHolds(areaCap, counts) {
   let treeHold = Math.min(treeAreas, rest, treeWant);
   rest -= treeHold;
   let buildingLimit = Math.min(buildings, base + rest);
-  let spare = (areaCap | 0) - (buildingLimit + treeHold + deckHold + waterHold);
+  // The RV hold is already spoken for, so it is not spare for trees.
+  let spare = (areaCap | 0) - (buildingLimit + treeHold + deckHold + waterHold + rvHold);
   if (spare > 0) {
     const addTrees = Math.min(spare, Math.max(0, treeAreas - treeHold));
     treeHold += addTrees;
@@ -479,6 +522,19 @@ function raisedAreaHolds(areaCap, counts) {
     buildingLimit += Math.min(spare, Math.max(0, buildings - buildingLimit));
   }
   return { buildingLimit, treeHold, deckHold, waterHold, rvHold };
+}
+
+/**
+ * The plain note when the area budget cuts RVs from the vehicle list, so a
+ * cut is never silent. Null when every RV fits.
+ */
+function vehicleCutNote(vehicleList, vehicleRoom) {
+  const list = vehicleList || [];
+  const room = Math.max(0, vehicleRoom | 0);
+  for (let i = room; i < list.length; i++) {
+    if (list[i] && list[i].kind === "rv") return "RVs left out to stay inside the area budget.";
+  }
+  return null;
 }
 
 const TERRAIN_README =
@@ -3093,9 +3149,32 @@ function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
   return { areas, kinds, droppedInvalid };
 }
 
+/** OpenIntent pixel centres of the pad-fill areas in a converted outdoor plan. */
+function padFillCentres(converted) {
+  const out = [];
+  if (!converted || !converted.fills) return out;
+  for (let i = 0; i < converted.areas.length; i++) {
+    if (!converted.fills[i]) continue;
+    const c = converted.areas[i] && converted.areas[i].area && converted.areas[i].area.coordinates;
+    if (!c || c.length < 4) continue;
+    let x = 0;
+    let y = 0;
+    const last = c[c.length - 1].coordinate_xyz;
+    const first = c[0].coordinate_xyz;
+    const n = last.x === first.x && last.y === first.y ? c.length - 1 : c.length;
+    for (let k = 0; k < n; k++) {
+      x += c[k].coordinate_xyz.x;
+      y += c[k].coordinate_xyz.y;
+    }
+    out.push([Math.round((x / n) * 100) / 100, Math.round((y / n) * 100) / 100]);
+  }
+  return out;
+}
+
 function outdoorToOi(items, imgW, imgH, mpuX) {
   const areas = [];
   const kinds = [];
+  const fills = [];
   const droppedByKind = {};
   for (const t of items || []) {
     const opts = { keepShape: true };
@@ -3114,8 +3193,9 @@ function outdoorToOi(items, imgW, imgH, mpuX) {
     }
     areas.push(area);
     kinds.push(t.kind);
+    fills.push(t.padFill === true);
   }
-  return { areas, kinds, droppedByKind };
+  return { areas, kinds, fills, droppedByKind };
 }
 
 /** Hamina outdoor OpenIntent floorplan height (gold export + after-paste re-export). */
@@ -3129,7 +3209,19 @@ function isTrunkArea(a) {
 
 function buildOpenIntent(frame, name, imgName, areas, materials) {
   const mpu = frame.mpuX || frame.mpu || frame.widthM / frame.imgW;
-  return {
+  let wallSegments = null;
+  let wallMaterials = [];
+  let areaMaterials = null;
+  if (require("./export-mode").isRvShell()) {
+    const shell = require("./rv-shell").shellRvAreas(areas);
+    if (shell.shells) {
+      areaMaterials = documentMaterials(shell.areas).concat(shell.roofMaterials);
+      areas = shell.areas;
+      wallSegments = shell.walls;
+      wallMaterials = shell.wallMaterials;
+    }
+  }
+  const oi = {
     floorplans: [
       {
         name,
@@ -3163,11 +3255,13 @@ function buildOpenIntent(frame, name, imgName, areas, materials) {
         closets: [],
       },
     ],
-    wall_materials: [],
+    wall_materials: wallMaterials,
     switches: [],
-    area_materials: documentMaterials(areas),
+    area_materials: areaMaterials || documentMaterials(areas),
     openintent_version: OPENINTENT_VERSION,
   };
+  if (wallSegments && wallSegments.length) oi.floorplans[0].wall_segments = wallSegments;
+  return oi;
 }
 
 /**
@@ -3210,6 +3304,34 @@ function rankPiecesByCover(pieces) {
   return pieces;
 }
 
+/** Crown outline tolerances tried, in metres, before trees are dropped for bytes. */
+const TREE_THIN_STEPS_M = [0.25, 0.5, 0.8];
+
+/** Douglas-Peucker each crown and foliage ring in place; returns vertices removed. */
+function thinTreeOutlines(pieces, epsPx) {
+  const { dpClosed } = require("./canopy-height");
+  let removed = 0;
+  for (let i = 0; i < pieces.length; i++) {
+    const areas = pieces[i].areas || [];
+    for (let j = 0; j < areas.length; j++) {
+      const a = areas[j];
+      if (!a || isTrunkArea(a) || !a.area || !a.area.coordinates) continue;
+      const coords = a.area.coordinates;
+      if (coords.length < 6) continue;
+      const closed = coords[0].coordinate_xyz.x === coords[coords.length - 1].coordinate_xyz.x && coords[0].coordinate_xyz.y === coords[coords.length - 1].coordinate_xyz.y;
+      const open = (closed ? coords.slice(0, -1) : coords).map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
+      const thin = dpClosed(open, epsPx);
+      if (thin.length < 3 || thin.length >= open.length) continue;
+      const unit = coords[0].coordinate_xyz.unit;
+      const next = thin.map((p) => ({ coordinate_xyz: { x: p[0], y: p[1], unit } }));
+      if (closed) next.push({ coordinate_xyz: { x: thin[0][0], y: thin[0][1], unit } });
+      removed += coords.length - next.length;
+      a.area = Object.assign({}, a.area, { coordinates: next });
+    }
+  }
+  return removed;
+}
+
 const OPEN_TREE_MAX_M2 = 400;
 const WALL_CROWN_MAX_W_M = 6;
 const WALL_CROWN_MIN_L_M = 18;
@@ -3249,6 +3371,7 @@ const LEAF_ON_MIN_GREEN = 0.05;
 // A lidar flight this many years old may predate clearing. The photo must
 // be leaf-on (median measured crown at least this green) before a crown it
 // shows as open, foliage-free ground is dropped.
+const { PIECE_LEAFY_MIN } = require("./photo-canopy");
 const STALE_LIDAR_YEARS = 4;
 const STALE_MIN_CROWNS = 8;
 const STALE_LEAF_ON_GREEN = 0.5;
@@ -3311,17 +3434,20 @@ function dropPassengerCarsFromPlan(plan) {
     }
     const srcKinds = plan.converted.kinds || [];
     const srcAreas = plan.converted.areas || [];
+    const srcFills = plan.converted.fills || [];
     const areas = [];
     const kinds = [];
+    const fills = [];
     for (let i = 0; i < srcKinds.length; i++) {
       if (srcKinds[i] === "car") continue;
       kinds.push(srcKinds[i]);
       areas.push(srcAreas[i]);
+      fills.push(srcFills[i] === true);
     }
     if (items.length === srcItems.length && kinds.length === srcKinds.length) return plan;
     return {
       planned: Object.assign({}, plan.planned, { items: items }),
-      converted: Object.assign({}, plan.converted, { areas: areas, kinds: kinds }),
+      converted: Object.assign({}, plan.converted, { areas: areas, kinds: kinds, fills: fills }),
     };
   }
   if (plan.items) {
@@ -3355,6 +3481,7 @@ function buildClutter({
   omitFoliage,
   chmRequired,
   maxFoliagePolygons,
+  photoCrowns,
   woodRings,
   outdoorFeatures,
   outdoorNotes,
@@ -3376,6 +3503,7 @@ function buildClutter({
   outdoorPlan,
   aerialOpenShare,
   aerialGreenShare,
+  photoLeafyShare,
   leafOnGreenShare,
   leafOnSource,
   imagery,
@@ -3412,7 +3540,9 @@ function buildClutter({
   }
   const slopeTop = demUnderFootprint(terrain);
   const areaCap = maxAttenuationAreas > 0 ? maxAttenuationAreas | 0 : DEFAULT_AREA_CAP;
-  const jsonByteBudget = jsonBudget > 0 ? jsonBudget | 0 : OPENINTENT_JSON_BUDGET;
+  const bigBudget = require("./export-mode").isBigBudget();
+  const imageBytes = imgBuf && imgBuf.length > 0 ? imgBuf.length : 0;
+  const jsonByteBudget = effectiveJsonBudget(jsonBudget, imageBytes);
   const capIsOverride = areaCapOverride === true;
   const buildingCeiling =
     areaCap > MAX_ATTENUATION_AREAS ? Math.max(MAX_BUILDINGS, areaCap) : MAX_BUILDINGS;
@@ -3436,6 +3566,7 @@ function buildClutter({
           maxPolygons: maxFoliagePolygons,
           woodRings,
           palmPoints,
+          photoCrowns,
         }))
       : {
         oiAreas: [],
@@ -3450,6 +3581,11 @@ function buildClutter({
         overlayPoints: [],
         overlayRings: [],
       };
+  if (!foliagePack && photoCrowns && photoCrowns.stats && Array.isArray(warnings)) {
+    if (footprintMeta) footprintMeta.photoCrowns = photoCrowns.stats;
+    const crownNote = require("./photo-crowns").photoCrownNote(photoCrowns.stats);
+    if (crownNote && warnings.indexOf(crownNote) < 0) warnings.push(crownNote);
+  }
   if (foliageOn && veg.foliageCoarsened && Array.isArray(warnings)) {
     const cap = maxFoliagePolygons > 0 ? maxFoliagePolygons | 0 : 720;
     const dropped = veg.foliageDropped | 0;
@@ -3634,6 +3770,7 @@ function buildClutter({
     const protectedOutdoor = Math.min(room, deckHold + waterHold);
     const vehicleRoom = Math.min(vehicleList.length, Math.max(0, room - protectedOutdoor));
     const vehicleTake = vehicleList.slice(0, vehicleRoom);
+    const rvCutNote = vehicleCutNote(vehicleList, vehicleRoom);
     const fit = fitOutdoorBudget(
       otherAreas,
       otherKinds,
@@ -3649,6 +3786,7 @@ function buildClutter({
     const wallDrop =
       (drop.wall || 0) + (drop.fence || 0) + (drop.retaining || 0) + (drop.hedge || 0);
     const notes = (outdoorNotes || []).concat(planned.notes || [], fit.notes || []);
+    if (rvCutNote && notes.indexOf(rvCutNote) < 0) notes.push(rvCutNote);
     const shapeNote = (n, label) =>
       n + " " + label + (n === 1 ? " was" : "s were") + " not a valid shape.";
     if (wallDrop) notes.push(shapeNote(wallDrop, "wall"));
@@ -3784,6 +3922,28 @@ function buildClutter({
       );
     }
   }
+  // /dev hosts: on a leaf-on photo, a lidar crown piece that shows foliage
+  // texture on almost none of its outline is a parked RV, a roof, a shadow or
+  // a tree cut since the flight (photo-canopy.js). Dropped with its stem.
+  let photoBareDropped = 0;
+  if (!canopyEstimated && typeof photoLeafyShare === "function" && treePieces.length) {
+    for (let i = treePieces.length - 1; i >= 0; i--) {
+      const crown = (treePieces[i].areas || []).find((a) => a && !isTrunkArea(a));
+      const coords = crown && crown.area && crown.area.coordinates;
+      if (!coords || coords.length < 3) continue;
+      const share = photoLeafyShare(coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]));
+      if (share !== null && share < PIECE_LEAFY_MIN) {
+        treePieces.splice(i, 1);
+        photoBareDropped++;
+      }
+    }
+    if (footprintMeta) footprintMeta.photoBareCrowns = photoBareDropped;
+    if (photoBareDropped && Array.isArray(warnings)) {
+      warnings.push(
+        "Left out " + photoBareDropped + " lidar crown" + (photoBareDropped === 1 ? "" : "s") + " with no foliage on the current photo."
+      );
+    }
+  }
   // On an estimated canopy, a crown the national summer photo shows as roof,
   // shadow or paving is dropped with its stem. Measured lidar crowns stay.
   let leafOnDropped = 0;
@@ -3803,6 +3963,8 @@ function buildClutter({
       warnings.push("Left out " + leafOnDropped + " canopy pieces with no summer foliage on the " + (leafOnSource || "leaf-on orthophoto") + ".");
     }
   }
+  let treeThinned = 0;
+  let treeThinStep = 0;
   const deckPieces = [];
   const waterPieces = [];
   const rvPieces = [];
@@ -3825,6 +3987,19 @@ function buildClutter({
   // The trees are then ranked by the canopy each one covers per byte, so a
   // crowd of small stemmed trees cannot push large stands out of the scene.
   if (treePieces.length > 1 && overJsonBudget(frame, name, imgName, chunks.concat(treePieces, latePieces), jsonByteBudget)) {
+    // First thin the crown outlines a little at a time, so the trim drops
+    // fewer trees. Stems keep their shape.
+    if (require("./export-mode").isSiteTypes()) {
+      const mpu = frame.mpuX || frame.mpu || frame.widthM / frame.imgW;
+      for (let s = 0; s < TREE_THIN_STEPS_M.length; s++) {
+        treeThinned = thinTreeOutlines(treePieces, TREE_THIN_STEPS_M[s] / mpu);
+        treeThinStep = TREE_THIN_STEPS_M[s];
+        if (!overJsonBudget(frame, name, imgName, chunks.concat(treePieces, latePieces), jsonByteBudget)) break;
+      }
+      if (treeThinned && Array.isArray(warnings)) {
+        warnings.push("Simplified tree outlines to within " + treeThinStep + " m to fit more of the canopy in the OpenIntent byte budget.");
+      }
+    }
     rankPiecesByCover(treePieces);
   }
   for (let i = 0; i < treePieces.length; i++) chunks.push(treePieces[i]);
@@ -3873,7 +4048,7 @@ function buildClutter({
   }
   if (planned) {
     for (let i = 0; i < planned.updates.length; i++) {
-      if (planned.updates[i].index < buildingEmitted) parkingAreas++;
+      if (planned.updates[i].index < buildingEmitted && planned.updates[i].kind !== "rv") parkingAreas++;
     }
   }
   const roofsLeftOut = fp.oiAreas.length - buildingEmitted;
@@ -3970,6 +4145,7 @@ function buildClutter({
     droppedTreeRings: treeOi.droppedInvalid,
     droppedAreasCap: roofsLeftOut,
     droppedTreeAreas: treeOi.areas.length - treeEmitted,
+    ...(treeThinned ? { treeVerticesThinned: treeThinned, treeThinM: treeThinStep } : {}),
     attenuationAreasEmitted: areas.length,
     openIntentBuildingAreas: buildingEmitted,
     openIntentTreeAreas: treeEmitted,
@@ -3990,6 +4166,10 @@ function buildClutter({
     guidewayAreas,
     bridgeAreas,
     rvAreas,
+    rvShellWalls: (oi.floorplans[0].wall_segments || []).length,
+    // Worst-case pad fills (rv-pads.js) by OpenIntent pixel centre, for the
+    // site-type bench only (OC_BENCH_PAD_FILLS), so it can score them apart.
+    ...(process.env.OC_BENCH_PAD_FILLS ? { padFills: padFillCentres(converted) } : {}),
     trailerAreas,
     semiAreas,
     storageAreas,
@@ -4001,6 +4181,7 @@ function buildClutter({
     openIntentJsonBytes: Buffer.byteLength(oiJson),
     jsonBudget: jsonByteBudget,
     stoppedBy,
+    ...(bigBudget ? { totalBudget: DEV_TOTAL_BUDGET, imageBytes } : {}),
     openintentVersion: OPENINTENT_VERSION,
     openclutterVersion: OPENCLUTTER_VERSION,
     coordinateUnit: "pixels",
@@ -4024,6 +4205,8 @@ function buildClutter({
     floorHeights: footprintMeta && footprintMeta.floorHeights ? footprintMeta.floorHeights : 0,
     chmTrees: footprintMeta && footprintMeta.chmTrees ? footprintMeta.chmTrees : 0,
     waterCanopyCells: footprintMeta && footprintMeta.waterCanopyCells ? footprintMeta.waterCanopyCells : 0,
+    ...(footprintMeta && footprintMeta.photoCanopy ? { photoCanopy: footprintMeta.photoCanopy, photoBareCrowns: footprintMeta.photoBareCrowns || 0 } : {}),
+    ...(footprintMeta && footprintMeta.photoCrowns ? { photoCrowns: footprintMeta.photoCrowns } : {}),
     waterTreesDropped: footprintMeta && footprintMeta.waterTreesDropped ? footprintMeta.waterTreesDropped : 0,
     terrainRaised: terrain && terrain.raised ? terrain.raised : 0,
     terrainSloped: terrain && terrain.sloped ? terrain.sloped : 0,
@@ -4094,12 +4277,17 @@ module.exports = {
   AREA_CAP_MAX,
   OPENINTENT_JSON_BUDGET,
   JSON_BUDGET_MAX,
+  DEV_JSON_BUDGET,
+  DEV_TOTAL_BUDGET,
+  DEV_JSON_FLOOR,
+  effectiveJsonBudget,
   OI_PIXEL_DECIMALS,
   ZIP_DOWNLOAD_MAX,
   parseAreaCapOverride,
   parseJsonBudgetOverride,
   raisedDeckCap,
   raisedAreaHolds,
+  vehicleCutNote,
   MIN_OI_SPAN_PX,
   MIN_OI_SPAN_M,
   OPENINTENT_VERSION,
@@ -4137,8 +4325,10 @@ module.exports = {
   expandOiCoordTriples,
   emitPixelVertex,
   fitChunksToJsonBudget,
+  thinTreeOutlines,
   treesToOi,
   outdoorToOi,
+  padFillCentres,
   emitIfValid,
   capAttenuationAreas,
   capBuildingsAndTrees,

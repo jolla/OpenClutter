@@ -18,7 +18,7 @@ const polygonClipping = require("polygon-clipping");
 const { guidewaysFromElements, guidewaysFromParsedWays, bridgesFromElements, bridgesFromParsedWays } = require("./outdoor-clutter");
 const { fetchOsmMaps, ringKey, bboxSpanM, TILE_SPAN_M } = require("./osm-tiles");
 const overpass = require("./overpass");
-const { isResilient } = require("./export-mode");
+const { isResilient, isSiteTypes } = require("./export-mode");
 const { placesFromElements } = require("./map-notes");
 
 const OVERPASS_URLS = [
@@ -237,6 +237,18 @@ function parkingStructureHeight(tags) {
   return 9;
 }
 
+/**
+ * building=no is the mapper saying the outline is not a building: a
+ * numbered RV site, a pad, a slab. Site types (/dev hosts) leave it out of
+ * the roofs; production keeps the 1.2.17 read.
+ */
+function isBuildingTag(tags) {
+  const b = tags && tags.building;
+  if (!b) return false;
+  if (isSiteTypes() && String(b).trim().toLowerCase() === "no") return false;
+  return true;
+}
+
 function pushOutlinedBuilding(buildings, structures, ring, tags) {
   buildings.push(ring);
   const heightM = parkingStructureHeight(tags);
@@ -275,7 +287,7 @@ function parseBuildingDetail(payload, bbox) {
         if (isWaterTags(tags)) water.push([ring]);
         continue;
       }
-      if (tags.building) pushOutlinedBuilding(buildings, structures, ring, tags);
+      if (isBuildingTag(tags)) pushOutlinedBuilding(buildings, structures, ring, tags);
       continue;
     }
     if (el.type !== "relation") continue;
@@ -304,7 +316,7 @@ function parseBuildingDetail(payload, bbox) {
       }
       continue;
     }
-    if (tags.building && !tags["building:part"]) {
+    if (isBuildingTag(tags) && !tags["building:part"]) {
       for (let o = 0; o < outers.length; o++) {
         if (!bbox || ringHitsBox(outers[o], bbox)) pushOutlinedBuilding(buildings, structures, outers[o], tags);
       }
@@ -459,7 +471,7 @@ function detailFromMapXml(xml, bbox, deckCap) {
     const tags = relations[r].tags || {};
     const members = relations[r].members || [];
     const partOrOpening = !!(tags["building:part"] || isOpeningTags(tags));
-    const building = !!tags.building && !tags["building:part"];
+    const building = isBuildingTag(tags) && !tags["building:part"];
     if (!partOrOpening && !building) continue;
     for (let m = 0; m < members.length; m++) {
       if (members[m].type !== "way") continue;
@@ -481,7 +493,7 @@ function detailFromMapXml(xml, bbox, deckCap) {
     const tags = rel.tags || {};
     const want =
       tags["building:part"] ||
-      tags.building ||
+      isBuildingTag(tags) ||
       isOpeningTags(tags);
     if (!want) continue;
     const grouped = { outer: [], inner: [] };
@@ -2633,6 +2645,7 @@ function trimTaperedRing(ring, allowLarge) {
 module.exports = {
   CORRIDOR_M,
   buildingDetailQuery,
+  isBuildingTag,
   parseBuildingDetail,
   detailFromMapXml,
   fetchBuildingDetail,

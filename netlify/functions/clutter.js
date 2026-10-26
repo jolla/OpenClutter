@@ -169,8 +169,10 @@ const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { buildSiteV1 } = require("../lib/site-v1");
 const { fetchSlopeForest } = require("../lib/slope-forest");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
+/** Wait for the park-context photo (park-context.js); a miss keeps the draw-only pads. */
+const PARK_CONTEXT_MS = 20000;
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
-const { fetchUsgsLidar, applyLidarSample, lidarNote, lidarStatusLine, rankProjects, heightForRing } = require("../lib/usgs-lidar");
+const { fetchUsgsLidar, applyLidarSample, checkSourceHeights, lidarNote, lidarStatusLine, rankProjects, heightForRing } = require("../lib/usgs-lidar");
 const { fuseLidarCanopy, keepLidarOpen, clearInside, clearThinLinesGrid, vehicleFeatures, lidarCanopyNote } = require("../lib/lidar-canopy");
 const exportJobs = require("../lib/export-jobs");
 const stageClock = require("../lib/stage-clock");
@@ -233,6 +235,8 @@ const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
 const { surfaceMasksFromImage, openShareSampler, poleShadowContrast } = require("../lib/surface-mask");
 const { fetchLeafOnPhoto, leafOnGreenSampler } = require("../lib/leaf-on-photo");
+const { checkCanopyOnPhoto, photoCanopyNote, leafyShareSampler, vehicleZoneTest, zonedShareSampler } = require("../lib/photo-canopy");
+const { photoCrownRefiner, photoCrownNote } = require("../lib/photo-crowns");
 const { createWaterTest, clearWaterCanopy, dropWaterPoints } = require("../lib/water-mask");
 const { rejectPavementFootprints } = require("../lib/pavement");
 const { rejectShadowless } = require("../lib/cast-shadow");
@@ -460,6 +464,7 @@ function imageryStepBudget(elapsed, attemptMs) {
  */
 async function fetchImageryStepped(bbox, steps, srcCtx) {
   let last;
+  let refusedAll = true;
   const started = Date.now();
   let askedSide = 0;
   const prepared = [];
@@ -477,7 +482,10 @@ async function fetchImageryStepped(bbox, steps, srcCtx) {
   for (let n = 0; n < prepared.length; n++) {
     const entry = prepared[n];
     const elapsed = Date.now() - started;
-    if (!isBackgroundExport() && n > 0 && elapsed >= IMAGERY_STEPDOWN_QUICK_MS && entry.step.maxSide > 1040) continue;
+    if (!isBackgroundExport() && n > 0 && elapsed >= IMAGERY_STEPDOWN_QUICK_MS && entry.step.maxSide > 1040) {
+      refusedAll = false;
+      continue;
+    }
     let attemptMs = entry.step.attemptMs;
     if (n > 0) {
       attemptMs = imageryStepBudget(elapsed, entry.step.attemptMs);
@@ -485,9 +493,10 @@ async function fetchImageryStepped(bbox, steps, srcCtx) {
     }
     try {
       const got = await tryImageryPlate(entry.plate, attemptMs, srcCtx);
-      return plateResult(got, askedSide, n > 0, sharpCapped);
+      return plateResult(got, askedSide, n > 0, sharpCapped, n > 0 && refusedAll);
     } catch (e) {
       last = e;
+      if (!aerialFetch.refusedBySource(e)) refusedAll = false;
     }
   }
   throw last;
@@ -552,7 +561,7 @@ async function fetchImageryWithinBudget(prepared, askedSide, sharpCapped, srcCtx
   } catch {
     /* logging is optional */
   }
-  return plateResult({ buf: got.buf, plate }, askedSide, got.index > 0, sharpCapped);
+  return plateResult({ buf: got.buf, plate }, askedSide, got.index > 0, sharpCapped, !!got.noFiner);
 }
 
 function imageryFrame(bbox, step) {
@@ -563,10 +572,11 @@ function imageryFrame(bbox, step) {
   });
 }
 
-function plateResult(got, askedSide, stepped, sharpCapped) {
+function plateResult(got, askedSide, stepped, sharpCapped, noFiner) {
   return {
     buf: got.buf,
     stepped: !!stepped,
+    noFiner: !!(stepped && noFiner),
     imgW: got.plate.imgW,
     imgH: got.plate.imgH,
     askedSide: askedSide,
@@ -1208,6 +1218,11 @@ function mapImageNote(plate, frame, jpegBuf) {
   const capped = plate.sharpCapped ? " A 2048 px plate does not fit this draw." : "";
   if (plate.stepped) {
     const asked = plate.askedSide > 0 ? plate.askedSide : side;
+    // Esri refused every sharper plate: this is the finest imagery it has
+    // here, not a slow fetch. Site types (/dev) say so.
+    if (plate.noFiner && exportMode.isSiteTypes()) {
+      return "Map image " + side + " px" + mpp + ": the finest Esri imagery here (sharper plates up to " + asked + " px are not served for this spot)." + capped;
+    }
     return "Map stepped down to " + side + " px from " + asked + " px." + capped;
   }
   return "Map image " + side + " px" + mpp + "." + capped;
@@ -1499,6 +1514,22 @@ async function handleClutter(event) {
   // Overpass retries and fallback, and the sharper-plate wait, run on every
   // host. On /dev hosts legacyFetch:true replays the earlier paths.
   exportMode.setResilient(!(testHost && body.legacyFetch === true));
+  // The 1.2.18 RV park and marina rules run on /dev hosts only.
+  exportMode.setSiteTypes(testHost);
+  // From 1.2.25 /dev RVs and trailers are hollow shells (four walls and a
+  // roof slab). rvShell:false on a /dev host exports the solid 9 dB/m block.
+  exportMode.setRvShell(exportMode.rvShellWanted(testHost, body));
+  // From 1.2.26 /dev worst-case pads learn the pad pattern from the whole
+  // park when a mapped park runs past the draw. Production never reads it.
+  exportMode.setParkContext(exportMode.parkContextWanted(testHost, body));
+  // From 1.2.29 /dev exports use the raised Hamina budget: 5.8 MB of JSON and
+  // 9.7 MB of JSON plus map image. Production keeps the 4.9 MB JSON budget.
+  exportMode.setBigBudget(testHost);
+  exportMode.setPhotoCanopy(testHost);
+  exportMode.setPhotoCrowns(testHost);
+  // From 1.2.31 large draws read the street-map tiles in one shared window
+  // with a slow-fail chain, a retry pass and a split (export-mode tiledOsm).
+  exportMode.setTiledOsm(exportMode.tiledOsmWanted(testHost));
   const areaCapOverride = testHost ? parseAreaCapOverride(body.areaCap) : 0;
   const jsonBudgetOverride = testHost ? parseJsonBudgetOverride(body.jsonBudget) : 0;
   const terrainFloors = testHost ? parseTerrainFloorOverride(body.terrainFloors) : 0;
@@ -1590,6 +1621,7 @@ async function handleClutter(event) {
   let overturePack = { features: [] };
   let demSamples = null;
   let chmGrid = null;
+  let photoCrowns = null;
   let coverJob = null;
   let coverPromise = null;
   let lidarPromise = null;
@@ -1604,6 +1636,7 @@ async function handleClutter(event) {
   let terrainJob = null;
   let chmJob = null;
   let outdoorJob = null;
+  let parkContextJob = null;
   let forestJob = null;
   let detailJob = null;
   let overtureFrame = null;
@@ -1652,6 +1685,21 @@ async function handleClutter(event) {
           trees: includeFoliage,
         }, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background, deckCap })
       );
+    }
+    if (outdoorJob && includeRvs === true && exportMode.isParkContext()) {
+      // A mapped park that runs past the draw: read its roads and pitches
+      // over the whole park while the rest of the export runs.
+      const outdoorWork = outdoorJob.work;
+      parkContextJob = Promise.resolve(outdoorWork)
+        .then((pack) => {
+          if (!pack || pack === TIMED_OUT || pack.ok === false) return null;
+          const box = require("../lib/park-context").contextBox(pack.features, requestBbox);
+          if (!box) return null;
+          return fetchOutdoorClutter(box, { rvs: true }, { ua: UA, timeoutMs: background ? 90000 : 4500, tile: background }).then(
+            (got) => (got && got.ok ? got.features || [] : null)
+          );
+        })
+        .catch(() => null);
     }
     if (includeFoliage) {
       forestJob = beginOptional((signal) =>
@@ -2203,6 +2251,15 @@ async function handleClutter(event) {
       }
       const lidar = await lidarPromise;
       scaleLidar = lidar;
+      if (exportMode.isSiteTypes() && lidar && !lidar.skipped && lidar.grid) {
+        // Model heights the lidar contradicts (a park model at 20 m) take the lidar height.
+        const checked = checkSourceHeights(features, lidar.grid);
+        if (checked.fixed) {
+          features = checked.features;
+          footprintMeta.lidarHeightFixes = checked.fixed;
+          warnings.push("Took " + checked.fixed + " roof height" + (checked.fixed === 1 ? "" : "s") + " from the lidar under the roof where the model height was missing or far too tall.");
+        }
+      }
       lidarCanopy = fuseCanopyFromLidar(lidar);
     } catch {
       lidarCanopy = null;
@@ -2607,6 +2664,29 @@ async function handleClutter(event) {
       footprintMeta.vehicleCanopyCells = clearInside(chmGrid, vehicleFeatures(outdoorFeatures));
       // A guideway or gantry beam is one cell wide and level; it is not a crown.
       footprintMeta.lineCanopyCells = clearThinLinesGrid(chmGrid);
+      // The flight measured the RVs parked that day and trees cut since. A
+      // cell the current leaf-on photo shows as a vehicle, roof or bare
+      // ground with no foliage is not canopy (/dev hosts). Only inside a
+      // mapped RV park, campground or mobile home park.
+      const vehicleZone = exportMode.isPhotoCanopy() ? vehicleZoneTest(outdoorFeatures) : null;
+      if (vehicleZone && decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH) {
+        try {
+          const checked = checkCanopyOnPhoto(chmGrid, decoded, frame, vehicleZone);
+          footprintMeta.photoCanopy = checked;
+          footprintMeta.photoCanopyZone = vehicleZone;
+          const midLat = ((+chmGrid.north + +chmGrid.south) / 2) * (Math.PI / 180);
+          const cellM2 =
+            ((+chmGrid.east - +chmGrid.west) / chmGrid.width) * 111320 * Math.cos(midLat) *
+            (((+chmGrid.north - +chmGrid.south) / chmGrid.height) * 110540);
+          const note = photoCanopyNote(checked, cellM2);
+          if (note && warnings.indexOf(note) < 0) warnings.push(note);
+          // Each lidar crown in those zones takes the outline of its own
+          // leaves on the same photo (/dev hosts).
+          if (checked.gate && exportMode.isPhotoCrowns()) photoCrowns = photoCrownRefiner(decoded, frame, vehicleZone);
+        } catch {
+          // The lidar canopy stands when the photo cannot be read.
+        }
+      }
     }
     if (background && includeFoliage && !chmTimedOut) {
       if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage trees-parallel\n");
@@ -2632,6 +2712,7 @@ async function handleClutter(event) {
               // Per-tree lidar crowns need more outlines than whole stands.
               // The zip budget still trims after this.
               maxPolygons: SEGMENT_TREES && lidarCanopy ? Math.round(foliageCap * SEGMENT_CAP_SCALE) : foliageCap,
+              photoCrowns,
             })
           )
           .then((pack) => {
@@ -2646,6 +2727,11 @@ async function handleClutter(event) {
       );
     }
     if (parallelTasks.length) await Promise.all(parallelTasks);
+    if (photoCrowns && foliagePack) {
+      footprintMeta.photoCrowns = photoCrowns.stats;
+      const crownNote = photoCrownNote(photoCrowns.stats);
+      if (crownNote && warnings.indexOf(crownNote) < 0) warnings.push(crownNote);
+    }
     if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage build-clutter\n");
     const leafOnPhoto = leafOnJob ? await leafOnJob : null;
     if (imageryCtx && imageryCtx.esriCitationJob && imageryCtx.esriCitation === undefined) {
@@ -2673,6 +2759,7 @@ async function handleClutter(event) {
       omitFoliage: chmTimedOut,
       chmRequired: includeFoliage,
       maxFoliagePolygons: foliageCap,
+      photoCrowns: foliagePack ? null : photoCrowns,
       terrainResolution,
       terrainStyle,
       nlsHeights: devHost,
@@ -2698,6 +2785,10 @@ async function handleClutter(event) {
         decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH
           ? openShareSampler(decoded)
           : null,
+      photoLeafyShare:
+        footprintMeta.photoCanopy && footprintMeta.photoCanopy.gate && decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH
+          ? zonedShareSampler(leafyShareSampler(decoded), footprintMeta.photoCanopyZone, frame)
+          : null,
       leafOnGreenShare: leafOnPhoto ? leafOnGreenSampler(leafOnPhoto, frame.mpuX) : null,
       aerialGreenShare:
         decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH && footprintMeta.lidarCanopyStats
@@ -2718,8 +2809,10 @@ async function handleClutter(event) {
   let outdoorNotes = [];
   let palmPoints = [];
   let outdoorMiss = false;
+  let osmTilesStats = null;
   if (outdoorJob) {
     const pack = await outdoorJob.work;
+    if (pack && pack !== TIMED_OUT && pack.osmTiles && exportMode.isTiledOsm() && testHost) osmTilesStats = pack.osmTiles;
     if (!pack || pack === TIMED_OUT || pack.ok === false) {
       outdoorMiss = true;
       warnings.push(OUTDOOR_MISS);
@@ -2783,6 +2876,39 @@ async function handleClutter(event) {
     if (warnings.indexOf(storageNote) < 0) warnings.push(storageNote);
   }
 
+  let parkContextStats = null;
+  // A small draw in a big RV park learns the park's pad pattern from the
+  // whole park, not only the RVs inside the draw (park-context.js, 1.2.26).
+  if (exportMode.isParkContext() && includeRvs === true && outdoorOn && outdoorMiss !== true && imgBuf && frame) {
+    try {
+      const parkFeatures = parkContextJob ? await parkContextJob : null;
+      const ctx = await stageClock.timeSpan("parkContext", () =>
+        require("../lib/park-context").readParkContext({
+          features: outdoorFeatures,
+          frame,
+          ctxFeatures: parkFeatures,
+          fetchPlate: (f) =>
+            imagerySource.fetchPlateWith(imageryCtx, f, PARK_CONTEXT_MS, null, (pf, ms, sig) =>
+              fetchImageryJpegBody(esriImageryUrl(pf), ms, sig)
+            ),
+          placePlate: (f, buf) => {
+            const placed = applyImageryMeta(f, null, jpegSize(buf), {
+              requestBbox: { west: f.west, south: f.south, east: f.east, north: f.north },
+            });
+            const locked = lockIsotropicImagery(placed, buf, { maxSide: Math.max(f.imgW, f.imgH) });
+            return { frame: locked.frame, buf: locked.jpegBuf };
+          },
+        })
+      );
+      parkContextStats = { candidates: ctx.candidates, rvs: ctx.rvs || 0, roads: ctx.roads || 0 };
+      if (ctx.frame) parkContextStats.photoPx = [ctx.frame.imgW, ctx.frame.imgH];
+      if (ctx.photoMiss) parkContextStats.photoMiss = ctx.photoMiss;
+      if (ctx.features.length) outdoorFeatures = outdoorFeatures.concat(ctx.features);
+    } catch (err) {
+      parkContextStats = { candidates: 0, rvs: 0, failed: String((err && err.message) || err).slice(0, 80) };
+    }
+  }
+
   let exportFeatures = features;
   const shortLarge = !background && Math.max(frame.widthM, frame.lengthM) > SYNC_LARGE_DRAW_M;
   if (shortLarge) {
@@ -2797,11 +2923,16 @@ async function handleClutter(event) {
   }
   if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage emit " + (Date.now() - started) + "\n");
   let built = await emitClutter(exportFeatures);
+  if (parkContextStats && built && built.stats) built.stats.parkContext = parkContextStats;
+  if (osmTilesStats && built && built.stats) built.stats.osmTiles = osmTilesStats;
   if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage emitted " + (Date.now() - started) + "\n");
   // The image does not count toward Hamina's JSON limit. Compress it only
   // when the zip itself cannot fit in Netlify's function response.
   if (background && built.zip && !exportJobs.zipDownloadFits(built.zip.length) && imgBuf) {
-    const room = exportJobs.ZIP_DOWNLOAD_MAX - (built.zip.length - imgBuf.length);
+    // On /dev (1.2.29) a smaller image frees JSON room under the 9.7 MB
+    // total, so the rebuilt JSON can grow; keep 200 KB spare for it.
+    const room =
+      exportJobs.ZIP_DOWNLOAD_MAX - (built.zip.length - imgBuf.length) - (exportMode.isBigBudget() ? 200000 : 0);
     const smaller = compressJpegToMax(imgBuf, Math.max(180000, room));
     if (smaller && smaller.length < imgBuf.length) {
       imgBuf = smaller;
@@ -2999,6 +3130,7 @@ async function handleClutter(event) {
       areaM2: frame && frame.widthM && frame.lengthM ? frame.widthM * frame.lengthM : 0,
     });
     if (built.stats && timings.cached.length) built.stats.cachedSources = timings.cached;
+    if (built.stats && osmTilesStats) built.stats.osmTiles = osmTilesStats;
     reportProgress({ timings });
     return json(200, cors, {
       ok: true,

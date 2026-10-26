@@ -22,7 +22,16 @@
  * overpass-api.de is overloaded, asks for no parallel scripts and a 30 s
  * pause after 429; private.coffee (formerly kumi.systems) has no rate
  * limit, allows commercial use, and asks for fewer than 10 requests at a
- * time; VK Maps states no limits.
+ * time; VK Maps states no limits. overpass.openstreetmap.fr serves the
+ * whole planet but its copy can be weeks behind, so it is a last resort:
+ * asked once two regular servers have failed in the same read, or when
+ * every other server is refused, paused or backing off for longer than
+ * LAST_RESORT_WAIT_MS.
+ *
+ * A server that refuses the connection outright (a firewall on one egress
+ * address answers ECONNREFUSED in under a second) is skipped for
+ * REFUSED_PAUSE_MS, so the read moves on at once instead of retrying it
+ * every backoff step.
  */
 
 const crypto = require("node:crypto");
@@ -31,7 +40,30 @@ const ENDPOINTS = [
   { id: "overpass-api.de", base: "https://overpass-api.de/api", slots: 2, pause429Ms: 30000, status: true },
   { id: "private.coffee", base: "https://overpass.private.coffee/api", slots: 3, pause429Ms: 10000, status: true },
   { id: "maps.mail.ru", base: "https://maps.mail.ru/osm/tools/overpass/api", slots: 2, pause429Ms: 10000, status: false },
+  { id: "openstreetmap.fr", base: "https://overpass.openstreetmap.fr/api", slots: 1, pause429Ms: 30000, status: false, lastResort: true },
 ];
+
+/** Skip a server that refused the connection for this long. */
+const REFUSED_PAUSE_MS = 10 * 60 * 1000;
+/** A refusal answers fast; a slow connect error is a timeout, not a firewall. */
+const REFUSED_MAX_MS = 5000;
+/** Ask a last-resort server only when no other one is free this soon. */
+const LAST_RESORT_WAIT_MS = 8000;
+const REFUSED_CODES = new Set(["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "ENOTFOUND", "EAI_FAIL"]);
+
+/** The socket error code under a fetch failure (undici nests it). */
+function errorCode(e) {
+  let cur = e;
+  for (let depth = 0; cur && depth < 4; depth++) {
+    if (cur.code && typeof cur.code === "string" && !/^UND_ERR/.test(cur.code)) return cur.code;
+    if (Array.isArray(cur.errors) && cur.errors.length) {
+      const inner = errorCode(cur.errors[0]);
+      if (inner) return inner;
+    }
+    cur = cur.cause;
+  }
+  return "";
+}
 
 /** Start the next endpoint beside a first answer this slow. */
 const HEDGE_MS = 15000;
@@ -170,10 +202,12 @@ async function slotWaitMs(ep, ua) {
 /** Overpass can answer 200 with a runtime error remark and no data. */
 function bodyOk(kind, text) {
   const t = String(text || "");
-  if (kind === "map") return t.indexOf("<osm") >= 0 && !/<remark>\s*runtime error/i.test(t);
+  // A body cut off mid-stream (one server closes long chunked answers early) has no </osm>.
+  if (kind === "map") return t.indexOf("<osm") >= 0 && t.lastIndexOf("</osm>") > 0 && !/<remark>\s*runtime error/i.test(t);
   const head = t.slice(0, 400);
   if (!/"elements"\s*:/.test(head) && !/"elements"\s*:/.test(t.slice(0, 4000))) return false;
   const tail = t.slice(-600);
+  if (!/\}\s*$/.test(tail)) return false;
   return !/"remark"\s*:\s*"[^"]*runtime error/i.test(tail);
 }
 
@@ -306,11 +340,16 @@ async function attempt(ep, kind, payload, opts, n, outer) {
   } catch (e) {
     const ms = nowFn() - t0;
     const aborted = !!(outer && outer.aborted);
-    if (!aborted) {
+    const code = errorCode(e);
+    if (!aborted && !ctrl.signal.aborted && REFUSED_CODES.has(code) && ms < REFUSED_MAX_MS) {
+      s.fails += 1;
+      s.pausedUntil = Math.max(s.pausedUntil, nowFn() + REFUSED_PAUSE_MS);
+      log(opts.tag, ep, kind, "refused", ms, n, "code=" + code + " pause=" + REFUSED_PAUSE_MS);
+    } else if (!aborted) {
       s.fails += 1;
       const wait = backoffMs(s.fails);
       s.pausedUntil = Math.max(s.pausedUntil, nowFn() + wait);
-      log(opts.tag, ep, kind, ctrl.signal.aborted ? "timeout" : "neterr", ms, n, "backoff=" + wait);
+      log(opts.tag, ep, kind, ctrl.signal.aborted ? "timeout" : "neterr", ms, n, "backoff=" + wait + (code ? " code=" + code : ""));
     } else {
       log(opts.tag, ep, kind, "cancelled", ms, n);
     }
@@ -327,18 +366,52 @@ function backoffMs(fails) {
   return Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * Math.pow(2, n - 1)) + jitter();
 }
 
-function nextEndpoint(skip) {
+/** Regular servers that failed in this read. */
+function regularFails(failed) {
+  if (!failed) return 0;
+  let n = 0;
+  for (const ep of ENDPOINTS) if (!ep.lastResort && failed.has(ep.id)) n++;
+  return n;
+}
+
+function nextEndpoint(skip, failed) {
   const now = nowFn();
   let best = null;
   let soonest = Infinity;
+  // Two regular servers failed this read: a regular one not tried yet,
+  // then the last resort, before waiting on a server that already failed.
+  if (regularFails(failed) >= 2) {
+    for (const ep of ENDPOINTS) {
+      if (ep.lastResort || (skip && skip.has(ep.id)) || failed.has(ep.id)) continue;
+      if (endpointState(ep).pausedUntil <= now) return { ep, waitMs: 0 };
+    }
+    for (const ep of ENDPOINTS) {
+      if (!ep.lastResort || (skip && skip.has(ep.id)) || failed.has(ep.id)) continue;
+      if (endpointState(ep).pausedUntil <= now) return { ep, waitMs: 0 };
+    }
+  }
   for (let i = 0; i < ENDPOINTS.length; i++) {
     const ep = ENDPOINTS[i];
-    if (skip && skip.has(ep.id)) continue;
+    if (ep.lastResort || (skip && skip.has(ep.id))) continue;
     const s = endpointState(ep);
     if (s.pausedUntil <= now) return { ep, waitMs: 0 };
     if (s.pausedUntil < soonest) {
       soonest = s.pausedUntil;
       best = ep;
+    }
+  }
+  // Every regular server is busy or refused: a last resort that is free
+  // now beats a wait longer than LAST_RESORT_WAIT_MS.
+  if (!best || soonest - now > LAST_RESORT_WAIT_MS) {
+    for (let i = 0; i < ENDPOINTS.length; i++) {
+      const ep = ENDPOINTS[i];
+      if (!ep.lastResort || (skip && skip.has(ep.id))) continue;
+      const s = endpointState(ep);
+      if (s.pausedUntil <= now) return { ep, waitMs: 0 };
+      if (s.pausedUntil < soonest) {
+        soonest = s.pausedUntil;
+        best = ep;
+      }
     }
   }
   if (!best) return null;
@@ -350,6 +423,7 @@ function nextEndpoint(skip) {
  * pauses and backoff, until one answers or the deadline passes.
  */
 async function fetchAcross(kind, payload, opts) {
+  if (opts.slowFailMs > 0) return fetchAcrossSlowFail(kind, payload, opts);
   const outer = new AbortController();
   const parent = opts.signal;
   const onParent = () => outer.abort();
@@ -361,9 +435,15 @@ async function fetchAcross(kind, payload, opts) {
   if (typeof deadlineTimer.unref === "function") deadlineTimer.unref();
   let n = 0;
   let lastStatus = 0;
+  const failed = new Set();
+  const tracked = (ep) =>
+    attempt(ep, kind, payload, opts, n, outer.signal).then((r) => {
+      if (r && !r.ok && !r.final && r.status !== "aborted") failed.add(ep.id);
+      return r;
+    });
   try {
     while (!outer.signal.aborted && nowFn() < opts.deadlineAt) {
-      const pick = nextEndpoint(null);
+      const pick = nextEndpoint(null, failed);
       if (!pick) break;
       if (pick.waitMs > 0) {
         if (nowFn() + pick.waitMs >= opts.deadlineAt) break;
@@ -372,7 +452,7 @@ async function fetchAcross(kind, payload, opts) {
       }
       n += 1;
       const running = new Set([pick.ep.id]);
-      const races = [attempt(pick.ep, kind, payload, opts, n, outer.signal)];
+      const races = [tracked(pick.ep)];
       let settledFirst = false;
       const hedgeWait = new AbortController();
       const onOuterStop = () => hedgeWait.abort();
@@ -382,14 +462,19 @@ async function fetchAcross(kind, payload, opts) {
         hedgeWait.abort();
         outer.signal.removeEventListener("abort", onOuterStop);
       });
-      // Hedge: one more endpoint beside a slow first answer.
-      const hedge = sleep(HEDGE_MS, hedgeWait.signal).then(() => {
-        if (settledFirst || outer.signal.aborted) return null;
-        const other = nextEndpoint(running);
-        if (!other || other.waitMs > 0) return null;
-        running.add(other.ep.id);
-        n += 1;
-        return attempt(other.ep, kind, payload, opts, n, outer.signal);
+      // Hedge: one more endpoint beside a slow first answer, and the next
+      // one in turn while the first is still out and the hedge failed.
+      const hedge = sleep(HEDGE_MS, hedgeWait.signal).then(async () => {
+        let last = null;
+        while (!settledFirst && !outer.signal.aborted) {
+          const other = nextEndpoint(running, failed);
+          if (!other || other.waitMs > 0) break;
+          running.add(other.ep.id);
+          n += 1;
+          last = await tracked(other.ep);
+          if (last && (last.ok || last.final)) break;
+        }
+        return last;
       });
       const winner = await firstOk([races[0], hedge]);
       if (winner && winner.ok) return winner;
@@ -402,6 +487,88 @@ async function fetchAcross(kind, payload, opts) {
     outer.abort();
     if (parent) parent.removeEventListener("abort", onParent);
   }
+}
+
+/**
+ * Large-draw tile reads (export-mode tiledOsm, 1.2.31). A server that has
+ * not answered after opts.slowFailMs counts as failed for this read, so the
+ * next regular server starts beside it, and once two regular servers have
+ * failed or gone slow, the last resort (openstreetmap.fr). A slow server
+ * keeps running: whichever answers first with a whole body wins. A cut-off
+ * or empty 200 is a failure of that server, not of the read; only a 400 (the
+ * query itself) ends it. The caller's deadline is final.
+ */
+function fetchAcrossSlowFail(kind, payload, opts) {
+  const outer = new AbortController();
+  const parent = opts.signal;
+  const onParent = () => outer.abort();
+  if (parent) {
+    if (parent.aborted) outer.abort();
+    else parent.addEventListener("abort", onParent, { once: true });
+  }
+  const failed = new Set();
+  const running = new Set();
+  let n = 0;
+  let pending = 0;
+  let waiting = false;
+  let lastStatus = 0;
+  let done = false;
+  return new Promise((resolve) => {
+    const deadlineTimer = setTimeout(() => finish({ ok: false, status: lastStatus || "deadline", text: "" }), Math.max(0, opts.deadlineAt - nowFn()));
+    if (typeof deadlineTimer.unref === "function") deadlineTimer.unref();
+    function finish(res) {
+      if (done) return;
+      done = true;
+      clearTimeout(deadlineTimer);
+      outer.abort();
+      if (parent) parent.removeEventListener("abort", onParent);
+      resolve(res);
+    }
+    outer.signal.addEventListener("abort", () => finish({ ok: false, status: lastStatus || "aborted", text: "" }), { once: true });
+    function launch() {
+      if (done || waiting) return;
+      const pick = nextEndpoint(running, failed);
+      if (!pick) {
+        if (pending === 0) finish({ ok: false, status: lastStatus || "none", text: "" });
+        return;
+      }
+      if (pick.waitMs > 0) {
+        if (pending > 0) return;
+        if (nowFn() + pick.waitMs >= opts.deadlineAt) return finish({ ok: false, status: lastStatus || "deadline", text: "" });
+        waiting = true;
+        sleep(pick.waitMs + jitter(), outer.signal).then(() => {
+          waiting = false;
+          launch();
+        });
+        return;
+      }
+      const ep = pick.ep;
+      running.add(ep.id);
+      n += 1;
+      pending += 1;
+      const slowStop = new AbortController();
+      sleep(opts.slowFailMs, slowStop.signal).then(() => {
+        if (done || slowStop.signal.aborted) return;
+        failed.add(ep.id);
+        log(opts.tag, ep, kind, "slow", opts.slowFailMs, n, "next");
+        launch();
+      });
+      attempt(ep, kind, payload, opts, n, outer.signal).then((r) => {
+        slowStop.abort();
+        pending -= 1;
+        if (done) return;
+        if (r && r.ok) return finish(r);
+        if (r && r.final && r.status === 400) return finish(r);
+        lastStatus = (r && r.status) || lastStatus;
+        if (!r || r.status !== "aborted") failed.add(ep.id);
+        // A server with a backoff may be asked again once it ends; one that
+        // failed without one (an empty or cut-off body) is not asked again.
+        if (endpointState(ep).pausedUntil > nowFn()) running.delete(ep.id);
+        launch();
+      });
+    }
+    launch();
+  });
 }
 
 /** First ok result; otherwise the last one once all settle. */
@@ -464,6 +631,7 @@ async function request(opts) {
     tag: o.tag || "",
     deadlineAt,
     signal: null,
+    slowFailMs: o.slowFailMs > 0 ? o.slowFailMs : 0,
   }).then((res) => {
     if (res && res.ok) memoSet(key, { ok: true, status: res.status, text: res.text });
     return res;
@@ -557,6 +725,9 @@ function resetForTests(opts) {
 
 module.exports = {
   ENDPOINTS,
+  REFUSED_PAUSE_MS,
+  LAST_RESORT_WAIT_MS,
+  errorCode,
   HEDGE_MS,
   ATTEMPT_MS,
   MEMO_MS,

@@ -495,6 +495,20 @@ function segTreeFits(ringPx, frame, heightM) {
 }
 
 /**
+ * A crown shaped on the photo (photo-crowns.js) is one tree down to the
+ * smallest leaf blob it keeps: a palm head or a young tree of 1 to 6 m².
+ */
+function photoTreeFits(ringPx, frame, heightM) {
+  const h = Number(heightM);
+  if (!(h >= 4 && h < 60) || !ringPx || ringPx.length < 4 || !frame) return false;
+  const area = canopyAreaM2(ringPx, frame);
+  return area >= 1 && area <= SEG_TREE_MAX_M2;
+}
+
+/** Crown depth per metre of crown width for a crown shaped on the photo. */
+const LEAF_DEPTH_PER_DIAM = 1.2;
+
+/**
  * Crown form from the measured heights: a conifer's top falls away fast
  * from its peak, a broadleaf crown stays near its top across most of its
  * width. "conifer", "column" (a cypress: tall and under 4 m across), or
@@ -572,6 +586,49 @@ function crownShortM(ringPx, frame) {
   return Math.min((maxX - minX) * mpuX, (maxY - minY) * mpuY);
 }
 
+/** The point of a 12 x 12 lattice farthest inside a ring (its deepest point). */
+function deepestPointPx(ring) {
+  const open = ring && ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? ring.slice(0, -1) : ring;
+  if (!open || open.length < 3) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of open) {
+    if (p[0] < minX) minX = p[0];
+    if (p[1] < minY) minY = p[1];
+    if (p[0] > maxX) maxX = p[0];
+    if (p[1] > maxY) maxY = p[1];
+  }
+  const steps = 12;
+  let best = null;
+  let bestD = 0;
+  for (let iy = 0; iy < steps; iy++) {
+    for (let ix = 0; ix < steps; ix++) {
+      const q = [minX + ((ix + 0.5) / steps) * (maxX - minX), minY + ((iy + 0.5) / steps) * (maxY - minY)];
+      if (!pointInRing(q, ring)) continue;
+      let d = Infinity;
+      for (let i = 0; i < open.length; i++) {
+        const a = open[i];
+        const b = open[(i + 1) % open.length];
+        const dx = b[0] - a[0];
+        const dy = b[1] - a[1];
+        const l2 = dx * dx + dy * dy;
+        const t = l2 > 0 ? Math.max(0, Math.min(1, ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / l2)) : 0;
+        const ex = q[0] - (a[0] + t * dx);
+        const ey = q[1] - (a[1] + t * dy);
+        const sep = Math.sqrt(ex * ex + ey * ey);
+        if (sep < d) d = sep;
+      }
+      if (d > bestD) {
+        bestD = d;
+        best = q;
+      }
+    }
+  }
+  return best;
+}
+
 /** Closed regular polygon. Ground diameter is `diameterM` on both axes. */
 function circleRingPx(c, diameterM, mpuX, mpuY, sides) {
   const rx = diameterM / 2 / mpuX;
@@ -599,15 +656,25 @@ function circleFits(ring, crown) {
  * a 12-gon, not a square. Vertices stay inside the crown; a tight crown
  * shrinks the stem instead of dropping it or poking out.
  */
-function trunkRingPx(ringPx, frame) {
+function trunkRingPx(ringPx, frame, deep) {
   const c = ringCentroidPx(ringPx);
   if (!c || !frame || !ringPx) return null;
+  // A leaf outline from the photo is irregular, and its vertex average can
+  // sit on an edge: the stem then goes at the point deepest inside it.
+  if (deep) {
+    const at = deepestPointPx(ringPx);
+    if (at) {
+      c[0] = at[0];
+      c[1] = at[1];
+    }
+  }
   const mpuX = frame.mpuX || frame.mpu || 1;
   const mpuY = frame.mpuY || mpuX;
   if (!(mpuX > 0) || !(mpuY > 0)) return null;
   const shortM = crownShortM(ringPx, frame);
   if (!(shortM > 0)) return null;
   let diameterM = Math.min(TRUNK_MAX_M, shortM * TRUNK_OF_CROWN);
+  if (deep && diameterM < 0.25) diameterM = 0.25;
   for (let attempt = 0; attempt < 8; attempt++) {
     if (!(diameterM >= 0.25)) return null;
     const ring = circleRingPx(c, diameterM, mpuX, mpuY, TRUNK_SIDES);
@@ -1971,6 +2038,10 @@ function treePairsFromPoints(treePoints, frame, buildingAabbs, affine, opts) {
     polygons = chmCrownPolygons(opts.chmGrid, frame, buildingAabbs, opts && opts.canopyHits, opts);
     coarsened = !!polygons.coarsened;
     foliageDropped = polygons.dropped | 0;
+    // /dev hosts: lidar crowns shaped on the current photo (photo-crowns.js).
+    if (opts.photoCrowns && typeof opts.photoCrowns.refine === "function" && polygons.length) {
+      polygons = opts.photoCrowns.refine(polygons, require("./photo-crowns").gridHeightAt(opts.chmGrid));
+    }
     if (polygons.length) foliageGeometry = "chm-contour";
   }
   if (
@@ -2186,7 +2257,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     if (poly.segTree && !poly.context) {
       for (const piece of clipFoliageRing(poly.ringPx, clipSet)) {
         if (!(ringPxArea(piece) > 0)) continue;
-        segAreas.push({ ringPx: piece, material: poly.material, kind: "canopy", shape: "polygon", segTree: true });
+        segAreas.push({ ringPx: piece, material: poly.material, kind: "canopy", shape: "polygon", segTree: true, photoShaped: poly.photoShaped === true });
         if (poly.material) materials.push(poly.material);
       }
       continue;
@@ -2500,7 +2571,10 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
           regionCapped++;
         }
       }
-      const segTree = area.segTree === true && seats.length === 1 && segTreeFits(rowArea.ringPx, frame, height);
+      const segTree =
+        area.segTree === true &&
+        seats.length === 1 &&
+        (segTreeFits(rowArea.ringPx, frame, height) || (area.photoShaped === true && photoTreeFits(rowArea.ringPx, frame, height)));
       // A lidar tree whose crown at 60% of its height is a few metres across
       // and far shorter than it is tall is a palm: a stem and a small crown.
       if (segTree && palmClimate && heightSample && height >= PALM_MIN_H) {
@@ -2536,8 +2610,10 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
             }
           }
         }
-        const parts = individualTreeParts(rowArea.material, ground);
-        const stem = parts && trunkRingPx(rowArea.ringPx, frame);
+        // A crown shaped on the photo is about as deep as it is wide.
+        const leafDepth = segTree && area.photoShaped === true ? LEAF_DEPTH_PER_DIAM * 2 * Math.sqrt(canopyAreaM2(rowArea.ringPx, frame) / Math.PI) : 0;
+        const parts = individualTreeParts(rowArea.material, ground, 0, leafDepth);
+        const stem = parts && trunkRingPx(rowArea.ringPx, frame, area.photoShaped === true);
         if (parts && stem) {
           rowArea.material = parts.crownMat;
           clip = parts.crownClip;

@@ -13,6 +13,7 @@ const {
   pointInRingLL,
   centroidLL,
 } = require("../netlify/lib/building-shape");
+const { setSiteTypes } = require("../netlify/lib/export-mode");
 
 function metersBox(lon, lat, widthM, heightM, props) {
   const mx = 111320 * Math.cos((lat * Math.PI) / 180);
@@ -104,6 +105,24 @@ describe("building outlines", () => {
       if (pointInRingLL(poolAt, ring)) covered++;
     }
     assert.equal(covered, 0);
+  });
+
+  it("reads building=no (a numbered RV site) as no roof on site types only", () => {
+    const geometry = [
+      { lon: -120.6375, lat: 35.1325 },
+      { lon: -120.6374, lat: 35.1325 },
+      { lon: -120.6374, lat: 35.13254 },
+      { lon: -120.6375, lat: 35.13254 },
+      { lon: -120.6375, lat: 35.1325 },
+    ];
+    const payload = { elements: [{ type: "way", tags: { building: "no", "addr:unit": "12" }, geometry }] };
+    assert.equal(parseBuildingDetail(payload).buildings.length, 0);
+    setSiteTypes(false);
+    try {
+      assert.equal(parseBuildingDetail(payload).buildings.length, 1);
+    } finally {
+      setSiteTypes(true);
+    }
   });
 
   it("reads an OSM part height and min_height, and a pool as an opening", () => {
