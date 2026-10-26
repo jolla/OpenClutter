@@ -84,9 +84,13 @@ async function otherWorkerFinished(jobId, worker) {
   return !!(who && who !== worker);
 }
 
+const CANCELLED = { ok: true, finished: false, cancelled: true, reason: "cancelled" };
+
 async function completeExportJob(jobId, inner, opts) {
   const warning = opts && opts.warning ? String(opts.warning) : "";
   const worker = opts && opts.worker ? String(opts.worker) : "";
+  // Cancelled before it started (page Cancel while queued): run nothing.
+  if (await jobs.jobCancelled(jobId)) return CANCELLED;
   try {
     const patch = { state: "running", stage: "Fetching aerial" };
     if (worker) patch.worker = worker;
@@ -110,6 +114,8 @@ async function completeExportJob(jobId, inner, opts) {
     if (await otherWorkerFinished(jobId, worker)) {
       return { ok: true, finished: false, reason: "other-worker-finished" };
     }
+    // Cancelled while it ran: store no zip and no site.
+    if (await jobs.jobCancelled(jobId)) return CANCELLED;
     const status = result && result.statusCode;
     let data = {};
     try {
@@ -149,6 +155,7 @@ async function completeExportJob(jobId, inner, opts) {
     if (await otherWorkerFinished(jobId, worker)) {
       return { ok: true, finished: false, reason: "other-worker-finished" };
     }
+    if (await jobs.jobCancelled(jobId)) return CANCELLED;
     const zip = Buffer.from(data.zipBase64, "base64");
     await jobs.saveZip(jobId, zip);
     const warnings = withWarning(Array.isArray(data.warnings) ? data.warnings : [], warning);
@@ -167,6 +174,7 @@ async function completeExportJob(jobId, inner, opts) {
     });
     return { ok: true, finished: true };
   } catch (err) {
+    if (await jobs.jobCancelled(jobId)) return CANCELLED;
     if (await otherWorkerFinished(jobId, worker)) {
       return { ok: true, finished: false, reason: "other-worker-finished" };
     }

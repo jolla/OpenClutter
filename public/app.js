@@ -1763,6 +1763,21 @@ function cancelExport() {
   syncExportLock();
   syncExportReady();
   setStatus("Export cancelled.");
+  stopServerExport(run.jobId);
+}
+
+/** /dev pages also stop the job on the server, so the worker drops it and stores no file. */
+function stopServerExport(jobId) {
+  if (!jobId || !devPage()) return;
+  try {
+    fetch("/api/export-cancel?job=" + encodeURIComponent(jobId), {
+      method: "POST",
+      cache: "no-store",
+      keepalive: true,
+    }).catch(() => {});
+  } catch (e) {
+    /* The page is already unlocked; the job just runs to its end. */
+  }
 }
 
 async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, includeTerrain) {
@@ -1966,7 +1981,7 @@ document.getElementById("export").onclick = async () => {
   exportSettingsEpoch = settingsEpoch;
   exportCopyReady = false;
   forgetExport();
-  const run = { controller: new AbortController(), cancelled: false };
+  const run = { controller: new AbortController(), cancelled: false, jobId: "" };
   exportRun = run;
   syncExportLock();
   const includeFoliage = clutterChecked("include-foliage");
@@ -2008,6 +2023,11 @@ document.getElementById("export").onclick = async () => {
       };
     }
     if (queued && queued.jobId) {
+      run.jobId = queued.jobId;
+      if (run.cancelled || exportRun !== run) {
+        stopServerExport(queued.jobId);
+        throw cancelledError();
+      }
       const data = await pollExport(queued.jobId);
       paintExportSteps(data, true);
       const got = await downloadJobZip(queued.jobId, data.zipFilename);

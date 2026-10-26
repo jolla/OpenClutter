@@ -16,6 +16,8 @@ const BODY_MAX = 2 * 1000 * 1000;
 // machine stops. on-failure does not restart a clean exit.
 const IDLE_EXIT_MS = 5 * 60 * 1000;
 let inFlight = null;
+let inFlightId = "";
+let cancelInFlight = null;
 let exportRunner = null;
 
 function header(headers, name) {
@@ -90,8 +92,8 @@ async function handleWorkerRequest(req) {
   if (method === "GET" && (path === "/health" || path === "/")) {
     return jsonResult(200, { ok: true });
   }
-  if (method !== "POST" || path !== "/export") {
-    return jsonResult(405, { error: "POST /export only." });
+  if (method !== "POST" || (path !== "/export" && path !== "/cancel")) {
+    return jsonResult(405, { error: "POST /export or /cancel only." });
   }
   if (!secretOk(req && req.headers)) {
     return jsonResult(401, { error: "Unauthorized." });
@@ -102,6 +104,7 @@ async function handleWorkerRequest(req) {
   } catch {
     return jsonResult(400, { error: "invalid json" });
   }
+  if (path === "/cancel") return handleCancel(payload);
   const jobId = payload && payload.jobId;
   const inner = payload && payload.event;
   if (!jobs.validJobId(jobId) || !inner || !inner.body) {
@@ -115,10 +118,31 @@ async function handleWorkerRequest(req) {
   }
   const job = runAcceptedJob(jobId, inner);
   inFlight = job;
+  inFlightId = jobId;
   job.finally(() => {
-    if (inFlight === job) inFlight = null;
+    if (inFlight === job) {
+      inFlight = null;
+      inFlightId = "";
+      cancelInFlight = null;
+    }
   });
   return { statusCode: 202, body: { ok: true, accepted: true }, job };
+}
+
+/**
+ * POST /cancel { jobId } with the worker secret. Stops the export this
+ * machine is running when the id matches. The job record is already
+ * "cancelled" (the page's Cancel wrote it), so a miss here is harmless:
+ * the running worker also sees it on its next heartbeat.
+ */
+function handleCancel(payload) {
+  const jobId = payload && payload.jobId;
+  if (!jobs.validJobId(jobId)) return jsonResult(400, { error: "Export id is not valid." });
+  if (!inFlight || inFlightId !== jobId || typeof cancelInFlight !== "function") {
+    return jsonResult(404, { ok: false, running: false });
+  }
+  cancelInFlight("cancel request");
+  return jsonResult(200, { ok: true, cancelled: true });
 }
 
 function stageStartLine(jobId, stage, elapsedMs) {
@@ -194,13 +218,17 @@ function heartbeatTiles() {
   }
 }
 
-function startHeartbeatTimer(jobId, getStage, intervalMs) {
+function startHeartbeatTimer(jobId, getStage, intervalMs, onCancelled) {
   const ms = intervalMs == null ? HEARTBEAT_MS : intervalMs;
   const beat = () => {
     Promise.resolve()
       .then(() =>
         jobs.writeHeartbeat(jobId, typeof getStage === "function" ? getStage() : getStage, heartbeatTiles())
       )
+      .then((cur) => {
+        // The page's Cancel marks the job; the beat is where this machine sees it.
+        if (jobs.isCancelled(cur) && typeof onCancelled === "function") onCancelled("job cancelled");
+      })
       .catch(() => {});
   };
   beat();
@@ -213,25 +241,58 @@ function setExportRunnerForTests(fn) {
   exportRunner = typeof fn === "function" ? fn : null;
 }
 
+function machineId() {
+  return String(process.env.FLY_MACHINE_ID || "").trim();
+}
+
+/**
+ * The export races a cancel. On cancel the job answers at once with
+ * { ok: true, cancelled: true }; the pipeline is left behind, stores
+ * nothing (completeExportJob checks the job before a zip), and the HTTP
+ * server exits the process after the answer so fetches and CPU threads
+ * stop and the machine is free. The next export starts it again.
+ */
 async function runAcceptedJob(jobId, inner) {
   enableAreaCache();
   const { cpuStartLine, setExportLog } = require("../netlify/lib/cpu-pool");
   setExportLog(jobId);
   console.log("export " + jobId + " " + cpuStartLine());
   const session = createWorkerSession(jobId);
-  const timer = startHeartbeatTimer(jobId, () => session.stageName());
+  let onCancel = null;
+  const cancelled = new Promise((resolve) => {
+    onCancel = resolve;
+  });
+  let cancelledOnce = false;
+  const cancel = (why) => {
+    if (cancelledOnce) return;
+    cancelledOnce = true;
+    console.log("export " + jobId + " cancelled (" + (why || "cancel") + ") during " + session.stageName() + "; stopping");
+    onCancel({ ok: true, finished: false, cancelled: true, reason: "cancelled" });
+  };
+  cancelInFlight = cancel;
+  const machine = machineId();
+  if (machine) jobs.updateJob(jobId, { flyMachine: machine }).catch(() => {});
+  const timer = startHeartbeatTimer(jobId, () => session.stageName(), null, cancel);
   try {
     const run = exportRunner || completeExportJob;
-    return await run(jobId, inner, {
-      worker: "fly",
-      onProgress: (patch) => session.onProgress(patch),
-    });
+    const work = Promise.resolve().then(() =>
+      run(jobId, inner, {
+        worker: "fly",
+        onProgress: (patch) => session.onProgress(patch),
+      })
+    );
+    work.catch(() => {});
+    return await Promise.race([work, cancelled]);
   } catch {
     return { ok: false, reason: "export-failed" };
   } finally {
     clearInterval(timer);
     session.finish();
   }
+}
+
+function cancelRunningForTests(why) {
+  if (typeof cancelInFlight === "function") cancelInFlight(why || "test");
 }
 
 /**
@@ -295,4 +356,5 @@ module.exports = {
   stageDoneLine,
   createIdleExit,
   setExportRunnerForTests,
+  cancelRunningForTests,
 };

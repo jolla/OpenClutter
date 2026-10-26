@@ -202,7 +202,38 @@ async function readJob(id) {
 }
 
 function isTerminalState(state) {
-  return state === "done" || state === "error" || state === "failed";
+  return state === "done" || state === "error" || state === "failed" || state === "cancelled";
+}
+
+const CANCEL_STAGE = "Export cancelled";
+
+/**
+ * The page's Cancel. A queued or running job becomes "cancelled", which is
+ * terminal: a later done, error, heartbeat or zip pointer is ignored. The
+ * Fly worker reads this on its next heartbeat and stops the job; the
+ * Netlify path checks it before it stores a zip. A job that already
+ * finished keeps its state. Returns the job as stored, or null.
+ */
+async function cancelJob(id) {
+  if (!validJobId(id)) return null;
+  const cur = await readJob(id);
+  if (!cur) return null;
+  if (isTerminalState(cur.state)) return cur;
+  return updateJob(id, {
+    state: "cancelled",
+    stage: CANCEL_STAGE,
+    error: null,
+    cancelledAt: Date.now(),
+  });
+}
+
+function isCancelled(job) {
+  return !!job && job.state === "cancelled";
+}
+
+async function jobCancelled(id) {
+  const cur = await readJob(id).catch(() => null);
+  return isCancelled(cur);
 }
 
 const jobLocks = new Map();
@@ -297,6 +328,14 @@ function mergeJobPatch(cur, patch) {
     delete incoming.zipBytes;
     delete incoming.heartbeatAt;
     delete incoming.heartbeatStage;
+    // A cancelled job keeps its "Export cancelled" line while a Netlify
+    // run that cannot be stopped mid-stage finishes in the background.
+    if (cur.state === "cancelled") {
+      delete incoming.stage;
+      delete incoming.tilesDone;
+      delete incoming.tilesTotal;
+      delete incoming.step;
+    }
   }
   const keyChanged = !!(incoming.stage && stageKey(cur.stage) !== stageKey(incoming.stage));
   if (incoming.tilesDone != null || incoming.tilesTotal != null) {
@@ -485,6 +524,10 @@ module.exports = {
   freshJob,
   writeHeartbeat,
   isTerminalState,
+  CANCEL_STAGE,
+  cancelJob,
+  isCancelled,
+  jobCancelled,
   mergeJobPatch,
   stageMovesForward,
 };
