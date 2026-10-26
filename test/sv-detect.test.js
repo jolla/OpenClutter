@@ -128,6 +128,25 @@ describe("site types roadside roofs (ROADSIDE_V2)", () => {
     assert.equal(vt.roadsideVehicles(PAD, FRAME, plate, []).length, 1);
   });
 
+  it("on a dim photo tan ground and a dull pale patch are not roofs; a white roof is", () => {
+    exportMode.setSiteTypes(true);
+    // A hazy photo whose brightest tone is pale ground, not a roof.
+    const base = () => {
+      const p = plateOf(W, H, [120, 118, 100]);
+      paint(p, 0, 0, 16, 16, [198, 192, 180]);
+      return p;
+    };
+    const tan = base();
+    paint(tan, 90, 76, 104, 124, [203, 187, 164]);
+    assert.equal(vt.roadsideVehicles(PAD, FRAME, tan, []).length, 0, "tan sand");
+    const dull = base();
+    paint(dull, 90, 76, 104, 124, [178, 178, 172]);
+    assert.equal(vt.roadsideVehicles(PAD, FRAME, dull, []).length, 0, "dull pale patch");
+    const roof = base();
+    paint(roof, 90, 76, 104, 124, [236, 236, 232]);
+    assert.equal(vt.roadsideVehicles(PAD, FRAME, roof, []).length, 1, "white roof");
+  });
+
   it("empty gravel gets no box", () => {
     exportMode.setSiteTypes(true);
     assert.equal(vt.roadsideVehicles(PAD, FRAME, plateOf(W, H, [166, 164, 147]), []).length, 0);

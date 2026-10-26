@@ -597,6 +597,9 @@ const ROADSIDE_V2 = {
   roofTouch: 0.08,
   roofP90: 230,
   roofTopGap: 20,
+  roofFloor: 185,
+  tanWarm: 38,
+  tanP90: 230,
   tealG: 15,
   tealB: 10,
 };
@@ -650,7 +653,12 @@ function roofTone(cells, x0, y0, bw, plate) {
   const n = cells.length;
   const p90 = lum[Math.floor(0.9 * (n - 1))];
   const teal = g / n - r / n >= ROADSIDE_V2.tealG && b / n - r / n >= ROADSIDE_V2.tealB;
-  const need = Math.min(ROADSIDE_V2.roofP90, plateTop(plate) - ROADSIDE_V2.roofTopGap);
+  // Tan sand, dirt, a footpath or a pool deck: warm (red well over blue)
+  // and short of white. A unit roof is near neutral, cool, or bright.
+  if (r / n - b / n >= ROADSIDE_V2.tanWarm && p90 < ROADSIDE_V2.tanP90) return false;
+  // On a dim or hazy photo the brightest tone can be pale ground, so a
+  // roof still has to read light in its own right.
+  const need = Math.min(ROADSIDE_V2.roofP90, Math.max(ROADSIDE_V2.roofFloor, plateTop(plate) - ROADSIDE_V2.roofTopGap));
   return p90 >= need || teal;
 }
 
