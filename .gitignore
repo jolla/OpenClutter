@@ -2,11 +2,11 @@ node_modules
 test/eval/out/
 # Local-only Esri crops for Esri-calibrated tests (never commit Esri imagery)
 test/fixtures-esri/
-jerry-oak-export/
 
 # Secrets and credentials: never commit these
 .env
 .env.*
+.envrc
 !.env.example
 *.pem
 *.key
@@ -14,11 +14,32 @@ jerry-oak-export/
 *.pfx
 *.secret
 *.secrets
+*.secret.*
+*.secrets.*
+.*_secret
+.*-secret
 .secrets/
 secrets/
 *.token
 .netlify/
 .npmrc
+
+# Hand labels, ground truth and other local-only reference data (bench reads them via OC_GT_DIR)
+groundtruth/
+ground-truth/
+hand-labels/
+labels-local/
+*.labels.geojson
+
+# Scratch work and local tool output
+scratch/
+tmp/
+.tmp/
+local/
+*.local.*
+*.tar.gz
+*.tgz
+*.xwd
 
 # Python caches
 __pycache__/
@@ -26,8 +47,12 @@ __pycache__/
 
 # Local exports, zips and bench output
 *.zip
+*.openintent
 exports/
+export-*/
+*-export/
 out/
+output/
 bench/out/
 bench/runs/
 *.log

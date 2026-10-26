@@ -487,7 +487,7 @@ describe("isotropic aspect lock after Esri N/S pad", () => {
     assert.ok(clip[1] > -locked.frame.lengthM - 0.05 && clip[1] < 0.05);
   });
 
-  it("fixes Jerry's Oak Creek anisotropic frame without geodesic stretch", () => {
+  it("fixes the Oak Creek repro anisotropic frame without geodesic stretch", () => {
     // Repro numbers from Jerry's failing zip frame-lock.json.
     const anisotropic = geoFrame(
       {
