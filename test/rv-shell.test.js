@@ -82,13 +82,14 @@ describe("RV shell", () => {
     assert.equal(mode.isRvShell(), false);
   });
 
-  it("is the default on /dev hosts and never on production", () => {
+  it("is the default on every host unless the request opts out (1.2.41)", () => {
     const { rvShellWanted } = require("../netlify/lib/export-mode");
     assert.equal(rvShellWanted(true, {}), true);
     assert.equal(rvShellWanted(true, { rvShell: true }), true);
     assert.equal(rvShellWanted(true, { rvShell: false }), false);
-    assert.equal(rvShellWanted(false, {}), false);
-    assert.equal(rvShellWanted(false, { rvShell: true }), false);
+    assert.equal(rvShellWanted(false, {}), true);
+    assert.equal(rvShellWanted(false, { rvShell: true }), true);
+    assert.equal(rvShellWanted(false, { rvShell: false }), false);
   });
 
   it("shells worst-case pad RVs the same way", () => {

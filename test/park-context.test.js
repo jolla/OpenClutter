@@ -123,11 +123,12 @@ describe("park context for worst-case pads", () => {
     assert.deepEqual(ctx.rings, own.rings);
   });
 
-  it("is on for /dev hosts only", () => {
+  it("is on for every host unless the request opts out (1.2.41)", () => {
     assert.equal(isParkContext(), false);
     assert.equal(parkContextWanted(true, {}), true);
     assert.equal(parkContextWanted(true, { parkContext: false }), false);
-    assert.equal(parkContextWanted(false, {}), false);
-    assert.equal(parkContextWanted(false, { parkContext: true }), false);
+    assert.equal(parkContextWanted(false, {}), true);
+    assert.equal(parkContextWanted(false, { parkContext: true }), true);
+    assert.equal(parkContextWanted(false, { parkContext: false }), false);
   });
 });

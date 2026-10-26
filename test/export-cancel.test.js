@@ -293,10 +293,14 @@ describe("export cancel: Fly worker", { concurrency: 1 }, () => {
 describe("export cancel: page", () => {
   const app = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
 
-  it("Cancel calls the server only on /dev pages", () => {
+  it("Cancel calls the server on every page (1.2.41)", () => {
     const fn = /function stopServerExport\(jobId\) \{([\s\S]*?)\n\}/.exec(app);
     assert.ok(fn, "stopServerExport is defined");
-    assert.match(fn[1], /if \(!jobId \|\| !devPage\(\)\) return;/);
+    assert.match(fn[1], /if \(!jobId \|\| !serverCancelWanted\(\)\) return;/);
+    assert.doesNotMatch(fn[1], /devPage\(\)/);
+    const wanted = /function serverCancelWanted\(\) \{([\s\S]*?)\n\}/.exec(app);
+    assert.ok(wanted, "serverCancelWanted is defined");
+    assert.match(wanted[1], /return true;/);
     assert.match(fn[1], /\/api\/export-cancel\?job=/);
     assert.match(fn[1], /method: "POST"/);
     const cancel = /function cancelExport\(\) \{([\s\S]*?)\n\}/.exec(app);

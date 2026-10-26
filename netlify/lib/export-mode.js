@@ -20,7 +20,7 @@ function isResilient() {
 
 // RV park and marina rules from 1.2.18 (road RVs only on photo roofs,
 // marinas and piers kept from the map read, the wider boat scan). On for
-// /dev hosts; production keeps the 1.2.17 rules until it is promoted.
+// /dev hosts from 1.2.18 and every host since 1.2.41 (production batch 1).
 let siteTypes = true;
 
 function setSiteTypes(on) {
@@ -31,9 +31,9 @@ function isSiteTypes() {
   return siteTypes;
 }
 
-// RVs and trailers as four walls plus a roof slab (1.2.25). On for /dev
-// hosts unless the request sends rvShell:false; production keeps the
-// 1.2.17 solid block. Off by default so nothing else turns it on.
+// RVs and trailers as four walls plus a roof slab (1.2.25). On for every
+// host since 1.2.41 unless the request sends rvShell:false. Off by default
+// so nothing else turns it on.
 let rvShell = false;
 
 function setRvShell(on) {
@@ -44,14 +44,14 @@ function isRvShell() {
   return rvShell;
 }
 
-/** Shell on /dev hosts unless the request says rvShell:false. Never on production. */
+/** Shell on every host since 1.2.41 unless the request says rvShell:false. */
 function rvShellWanted(testHost, body) {
-  return !!testHost && !(body && body.rvShell === false);
+  return !(body && body.rvShell === false);
 }
 
 // Worst-case pads learn the pad pattern from the whole mapped park, read on
-// a second photo past the draw (1.2.26). On for /dev hosts unless the request
-// sends parkContext:false; production never reads past the draw.
+// a second photo past the draw (1.2.26). On for every host since 1.2.41
+// unless the request sends parkContext:false.
 let parkContext = false;
 
 function setParkContext(on) {
@@ -62,14 +62,14 @@ function isParkContext() {
   return parkContext;
 }
 
-/** Park context on /dev hosts unless the request says parkContext:false. Never on production. */
+/** Park context on every host since 1.2.41 unless the request says parkContext:false. */
 function parkContextWanted(testHost, body) {
-  return !!testHost && !(body && body.parkContext === false);
+  return !(body && body.parkContext === false);
 }
 
 // Hamina import budget (1.2.29): 5.8 MB of OpenIntent JSON and at most
-// 9.7 MB of JSON plus map image. On for /dev hosts; production keeps the
-// 1.2.17 4.9 MB JSON-only budget until it is promoted.
+// 9.7 MB of JSON plus map image. On for every host since 1.2.41 (before
+// that production kept the 4.9 MB JSON-only budget).
 let bigBudget = false;
 
 function setBigBudget(on) {
@@ -102,8 +102,7 @@ function tiledOsmWanted(testHost) {
 
 // Lidar canopy checked on the current photo (1.2.37): cells lower than a
 // vehicle or on bare ground and roofs, with no foliage on a leaf-on photo,
-// are cleared. On for /dev hosts; production keeps the 1.2.17 canopy until
-// it is promoted.
+// are cleared. On for every host since 1.2.41.
 let photoCanopy = false;
 
 function setPhotoCanopy(on) {
@@ -120,8 +119,8 @@ function isPhotoCanopy() {
 // a crown with no leaves today is left out, where enough crowns have no
 // leaves on the photo to show the flight is out of date. Elsewhere crowns
 // keep their lidar outline and only a leafless crown on roof or open ground
-// is left out. On for /dev hosts; production
-// keeps the 1.2.17 canopy until it is promoted.
+// is left out. On for /dev hosts only; production keeps lidar crowns
+// (the 1.2.37 photo canopy check runs there from 1.2.41).
 let photoCrowns = false;
 
 function setPhotoCrowns(on) {

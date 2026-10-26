@@ -1514,18 +1514,25 @@ async function handleClutter(event) {
   // Overpass retries and fallback, and the sharper-plate wait, run on every
   // host. On /dev hosts legacyFetch:true replays the earlier paths.
   exportMode.setResilient(!(testHost && body.legacyFetch === true));
-  // The 1.2.18 RV park and marina rules run on /dev hosts only.
-  exportMode.setSiteTypes(testHost);
-  // From 1.2.25 /dev RVs and trailers are hollow shells (four walls and a
-  // roof slab). rvShell:false on a /dev host exports the solid 9 dB/m block.
+  // Production batch 1 (1.2.41): the /dev export rules run on every host.
+  // Each switch stays, so putting one back on /dev only is a one-line change
+  // (pass testHost again). The request opt-outs rvShell:false and
+  // parkContext:false still work on every host.
+  // 1.2.18 RV park and marina rules (with the later RV detection fixes).
+  exportMode.setSiteTypes(true);
+  // From 1.2.25 RVs and trailers are hollow shells (four walls and a roof
+  // slab). rvShell:false exports the solid 9 dB/m block.
   exportMode.setRvShell(exportMode.rvShellWanted(testHost, body));
-  // From 1.2.26 /dev worst-case pads learn the pad pattern from the whole
-  // park when a mapped park runs past the draw. Production never reads it.
+  // From 1.2.26 worst-case pads learn the pad pattern from the whole park
+  // when a mapped park runs past the draw. parkContext:false turns it off.
   exportMode.setParkContext(exportMode.parkContextWanted(testHost, body));
-  // From 1.2.29 /dev exports use the raised Hamina budget: 5.8 MB of JSON and
-  // 9.7 MB of JSON plus map image. Production keeps the 4.9 MB JSON budget.
-  exportMode.setBigBudget(testHost);
-  exportMode.setPhotoCanopy(testHost);
+  // From 1.2.29 the raised Hamina budget: 5.8 MB of JSON and 9.7 MB of JSON
+  // plus map image (production used 4.9 MB of JSON before 1.2.41).
+  exportMode.setBigBudget(true);
+  // 1.2.37 lidar canopy checked on the photo runs on every host. The 1.2.39
+  // photo-shaped crowns stay on /dev hosts: their stale-lidar test fired in
+  // a leafy campground (Traverse City KOA) and cut real dense canopy.
+  exportMode.setPhotoCanopy(true);
   exportMode.setPhotoCrowns(testHost);
   // From 1.2.31 large draws read the street-map tiles in one shared window
   // with a slow-fail chain, a retry pass and a split (export-mode tiledOsm).

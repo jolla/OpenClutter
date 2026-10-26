@@ -1766,9 +1766,14 @@ function cancelExport() {
   stopServerExport(run.jobId);
 }
 
-/** /dev pages also stop the job on the server, so the worker drops it and stores no file. */
+/** Every page since 1.2.41 (/dev since 1.2.38) also stops the job on the server. */
+function serverCancelWanted() {
+  return true;
+}
+
+/** Cancel also stops the job on the server, so the worker drops it and stores no file. */
 function stopServerExport(jobId) {
-  if (!jobId || !devPage()) return;
+  if (!jobId || !serverCancelWanted()) return;
   try {
     fetch("/api/export-cancel?job=" + encodeURIComponent(jobId), {
       method: "POST",
