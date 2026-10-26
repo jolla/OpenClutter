@@ -1164,17 +1164,27 @@ function roadsideBoxes(f, found, placed) {
     if (!v || !Number.isFinite(v.lon) || !Number.isFinite(v.lat)) continue;
     const proj = projectAt(v.lat);
     const xy = proj.to(v.lon, v.lat);
-    let dup = false;
-    for (let p = 0; p < placed.length && !dup; p++) {
-      if (Math.hypot(placed[p][0] - xy[0], placed[p][1] - xy[1]) < 3) dup = true;
-    }
-    if (dup) continue;
-    placed.push(xy);
     const len = Math.max(6, Math.min(13, v.len || RV_LENGTH_M));
     // Site types: a park model or a wide unit keeps its width.
     const widBox = isSiteTypes() ? ROADSIDE_V2.boxWid : [2.3, 3];
     const wid = Math.max(widBox[0], Math.min(widBox[1], v.wid || RV_WIDTH_M));
     const heading = { ux: v.ux, uy: v.uy };
+    // One frame for every box (a frame per box latitude shifts east-west
+    // by metres between boxes a few metres apart north-south). A unit seen
+    // from two overlapping pad windows, or a roof and the awning beside it
+    // read as a second roof, is one unit: a box that overlaps one already
+    // placed is the same unit seen again.
+    if (!placed.proj) placed.proj = projectAt(v.lat);
+    const at = placed.proj.to(v.lon, v.lat);
+    const rect = boxRect(at[0], at[1], heading, len, wid);
+    let dup = false;
+    for (let p = 0; p < placed.length && !dup; p++) {
+      const q = placed[p];
+      if (Math.hypot(q.x - at[0], q.y - at[1]) < 3) dup = true;
+      else if (Math.hypot(q.x - at[0], q.y - at[1]) < (q.len + len) / 2 && rectOverlapShare(rect, q.rect) > ROADSIDE_OVERLAP_MAX) dup = true;
+    }
+    if (dup) continue;
+    placed.push({ x: at[0], y: at[1], len, rect });
     out.push(
       Object.assign({}, f, {
         kind: "rv",
@@ -1185,6 +1195,29 @@ function roadsideBoxes(f, found, placed) {
     );
   }
   return out;
+}
+
+/** Share of a roadside box over another before it counts as the same unit. */
+const ROADSIDE_OVERLAP_MAX = 0.1;
+
+/** Corners (metres) of a box centred at x, y along heading. */
+function boxRect(x, y, heading, len, wid) {
+  return { x, y, ux: heading.ux, uy: heading.uy, hl: len / 2, hw: wid / 2 };
+}
+
+/** Share of rect a (sampled on a 0.5 m grid) that lies inside rect b. */
+function rectOverlapShare(a, b) {
+  let n = 0;
+  let hit = 0;
+  for (let i = -a.hl + 0.25; i < a.hl; i += 0.5) {
+    for (let j = -a.hw + 0.25; j < a.hw; j += 0.5) {
+      const px = a.x + a.ux * i - a.uy * j - b.x;
+      const py = a.y + a.uy * i + a.ux * j - b.y;
+      n++;
+      if (Math.abs(px * b.ux + py * b.uy) <= b.hl && Math.abs(-px * b.uy + py * b.ux) <= b.hw) hit++;
+    }
+  }
+  return n ? hit / n : 0;
 }
 
 function finalizeVehiclesWork(features, fractionFor, roadsideFor) {
@@ -3714,6 +3747,8 @@ module.exports = {
   decodePlate,
   needsPitchImage,
   projectAt,
+  boxRect,
+  rectOverlapShare,
   centroidLL,
   orientedRing,
   semiBoxes,
