@@ -21,6 +21,9 @@ function photoOf(kind) {
       let c;
       if (k === "leafy") c = odd ? [55, 72, 38] : [85, 104, 62];
       else if (k === "shade") c = odd ? [18, 22, 26] : [30, 34, 36];
+      // Dense dull green canopy the leaf test misses (neither leafy, shade,
+      // bare nor bright): a leaf-on deciduous woods on a hazy photo.
+      else if (k === "dull") c = odd ? [90, 140, 100] : [120, 170, 125];
       else c = [236, 238, 240];
       const i = (y * S + x) * 4;
       data[i] = c[0];
@@ -153,6 +156,24 @@ describe("photo-crowns", () => {
     const out = ref.refine([tree, roof], () => 7);
     assert.deepEqual(out, [tree]);
     assert.equal(ref.stats.dropped, 1);
+  });
+  it("does not call dense dull green canopy out-of-date lidar", () => {
+    // A leafy campground: most crowns sit on dense green canopy the leaf test
+    // misses. With no bright roof under them they are no evidence that the
+    // lidar is out of date, so no crown is trimmed, split or left out.
+    const photo = photoOf((x, y) => (y < 150 ? "dull" : "roof"));
+    const ref = pcr.photoCrownRefiner(photo, frame, null);
+    assert.equal(ref.classAt(10, 10), 0);
+    assert.equal(ref.classAt(11, 10), 0);
+    const crowns = [];
+    for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++) crowns.push(squareCrown(4 + i * 28, 4 + j * 28, 24 + i * 28, 24 + j * 28, 12));
+    const out = ref.refine(crowns, () => 12);
+    assert.deepEqual(out, crowns);
+    assert.equal(ref.stats.leafless, 25);
+    assert.equal(ref.stats.evidence, 0);
+    assert.equal(ref.stats.stale, false);
+    assert.equal(ref.stats.dropped, 0);
+    assert.equal(ref.stats.shaped, 0);
   });
   it("needs a photo that matches the frame", () => {
     assert.equal(pcr.photoCrownRefiner({ width: 10, height: 10, data: new Uint8Array(400) }, frame, null), null);

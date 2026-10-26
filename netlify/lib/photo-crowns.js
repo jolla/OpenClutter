@@ -24,7 +24,10 @@
  *   is gone or was never a tree.
  * All of that only where the lidar is out of date in the zones: at least
  * STALE_SHARE of the crowns read have no leaves at all on the photo (RVs,
- * awnings and trailers the flight read as crowns, trees since cut). Where
+ * awnings and trailers the flight read as crowns, trees since cut), and at
+ * least STALE_EVIDENCE_SHARE of those show a bright roof, vehicle top or
+ * pale ground (STALE_BRIGHT_MIN of the crown). Dense leaf-on canopy the
+ * leaf test misses (dull or hazy green) is no such evidence. Where
  * the lidar still matches the photo, every crown keeps its lidar outline,
  * and a crown with no leaves is left out only when the photo shows at
  * least DROP_OPEN of it as roof, vehicle top or open ground. "Not leafy"
@@ -62,6 +65,15 @@ const STALE_MIN_CROWNS = 20;
 // Otherwise a leafless crown is left out only when this share of it is
 // roof, vehicle top or open ground on the photo.
 const DROP_OPEN = 0.5;
+// A leafless crown is evidence that the lidar is out of date only when at
+// least this share of it is bright roof, vehicle top or pale ground on the
+// photo, and the lidar counts as out of date only when at least
+// STALE_EVIDENCE_SHARE of the leafless crowns are such evidence. Leafless
+// crowns that reach STALE_BRIGHT_MIN: Pismo Coast Village 57%, Westwind 69%,
+// Traverse City KOA 15% (dense leaf-on woods the leaf test misses),
+// Fort Wilderness 12%, Colorado camp 4%.
+const STALE_BRIGHT_MIN = 0.15;
+const STALE_EVIDENCE_SHARE = 0.4;
 
 const C_LEAFY = 1;
 const C_BARE = 2;
@@ -248,7 +260,7 @@ function photoCrownRefiner(photo, frame, inZone) {
     cls[i] = c + 8;
     return c;
   };
-  const stats = { crowns: 0, shaped: 0, extra: 0, dropped: 0, kept: 0, m2Before: 0, m2After: 0 };
+  const stats = { crowns: 0, shaped: 0, extra: 0, dropped: 0, kept: 0, m2Before: 0, m2After: 0, leafless: 0, evidence: 0 };
 
   function centreLonLat(ringPx) {
     let cx = 0;
@@ -367,7 +379,7 @@ function photoCrownRefiner(photo, frame, inZone) {
     // Share of the crown the photo positively shows as roof, vehicle top or
     // open ground (not just "not leafy": dark, olive and shaded crowns
     // often read as neither).
-    return { blobs, open: (nBright + nBare) / nIn, m2 };
+    return { blobs, open: (nBright + nBare) / nIn, bright: nBright / nIn, m2 };
   }
 
   /** One crown polygon from a set of photo pixels (whole-photo indices). */
@@ -444,8 +456,18 @@ function photoCrownRefiner(photo, frame, inZone) {
     // its lidar outline, and only a crown with no leaves whose photo shows
     // mostly roof, vehicle top or open ground is left out: a crown the leaf
     // test merely misses (dark, olive, shaded) stays.
-    const leafless = read.filter((r) => !r.made.blobs.length).length;
-    stats.stale = read.length >= STALE_MIN_CROWNS && leafless / read.length >= STALE_SHARE;
+    // A leafless crown counts as evidence only when the photo shows bright
+    // roof, vehicle top or pale ground there: a leaf-on woods the leaf test
+    // misses (dull or hazy green) is not a sign that the flight is old.
+    const leaflessCrowns = read.filter((r) => !r.made.blobs.length);
+    const leafless = leaflessCrowns.length;
+    const evidence = leaflessCrowns.filter((r) => r.made.bright >= STALE_BRIGHT_MIN).length;
+    stats.leafless = leafless;
+    stats.evidence = evidence;
+    stats.stale =
+      read.length >= STALE_MIN_CROWNS &&
+      leafless / read.length >= STALE_SHARE &&
+      evidence / leafless >= STALE_EVIDENCE_SHARE;
     for (const r of read) {
       if (!r.made.blobs.length) {
         if (stats.stale || r.made.open >= DROP_OPEN) {
@@ -552,4 +574,6 @@ module.exports = {
   traceBlob,
   CROWN_MAX_M2,
   BLOB_MIN_M2,
+  STALE_BRIGHT_MIN,
+  STALE_EVIDENCE_SHARE,
 };
