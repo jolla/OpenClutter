@@ -236,6 +236,7 @@ const { supplementFootprints } = require("../lib/roof-mask");
 const { surfaceMasksFromImage, openShareSampler, poleShadowContrast } = require("../lib/surface-mask");
 const { fetchLeafOnPhoto, leafOnGreenSampler } = require("../lib/leaf-on-photo");
 const { checkCanopyOnPhoto, photoCanopyNote, leafyShareSampler, vehicleZoneTest, zonedShareSampler } = require("../lib/photo-canopy");
+const { photoCrownRefiner, photoCrownNote } = require("../lib/photo-crowns");
 const { createWaterTest, clearWaterCanopy, dropWaterPoints } = require("../lib/water-mask");
 const { rejectPavementFootprints } = require("../lib/pavement");
 const { rejectShadowless } = require("../lib/cast-shadow");
@@ -1525,6 +1526,7 @@ async function handleClutter(event) {
   // 9.7 MB of JSON plus map image. Production keeps the 4.9 MB JSON budget.
   exportMode.setBigBudget(testHost);
   exportMode.setPhotoCanopy(testHost);
+  exportMode.setPhotoCrowns(testHost);
   // From 1.2.31 large draws read the street-map tiles in one shared window
   // with a slow-fail chain, a retry pass and a split (export-mode tiledOsm).
   exportMode.setTiledOsm(exportMode.tiledOsmWanted(testHost));
@@ -1619,6 +1621,7 @@ async function handleClutter(event) {
   let overturePack = { features: [] };
   let demSamples = null;
   let chmGrid = null;
+  let photoCrowns = null;
   let coverJob = null;
   let coverPromise = null;
   let lidarPromise = null;
@@ -2677,6 +2680,9 @@ async function handleClutter(event) {
             (((+chmGrid.north - +chmGrid.south) / chmGrid.height) * 110540);
           const note = photoCanopyNote(checked, cellM2);
           if (note && warnings.indexOf(note) < 0) warnings.push(note);
+          // Each lidar crown in those zones takes the outline of its own
+          // leaves on the same photo (/dev hosts).
+          if (checked.gate && exportMode.isPhotoCrowns()) photoCrowns = photoCrownRefiner(decoded, frame, vehicleZone);
         } catch {
           // The lidar canopy stands when the photo cannot be read.
         }
@@ -2706,6 +2712,7 @@ async function handleClutter(event) {
               // Per-tree lidar crowns need more outlines than whole stands.
               // The zip budget still trims after this.
               maxPolygons: SEGMENT_TREES && lidarCanopy ? Math.round(foliageCap * SEGMENT_CAP_SCALE) : foliageCap,
+              photoCrowns,
             })
           )
           .then((pack) => {
@@ -2720,6 +2727,11 @@ async function handleClutter(event) {
       );
     }
     if (parallelTasks.length) await Promise.all(parallelTasks);
+    if (photoCrowns && foliagePack) {
+      footprintMeta.photoCrowns = photoCrowns.stats;
+      const crownNote = photoCrownNote(photoCrowns.stats);
+      if (crownNote && warnings.indexOf(crownNote) < 0) warnings.push(crownNote);
+    }
     if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage build-clutter\n");
     const leafOnPhoto = leafOnJob ? await leafOnJob : null;
     if (imageryCtx && imageryCtx.esriCitationJob && imageryCtx.esriCitation === undefined) {
@@ -2747,6 +2759,7 @@ async function handleClutter(event) {
       omitFoliage: chmTimedOut,
       chmRequired: includeFoliage,
       maxFoliagePolygons: foliageCap,
+      photoCrowns: foliagePack ? null : photoCrowns,
       terrainResolution,
       terrainStyle,
       nlsHeights: devHost,

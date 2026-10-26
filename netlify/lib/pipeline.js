@@ -3481,6 +3481,7 @@ function buildClutter({
   omitFoliage,
   chmRequired,
   maxFoliagePolygons,
+  photoCrowns,
   woodRings,
   outdoorFeatures,
   outdoorNotes,
@@ -3565,6 +3566,7 @@ function buildClutter({
           maxPolygons: maxFoliagePolygons,
           woodRings,
           palmPoints,
+          photoCrowns,
         }))
       : {
         oiAreas: [],
@@ -3579,6 +3581,11 @@ function buildClutter({
         overlayPoints: [],
         overlayRings: [],
       };
+  if (!foliagePack && photoCrowns && photoCrowns.stats && Array.isArray(warnings)) {
+    if (footprintMeta) footprintMeta.photoCrowns = photoCrowns.stats;
+    const crownNote = require("./photo-crowns").photoCrownNote(photoCrowns.stats);
+    if (crownNote && warnings.indexOf(crownNote) < 0) warnings.push(crownNote);
+  }
   if (foliageOn && veg.foliageCoarsened && Array.isArray(warnings)) {
     const cap = maxFoliagePolygons > 0 ? maxFoliagePolygons | 0 : 720;
     const dropped = veg.foliageDropped | 0;
@@ -4199,6 +4206,7 @@ function buildClutter({
     chmTrees: footprintMeta && footprintMeta.chmTrees ? footprintMeta.chmTrees : 0,
     waterCanopyCells: footprintMeta && footprintMeta.waterCanopyCells ? footprintMeta.waterCanopyCells : 0,
     ...(footprintMeta && footprintMeta.photoCanopy ? { photoCanopy: footprintMeta.photoCanopy, photoBareCrowns: footprintMeta.photoBareCrowns || 0 } : {}),
+    ...(footprintMeta && footprintMeta.photoCrowns ? { photoCrowns: footprintMeta.photoCrowns } : {}),
     waterTreesDropped: footprintMeta && footprintMeta.waterTreesDropped ? footprintMeta.waterTreesDropped : 0,
     terrainRaised: terrain && terrain.raised ? terrain.raised : 0,
     terrainSloped: terrain && terrain.sloped ? terrain.sloped : 0,

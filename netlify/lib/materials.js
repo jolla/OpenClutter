@@ -782,11 +782,27 @@ function canonicalUnderstory(material) {
  * the stem top are the same clearance. A slope adds that ground under both.
  * Null when the height cannot hold a stem and a crown.
  */
-function individualTreeParts(material, groundM, crownM) {
+/**
+ * Stem height under a crown whose depth is known from its width on the
+ * photo (photo-crowns.js): a crown is about as deep as it is wide, so a
+ * small head on a tall reading (a palm, a lone eucalyptus top) sits on a
+ * long stem instead of a green column to the ground. Never lower than the
+ * usual stem, and the crown stays at least 2.5 m deep.
+ */
+function leafCrownBase(heightM, depthM) {
+  const h = roundHeightM(heightM);
+  const usual = individualTreeCrownBase(h);
+  if (!usual) return 0;
+  const depth = Math.max(2.5, Number(depthM) || 0);
+  const base = roundTenths(Math.max(usual, h - depth));
+  return h - base >= 2.5 ? base : usual;
+}
+
+function individualTreeParts(material, groundM, crownM, depthM) {
   if (!material || !isVegetationOiName(material.name) || isLiftedFoliageName(material.name)) return null;
   const height = roundHeightM(material.top_height);
   if (!height) return null;
-  let clearance = crownM > 0 ? palmCrownBase(height, crownM) : individualTreeCrownBase(height);
+  let clearance = crownM > 0 ? palmCrownBase(height, crownM) : depthM > 0 ? leafCrownBase(height, depthM) : individualTreeCrownBase(height);
   if (!clearance) return null;
   const tier = String(material.name).indexOf(FOLIAGE_LIGHT_NAME) >= 0 ? "light" : "heavy";
   let thickness = roundTenths(height - clearance);
@@ -1367,6 +1383,7 @@ module.exports = {
   measuredFoliageMaterial,
   measuredTrunkMaterial,
   individualTreeCrownBase,
+  leafCrownBase,
   palmCrownBase,
   individualTreeParts,
   trunkOiMaterial,
