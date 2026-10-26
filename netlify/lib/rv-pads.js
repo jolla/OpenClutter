@@ -41,8 +41,14 @@ const PAD_GROUND_MIN = 80;
 const PAD_MATCH_DIST = 40;
 const PAD_MATCH_MIN = 0.5;
 /** RVs found per 100 m of a park's own roads before its empty pads are filled. */
-const PAD_DENSITY_MIN = 2;
+const PAD_DENSITY_MIN = 1.8;
 const FILL_CAP = 1500;
+/**
+ * Site types: no pad within this many metres of a point where two park
+ * roads meet. The pavement widens into the turn there, past any road
+ * line's half width, and a corner is a lane mouth more often than a pad.
+ */
+const JUNCTION_CLEAR_M = 16;
 const ROAD_CAP = 400;
 
 function median(a) {
@@ -272,6 +278,50 @@ function clamp(v, r) {
   return Math.max(r[0], Math.min(r[1], v));
 }
 
+/** Points (metres) where two road polylines cross or one ends on another. */
+function roadJunctions(tabs) {
+  const out = [];
+  const boxes = tabs.map((t) => bboxOf(t.line));
+  const near = (p, line) => {
+    for (let k = 1; k < line.length; k++) {
+      const a = line[k - 1];
+      const b = line[k];
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const L2 = dx * dx + dy * dy;
+      const f = L2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0;
+      if (Math.hypot(p[0] - a[0] - f * dx, p[1] - a[1] - f * dy) < 1) return true;
+    }
+    return false;
+  };
+  for (let i = 0; i < tabs.length; i++) {
+    for (let j = i + 1; j < tabs.length; j++) {
+      const A = boxes[i];
+      const B = boxes[j];
+      if (A[2] < B[0] - 1 || B[2] < A[0] - 1 || A[3] < B[1] - 1 || B[3] < A[1] - 1) continue;
+      const a = tabs[i].line;
+      const b = tabs[j].line;
+      // An end of one road on the other, or two segments that cross.
+      for (const p of [a[0], a[a.length - 1]]) if (near(p, b)) out.push(p);
+      for (const p of [b[0], b[b.length - 1]]) if (near(p, a)) out.push(p);
+      for (let k = 1; k < a.length; k++) {
+        for (let m = 1; m < b.length; m++) {
+          const p = a[k - 1];
+          const r = [a[k][0] - p[0], a[k][1] - p[1]];
+          const q = b[m - 1];
+          const s2 = [b[m][0] - q[0], b[m][1] - q[1]];
+          const den = r[0] * s2[1] - r[1] * s2[0];
+          if (Math.abs(den) < 1e-9) continue;
+          const t = ((q[0] - p[0]) * s2[1] - (q[1] - p[1]) * s2[0]) / den;
+          const u = ((q[0] - p[0]) * r[1] - (q[1] - p[1]) * r[0]) / den;
+          if (t > 0 && t < 1 && u > 0 && u < 1) out.push([p[0] + r[0] * t, p[1] + r[1] * t]);
+        }
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * @param {object} o
  * @param {Array} o.zones pixel rings of RV parks, campgrounds, mobile-home parks
@@ -334,6 +384,7 @@ function fillPads(o) {
   }
   const clearOf = (k) => clear[k];
   if (!roads.length) return { rings: [], added: 0 };
+  const junctions = isSiteTypes() ? roadJunctions(clearRoads) : [];
   const boxes = [];
   for (const ring of o.evidence || []) {
     if (!ring || ring.length < 3) continue;
@@ -482,6 +533,7 @@ function fillPads(o) {
     const pts = samplesIn(cx, cy, ux, uy, pat.len, pat.wid);
     for (const p of pts) {
       if (!inZone(p[0], p[1])) return false;
+      for (const j of junctions) if (Math.abs(p[0] - j[0]) < JUNCTION_CLEAR_M && Math.abs(p[1] - j[1]) < JUNCTION_CLEAR_M && Math.hypot(p[0] - j[0], p[1] - j[1]) < JUNCTION_CLEAR_M) return false;
       if (blocked.hit(p[0], p[1]) || occupied.hit(p[0], p[1])) return false;
       for (let k = 0; k < clearRoads.length; k++) {
         const q = project(clearRoads[k], p[0], p[1]);
@@ -554,4 +606,4 @@ function fillPads(o) {
   return { rings: out, added: out.length };
 }
 
-module.exports = { fillPads, boxOf, project, lineTable };
+module.exports = { fillPads, boxOf, project, lineTable, roadJunctions };
