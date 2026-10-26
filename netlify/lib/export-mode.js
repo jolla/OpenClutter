@@ -100,7 +100,23 @@ function tiledOsmWanted(testHost) {
   return true;
 }
 
+// Lidar canopy checked on the current photo (1.2.37): cells lower than a
+// vehicle or on bare ground and roofs, with no foliage on a leaf-on photo,
+// are cleared. On for /dev hosts; production keeps the 1.2.17 canopy until
+// it is promoted.
+let photoCanopy = false;
+
+function setPhotoCanopy(on) {
+  photoCanopy = !!on;
+}
+
+function isPhotoCanopy() {
+  return photoCanopy;
+}
+
 module.exports = {
+  setPhotoCanopy,
+  isPhotoCanopy,
   setTiledOsm,
   isTiledOsm,
   tiledOsmWanted,

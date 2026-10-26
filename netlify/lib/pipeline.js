@@ -3371,6 +3371,7 @@ const LEAF_ON_MIN_GREEN = 0.05;
 // A lidar flight this many years old may predate clearing. The photo must
 // be leaf-on (median measured crown at least this green) before a crown it
 // shows as open, foliage-free ground is dropped.
+const { PIECE_LEAFY_MIN } = require("./photo-canopy");
 const STALE_LIDAR_YEARS = 4;
 const STALE_MIN_CROWNS = 8;
 const STALE_LEAF_ON_GREEN = 0.5;
@@ -3501,6 +3502,7 @@ function buildClutter({
   outdoorPlan,
   aerialOpenShare,
   aerialGreenShare,
+  photoLeafyShare,
   leafOnGreenShare,
   leafOnSource,
   imagery,
@@ -3913,6 +3915,28 @@ function buildClutter({
       );
     }
   }
+  // /dev hosts: on a leaf-on photo, a lidar crown piece that shows foliage
+  // texture on almost none of its outline is a parked RV, a roof, a shadow or
+  // a tree cut since the flight (photo-canopy.js). Dropped with its stem.
+  let photoBareDropped = 0;
+  if (!canopyEstimated && typeof photoLeafyShare === "function" && treePieces.length) {
+    for (let i = treePieces.length - 1; i >= 0; i--) {
+      const crown = (treePieces[i].areas || []).find((a) => a && !isTrunkArea(a));
+      const coords = crown && crown.area && crown.area.coordinates;
+      if (!coords || coords.length < 3) continue;
+      const share = photoLeafyShare(coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]));
+      if (share !== null && share < PIECE_LEAFY_MIN) {
+        treePieces.splice(i, 1);
+        photoBareDropped++;
+      }
+    }
+    if (footprintMeta) footprintMeta.photoBareCrowns = photoBareDropped;
+    if (photoBareDropped && Array.isArray(warnings)) {
+      warnings.push(
+        "Left out " + photoBareDropped + " lidar crown" + (photoBareDropped === 1 ? "" : "s") + " with no foliage on the current photo."
+      );
+    }
+  }
   // On an estimated canopy, a crown the national summer photo shows as roof,
   // shadow or paving is dropped with its stem. Measured lidar crowns stay.
   let leafOnDropped = 0;
@@ -4174,6 +4198,7 @@ function buildClutter({
     floorHeights: footprintMeta && footprintMeta.floorHeights ? footprintMeta.floorHeights : 0,
     chmTrees: footprintMeta && footprintMeta.chmTrees ? footprintMeta.chmTrees : 0,
     waterCanopyCells: footprintMeta && footprintMeta.waterCanopyCells ? footprintMeta.waterCanopyCells : 0,
+    ...(footprintMeta && footprintMeta.photoCanopy ? { photoCanopy: footprintMeta.photoCanopy, photoBareCrowns: footprintMeta.photoBareCrowns || 0 } : {}),
     waterTreesDropped: footprintMeta && footprintMeta.waterTreesDropped ? footprintMeta.waterTreesDropped : 0,
     terrainRaised: terrain && terrain.raised ? terrain.raised : 0,
     terrainSloped: terrain && terrain.sloped ? terrain.sloped : 0,

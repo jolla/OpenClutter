@@ -518,6 +518,94 @@ function scoreHandLabels(fc, rings, frame, imgW, imgH) {
   };
 }
 
+/**
+ * Hand-label tree scoring. A site whose lidar caught RVs that have moved
+ * since reads them as canopy, so canopy recall against that lidar rewards
+ * crowns drawn over RV rows. Such a site can name a tree hand-label set
+ * ("treeLabels"): crowns traced on the current Esri plate, "uncertain"
+ * patches (palms, hedges, scrub) and a "window" polygon, at
+ * OC_GT_DIR/<treeLabels>/labels.geojson, kept outside the repo. The exported
+ * Heavy, Light and Understory foliage is rasterised on a 0.2 m grid inside
+ * the window, uncertain cells ignored. Precision is the share of foliage
+ * within 1 m of a labelled crown, recall the share of labelled crown within
+ * 1 m of foliage. The tree F1 replaces canopy recall in the site score.
+ */
+function treeLabelSet(site) {
+  if (!site.treeLabels || !process.env.OC_GT_DIR) return null;
+  const p = path.join(process.env.OC_GT_DIR, site.treeLabels, "labels.geojson");
+  if (!fs.existsSync(p)) return null;
+  return JSON.parse(fs.readFileSync(p, "utf8"));
+}
+
+function scoreTreeLabels(fc, rings, frame, imgW, imgH) {
+  const winF = fc.features.find((f) => f.properties && f.properties.class === "window");
+  if (!winF) return { treeRef: "tree labels have no window, lidar used" };
+  const wr = winF.geometry.coordinates[0];
+  const win = { west: Infinity, east: -Infinity, south: Infinity, north: -Infinity };
+  for (const c of wr) {
+    win.west = Math.min(win.west, c[0]);
+    win.east = Math.max(win.east, c[0]);
+    win.south = Math.min(win.south, c[1]);
+    win.north = Math.max(win.north, c[1]);
+  }
+  const lat0 = (win.north + win.south) / 2;
+  const mx = 111320 * Math.cos((lat0 * Math.PI) / 180);
+  const my = 110540;
+  const toM = (lon, lat) => [(lon - win.west) * mx, (win.north - lat) * my];
+  const grid = { w: Math.ceil(((win.east - win.west) * mx) / HAND_CELL_M), h: Math.ceil(((win.north - win.south) * my) / HAND_CELL_M) };
+  const n = grid.w * grid.h;
+  const inWin = new Uint8Array(n);
+  const gt = new Uint8Array(n);
+  const pred = new Uint8Array(n);
+  for (const k of polyCells(wr.map((c) => toM(c[0], c[1])), grid)) inWin[k] = 1;
+  for (const f of fc.features) {
+    const cls = f.properties && f.properties.class;
+    if (cls !== "tree" && cls !== "uncertain") continue;
+    for (const k of polyCells(f.geometry.coordinates[0].map((c) => toM(c[0], c[1])), grid)) {
+      if (cls === "uncertain") inWin[k] = 0;
+      else gt[k] = 1;
+    }
+  }
+  for (const ring of rings) {
+    const pts = ring.map((p) => {
+      const ll = imagePxToLl(p[0], imgH - p[1], frame);
+      return toM(ll[0], ll[1]);
+    });
+    for (const k of polyCells(pts, grid)) pred[k] = 1;
+  }
+  for (let k = 0; k < n; k++) if (!inWin[k]) gt[k] = 0;
+  const r = Math.round(1 / HAND_CELL_M);
+  const gtNear = dilate(gt, grid.w, grid.h, r);
+  const predNear = dilate(pred, grid.w, grid.h, r);
+  let ev = 0;
+  let np = 0;
+  let tp = 0;
+  let ng = 0;
+  let hit = 0;
+  for (let k = 0; k < n; k++) {
+    if (!inWin[k]) continue;
+    ev++;
+    if (pred[k]) {
+      np++;
+      if (gtNear[k]) tp++;
+    }
+    if (gt[k]) {
+      ng++;
+      if (predNear[k]) hit++;
+    }
+  }
+  const precision = np ? Math.round((1000 * tp) / np) / 10 : null;
+  const recall = ng ? Math.round((1000 * hit) / ng) / 10 : null;
+  return {
+    treeRef: "tree hand labels, " + (fc.properties && fc.properties.imagery ? fc.properties.imagery : "current photo"),
+    treeCoverPct: ev ? Math.round((1000 * np) / ev) / 10 : null,
+    treeLabelCoverPct: ev ? Math.round((1000 * ng) / ev) / 10 : null,
+    treePrecision: precision,
+    treeRecall: recall,
+    treeF1: recall != null ? f1(recall, precision == null ? 0 : precision) : null,
+  };
+}
+
 async function scoreObjects(site, zipPath) {
   const loaded = loadZip(zipPath, path.join(OUT, "obj-" + site.id));
   const fp = loaded.json.floorplans[0];
@@ -535,11 +623,13 @@ async function scoreObjects(site, zipPath) {
   const kinds = {};
   const centres = padFillCentres(site);
   const handRings = [];
+  const foliageRings = [];
   for (const a of fp.attenuation_areas || []) {
     const name = (a.area_material && a.area_material.name) || "";
     const coords = a.area && a.area.coordinates;
     if (!coords || coords.length < 3) continue;
     const ring = coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
+    if (/^Foliage - (Heavy|Light|Understory)/.test(name)) foliageRings.push(ring);
     if (/water/i.test(name)) water.push(ring);
     if (!solidName(name)) continue;
     if (isPadFill(ring, centres)) {
@@ -561,6 +651,9 @@ async function scoreObjects(site, zipPath) {
   }
   const fc = handLabelSet(site);
   const hand = fc ? scoreHandLabels(fc, handRings, frame, imgW, imgH) : site.handLabels ? { rvRef: "hand labels missing (set OC_GT_DIR), lidar used" } : {};
+  const tfc = treeLabelSet(site);
+  if (tfc) Object.assign(hand, scoreTreeLabels(tfc, foliageRings, frame, imgW, imgH));
+  else if (site.treeLabels) hand.treeRef = "tree hand labels missing (set OC_GT_DIR), lidar canopy used";
   const ref = await objectReference(site, frame);
   if (!ref) return Object.assign({ objRef: "none", kinds, padFills: centres ? centres.length : null }, hand);
   const step = Math.max(1, Math.round(1 / mpu));
@@ -683,7 +776,8 @@ async function scoreObjects(site, zipPath) {
 
 function siteScore(r) {
   const parts = [];
-  if (r.canopyRecall != null && r.canopyRefPx >= 2000) parts.push(r.canopyRecall);
+  if (r.treeF1 != null) parts.push(r.treeF1);
+  else if (r.canopyRecall != null && r.canopyRefPx >= 2000) parts.push(r.canopyRecall);
   if (r.rvF1 != null) parts.push(r.rvF1);
   else if (r.smallF1 != null) parts.push(r.smallF1);
   if (r.bigF1 != null) parts.push(r.bigF1);
@@ -715,6 +809,8 @@ function writeBoard() {
   for (const r of rows) {
     if (r.rvLabels != null) lines.push("", r.name + ": RVs vs " + r.rvRef + ": " + r.rvLabels + " labels, " + r.rvPreds + " predictions, " + r.rvTp + " matched, recall " + r.rvRecall + ", precision " + f(r.rvPrecision) + ", F1 " + f(r.rvF1) + " (replaces the lidar small F1).");
     else if (r.rvRef) lines.push("", r.name + ": " + r.rvRef + ".");
+    if (r.treeF1 != null) lines.push("", r.name + ": trees vs " + r.treeRef + ": foliage cover " + r.treeCoverPct + "% vs " + r.treeLabelCoverPct + "% labelled, precision " + f(r.treePrecision) + ", recall " + r.treeRecall + ", F1 " + r.treeF1 + " (replaces the lidar canopy recall " + f(r.canopyRecall) + ").");
+    else if (r.treeRef) lines.push("", r.name + ": " + r.treeRef + ".");
   }
   for (const r of rows) if (r.objRefStale) lines.push("", r.name + ": " + r.objRefStale);
   lines.push("");

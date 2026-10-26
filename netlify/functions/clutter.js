@@ -235,6 +235,7 @@ const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
 const { surfaceMasksFromImage, openShareSampler, poleShadowContrast } = require("../lib/surface-mask");
 const { fetchLeafOnPhoto, leafOnGreenSampler } = require("../lib/leaf-on-photo");
+const { checkCanopyOnPhoto, photoCanopyNote, leafyShareSampler, vehicleZoneTest, zonedShareSampler } = require("../lib/photo-canopy");
 const { createWaterTest, clearWaterCanopy, dropWaterPoints } = require("../lib/water-mask");
 const { rejectPavementFootprints } = require("../lib/pavement");
 const { rejectShadowless } = require("../lib/cast-shadow");
@@ -1523,6 +1524,7 @@ async function handleClutter(event) {
   // From 1.2.29 /dev exports use the raised Hamina budget: 5.8 MB of JSON and
   // 9.7 MB of JSON plus map image. Production keeps the 4.9 MB JSON budget.
   exportMode.setBigBudget(testHost);
+  exportMode.setPhotoCanopy(testHost);
   // From 1.2.31 large draws read the street-map tiles in one shared window
   // with a slow-fail chain, a retry pass and a split (export-mode tiledOsm).
   exportMode.setTiledOsm(exportMode.tiledOsmWanted(testHost));
@@ -2659,6 +2661,26 @@ async function handleClutter(event) {
       footprintMeta.vehicleCanopyCells = clearInside(chmGrid, vehicleFeatures(outdoorFeatures));
       // A guideway or gantry beam is one cell wide and level; it is not a crown.
       footprintMeta.lineCanopyCells = clearThinLinesGrid(chmGrid);
+      // The flight measured the RVs parked that day and trees cut since. A
+      // cell the current leaf-on photo shows as a vehicle, roof or bare
+      // ground with no foliage is not canopy (/dev hosts). Only inside a
+      // mapped RV park, campground or mobile home park.
+      const vehicleZone = exportMode.isPhotoCanopy() ? vehicleZoneTest(outdoorFeatures) : null;
+      if (vehicleZone && decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH) {
+        try {
+          const checked = checkCanopyOnPhoto(chmGrid, decoded, frame, vehicleZone);
+          footprintMeta.photoCanopy = checked;
+          footprintMeta.photoCanopyZone = vehicleZone;
+          const midLat = ((+chmGrid.north + +chmGrid.south) / 2) * (Math.PI / 180);
+          const cellM2 =
+            ((+chmGrid.east - +chmGrid.west) / chmGrid.width) * 111320 * Math.cos(midLat) *
+            (((+chmGrid.north - +chmGrid.south) / chmGrid.height) * 110540);
+          const note = photoCanopyNote(checked, cellM2);
+          if (note && warnings.indexOf(note) < 0) warnings.push(note);
+        } catch {
+          // The lidar canopy stands when the photo cannot be read.
+        }
+      }
     }
     if (background && includeFoliage && !chmTimedOut) {
       if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage trees-parallel\n");
@@ -2749,6 +2771,10 @@ async function handleClutter(event) {
       aerialOpenShare:
         decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH
           ? openShareSampler(decoded)
+          : null,
+      photoLeafyShare:
+        footprintMeta.photoCanopy && footprintMeta.photoCanopy.gate && decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH
+          ? zonedShareSampler(leafyShareSampler(decoded), footprintMeta.photoCanopyZone, frame)
           : null,
       leafOnGreenShare: leafOnPhoto ? leafOnGreenSampler(leafOnPhoto, frame.mpuX) : null,
       aerialGreenShare:
