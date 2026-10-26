@@ -147,6 +147,42 @@ describe("site types roadside roofs (ROADSIDE_V2)", () => {
     assert.equal(vt.roadsideVehicles(PAD, FRAME, roof, []).length, 1, "white roof");
   });
 
+  // A 2.75 x 7 m white trailer roof that its vents and a seam break into
+  // two short pieces; neither piece passes as a roof on its own.
+  function ventedRoof(width, { vents = true, band = false } = {}) {
+    const g = [166, 164, 147];
+    const p = plateOf(W, H, g);
+    paint(p, 0, 0, 16, 16, [248, 248, 246]);
+    paint(p, 95, 86, 95 + width, 114, [240, 240, 236]);
+    paint(p, 95, 99, 99, 102, g);
+    paint(p, 91 + width, 99, 95 + width, 102, g);
+    const mid = 95 + Math.floor(width / 2);
+    if (vents) for (const y of [90, 95, 105, 109]) paint(p, mid - 1, y, mid + 1, y + 2, [70, 72, 70]);
+    // A windshield or pickup bed: a dark band across the whole roof.
+    if (band) paint(p, 96, 93, 94 + width, 97, [70, 72, 70]);
+    return p;
+  }
+
+  it("joins a roof broken up at its vents when the pieces fit one RV-wide rectangle", () => {
+    exportMode.setSiteTypes(true);
+    const got = vt.roadsideVehicles(PAD, FRAME, ventedRoof(11), []);
+    assert.equal(got.length, 1);
+    assert.ok(got[0].len > 6.5 && got[0].len < 7.5, String(got[0].len));
+    vt.ROADSIDE_V2.vent = false;
+    try {
+      assert.equal(vt.roadsideVehicles(PAD, FRAME, ventedRoof(11), []).length, 0, "pieces alone");
+    } finally {
+      vt.ROADSIDE_V2.vent = true;
+    }
+  });
+
+  it("does not join pieces that are car-wide or crossed by a windshield", () => {
+    exportMode.setSiteTypes(true);
+    assert.equal(vt.roadsideVehicles(PAD, FRAME, ventedRoof(8), []).length, 0, "2 m wide");
+    assert.equal(vt.roadsideVehicles(PAD, FRAME, ventedRoof(11, { vents: false, band: true }), []).length, 0, "windshield");
+    assert.equal(vt.roadsideVehicles(PAD, FRAME, ventedRoof(11, { band: true }), []).length, 0, "windshield and vents");
+  });
+
   it("empty gravel gets no box", () => {
     exportMode.setSiteTypes(true);
     assert.equal(vt.roadsideVehicles(PAD, FRAME, plateOf(W, H, [166, 164, 147]), []).length, 0);

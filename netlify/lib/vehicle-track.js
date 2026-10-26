@@ -602,6 +602,18 @@ const ROADSIDE_V2 = {
   tanP90: 230,
   tealG: 15,
   tealB: 10,
+  vent: true,
+  ventGapM: 1,
+  ventPieceM2: 0.3,
+  ventLen: [4.5, 10],
+  ventWid: [2.5, 2.9],
+  ventInsetM: 0.3,
+  ventFill: 0.5,
+  ventWhite: 0.75,
+  ventGapM2: [0.03, 1],
+  ventSpan: 0.7,
+  ventMin: 3,
+  ventOutM: 3,
 };
 
 const plateTops = new WeakMap();
@@ -758,6 +770,7 @@ function roadsideVehicles(pad, frame, plate, holes) {
     }
   }
   const v2 = isSiteTypes();
+  const core = v2 && ROADSIDE_V2.vent ? mask.slice() : null;
   const ground = v2 ? addGroundContrast(mask, poly, x0, y0, bw, bh, plate, holes, frame) : null;
   const nearRoof = ground && ground.nearRoof;
   const seen = new Uint8Array(bw * bh);
@@ -798,6 +811,8 @@ function roadsideVehicles(pad, frame, plate, holes) {
     if (!pointInRing(c, poly)) return "outside";
     return { lon, lat, ux: ext.ux, uy: ext.uy, len: ext.len, wid: ext.wid };
   };
+  // Roof pieces no blob test kept, for the vented-roof pass.
+  const left = v2 && ground && ROADSIDE_V2.vent ? new Uint8Array(bw * bh) : null;
   for (let i = 0; i < mask.length; i++) {
     if (!mask[i] || seen[i]) continue;
     const cells = [];
@@ -834,14 +849,264 @@ function roadsideVehicles(pad, frame, plate, holes) {
     }
     // Site types: a unit merged with the awning, car or shed beside it is
     // split at its narrow necks once and each part judged again.
-    if (!v2 || got === "small" || cells.length * pxM2 > maxM2 * 2) continue;
-    const parts = splitBlob(cells, bw, bh, Math.max(1, Math.round(ROADSIDE_V2.splitM / Math.min(mpuX, mpuY))));
-    for (let p = 0; p < parts.length; p++) {
-      const part = judge(parts[p]);
-      if (typeof part === "object") out.push(part);
+    let kept = false;
+    if (v2 && got !== "small" && cells.length * pxM2 <= maxM2 * 2) {
+      const parts = splitBlob(cells, bw, bh, Math.max(1, Math.round(ROADSIDE_V2.splitM / Math.min(mpuX, mpuY))));
+      for (let p = 0; p < parts.length; p++) {
+        const part = judge(parts[p]);
+        if (typeof part === "object") {
+          out.push(part);
+          kept = true;
+        }
+      }
     }
+    if (left && !kept && cells.length * pxM2 <= maxM2) for (let k = 0; k < cells.length; k++) left[cells[k]] = 1;
+  }
+  if (left) {
+    const more = ventedRoofs(left, core, x0, y0, bw, bh, plate, frame, mpuX, mpuY, (cells, ext) => {
+      if (!roofTone(cells, x0, y0, bw, plate)) return "dull";
+      if (nearRoof) {
+        let touch = 0;
+        for (let k = 0; k < cells.length; k++) touch += nearRoof[cells[k]];
+        if (touch > cells.length * ROADSIDE_V2.roofTouch) return "roof";
+      }
+      if (aroundShare(ext, plate, frame, ground.refs) < ROADSIDE_V2.aroundMin) return "ringed";
+      if (courtShare(ext, plate, frame) > ROADSIDE_V2.courtMax) return "court";
+      const lon = ext.cx / ext.mLon;
+      const lat = ext.cy / 110540;
+      const at = llToImagePx(lon, lat, frame);
+      if (!pointInRing(at, poly) && ringGapPx(at, poly) * Math.min(mpuX, mpuY) > ROADSIDE_V2.ventOutM) return "outside";
+      return { lon, lat, ux: ext.ux, uy: ext.uy, len: ext.len, wid: ext.wid };
+    });
+    for (let k = 0; k < more.length; k++) out.push(more[k]);
   }
   return out;
+}
+
+/**
+ * Site types: a white RV or trailer roof that the photo breaks into small
+ * pieces at its roof vents, AC units and seams. Pieces no blob test kept
+ * are grouped with neighbours less than about 1 m away, but only while the
+ * group still fits one rectangle of an RV's width (2.1 to 2.9 m), so a roof
+ * never merges with the awning, car or roof beside it. A group is a unit
+ * roof only when its rectangle is mostly white and at least three small
+ * gaps (vents, an AC unit, a skylight) sit wholly inside the white with
+ * none crossing the roof. A car or pickup roof is narrower and its
+ * windshield or bed crosses the whole roof; a shed or slab is plain. Each
+ * group then passes the usual roof tests.
+ */
+function ventedRoofs(left, core, x0, y0, bw, bh, plate, frame, mpuX, mpuY, check) {
+  const V = ROADSIDE_V2;
+  const mpu = Math.min(mpuX, mpuY);
+  const pxM2 = mpuX * mpuY;
+  const lat0 = ((+frame.south || 0) + (+frame.north || 0)) / 2;
+  const mLon = 111320 * Math.cos((lat0 * Math.PI) / 180);
+  const toM = (x, y) => [
+    (frame.west + (x / frame.imgW) * (frame.east - frame.west)) * mLon,
+    (frame.north - (y / frame.imgH) * (frame.north - frame.south)) * 110540,
+  ];
+  // Pieces: 8-connected components of the leftover mask.
+  const lab = new Int32Array(bw * bh).fill(-1);
+  const pieces = [];
+  for (let i = 0; i < left.length; i++) {
+    if (!left[i] || lab[i] >= 0) continue;
+    const id = pieces.length;
+    const cells = [];
+    const st = [i];
+    lab[i] = id;
+    while (st.length) {
+      const k = st.pop();
+      cells.push(k);
+      const x = k % bw;
+      const y = (k / bw) | 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
+          const j = ny * bw + nx;
+          if (!left[j] || lab[j] >= 0) continue;
+          lab[j] = id;
+          st.push(j);
+        }
+      }
+    }
+    pieces.push(cells);
+  }
+  if (!pieces.length) return [];
+  // Neighbours: pieces within ventGapM of each other (boundary cells only).
+  const g = Math.max(1, Math.round(V.ventGapM / mpu));
+  const nb = pieces.map(() => new Set());
+  for (let id = 0; id < pieces.length; id++) {
+    if (pieces[id].length * pxM2 < V.ventPieceM2) continue;
+    for (const k of pieces[id]) {
+      const x = k % bw;
+      const y = (k / bw) | 0;
+      if (x > 0 && x < bw - 1 && y > 0 && y < bh - 1 && left[k - 1] && left[k + 1] && left[k - bw] && left[k + bw]) continue;
+      for (let dy = -g; dy <= g; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= bh) continue;
+        for (let dx = -g; dx <= g; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= bw || dx * dx + dy * dy > g * g) continue;
+          const o = lab[ny * bw + nx];
+          if (o >= 0 && o !== id && pieces[o].length * pxM2 >= V.ventPieceM2) nb[id].add(o);
+        }
+      }
+    }
+  }
+  const rectOf = (cells) => {
+    const e = roofExtent(cells, x0, y0, bw, frame);
+    const vx = -e.uy;
+    const vy = e.ux;
+    let a0 = Infinity;
+    let a1 = -Infinity;
+    let c0 = Infinity;
+    let c1 = -Infinity;
+    for (let k = 0; k < cells.length; k++) {
+      const p = toM(x0 + (cells[k] % bw) + 0.5, y0 + ((cells[k] / bw) | 0) + 0.5);
+      const a = (p[0] - e.cx) * e.ux + (p[1] - e.cy) * e.uy;
+      const c = (p[0] - e.cx) * vx + (p[1] - e.cy) * vy;
+      if (a < a0) a0 = a;
+      if (a > a1) a1 = a;
+      if (c < c0) c0 = c;
+      if (c > c1) c1 = c;
+    }
+    return { e, vx, vy, a0, a1, c0, c1, len: a1 - a0 + mpu, wid: c1 - c0 + mpu };
+  };
+  const order = pieces.map((c, id) => id).filter((id) => pieces[id].length * pxM2 >= V.ventPieceM2);
+  order.sort((p, q) => pieces[q].length - pieces[p].length);
+  const used = new Uint8Array(pieces.length);
+  const out = [];
+  for (const seed of order) {
+    if (used[seed]) continue;
+    let cells = pieces[seed].slice();
+    const group = new Set([seed]);
+    let rect = rectOf(cells);
+    // A piece too wide alone (a bent or squarish piece has no stable long
+    // axis) can still join a neighbour's group.
+    if (Math.min(rect.wid, rect.len) > V.ventWid[1] || rect.len > V.ventLen[1]) continue;
+    used[seed] = 1;
+    for (;;) {
+      const cand = new Set();
+      for (const id of group) for (const o of nb[id]) if (!used[o] && !group.has(o)) cand.add(o);
+      const list = [...cand].sort((p, q) => pieces[q].length - pieces[p].length);
+      let added = false;
+      for (const o of list) {
+        const next = cells.concat(pieces[o]);
+        const r = rectOf(next);
+        if (Math.min(r.wid, r.len) > V.ventWid[1] || r.len > V.ventLen[1]) continue;
+        cells = next;
+        rect = r;
+        group.add(o);
+        used[o] = 1;
+        added = true;
+        break;
+      }
+      if (!added) break;
+    }
+    const { e, vx, vy, a0, a1, c0, c1, len, wid } = rect;
+    const cx = e.cx + (e.ux * (a0 + a1)) / 2 + (vx * (c0 + c1)) / 2;
+    const cy = e.cy + (e.uy * (a0 + a1)) / 2 + (vy * (c0 + c1)) / 2;
+    if (len < V.ventLen[0]) continue;
+    if (wid < V.ventWid[0]) continue;
+    // The rectangle, in local pixels: share of it the pieces cover, share
+    // the photo shows white, and the gaps in the white more than
+    // ventInsetM inside its outline.
+    const ins = V.ventInsetM;
+    let bx0 = bw;
+    let by0 = bh;
+    let bx1 = 0;
+    let by1 = 0;
+    for (let k = 0; k < cells.length; k++) {
+      const x = cells[k] % bw;
+      const y = (cells[k] / bw) | 0;
+      if (x < bx0) bx0 = x;
+      if (x > bx1) bx1 = x;
+      if (y < by0) by0 = y;
+      if (y > by1) by1 = y;
+    }
+    const inG = new Set(cells);
+    let nRect = 0;
+    let nIn = 0;
+    let nWhite = 0;
+    let edge = false;
+    const gap = new Map();
+    for (let y = Math.max(0, by0 - 3); y <= Math.min(bh - 1, by1 + 3); y++) {
+      for (let x = Math.max(0, bx0 - 3); x <= Math.min(bw - 1, bx1 + 3); x++) {
+        const p = toM(x0 + x + 0.5, y0 + y + 0.5);
+        const a = (p[0] - e.cx) * e.ux + (p[1] - e.cy) * e.uy;
+        const c = (p[0] - e.cx) * vx + (p[1] - e.cy) * vy;
+        if (a < a0 || a > a1 || c < c0 || c > c1) continue;
+        const k = y * bw + x;
+        if (x === 0 || y === 0 || x === bw - 1 || y === bh - 1) edge = true;
+        nRect++;
+        if (inG.has(k)) nIn++;
+        if (core[k]) nWhite++;
+        else if (a > a0 + ins && a < a1 - ins && c > c0 + ins && c < c1 - ins) gap.set(k, c);
+      }
+    }
+    if (edge) continue;
+    const fill = nIn / Math.max(1, nRect);
+    const whiteShare = nWhite / Math.max(1, nRect);
+    let vents = 0;
+    let span = 0;
+    const gs = new Set();
+    for (const [k0] of gap) {
+      if (gs.has(k0)) continue;
+      const q = [k0];
+      gs.add(k0);
+      let n = 0;
+      let touch = false;
+      let cmin = Infinity;
+      let cmax = -Infinity;
+      while (q.length) {
+        const k = q.pop();
+        n++;
+        const c = gap.get(k);
+        if (c < cmin) cmin = c;
+        if (c > cmax) cmax = c;
+        const x = k % bw;
+        const nbr = [x > 0 ? k - 1 : -1, x < bw - 1 ? k + 1 : -1, k - bw, k + bw];
+        for (const j of nbr) {
+          if (j < 0 || j >= bw * bh) continue;
+          if (gap.has(j)) {
+            if (!gs.has(j)) {
+              gs.add(j);
+              q.push(j);
+            }
+          } else if (!core[j]) touch = true;
+        }
+      }
+      span = Math.max(span, (cmax - cmin + mpu) / Math.max(0.1, wid - 2 * ins));
+      const g2 = n * pxM2;
+      if (!touch && g2 >= V.ventGapM2[0] && g2 <= V.ventGapM2[1]) vents++;
+    }
+    if (fill < V.ventFill) continue;
+    if (whiteShare < V.ventWhite) continue;
+    if (span > V.ventSpan) continue;
+    if (vents < V.ventMin) continue;
+    const ext = { len, wid, ux: e.ux, uy: e.uy, cx, cy, mLon };
+    const res = check(cells, ext);
+    if (typeof res === "object") out.push(res);
+  }
+  return out;
+}
+
+/** Pixel distance from a point to a ring's outline. */
+function ringGapPx(p, ring) {
+  let best = Infinity;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const ax = ring[j][0];
+    const ay = ring[j][1];
+    const dx = ring[i][0] - ax;
+    const dy = ring[i][1] - ay;
+    const l2 = dx * dx + dy * dy;
+    let t = l2 > 0 ? ((p[0] - ax) * dx + (p[1] - ay) * dy) / l2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    best = Math.min(best, Math.hypot(p[0] - (ax + t * dx), p[1] - (ay + t * dy)));
+  }
+  return best;
 }
 
 /** Share of a ring 1 m outside a roof that reads as open ground, road, shade or plants. */
