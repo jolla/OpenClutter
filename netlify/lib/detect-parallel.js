@@ -20,6 +20,7 @@
 
 const { threadCount, runOne, runQueue } = require("./cpu-pool");
 const { polygonsFromCrowns, treePairsFromPoints } = require("./vegetation");
+const { gridHeightAt } = require("./photo-crowns");
 const { selectCrownsForExport, fitSegments, CROWN_CAP } = require("./canopy-height");
 const { coverClasses } = require("./canopy-fill");
 const { materialForVegetation } = require("./materials");
@@ -394,6 +395,10 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
     foliageGeometry: crowns.length ? "chm-contour" : "none",
   };
   let polygons = polygonsFromCrowns(crowns, frame);
+  // /dev hosts: lidar crowns shaped on the current photo (photo-crowns.js).
+  if (opts && opts.photoCrowns && typeof opts.photoCrowns.refine === "function" && polygons.length) {
+    polygons = opts.photoCrowns.refine(polygons, gridHeightAt(masked && masked.values ? masked : grid));
+  }
   if (!(opts && opts.omitFoliage)) polygons = polygons.concat(woodPolygons(opts.woodRings, frame));
   if (!polygons.length) {
     return treePairsFromPoints(treePoints, frame, buildingAabbs, affine, Object.assign({}, opts, {

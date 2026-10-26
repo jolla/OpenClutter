@@ -114,7 +114,27 @@ function isPhotoCanopy() {
   return photoCanopy;
 }
 
+// Lidar tree crowns shaped on the current photo (1.2.39): inside the zones
+// the photo canopy check reads, each crown up to one tree or a small group
+// takes the outline of its own leaves, merged crowns split into trees, and
+// a crown with no leaves today is left out, where enough crowns have no
+// leaves on the photo to show the flight is out of date. Elsewhere crowns
+// keep their lidar outline and only a leafless crown on roof or open ground
+// is left out. On for /dev hosts; production
+// keeps the 1.2.17 canopy until it is promoted.
+let photoCrowns = false;
+
+function setPhotoCrowns(on) {
+  photoCrowns = !!on;
+}
+
+function isPhotoCrowns() {
+  return photoCrowns;
+}
+
 module.exports = {
+  setPhotoCrowns,
+  isPhotoCrowns,
   setPhotoCanopy,
   isPhotoCanopy,
   setTiledOsm,
