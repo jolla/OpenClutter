@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Overture Maps buildings (release 2026-09-23.1), free Azure GeoParquet.
+ * Overture Maps buildings (release 2026-10-21.0), free Azure GeoParquet.
  *
  * The theme is ~277 GB across 512 files. A committed row-group bbox index
  * (parquet footer stats) selects the one or two groups that cover the export
@@ -13,7 +13,7 @@
 const zlib = require("node:zlib");
 const { FLOOR_HEIGHT_M } = require("./conflate");
 
-const RELEASE = "2026-09-23.1";
+const RELEASE = "2026-10-21.0";
 const AZURE_PREFIX =
   "https://overturemapswestus2.blob.core.windows.net/release/" +
   RELEASE +
