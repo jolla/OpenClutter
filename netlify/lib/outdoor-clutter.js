@@ -65,7 +65,7 @@ const { placesFromElements } = require("./map-notes");
 
 const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
 const overpass = require("./overpass");
-const { isResilient, isSiteTypes } = require("./export-mode");
+const { isResilient, isSiteTypes, isShadowTrailers } = require("./export-mode");
 const FETCH_MS = 3200;
 const POLE_CAP = 48;
 const WALL_CAP = 80;
@@ -2715,7 +2715,7 @@ function campFootprints(buildings, zoneRings, frame, slopeTop) {
     if (d.len < CAMP_RV_LEN_M[0] || d.len > CAMP_RV_LEN_M[1]) continue;
     if (d.wid < CAMP_RV_WID_M[0] || d.wid > CAMP_RV_WID_M[1]) continue;
     if (d.area > CAMP_RV_MAX_M2 || d.area < 0.6 * d.len * d.wid) continue;
-    const ll = imagePxRingToLonLat(px, frame);
+    const ll = isShadowTrailers() ? imagePxRingToLonLat(px, frame) : pxRingToLonLat(px, frame);
     const material = materialForKind("rv", RV_HEIGHT_M, ll, slopeTop, 0);
     if (material) updates.push({ index: building.index, material, kind: "rv" });
   }
@@ -2790,7 +2790,7 @@ function worstCasePads({ campZones, campRoads, features, items, updates, buildin
   for (let i = 0; i < filled.rings.length; i++) {
     const ringPx = filled.rings[i].slice();
     ringPx.push(ringPx[0].slice());
-    const ll = imagePxRingToLonLat(ringPx, frame);
+    const ll = isShadowTrailers() ? imagePxRingToLonLat(ringPx, frame) : pxRingToLonLat(ringPx, frame);
     const material = materialForKind("rv", RV_HEIGHT_M, ll, slopeTop, 0);
     if (material) items.push({ ringPx, material, kind: "rv", thin: true, padFill: true });
   }
@@ -2881,12 +2881,17 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       : null;
   let roofLL = null;
   function roofRingsLL() {
-    // building.ringPx is JPEG Y-down. pxRingToLonLat uses Y-up pxToLl, which
-    // mirrored amenity roofs onto trailers (Pismo L64 by a palm). Convert with
-    // imagePxToLl. Only large amenity roofs are holes so RV and park-model
-    // footprints stay in the white mask the roadside detector reads.
+    // /dev (shadowTrailers): building.ringPx is JPEG Y-down; convert with
+    // imagePxToLl and keep only amenity roofs >320 m2 as holes so park-model
+    // sheds are not RVs and Pismo L64 is not punched by a mirrored hole.
+    // Prod keeps the legacy Y-up path until this ships with approval.
     if (roofLL) return roofLL;
     roofLL = [];
+    if (!isShadowTrailers()) {
+      const px = buildingRingsPx(buildings, frame);
+      for (let i = 0; i < px.length; i++) roofLL.push(pxRingToLonLat(px[i], frame));
+      return roofLL;
+    }
     const mpu = Math.min(frame.mpuX || 0.25, frame.mpuY || 0.25);
     for (let i = 0; i < (buildings || []).length; i++) {
       const b = buildings[i];
