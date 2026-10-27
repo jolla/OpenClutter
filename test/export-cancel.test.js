@@ -146,6 +146,59 @@ describe("export cancel: completeExportJob", { concurrency: 1 }, () => {
   });
 });
 
+describe("export cancel: partial files", { concurrency: 1 }, () => {
+  it("drops a zip written while the cancel lands", async () => {
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    await jobs.createJob(JOB);
+    clutter.runBackgroundExport = async () => ({
+      statusCode: 200,
+      body: JSON.stringify({ zipBase64: Buffer.from("zip").toString("base64"), zipFilename: "a.zip" }),
+    });
+    const realSave = jobs.saveZip;
+    jobs.saveZip = async (id, buf) => {
+      const n = await realSave(id, buf);
+      await jobs.cancelJob(id);
+      return n;
+    };
+    try {
+      const out = await completeExportJob(JOB, innerEvent(), { worker: "fly" });
+      assert.equal(out.cancelled, true);
+    } finally {
+      jobs.saveZip = realSave;
+    }
+    assert.equal(store.map.has("job/" + JOB + "/zip"), false);
+    const job = await jobs.readJob(JOB);
+    assert.equal(job.state, "cancelled");
+    assert.equal(job.zipFilename, null);
+  });
+
+  it("export-cancel deletes a zip or site already stored for the job", async () => {
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    await jobs.createJob(JOB);
+    await jobs.updateJob(JOB, { state: "running", worker: "netlify" });
+    await jobs.saveZip(JOB, Buffer.from("partial"));
+    await jobs.saveSite(JOB, { ok: true });
+    assert.equal(store.map.has("job/" + JOB + "/zip"), true);
+    const res = await cancelFn.handler({ httpMethod: "POST", queryStringParameters: { job: JOB } });
+    assert.equal(JSON.parse(res.body).cancelled, true);
+    assert.equal(store.map.has("job/" + JOB + "/zip"), false);
+    assert.equal(store.map.has("job/" + JOB + "/site-v1"), false);
+  });
+
+  it("export-cancel leaves a finished job's zip alone", async () => {
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    await jobs.createJob(JOB);
+    await jobs.saveZip(JOB, Buffer.from("done"));
+    await jobs.updateJob(JOB, { state: "done", stage: "Zip ready", zipBytes: 4 });
+    const res = await cancelFn.handler({ httpMethod: "POST", queryStringParameters: { job: JOB } });
+    assert.equal(JSON.parse(res.body).cancelled, false);
+    assert.equal(store.map.has("job/" + JOB + "/zip"), true);
+  });
+});
+
 describe("export cancel: Netlify paths", { concurrency: 1 }, () => {
   it("does not hand a cancelled job to the worker or run it here", async () => {
     jobs.setExportStoreForTests(memoryStore());

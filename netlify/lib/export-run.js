@@ -128,6 +128,11 @@ async function completeExportJob(jobId, inner, opts) {
         return { ok: true, finished: false, reason: "other-worker-finished" };
       }
       const bytes = await jobs.saveSite(jobId, data.site);
+      // Cancel can land while the site is written: drop the stored copy.
+      if (await jobs.jobCancelled(jobId)) {
+        await jobs.deleteZip(jobId).catch(() => {});
+        return CANCELLED;
+      }
       await jobs.updateJob(jobId, {
         state: "done",
         stage: "Site ready",
@@ -158,6 +163,12 @@ async function completeExportJob(jobId, inner, opts) {
     if (await jobs.jobCancelled(jobId)) return CANCELLED;
     const zip = Buffer.from(data.zipBase64, "base64");
     await jobs.saveZip(jobId, zip);
+    // Cancel can land while the zip is written: drop the stored zip so a
+    // cancelled job leaves no file behind.
+    if (await jobs.jobCancelled(jobId)) {
+      await jobs.deleteZip(jobId).catch(() => {});
+      return CANCELLED;
+    }
     const warnings = withWarning(Array.isArray(data.warnings) ? data.warnings : [], warning);
     await jobs.updateJob(jobId, {
       state: "done",

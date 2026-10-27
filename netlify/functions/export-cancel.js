@@ -6,7 +6,8 @@
  * job cancelled (terminal, so no zip is stored for it) and asks the Fly
  * machine running it to stop now. The worker also sees the mark on its
  * next heartbeat, so a request the Fly proxy does not deliver still stops
- * the job within a few seconds.
+ * the job within a few seconds. Any zip or site already stored for the
+ * job is deleted.
  */
 
 const jobs = require("../lib/export-jobs");
@@ -55,6 +56,9 @@ exports.handler = async (event) => {
   }
   if (!job) return json(404, { error: "This export expired." });
   const cancelled = job.state === "cancelled";
+  // A zip or site the run already wrote is removed; a cancelled job never
+  // serves a file, so nothing waits for its TTL.
+  if (cancelled) await jobs.deleteZip(id).catch(() => {});
   let worker = { sent: false, status: 0 };
   if (cancelled && job.worker === "fly") {
     worker = await workerCancel(id, job.flyMachine || "").catch(() => ({ sent: false, status: 0 }));
