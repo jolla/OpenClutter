@@ -2835,6 +2835,57 @@ function rectDims(px, mx, my) {
 }
 
 /**
+ * /dev (shadowTrailers) roadside holes. building.ringPx comes from llToPx,
+ * so it is Y-up from the south edge (the same as OpenIntent pixels) and
+ * converts back with pxToLl. Only amenity roofs over 320 m2 are holes; a
+ * smaller mapped outline is often the RV site itself. cents are every
+ * building centre, for the park-model gap test (nearRoofCents).
+ * Returns { rings, cents } in lon/lat.
+ */
+function devRoadsideHoles(buildings, frame) {
+  const rings = [];
+  const cents = [];
+  if (!frame) return { rings, cents };
+  const mpu = Math.min(frame.mpuX || 0.25, frame.mpuY || 0.25);
+  const lat0 = ((+frame.south || 0) + (+frame.north || 0)) / 2;
+  const mLon = 111320 * Math.cos((lat0 * Math.PI) / 180);
+  for (let i = 0; i < (buildings || []).length; i++) {
+    const b = buildings[i];
+    if (!b) continue;
+    let ll = null;
+    let areaM2 = 0;
+    if (b.ring && b.ring.length >= 3) {
+      ll = b.ring;
+      let s = 0;
+      for (let k = 0; k < ll.length; k++) {
+        const j = (k + 1) % ll.length;
+        s += ll[k][0] * mLon * ll[j][1] * 110540 - ll[j][0] * mLon * ll[k][1] * 110540;
+      }
+      areaM2 = Math.abs(s) / 2;
+    } else if (b.ringPx && b.ringPx.length >= 3) {
+      ll = [];
+      for (let k = 0; k < b.ringPx.length; k++) ll.push(pxToLl(b.ringPx[k][0], b.ringPx[k][1], frame));
+      let s = 0;
+      for (let k = 0; k < b.ringPx.length; k++) {
+        const j = (k + 1) % b.ringPx.length;
+        s += b.ringPx[k][0] * b.ringPx[j][1] - b.ringPx[j][0] * b.ringPx[k][1];
+      }
+      areaM2 = (Math.abs(s) / 2) * mpu * mpu;
+    }
+    if (!ll || ll.length < 3) continue;
+    let lon = 0;
+    let lat = 0;
+    for (let k = 0; k < ll.length; k++) {
+      lon += ll[k][0];
+      lat += ll[k][1];
+    }
+    cents.push([lon / ll.length, lat / ll.length]);
+    if (areaM2 > 320) rings.push(ll);
+  }
+  return { rings, cents };
+}
+
+/**
  * Pixel rings plus a parking recolor of buildings that already cover a garage.
  * A matched garage is not drawn a second time. Water is cut against those
  * same roofs so a pond or a mis-tagged panel block does not cover them.
@@ -2881,75 +2932,23 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       : null;
   let roofLL = null;
   function roofRingsLL() {
-    // /dev (shadowTrailers): building.ringPx is JPEG Y-down; convert with
-    // imagePxToLl and keep only amenity roofs >320 m2 as holes so park-model
-    // sheds are not RVs and Pismo L64 is not punched by a mirrored hole.
-    // Prod keeps the legacy Y-up path until this ships with approval.
+    // /dev (shadowTrailers): only amenity roofs over 320 m2 are holes, so a
+    // small mapped outline (an RV site or park-model footprint) does not
+    // mask the RV parked on it. The live path builds the same holes in
+    // detect-parallel scanVehicles through devRoadsideHoles.
     if (roofLL) return roofLL;
-    roofLL = [];
     if (!isShadowTrailers()) {
+      roofLL = [];
       const px = buildingRingsPx(buildings, frame);
       for (let i = 0; i < px.length; i++) roofLL.push(pxRingToLonLat(px[i], frame));
       return roofLL;
     }
-    const mpu = Math.min(frame.mpuX || 0.25, frame.mpuY || 0.25);
-    for (let i = 0; i < (buildings || []).length; i++) {
-      const b = buildings[i];
-      if (!b) continue;
-      let ll = null;
-      let areaM2 = 0;
-      if (b.ring && b.ring.length >= 3) {
-        ll = b.ring;
-        const lat0 = ((+frame.south || 0) + (+frame.north || 0)) / 2;
-        const mLon = 111320 * Math.cos((lat0 * Math.PI) / 180);
-        let s = 0;
-        for (let k = 0; k < ll.length; k++) {
-          const j = (k + 1) % ll.length;
-          s += ll[k][0] * mLon * ll[j][1] * 110540 - ll[j][0] * mLon * ll[k][1] * 110540;
-        }
-        areaM2 = Math.abs(s) / 2;
-      } else if (b.ringPx && b.ringPx.length >= 3) {
-        ll = [];
-        for (let k = 0; k < b.ringPx.length; k++) ll.push(imagePxToLl(b.ringPx[k][0], b.ringPx[k][1], frame));
-        let s = 0;
-        for (let k = 0; k < b.ringPx.length; k++) {
-          const j = (k + 1) % b.ringPx.length;
-          s += b.ringPx[k][0] * b.ringPx[j][1] - b.ringPx[j][0] * b.ringPx[k][1];
-        }
-        areaM2 = (Math.abs(s) / 2) * mpu * mpu;
-      }
-      if (!ll || ll.length < 3) continue;
-      if (!(areaM2 > 320)) continue;
-      roofLL.push(ll);
-    }
+    roofLL = devRoadsideHoles(buildings, frame).rings;
     return roofLL;
   }
 
   function roofCentsLL() {
-    const out = [];
-    for (let i = 0; i < (buildings || []).length; i++) {
-      const b = buildings[i];
-      if (!b) continue;
-      let lon = 0;
-      let lat = 0;
-      let n = 0;
-      if (b.ring && b.ring.length >= 3) {
-        for (let k = 0; k < b.ring.length; k++) {
-          lon += b.ring[k][0];
-          lat += b.ring[k][1];
-          n++;
-        }
-      } else if (b.ringPx && b.ringPx.length >= 3) {
-        for (let k = 0; k < b.ringPx.length; k++) {
-          const ll = imagePxToLl(b.ringPx[k][0], b.ringPx[k][1], frame);
-          lon += ll[0];
-          lat += ll[1];
-          n++;
-        }
-      }
-      if (n >= 3) out.push([lon / n, lat / n]);
-    }
-    return out;
+    return devRoadsideHoles(buildings, frame).cents;
   }
 
   features = dropRoadsideUnderRoofs(finalizeVehicles(features, fractionFor, roadsideFor), buildings, frame);
@@ -3381,5 +3380,6 @@ module.exports = {
   fetchOutdoorClutter,
   isParkingClass,
   planOutdoor,
+  devRoadsideHoles,
   fitOutdoorBudget,
 };

@@ -529,7 +529,13 @@ async function scanVehicles(features, frame, buildings, imgBuf) {
   const jobs = [];
   const carPlans = [];
   const holeBoxes = boxRings(holes);
-  const siteTypes = require("./export-mode").isSiteTypes();
+  const mode = require("./export-mode");
+  const siteTypes = mode.isSiteTypes();
+  // /dev (shadowTrailers): roadside reads use the same holes and building
+  // centres as planOutdoor (amenity roofs over 320 m2), so the live export
+  // and a serial planOutdoor run agree. Prod keeps every building as a hole.
+  const devHoles = mode.isShadowTrailers() ? require("./outdoor-clutter").devRoadsideHoles(buildings, frame) : null;
+  const devBoxes = devHoles ? boxRings(devHoles.rings) : null;
   for (let i = 0; i < list.length; i++) {
     const feature = list[i];
     if (!feature) continue;
@@ -540,7 +546,8 @@ async function scanVehicles(features, frame, buildings, imgBuf) {
         key: ringKey(feature.pad),
         ring: feature.pad,
         frame,
-        holes: holesNear(holeBoxes, feature.pad),
+        holes: holesNear(devBoxes || holeBoxes, feature.pad),
+        cents: devHoles ? devHoles.cents : undefined,
         buffer: shared.buffer,
         width: shared.width,
         height: shared.height,

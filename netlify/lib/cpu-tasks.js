@@ -156,7 +156,12 @@ function vehicleJob(payload) {
   const op = payload.op;
   if (op === "car-hits") return { hits: track.occupiedCarLayerWork(payload.ring, payload.frame, plate, payload.ys) };
   if (op === "pitch") return { value: track.pitchVehicle(payload.ring, payload.frame, plate) };
-  if (op === "roadside") return { value: track.roadsideVehicles(payload.ring, payload.frame, plate, payload.holes) };
+  if (op === "roadside") {
+    // Array properties do not survive postMessage; building centres ride as cents.
+    const holes = payload.holes || [];
+    if (Array.isArray(payload.cents)) holes.cents = payload.cents;
+    return { value: track.roadsideVehicles(payload.ring, payload.frame, plate, holes) };
+  }
   if (op === "boats" && payload.legacy) return { value: track.boatsOnWaterLegacy(payload.ring, payload.frame, plate) };
   if (op === "boats") return { value: track.boatsOnWaterWork(payload.ring, payload.frame, plate, payload.holes, payload.piers) };
   if (op === "homes") return { value: track.mobileHomesInRingWork(payload.ring, payload.frame, plate) };
