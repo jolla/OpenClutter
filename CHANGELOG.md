@@ -4,6 +4,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## Production releases
 
+- **v1.2.43** (Oct 26, 2026) production fix: Overture buildings read release 2026-10-21.0 before 2026-09-23.1 is removed. Production also takes the /dev 1.2.42 tree-crown change, which stays gated to /dev hosts, so production exports change only where Overture updated a footprint.
 - **v1.2.41** (Oct 26, 2026) production batch 1: the /dev export rules from 1.2.18 to 1.2.39 run on every host (RV park, campground and marina rules with RV detection fixes, RVs as hollow shells, park context, the 5.8 MB Hamina budget, the 1.2.37 photo-checked canopy; the 1.2.39 photo-shaped tree crowns stay on /dev), and Cancel stops the job on the server.
 - **v1.2.40** (Oct 26, 2026) production promotion of /dev v1.2.39 (batch 1), merged with the /dev export rules still gated to /dev hosts, so production exports are unchanged by this step. Production gets the /dev page (Space pan, Lidar heights tip, export lock with Cancel).
 - **v1.2.36** (Oct 25, 2026) production hotfix: only the 1.2.36 zoom button fix below. Production otherwise keeps the v1.2.17 page and rules; the other /dev changes wait for the next promotion.
