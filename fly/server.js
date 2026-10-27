@@ -113,9 +113,17 @@ async function onRequest(req, res) {
       // A cancelled pipeline may still hold fetches and CPU threads. Answer,
       // then exit so all of it stops and the machine is free; a clean exit
       // is not restarted and the next export starts the machine.
-      const done = () => cancelExit();
-      if (!res.writableEnded) res.end(JSON.stringify(outcome) + "\n", done);
-      else done();
+      // Do not wait for the answer to flush: the Netlify handoff drops its
+      // connection as soon as it reads the cancel from the job store, and
+      // then 'finish' never fires. The exit waits CANCEL_EXIT_MS, which is
+      // enough for the answer to go out when the caller is still there.
+      // The worker answers 409 to new exports until then (workerStopping).
+      try {
+        if (!res.writableEnded && !res.destroyed) res.end(JSON.stringify(outcome) + "\n");
+      } catch {
+        /* The caller already left. */
+      }
+      cancelExit();
       return;
     }
     if (!res.writableEnded) res.end(JSON.stringify(outcome) + "\n");

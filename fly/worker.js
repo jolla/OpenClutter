@@ -18,6 +18,9 @@ const IDLE_EXIT_MS = 5 * 60 * 1000;
 let inFlight = null;
 let inFlightId = "";
 let cancelInFlight = null;
+// Set when an export is cancelled: the left-behind pipeline still runs
+// until the process exits, so no new export may start on this machine.
+let stopping = false;
 let exportRunner = null;
 
 function header(headers, name) {
@@ -115,6 +118,9 @@ async function handleWorkerRequest(req) {
   }
   if (inFlight) {
     return jsonResult(409, { error: "An export is already running." });
+  }
+  if (stopping) {
+    return jsonResult(409, { error: "A cancelled export is stopping." });
   }
   const job = runAcceptedJob(jobId, inner);
   inFlight = job;
@@ -241,6 +247,14 @@ function setExportRunnerForTests(fn) {
   exportRunner = typeof fn === "function" ? fn : null;
 }
 
+function workerStopping() {
+  return stopping;
+}
+
+function resetStoppingForTests() {
+  stopping = false;
+}
+
 function machineId() {
   return String(process.env.FLY_MACHINE_ID || "").trim();
 }
@@ -249,8 +263,12 @@ function machineId() {
  * The export races a cancel. On cancel the job answers at once with
  * { ok: true, cancelled: true }; the pipeline is left behind, stores
  * nothing (completeExportJob checks the job before a zip), and the HTTP
- * server exits the process after the answer so fetches and CPU threads
- * stop and the machine is free. The next export starts it again.
+ * server exits the process right after (without waiting for the answer
+ * to flush, since Netlify may already have dropped the connection) so
+ * fetches and CPU threads stop and the machine is free. Until then the
+ * worker answers 409 to a new export, so no other job shares the machine
+ * with the left-behind pipeline or dies with it. The next export starts
+ * the machine again.
  */
 async function runAcceptedJob(jobId, inner) {
   enableAreaCache();
@@ -266,6 +284,7 @@ async function runAcceptedJob(jobId, inner) {
   const cancel = (why) => {
     if (cancelledOnce) return;
     cancelledOnce = true;
+    stopping = true;
     console.log("export " + jobId + " cancelled (" + (why || "cancel") + ") during " + session.stageName() + "; stopping");
     onCancel({ ok: true, finished: false, cancelled: true, reason: "cancelled" });
   };
@@ -357,4 +376,6 @@ module.exports = {
   createIdleExit,
   setExportRunnerForTests,
   cancelRunningForTests,
+  workerStopping,
+  resetStoppingForTests,
 };
