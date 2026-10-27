@@ -13,7 +13,11 @@
  * a woods), on a leaf-on photo:
  * - Leafy pixels (photo-canopy.js) within WINDOW_M of the traced outline are
  *   cleaned: an opening drops lone pixels and thin lawn edges, a closing
- *   fills the texture gaps inside a crown.
+ *   fills the texture gaps inside a crown. The grid keeps one return per
+ *   2.2 m cell and its edge can sit a cell off the leaves, so a crown kept
+ *   that way is then traced out to SHAPE_WINDOW_M (about one cell): it keeps
+ *   all of its leaves, but a wider blob never adds a tree, never joins two,
+ *   and never changes which crowns are kept or left out.
  * - Each leaf blob of at least BLOB_MIN_M2 with at least IN_SHARE of it
  *   inside the outline is one crown. Its outline is the blob edge, so a
  *   crown is as wide as its leaves and two trees the grid merged are two
@@ -47,6 +51,8 @@ const { pxToLl } = require("./geo-frame");
 
 const CROWN_MAX_M2 = 400;
 const WINDOW_M = 1;
+// A kept crown is traced out to about one 2.2 m canopy cell (1.2.48).
+const SHAPE_WINDOW_M = 2;
 const BLOB_MIN_M2 = 2;
 const IN_SHARE = 0.3;
 const OPEN_PX = 1;
@@ -287,7 +293,7 @@ function photoCrownRefiner(photo, frame, inZone) {
     stats.crowns++;
     stats.m2Before += m2;
     // Crop in photo rows (y down).
-    const pad = Math.ceil(WINDOW_M / mpu) + 2;
+    const pad = Math.ceil(Math.max(WINDOW_M, SHAPE_WINDOW_M) / mpu) + 2;
     let minX = Infinity;
     let maxX = -Infinity;
     let minY = Infinity;
@@ -331,38 +337,76 @@ function photoCrownRefiner(photo, frame, inZone) {
       stats.m2After += m2;
       return null;
     }
-    const win = morph(inside, cw, ch, Math.round(WINDOW_M / mpu), true);
-    let leaf = new Uint8Array(cw * ch);
-    for (let y = 0; y < ch; y++) {
-      for (let x = 0; x < cw; x++) {
-        const i = y * cw + x;
-        if (win[i] && classAt(x0 + x, y0 + y) === C_LEAFY) leaf[i] = 1;
+    // Leaf blobs within windowM of the outline (4-connected, whole-photo
+    // pixel indices). Each blob carries how many of its pixels fall inside.
+    const leafBlobs = (windowM) => {
+      const win = morph(inside, cw, ch, Math.round(windowM / mpu), true);
+      let leaf = new Uint8Array(cw * ch);
+      for (let y = 0; y < ch; y++) {
+        for (let x = 0; x < cw; x++) {
+          const i = y * cw + x;
+          if (win[i] && classAt(x0 + x, y0 + y) === C_LEAFY) leaf[i] = 1;
+        }
       }
+      leaf = morph(morph(leaf, cw, ch, OPEN_PX, false), cw, ch, OPEN_PX, true);
+      leaf = morph(morph(leaf, cw, ch, CLOSE_PX, true), cw, ch, CLOSE_PX, false);
+      for (let i = 0; i < leaf.length; i++) if (!win[i]) leaf[i] = 0;
+      const lab = new Uint8Array(cw * ch);
+      const found = [];
+      for (let i = 0; i < leaf.length; i++) {
+        if (!leaf[i] || lab[i]) continue;
+        const stack = [i];
+        lab[i] = 1;
+        const px = [];
+        let ni = 0;
+        while (stack.length) {
+          const j = stack.pop();
+          const x = j % cw;
+          const y = (j / cw) | 0;
+          px.push((y0 + y) * w + x0 + x);
+          if (inside[j]) ni++;
+          if (x > 0 && leaf[j - 1] && !lab[j - 1]) { lab[j - 1] = 1; stack.push(j - 1); }
+          if (x < cw - 1 && leaf[j + 1] && !lab[j + 1]) { lab[j + 1] = 1; stack.push(j + 1); }
+          if (y > 0 && leaf[j - cw] && !lab[j - cw]) { lab[j - cw] = 1; stack.push(j - cw); }
+          if (y < ch - 1 && leaf[j + cw] && !lab[j + cw]) { lab[j + cw] = 1; stack.push(j + cw); }
+        }
+        found.push({ px, ni });
+      }
+      return found;
+    };
+    // Which crowns are trees, and which are left out, is read inside
+    // WINDOW_M of the outline, as before.
+    const core = leafBlobs(WINDOW_M).filter((b) => b.px.length * mpu * mpu >= BLOB_MIN_M2 && b.ni / b.px.length >= IN_SHARE);
+    // A tree the read keeps is then traced out to SHAPE_WINDOW_M, so a crown
+    // the grid placed a cell off its leaves keeps the whole crown. A wider
+    // blob is used only when it holds exactly one kept blob: it never adds a
+    // tree and never joins two.
+    let shapes = core;
+    if (core.length && SHAPE_WINDOW_M > WINDOW_M) {
+      const owner = new Map();
+      core.forEach((b, k) => {
+        for (const j of b.px) owner.set(j, k);
+      });
+      const used = new Set();
+      shapes = [];
+      for (const b of leafBlobs(SHAPE_WINDOW_M)) {
+        const held = new Set();
+        for (const j of b.px) {
+          const k = owner.get(j);
+          if (k !== undefined) held.add(k);
+        }
+        if (held.size !== 1) continue;
+        const k = held.values().next().value;
+        if (used.has(k)) continue;
+        used.add(k);
+        shapes.push(b);
+      }
+      core.forEach((b, k) => {
+        if (!used.has(k)) shapes.push(b);
+      });
     }
-    leaf = morph(morph(leaf, cw, ch, OPEN_PX, false), cw, ch, OPEN_PX, true);
-    leaf = morph(morph(leaf, cw, ch, CLOSE_PX, true), cw, ch, CLOSE_PX, false);
-    for (let i = 0; i < leaf.length; i++) if (!win[i]) leaf[i] = 0;
-    // 4-connected leaf blobs, in whole-photo pixel indices.
-    const lab = new Uint8Array(cw * ch);
     const blobs = [];
-    for (let i = 0; i < leaf.length; i++) {
-      if (!leaf[i] || lab[i]) continue;
-      const stack = [i];
-      lab[i] = 1;
-      const px = [];
-      let ni = 0;
-      while (stack.length) {
-        const j = stack.pop();
-        const x = j % cw;
-        const y = (j / cw) | 0;
-        px.push((y0 + y) * w + x0 + x);
-        if (inside[j]) ni++;
-        if (x > 0 && leaf[j - 1] && !lab[j - 1]) { lab[j - 1] = 1; stack.push(j - 1); }
-        if (x < cw - 1 && leaf[j + 1] && !lab[j + 1]) { lab[j + 1] = 1; stack.push(j + 1); }
-        if (y > 0 && leaf[j - cw] && !lab[j - cw]) { lab[j - cw] = 1; stack.push(j - cw); }
-        if (y < ch - 1 && leaf[j + cw] && !lab[j + cw]) { lab[j + cw] = 1; stack.push(j + cw); }
-      }
-      if (px.length * mpu * mpu < BLOB_MIN_M2 || ni / px.length < IN_SHARE) continue;
+    for (const { px } of shapes) {
       let top = 0;
       if (typeof heightAt === "function") {
         for (let k = 0; k < px.length; k += 3) {
@@ -574,6 +618,7 @@ module.exports = {
   traceBlob,
   CROWN_MAX_M2,
   BLOB_MIN_M2,
+  SHAPE_WINDOW_M,
   STALE_BRIGHT_MIN,
   STALE_EVIDENCE_SHARE,
 };

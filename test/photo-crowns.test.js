@@ -95,14 +95,15 @@ describe("photo-crowns", () => {
     assert.equal(out.length, 0);
     assert.equal(ref.stats.dropped, 1);
   });
-  it("never reaches past the lidar crown onto leaves farther than a metre", () => {
+  it("never reaches past the lidar crown onto leaves farther than about one canopy cell", () => {
     const photo = photoOf((x) => (x < 100 ? "leafy" : "roof"));
     const ref = pcr.photoCrownRefiner(photo, frame, null);
     const out = ref.refine([squareCrown(60, 60, 90, 90, 8)].concat(staleRoofCrowns(100)), () => 8);
     assert.equal(out.length, 1);
     for (const p of out[0].ringPx) {
-      assert.ok(p[0] >= 60 - 5.5 && p[0] <= 90 + 5.5, "x " + p[0]);
-      assert.ok(S - p[1] >= 60 - 5.5 && S - p[1] <= 90 + 5.5, "y " + p[1]);
+      // WINDOW_M is 2 m = 10 px at 0.2 m a pixel, plus half a pixel of edge.
+      assert.ok(p[0] >= 60 - 10.5 && p[0] <= 90 + 10.5, "x " + p[0]);
+      assert.ok(S - p[1] >= 60 - 10.5 && S - p[1] <= 90 + 10.5, "y " + p[1]);
     }
   });
   it("keeps a shaded or leaf-off crown, a woods, and crowns outside the zone as they were", () => {
@@ -117,6 +118,19 @@ describe("photo-crowns", () => {
     const outside = pcr.photoCrownRefiner(roof, frame, () => false);
     const c2 = squareCrown(40, 40, 70, 60, 6);
     assert.deepEqual(outside.refine([c2], () => 6), [c2]);
+  });
+  it("finds a tree whose lidar crown sits one canopy cell off its leaves", () => {
+    // A 3.2 m crown whose east half spills 2 m (10 px) past the lidar square:
+    // the old 1 m window cut it at 1 m, one 2.2 m canopy cell keeps all of it.
+    const leaves = disk(76, 75, 8);
+    const photo = photoOf((x, y) => (leaves(x, y) ? "leafy" : "roof"));
+    const ref = pcr.photoCrownRefiner(photo, frame, null);
+    const out = ref.refine([squareCrown(60, 65, 74, 85, 8)].concat(staleRoofCrowns()), () => 8);
+    assert.equal(ref.stats.stale, true);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].photoShaped, true);
+    const xs = out[0].ringPx.map((p) => p[0]);
+    assert.ok(Math.max(...xs) >= 83, "reaches the leaves " + Math.max(...xs));
   });
   it("does not give one leaf blob to two crowns", () => {
     const photo = photoOf((x, y) => (disk(100, 100, 14)(x, y) ? "leafy" : "roof"));
