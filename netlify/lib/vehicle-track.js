@@ -813,8 +813,9 @@ function roadsideVehicles(pad, frame, plate, holes) {
     if (m2 / (ext.len * ext.wid) < fillMin) return "fill";
     if (v2 && !roofTone(cells, x0, y0, bw, plate)) return "dull";
     if (nearRoof) {
+      const roofMask = isShadowTrailers() && ground.keepOut ? ground.keepOut : nearRoof;
       let touch = 0;
-      for (let k = 0; k < cells.length; k++) touch += nearRoof[cells[k]];
+      for (let k = 0; k < cells.length; k++) touch += roofMask[cells[k]];
       if (touch > cells.length * ROADSIDE_V2.roofTouch) return "roof";
     }
     // A unit stands on open ground: most of a ring just outside it is
@@ -891,8 +892,9 @@ function roadsideVehicles(pad, frame, plate, holes) {
       )
         return "dull";
       if (nearRoof) {
+        const roofMask = isShadowTrailers() && ground.keepOut ? ground.keepOut : nearRoof;
         let touch = 0;
-        for (let k = 0; k < cells.length; k++) touch += nearRoof[cells[k]];
+        for (let k = 0; k < cells.length; k++) touch += roofMask[cells[k]];
         if (touch > cells.length * ROADSIDE_V2.roofTouch) return "roof";
       }
       if (aroundShare(ext, plate, frame, ground.refs) < ROADSIDE_V2.aroundMin) return "ringed";
@@ -1477,7 +1479,10 @@ function addGroundContrast(mask, poly, x0, y0, bw, bh, plate, holes, frame) {
   const gap = Math.max(1, Math.round(ROADSIDE_V2.roofGapM / Math.max(0.05, frame.mpuX || 0.25)));
   let near = keepOut;
   for (let it = 0; it < gap; it++) near = di(near);
-  return { nearRoof: near, refs };
+  // keepOut is the mapped roof itself; nearRoof adds a short gap for outlines
+  // drawn a little off the photo. Touch tests under shadowTrailers use keepOut
+  // so an RV parked a meter from a cabin is not rejected.
+  return { nearRoof: near, keepOut, refs };
 }
 
 function recenterBox(feature, lon, lat) {

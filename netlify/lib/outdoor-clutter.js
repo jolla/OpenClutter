@@ -39,7 +39,7 @@
  * custom under or equal to 2 m does not import, so the fence is 2.1 m.
  */
 
-const { llToPx, pxToLl } = require("./geo-frame");
+const { llToPx, pxToLl, imagePxToLl } = require("./geo-frame");
 const {
   BOX: VEHICLE_BOX,
   pitchClass,
@@ -2620,6 +2620,13 @@ function pxRingToLonLat(ring, frame) {
   return out;
 }
 
+/** JPEG / Y-down ringPx to lon/lat (building.ringPx, pad fills). */
+function imagePxRingToLonLat(ring, frame) {
+  const out = [];
+  for (let i = 0; i < ring.length; i++) out.push(imagePxToLl(ring[i][0], ring[i][1], frame));
+  return out;
+}
+
 /**
  * A roof the photo found beside a road that a building footprint already
  * covers is that building (a park model or a cabin), not a second RV.
@@ -2708,7 +2715,7 @@ function campFootprints(buildings, zoneRings, frame, slopeTop) {
     if (d.len < CAMP_RV_LEN_M[0] || d.len > CAMP_RV_LEN_M[1]) continue;
     if (d.wid < CAMP_RV_WID_M[0] || d.wid > CAMP_RV_WID_M[1]) continue;
     if (d.area > CAMP_RV_MAX_M2 || d.area < 0.6 * d.len * d.wid) continue;
-    const ll = pxRingToLonLat(px, frame);
+    const ll = imagePxRingToLonLat(px, frame);
     const material = materialForKind("rv", RV_HEIGHT_M, ll, slopeTop, 0);
     if (material) updates.push({ index: building.index, material, kind: "rv" });
   }
@@ -2783,7 +2790,7 @@ function worstCasePads({ campZones, campRoads, features, items, updates, buildin
   for (let i = 0; i < filled.rings.length; i++) {
     const ringPx = filled.rings[i].slice();
     ringPx.push(ringPx[0].slice());
-    const ll = pxRingToLonLat(ringPx, frame);
+    const ll = imagePxRingToLonLat(ringPx, frame);
     const material = materialForKind("rv", RV_HEIGHT_M, ll, slopeTop, 0);
     if (material) items.push({ ringPx, material, kind: "rv", thin: true, padFill: true });
   }
@@ -2872,10 +2879,42 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       : null;
   let roofLL = null;
   function roofRingsLL() {
+    // building.ringPx is JPEG Y-down. pxRingToLonLat uses Y-up pxToLl, which
+    // mirrored amenity roofs onto trailers (Pismo L64 by a palm). Convert with
+    // imagePxToLl. Only large amenity roofs are holes so RV and park-model
+    // footprints stay in the white mask the roadside detector reads.
     if (roofLL) return roofLL;
     roofLL = [];
-    const px = buildingRingsPx(buildings, frame);
-    for (let i = 0; i < px.length; i++) roofLL.push(pxRingToLonLat(px[i], frame));
+    const mpu = Math.min(frame.mpuX || 0.25, frame.mpuY || 0.25);
+    for (let i = 0; i < (buildings || []).length; i++) {
+      const b = buildings[i];
+      if (!b) continue;
+      let ll = null;
+      let areaM2 = 0;
+      if (b.ring && b.ring.length >= 3) {
+        ll = b.ring;
+        const lat0 = ((+frame.south || 0) + (+frame.north || 0)) / 2;
+        const mLon = 111320 * Math.cos((lat0 * Math.PI) / 180);
+        let s = 0;
+        for (let k = 0; k < ll.length; k++) {
+          const j = (k + 1) % ll.length;
+          s += ll[k][0] * mLon * ll[j][1] * 110540 - ll[j][0] * mLon * ll[k][1] * 110540;
+        }
+        areaM2 = Math.abs(s) / 2;
+      } else if (b.ringPx && b.ringPx.length >= 3) {
+        ll = [];
+        for (let k = 0; k < b.ringPx.length; k++) ll.push(imagePxToLl(b.ringPx[k][0], b.ringPx[k][1], frame));
+        let s = 0;
+        for (let k = 0; k < b.ringPx.length; k++) {
+          const j = (k + 1) % b.ringPx.length;
+          s += b.ringPx[k][0] * b.ringPx[j][1] - b.ringPx[j][0] * b.ringPx[k][1];
+        }
+        areaM2 = (Math.abs(s) / 2) * mpu * mpu;
+      }
+      if (!ll || ll.length < 3) continue;
+      if (!(areaM2 > 320)) continue;
+      roofLL.push(ll);
+    }
     return roofLL;
   }
   features = dropRoadsideUnderRoofs(finalizeVehicles(features, fractionFor, roadsideFor), buildings, frame);
