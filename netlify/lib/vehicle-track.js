@@ -805,7 +805,11 @@ function roadsideVehicles(pad, frame, plate, holes) {
     const ext = roofExtent(cells, x0, y0, bw, frame);
     if (ext.len < lenR[0] || ext.len > lenR[1]) return "len";
     if (ext.wid < widR[0] || ext.wid > widR[1]) return "wid";
-    if (ext.len / Math.max(0.1, ext.wid) < aspectMin) return "aspect";
+    // /dev (shadowTrailers): fifth-wheels with dual slide-outs can read
+    // near-square (aspect ~1.1). Small blobs keep the taller bar.
+    const needAspect =
+      v2 && isShadowTrailers() && cells.length * pxM2 >= 18 ? 1.05 : v2 && isShadowTrailers() ? 1.2 : aspectMin;
+    if (ext.len / Math.max(0.1, ext.wid) < needAspect) return "aspect";
     if (m2 / (ext.len * ext.wid) < fillMin) return "fill";
     if (v2 && !roofTone(cells, x0, y0, bw, plate)) return "dull";
     if (nearRoof) {
@@ -881,7 +885,11 @@ function roadsideVehicles(pad, frame, plate, holes) {
   if (left) {
     const sun = isShadowTrailers() ? photoSun(plate, Math.min(mpuX, mpuY)) : null;
     const more = ventedRoofs(left, core, x0, y0, bw, bh, plate, frame, mpuX, mpuY, sun && sun.ok ? sun : null, (cells, ext) => {
-      if (!roofTone(cells, x0, y0, bw, plate)) return "dull";
+      if (
+        !roofTone(cells, x0, y0, bw, plate) &&
+        !(isShadowTrailers() && roofMostlyWhite(cells, x0, y0, bw, core))
+      )
+        return "dull";
       if (nearRoof) {
         let touch = 0;
         for (let k = 0; k < cells.length; k++) touch += nearRoof[cells[k]];
@@ -892,7 +900,8 @@ function roadsideVehicles(pad, frame, plate, holes) {
       const lon = ext.cx / ext.mLon;
       const lat = ext.cy / 110540;
       const at = llToImagePx(lon, lat, frame);
-      if (!pointInRing(at, poly) && ringGapPx(at, poly) * Math.min(mpuX, mpuY) > ROADSIDE_V2.ventOutM) return "outside";
+      const outM = isShadowTrailers() ? 5 : ROADSIDE_V2.ventOutM;
+      if (!pointInRing(at, poly) && ringGapPx(at, poly) * Math.min(mpuX, mpuY) > outM) return "outside";
       return { lon, lat, ux: ext.ux, uy: ext.uy, len: ext.len, wid: ext.wid };
     });
     for (let k = 0; k < more.length; k++) out.push(more[k]);
@@ -912,6 +921,15 @@ function roadsideVehicles(pad, frame, plate, holes) {
  * windshield or bed crosses the whole roof; a shed or slab is plain. Each
  * group then passes the usual roof tests.
  */
+
+/** True when most leftover cells still sit on the white-roof core mask. */
+function roofMostlyWhite(cells, x0, y0, bw, core) {
+  if (!core || !cells.length) return false;
+  let n = 0;
+  for (let k = 0; k < cells.length; k++) n += core[cells[k]];
+  return n >= cells.length * 0.7;
+}
+
 function ventedRoofs(left, core, x0, y0, bw, bh, plate, frame, mpuX, mpuY, sun, check) {
   const V = ROADSIDE_V2;
   const mpu = Math.min(mpuX, mpuY);
@@ -1105,12 +1123,27 @@ function ventedRoofs(left, core, x0, y0, bw, bh, plate, frame, mpuX, mpuY, sun, 
         const g2 = n * pxM2;
         if (!touch && g2 >= V.ventGapM2[0] && g2 <= V.ventGapM2[1]) vents++;
       }
-      if (span > V.ventSpan) continue;
+      // Miss-fix loosenings (aspect/span/vents/shadow) stay on /dev hosts
+      // via shadowTrailers so production exports are unchanged.
+      const miss = isShadowTrailers();
+      const spanLim = miss && shade && vents >= 2 ? 0.95 : V.ventSpan;
+      if (span > spanLim) continue;
       if (shade) {
-        if (fill < V.shadeFill || whiteShare < V.shadeWhite) continue;
+        const fillMin = miss ? 0.45 : V.shadeFill;
+        const whiteMin = miss ? 0.55 : V.shadeWhite;
+        if (fill < fillMin || whiteShare < whiteMin) continue;
         if (vents < 1 && len < V.shadeBareLen) continue;
-        if (!castsShadow(cells, core, x0, y0, bw, bh, plate, mpu, sun)) continue;
-      } else if (fill < V.ventFill || whiteShare < V.ventWhite || vents < V.ventMin) continue;
+        // Slide-outs are wider than ventWid, so only this pass sees them. When
+        // the group already meets a clear vents/white/fill bar, that is enough.
+        const strongVents =
+          miss && vents >= 2 && whiteShare >= (vents >= 3 ? 0.62 : 0.7) && fill >= 0.45;
+        if (!strongVents && !castsShadow(cells, core, x0, y0, bw, bh, plate, mpu, sun)) continue;
+      } else {
+        // /dev: two clear vents on a very white, well-filled roof still mark a
+        // trailer. Three remains the default so a car with one sunroof is out.
+        const minVents = miss && whiteShare >= 0.85 && fill >= 0.7 ? 2 : V.ventMin;
+        if (fill < V.ventFill || whiteShare < V.ventWhite || vents < minVents) continue;
+      }
       const ext = { len, wid, ux: e.ux, uy: e.uy, cx, cy, mLon };
       const res = check(cells, ext);
       if (typeof res !== "object") continue;
