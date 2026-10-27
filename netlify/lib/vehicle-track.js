@@ -813,15 +813,19 @@ function roadsideVehicles(pad, frame, plate, holes) {
     if (m2 / (ext.len * ext.wid) < fillMin) return "fill";
     if (v2 && !roofTone(cells, x0, y0, bw, plate)) return "dull";
     if (nearRoof) {
-      const roofMask = isShadowTrailers() && ground.keepOut ? ground.keepOut : nearRoof;
       let touch = 0;
-      for (let k = 0; k < cells.length; k++) touch += roofMask[cells[k]];
+      for (let k = 0; k < cells.length; k++) touch += nearRoof[cells[k]];
       if (touch > cells.length * ROADSIDE_V2.roofTouch) return "roof";
     }
     // A unit stands on open ground: most of a ring just outside it is
     // pad, road, shade or plants. A piece of a court, a pool deck or a
     // roof is ringed by more of the same.
     if (ground && aroundShare(ext, plate, frame, ground.refs) < ROADSIDE_V2.aroundMin) return "ringed";
+    if (isShadowTrailers() && nearRoofCents(ext, holes && holes.cents, 20) >= 2) {
+      const hem = brightRoofAround(ext, plate, frame);
+      if (hem > 0.3) return "hemmed";
+      if (hem > 0.18 && cellsP50(cells, x0, y0, bw, plate) < 190) return "gap";
+    }
     // Painted courts and pools are saturated blue or cyan. A light strip
     // on a court, its apron, or the lounge row on a pool deck sits right
     // beside that colour; a parked unit does not.
@@ -892,12 +896,16 @@ function roadsideVehicles(pad, frame, plate, holes) {
       )
         return "dull";
       if (nearRoof) {
-        const roofMask = isShadowTrailers() && ground.keepOut ? ground.keepOut : nearRoof;
         let touch = 0;
-        for (let k = 0; k < cells.length; k++) touch += roofMask[cells[k]];
+        for (let k = 0; k < cells.length; k++) touch += nearRoof[cells[k]];
         if (touch > cells.length * ROADSIDE_V2.roofTouch) return "roof";
       }
       if (aroundShare(ext, plate, frame, ground.refs) < ROADSIDE_V2.aroundMin) return "ringed";
+      if (isShadowTrailers() && nearRoofCents(ext, holes && holes.cents, 20) >= 2) {
+        const hem = brightRoofAround(ext, plate, frame);
+        if (hem > 0.3) return "hemmed";
+        if (hem > 0.18 && cellsP50(cells, x0, y0, bw, plate) < 190) return "gap";
+      }
       if (courtShare(ext, plate, frame) > ROADSIDE_V2.courtMax) return "court";
       const lon = ext.cx / ext.mLon;
       const lat = ext.cy / 110540;
@@ -1201,6 +1209,65 @@ function ringGapPx(p, ring) {
     best = Math.min(best, Math.hypot(p[0] - (ax + t * dx), p[1] - (ay + t * dy)));
   }
   return best;
+}
+
+
+
+/** Count mapped roof centroids within rM of a blob centre. */
+function nearRoofCents(ext, cents, rM) {
+  if (!cents || !cents.length) return 0;
+  const lon = ext.cx / ext.mLon;
+  const lat = ext.cy / 110540;
+  const mx = ext.mLon;
+  let n = 0;
+  for (let i = 0; i < cents.length; i++) {
+    const c = cents[i];
+    if (!c) continue;
+    if (Math.hypot((c[0] - lon) * mx, (c[1] - lat) * 110540) < rM) n++;
+  }
+  return n;
+}
+
+/** Share of a ring ~1.5 m outside a roof that is bright roof (park-model hem). */
+function brightRoofAround(ext, plate, frame) {
+  const L = ext.len + 3;
+  const W = ext.wid + 3;
+  const per = Math.max(16, Math.round((L + W) * 4));
+  let n = 0;
+  let bright = 0;
+  for (let k = 0; k < per; k++) {
+    const e = (k / per) * 2 * (L + W);
+    let a;
+    let c;
+    if (e < L) [a, c] = [e - L / 2, W / 2];
+    else if (e < L + W) [a, c] = [L / 2, W / 2 - (e - L)];
+    else if (e < 2 * L + W) [a, c] = [L / 2 - (e - L - W), -W / 2];
+    else [a, c] = [-L / 2, -W / 2 + (e - 2 * L - W)];
+    const xy = llToImagePx((ext.cx + ext.ux * a - ext.uy * c) / ext.mLon, (ext.cy + ext.uy * a + ext.ux * c) / 110540, frame);
+    const x = Math.round(xy[0]);
+    const y = Math.round(xy[1]);
+    if (x < 0 || y < 0 || x >= plate.width || y >= plate.height) continue;
+    const i = (y * plate.width + x) * 4;
+    n++;
+    if (0.299 * plate.data[i] + 0.587 * plate.data[i + 1] + 0.114 * plate.data[i + 2] >= 200) bright++;
+  }
+  return n ? bright / n : 0;
+}
+
+/** Median luma of blob cells (dark gap between park models vs white trailer). */
+function cellsP50(cells, x0, y0, bw, plate) {
+  const luma = [];
+  for (let k = 0; k < cells.length; k++) {
+    const cell = cells[k];
+    const x = x0 + (cell % bw);
+    const y = y0 + ((cell / bw) | 0);
+    if (x < 0 || y < 0 || x >= plate.width || y >= plate.height) continue;
+    const i = (y * plate.width + x) * 4;
+    luma.push(0.299 * plate.data[i] + 0.587 * plate.data[i + 1] + 0.114 * plate.data[i + 2]);
+  }
+  if (!luma.length) return 255;
+  luma.sort((a, b) => a - b);
+  return luma[(luma.length / 2) | 0];
 }
 
 /** Share of a ring 1 m outside a roof that reads as open ground, road, shade or plants. */

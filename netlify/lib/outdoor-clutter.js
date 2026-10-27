@@ -2874,7 +2874,9 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
             const key = ringKey(ring);
             if (Object.prototype.hasOwnProperty.call(roadsideMap, key)) return roadsideMap[key];
           }
-          return roadsideVehicles(ring, frame, vehiclePlate, roofRingsLL());
+          const holes = roofRingsLL();
+          holes.cents = roofCentsLL();
+          return roadsideVehicles(ring, frame, vehiclePlate, holes);
         }
       : null;
   let roofLL = null;
@@ -2917,6 +2919,34 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
     }
     return roofLL;
   }
+
+  function roofCentsLL() {
+    const out = [];
+    for (let i = 0; i < (buildings || []).length; i++) {
+      const b = buildings[i];
+      if (!b) continue;
+      let lon = 0;
+      let lat = 0;
+      let n = 0;
+      if (b.ring && b.ring.length >= 3) {
+        for (let k = 0; k < b.ring.length; k++) {
+          lon += b.ring[k][0];
+          lat += b.ring[k][1];
+          n++;
+        }
+      } else if (b.ringPx && b.ringPx.length >= 3) {
+        for (let k = 0; k < b.ringPx.length; k++) {
+          const ll = imagePxToLl(b.ringPx[k][0], b.ringPx[k][1], frame);
+          lon += ll[0];
+          lat += ll[1];
+          n++;
+        }
+      }
+      if (n >= 3) out.push([lon / n, lat / n]);
+    }
+    return out;
+  }
+
   features = dropRoadsideUnderRoofs(finalizeVehicles(features, fractionFor, roadsideFor), buildings, frame);
   const guideCap = segmentCaps && segmentCaps.guideway > 0 ? segmentCaps.guideway | 0 : GUIDEWAY_SEGMENT_CAP;
   const bridgeCap = segmentCaps && segmentCaps.bridge > 0 ? segmentCaps.bridge | 0 : BRIDGE_SEGMENT_CAP;
