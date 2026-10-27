@@ -172,6 +172,7 @@ const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 /** Wait for the park-context photo (park-context.js); a miss keeps the draw-only pads. */
 const PARK_CONTEXT_MS = 20000;
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
+const { dropStaleCampFootprints } = require("../lib/stale-footprints");
 const { fetchUsgsLidar, applyLidarSample, checkSourceHeights, lidarNote, lidarStatusLine, rankProjects, heightForRing } = require("../lib/usgs-lidar");
 const { fuseLidarCanopy, keepLidarOpen, clearInside, clearThinLinesGrid, vehicleFeatures, lidarCanopyNote } = require("../lib/lidar-canopy");
 const exportJobs = require("../lib/export-jobs");
@@ -1534,6 +1535,9 @@ async function handleClutter(event) {
   // a leafy campground (Traverse City KOA) and cut real dense canopy.
   exportMode.setPhotoCanopy(true);
   exportMode.setPhotoCrowns(testHost);
+  // Stale pad footprints and shaded trailers stay on /dev hosts for now.
+  exportMode.setStaleFootprints(testHost);
+  exportMode.setShadowTrailers(testHost);
   // From 1.2.31 large draws read the street-map tiles in one shared window
   // with a slow-fail chain, a retry pass and a split (export-mode tiledOsm).
   exportMode.setTiledOsm(exportMode.tiledOsmWanted(testHost));
@@ -2250,6 +2254,8 @@ async function handleClutter(event) {
   // The canopy lidar, kept so its roof heights can scale photo shadows even
   // when lidar heights are off.
   let scaleLidar = null;
+  // The lidar grid either way, for outlines on empty RV pads.
+  let padLidar = null;
   if (lidarCanopyOn && !lidarOn && !chmTimedOut) {
     try {
       if (!lidarSettled) {
@@ -2258,6 +2264,7 @@ async function handleClutter(event) {
       }
       const lidar = await lidarPromise;
       scaleLidar = lidar;
+      if (lidar && !lidar.skipped && lidar.grid) padLidar = lidar.grid;
       if (exportMode.isSiteTypes() && lidar && !lidar.skipped && lidar.grid) {
         // Model heights the lidar contradicts (a park model at 20 m) take the lidar height.
         const checked = checkSourceHeights(features, lidar.grid);
@@ -2299,6 +2306,7 @@ async function handleClutter(event) {
         warnings.push("Lidar heights not used.");
       } else {
         if (!lidar.skipped && lidar.grid) {
+          padLidar = lidar.grid;
           const applied = applyLidarSample(features, treePoints, lidar.grid);
           features = applied.features;
           treePoints = applied.trees;
@@ -2913,6 +2921,47 @@ async function handleClutter(event) {
       if (ctx.features.length) outdoorFeatures = outdoorFeatures.concat(ctx.features);
     } catch (err) {
       parkContextStats = { candidates: 0, rvs: 0, failed: String((err && err.message) || err).slice(0, 80) };
+    }
+  }
+
+  // Building outlines left on empty RV pads: a small outline in an RV park,
+  // campground or mobile-home park that the photo shows as bare pad, with
+  // no height in the lidar or no shadow under clear sun (stale-footprints).
+  if (exportMode.isStaleFootprints() && features.length && frame && imgBuf) {
+    try {
+      const zones = [];
+      for (let i = 0; i < outdoorFeatures.length; i++) {
+        const f = outdoorFeatures[i];
+        if (!f || !f.coords || f.coords.length < 4) continue;
+        if ((f.kind === "camp-zone" && f.tentOnly !== true) || f.kind === "mobile-park") zones.push(f.coords);
+      }
+      if (zones.length) {
+        const plate =
+          shadowPlate && shadowPlate.width === frame.imgW && shadowPlate.height === frame.imgH
+            ? shadowPlate
+            : decoded && decoded.width === frame.imgW && decoded.height === frame.imgH
+              ? decoded
+              : decodeRoofImagery(imgBuf);
+        const stale = dropStaleCampFootprints({ features, zones, plate, frame, lidar: padLidar });
+        if (stale.dropped.length) {
+          features = stale.features;
+          footprintMeta.droppedStalePads = stale.dropped.length;
+          // The outlines still mark pads for the worst-case pad fill.
+          for (let i = 0; i < stale.dropped.length; i++) {
+            const g = stale.dropped[i].ring;
+            if (g) outdoorFeatures.push({ kind: "stale-pad", coords: g, closed: true, heightM: 0, explicitHeight: false, rank: 0 });
+          }
+          warnings.push(
+            "Left out " +
+              stale.dropped.length +
+              " building outline" +
+              (stale.dropped.length === 1 ? "" : "s") +
+              " on empty RV or campground pads: the photo shows bare pad there and nothing standing on it."
+          );
+        }
+      }
+    } catch {
+      // The check is optional. The outlines stay.
     }
   }
 

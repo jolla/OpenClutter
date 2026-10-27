@@ -250,7 +250,8 @@ function runOn(workerIndex, task, payload, hooks) {
     pending.set(id, { resolve, reject, onTime });
     try {
       // Threads keep their own module state: carry the export's rule set.
-      worker.postMessage({ id, task, payload, siteTypes: require("./export-mode").isSiteTypes() });
+      const mode = require("./export-mode");
+      worker.postMessage({ id, task, payload, siteTypes: mode.isSiteTypes(), shadowTrailers: mode.isShadowTrailers() });
     } catch (err) {
       pending.delete(id);
       reject(err);

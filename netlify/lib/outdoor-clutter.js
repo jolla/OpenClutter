@@ -2719,7 +2719,7 @@ function campFootprints(buildings, zoneRings, frame, slopeTop) {
  * Worst case for an RF plan: an RV on every pad of an RV park, campground,
  * or mobile-home park, occupied or not (see rv-pads.js). Adds RV items.
  */
-function worstCasePads({ campZones, campRoads, features, items, updates, buildings, frame, plate, slopeTop, parkContext }) {
+function worstCasePads({ campZones, campRoads, features, items, updates, buildings, frame, plate, slopeTop, parkContext, stalePads }) {
   const zones = [];
   for (let i = 0; i < campZones.length; i++) if (!campZones[i].tentOnly) zones.push(lonLatRingToPx(campZones[i].coords, frame));
   for (let i = 0; i < (features || []).length; i++) {
@@ -2772,7 +2772,14 @@ function worstCasePads({ campZones, campRoads, features, items, updates, buildin
     if (!dup) ctxEvidence.push(px);
   }
   const context = ctxEvidence.length || ctxRoads.length ? { evidence: ctxEvidence, roads: ctxRoads } : null;
-  const filled = require("./rv-pads").fillPads({ zones, roads, evidence, obstacles, frame, plate, context });
+  // Outlines left out on empty pads (stale-footprints) still mark where the
+  // pads are: they set the pad pattern, and the pads stay open to fill.
+  const hints = [];
+  for (let i = 0; i < (stalePads || []).length; i++) {
+    const c = stalePads[i];
+    if (c && c.coords && c.coords.length >= 4) hints.push(lonLatRingToPx(c.coords, frame));
+  }
+  const filled = require("./rv-pads").fillPads({ zones, roads, evidence, obstacles, frame, plate, context, hints });
   for (let i = 0; i < filled.rings.length; i++) {
     const ringPx = filled.rings[i].slice();
     ringPx.push(ringPx[0].slice());
@@ -2829,12 +2836,14 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
   const campZones = [];
   const campRoads = [];
   const parkContext = [];
-  if (features && features.some((f) => f && (f.kind === "camp-zone" || f.kind === "camp-road" || f.kind === "rv-context"))) {
+  const stalePads = [];
+  if (features && features.some((f) => f && (f.kind === "camp-zone" || f.kind === "camp-road" || f.kind === "rv-context" || f.kind === "stale-pad"))) {
     const rest = [];
     for (let i = 0; i < features.length; i++) {
       if (features[i] && features[i].kind === "camp-zone") campZones.push(features[i]);
       else if (features[i] && features[i].kind === "camp-road") campRoads.push(features[i]);
       else if (features[i] && features[i].kind === "rv-context") parkContext.push(features[i]);
+      else if (features[i] && features[i].kind === "stale-pad") stalePads.push(features[i]);
       else rest.push(features[i]);
     }
     features = rest;
@@ -3165,7 +3174,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
   const notes = [];
   if (shortWalls) notes.push("Short walls were left out.");
   if (isSiteTypes() && frame && campZones.length) {
-    const padded = worstCasePads({ campZones, campRoads, features, items, updates, buildings, frame, plate: vehiclePlate, slopeTop, parkContext });
+    const padded = worstCasePads({ campZones, campRoads, features, items, updates, buildings, frame, plate: vehiclePlate, slopeTop, parkContext, stalePads });
     if (padded) notes.push("RVs modeled on all pads (worst case): " + padded + " added on open pads.");
   }
   return { items, updates, notes, reclass };

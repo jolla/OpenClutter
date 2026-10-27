@@ -391,6 +391,13 @@ function fillPads(o) {
     const b = boxOf(toM(ring, mx, my));
     if (b && b.len >= 4 && b.len <= 16 && inZone(b.cx, b.cy)) boxes.push(b);
   }
+  // Pads an out-of-date outline marks (stale-footprints): pattern evidence
+  // only. They are not occupied, so a pad fill can still go there.
+  for (const ring of o.hints || []) {
+    if (!ring || ring.length < 3) continue;
+    const b = boxOf(toM(ring, mx, my));
+    if (b && b.len >= 4 && b.len <= 16 && inZone(b.cx, b.cy)) boxes.push(b);
+  }
   if (boxes.length < ZONE_MIN_EVIDENCE) return { rings: [], added: 0 };
   // Site types: worst-case pads only in a park the photo shows packed with
   // RVs. A campground with an RV every few hundred metres of road (tent and

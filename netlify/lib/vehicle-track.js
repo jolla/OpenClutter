@@ -1,6 +1,7 @@
 "use strict";
 
-const { isSiteTypes } = require("./export-mode");
+const { isSiteTypes, isShadowTrailers } = require("./export-mode");
+const { photoSun, shiftedDarkShare } = require("./sun-shadow");
 
 /**
  * Vehicles and mobile structures.
@@ -614,6 +615,21 @@ const ROADSIDE_V2 = {
   ventSpan: 0.7,
   ventMin: 3,
   ventOutM: 3,
+  // Shaded trailers (export-mode shadowTrailers): when the photo has clear
+  // sun, the pieces no vented roof took are grouped again up to a slide-out
+  // trailer's width, and a group counts when it casts a tall unit's shadow:
+  // dark ground 1.5 to 2.5 m beyond it along the sun direction and plain
+  // ground the opposite way.
+  shadeLen: [4, 10],
+  shadeWid: [2.2, 3.4],
+  shadeFill: 0.5,
+  shadeWhite: 0.6,
+  shadeAtM: [1.5, 2.5],
+  shadeMin: 0.4,
+  shadeBase: 0.25,
+  // A short plain white box with no roof fittings is as likely a van or a
+  // truck body: under shadeBareLen it needs at least one vent.
+  shadeBareLen: 5,
 };
 
 const plateTops = new WeakMap();
@@ -863,7 +879,8 @@ function roadsideVehicles(pad, frame, plate, holes) {
     if (left && !kept && cells.length * pxM2 <= maxM2) for (let k = 0; k < cells.length; k++) left[cells[k]] = 1;
   }
   if (left) {
-    const more = ventedRoofs(left, core, x0, y0, bw, bh, plate, frame, mpuX, mpuY, (cells, ext) => {
+    const sun = isShadowTrailers() ? photoSun(plate, Math.min(mpuX, mpuY)) : null;
+    const more = ventedRoofs(left, core, x0, y0, bw, bh, plate, frame, mpuX, mpuY, sun && sun.ok ? sun : null, (cells, ext) => {
       if (!roofTone(cells, x0, y0, bw, plate)) return "dull";
       if (nearRoof) {
         let touch = 0;
@@ -895,7 +912,7 @@ function roadsideVehicles(pad, frame, plate, holes) {
  * windshield or bed crosses the whole roof; a shed or slab is plain. Each
  * group then passes the usual roof tests.
  */
-function ventedRoofs(left, core, x0, y0, bw, bh, plate, frame, mpuX, mpuY, check) {
+function ventedRoofs(left, core, x0, y0, bw, bh, plate, frame, mpuX, mpuY, sun, check) {
   const V = ROADSIDE_V2;
   const mpu = Math.min(mpuX, mpuY);
   const pxM2 = mpuX * mpuY;
@@ -976,121 +993,156 @@ function ventedRoofs(left, core, x0, y0, bw, bh, plate, frame, mpuX, mpuY, check
   };
   const order = pieces.map((c, id) => id).filter((id) => pieces[id].length * pxM2 >= V.ventPieceM2);
   order.sort((p, q) => pieces[q].length - pieces[p].length);
-  const used = new Uint8Array(pieces.length);
   const out = [];
-  for (const seed of order) {
-    if (used[seed]) continue;
-    let cells = pieces[seed].slice();
-    const group = new Set([seed]);
-    let rect = rectOf(cells);
-    // A piece too wide alone (a bent or squarish piece has no stable long
-    // axis) can still join a neighbour's group.
-    if (Math.min(rect.wid, rect.len) > V.ventWid[1] || rect.len > V.ventLen[1]) continue;
-    used[seed] = 1;
-    for (;;) {
-      const cand = new Set();
-      for (const id of group) for (const o of nb[id]) if (!used[o] && !group.has(o)) cand.add(o);
-      const list = [...cand].sort((p, q) => pieces[q].length - pieces[p].length);
-      let added = false;
-      for (const o of list) {
-        const next = cells.concat(pieces[o]);
-        const r = rectOf(next);
-        if (Math.min(r.wid, r.len) > V.ventWid[1] || r.len > V.ventLen[1]) continue;
-        cells = next;
-        rect = r;
-        group.add(o);
-        used[o] = 1;
-        added = true;
-        break;
+  const taken = new Uint8Array(pieces.length);
+  // shade false: the vented roof pass. shade true: the shaded trailer pass
+  // over the pieces no vented roof took.
+  const pass = (shade) => {
+    const maxWid = shade ? V.shadeWid[1] : V.ventWid[1];
+    const maxLen = shade ? V.shadeLen[1] : V.ventLen[1];
+    const used = taken.slice();
+    for (const seed of order) {
+      if (used[seed]) continue;
+      let cells = pieces[seed].slice();
+      const group = new Set([seed]);
+      let rect = rectOf(cells);
+      // A piece too wide alone (a bent or squarish piece has no stable long
+      // axis) can still join a neighbour's group.
+      if (Math.min(rect.wid, rect.len) > maxWid || rect.len > maxLen) continue;
+      used[seed] = 1;
+      for (;;) {
+        const cand = new Set();
+        for (const id of group) for (const o of nb[id]) if (!used[o] && !group.has(o)) cand.add(o);
+        const list = [...cand].sort((p, q) => pieces[q].length - pieces[p].length);
+        let added = false;
+        for (const o of list) {
+          const next = cells.concat(pieces[o]);
+          const r = rectOf(next);
+          if (Math.min(r.wid, r.len) > maxWid || r.len > maxLen) continue;
+          cells = next;
+          rect = r;
+          group.add(o);
+          used[o] = 1;
+          added = true;
+          break;
+        }
+        if (!added) break;
       }
-      if (!added) break;
-    }
-    const { e, vx, vy, a0, a1, c0, c1, len, wid } = rect;
-    const cx = e.cx + (e.ux * (a0 + a1)) / 2 + (vx * (c0 + c1)) / 2;
-    const cy = e.cy + (e.uy * (a0 + a1)) / 2 + (vy * (c0 + c1)) / 2;
-    if (len < V.ventLen[0]) continue;
-    if (wid < V.ventWid[0]) continue;
-    // The rectangle, in local pixels: share of it the pieces cover, share
-    // the photo shows white, and the gaps in the white more than
-    // ventInsetM inside its outline.
-    const ins = V.ventInsetM;
-    let bx0 = bw;
-    let by0 = bh;
-    let bx1 = 0;
-    let by1 = 0;
-    for (let k = 0; k < cells.length; k++) {
-      const x = cells[k] % bw;
-      const y = (cells[k] / bw) | 0;
-      if (x < bx0) bx0 = x;
-      if (x > bx1) bx1 = x;
-      if (y < by0) by0 = y;
-      if (y > by1) by1 = y;
-    }
-    const inG = new Set(cells);
-    let nRect = 0;
-    let nIn = 0;
-    let nWhite = 0;
-    let edge = false;
-    const gap = new Map();
-    for (let y = Math.max(0, by0 - 3); y <= Math.min(bh - 1, by1 + 3); y++) {
-      for (let x = Math.max(0, bx0 - 3); x <= Math.min(bw - 1, bx1 + 3); x++) {
-        const p = toM(x0 + x + 0.5, y0 + y + 0.5);
-        const a = (p[0] - e.cx) * e.ux + (p[1] - e.cy) * e.uy;
-        const c = (p[0] - e.cx) * vx + (p[1] - e.cy) * vy;
-        if (a < a0 || a > a1 || c < c0 || c > c1) continue;
-        const k = y * bw + x;
-        if (x === 0 || y === 0 || x === bw - 1 || y === bh - 1) edge = true;
-        nRect++;
-        if (inG.has(k)) nIn++;
-        if (core[k]) nWhite++;
-        else if (a > a0 + ins && a < a1 - ins && c > c0 + ins && c < c1 - ins) gap.set(k, c);
+      const { e, vx, vy, a0, a1, c0, c1, len, wid } = rect;
+      const cx = e.cx + (e.ux * (a0 + a1)) / 2 + (vx * (c0 + c1)) / 2;
+      const cy = e.cy + (e.uy * (a0 + a1)) / 2 + (vy * (c0 + c1)) / 2;
+      if (len < (shade ? V.shadeLen[0] : V.ventLen[0])) continue;
+      if (wid < (shade ? V.shadeWid[0] : V.ventWid[0])) continue;
+      // The rectangle, in local pixels: share of it the pieces cover, share
+      // the photo shows white, and the gaps in the white more than
+      // ventInsetM inside its outline.
+      const ins = V.ventInsetM;
+      let bx0 = bw;
+      let by0 = bh;
+      let bx1 = 0;
+      let by1 = 0;
+      for (let k = 0; k < cells.length; k++) {
+        const x = cells[k] % bw;
+        const y = (cells[k] / bw) | 0;
+        if (x < bx0) bx0 = x;
+        if (x > bx1) bx1 = x;
+        if (y < by0) by0 = y;
+        if (y > by1) by1 = y;
       }
-    }
-    if (edge) continue;
-    const fill = nIn / Math.max(1, nRect);
-    const whiteShare = nWhite / Math.max(1, nRect);
-    let vents = 0;
-    let span = 0;
-    const gs = new Set();
-    for (const [k0] of gap) {
-      if (gs.has(k0)) continue;
-      const q = [k0];
-      gs.add(k0);
-      let n = 0;
-      let touch = false;
-      let cmin = Infinity;
-      let cmax = -Infinity;
-      while (q.length) {
-        const k = q.pop();
-        n++;
-        const c = gap.get(k);
-        if (c < cmin) cmin = c;
-        if (c > cmax) cmax = c;
-        const x = k % bw;
-        const nbr = [x > 0 ? k - 1 : -1, x < bw - 1 ? k + 1 : -1, k - bw, k + bw];
-        for (const j of nbr) {
-          if (j < 0 || j >= bw * bh) continue;
-          if (gap.has(j)) {
-            if (!gs.has(j)) {
-              gs.add(j);
-              q.push(j);
-            }
-          } else if (!core[j]) touch = true;
+      const inG = new Set(cells);
+      let nRect = 0;
+      let nIn = 0;
+      let nWhite = 0;
+      let edge = false;
+      const gap = new Map();
+      for (let y = Math.max(0, by0 - 3); y <= Math.min(bh - 1, by1 + 3); y++) {
+        for (let x = Math.max(0, bx0 - 3); x <= Math.min(bw - 1, bx1 + 3); x++) {
+          const p = toM(x0 + x + 0.5, y0 + y + 0.5);
+          const a = (p[0] - e.cx) * e.ux + (p[1] - e.cy) * e.uy;
+          const c = (p[0] - e.cx) * vx + (p[1] - e.cy) * vy;
+          if (a < a0 || a > a1 || c < c0 || c > c1) continue;
+          const k = y * bw + x;
+          if (x === 0 || y === 0 || x === bw - 1 || y === bh - 1) edge = true;
+          nRect++;
+          if (inG.has(k)) nIn++;
+          if (core[k]) nWhite++;
+          else if (a > a0 + ins && a < a1 - ins && c > c0 + ins && c < c1 - ins) gap.set(k, c);
         }
       }
-      span = Math.max(span, (cmax - cmin + mpu) / Math.max(0.1, wid - 2 * ins));
-      const g2 = n * pxM2;
-      if (!touch && g2 >= V.ventGapM2[0] && g2 <= V.ventGapM2[1]) vents++;
+      if (edge) continue;
+      const fill = nIn / Math.max(1, nRect);
+      const whiteShare = nWhite / Math.max(1, nRect);
+      let vents = 0;
+      let span = 0;
+      const gs = new Set();
+      for (const [k0] of gap) {
+        if (gs.has(k0)) continue;
+        const q = [k0];
+        gs.add(k0);
+        let n = 0;
+        let touch = false;
+        let cmin = Infinity;
+        let cmax = -Infinity;
+        while (q.length) {
+          const k = q.pop();
+          n++;
+          const c = gap.get(k);
+          if (c < cmin) cmin = c;
+          if (c > cmax) cmax = c;
+          const x = k % bw;
+          const nbr = [x > 0 ? k - 1 : -1, x < bw - 1 ? k + 1 : -1, k - bw, k + bw];
+          for (const j of nbr) {
+            if (j < 0 || j >= bw * bh) continue;
+            if (gap.has(j)) {
+              if (!gs.has(j)) {
+                gs.add(j);
+                q.push(j);
+              }
+            } else if (!core[j]) touch = true;
+          }
+        }
+        span = Math.max(span, (cmax - cmin + mpu) / Math.max(0.1, wid - 2 * ins));
+        const g2 = n * pxM2;
+        if (!touch && g2 >= V.ventGapM2[0] && g2 <= V.ventGapM2[1]) vents++;
+      }
+      if (span > V.ventSpan) continue;
+      if (shade) {
+        if (fill < V.shadeFill || whiteShare < V.shadeWhite) continue;
+        if (vents < 1 && len < V.shadeBareLen) continue;
+        if (!castsShadow(cells, core, x0, y0, bw, bh, plate, mpu, sun)) continue;
+      } else if (fill < V.ventFill || whiteShare < V.ventWhite || vents < V.ventMin) continue;
+      const ext = { len, wid, ux: e.ux, uy: e.uy, cx, cy, mLon };
+      const res = check(cells, ext);
+      if (typeof res !== "object") continue;
+      out.push(res);
+      for (const id of group) taken[id] = 1;
     }
-    if (fill < V.ventFill) continue;
-    if (whiteShare < V.ventWhite) continue;
-    if (span > V.ventSpan) continue;
-    if (vents < V.ventMin) continue;
-    const ext = { len, wid, ux: e.ux, uy: e.uy, cx, cy, mLon };
-    const res = check(cells, ext);
-    if (typeof res === "object") out.push(res);
-  }
+  };
+  pass(false);
+  if (sun) pass(true);
   return out;
+}
+
+/**
+ * Shaded trailers: true when a roof group's shadow falls where the photo's
+ * sun puts it. The group, shifted 1.5 and 2.5 m along the sun direction,
+ * lands mostly on dark ground (white roof pixels skipped), and shifted the
+ * same way against the sun it lands on plain ground. A car, a slab or a
+ * white tarp casts little or no shadow that far.
+ */
+function castsShadow(cells, core, x0, y0, bw, bh, plate, mpu, sun) {
+  const V = ROADSIDE_V2;
+  const px = new Array(cells.length);
+  for (let k = 0; k < cells.length; k++) px[k] = [x0 + (cells[k] % bw), y0 + ((cells[k] / bw) | 0)];
+  const skip = (x, y) => {
+    const lx = x - x0;
+    const ly = y - y0;
+    return lx >= 0 && ly >= 0 && lx < bw && ly < bh && core[ly * bw + lx] === 1;
+  };
+  const along = shiftedDarkShare(plate, px, sun.dx, sun.dy, V.shadeAtM, mpu, sun.dark, skip);
+  if (along == null || along < V.shadeMin) return false;
+  const back = shiftedDarkShare(plate, px, -sun.dx, -sun.dy, V.shadeAtM, mpu, sun.dark, skip);
+  return back != null && back <= V.shadeBase;
 }
 
 /** Pixel distance from a point to a ring's outline. */

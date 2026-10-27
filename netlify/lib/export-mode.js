@@ -131,7 +131,39 @@ function isPhotoCrowns() {
   return photoCrowns;
 }
 
+// Building outlines left on empty RV pads: a small
+// footprint inside an RV park, campground or mobile-home park that the
+// photo shows as bare pad, with no height in the lidar or no shadow where
+// the photo has clear sun, is left out. On for /dev hosts only.
+let staleFootprints = false;
+
+function setStaleFootprints(on) {
+  staleFootprints = !!on;
+}
+
+function isStaleFootprints() {
+  return staleFootprints;
+}
+
+// Trailers whose light roof breaks up on a pale pad: a
+// roof group of RV width that casts a tall shadow along the photo's sun
+// direction counts as a unit even without the vent pattern. On for /dev
+// hosts only; carried to CPU worker threads with each task.
+let shadowTrailers = false;
+
+function setShadowTrailers(on) {
+  shadowTrailers = !!on;
+}
+
+function isShadowTrailers() {
+  return shadowTrailers;
+}
+
 module.exports = {
+  setStaleFootprints,
+  isStaleFootprints,
+  setShadowTrailers,
+  isShadowTrailers,
   setPhotoCrowns,
   isPhotoCrowns,
   setPhotoCanopy,

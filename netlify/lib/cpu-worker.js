@@ -14,7 +14,9 @@ parentPort.on("message", (msg) => {
   if (profiling) profile.reset();
   Promise.resolve()
     .then(() => {
-      require("./export-mode").setSiteTypes(msg.siteTypes !== false);
+      const mode = require("./export-mode");
+      mode.setSiteTypes(msg.siteTypes !== false);
+      mode.setShadowTrailers(msg.shadowTrailers === true);
       return runTask(msg.task, msg.payload);
     })
     .then(
