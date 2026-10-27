@@ -1135,8 +1135,15 @@ function ventedRoofs(left, core, x0, y0, bw, bh, plate, frame, mpuX, mpuY, sun, 
         if (vents < 1 && len < V.shadeBareLen) continue;
         // Slide-outs are wider than ventWid, so only this pass sees them. When
         // the group already meets a clear vents/white/fill bar, that is enough.
+        // A short group with many vents is usually a piece of a longer roof
+        // (the rest failed the white mask). Require length >= 6 m when vents
+        // are dense so those fragments are not emitted as their own RV.
         const strongVents =
-          miss && vents >= 2 && whiteShare >= (vents >= 3 ? 0.62 : 0.7) && fill >= 0.45;
+          miss &&
+          vents >= 2 &&
+          whiteShare >= (vents >= 3 ? 0.62 : 0.7) &&
+          fill >= 0.45 &&
+          (len >= 6 || vents <= 4);
         if (!strongVents && !castsShadow(cells, core, x0, y0, bw, bh, plate, mpu, sun)) continue;
       } else {
         // /dev: two clear vents on a very white, well-filled roof still mark a
