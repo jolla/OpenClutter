@@ -15,6 +15,8 @@ const {
   startHeartbeatTimer,
   setExportRunnerForTests,
   jobInFlight,
+  workerStopping,
+  resetStoppingForTests,
 } = require("../fly/worker");
 const { startServer, useIdleExit, setCancelExitForTests } = require("../fly/server");
 
@@ -63,6 +65,7 @@ const realRun = clutter.runBackgroundExport;
 afterEach(() => {
   jobs.setExportStoreForTests(null);
   setExportRunnerForTests(null);
+  resetStoppingForTests();
   setHandoffDepsForTests(null);
   cancelFn.setWorkerCancelForTests(null);
   setCancelExitForTests(null);
@@ -287,6 +290,70 @@ describe("export cancel: Fly worker", { concurrency: 1 }, () => {
     } finally {
       await new Promise((r) => server.close(r));
     }
+  });
+});
+
+describe("export cancel: worker exits when the caller already left", () => {
+  it("exits after a cancel even when Netlify dropped the export connection", async () => {
+    workerEnv();
+    jobs.setExportStoreForTests(memoryStore());
+    await jobs.createJob(JOB);
+    let exits = 0;
+    setCancelExitForTests(() => {
+      exits += 1;
+    });
+    setExportRunnerForTests(async () => {
+      await new Promise(() => {});
+    });
+    const server = await startServer(0);
+    const base = "http://127.0.0.1:" + server.address().port;
+    const ac = new AbortController();
+    try {
+      const res = await fetch(base + "/export", {
+        method: "POST",
+        headers: auth(),
+        body: JSON.stringify({ jobId: JOB, event: innerEvent() }),
+        signal: ac.signal,
+      });
+      assert.equal(res.status, 202);
+      ac.abort();
+      await res.text().catch(() => {});
+      await new Promise((r) => setTimeout(r, 30));
+      const ok = await fetch(base + "/cancel", { method: "POST", headers: auth(), body: JSON.stringify({ jobId: JOB }) });
+      assert.equal(ok.status, 200);
+      for (let i = 0; i < 100 && exits === 0; i++) await new Promise((r) => setTimeout(r, 5));
+      assert.equal(exits, 1);
+      assert.equal(jobInFlight(), false);
+      assert.equal(workerStopping(), true);
+    } finally {
+      server.closeAllConnections && server.closeAllConnections();
+      await new Promise((r) => server.close(r));
+    }
+  });
+});
+
+describe("export cancel: no new export shares a stopping machine", () => {
+  it("answers 409 to a new export after a cancel until the process exits", async () => {
+    workerEnv();
+    jobs.setExportStoreForTests(memoryStore());
+    await jobs.createJob(JOB);
+    await jobs.createJob(OTHER);
+    setCancelExitForTests(() => {});
+    let runs = 0;
+    setExportRunnerForTests(async () => {
+      runs += 1;
+      await new Promise(() => {});
+    });
+    const first = await handleWorkerRequest({ method: "POST", url: "/export", headers: auth(), body: JSON.stringify({ jobId: JOB, event: innerEvent() }) });
+    assert.equal(first.statusCode, 202);
+    const ok = await handleWorkerRequest({ method: "POST", url: "/cancel", headers: auth(), body: JSON.stringify({ jobId: JOB }) });
+    assert.equal(ok.statusCode, 200);
+    assert.equal((await first.job).cancelled, true);
+    assert.equal(jobInFlight(), false);
+    const next = await handleWorkerRequest({ method: "POST", url: "/export", headers: auth(), body: JSON.stringify({ jobId: OTHER, event: innerEvent() }) });
+    assert.equal(next.statusCode, 409);
+    assert.equal(next.job, undefined);
+    assert.equal(runs, 1);
   });
 });
 
