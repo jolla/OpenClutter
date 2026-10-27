@@ -15,6 +15,8 @@ const {
 } = require("../netlify/lib/geo-frame");
 const {
   terrainFromSamples,
+  TERRAIN_DB_PER_M,
+  terrainAttenDb,
   depressWaterBasins,
   parseDemSamples,
   terrainBundleFields,
@@ -179,7 +181,7 @@ describe("3DEP terrain clipboard", () => {
       assert.deepEqual(Object.keys(z), RAISED_KEYS);
       assert.equal(z.area.type, "Polygon");
       assert.equal(z.height, 0);
-      assert.equal(z.attenuationDbPerMeter, 0);
+      assert.equal(z.attenuationDbPerMeter, TERRAIN_DB_PER_M);
       assert.equal(z.slabOnly, false);
       assertOpenQuad(z.area.coordinates[0], 2);
     }
@@ -231,6 +233,37 @@ describe("3DEP terrain clipboard", () => {
     assert.ok(zones.every((z) => z.slabOnly === false));
   });
 
+  it("applies TERRAIN_DB_PER_M to every raised and sloped zone on every host", () => {
+    assert.equal(TERRAIN_DB_PER_M, 20);
+    assert.equal(terrainAttenDb(), TERRAIN_DB_PER_M);
+    const frame = geoFrame({ west: -87.922, south: 42.89, east: -87.912, north: 42.903, name: "Atten" });
+    const sloped = terrainFromSamples(gridSamples(frame, (r) => 180 + r * 8), frame, {
+      terrainStyle: "sloped",
+    });
+    const raised = terrainFromSamples(gridSamples(frame, (r) => 180 + r * 8), frame, {
+      terrainStyle: "raised",
+    });
+    const flat = terrainFromSamples(gridSamples(frame, () => 200), frame, { terrainStyle: "sloped" });
+    const zones = []
+      .concat(sloped.clipboard.raisedFloorZones)
+      .concat(sloped.clipboard.slopedFloors)
+      .concat(raised.clipboard.raisedFloorZones)
+      .concat(raised.clipboard.slopedFloors)
+      .concat(flat.clipboard.raisedFloorZones)
+      .concat(flat.clipboard.slopedFloors);
+    assert.ok(zones.length >= 1);
+    assert.ok(sloped.clipboard.slopedFloors.length >= 1, "sloped style emits ramps");
+    assert.ok(raised.clipboard.raisedFloorZones.length >= 1, "raised style emits pads");
+    assert.ok(flat.clipboard.raisedFloorZones.length >= 1, "flat ground emits pads");
+    for (const z of zones) {
+      assert.equal(z.attenuationDbPerMeter, TERRAIN_DB_PER_M);
+      assert.equal(z.slabOnly, false);
+      assert.notEqual(z.attenuationDbPerMeter, 0);
+    }
+    const zeroAtten = zones.filter((z) => z.attenuationDbPerMeter === 0);
+    assert.equal(zeroAtten.length, 0, "no terrain zone at 0 dB/m");
+  });
+
   it("turns a sloped DEM into slopedFloors with xyz vertices", () => {
     const frame = geoFrame({ west: -87.922, south: 42.89, east: -87.912, north: 42.903, name: "Slope" });
     const terrain = terrainFromSamples(
@@ -247,7 +280,7 @@ describe("3DEP terrain clipboard", () => {
     for (const z of terrain.clipboard.slopedFloors) {
       assert.deepEqual(Object.keys(z), SLOPED_KEYS);
       assert.equal(z.area.type, "Polygon");
-      assert.equal(z.attenuationDbPerMeter, 0);
+      assert.equal(z.attenuationDbPerMeter, TERRAIN_DB_PER_M);
       assert.equal(z.crowdEnabled, false);
       assert.equal(z.drawStairs, false);
       assert.equal(z.slabOnly, false);
@@ -287,7 +320,7 @@ describe("3DEP terrain clipboard", () => {
       const ring = z.area.coordinates[0];
       assertOpenQuad(ring, 2);
       assert.equal(z.slabOnly, false);
-      assert.equal(z.attenuationDbPerMeter, 0);
+      assert.equal(z.attenuationDbPerMeter, TERRAIN_DB_PER_M);
       if (pointInOrOn(ring, ne[0], ne[1]) && z.height > 0) covers += 1;
     }
     assert.ok(covers >= 2, "high corner is in a stack of plates, got " + covers + " top " + top);
@@ -341,7 +374,7 @@ describe("3DEP terrain clipboard", () => {
       assert.equal(z.slabOnly, false);
       assert.equal(z.crowdEnabled, false);
       assert.equal(z.drawStairs, false);
-      assert.equal(z.attenuationDbPerMeter, 0);
+      assert.equal(z.attenuationDbPerMeter, TERRAIN_DB_PER_M);
       for (const p of ring) {
         assert.ok(p[0] <= 0.001 && p[0] >= -frame.widthM - 0.01);
         assert.ok(p[1] <= 0.001 && p[1] >= -frame.lengthM - 0.01);
