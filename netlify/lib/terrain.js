@@ -72,6 +72,16 @@ const { fetchCopernicusDemSamples, GLO30_CREDIT } = require("./copernicus-dem");
 const DEM_URL = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/getSamples";
 const USGS_3DEP_ATTRIBUTION = "USGS 3DEP";
 const TERRAIN_FILENAME = "terrain-clipboard.json";
+/**
+ * 5 GHz dB/m for Copy terrain raised/sloped floors on every host.
+ * Solid volume (slabOnly false). Bug fix: ground must attenuate.
+ */
+const TERRAIN_DB_PER_M = 20;
+
+function terrainAttenDb() {
+  return TERRAIN_DB_PER_M;
+}
+
 const FLAT_M = 0.5;
 /**
  * Sloped style only. A 0.5 m gate turned every cell of a fine mesh into a pad
@@ -944,7 +954,7 @@ function raisedZone(sw, se, ne, nw, height) {
   return {
     area: zoneArea(ring),
     height,
-    attenuationDbPerMeter: 0,
+    attenuationDbPerMeter: terrainAttenDb(),
     // false matches a Hamina-native paste: Planner Plus draws a solid floor.
     // true is the thin "slab only" sheet. Attenuation stays 0 either way.
     slabOnly: false,
@@ -1197,7 +1207,7 @@ function slopedZone(ring) {
   if (!(zHigh > zLow)) return null;
   return {
     area: zoneArea(ring),
-    attenuationDbPerMeter: 0,
+    attenuationDbPerMeter: terrainAttenDb(),
     crowdEnabled: false,
     drawStairs: false,
     // Solid volume, same flag as the native sloped-floor paste. Open quads stay.
@@ -1687,7 +1697,7 @@ function raisedFromRing(ring, height) {
       return [p[0], p[1]];
     })),
     height: round1(height),
-    attenuationDbPerMeter: 0,
+    attenuationDbPerMeter: terrainAttenDb(),
     slabOnly: false,
   };
 }
@@ -4126,6 +4136,8 @@ async function fetchTerrainDemWork(frame, fetchFn, opts) {
 }
 
 module.exports = {
+  TERRAIN_DB_PER_M,
+  terrainAttenDb,
   DEM_URL,
   USGS_3DEP_ATTRIBUTION,
   GLO30_CREDIT,

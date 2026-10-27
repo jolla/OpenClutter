@@ -689,7 +689,7 @@ describe("optional sources cannot fail the export", () => {
     assert.deepEqual(Object.keys(pad), ["area", "height", "attenuationDbPerMeter", "slabOnly"]);
     assert.equal(pad.area.coordinates[0][0].length, 2);
     assert.equal(pad.slabOnly, false);
-    assert.equal(pad.attenuationDbPerMeter, 0);
+    assert.equal(pad.attenuationDbPerMeter, 20);
     const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
     assert.equal(files["terrain-clipboard.json"], undefined);
     assert.equal(files["openIntent_Wynn-Golf.json"].toString().includes("raisedFloorZones"), false);
