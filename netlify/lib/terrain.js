@@ -955,8 +955,8 @@ function raisedZone(sw, se, ne, nw, height) {
     area: zoneArea(ring),
     height,
     attenuationDbPerMeter: terrainAttenDb(),
-    // false matches a Hamina-native paste: Planner Plus draws a solid floor.
-    // true is the thin "slab only" sheet. Attenuation stays 0 either way.
+    // false matches a Hamina-native paste: Planner Plus draws a solid floor
+    // (20 dB/m through the volume). true would be the thin "slab only" sheet.
     slabOnly: false,
   };
 }
