@@ -1,9 +1,8 @@
 /*
  * Feedback form. The "Feedback" link by the version opens a small dialog:
  * type, message, screenshots (paste, drop, pick a file, or attach the map
- * view), optional email, and Send. Reports are private by default; "Post
- * publicly on GitHub" is opt-in and only shown when the server has a public
- * destination set up. Screenshots are re-drawn on a canvas and saved as
+ * view), optional email, and Send. Reports go privately to the OpenClutter
+ * team (an issue in a private repo). Screenshots are re-drawn on a canvas and saved as
  * WebP or JPEG, which drops photo metadata (EXIF, GPS) and keeps each one
  * small enough for the function.
  */
@@ -38,7 +37,6 @@
       type: s.type || "bug",
       message: String(s.message || ""),
       email: String(s.email || "").trim(),
-      public: !!s.public,
       version: s.version || "",
       images: (s.images || []).slice(0, MAX_IMAGES),
       website: s.website || "",
@@ -48,8 +46,6 @@
       body.context = { viewport: s.viewport || null };
       if (s.bounds) body.context.bounds = s.bounds;
     }
-    // An email on a public report only travels when the server can keep it private.
-    if (body.public && !s.privateAvailable) body.email = "";
     return body;
   }
 
@@ -72,12 +68,8 @@
   var form = $("fb-form");
   var msg = $("fb-message");
   var email = $("fb-email");
-  var emailRow = $("fb-email-row");
-  var pubRow = $("fb-public-row");
-  var pub = $("fb-public");
   var ctxBox = $("fb-context");
   var ctxLabel = $("fb-context-label");
-  var note = $("fb-note");
   var shots = $("fb-shots");
   var drop = $("fb-drop");
   var fileIn = $("fb-file");
@@ -85,7 +77,6 @@
   var sendBtn = $("fb-send");
   var errEl = $("fb-error");
   var doneEl = $("fb-done");
-  var mailRow = $("fb-mail");
   var hp = $("fb-website");
 
   var config = null;
@@ -111,26 +102,10 @@
   }
 
   function showError(text) {
+    // Clearing an error keeps the not set up notice while the form cannot send.
+    if (!text && config && !config.configured) text = "Feedback is not set up yet.";
     errEl.textContent = text || "";
     errEl.hidden = !text;
-  }
-
-  function syncPrivacy() {
-    var cfg = config || {};
-    var isPublic = !!(cfg.public && pub.checked);
-    var publicOnly = !!(cfg.public && !cfg.private);
-    pubRow.hidden = !cfg.public;
-    note.textContent = isPublic
-      ? "This report and its screenshots will be public on GitHub."
-      : publicOnly
-        ? "Reports are posted on GitHub for now. Tick Post publicly on GitHub to send."
-        : "Private: only the OpenClutter team sees this report and its screenshots.";
-    if (cfg.configured && !sending) sendBtn.disabled = publicOnly && !isPublic;
-    note.classList.toggle("fb-public", !!isPublic);
-    // A public report keeps an email only when there is a private place for it.
-    emailRow.hidden = !!(isPublic && !cfg.private);
-    email.placeholder = isPublic ? "Email for a reply (optional, kept private)" : "Email for a reply (optional)";
-    sendBtn.textContent = isPublic ? "Post publicly" : "Send";
   }
 
   function syncContext() {
@@ -358,22 +333,13 @@
     dlg.showModal();
     msg.focus();
     var cfg = await loadConfig();
-    if (cfg.email) {
-      var a = mailRow.querySelector("a");
-      a.href = "mailto:" + cfg.email + "?subject=" + encodeURIComponent("OpenClutter feedback");
-      a.textContent = cfg.email;
-      mailRow.hidden = false;
-    } else {
-      mailRow.hidden = true;
-    }
     if (!cfg.configured) {
-      showError("Feedback is not set up yet." + (cfg.email ? " Please email us instead." : ""));
+      showError("Feedback is not set up yet.");
       sendBtn.disabled = true;
     } else if (!sending) {
       sendBtn.disabled = false;
-      if (errEl.textContent === "Feedback is not set up yet." || /not set up/.test(errEl.textContent)) showError("");
+      if (/not set up/.test(errEl.textContent)) showError("");
     }
-    syncPrivacy();
   }
 
   function close() {
@@ -391,14 +357,10 @@
       msg.focus();
       return;
     }
-    var cfg = config || {};
-    var isPublic = !!(cfg.public && pub.checked);
     var payload = buildPayload({
       type: (form.querySelector("input[name=fb-type]:checked") || {}).value,
       message: text,
       email: email.value,
-      public: isPublic,
-      privateAvailable: !!cfg.private,
       version: window.OPENCLUTTER_VERSION || "",
       images: images,
       website: hp.value,
@@ -427,18 +389,7 @@
       form.hidden = true;
       doneEl.textContent = "";
       var p = document.createElement("p");
-      if (data.public && data.url && /^https:\/\/github\.com\//.test(data.url)) {
-        p.appendChild(document.createTextNode("Thanks! Posted as "));
-        var a = document.createElement("a");
-        a.href = data.url;
-        a.target = "_blank";
-        a.rel = "noopener noreferrer";
-        a.textContent = "issue #" + data.number;
-        p.appendChild(a);
-        p.appendChild(document.createTextNode(" on GitHub."));
-      } else {
-        p.textContent = "Thanks! Your report was sent privately.";
-      }
+      p.textContent = "Thanks! Your report was sent privately to the OpenClutter team.";
       var b = document.createElement("button");
       b.type = "button";
       b.textContent = "Close";
@@ -453,7 +404,6 @@
     } finally {
       sending = false;
       sendBtn.textContent = label;
-      if (!form.hidden) syncPrivacy();
     }
   }
 
@@ -463,7 +413,6 @@
     if (ev.target === dlg) close();
   });
   form.addEventListener("submit", send);
-  pub.addEventListener("change", syncPrivacy);
   fileIn.addEventListener("change", function () {
     addFiles(fileIn.files).then(function () {
       fileIn.value = "";

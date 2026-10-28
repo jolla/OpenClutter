@@ -1,27 +1,22 @@
 "use strict";
 
 /**
- * In-app feedback. Checks a report from the page and turns it into a GitHub
- * issue. Private by default: reports go to a private repo (FEEDBACK_PRIVATE_REPO)
- * and their screenshots are stored in that private repo. Only when the
- * reporter ticks "Post publicly on GitHub" does the report go to the public
- * repo, with screenshots served from Netlify Blobs by unguessable id.
+ * In-app feedback. Checks a report from the page and turns it into an issue
+ * in the private feedback repo (FEEDBACK_PRIVATE_REPO). Screenshots are
+ * stored as files in that private repo, so only people with access to it
+ * can see the report, the screenshots or the reply email.
  *
- * The page never talks to GitHub and never sees a token or a private address.
- * Public issue bodies put the user's words inside a code block so mentions,
- * links, images and HTML do not render.
+ * The page never talks to GitHub and never sees the token or the repo name.
+ * The issue puts the user's words inside a code block so mentions, links,
+ * images and HTML do not render.
  */
 
 const crypto = require("node:crypto");
 
 const ENV = {
-  publicToken: "GITHUB_FEEDBACK_TOKEN",
-  publicRepo: "GITHUB_FEEDBACK_REPO",
-  privateToken: "GITHUB_FEEDBACK_PRIVATE_TOKEN",
-  privateRepo: "FEEDBACK_PRIVATE_REPO",
-  publicEmail: "FEEDBACK_PUBLIC_EMAIL",
+  token: "GITHUB_FEEDBACK_PRIVATE_TOKEN",
+  repo: "FEEDBACK_PRIVATE_REPO",
 };
-const DEFAULT_PUBLIC_REPO = "jolla/OpenClutter";
 
 const TYPES = {
   bug: { label: "bug", title: "Bug" },
@@ -50,7 +45,6 @@ const RATE = {
   globalDayMax: 60,
 };
 
-const PUBLIC_IMAGE_STORE = "openclutter-feedback-public";
 const RATE_STORE = "openclutter-ratelimit";
 
 class FeedbackError extends Error {
@@ -70,31 +64,20 @@ function validRepo(s) {
 }
 
 /**
- * Which destinations are set up. Token values stay inside this object and
- * are never sent to the page or logged.
+ * The private repo and its token, or null when either is missing. The token
+ * stays inside this object and is never sent to the page or logged.
  */
 function readConfig(env) {
   const e = env || process.env;
-  const s = (k) => String(e[k] || "").trim();
-  const pubRepo = s(ENV.publicRepo) || DEFAULT_PUBLIC_REPO;
-  const privRepo = s(ENV.privateRepo);
-  const publicToken = s(ENV.publicToken);
-  const privateToken = s(ENV.privateToken);
-  const email = s(ENV.publicEmail);
-  return {
-    public: publicToken && validRepo(pubRepo) ? { repo: pubRepo, token: publicToken } : null,
-    private: privateToken && validRepo(privRepo) ? { repo: privRepo, token: privateToken } : null,
-    publicEmail: email && validEmail(email) ? email : "",
-  };
+  const repo = String(e[ENV.repo] || "").trim();
+  const token = String(e[ENV.token] || "").trim();
+  return token && validRepo(repo) ? { repo, token } : null;
 }
 
-/** What the page may know: which options to show, and the mailto alias. */
-function publicConfig(cfg) {
+/** What the page may know: whether the form works, and its limits. */
+function pageConfig(cfg) {
   return {
-    configured: !!(cfg.public || cfg.private),
-    private: !!cfg.private,
-    public: !!cfg.public,
-    email: cfg.publicEmail || null,
+    configured: !!cfg,
     maxImages: MAX_IMAGES,
     maxImageBytes: IMAGE_MAX_BYTES,
     maxMessage: MESSAGE_MAX,
@@ -269,7 +252,6 @@ function parseReport(body) {
   const share = body.context && typeof body.context === "object" ? body.context : null;
   return {
     spam: false,
-    public: body.public === true,
     type,
     message,
     email,
@@ -281,10 +263,7 @@ function parseReport(body) {
   };
 }
 
-/**
- * Markdown issue for either repo. extra.email is only passed for the private
- * repo; the public body says at most that a private contact exists.
- */
+/** Markdown issue for the private repo. */
 function buildIssue(report, extra) {
   const x = extra || {};
   const lines = [];
@@ -303,8 +282,6 @@ function buildIssue(report, extra) {
     );
   }
   if (x.email) lines.push("**Reply to:** `" + x.email.replace(/`/g, "") + "`");
-  else if (x.hasPrivateContact) lines.push("**Contact:** the reporter left an email, kept private.");
-  if (x.publicIssueUrl) lines.push("**Public issue:** " + x.publicIssueUrl);
   lines.push("");
   lines.push("**Message:**");
   lines.push("");
@@ -317,28 +294,11 @@ function buildIssue(report, extra) {
     urls.forEach((u, i) => lines.push("![Screenshot " + (i + 1) + "](" + u + ")"));
   }
   lines.push("");
-  lines.push(
-    "<sub>Sent from the OpenClutter Feedback form" + (x.isPrivate ? " (private)" : " (posted publicly by the reporter)") + ".</sub>"
-  );
+  lines.push("<sub>Sent privately from the OpenClutter Feedback form.</sub>");
   return {
     title: titleFrom(report.type, report.message),
     body: lines.join("\n"),
     labels: [TYPES[report.type].label, FEEDBACK_LABEL],
-  };
-}
-
-/** A short private note for the email someone left on a public report. */
-function buildContactNote(report, publicIssue, host) {
-  return {
-    title: "[Contact] for public report #" + publicIssue.number,
-    body: [
-      "**Public issue:** " + publicIssue.url,
-      "**Reply to:** `" + report.email.replace(/`/g, "") + "`",
-      "**Host:** " + host,
-      "",
-      "<sub>The email is kept here so it never appears on the public issue.</sub>",
-    ].join("\n"),
-    labels: [FEEDBACK_LABEL, "contact"],
   };
 }
 
@@ -378,13 +338,8 @@ function newImageId() {
   return crypto.randomBytes(16).toString("hex");
 }
 
-function validImageId(id) {
-  return /^[0-9a-f]{32}$/.test(String(id || ""));
-}
-
 module.exports = {
   ENV,
-  DEFAULT_PUBLIC_REPO,
   TYPES,
   FEEDBACK_LABEL,
   MESSAGE_MAX,
@@ -392,11 +347,10 @@ module.exports = {
   IMAGE_MAX_BYTES,
   BODY_MAX_BYTES,
   RATE,
-  PUBLIC_IMAGE_STORE,
   RATE_STORE,
   FeedbackError,
   readConfig,
-  publicConfig,
+  pageConfig,
   allowedOrigin,
   hostKind,
   cleanText,
@@ -409,9 +363,7 @@ module.exports = {
   sniffImage,
   parseReport,
   buildIssue,
-  buildContactNote,
   ipHash,
   checkRate,
   newImageId,
-  validImageId,
 };

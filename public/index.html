@@ -370,18 +370,13 @@
       background: #30363d; color: #e8eaed; font-size: 13px; line-height: 18px; font-weight: 600;
     }
     #feedback #fb-email-row { margin-top: 8px; }
-    #feedback #fb-email-row[hidden] { display: none; }
     #feedback .fb-check { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: #c9d1d9; font-size: 12px; }
     #feedback .fb-check[hidden] { display: none; }
     #feedback .fb-hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
     #feedback .fb-note { margin: 8px 0 0; color: #8b949e; font-size: 11px; }
-    #feedback .fb-note.fb-public { color: #d29922; }
     #feedback .fb-error { margin: 6px 0 0; color: #f85149; font-size: 12px; }
     #feedback .fb-error[hidden] { display: none; }
     #feedback .fb-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 10px; }
-    #feedback .fb-mail { margin-right: auto; color: #8b949e; font-size: 11px; }
-    #feedback .fb-mail[hidden] { display: none; }
-    #feedback .fb-mail a, #feedback .fb-done a { color: #58a6ff; }
     #feedback button:disabled { opacity: 0.6; cursor: default; }
     #feedback .fb-done p { margin: 4px 0 12px; }
     #feedback .fb-done[hidden] { display: none; }
@@ -612,12 +607,10 @@
       <ul id="fb-shots" class="fb-shots" hidden></ul>
       <div id="fb-email-row"><input type="email" id="fb-email" maxlength="254" autocomplete="email" aria-label="Email (optional)" placeholder="Email for a reply (optional)" /></div>
       <label class="check fb-check"><input type="checkbox" id="fb-context" /> <span id="fb-context-label">Include browser info</span></label>
-      <label class="check fb-check" id="fb-public-row" hidden><input type="checkbox" id="fb-public" /> Post publicly on GitHub</label>
       <div class="fb-hp" aria-hidden="true"><label>Website <input type="text" id="fb-website" name="website" tabindex="-1" autocomplete="off" /></label></div>
-      <p id="fb-note" class="fb-note">Private: only the OpenClutter team sees this report and its screenshots.</p>
+      <p id="fb-note" class="fb-note">Your report and screenshots go privately to the OpenClutter team.</p>
       <p id="fb-error" class="fb-error" role="alert" hidden></p>
       <div class="fb-actions">
-        <span id="fb-mail" class="fb-mail" hidden>or email <a href="#"></a></span>
         <button type="submit" id="fb-send">Send</button>
       </div>
     </form>
