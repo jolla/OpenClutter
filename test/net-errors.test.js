@@ -150,6 +150,92 @@ describe("net errors: guardedFetch", () => {
   });
 });
 
+describe("net errors: API host fallback", () => {
+  function memStore() {
+    const m = new Map();
+    return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)) };
+  }
+  function closedOn(host, okRes) {
+    const calls = [];
+    const f = async (url) => {
+      calls.push(String(url));
+      if (String(url).includes(host)) throw new TypeError("Failed to fetch"); // net::ERR_CONNECTION_CLOSED
+      return okRes;
+    };
+    return { f, calls };
+  }
+  const PAGE = "https://dev.openclutter.com/";
+
+  it("uses same-origin only when no API host is set", async () => {
+    const ok = res(200);
+    const { f, calls } = closedOn("api.openclutter.com", ok);
+    const route = N.createApiRoute({ base: "", fetch: f, pageBase: PAGE });
+    assert.equal(await route.fetch("/api/clutter", {}, { step: "Export" }), ok);
+    assert.deepEqual(calls, ["/api/clutter"]);
+    assert.equal(route.url("/api/x"), "/api/x");
+  });
+
+  it("falls back to the page's own /api when the API host drops the connection, and remembers it", async () => {
+    const ok = res(200);
+    const { f, calls } = closedOn("api.openclutter.com", ok);
+    const storage = memStore();
+    let fell = 0;
+    const route = N.createApiRoute({ base: "https://api.openclutter.com/", fetch: f, pageBase: PAGE, storage, onFallback: () => fell++ });
+    assert.equal(route.url("/api/clutter"), "https://api.openclutter.com/api/clutter");
+    assert.equal(await route.fetch("/api/clutter", { method: "POST" }, { step: "Export" }), ok);
+    assert.deepEqual(calls, ["https://api.openclutter.com/api/clutter", "/api/clutter"]);
+    assert.equal(fell, 1);
+    assert.equal(route.sameOrigin, true);
+    // Status and download go straight to the page's host now.
+    await route.fetch("/api/export-status?job=1", {}, { step: "Export status" });
+    assert.equal(calls[calls.length - 1], "/api/export-status?job=1");
+    // A new page in the same session starts on the page's host.
+    const again = N.createApiRoute({ base: "https://api.openclutter.com", fetch: f, pageBase: PAGE, storage });
+    assert.equal(again.sameOrigin, true);
+  });
+
+  it("does not fall back on an HTTP answer from the API host", async () => {
+    const calls = [];
+    const f = async (url) => {
+      calls.push(url);
+      return res(500, "application/json");
+    };
+    const route = N.createApiRoute({ base: "https://api.openclutter.com", fetch: f, pageBase: PAGE });
+    const r = await route.fetch("/api/clutter", {}, { step: "Export" });
+    assert.equal(r.status, 500);
+    assert.equal(calls.length, 1);
+    assert.equal(route.sameOrigin, false);
+  });
+
+  it("names both hosts when the page's own host is blocked too", async () => {
+    const f = async () => {
+      throw new TypeError("Failed to fetch");
+    };
+    const route = N.createApiRoute({ base: "https://api.openclutter.com", fetch: f, pageBase: PAGE, navigator: { onLine: true } });
+    let err = null;
+    try {
+      await route.fetch("/api/clutter", {}, { step: "Export" });
+    } catch (e) {
+      err = e;
+    }
+    assert.ok(err && err.blocked && err.noRetry);
+    assert.match(err.message, /^Export could not reach api\.openclutter\.com or dev\.openclutter\.com\. A company firewall or proxy may be blocking it\. Try another network\.$/);
+  });
+
+  it("rethrows a user cancel without falling back", async () => {
+    const abort = new Error("aborted");
+    abort.name = "AbortError";
+    const calls = [];
+    const f = async (url) => {
+      calls.push(url);
+      throw abort;
+    };
+    const route = N.createApiRoute({ base: "https://api.openclutter.com", fetch: f, pageBase: PAGE });
+    await assert.rejects(route.fetch("/api/clutter", { signal: { reason: abort } }, { step: "Export" }), (e) => e === abort);
+    assert.equal(calls.length, 1);
+  });
+});
+
 describe("net errors: tile watch", () => {
   it("shows once after a batch of failed tiles, not per tile", () => {
     let shown = 0;
@@ -191,7 +277,11 @@ describe("net errors: page wiring", () => {
   it("sends every app request except the fire-and-forget cancel through guardedFetch", () => {
     const raw = app.match(/(^|[^.\w])fetch\(/g) || [];
     assert.equal(raw.length, 1);
-    assert.match(app, /fetch\("\/api\/export-cancel/);
+    assert.match(app, /fetch\(exportApi\.url\("\/api\/export-cancel/);
+    for (const p of ["/api/clutter", "/api/export-status", "/api/export-file"]) {
+      assert.equal(new RegExp('OpenClutterNet\\.guardedFetch\\(\\s*"' + p.replace(/\//g, "\\/")).test(app), false, p + " goes through exportApi");
+    }
+    assert.match(app, /addEventListener\("unhandledrejection"/);
     for (const step of ["Search", "Export", "Export status", "Download", "Terrain", "Tree canopy data"]) {
       assert.match(app, new RegExp('step: "' + step + '"'), step);
     }

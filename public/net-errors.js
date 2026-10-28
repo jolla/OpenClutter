@@ -152,6 +152,66 @@
     return res;
   }
 
+  const FALLBACK_KEY = "openclutter.apiSameOrigin";
+
+  /**
+   * Export calls with an optional API host in front of the page's own /api.
+   * opts.base is that host ("https://api.example.com"), or "" for same-origin
+   * only. A connection-level failure on the base host (no HTTP answer: reset,
+   * closed, DNS, timeout) retries the same path on the page's own host and
+   * remembers that for the session. An HTTP answer from the base host,
+   * even an error, is the answer. If the page's host fails too, the message
+   * names both hosts.
+   */
+  function createApiRoute(opts) {
+    const o = opts || {};
+    const base = String(o.base || "").replace(/\/+$/, "");
+    const storage = o.storage || null;
+    const pageBase = o.pageBase || (typeof location !== "undefined" ? location.href : "http://localhost/");
+    let sameOrigin = !base;
+    if (!sameOrigin && storage) {
+      try {
+        sameOrigin = storage.getItem(FALLBACK_KEY) === "1";
+      } catch (err) {}
+    }
+    function remember() {
+      sameOrigin = true;
+      if (!storage) return;
+      try {
+        storage.setItem(FALLBACK_KEY, "1");
+      } catch (err) {}
+    }
+    async function routeFetch(path, init, fopts) {
+      const f = Object.assign({}, fopts || {}, { fetch: o.fetch, base: pageBase, navigator: o.navigator });
+      if (sameOrigin) return guardedFetch(path, init, f);
+      try {
+        return await guardedFetch(base + path, init, f);
+      } catch (err) {
+        if (!err || !err.blocked || (err.kind !== "network" && err.kind !== "timeout")) throw err;
+        remember();
+        if (typeof o.onFallback === "function") o.onFallback(err);
+        try {
+          return await guardedFetch(path, init, f);
+        } catch (err2) {
+          if (err2 && err2.blocked && (err2.kind === "network" || err2.kind === "timeout")) {
+            const own = hostOf(path, pageBase);
+            throw blockedError(f.step, err.host + " or " + own, err2.kind, err2);
+          }
+          throw err2;
+        }
+      }
+    }
+    return {
+      fetch: routeFetch,
+      get sameOrigin() {
+        return sameOrigin;
+      },
+      url(path) {
+        return sameOrigin ? path : base + path;
+      },
+    };
+  }
+
   /**
    * Watches a tile layer's tileerror and tileload events. After a batch with
    * errors and no loads (ignoring zooms listed in skip), onBlocked runs once.
@@ -202,6 +262,7 @@
     unexpectedReplyMessage,
     blockedError,
     guardedFetch,
+    createApiRoute,
     createTileWatch,
   };
 });

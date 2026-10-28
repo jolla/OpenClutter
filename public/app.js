@@ -226,6 +226,30 @@ function readUrlState() {
   }
 }
 
+// Export, status, download and cancel calls. Same-origin /api unless a build
+// sets window.OPENCLUTTER_API_BASE; a connection that a firewall drops on that
+// host falls back to this page's own /api for the rest of the session.
+const exportApi = OpenClutterNet.createApiRoute({
+  base: typeof window.OPENCLUTTER_API_BASE === "string" ? window.OPENCLUTTER_API_BASE : "",
+  storage: (() => {
+    try {
+      return window.sessionStorage;
+    } catch (err) {
+      return null;
+    }
+  })(),
+});
+
+// Last guard: a network failure that escaped every handler still says why.
+window.addEventListener("unhandledrejection", (ev) => {
+  const err = ev && ev.reason;
+  if (!err || !(err.blocked || OpenClutterNet.isNetworkError(err))) return;
+  ev.preventDefault();
+  if (!exportLocked()) {
+    setStatus(err.blocked ? err.message : OpenClutterNet.blockedMessage("A request", location.host, "network"), true);
+  }
+});
+
 // The address bar follows the map and the drawn box, for bookmarks and shared
 // links. replaceState: panning does not fill the Back history.
 let urlStateReady = false;
@@ -1520,7 +1544,7 @@ async function fetchTerrainPaste() {
   // terrain does not wait on a second click.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const r = await OpenClutterNet.guardedFetch(
+      const r = await exportApi.fetch(
         "/api/clutter",
         { method: "POST", headers: { "content-type": "application/json" }, body },
         { step: "Terrain" }
@@ -1872,7 +1896,7 @@ function serverCancelWanted() {
 function stopServerExport(jobId) {
   if (!jobId || !serverCancelWanted()) return;
   try {
-    fetch("/api/export-cancel?job=" + encodeURIComponent(jobId), {
+    fetch(exportApi.url("/api/export-cancel?job=" + encodeURIComponent(jobId)), {
       method: "POST",
       cache: "no-store",
       keepalive: true,
@@ -1885,7 +1909,7 @@ function stopServerExport(jobId) {
 async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, includeTerrain) {
   const foliage = includeFoliage === true;
   const terrain = includeTerrain !== false;
-  const r = await OpenClutterNet.guardedFetch("/api/clutter", {
+  const r = await exportApi.fetch("/api/clutter", {
     method: "POST",
     signal: exportSignal(),
     headers: { "content-type": "application/json" },
@@ -1931,7 +1955,7 @@ async function pollExport(jobId) {
   while (Date.now() - started < ceiling) {
     let data = null;
     try {
-      const r = await OpenClutterNet.guardedFetch(
+      const r = await exportApi.fetch(
         "/api/export-status?job=" + encodeURIComponent(jobId),
         { cache: "no-store", signal: exportSignal() },
         { step: "Export status" }
@@ -1976,7 +2000,7 @@ async function downloadJobZip(jobId, filename) {
   let lastStatus = 0;
   let lastData = {};
   for (let attempt = 0; attempt < 4; attempt++) {
-    const r = await OpenClutterNet.guardedFetch(
+    const r = await exportApi.fetch(
       "/api/export-file?job=" + encodeURIComponent(jobId),
       { cache: "no-store", signal: exportSignal() },
       { step: "Download" }
@@ -2006,7 +2030,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
     terrain && qualityPage() && terrainPaste && Array.isArray(terrainPaste.liftSamples)
       ? terrainPaste.liftSamples
       : undefined;
-  const r = await OpenClutterNet.guardedFetch("/api/clutter", {
+  const r = await exportApi.fetch("/api/clutter", {
     method: "POST",
     signal: exportSignal(),
     headers: { "content-type": "application/json" },
@@ -2229,7 +2253,7 @@ document.getElementById("export").onclick = async () => {
   }
   let data = null;
   try {
-    const r = await OpenClutterNet.guardedFetch(
+    const r = await exportApi.fetch(
       "/api/export-status?job=" + encodeURIComponent(saved.jobId),
       { cache: "no-store" },
       { step: "Last export" }
