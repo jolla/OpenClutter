@@ -4,6 +4,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## Production releases
 
+- **v1.2.50** (Oct 28, 2026) production fix: only the 1.2.50 light pole fix below on top of v1.2.49.
 - **v1.2.49** (Oct 27, 2026) production fix: only the 1.2.49 Cancel fix below on top of v1.2.47.
 - **v1.2.47** (Oct 27, 2026) production fix: only the 1.2.47 terrain change below on top of v1.2.43. The /dev rules from 1.2.44 to 1.2.46 stay on /dev.
 - **v1.2.43** (Oct 26, 2026) production fix: Overture buildings read release 2026-10-21.0 before 2026-09-23.1 is removed. Production also takes the /dev 1.2.42 tree-crown change, which stays gated to /dev hosts, so production exports change only where Overture updated a footprint.
@@ -19,6 +20,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.2
 
+- **1.2.50** Bug fix on every host: light poles sit on sloped terrain. A pole is one point, and the terrain seat needed at least two, so on a hill (20 m or more of relief) every pole stayed on the floor and was buried in the Copy terrain floors. Each pole now takes the ground under its own 0.3 m width as bottom_height, the same way buildings, RVs and fences are seated. Flat sites are unchanged.
 - **1.2.49** Bug fix on every host: Cancel frees the export machine. When the page cancels an export, the worker process now exits about half a second after it learns of the cancel, even if the connection that started the job was already closed, and it turns away new exports until it has stopped, so a cancelled job can no longer run on to Packing zip beside the next export. Exports that are not cancelled are unchanged.
 - **1.2.47** Bug fix on every host: Copy terrain raised and sloped floors use 20 dB/m at 5 GHz as a solid volume (slabOnly false), so a path through ground is attenuated. They were 0 dB/m before.
 - **1.2.43** Overture buildings read release 2026-10-21.0 (the row-group index is rebuilt from that release). Overture deletes old releases, and when 2026-09-23.1 goes away every Overture read would be a 404 and Overture-only roofs such as the Las Vegas Sphere would leave every export. This is a fix and runs on every host. Building outlines follow the new release, so a few footprints can differ where Overture updated its data.
