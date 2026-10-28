@@ -141,6 +141,31 @@ describe("outdoor clutter materials", () => {
     assert.equal(seated.items[0].material.top_height, 36.3);
   });
 
+  it("seats a one-point light pole on the slope instead of burying it in the hill", () => {
+    const f = frame();
+    const pt = [f.west + (f.east - f.west) * 0.5, f.south + (f.north - f.south) * 0.5];
+    let sampled = null;
+    const seated = planOutdoor({
+      features: [{ kind: "pole", coords: [pt], heightM: 10.2, explicitHeight: false }],
+      frame: f,
+      slopeTop: {
+        seat: (ring) => {
+          sampled = ring;
+          return 17.4;
+        },
+      },
+    });
+    assert.equal(seated.items.length, 1);
+    const mat = seated.items[0].material;
+    assert.equal(mat.bottom_height, 17.4);
+    assert.equal(mat.top_height, 27.6);
+    assert.ok(sampled && sampled.length >= 3, "seat sampled a ring around the pole");
+    for (const p of sampled) {
+      assert.ok(Math.abs(p[0] - pt[0]) < 1e-5 && Math.abs(p[1] - pt[1]) < 1e-5, "sample stays at the pole");
+    }
+    assert.deepEqual(canonicalAreaMaterial(mat), mat);
+  });
+
   it("seats water 0.1 m above the terrain and does not emit a negative height", () => {
     const f = frame();
     const ring = [

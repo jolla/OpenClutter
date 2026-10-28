@@ -3332,6 +3332,14 @@ function floorExtentUnderRing(terrain, ring) {
     const mid = [(+ring[0][0] + +ring[1][0]) / 2, (+ring[0][1] + +ring[1][1]) / 2];
     ring = [ring[0], mid, ring[1], ring[0]];
   }
+  // A light pole is one point: sample the ground under its 0.3 m width.
+  if (ring && ring.length === 1 && ring[0]) {
+    const lon = +ring[0][0];
+    const lat = +ring[0][1];
+    const dLat = 0.15 / 110540;
+    const dLon = 0.15 / (111320 * Math.max(0.01, Math.cos((lat * Math.PI) / 180)));
+    ring = [[lon + dLon, lat], [lon - dLon / 2, lat + dLat], [lon - dLon / 2, lat - dLat], [lon + dLon, lat]];
+  }
   if (!terrain || !ring || ring.length < 3) return { min: 0, max: 0 };
   const frame = terrain.frame;
   const xy = frame ? ringToClipboard(ring, frame) : [];

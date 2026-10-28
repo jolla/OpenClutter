@@ -2397,8 +2397,28 @@ function thicknessOf(material) {
   return t > 2 ? Math.round(t * 10) / 10 : 0;
 }
 
+/** A small closed triangle around one point, about the pole's own width. */
+function pointSampleRing(pt, radiusM) {
+  const lon = +pt[0];
+  const lat = +pt[1];
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+  const dLat = radiusM / 110540;
+  const dLon = radiusM / (111320 * Math.max(0.01, Math.cos((lat * Math.PI) / 180)));
+  const ring = [];
+  for (let i = 0; i < 3; i++) {
+    const a = (2 * Math.PI * i) / 3;
+    ring.push([lon + dLon * Math.cos(a), lat + dLat * Math.sin(a)]);
+  }
+  ring.push(ring[0]);
+  return ring;
+}
+
 function seatBottom(slopeTop, ring) {
-  if (!slopeTop || typeof slopeTop.seat !== "function" || !ring || ring.length < 2) return 0;
+  if (!slopeTop || typeof slopeTop.seat !== "function" || !ring || ring.length < 1) return 0;
+  // A light pole is one point. The seat used to need two, so every pole
+  // stayed on the floor and was buried wherever the hill rose above it.
+  if (ring.length === 1) ring = pointSampleRing(ring[0], POLE_DIAMETER_M / 2);
+  if (!ring) return 0;
   let sample = ring;
   if (ring.length < 3 && ring[0] && ring[1]) {
     const mid = [(+ring[0][0] + +ring[1][0]) / 2, (+ring[0][1] + +ring[1][1]) / 2];

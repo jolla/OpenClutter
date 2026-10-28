@@ -3754,6 +3754,36 @@ describe("terrain paste stays the size Hamina accepted", () => {
     }
   });
 
+  it("seats a one-point light pole on the pasted ramp", () => {
+    const frame = geoFrame({ west: -71.55, south: 44.46, east: -71.54, north: 44.47, name: "Pole hill" });
+    const a = [-71.5465, 44.4645];
+    const ca = llToClipboard(a[0], a[1], frame);
+    const pad = 40;
+    const terrain = {
+      frame,
+      clipboard: {
+        slopedFloors: [
+          {
+            area: {
+              type: "Polygon",
+              coordinates: [[
+                [ca[0] - pad, ca[1] - pad, 30],
+                [ca[0] + pad, ca[1] - pad, 30],
+                [ca[0] + pad, ca[1] + pad, 38],
+                [ca[0] - pad, ca[1] + pad, 38],
+                [ca[0] - pad, ca[1] - pad, 30],
+              ]],
+            },
+          },
+        ],
+        raisedFloorZones: [],
+      },
+    };
+    const seat = slopeSeatUnderRing(terrain, [a]);
+    // The ramp is 34 m under the pole; the seat is within 0.1 m of it.
+    assert.ok(seat >= 33.8 && seat <= 34.05, "seat " + seat);
+  });
+
   it("seats a two-point fence line on the pasted ramp", () => {
     const frame = geoFrame({ west: -71.55, south: 44.46, east: -71.54, north: 44.47, name: "Fence hill" });
     const a = [-71.547, 44.464];
