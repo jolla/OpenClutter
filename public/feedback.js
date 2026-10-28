@@ -76,6 +76,7 @@
   var mapBtn = $("fb-mapshot");
   var sendBtn = $("fb-send");
   var errEl = $("fb-error");
+  var blockedEl = $("fb-blocked");
   var doneEl = $("fb-done");
   var hp = $("fb-website");
 
@@ -319,6 +320,32 @@
     return SEND_FAILED;
   }
 
+  // Some proxies pass GETs and swap every POST for a block page, so the form
+  // sends a tiny POST ping when it opens and says so before anyone types.
+  // One ping at a time; a good answer is reused for a minute.
+  var PING_FRESH_MS = 60000;
+  var ping = { at: 0, result: null, pending: null };
+
+  function checkPost() {
+    var net = window.OpenClutterNet;
+    if (!net || !net.pingPost) return Promise.resolve({ ok: true });
+    if (ping.pending) return ping.pending;
+    if (ping.result && ping.result.ok && Date.now() - ping.at < PING_FRESH_MS) return Promise.resolve(ping.result);
+    ping.pending = net.pingPost("/api/feedback", "Feedback").then(function (res) {
+      ping.at = Date.now();
+      ping.result = res;
+      ping.pending = null;
+      return res;
+    });
+    return ping.pending;
+  }
+
+  function showBlocked(text) {
+    if (!blockedEl) return;
+    blockedEl.textContent = text ? text + " Your text stays here so you can copy it." : "";
+    blockedEl.hidden = !text;
+  }
+
   async function loadConfig() {
     if (config && config.configured) return config;
     try {
@@ -349,7 +376,14 @@
     syncShots();
     dlg.showModal();
     msg.focus();
+    var pinged = checkPost();
     var cfg = await loadConfig();
+    var res = await pinged;
+    showBlocked(res && !res.ok ? res.message : "");
+    if (res && !res.ok) {
+      sendBtn.disabled = true;
+      return;
+    }
     if (!cfg.configured) {
       showError(cfg.blocked || "Feedback is not set up yet.");
       sendBtn.disabled = true;

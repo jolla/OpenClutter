@@ -3237,11 +3237,28 @@ exports.chmJoinWait = chmJoinWait;
 exports.setFetchWorldCoverForTests = setFetchWorldCoverForTests;
 exports.setSourceCapsForTests = setSourceCapsForTests;
 
+function isPingRequest(event) {
+  if (!event || event.httpMethod !== "POST") return false;
+  const raw = event.isBase64Encoded ? Buffer.from(event.body || "", "base64").toString("utf8") : String(event.body || "");
+  if (raw.length > 64) return false;
+  try {
+    const b = JSON.parse(raw);
+    return !!b && typeof b === "object" && !Array.isArray(b) && b.ping === true && Object.keys(b).length === 1;
+  } catch {
+    return false;
+  }
+}
+
 exports.handler = async (event, context) => {
   // An image or footprint socket that is still open must not hold the zip.
   // The gateway turns that silence into an empty 504, and the page has no
   // JSON error to show.
   if (context) context.callbackWaitsForEmptyEventLoop = false;
+  // {"ping":true} from the page after a draw: proves a POST reaches the export
+  // function through the user's network. No export work, no outside calls.
+  if (isPingRequest(event)) {
+    return json(200, { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type", "cache-control": "no-store" }, { ok: true, ping: true });
+  }
   try {
     return await handleClutter(event);
   } catch (e) {
@@ -3255,6 +3272,7 @@ exports.handler = async (event, context) => {
 };
 
 exports.UA = UA;
+exports.isPingRequest = isPingRequest;
 exports.imageryAttemptMs = imageryAttemptMs;
 exports.IMAGERY_ATTEMPT_MS = IMAGERY_ATTEMPT_MS;
 exports.IMAGERY_ATTEMPT_MS_DEV = IMAGERY_ATTEMPT_MS_DEV;

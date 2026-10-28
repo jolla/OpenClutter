@@ -3,6 +3,8 @@
 /**
  * GET  /api/feedback  whether the form is set up (no token, no repo name).
  * POST /api/feedback  one report from the page's Feedback form.
+ * POST /api/feedback  {"ping":true}: a reachability check when the form opens.
+ *                     Answers {ok, ping, configured}; no issue, no rate count.
  *
  * Reports are private: each one becomes an issue in FEEDBACK_PRIVATE_REPO,
  * its screenshots are stored as files in that private repo, and an email the
@@ -115,13 +117,15 @@ exports.handler = async (event) => {
   if (Buffer.byteLength(raw, "utf8") > fb.BODY_MAX_BYTES) {
     return json(413, { error: "That report is too large. Try fewer or smaller screenshots.", code: "too_big" }, okOrigin);
   }
-  if (!cfg) return json(503, { error: "Feedback is not configured yet.", code: "not_configured" }, okOrigin);
   let body;
   try {
     body = JSON.parse(raw);
   } catch {
     return json(400, { error: "The report could not be read.", code: "bad_request" }, okOrigin);
   }
+  // Answered before the config, rate and spam checks: it only proves a POST gets through.
+  if (fb.isPing(body)) return json(200, { ok: true, ping: true, configured: !!cfg }, okOrigin);
+  if (!cfg) return json(503, { error: "Feedback is not configured yet.", code: "not_configured" }, okOrigin);
   bindBlobs(event, h);
   const now = nowOverride == null ? Date.now() : nowOverride;
   try {

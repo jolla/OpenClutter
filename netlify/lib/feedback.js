@@ -234,6 +234,14 @@ function decodeImage(item, i) {
  * Checks the parsed body. Returns { spam: true } for the honeypot or a form
  * sent too fast, so the caller can answer like a success without an issue.
  */
+/**
+ * A reachability ping from the page: exactly {"ping": true}. It creates no
+ * issue, skips the honeypot, fill-time and rate checks, and touches no store.
+ */
+function isPing(body) {
+  return !!body && typeof body === "object" && !Array.isArray(body) && body.ping === true && Object.keys(body).length === 1;
+}
+
 function parseReport(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) fail(400, "bad_request", "The report could not be read.");
   if (String(body.website || "").trim()) return { spam: true };
@@ -361,6 +369,7 @@ module.exports = {
   cleanBounds,
   browserSummary,
   sniffImage,
+  isPing,
   parseReport,
   buildIssue,
   ipHash,

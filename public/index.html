@@ -400,6 +400,7 @@
     #feedback .fb-note { margin: 8px 0 0; color: #8b949e; font-size: 11px; }
     #feedback .fb-error { margin: 6px 0 0; color: #f85149; font-size: 12px; }
     #feedback .fb-error[hidden] { display: none; }
+    #feedback .fb-blocked { margin: 0 0 8px; padding: 6px 8px; border: 1px solid #f8514966; border-radius: 6px; background: #f851491a; }
     #feedback .fb-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 10px; }
     #feedback button:disabled { opacity: 0.6; cursor: default; }
     #feedback #fb-send:disabled { background: #30363d; color: #8b949e; opacity: 1; cursor: not-allowed; }
@@ -619,6 +620,7 @@
         <h2 id="fb-title">Feedback</h2>
         <button type="button" id="fb-close" class="fb-close" aria-label="Close">&times;</button>
       </div>
+      <p id="fb-blocked" class="fb-error fb-blocked" role="alert" hidden></p>
       <div class="fb-types" role="radiogroup" aria-label="Type">
         <label><input type="radio" name="fb-type" value="bug" checked /><span>Bug</span></label>
         <label><input type="radio" name="fb-type" value="suggestion" /><span>Suggestion</span></label>

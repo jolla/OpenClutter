@@ -152,6 +152,47 @@
     return res;
   }
 
+  /**
+   * POSTs {"ping":true} to path and says whether a POST gets through. Some
+   * proxies pass GETs and swap every POST for a block page, so a GET check
+   * is not enough. Resolves { ok: true } or { ok: false, message }; never
+   * throws. An answer that is JSON but not ok (an old server, a 500) counts
+   * as reachable: only a block, a dropped connection or a non-JSON reply fail.
+   * opts.fetchImpl (a guardedFetch-like function) is for tests.
+   */
+  async function pingPost(path, step, opts) {
+    const o = opts || {};
+    const doFetch = o.fetchImpl || ((url, init, f) => guardedFetch(url, init, f));
+    const base = o.base || (typeof location !== "undefined" ? location.href : "http://localhost/");
+    let r;
+    try {
+      r = await doFetch(
+        path,
+        {
+          method: "POST",
+          cache: "no-store",
+          headers: { "content-type": "application/json" },
+          body: '{"ping":true}',
+          signal: typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(o.timeoutMs || 8000) : undefined,
+        },
+        { step, fetch: o.fetch, base, navigator: o.navigator }
+      );
+    } catch (err) {
+      if (err && err.blocked) return { ok: false, message: err.message, kind: err.kind };
+      return { ok: false, message: blockedMessage(step, hostOf(path, base), "network"), kind: "network" };
+    }
+    let data = null;
+    try {
+      data = await r.json();
+    } catch (err) {
+      data = null;
+    }
+    if (!data || typeof data !== "object") {
+      return { ok: false, message: unexpectedReplyMessage(step, hostOf(path, base), r.status), kind: "unexpected" };
+    }
+    return { ok: true, configured: data.configured };
+  }
+
   const FALLBACK_KEY = "openclutter.apiSameOrigin";
 
   /**
@@ -263,6 +304,7 @@
     blockedError,
     guardedFetch,
     createApiRoute,
+    pingPost,
     createTileWatch,
   };
 });

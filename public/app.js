@@ -687,6 +687,33 @@ function applyExtent(bounds, label) {
   if (exportBtn.disabled) setStatus(areaLimitMessage() || "Area is outside the export size limits.", true);
   else setStatus("Ready to export.");
   writeUrlState();
+  if (!exportBtn.disabled) checkExportPost();
+}
+
+// Some proxies pass GETs and swap POSTs for a block page, so a finished draw
+// sends one tiny {"ping":true} POST to the export endpoint. A block shows a
+// one-line heads-up under Ready to export; no export starts. A good answer is
+// kept for the page; a blocked one is checked again on the next draw.
+let exportPostOk = false;
+let exportPostPending = null;
+function checkExportPost() {
+  if (exportPostOk || exportPostPending) return;
+  const box = bbox;
+  exportPostPending = OpenClutterNet.pingPost("/api/clutter", "Export", {
+    fetchImpl: (path, init, f) => exportApi.fetch(path, init, f),
+  })
+    .then((res) => {
+      if (res.ok) {
+        exportPostOk = true;
+        return;
+      }
+      const line = document.getElementById("status-line");
+      const ready = line && line.textContent === "Ready to export.";
+      if (ready && bbox === box && !exportLocked()) setStatus("Heads-up: " + res.message, true);
+    })
+    .finally(() => {
+      exportPostPending = null;
+    });
 }
 
 /** The idle line for the current draw: blank, the size limit, or Ready to export. */
