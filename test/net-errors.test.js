@@ -191,6 +191,14 @@ describe("net errors: page wiring", () => {
     }
   });
 
+  it("sends both feedback requests through guardedFetch", () => {
+    const fb = fs.readFileSync(path.join(root, "public/feedback.js"), "utf8");
+    assert.match(fb, /net\.guardedFetch\("\/api\/feedback", init, \{ step: "Feedback" \}\)/);
+    assert.equal((fb.match(/feedbackFetch\(\{/g) || []).length, 2);
+    assert.equal(/fetch\("\/api\/feedback", \{/.test(fb), false);
+    assert.ok(html.indexOf('src="/net-errors.js"') < html.indexOf('src="/feedback.js"'));
+  });
+
   it("watches imagery tile errors once", () => {
     assert.match(app, /createTileWatch\(/);
     assert.match(app, /imageryTiles\.on\("tileerror", \(ev\) => tileWatch\.error/);

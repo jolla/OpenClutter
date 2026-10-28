@@ -302,13 +302,20 @@
     }
   }
 
+  // A firewall or proxy that blocks /api/feedback gets the same plain message as the rest of the page.
+  function feedbackFetch(init) {
+    var net = window.OpenClutterNet;
+    if (net && net.guardedFetch) return net.guardedFetch("/api/feedback", init, { step: "Feedback" });
+    return fetch("/api/feedback", init);
+  }
+
   async function loadConfig() {
     if (config && config.configured) return config;
     try {
-      var r = await fetch("/api/feedback", { cache: "no-store" });
+      var r = await feedbackFetch({ cache: "no-store" });
       config = r.ok ? await r.json() : { configured: false };
     } catch (e) {
-      config = { configured: false };
+      config = { configured: false, blocked: e && e.blocked ? e.message : "" };
     }
     return config;
   }
@@ -334,11 +341,11 @@
     msg.focus();
     var cfg = await loadConfig();
     if (!cfg.configured) {
-      showError("Feedback is not set up yet.");
+      showError(cfg.blocked || "Feedback is not set up yet.");
       sendBtn.disabled = true;
     } else if (!sending) {
       sendBtn.disabled = false;
-      if (/not set up/.test(errEl.textContent)) showError("");
+      if (/not set up|^Feedback (was|could|timed)/.test(errEl.textContent)) showError("");
     }
   }
 
@@ -374,7 +381,7 @@
     var label = sendBtn.textContent;
     sendBtn.textContent = "Sending...";
     try {
-      var r = await fetch("/api/feedback", {
+      var r = await feedbackFetch({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
