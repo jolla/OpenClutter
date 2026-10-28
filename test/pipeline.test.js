@@ -1336,7 +1336,8 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.equal(/Ski hills only/i.test(html), false);
     assert.match(html, /placeholder="Search a place or address"/);
     assert.match(html, /enterkeyhint="search"/);
-    assert.equal(/type="submit"|>Go</.test(html), false);
+    // The search box has no Go button; the Feedback dialog's Send is the only submit.
+    assert.equal(/type="submit"|>Go</.test(html.replace(/<dialog id="feedback"[\s\S]*?<\/dialog>/, "")), false);
     assert.match(html, /id="map-credit"/);
     assert.match(html, /class="map-credit"/);
     const creditAt = html.indexOf('id="map-credit"');
@@ -1481,7 +1482,8 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.equal(/Right-click finishes/.test(html + app), false);
     assert.match(html, /src="\/site-draw\.js"/);
     assert.equal(/leaflet-draw/.test(html), false);
-    assert.equal(/<dialog/i.test(html), false);
+    // No draw-plugin dialogs; the Feedback form is the one dialog.
+    assert.equal(/<dialog/i.test(html.replace(/<dialog id="feedback"[\s\S]*?<\/dialog>/, "")), false);
     // Map quality, plus the dev-only aerial Source picker (hidden off dev).
     assert.equal((html.match(/<select/gi) || []).length, 2);
     assert.match(html, /id="map-source-row"[^>]*hidden/);

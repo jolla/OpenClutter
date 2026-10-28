@@ -317,6 +317,18 @@ let exportEpoch = 0;
 let settingsEpoch = 0;
 let exportSettingsEpoch = 0;
 
+// The Feedback form (feedback.js) reads the map for "Attach map view" and the
+// draw bounds when the reporter opts in. Nothing is sent unless they press Send.
+window.OpenClutterFeedbackHooks = {
+  map: () => map,
+  bounds: () => (bbox ? { west: bbox.west, south: bbox.south, east: bbox.east, north: bbox.north } : null),
+};
+
+function feedbackOpen() {
+  const dlg = document.getElementById("feedback");
+  return !!(dlg && dlg.open);
+}
+
 function chipBbox(bounds) {
   return {
     west: bounds.getWest(),
@@ -1047,6 +1059,8 @@ mapEl.addEventListener(
 );
 
 window.addEventListener("keydown", (ev) => {
+  // The Feedback dialog owns the keyboard while it is open (Space, arrows, Escape).
+  if (feedbackOpen()) return;
   if (ev.code === "Space" && !typingTarget(ev.target)) {
     releasePanelFocus();
     ev.preventDefault();

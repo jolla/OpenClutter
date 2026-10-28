@@ -332,9 +332,11 @@ describe("Copy terrain after a background result", () => {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     assert.equal(/id="copy-terrain"/.test(html + app), false);
     // Export is the only action button; the map-corner version link (What's new, v1.1.182) and the Lidar heights info tip (1.2.35) are the others.
-    const buttonIds = [...html.matchAll(/<button\b[^>]*\bid="([^"]+)"/gi)].map((m) => m[1]).sort();
-    assert.equal((html.match(/<button/gi) || []).length, buttonIds.length);
-    assert.deepEqual(buttonIds, ["app-version", "export", "lidar-tip-btn"]);
+    // The Feedback link sits by the version; its dialog has its own buttons (feedback.test.js).
+    const page = html.replace(/<dialog id="feedback"[\s\S]*?<\/dialog>/, "");
+    const buttonIds = [...page.matchAll(/<button\b[^>]*\bid="([^"]+)"/gi)].map((m) => m[1]).sort();
+    assert.equal((page.match(/<button/gi) || []).length, buttonIds.length);
+    assert.deepEqual(buttonIds, ["app-version", "export", "feedback-link", "lidar-tip-btn"]);
     const drag = app.slice(app.indexOf("function showDragPreview"), app.indexOf("function showVertexPreview"));
     const vertex = app.slice(app.indexOf("function showVertexPreview"), app.indexOf("function handleDraw"));
     assert.match(drag, /noteDrawInProgress\(\)/);
