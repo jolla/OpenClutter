@@ -210,7 +210,46 @@ const mapZoom = qualityPage() ? ESRI_TILE_MAX_ZOOM : 18;
 // No +/- zoom buttons: the panel covers Leaflet's top-left corner, and the
 // hidden white buttons peeked out past its rounded corner. Wheel, pinch,
 // keys and double-click still zoom.
-const map = L.map("map", { maxZoom: mapZoom, zoomControl: false }).setView([36.128, -115.16], 16);
+const map = L.map("map", { maxZoom: mapZoom, zoomControl: false });
+// A shared or bookmarked link (#map=zoom/lat/lon&box=s,w,n,e) opens on that view.
+// The box itself is restored once drawing is set up, near the end of this file.
+const urlStart = readUrlState();
+if (urlStart.view) map.setView([urlStart.view.lat, urlStart.view.lon], urlStart.view.zoom);
+else if (urlStart.box) map.fitBounds(L.latLngBounds([urlStart.box.south, urlStart.box.west], [urlStart.box.north, urlStart.box.east]));
+else map.setView([36.128, -115.16], 16);
+
+function readUrlState() {
+  try {
+    return OpenClutterUrlState.parse(location.hash, { maxZoom: mapZoom });
+  } catch (err) {
+    return { view: null, box: null };
+  }
+}
+
+// The address bar follows the map and the drawn box, for bookmarks and shared
+// links. replaceState: panning does not fill the Back history.
+let urlStateReady = false;
+let urlHashWritten = location.hash;
+const pushUrlState = OpenClutterUrlState.debounce(function () {
+  if (!urlStateReady) return;
+  const c = map.getCenter();
+  const hash = OpenClutterUrlState.format(location.hash, {
+    view: { zoom: map.getZoom(), lat: c.lat, lon: c.lng },
+    box: bbox,
+  });
+  if (hash === location.hash) return;
+  urlHashWritten = hash;
+  try {
+    history.replaceState(history.state, "", location.pathname + location.search + hash);
+  } catch (err) {
+    /* A sandboxed frame can refuse; the map still works. */
+  }
+}, 300);
+function writeUrlState() {
+  pushUrlState();
+}
+map.on("moveend", writeUrlState);
+
 // CARTO's keyless dark tiles now paint "API KEY REQUIRED" through the aerial.
 // The draw sits on World Imagery. The page background shows where a tile misses.
 const imageryTiles = L.tileLayer(
@@ -267,6 +306,23 @@ function creditForExport(stats) {
   if (sel) sel.addEventListener("change", creditForPick);
   creditForPick();
 })();
+// A firewall that blocks Esri tiles leaves a blank map. Say so once, not per tile.
+const ESRI_TILE_HOST = "server.arcgisonline.com";
+const MAP_TILES_BLOCKED = OpenClutterNet.blockedMessage("Map imagery", ESRI_TILE_HOST, "network");
+const tileWatch = OpenClutterNet.createTileWatch({
+  // On the quality map a missing deep level is normal; the native zoom steps down.
+  skipZoom: (z) => qualityPage() && typeof z === "number" && z > 19,
+  onBlocked: () => {
+    if (!exportLocked()) setStatus(MAP_TILES_BLOCKED, true);
+  },
+  onRecovered: () => {
+    const line = document.getElementById("status-line");
+    if (line && line.textContent === MAP_TILES_BLOCKED && !exportLocked()) showIdleStatus();
+  },
+});
+imageryTiles.on("loading", () => tileWatch.batch());
+imageryTiles.on("tileload", () => tileWatch.load());
+imageryTiles.on("tileerror", (ev) => tileWatch.error(ev && ev.coords && ev.coords.z));
 if (qualityPage()) {
   imageryTiles.on("tileerror", function (ev) {
     const z = ev.coords && ev.coords.z;
@@ -606,6 +662,14 @@ function applyExtent(bounds, label) {
   syncDrawHint();
   if (exportBtn.disabled) setStatus(areaLimitMessage() || "Area is outside the export size limits.", true);
   else setStatus("Ready to export.");
+  writeUrlState();
+}
+
+/** The idle line for the current draw: blank, the size limit, or Ready to export. */
+function showIdleStatus() {
+  if (!bbox) setStatus("");
+  else if (exportBtn.disabled) setStatus(areaLimitMessage() || "Area is outside the export size limits.", true);
+  else setStatus("Ready to export.");
 }
 
 function clearFinishedShape() {
@@ -621,6 +685,7 @@ function clearFinishedShape() {
   syncExportReady();
   syncDrawHint();
   if (!(drawSession.phase === "polygon" && drawSession.vertices.length)) setStatus("");
+  writeUrlState();
 }
 
 function commitBox(start, end) {
@@ -1119,6 +1184,7 @@ document.addEventListener("visibilitychange", () => {
 
 map.on("zoomend moveend", refreshVertexPixels);
 
+
 enterDrawMode();
 
 const searchInput = document.getElementById("q");
@@ -1174,14 +1240,15 @@ searchInput.addEventListener("input", () => {
   if (q.length < 2) return closeSuggest();
   suggestTimer = setTimeout(async () => {
     try {
-      const r = await fetch("/api/suggest?q=" + encodeURIComponent(q) + viewParams());
+      const r = await OpenClutterNet.guardedFetch("/api/suggest?q=" + encodeURIComponent(q) + viewParams(), undefined, { step: "Search" });
       const list = r.ok ? await r.json() : [];
       if (seq !== suggestSeq) return;
       suggestItems = Array.isArray(list) ? list : [];
       suggestActive = -1;
       renderSuggest();
-    } catch {
-      // Enter still searches.
+    } catch (err) {
+      // Enter still searches. A blocked API says so once, here, while typing.
+      if (err && err.blocked && seq === suggestSeq && !exportLocked()) setStatus(err.message, true);
     }
   }, 200);
 });
@@ -1217,8 +1284,12 @@ async function runSearch(q, extra) {
   closeSuggest();
   if (!exportLocked()) setStatus("Searching…");
   try {
-    const r = await fetch("/api/geocode?q=" + encodeURIComponent(q) + viewParams() + (extra || ""));
-    const hits = await r.json();
+    const r = await OpenClutterNet.guardedFetch("/api/geocode?q=" + encodeURIComponent(q) + viewParams() + (extra || ""), undefined, {
+      step: "Search",
+    });
+    const hits = await r.json().catch(() => {
+      throw new Error("Search got an unreadable reply. Try again.");
+    });
     if (!r.ok) throw new Error(hits.error || "Geocode failed");
     if (!hits.length) throw new Error("No results. Try the street address.");
     flyToHit(hits[0]);
@@ -1244,9 +1315,13 @@ document.getElementById("search").onsubmit = (e) => {
 
 async function detectCanopyTrees(b) {
   const T = globalThis.OpenClutterTrees;
-  return T.fetchCanopyTrees(b, (url) => fetch(url, { signal: AbortSignal.timeout(8000) }), {
-    maxTrees: T.maxTreesForBbox(b),
-  });
+  return T.fetchCanopyTrees(
+    b,
+    (url) => OpenClutterNet.guardedFetch(url, { signal: AbortSignal.timeout(8000) }, { step: "Tree canopy data" }),
+    {
+      maxTrees: T.maxTreesForBbox(b),
+    }
+  );
 }
 
 function downloadBlob(blob, name) {
@@ -1445,19 +1520,23 @@ async function fetchTerrainPaste() {
   // terrain does not wait on a second click.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const r = await fetch("/api/clutter", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body,
-      });
+      const r = await OpenClutterNet.guardedFetch(
+        "/api/clutter",
+        { method: "POST", headers: { "content-type": "application/json" }, body },
+        { step: "Terrain" }
+      );
       const data = await r.json().catch(() => ({}));
       if (r.ok && data && data.terrainClipboard) return data;
       last = {
         terrainClipboard: null,
         terrainStatus: (data && data.terrainStatus) || "Terrain did not return. Export again.",
       };
-    } catch {
-      last = { terrainClipboard: null, terrainStatus: "Terrain did not return. Export again." };
+    } catch (err) {
+      last = {
+        terrainClipboard: null,
+        terrainStatus: err && err.blocked ? err.message : "Terrain did not return. Export again.",
+      };
+      if (err && err.blocked) break;
     }
   }
   return last;
@@ -1494,6 +1573,7 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
   for (let i = 0; i < detail.length; i++) lines.push(detail[i]);
   lines.push("Import this OpenIntent file in Hamina (Projects → Import → OpenIntent).");
   if (fallbackNote) lines.push(fallbackNote);
+  if (canopyBlockedNote) lines.push(canopyBlockedNote);
   const coveredTerrain = detail.some((line) => line.indexOf("Terrain") === 0 || line.indexOf("Minimum ") === 0);
   if (terrainNote && !coveredTerrain) lines.push(terrainNote);
   if (pasteLine && !detail.some((line) => line.indexOf("Terrain pieces ") === 0)) lines.push(pasteLine);
@@ -1516,6 +1596,9 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
   setStatus(lines.join("\n"));
   if (exportCopyReady && !drawHidesCopy) setCopyNote("Paste terrain separately in Hamina.");
 }
+
+/** Set when the browser's tree canopy lookup was blocked; the export still runs. */
+let canopyBlockedNote = "";
 
 const EXPORT_STEPS = [
   { id: "aerial", label: "Aerial image" },
@@ -1802,7 +1885,7 @@ function stopServerExport(jobId) {
 async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, includeTerrain) {
   const foliage = includeFoliage === true;
   const terrain = includeTerrain !== false;
-  const r = await fetch("/api/clutter", {
+  const r = await OpenClutterNet.guardedFetch("/api/clutter", {
     method: "POST",
     signal: exportSignal(),
     headers: { "content-type": "application/json" },
@@ -1833,7 +1916,7 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
       format: "bundle",
       async: true,
     }),
-  });
+  }, { step: "Export" });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw exportError(r.status, data);
   return data;
@@ -1844,10 +1927,15 @@ async function pollExport(jobId) {
   const started = Date.now();
   const ceiling = 15 * 60 * 1000;
   let misses = 0;
+  let blocked = null;
   while (Date.now() - started < ceiling) {
     let data = null;
     try {
-      const r = await fetch("/api/export-status?job=" + encodeURIComponent(jobId), { cache: "no-store", signal: exportSignal() });
+      const r = await OpenClutterNet.guardedFetch(
+        "/api/export-status?job=" + encodeURIComponent(jobId),
+        { cache: "no-store", signal: exportSignal() },
+        { step: "Export status" }
+      );
       data = await r.json().catch(() => ({}));
       if (r.status === 404) throw new Error(data.error || "This export expired. Export again.");
       if (!r.ok) throw new Error(data.error || "Could not read export status.");
@@ -1855,8 +1943,9 @@ async function pollExport(jobId) {
     } catch (err) {
       if (err && (err.name === "AbortError" || !exportLocked())) throw cancelledError();
       if (err && /expired|Export id/i.test(err.message || "")) throw err;
+      if (err && err.blocked) blocked = err;
       misses += 1;
-      if (misses >= 4) throw new Error("Could not read export status. Export again.");
+      if (misses >= 4) throw blocked || new Error("Could not read export status. Export again.");
       await sleep(1500);
       checkExportRun(run);
       continue;
@@ -1887,7 +1976,11 @@ async function downloadJobZip(jobId, filename) {
   let lastStatus = 0;
   let lastData = {};
   for (let attempt = 0; attempt < 4; attempt++) {
-    const r = await fetch("/api/export-file?job=" + encodeURIComponent(jobId), { cache: "no-store", signal: exportSignal() });
+    const r = await OpenClutterNet.guardedFetch(
+      "/api/export-file?job=" + encodeURIComponent(jobId),
+      { cache: "no-store", signal: exportSignal() },
+      { step: "Download" }
+    );
     if (r.ok) {
       const blob = await r.blob();
       checkExportRun(run);
@@ -1913,7 +2006,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
     terrain && qualityPage() && terrainPaste && Array.isArray(terrainPaste.liftSamples)
       ? terrainPaste.liftSamples
       : undefined;
-  const r = await fetch("/api/clutter", {
+  const r = await OpenClutterNet.guardedFetch("/api/clutter", {
     method: "POST",
     signal: exportSignal(),
     headers: { "content-type": "application/json" },
@@ -1946,7 +2039,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       canopyHits: foliage && canopyHits && canopyHits.length ? canopyHits : undefined,
       format: "bundle",
     }),
-  });
+  }, { step: "Export" });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw exportError(r.status, data);
   return data;
@@ -2005,6 +2098,7 @@ document.getElementById("export").onclick = async () => {
   syncExportLock();
   const includeFoliage = clutterChecked("include-foliage");
   const includeTerrain = terrainExportEnabled();
+  canopyBlockedNote = "";
   try {
     beginExportProgress({ terrain: includeTerrain !== false, foliage: includeFoliage === true });
     let trees = [];
@@ -2017,6 +2111,7 @@ document.getElementById("export").onclick = async () => {
       try {
         canopy = await detectCanopyTrees(bbox);
       } catch (e) {
+        if (e && e.blocked) canopyBlockedNote = e.message.replace(/ Try another network(\.|, or ask IT to allow \S+\.)$/, " The export used server trees only.");
         canopy = { trees: [], source: null, reason: "fetch-failed", parsed: { samples: 0, validCount: 0, hits: [] } };
       }
       checkExportRun(run);
@@ -2106,6 +2201,8 @@ document.getElementById("export").onclick = async () => {
     // A cancelled run was already closed by cancelExport; a newer export may own the page now.
     if (run.cancelled || exportRun !== run) return;
     setStatus(OpenClutterExport.idleStatus(err), true);
+    // A blocked request never reached the worker, so its step list says nothing.
+    if (err && err.blocked) hideExportSteps();
   } finally {
     if (!run.cancelled && exportRun === run) {
       exportRun = null;
@@ -2132,7 +2229,11 @@ document.getElementById("export").onclick = async () => {
   }
   let data = null;
   try {
-    const r = await fetch("/api/export-status?job=" + encodeURIComponent(saved.jobId), { cache: "no-store" });
+    const r = await OpenClutterNet.guardedFetch(
+      "/api/export-status?job=" + encodeURIComponent(saved.jobId),
+      { cache: "no-store" },
+      { step: "Last export" }
+    );
     if (r.status === 404) {
       forgetExport();
       return;
@@ -2142,15 +2243,58 @@ document.getElementById("export").onclick = async () => {
   } catch {
     return;
   }
-  if (!data || data.state !== "done" || bbox || exportLive) return;
+  if (!data || data.state !== "done" || exportLive) return;
+  // A box from the link wins unless it is the same site as the last export.
+  if (bbox && !sameBox(bbox, b)) return;
   const bounds = L.latLngBounds([b.south, b.west], [b.north, b.east]);
   applyExtent(bounds, saved.label);
-  try {
-    map.fitBounds(bounds);
-  } catch {}
+  if (!urlStart.view && !urlStart.box) {
+    try {
+      map.fitBounds(bounds);
+    } catch {}
+  }
   exportEpoch = drawEpoch;
   exportSettingsEpoch = settingsEpoch;
   showExportResult(data, saved.includeFoliage, saved.includeTerrain, "");
   syncIdleExportLabel();
   rememberExport(Object.assign({}, saved, { blob: null, bytes: saved.bytes || data.zipBytes || 0 }));
 })();
+
+function sameBox(a, b) {
+  if (!a || !b) return false;
+  const eps = 2e-6;
+  return (
+    Math.abs(a.south - b.south) < eps &&
+    Math.abs(a.west - b.west) < eps &&
+    Math.abs(a.north - b.north) < eps &&
+    Math.abs(a.east - b.east) < eps
+  );
+}
+
+/** Draws a box from the link as if it had just been drawn: ready to export. */
+function applyUrlBox(box) {
+  if (!box || exportLocked()) return;
+  if (bbox && sameBox(bbox, box)) return;
+  const bounds = L.latLngBounds([box.south, box.west], [box.north, box.east]);
+  drawn.clearLayers();
+  drawn.addLayer(L.rectangle(bounds, OUTLINE));
+  if (!map.hasLayer(drawn)) map.addLayer(drawn);
+  sketchHidden = false;
+  applyExtent(bounds, null);
+  resumeDrawMode();
+}
+
+// After restoreLastExport has read its saved record, so a link to the same
+// site still brings back Download again.
+applyUrlBox(urlStart.box);
+urlStateReady = true;
+
+// A link pasted into this same tab changes only the hash.
+window.addEventListener("hashchange", () => {
+  if (location.hash === urlHashWritten) return;
+  const next = readUrlState();
+  urlHashWritten = location.hash;
+  if (next.view) map.setView([next.view.lat, next.view.lon], next.view.zoom);
+  else if (next.box) map.fitBounds(L.latLngBounds([next.box.south, next.box.west], [next.box.north, next.box.east]));
+  if (next.box) applyUrlBox(next.box);
+});

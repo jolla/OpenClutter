@@ -617,6 +617,17 @@
     <div id="fb-done" class="fb-done" role="status" hidden></div>
   </dialog>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    // The map library comes from unpkg.com. A firewall that blocks it leaves no map, so say why.
+    if (!window.L) {
+      var s = document.getElementById("status");
+      var l = document.getElementById("status-line");
+      if (s) s.className = "err";
+      if (l) l.textContent = "The map could not load: unpkg.com was blocked or unreachable. A company firewall or proxy may be blocking it. Try another network.";
+    }
+  </script>
+  <script src="/net-errors.js"></script>
+  <script src="/url-state.js"></script>
   <script src="/tree-detect.js"></script>
   <script src="/bbox-area.js"></script>
   <script src="/site-draw.js"></script>
