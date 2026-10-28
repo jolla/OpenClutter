@@ -137,6 +137,12 @@ describe("net errors: guardedFetch", () => {
     assert.equal(err, abort);
   });
 
+  it("keeps the network hint on an unexpected reply", () => {
+    const m = N.unexpectedReplyMessage("Feedback", "openclutter.com", 502);
+    assert.equal(m, "Feedback got an unexpected reply from openclutter.com (502). A company firewall or proxy may be in the way. Try again, or try another network.");
+    assert.match(N.unexpectedReplyMessage("Feedback", "", 0), /from the server\. /);
+  });
+
   it("has no em dashes in any message", () => {
     for (const kind of ["network", "timeout", "forbidden", "proxy-auth", "html", "redirect", "offline"]) {
       assert.equal(/\u2014/.test(N.blockedMessage("Export", "openclutter.com", kind)), false, kind);
@@ -197,6 +203,10 @@ describe("net errors: page wiring", () => {
     assert.equal((fb.match(/feedbackFetch\(\{/g) || []).length, 2);
     assert.equal(/fetch\("\/api\/feedback", \{/.test(fb), false);
     assert.ok(html.indexOf('src="/net-errors.js"') < html.indexOf('src="/feedback.js"'));
+    // Non-JSON or empty 5xx replies keep the network hint; the generic line suggests another network.
+    assert.match(fb, /net\.unexpectedReplyMessage\("Feedback", location\.host, status\)/);
+    assert.match(fb, /SEND_FAILED = "Sorry, the report could not be sent\. Try again later, or try another network\."/);
+    assert.equal(/Please try again later/.test(fb), false);
   });
 
   it("watches imagery tile errors once", () => {

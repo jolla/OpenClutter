@@ -103,7 +103,7 @@
 
   function showError(text) {
     // Clearing an error keeps the not set up notice while the form cannot send.
-    if (!text && config && !config.configured) text = "Feedback is not set up yet.";
+    if (!text && config && !config.configured) text = config.blocked || "Feedback is not set up yet.";
     errEl.textContent = text || "";
     errEl.hidden = !text;
   }
@@ -309,6 +309,16 @@
     return fetch("/api/feedback", init);
   }
 
+  var SEND_FAILED = "Sorry, the report could not be sent. Try again later, or try another network.";
+
+  /** A sentence from the function is shown as-is; a non-JSON or empty reply may be a proxy. */
+  function sendFailure(status, data) {
+    if (data && data.error) return String(data.error);
+    var net = window.OpenClutterNet;
+    if (!data && net && net.unexpectedReplyMessage) return net.unexpectedReplyMessage("Feedback", location.host, status);
+    return SEND_FAILED;
+  }
+
   async function loadConfig() {
     if (config && config.configured) return config;
     try {
@@ -386,13 +396,13 @@
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
       });
-      var data = {};
+      var data = null;
       try {
         data = await r.json();
       } catch (e) {
-        data = {};
+        data = null;
       }
-      if (!r.ok || !data.ok) throw new Error(data.error || "Sorry, the report could not be sent. Please try again later.");
+      if (!r.ok || !data || !data.ok) throw new Error(sendFailure(r.status, data));
       form.hidden = true;
       doneEl.textContent = "";
       var p = document.createElement("p");
@@ -406,7 +416,7 @@
       doneEl.hidden = false;
       b.focus();
     } catch (e) {
-      showError(e.message || "Sorry, the report could not be sent. Please try again later.");
+      showError(e.message || SEND_FAILED);
       sendBtn.disabled = false;
     } finally {
       sending = false;

@@ -252,9 +252,14 @@ test("feedback client: payload and helpers", () => {
   assert.deepEqual(q.context.bounds, { west: 1 });
 });
 
-test("feedback page: link by the version, private dialog, no public option, no em dashes", () => {
+test("feedback page: visible Feedback pill, private dialog, no public option, no em dashes", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
-  assert.match(html, /id="app-version"[^>]*>v[\d.]+<\/button><span class="map-credit-sep"[^>]*>·<\/span><button type="button" id="feedback-link"/);
+  // 1.2.52: its own pill in the bottom-right corner (a tester called the footer link very subtle).
+  assert.match(html, /<button type="button" id="feedback-link" class="feedback-pill"[^>]*>[\s\S]*?Feedback<\/button>/);
+  assert.match(html, /\.feedback-pill:focus-visible \{ outline:/);
+  const credit = html.slice(html.indexOf('<p class="map-credit"'), html.indexOf("</p>", html.indexOf('<p class="map-credit"')));
+  assert.ok(!credit.includes("feedback-link"), "not faint footer text");
+  assert.match(html, /#fb-send:disabled \{ background: #30363d;/);
   assert.match(html, /<dialog id="feedback"/);
   assert.ok(!/fb-public|Post publicly|fb-mail/.test(html));
   assert.match(html, /go privately to the OpenClutter team/);

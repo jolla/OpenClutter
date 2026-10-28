@@ -92,6 +92,18 @@
     return who + " could not reach " + site + ". A company firewall or proxy may be blocking it. " + TRY_ELSEWHERE;
   }
 
+  /**
+   * A reply that is not the JSON the page expected (a gateway or proxy page,
+   * an empty 5xx). It may be a firewall, so the network hint stays.
+   */
+  function unexpectedReplyMessage(step, host, status) {
+    const code = +status > 0 ? " (" + status + ")" : "";
+    return (
+      stepText(step) + " got an unexpected reply from " + (host || "the server") + code +
+      ". A company firewall or proxy may be in the way. Try again, or try another network."
+    );
+  }
+
   function blockedError(step, host, kind, cause) {
     const err = new Error(blockedMessage(step, host, kind));
     err.blocked = true;
@@ -187,6 +199,7 @@
     isTimeout,
     responseBlockKind,
     blockedMessage,
+    unexpectedReplyMessage,
     blockedError,
     guardedFetch,
     createTileWatch,
