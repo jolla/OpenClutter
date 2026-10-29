@@ -14,6 +14,7 @@ const rows = SOURCES.map(
 ).join("\n      ");
 const imagery = [
   `<li><strong>Esri World Imagery</strong> (draw map, and the export image when Esri is the source): ${esc(ESRI_POWERED)}. ${esc(ESRI_SOURCE)}. Esri terms of use.</li>`,
+  `<li><strong>Esri World Boundaries and Places</strong> (place-name labels on the draw map only, never in an export): Esri, HERE, Garmin, (c) OpenStreetMap contributors, and the GIS user community. Esri terms of use.</li>`,
   `<li><strong>${esc(NAIP.name)}</strong>: ${esc(NAIP.attribution)}. ${esc(NAIP.license)}.</li>`,
 ]
   .concat(NATIONAL.map((n) => `<li><strong>${esc(n.name)}</strong>: ${esc(n.attribution)}. ${esc(n.license)}.</li>`))

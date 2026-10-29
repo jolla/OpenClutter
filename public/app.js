@@ -287,6 +287,26 @@ const imageryTiles = L.tileLayer(
       "Source: Esri, Vantor, Earthstar Geographics, and the GIS User Community",
   }
 ).addTo(map);
+// Place names over the aerial: states and countries when zoomed out, then
+// cities and towns. Esri's keyless reference tiles pick what to show for each
+// zoom. Draw map only: an export fetches its image on the server and never
+// sees this layer. Hidden past MAP_LABEL_MAX_ZOOM (so from the default zoom
+// 16 in), where the names are shops and parks that would sit on the site.
+// Silent if blocked: the imagery watch above already says when this host is
+// unreachable.
+const MAP_LABEL_MAX_ZOOM = 15;
+const labelPane = map.createPane("labels");
+labelPane.style.zIndex = "350"; // above tiles (200), below the drawn box (400)
+labelPane.style.pointerEvents = "none";
+L.tileLayer(
+  "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+  {
+    pane: "labels",
+    maxZoom: MAP_LABEL_MAX_ZOOM,
+    maxNativeZoom: MAP_LABEL_MAX_ZOOM,
+    attribution: "Labels: Esri, HERE, Garmin, (c) OpenStreetMap contributors",
+  }
+).addTo(map);
 // The draw map is always Esri tiles. The credit beside them also names the
 // aerial an export uses: the Source pick before an export, and the image the
 // zip shipped (vendor and capture date when known) after one.

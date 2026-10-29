@@ -28,6 +28,7 @@ Contains information from OpenStreetMap (c) OpenStreetMap contributors, Microsof
 | Source | Where | Credit | License |
 |---|---|---|---|
 | Esri World Imagery | draw map on every host; export image on production and when chosen on /dev | Powered by Esri. Source: Esri, Vantor, Earthstar Geographics, and the GIS User Community | Esri terms of use |
+| Esri World Boundaries and Places | place-name labels on the draw map only, never in an export | Esri, HERE, Garmin, (c) OpenStreetMap contributors, and the GIS user community | Esri terms of use |
 | USDA NAIP (via Microsoft Planetary Computer) | /dev Auto or NAIP | USDA Farm Production and Conservation Business Center | Public domain |
 | swisstopo SWISSIMAGE | /dev National, Switzerland | Federal Office of Topography swisstopo | OGD |
 | PDOK Luchtfoto | /dev National, Netherlands | Beeldmateriaal Nederland / PDOK | CC BY 4.0 |
