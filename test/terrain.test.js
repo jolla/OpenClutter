@@ -2922,7 +2922,7 @@ describe("Finland terrain does not wait on 3DEP", () => {
           geotiff: miss.geotiff,
           terrainResolution: "default",
         }),
-      /did not return a usable grid/
+      /Copernicus GLO-30 elevation read failed \(HTTP 404\)/
     );
   });
 });
@@ -3839,5 +3839,58 @@ describe("terrain paste stays the size Hamina accepted", () => {
     assert.ok(n > 0);
     assert.ok(n <= 150, "floors " + n);
     assert.ok(JSON.stringify(terrain.clipboard).length <= 150 * 480);
+  });
+});
+
+describe("GLO-30 tile read retry", () => {
+  const { fetchCopernicusDemSamples } = require("../netlify/lib/copernicus-dem");
+  const frame = { west: 121.49, south: -30.79, east: 121.5, north: -30.78 };
+  function fakeTiff() {
+    const w = 64;
+    const data = new Float32Array(w * w).fill(350);
+    const image = {
+      getWidth: () => 3600,
+      getHeight: () => 3600,
+      getOrigin: () => [121, -30, 0],
+      getResolution: () => [1 / 3600, -1 / 3600, 0],
+      getBoundingBox: () => [121, -31, 122, -30],
+      getGDALNoData: () => null,
+      readRasters: async ({ window }) => {
+        const ww = window[2] - window[0];
+        const hh = window[3] - window[1];
+        const out = new Float32Array(ww * hh).fill(350);
+        out.width = ww;
+        out.height = hh;
+        return out;
+      },
+    };
+    return { getImageCount: async () => 1, getImage: async () => image, data };
+  }
+  it("reads a tile again once after a dropped read", async () => {
+    let calls = 0;
+    const geotiff = {
+      fromUrl: async () => {
+        calls++;
+        if (calls === 1) throw new Error("socket hang up");
+        return fakeTiff();
+      },
+    };
+    const out = await fetchCopernicusDemSamples(frame, { sampleCount: 16, geotiff, signal: AbortSignal.timeout(5000) });
+    assert.equal(calls, 2);
+    assert.ok(out.length >= 4);
+  });
+  it("gives up after the second failure with the read's own reason", async () => {
+    let calls = 0;
+    const geotiff = {
+      fromUrl: async () => {
+        calls++;
+        throw new Error("socket hang up");
+      },
+    };
+    await assert.rejects(
+      fetchCopernicusDemSamples(frame, { sampleCount: 16, geotiff, signal: AbortSignal.timeout(5000) }),
+      /GLO-30 socket hang up/
+    );
+    assert.equal(calls, 2);
   });
 });

@@ -4,6 +4,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## Production releases
 
+- **v1.3.3** (Oct 30, 2026) production fix: the 1.3.3 Copy terrain fix below on top of v1.3.1. The 1.3.2 adaptive terrain stays on /dev.
 - **v1.3.1** (Oct 30, 2026) production fix: the 1.3.1 search and terrain fixes below on top of v1.3.0. /dev and production stay on the same build.
 - **v1.3.0** (Oct 30, 2026) production batch 2: production takes /dev 1.3.0, so both hosts run the same page and the same export rules. New on production since v1.2.58: the 1.2.44 to 1.2.48 RV park and tree crown rules, the 1.2.51 Feedback form, the 1.2.52 shareable links and blocked-network messages, the 1.2.53 early block check, the 1.2.54 place labels and the 1.2.57 tower height fix. The four switches that kept these on /dev hosts (photoCrowns, staleFootprints, shadowTrailers, staleTowers) are now on for every host.
 - **v1.2.58** (Oct 30, 2026) production fix: only the 1.2.58 Copy terrain fallback below on top of v1.2.56. The 1.2.51 to 1.2.57 /dev changes stay on /dev.
@@ -24,6 +25,10 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.3** Bug fix on every host (on /dev with the 1.3.2 adaptive terrain) (Oct 30, 2026): Copy terrain missing after an export (the 1:45 AM report, seen again on the Kalgoorlie Super Pit right after a worker deploy).
+  - A single failed Copernicus GLO-30 read (outside the US) left the whole export without terrain. Each GLO-30 tile read now gets one more try after a short pause.
+  - The reason is now the real one: outside the US the message names the GLO-30 read and its error instead of "USGS 3DEP did not return a usable grid", and the worker log keeps it.
+  - When a background export comes back without terrain, the page reads terrain once more on its own before showing the result, so Copy terrain appears without a second export. If terrain is still missing, a line under the button says terrain was left out, why, and that the OpenIntent file is complete (before, the button just went back to Export OpenIntent and the reason sat in the collapsed Details).
 - **1.3.2** /dev only (Oct 30, 2026): adaptive terrain for Copy terrain, from Jerry's Kalgoorlie Super Pit report (feedback #10 follow-up). Production is unchanged.
   - The terrain DEM is read at its native spacing (Copernicus GLO-30 at full resolution outside the US, a USGS 3DEP raster beside the usual samples in the US), and the Copy terrain mesh spends its floors where the ground is steep or curved (pit walls, ski runs) and stays coarse on flats. Band heights follow the ground (clustered elevations) instead of a fixed step. The paste stays within the same 1500 floor and 400 KB caps.
   - Measured against the native DEM: Kalgoorlie Super Pit RMS 14.4 m to 10.1 m (steep ground 18.4 to 14.7 m, worst point 83 to 61 m); Snowbird, UT 17.3 to 13.4 m (worst point 123 to 64 m); Silver View RV 1.6 to 1.3 m; Granite Peak 0.78 to 0.71 m. Pastes use more of the budget (Kalgoorlie 733 to 1492 floors, 181 to 389 KB).

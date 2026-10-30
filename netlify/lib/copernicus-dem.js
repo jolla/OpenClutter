@@ -26,6 +26,22 @@ const MAX_TILES = 4;
  */
 const GLO30_FETCH_MS = 8000;
 
+/** Pause before the one retry of a failed tile read. */
+const GLO30_RETRY_MS = 400;
+
+function pauseUnlessAborted(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal && signal.aborted) return resolve();
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", done);
+      resolve();
+    }
+    if (signal) signal.addEventListener("abort", done, { once: true });
+  });
+}
+
 function glo30TileId(latSw, lonSw) {
   const lat = latSw | 0;
   const lon = lonSw | 0;
@@ -237,12 +253,24 @@ async function fetchCopernicusDemSamples(frame, opts) {
   let firstError = null;
   await Promise.all(
     urls.map(async (url) => {
-      try {
-        const tile = await readGlo30Window(geotiff, url, frame, signal, maxRasterSide);
-        if (tile) tiles.push(tile);
-      } catch (e) {
-        if (signal.aborted) throw e;
-        if (!firstError) firstError = e;
+      // One more read after a short pause when a tile read fails for a
+      // reason other than the caller's stop. A single dropped S3 range read
+      // (seen on a freshly started worker, Kalgoorlie Oct 30) used to leave
+      // the whole export without terrain.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const tile = await readGlo30Window(geotiff, url, frame, signal, maxRasterSide);
+          if (tile) tiles.push(tile);
+          return;
+        } catch (e) {
+          if (signal.aborted) throw e;
+          if (attempt === 0) {
+            await pauseUnlessAborted(GLO30_RETRY_MS, signal);
+            if (signal.aborted) throw e;
+            continue;
+          }
+          if (!firstError) firstError = e;
+        }
       }
     })
   );
