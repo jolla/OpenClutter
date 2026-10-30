@@ -25,6 +25,14 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.4** /dev only (Oct 30, 2026): forest export prototypes for feedback #9 (large forests come out as a grid of squares in Hamina). Production is unchanged.
+  - Large tree stands were cut into fixed blocks of about 42 to 50 m, each with one height, so a forest showed up as a grid. Two ways to cut them instead are on /dev, picked with ?forest= on the /dev page.
+  - ?forest=bands (A, the /dev default): a stand is split where its canopy height changes, in 3 m height bands, so the pieces follow the real canopy. Small pieces (under 400 m2) join a neighbour.
+  - ?forest=merge (B): the fixed blocks stay, but neighbouring blocks whose heights are within 2.5 m of the group's first block are joined into one area.
+  - ?forest=off: the 1.3.3 behaviour, for a before and after comparison.
+  - Issue #9 box: areas 1595 to 1318 (A) or 1267 (B), JSON 1.82 MB to 1.61 MB (A) or 1.42 MB (B). Fort Wilderness stays within the 5.8 MB Hamina budget with either; with A it keeps more continuous forest and fewer single trees.
+  - Benches: canopy 18 sites 75.73 before, A 75.61, B 75.72; site type 12 sites A 65.86, B 65.71; Pismo Coast RV precision 96.7 with both.
+  - Export-mode switches canopyBands and mergeTiles, off on production hosts.
 - **1.3.3** Bug fix on every host (on /dev with the 1.3.2 adaptive terrain) (Oct 30, 2026): Copy terrain missing after an export (the 1:45 AM report, seen again on the Kalgoorlie Super Pit right after a worker deploy).
   - A single failed Copernicus GLO-30 read (outside the US) left the whole export without terrain. Each GLO-30 tile read now gets one more try after a short pause.
   - The reason is now the real one: outside the US the message names the GLO-30 read and its error instead of "USGS 3DEP did not return a usable grid", and the worker log keeps it.
