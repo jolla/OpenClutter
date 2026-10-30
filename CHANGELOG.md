@@ -4,6 +4,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## Production releases
 
+- **v1.3.0** (Oct 30, 2026) production batch 2: production takes /dev 1.3.0, so both hosts run the same page and the same export rules. New on production since v1.2.58: the 1.2.44 to 1.2.48 RV park and tree crown rules, the 1.2.51 Feedback form, the 1.2.52 shareable links and blocked-network messages, the 1.2.53 early block check, the 1.2.54 place labels and the 1.2.57 tower height fix. The four switches that kept these on /dev hosts (photoCrowns, staleFootprints, shadowTrailers, staleTowers) are now on for every host.
 - **v1.2.58** (Oct 30, 2026) production fix: only the 1.2.58 Copy terrain fallback below on top of v1.2.56. The 1.2.51 to 1.2.57 /dev changes stay on /dev.
 - **v1.2.56** (Oct 29, 2026) production fix: only the 1.2.56 Copy terrain fix below on top of v1.2.50. The 1.2.51 to 1.2.54 changes stay on /dev.
 - **v1.2.50** (Oct 28, 2026) production fix: only the 1.2.50 light pole fix below on top of v1.2.49. The 1.2.48 changes stay on /dev.
@@ -19,6 +20,19 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 - **v1.2.0** (Oct 17, 2026) production promotion of /dev v1.1.219.
 - **/dev v1.1.163 to v1.1.189** (Oct 13 to 15, 2026) went to production in steps. From v1.1.172, production exports at /dev quality.
 - **v1.0.0** (Sep 22, 2026) production freeze of the buildings to Hamina OpenIntent import.
+
+## 1.3
+
+- **1.3.0** Production batch 2 (Oct 30, 2026). Everything below now runs on openclutter.com as well as /dev.
+  - Feedback: a Feedback button in the bottom-right corner opens a short form (Bug, Suggestion or Other, a message, up to 3 screenshots, an optional email). Reports go privately to the OpenClutter team. If a network blocks the form, it says so before you type and Send is greyed out.
+  - Shareable links: the address bar follows the map and the drawn box, so a site can be bookmarked or sent to someone. Opening the link brings back the view and the box, ready to export.
+  - Clearer network messages: when a company firewall or proxy blocks a step (export, map imagery, search, Feedback), the page names the step and suggests trying another network instead of failing silently. Export falls back to the page's own address when the API address drops the connection.
+  - Place labels: country, state, city and town names sit on the draw map when zoomed out and hide from zoom 16 in. They are never part of the export.
+  - RV parks: more trailers are found on pale concrete and in shade, short roof fragments are no longer counted as their own RV, and old building outlines on empty RV pads are left out.
+  - Trees: crowns follow the leaves seen on the aerial photo, so tree cover matches the site more closely (Pismo Coast Village drops from about 7.7% to about 4.0% cover, close to the hand count).
+  - Towers: a tall building built after the lidar flight keeps its real height instead of taking the height of whatever stood there before (Downtown Austin Block 185 is about 181 m again, not about 7 m).
+  - Copy terrain (already on production as fixes 1.2.56 and 1.2.58): terrain pastes line up with the imported map, the Copy terrain button is always there after an export even if the zip download is blocked, and a Terrain JSON link beside Download again saves the same terrain file.
+  - Data: no new map data in this release. Buildings still read Overture release 2026-10-21.0 (from 1.2.43).
 
 ## 1.2
 
