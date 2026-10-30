@@ -4,6 +4,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## Production releases
 
+- **v1.2.56** (Oct 29, 2026) production fix: only the 1.2.56 Copy terrain fix below on top of v1.2.50. The 1.2.51 to 1.2.54 changes stay on /dev.
 - **v1.2.50** (Oct 28, 2026) production fix: only the 1.2.50 light pole fix below on top of v1.2.49. The 1.2.48 changes stay on /dev.
 - **v1.2.49** (Oct 27, 2026) production fix: only the 1.2.49 Cancel fix below on top of v1.2.47. The 1.2.48 changes stay on /dev.
 - **v1.2.47** (Oct 27, 2026) production fix: only the 1.2.47 terrain change below on top of v1.2.43. The /dev rules from 1.2.44 to 1.2.46 stay on /dev.
