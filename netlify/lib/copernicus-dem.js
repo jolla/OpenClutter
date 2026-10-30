@@ -92,9 +92,23 @@ function usableElevation(z, nodata) {
   return true;
 }
 
-function rasterWindow(image, frame) {
-  const origin = image.getOrigin();
-  const res = image.getResolution();
+/**
+ * GLO-30 overviews carry no geo tags of their own. geotiff.js throws "does
+ * not have an affine transformation" on them, which used to drop terrain on
+ * any draw big enough to step past full resolution. An overview shares the
+ * full image origin, and its pixel size scales by the width ratio.
+ */
+function imageGeo(image, ref) {
+  try {
+    return { origin: image.getOrigin(), res: image.getResolution() };
+  } catch (e) {
+    if (!ref || ref === image) throw e;
+    return { origin: ref.getOrigin(), res: image.getResolution(ref) };
+  }
+}
+
+function rasterWindow(image, frame, ref) {
+  const { origin, res } = imageGeo(image, ref);
   const iw = image.getWidth();
   const ih = image.getHeight();
   if (!origin || !res || !(res[0] > 0) || !(res[1] < 0) || !(iw > 1) || !(ih > 1)) return null;
@@ -149,7 +163,12 @@ async function chooseGlo30Image(tiff, frame, maxSide) {
     } catch {
       break;
     }
-    const win = rasterWindow(image, frame);
+    let win;
+    try {
+      win = rasterWindow(image, frame, full);
+    } catch {
+      break;
+    }
     if (!win) continue;
     coarsest = { image, win };
     if (win.longSide <= cap) return coarsest;
