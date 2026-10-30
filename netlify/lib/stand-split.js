@@ -27,6 +27,8 @@ const BAND_VEG_MIN_PIECE_M2 = 600;
 // opening of GAP_OPEN_CELLS cells, is left out of the stand.
 const GAP_MIN_M2 = 150;
 const GAP_OPEN_CELLS = 2;
+// A band or merged piece is cut through any hole this big (see holeFreeGroups).
+const HOLE_MIN_M2 = 100;
 
 // mergeTiles
 const MERGE_TOL_M = 2.5; // a neighbour joins when its height is within 2.5 m of the first tile
@@ -754,10 +756,10 @@ function mergePixelGroups(groups, at, w, minH) {
  * GAP_MIN_M2 that is still there after a one-cell opening) is cut through the
  * hole, so the traced outline goes around the open ground instead of across it.
  */
-function scrubPixelGroups(groups, standSet, w, mPerX, mPerY, depth) {
+function scrubPixelGroups(groups, standSet, w, mPerX, mPerY, depth, minHoleM2) {
   const out = [];
   const cellM2 = mPerX * mPerY;
-  const minCells = Math.max(4, Math.round(GAP_MIN_M2 / cellM2));
+  const minCells = Math.max(4, Math.round((minHoleM2 || GAP_MIN_M2) / cellM2));
   for (const g of groups) {
     if ((depth || 0) > 10 || g.length < minCells * 2) {
       out.push(g);
@@ -844,7 +846,7 @@ function scrubPixelGroups(groups, standSet, w, mPerX, mPerY, depth) {
       continue;
     }
     const parts = pixelParts(left, w).concat(pixelParts(right, w));
-    const again = scrubPixelGroups(parts, standSet, w, mPerX, mPerY, (depth || 0) + 1);
+    const again = scrubPixelGroups(parts, standSet, w, mPerX, mPerY, (depth || 0) + 1, minHoleM2);
     for (const a of again) out.push(a);
   }
   return out;
@@ -853,3 +855,14 @@ function scrubPixelGroups(groups, standSet, w, mPerX, mPerY, depth) {
 module.exports.bandPixelGroups = bandPixelGroups;
 module.exports.mergePixelGroups = mergePixelGroups;
 module.exports.scrubPixelGroups = scrubPixelGroups;
+
+/**
+ * A band or merged piece can wrap around a city block or another piece (a
+ * ring of street trees). Its traced outline would fill the middle. A piece
+ * with a hole of HOLE_MIN_M2 or more is cut through the hole instead.
+ */
+function holeFreeGroups(groups, w, mPerX, mPerY) {
+  return scrubPixelGroups(groups, new Set(), w, mPerX, mPerY, 0, HOLE_MIN_M2);
+}
+
+module.exports.holeFreeGroups = holeFreeGroups;

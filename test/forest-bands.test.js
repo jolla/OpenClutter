@@ -66,4 +66,16 @@ describe("feedback #9 canopyBands prototype", () => {
     assert.equal(hs[0], 5);
     assert.equal(hs[hs.length - 1], 14);
   });
+
+  it("cuts a piece that wraps around a hole so the outline does not fill it", () => {
+    const w = 60;
+    const pixels = [];
+    // A 60 x 60 ring of street trees, 6 cells wide, around a 48 x 48 block.
+    for (let y = 0; y < 60; y++) for (let x = 0; x < 60; x++) if (x < 6 || x >= 54 || y < 6 || y >= 54) pixels.push([x, y]);
+    const out = standSplit.holeFreeGroups([pixels], w, 2, 2);
+    assert.ok(out.length >= 2);
+    let total = 0;
+    for (const g of out) total += g.length;
+    assert.equal(total, pixels.length);
+  });
 });

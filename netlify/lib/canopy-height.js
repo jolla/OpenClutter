@@ -1309,6 +1309,8 @@ function crownsFromChm(grid, opts) {
         if (exportMode.isCanopyBands()) blocks = standSplit.bandPixelGroups(pixels, at, w, mPerX, mPerY, area);
         if (!blocks) blocks = tilePixels(pixels, mPerX, mPerY, tileMeters(area));
         if (blocks && exportMode.isMergeTiles() && !exportMode.isCanopyBands()) blocks = standSplit.mergePixelGroups(blocks, at, w, CROWN_MIN_H);
+        // A band or merged piece never fills a hole it wraps around.
+        if (blocks && (exportMode.isCanopyBands() || exportMode.isMergeTiles())) blocks = standSplit.holeFreeGroups(blocks, w, mPerX, mPerY);
         if (prof) profile.add("tile-split", profile.msSince(tProf));
         if (blocks) {
           for (let b = 0; b < blocks.length; b++) groups.push(blocks[b]);
