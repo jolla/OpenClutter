@@ -198,9 +198,8 @@ function adaptiveTerrainWanted(testHost, body) {
 }
 
 // Prototypes for feedback #9 (wide stands read as a grid of 50 m squares).
-// Off by default; /dev hosts turn one on per request (canopyBands:true,
-// mergeTiles:true, scrubGaps:true) or with OC_CANOPY_BANDS=1,
-// OC_MERGE_TILES=1, OC_SCRUB_GAPS=1 in a local run. Never on production.
+// Off by default and never on production. /dev hosts pick one with
+// forestMode (below); scrubGaps only with OC_SCRUB_GAPS=1 in a local run.
 // canopyBands: a wide stand is cut along its canopy height bands.
 let canopyBands = false;
 
@@ -234,6 +233,26 @@ function isScrubGaps() {
   return scrubGaps;
 }
 
+/** Forest cut on a /dev host when the request does not pick one. */
+const DEV_FOREST_DEFAULT = "bands";
+const FOREST_MODES = ["bands", "merge", "off"];
+
+/**
+ * Which feedback #9 forest cut runs: "bands" (canopyBands), "merge"
+ * (mergeTiles) or "off" (the 1.3.1 blocks). Production is always "off".
+ * A /dev host takes body.forest (the page sends ?forest=bands|merge|off),
+ * then OC_CANOPY_BANDS=1 or OC_MERGE_TILES=1 in a local run, then
+ * DEV_FOREST_DEFAULT.
+ */
+function forestMode(testHost, body) {
+  if (!testHost) return "off";
+  const asked = body && typeof body.forest === "string" ? body.forest.toLowerCase() : "";
+  if (FOREST_MODES.includes(asked)) return asked;
+  if (process.env.OC_CANOPY_BANDS === "1") return "bands";
+  if (process.env.OC_MERGE_TILES === "1") return "merge";
+  return DEV_FOREST_DEFAULT;
+}
+
 /** A prototype switch: only on /dev hosts, and only when asked for. */
 function protoWanted(testHost, body, key, envKey) {
   if (!testHost) return false;
@@ -251,6 +270,8 @@ module.exports = {
   setScrubGaps,
   isScrubGaps,
   protoWanted,
+  forestMode,
+  DEV_FOREST_DEFAULT,
   setStaleTowers,
   isStaleTowers,
   setStaleFootprints,

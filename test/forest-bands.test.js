@@ -17,7 +17,31 @@ describe("feedback #9 canopyBands prototype", () => {
     assert.equal(exportMode.protoWanted(true, {}, "canopyBands", "OC_CANOPY_BANDS_UNSET_FOR_TEST"), false);
     assert.equal(exportMode.protoWanted(true, { canopyBands: true }, "canopyBands", "OC_CANOPY_BANDS"), true);
     const src = fs.readFileSync(path.join(__dirname, "../netlify/functions/clutter.js"), "utf8");
-    assert.match(src, /exportMode\.setCanopyBands\(exportMode\.protoWanted\(testHost, body, "canopyBands", "OC_CANOPY_BANDS"\)\);/);
+    assert.match(src, /const forest = exportMode\.forestMode\(testHost, body\);/);
+    assert.match(src, /exportMode\.setCanopyBands\(forest === "bands"\);/);
+  });
+
+  it("picks the forest cut only on a /dev host", () => {
+    const saved = [process.env.OC_CANOPY_BANDS, process.env.OC_MERGE_TILES];
+    delete process.env.OC_CANOPY_BANDS;
+    delete process.env.OC_MERGE_TILES;
+    try {
+      assert.equal(exportMode.forestMode(false, { forest: "bands" }), "off");
+      assert.equal(exportMode.forestMode(false, { forest: "merge" }), "off");
+      assert.equal(exportMode.forestMode(true, {}), exportMode.DEV_FOREST_DEFAULT);
+      assert.equal(exportMode.forestMode(true, { forest: "merge" }), "merge");
+      assert.equal(exportMode.forestMode(true, { forest: "OFF" }), "off");
+      assert.equal(exportMode.forestMode(true, { forest: "grid" }), exportMode.DEV_FOREST_DEFAULT);
+    } finally {
+      if (saved[0] !== undefined) process.env.OC_CANOPY_BANDS = saved[0];
+      if (saved[1] !== undefined) process.env.OC_MERGE_TILES = saved[1];
+    }
+  });
+
+  it("sends ?forest only from a dev page", () => {
+    const src = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
+    assert.match(src, /function forestOverride\(\) \{\n  if \(!devPage\(\)\) return undefined;/);
+    assert.equal((src.match(/forest: forestOverride\(\),/g) || []).length, 2);
   });
 
   it("cuts a two-height stand along the height step, not on a grid", () => {

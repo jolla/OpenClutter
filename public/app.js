@@ -139,6 +139,20 @@ function jsonBudgetOverride() {
   return n;
 }
 
+// Feedback #9 forest cut on /dev only: ?forest=bands|merge|off. Unset keeps
+// the dev default (bands). Production never sends it.
+function forestOverride() {
+  if (!devPage()) return undefined;
+  let raw = "";
+  try {
+    raw = new URLSearchParams(location.search || "").get("forest");
+  } catch (err) {
+    return undefined;
+  }
+  raw = String(raw || "").toLowerCase();
+  return raw === "bands" || raw === "merge" || raw === "off" ? raw : undefined;
+}
+
 function lidarQueryOn() {
   let raw = "";
   try {
@@ -2047,6 +2061,7 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
       jsonBudget: jsonBudgetOverride(),
       terrainFloors: terrainFloorsOverride(),
       adaptiveTerrain: adaptiveTerrainOverride(),
+      forest: forestOverride(),
       lidar: lidarEnabled(),
       mapNotes: clutterChecked("include-map-notes"),
       trees: foliage ? trees : [],
@@ -2172,6 +2187,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       jsonBudget: jsonBudgetOverride(),
       terrainFloors: terrainFloorsOverride(),
       adaptiveTerrain: adaptiveTerrainOverride(),
+      forest: forestOverride(),
       lidar: lidarEnabled(),
       mapNotes: clutterChecked("include-map-notes"),
       trees: foliage ? trees : [],
