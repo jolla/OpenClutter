@@ -1240,12 +1240,15 @@ const FACET_SPILL = 0.15;
 const FACET_COVER = 0.85;
 const FACET_CLIP_SCALES = [1.15, 1.3, 1.5];
 const FACET_CLIP_COVER = 0.9;
-const FACET_LONE_COVER = 0.72;
+// A lone crown on the ~2 m canopy grid: its facet may reach a quarter past
+// the traced cells (under one cell), and must cover two thirds of them.
+const FACET_LONE_SPILL = 0.25;
+const FACET_LONE_COVER = 0.6;
 const FACET_MIN_TIER = 0.55;
-const FACET_MIN_SHRINK = 0.8;
+const FACET_MIN_SHRINK = 0.65;
 const FACET_GAP_M = 0.3;
-const FACET_SCRAP_MAX_M2 = 25;
-const FACET_SCRAP_REACH_M = 2;
+const FACET_SCRAP_MAX_M2 = 40;
+const FACET_SCRAP_REACH_M = 2.5;
 const FACET_SIDES = 10;
 const FACET_SIDES_SMALL = 8;
 const FACET_LONE_MAX_M2 = 400;
@@ -1287,7 +1290,7 @@ function insideShare(ring, outline) {
 const FACET_OPEN_STEP_M = 2;
 const FACET_OPEN_SAMPLES = 24;
 const CROWN_OPEN_H = 3;
-const FACET_OPEN_MIN = 0.7;
+const FACET_OPEN_MIN = 0.45;
 
 function openEdgeShare(outline, frame, heightSample) {
   if (typeof heightSample !== "function" || !outline || outline.length < 4) return 0;
@@ -1367,10 +1370,14 @@ function dropCollinearRing(ring) {
 /**
  * One tidy faceted crown for a lone tree: centre over the stem (or the
  * clump), radius from the measured plan area, shrunk only to keep spill under
- * FACET_SPILL and still cover FACET_LONE_COVER of the measured crown. Null
+ * FACET_LONE_SPILL and still cover FACET_LONE_COVER of the measured crown. Null
  * when the crown is not round enough; it then keeps its traced outline.
  */
-function planFacet(row, frame) {
+function planFacet(row, frame, why) {
+  const no = (k) => {
+    if (why) why[k] = (why[k] || 0) + 1;
+    return null;
+  };
   if (!row || row.palm || row.tile || row.slopePiece) return null;
   const outline = row.area && row.area.ringPx;
   if (!outline || outline.length < 4) return null;
@@ -1379,11 +1386,14 @@ function planFacet(row, frame) {
   const outlinePx = ringPxArea(outline);
   const outlineM2 = outlinePx * mpuX * mpuY;
   if (!(outlineM2 > 0)) return null;
-  if (!row.trunk && outlineM2 > FACET_LONE_MAX_M2) return null;
+  if (!row.trunk && outlineM2 > FACET_LONE_MAX_M2) return no("big");
   const stem = row.trunk && row.trunk.ringPx;
   if (row.trunk && (!stem || stem.length < 4)) return null;
-  const c = ringCentroidPx(stem || outline);
-  if (!c || !pointInRing(c, outline)) return null;
+  // The crown sits on the middle of its measured plan; the stem moves under it.
+  const c = areaCentroidPx(outline);
+  if (!c || !pointInRing(c, outline)) return no("centre");
+  const s0 = stem ? ringCentroidPx(stem) : null;
+  const shift = s0 ? [c[0] - s0[0], c[1] - s0[1]] : null;
   const r0 = Math.sqrt(outlineM2 / Math.PI);
   const sides = r0 >= 3 ? FACET_SIDES : FACET_SIDES_SMALL;
   // A fixed turn per tree, from where it stands, so neighbours do not line up.
@@ -1393,13 +1403,39 @@ function planFacet(row, frame) {
   for (let k = 0; k < scales.length; k++) {
     const r = r0 * scales[k];
     const ring = facetRing(c, r / mpuX, r / mpuY, sides, phase);
-    if (!ringClearsSpan(ring, floor)) continue;
+    if (!ringClearsSpan(ring, floor)) {
+      if (k === 0) no("span");
+      continue;
+    }
     const inside = insideShare(ring, outline);
-    if (inside < 1 - FACET_SPILL) continue;
+    if (k === 0 && why) {
+      why.inside = why.inside || [0, 0, 0, 0, 0];
+      why.inside[Math.min(4, Math.floor(inside * 5))]++;
+    }
+    if (inside < 1 - FACET_LONE_SPILL) continue;
     if ((inside * ringPxArea(ring)) / outlinePx < FACET_LONE_COVER) continue;
-    return { c, rM: r, sides, phase, mpuX, mpuY, floor, outlineM2 };
+    return { c, rM: r, sides, phase, mpuX, mpuY, floor, outlineM2, shift };
   }
-  return null;
+  return no("fit");
+}
+
+/** Area-weighted centre of a ring (the vertex average leans toward dense edges). */
+function areaCentroidPx(ring) {
+  const open = openCrownRing(ring);
+  if (!open || open.length < 3) return null;
+  let a = 0;
+  let x = 0;
+  let y = 0;
+  for (let i = 0; i < open.length; i++) {
+    const p = open[i];
+    const q = open[(i + 1) % open.length];
+    const k = p[0] * q[1] - q[0] * p[1];
+    a += k;
+    x += (p[0] + q[0]) * k;
+    y += (p[1] + q[1]) * k;
+  }
+  if (!(Math.abs(a) > 1e-9)) return ringCentroidPx(ring);
+  return [x / (3 * a), y / (3 * a)];
 }
 
 /**
@@ -1447,11 +1483,18 @@ function planSceneFacets(pending, plans, frame, heightSample) {
   const cellM = 12;
   const grid = new Map();
   const key = (gx, gy) => gx + "," + gy;
+  const dbg = { order: 0, open: 0, plan: 0, crowded: 0, stem: 0, shares: [0, 0, 0, 0, 0] };
   for (const r of order) {
     const row = pending[r];
-    if (openEdgeShare(row.area.ringPx, frame, heightSample) < FACET_OPEN_MIN) continue;
-    const plan = planFacet(row, frame);
+    dbg.order++;
+    if (row.trunk) dbg.stem++;
+    const share = openEdgeShare(row.area.ringPx, frame, heightSample);
+    dbg.shares[Math.min(4, Math.floor(share * 5))]++;
+    if (share < FACET_OPEN_MIN) continue;
+    dbg.open++;
+    const plan = planFacet(row, frame, dbg);
     if (!plan) continue;
+    dbg.plan++;
     const xM = plan.c[0] * plan.mpuX;
     const yM = plan.c[1] * plan.mpuY;
     const gx = Math.floor(xM / cellM);
@@ -1469,7 +1512,10 @@ function planSceneFacets(pending, plans, frame, heightSample) {
       }
     }
     if (rMax < plan.rM) {
-      if (!(rMax >= plan.rM * FACET_MIN_SHRINK)) continue;
+      if (!(rMax >= plan.rM * FACET_MIN_SHRINK)) {
+        dbg.crowded++;
+        continue;
+      }
       plan.rM = rMax;
       const ring = facetRing(plan.c, rMax / plan.mpuX, rMax / plan.mpuY, plan.sides, plan.phase);
       if (!ringClearsSpan(ring, plan.floor)) continue;
@@ -1515,13 +1561,19 @@ function planSceneFacets(pending, plans, frame, heightSample) {
       if (near) drop[r] = true;
     }
   }
+  if (process.env.OC_FACET_DEBUG === "1") {
+    console.log("facet-debug " + JSON.stringify(dbg) + " kept " + kept.length + " drop " + drop.filter(Boolean).length);
+  }
   return { plans: out, drop };
 }
 
 /** Plan and apply one crown on its own (no neighbours). Used by tests. */
 function facetCrownParts(parts, row, frame, stand, isolated) {
   if (stand || !isolated) return false;
-  return applyFacet(parts, planFacet(row, frame));
+  const plan = planFacet(row, frame);
+  if (!applyFacet(parts, plan)) return false;
+  if (plan.shift && row.trunk && row.trunk.ringPx) row.trunk.ringPx = row.trunk.ringPx.map((p) => [p[0] + plan.shift[0], p[1] + plan.shift[1]]);
+  return true;
 }
 
 function wantedCrownLayers(discrete, thickness, treeCount) {
@@ -3069,7 +3121,11 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       ]
     );
     roundCrownParts(parts, row, frame);
-    if (facets && facets.plans[r] && applyFacet(parts, facets.plans[r])) crownsFaceted++;
+    if (facets && facets.plans[r] && applyFacet(parts, facets.plans[r])) {
+      crownsFaceted++;
+      const sh = facets.plans[r].shift;
+      if (sh && row.trunk && row.trunk.ringPx) row.trunk.ringPx = row.trunk.ringPx.map((p) => [p[0] + sh[0], p[1] + sh[1]]);
+    }
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
       // An upper band traced on the height grid of a tile can spill past the

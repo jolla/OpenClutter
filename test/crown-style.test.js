@@ -62,7 +62,17 @@ describe("forest=crowns prototype", () => {
     assert.ok(area(parts[1].ringPx) > area(parts[0].ringPx));
     assert.ok(area(parts[0].ringPx) > area(parts[2].ringPx));
     assert.ok(area(parts[1].ringPx) <= area(outline) * 1.02);
-    // One axis: every band is centred over the stem.
+    // One axis: every band, and the stem moved under them, share one centre.
+    const st = row.trunk.ringPx;
+    let sx = 0;
+    let sy = 0;
+    for (let i = 0; i < st.length - 1; i++) {
+      sx += st[i][0];
+      sy += st[i][1];
+    }
+    const cx = sx / (st.length - 1);
+    const cy = sy / (st.length - 1);
+    assert.ok(Math.hypot(cx - 100, cy - 100) < 1);
     for (const p of parts) {
       const n = p.ringPx.length - 1;
       let x = 0;
@@ -71,7 +81,7 @@ describe("forest=crowns prototype", () => {
         x += p.ringPx[i][0];
         y += p.ringPx[i][1];
       }
-      assert.ok(Math.abs(x / n - 100.5) < 1e-6 && Math.abs(y / n - 99.5) < 1e-6);
+      assert.ok(Math.abs(x / n - cx) < 1e-6 && Math.abs(y / n - cy) < 1e-6);
     }
   });
 
