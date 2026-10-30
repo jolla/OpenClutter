@@ -784,12 +784,17 @@ function missingFootprints(grid, rings) {
  * the lidar height, and a roof with no height takes the lidar height, so a
  * neighbour's model height is not borrowed. Only a roof the lidar measures
  * well below the source is lowered; a roof the flight predates reads as
- * ground and keeps its height.
+ * ground and keeps its height. A tower (TALL_SOURCE_M or more) the lidar reads
+ * at under TALL_KEEP_RATIO of its height keeps it too: that is a tower built
+ * or topped out after the flight (Block 185 in Austin, 181 m, read 6.6 m in a
+ * 2017 flight over its site), the same rule applyLidarSample uses.
  */
 const CHECKED_SOURCES = { overture: true, "overture-floors": true, "ms-global": true, nearby: true };
 const CHECK_MIN_SOURCE_M = 6;
 const CHECK_RATIO = 0.6;
 const CHECK_MIN_LIDAR_M = 2.5;
+const TALL_SOURCE_M = 45;
+const TALL_KEEP_RATIO = 0.45;
 
 function checkSourceHeights(features, grid, measure) {
   const heightOf = typeof measure === "function" ? measure : heightForRing;
@@ -809,6 +814,10 @@ function checkSourceHeights(features, grid, measure) {
     let measured = null;
     for (let k = 0; k < list.length && measured == null; k++) measured = heightOf(grid, list[k]);
     if (measured == null || measured < CHECK_MIN_LIDAR_M || (!missing && measured >= h * CHECK_RATIO)) {
+      next.push(feature);
+      continue;
+    }
+    if (!missing && h >= TALL_SOURCE_M && measured < h * TALL_KEEP_RATIO) {
       next.push(feature);
       continue;
     }
@@ -835,7 +844,7 @@ function applyLidarSample(features, trees, grid) {
     // A coarse cell can miss a tower roof and report the podium. Do not
     // replace a tall height with less than half of it.
     const previous = Number(feature.properties && feature.properties.height) || 0;
-    if (previous >= 45 && measured < previous * 0.45) {
+    if (previous >= TALL_SOURCE_M && measured < previous * TALL_KEEP_RATIO) {
       next.push(feature);
       continue;
     }
