@@ -17,6 +17,8 @@
 
 const { quadkeysForBbox } = require("./ms-global");
 const profile = require("./profile-log");
+const exportMode = require("./export-mode");
+const standSplit = require("./stand-split");
 
 const CHM_ZOOM = 10;
 const MAX_TILES = 4;
@@ -1301,7 +1303,11 @@ function crownsFromChm(grid, opts) {
       // cap then dropped most of them.
       if (area >= TILE_AREA_M2) {
         if (prof) tProf = profile.now();
-        const blocks = tilePixels(pixels, mPerX, mPerY, tileMeters(area));
+        let blocks = null;
+        blocks = tilePixels(pixels, mPerX, mPerY, tileMeters(area));
+        // Feedback #9 prototype (off by default): neighbouring blocks of about
+        // one height merge into one piece.
+        if (blocks && exportMode.isMergeTiles()) blocks = standSplit.mergePixelGroups(blocks, at, w, CROWN_MIN_H);
         if (prof) profile.add("tile-split", profile.msSince(tProf));
         if (blocks) {
           for (let b = 0; b < blocks.length; b++) groups.push(blocks[b]);
@@ -1350,8 +1356,10 @@ function crownsFromChm(grid, opts) {
       if (!groups.length) groups.push(pixels);
       const tiled = groups;
       const split = tiled.length > 1;
+      const banded = exportMode.isMergeTiles() && area >= TILE_AREA_M2;
       for (let g = 0; g < tiled.length; g++) {
         const crown = crownFromPixels(tiled[g], values, w, grid, mPerX, mPerY, 0, split || area >= SUBSTAND_AREA_M2);
+        if (crown && banded) crown.banded = true;
         if (crown) crowns.push(crown);
       }
     }

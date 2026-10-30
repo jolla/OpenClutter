@@ -251,7 +251,7 @@ function runOn(workerIndex, task, payload, hooks) {
     try {
       // Threads keep their own module state: carry the export's rule set.
       const mode = require("./export-mode");
-      worker.postMessage({ id, task, payload, siteTypes: mode.isSiteTypes(), shadowTrailers: mode.isShadowTrailers() });
+      worker.postMessage({ id, task, payload, siteTypes: mode.isSiteTypes(), shadowTrailers: mode.isShadowTrailers(), mergeTiles: mode.isMergeTiles() });
     } catch (err) {
       pending.delete(id);
       reject(err);

@@ -173,7 +173,30 @@ function isStaleTowers() {
   return staleTowers;
 }
 
+// Prototype for feedback #9 (wide stands read as a grid of 50 m squares).
+// Off by default; /dev hosts turn it on per request (mergeTiles:true) or
+// with OC_MERGE_TILES=1 in a local run. Never on production.
+// mergeTiles: neighbouring stand blocks whose heights agree ship as one piece.
+let mergeTiles = false;
+
+function setMergeTiles(on) {
+  mergeTiles = !!on;
+}
+
+function isMergeTiles() {
+  return mergeTiles;
+}
+
+/** A prototype switch: only on /dev hosts, and only when asked for. */
+function protoWanted(testHost, body, key, envKey) {
+  if (!testHost) return false;
+  return !!((body && body[key] === true) || process.env[envKey] === "1");
+}
+
 module.exports = {
+  setMergeTiles,
+  isMergeTiles,
+  protoWanted,
   setStaleTowers,
   isStaleTowers,
   setStaleFootprints,

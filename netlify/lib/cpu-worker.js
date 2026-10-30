@@ -17,6 +17,7 @@ parentPort.on("message", (msg) => {
       const mode = require("./export-mode");
       mode.setSiteTypes(msg.siteTypes !== false);
       mode.setShadowTrailers(msg.shadowTrailers === true);
+      mode.setMergeTiles(msg.mergeTiles === true);
       return runTask(msg.task, msg.payload);
     })
     .then(
