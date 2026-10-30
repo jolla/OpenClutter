@@ -266,7 +266,75 @@ async function fetchCopernicusDemSamples(frame, opts) {
     }
   }
   if (out.length < 4) throw new Error("GLO-30 did not return a usable grid");
+  const fineMax = opts && opts.fineGridSide > 0 ? opts.fineGridSide | 0 : 0;
+  if (fineMax > 0) {
+    const fine = glo30FineGrid(tiles, frame, fineMax);
+    if (fine) Object.defineProperty(out, "fineGrid", { value: fine, enumerable: false, writable: true });
+  }
   return out;
+}
+
+/**
+ * Node lattice at the raster's own posting (capped at maxSide per axis), for
+ * the adaptive terrain mesh. Nodes run edge to edge of the frame. A node with
+ * no usable value takes the nearest usable node on its row, then column.
+ */
+function glo30FineGrid(tiles, frame, maxSide) {
+  let resLon = Infinity;
+  let resLat = Infinity;
+  for (let i = 0; i < tiles.length; i++) {
+    resLon = Math.min(resLon, Math.abs(tiles[i].res[0]));
+    resLat = Math.min(resLat, Math.abs(tiles[i].res[1]));
+  }
+  if (!(resLon > 0) || !(resLat > 0) || !Number.isFinite(resLon)) return null;
+  const spanLon = +frame.east - +frame.west;
+  const spanLat = +frame.north - +frame.south;
+  const cols = Math.max(2, Math.min(maxSide, Math.ceil(spanLon / resLon - 1e-6) + 1));
+  const rows = Math.max(2, Math.min(maxSide, Math.ceil(spanLat / resLat - 1e-6) + 1));
+  const z = new Float32Array(cols * rows);
+  let good = 0;
+  for (let r = 0; r < rows; r++) {
+    const lat = +frame.south + (r / (rows - 1)) * spanLat;
+    for (let c = 0; c < cols; c++) {
+      const lon = +frame.west + (c / (cols - 1)) * spanLon;
+      let v = null;
+      for (let i = 0; i < tiles.length && v == null; i++) v = sampleTile(tiles[i], lon, lat);
+      z[r * cols + c] = v == null ? NaN : v;
+      if (v != null) good++;
+    }
+  }
+  if (good < cols * rows * 0.9) return null;
+  fillGaps(z, cols, rows);
+  return { west: +frame.west, south: +frame.south, east: +frame.east, north: +frame.north, cols, rows, z };
+}
+
+function fillGaps(z, cols, rows) {
+  for (let pass = 0; pass < 2; pass++) {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (!Number.isNaN(z[r * cols + c])) continue;
+        let best = NaN;
+        for (let d = 1; d < Math.max(cols, rows) && Number.isNaN(best); d++) {
+          const cand = [
+            [c - d, r],
+            [c + d, r],
+            [c, r - d],
+            [c, r + d],
+          ];
+          for (let k = 0; k < cand.length; k++) {
+            const [cc, rr] = cand[k];
+            if (cc < 0 || rr < 0 || cc >= cols || rr >= rows) continue;
+            const v = z[rr * cols + cc];
+            if (!Number.isNaN(v)) {
+              best = v;
+              break;
+            }
+          }
+        }
+        z[r * cols + c] = best;
+      }
+    }
+  }
 }
 
 module.exports = {
@@ -279,4 +347,5 @@ module.exports = {
   glo30TileUrlForPoint,
   glo30TilesForFrame,
   fetchCopernicusDemSamples,
+  glo30FineGrid,
 };

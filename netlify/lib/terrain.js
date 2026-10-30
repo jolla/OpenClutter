@@ -65,6 +65,7 @@
  */
 
 const { llToClipboard, clipboardToLl, needsGroundMeterImage } = require("./geo-frame");
+const exportMode = require("./export-mode");
 const polygonClipping = require("polygon-clipping");
 const { emptyClipboard, stampGpsTiePoints } = require("./hamina-clipboard");
 const { fetchCopernicusDemSamples, GLO30_CREDIT } = require("./copernicus-dem");
@@ -1407,7 +1408,26 @@ function axisAlignedGrid(grid) {
 }
 
 function quantizeStep(z, step) {
+  if (step && step.levels) return nearestLevel(step.levels, z);
   return round1(Math.round(z / step) * step);
+}
+
+/**
+ * Adaptive terrain bands are a sorted list of heights instead of a fixed
+ * step (see bandLevels). Every vertex snaps to the nearest one, so a shared
+ * vertex still lands on the same height from both sides.
+ */
+function nearestLevel(levels, z) {
+  let lo = 0;
+  let hi = levels.length - 1;
+  if (z <= levels[0]) return levels[0];
+  if (z >= levels[hi]) return levels[hi];
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (levels[mid] <= z) lo = mid;
+    else hi = mid;
+  }
+  return z - levels[lo] <= levels[hi] - z ? levels[lo] : levels[hi];
 }
 
 function dedupeContour(poly) {
@@ -1781,8 +1801,11 @@ function contourPolysForQuad(corners, step) {
   }
   if (zmax - zmin < SLOPED_FLAT_M) return [{ pts: q, flat: true, h: zmin }];
   const polys = [];
-  for (let lo = zmin; lo < zmax - 1e-6; lo = round1(lo + step)) {
-    const hi = round1(lo + step);
+  const levels = step && step.levels ? step.levels : null;
+  let li = levels ? levels.indexOf(zmin) : -1;
+  for (let lo = zmin; lo < zmax - 1e-6; lo = levels ? levels[li] : round1(lo + step)) {
+    const hi = levels ? levels[++li] : round1(lo + step);
+    if (hi == null) break;
     let poly = q.map(function (p) {
       return { x: p.x, y: p.y, z: p.z };
     });
@@ -1794,12 +1817,16 @@ function contourPolysForQuad(corners, step) {
   return polys;
 }
 
-function quadMid(a, b) {
-  return {
-    x: round3((a.x + b.x) / 2),
-    y: round3((a.y + b.y) / 2),
-    z: round1((a.z + b.z) / 2),
-  };
+/**
+ * zAt (adaptive terrain only) reads a new vertex from the native DEM,
+ * already on the band step, so a split adds real ground detail instead of
+ * the bilinear midpoint. Shared vertices read the same xy, so both sides of
+ * a seam agree.
+ */
+function quadMid(a, b, zAt) {
+  const x = round3((a.x + b.x) / 2);
+  const y = round3((a.y + b.y) / 2);
+  return { x, y, z: zAt ? zAt(x, y) : round1((a.z + b.z) / 2) };
 }
 
 /** |twist| / 4 is how far the bilinear center sits off either triangle plane. */
@@ -1811,20 +1838,21 @@ function quadPlaneError(corners) {
   return Math.abs(z0 + z2 - z1 - z3) / 4;
 }
 
-function splitPlanarQuad(corners) {
+function splitPlanarQuad(corners, zAt) {
   const sw = corners[0];
   const se = corners[1];
   const ne = corners[2];
   const nw = corners[3];
-  const south = quadMid(sw, se);
-  const east = quadMid(se, ne);
-  const north = quadMid(nw, ne);
-  const west = quadMid(sw, nw);
+  const south = quadMid(sw, se, zAt);
+  const east = quadMid(se, ne, zAt);
+  const north = quadMid(nw, ne, zAt);
+  const west = quadMid(sw, nw, zAt);
   const center = {
     x: round3((sw.x + se.x + ne.x + nw.x) / 4),
     y: round3((sw.y + se.y + ne.y + nw.y) / 4),
     z: round1((sw.z + se.z + ne.z + nw.z) / 4),
   };
+  if (zAt) center.z = zAt(center.x, center.y);
   return [
     [sw, south, center, west],
     [south, se, east, center],
@@ -1888,8 +1916,16 @@ function balanceContourJunctions(leaves, leafCap) {
  * is split too when its edge runs into those vertices, so the seam has no
  * T-junction gap.
  */
-function refineContourQuads(grid, step, leafCapOverride) {
+function refineContourQuads(grid, step, leafCapOverride, fine) {
+  // fine (adaptive terrain only): { zAt(x, y) on clipboard meters, minLeafM }.
+  // A leaf's error is how far the native DEM sits off that leaf's surface,
+  // so steep or curved ground splits first and flats stay one floor.
+  const zAt = fine ? (x, y) => quantizeStep(fine.zAt(x, y), step) : null;
+  const leafErr = fine ? (corners) => fineLeafError(corners, fine.zAt) : null;
+  // Adaptive splits stop at half a meter too; the leaf cap, not this target,
+  // is what limits them, and the worst leaf always goes first.
   const errTarget = 0.5;
+  const maxDepth = fine ? fineMaxDepth(grid, fine.minLeafM) : 5;
   const budget = Math.max(1, pastePlanQuadBudget());
   const baseLeaves = grid.cols * grid.rows;
   const leafCap =
@@ -1899,7 +1935,7 @@ function refineContourQuads(grid, step, leafCapOverride) {
   // Error splits stop short of the leaf cap so a T-junction can still be
   // closed. balanceContourJunctions spends that remainder.
   const extra = Math.max(0, leafCap - baseLeaves);
-  const errCap = baseLeaves + Math.floor(extra * 0.7);
+  const errCap = fine ? leafCap : baseLeaves + Math.floor(extra * 0.7);
   const leaves = [];
   for (let r = 0; r < grid.rows; r++) {
     for (let c = 0; c < grid.cols; c++) {
@@ -1908,7 +1944,7 @@ function refineContourQuads(grid, step, leafCapOverride) {
           return { x: n.x, y: n.y, z: quantizeStep(n.zRel, step) };
         }
       );
-      leaves.push({ corners: corners, err: quadPlaneError(corners), depth: 0 });
+      leaves.push({ corners: corners, err: leafErr ? leafErr(corners) : quadPlaneError(corners), depth: 0 });
     }
   }
   let guard = 0;
@@ -1916,7 +1952,7 @@ function refineContourQuads(grid, step, leafCapOverride) {
     let worst = -1;
     let worstErr = errTarget;
     for (let i = 0; i < leaves.length; i++) {
-      if (leaves[i].depth >= 5) continue;
+      if (leaves[i].depth >= maxDepth) continue;
       if (leaves[i].err > worstErr) {
         worstErr = leaves[i].err;
         worst = i;
@@ -1924,12 +1960,12 @@ function refineContourQuads(grid, step, leafCapOverride) {
     }
     if (worst < 0) break;
     const parent = leaves[worst];
-    const parts = splitPlanarQuad(parent.corners);
+    const parts = splitPlanarQuad(parent.corners, zAt);
     leaves.splice(worst, 1);
     for (let i = 0; i < parts.length; i++) {
       leaves.push({
         corners: parts[i],
-        err: quadPlaneError(parts[i]),
+        err: leafErr ? leafErr(parts[i]) : quadPlaneError(parts[i]),
         depth: parent.depth + 1,
       });
     }
@@ -1937,10 +1973,62 @@ function refineContourQuads(grid, step, leafCapOverride) {
   // Close every T-junction even when that uses more leaves than the error
   // split asked for. The caller drops the mesh if the floor count then
   // passes the paste budget.
+  if (fine) return fanHangingVertices(leaves, zAt);
   balanceContourJunctions(leaves, leafCap);
   return leaves.map(function (leaf) {
     return leaf.corners;
   });
+}
+
+/**
+ * Adaptive terrain seams. A big leaf beside split neighbors has their
+ * vertices on its edge. Instead of splitting it (which cascades), the leaf
+ * becomes a fan of triangles from its center through every vertex on its
+ * boundary, so both sides of the seam share the same points and heights.
+ * A leaf with no such vertex stays the plain quad.
+ */
+function fanHangingVertices(leaves, zAt) {
+  const verts = new Map();
+  for (let i = 0; i < leaves.length; i++) {
+    const corners = leaves[i].corners;
+    for (let k = 0; k < 4; k++) verts.set(contourVertexKey(corners[k]), corners[k]);
+  }
+  function edgePoints(a, b, depth, out) {
+    if (depth > 8) return;
+    const x = round3((a.x + b.x) / 2);
+    const y = round3((a.y + b.y) / 2);
+    const m = verts.get(x.toFixed(3) + "," + y.toFixed(3));
+    if (!m) return;
+    edgePoints(a, m, depth + 1, out);
+    out.push(m);
+    edgePoints(m, b, depth + 1, out);
+  }
+  const out = [];
+  for (let i = 0; i < leaves.length; i++) {
+    const corners = leaves[i].corners;
+    const ring = [];
+    let hanging = false;
+    for (let k = 0; k < 4; k++) {
+      const a = corners[k];
+      const b = corners[(k + 1) % 4];
+      ring.push(a);
+      const mids = [];
+      edgePoints(a, b, 0, mids);
+      if (mids.length) hanging = true;
+      for (let j = 0; j < mids.length; j++) ring.push(mids[j]);
+    }
+    if (!hanging) {
+      out.push(corners);
+      continue;
+    }
+    const cx = round3((corners[0].x + corners[1].x + corners[2].x + corners[3].x) / 4);
+    const cy = round3((corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4);
+    const center = { x: cx, y: cy, z: zAt(cx, cy) };
+    const fan = [];
+    for (let k = 0; k < ring.length; k++) fan.push([center, ring[k], ring[(k + 1) % ring.length]]);
+    out.push({ fan });
+  }
+  return out;
 }
 
 function mergeRaisedPads(raised) {
@@ -2113,11 +2201,18 @@ function coverContourPoly(pts, ramps, raised) {
   }
 }
 
-function contourPiecesAtStep(grid, step, leafCap) {
+function contourPiecesAtStep(grid, step, leafCap, fine) {
   const polys = [];
-  const quads = refineContourQuads(grid, step, leafCap);
+  const quads = refineContourQuads(grid, step, leafCap, fine);
   for (let i = 0; i < quads.length; i++) {
     const corners = quads[i];
+    if (corners && corners.fan) {
+      for (let t = 0; t < corners.fan.length; t++) {
+        const parts = contourPolysForQuad(corners.fan[t], step);
+        for (let k = 0; k < parts.length; k++) polys.push(parts[k]);
+      }
+      continue;
+    }
       const zmin = Math.min(corners[0].z, corners[1].z, corners[2].z, corners[3].z);
       const zmax = Math.max(corners[0].z, corners[1].z, corners[2].z, corners[3].z);
       // A saddle is not one plane. Two triangles are, and the shared diagonal
@@ -2396,6 +2491,337 @@ function contourMeshFromGrid(grid, frame) {
     vertMeanM: err.mean,
     vertMaxM: err.max,
     cover: err.cover,
+  };
+}
+
+
+/*
+ * Adaptive terrain (export-mode adaptiveTerrain, off by default).
+ *
+ * The 20x20 lattice spends the same floors on a flat paddock as on a pit
+ * wall, and its nodes come from a ~24x24 DEM read, so a 4 km draw is meshed
+ * from 150 to 200 m samples. With the switch on, the DEM is the native grid
+ * (GLO-30 at full resolution, 3DEP as a raster) and every leaf of the
+ * contour mesh is checked against it: a leaf whose surface sits more than
+ * half a band off the ground splits, down to about the DEM's own spacing.
+ * New vertices are read from that DEM. Several band steps are built inside
+ * the same floor and byte caps and the one closest to the DEM is kept.
+ */
+const ADAPTIVE_STEPS = [2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 60, 80, 100, 120, 160, 200, 250, 320];
+/** Native-grid side cap. GLO-30 on the 15 km span limit is ~500 nodes; 320 keeps a 4 km box native. */
+const FINE_GRID_MAX = 320;
+/** Steps built after the first one that fits. */
+const ADAPTIVE_CANDIDATES = 3;
+/** Fitted band counts tried after the fixed steps (see bandLevels). */
+const ADAPTIVE_LEVEL_COUNTS = [6, 10, 16, 24, 32, 48, 64, 96];
+
+function adaptiveTerrainOn() {
+  return exportMode.isAdaptiveTerrain();
+}
+
+/** Bilinear over a fine node lattice ({west,south,east,north,cols,rows,z}). */
+function fineElevation(fine) {
+  const cols = fine.cols;
+  const rows = fine.rows;
+  const spanLon = fine.east - fine.west;
+  const spanLat = fine.north - fine.south;
+  return function elevationAt(lon, lat) {
+    let fx = ((lon - fine.west) / spanLon) * (cols - 1);
+    let fy = ((lat - fine.south) / spanLat) * (rows - 1);
+    fx = Math.max(0, Math.min(cols - 1, fx));
+    fy = Math.max(0, Math.min(rows - 1, fy));
+    const c = Math.min(cols - 2, Math.floor(fx));
+    const r = Math.min(rows - 2, Math.floor(fy));
+    const u = fx - c;
+    const v = fy - r;
+    const z00 = fine.z[r * cols + c];
+    const z10 = fine.z[r * cols + c + 1];
+    const z01 = fine.z[(r + 1) * cols + c];
+    const z11 = fine.z[(r + 1) * cols + c + 1];
+    return (z00 * (1 - u) + z10 * u) * (1 - v) + (z01 * (1 - u) + z11 * u) * v;
+  };
+}
+
+function fineGridStats(fine, frame) {
+  let min = Infinity;
+  for (let i = 0; i < fine.z.length; i++) if (fine.z[i] < min) min = fine.z[i];
+  const widthM = frame && frame.widthM > 0 ? frame.widthM : 800;
+  const lengthM = frame && frame.lengthM > 0 ? frame.lengthM : 800;
+  const spacingM = Math.min(widthM / Math.max(1, fine.cols - 1), lengthM / Math.max(1, fine.rows - 1));
+  return { minZ: min, spacingM };
+}
+
+/** Lower the lattice datum to the fine grid's lowest point so no vertex is below 0. */
+function rebaseGrid(grid, minZ) {
+  if (!(minZ < grid.minZ)) return grid;
+  grid.minZ = minZ;
+  let maxRel = 0;
+  for (const n of grid.nodes) {
+    n.zRel = round1(n.z - minZ);
+    if (n.zRel > maxRel) maxRel = n.zRel;
+  }
+  grid.maxRel = maxRel;
+  grid.relief = grid.maxZ - minZ;
+  return grid;
+}
+
+/** Largest distance from the native DEM to a leaf's bilinear surface, on a 3x3 probe. */
+function fineLeafError(corners, zAt) {
+  const sw = corners[0];
+  const se = corners[1];
+  const ne = corners[2];
+  const nw = corners[3];
+  let worst = 0;
+  for (let a = 1; a <= 3; a++) {
+    for (let b = 1; b <= 3; b++) {
+      const u = a / 4;
+      const v = b / 4;
+      const x = (sw.x * (1 - u) + se.x * u) * (1 - v) + (nw.x * (1 - u) + ne.x * u) * v;
+      const y = (sw.y * (1 - u) + se.y * u) * (1 - v) + (nw.y * (1 - u) + ne.y * u) * v;
+      const zl = (sw.z * (1 - u) + se.z * u) * (1 - v) + (nw.z * (1 - u) + ne.z * u) * v;
+      const e = Math.abs(zAt(x, y) - zl);
+      if (e > worst) worst = e;
+    }
+  }
+  return worst;
+}
+
+/** Split depth that keeps a leaf at or above the DEM spacing. */
+function fineMaxDepth(grid, minLeafM) {
+  const a = at(grid, 0, 0);
+  const b = at(grid, 1, 1);
+  const cell = Math.min(Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+  if (!(cell > 0) || !(minLeafM > 0)) return 5;
+  const d = Math.floor(Math.log2(cell / minLeafM));
+  return Math.max(0, Math.min(6, d));
+}
+
+/** Mesh vs native DEM on a 64x64 probe: mean, rms and max in meters, and cover. */
+function fineMeshError(grid, ramps, raised, zAt) {
+  const items = [];
+  const push = (ring, sloped, h) => {
+    let minx = Infinity;
+    let maxx = -Infinity;
+    let miny = Infinity;
+    let maxy = -Infinity;
+    for (let k = 0; k < ring.length; k++) {
+      if (ring[k][0] < minx) minx = ring[k][0];
+      if (ring[k][0] > maxx) maxx = ring[k][0];
+      if (ring[k][1] < miny) miny = ring[k][1];
+      if (ring[k][1] > maxy) maxy = ring[k][1];
+    }
+    items.push({ ring, sloped, h, minx, maxx, miny, maxy });
+  };
+  for (let i = 0; i < ramps.length; i++) push(ramps[i].area.coordinates[0], true, 0);
+  for (let i = 0; i < raised.length; i++) push(raised[i].area.coordinates[0], false, raised[i].height);
+  const x0 = at(grid, 0, 0).x;
+  const x1 = at(grid, grid.cols, 0).x;
+  const y0 = at(grid, 0, 0).y;
+  const y1 = at(grid, 0, grid.rows).y;
+  const N = 64;
+  let n = 0;
+  let inside = 0;
+  let sum = 0;
+  let sq = 0;
+  let max = 0;
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      // Off-center so probes do not sit on dyadic leaf edges.
+      const x = x0 + ((i + 0.37) / N) * (x1 - x0);
+      const y = y0 + ((j + 0.41) / N) * (y1 - y0);
+      n++;
+      let zMesh = null;
+      for (let k = 0; k < items.length; k++) {
+        const it = items[k];
+        if (x < it.minx || x > it.maxx || y < it.miny || y > it.maxy) continue;
+        if (!contourPointIn(it.ring, x, y)) continue;
+        const z = it.sloped ? ruledRampZ(it.ring, x, y) : it.h;
+        if (zMesh == null || z > zMesh) zMesh = z;
+      }
+      if (zMesh == null) continue;
+      inside++;
+      const e = Math.abs(zMesh - zAt(x, y));
+      sum += e;
+      sq += e * e;
+      if (e > max) max = e;
+    }
+  }
+  return {
+    mean: inside ? Math.round((sum / inside) * 100) / 100 : 0,
+    rms: inside ? Math.sqrt(sq / inside) : Infinity,
+    max: Math.round(max * 100) / 100,
+    cover: n ? inside / n : 0,
+  };
+}
+
+/**
+ * Band heights fitted to the ground (1D k-means on the native DEM, Lloyd
+ * iterations on a 0.5 m histogram). Flats such as a pit floor, benches and
+ * the plain around it get a band at their own height, and a straight wall
+ * between them is one ramp per band instead of a staircase of fixed steps.
+ */
+function bandLevels(values, k) {
+  let min = Infinity;
+  let max = -Infinity;
+  for (let i = 0; i < values.length; i++) {
+    if (values[i] < min) min = values[i];
+    if (values[i] > max) max = values[i];
+  }
+  if (!(max - min >= 1) || k < 2) return null;
+  const bin = 0.5;
+  const nb = Math.ceil((max - min) / bin) + 1;
+  const hist = new Float64Array(nb);
+  for (let i = 0; i < values.length; i++) hist[Math.round((values[i] - min) / bin)] += 1;
+  const total = values.length;
+  // Start on quantiles, then spread any that collapse.
+  let centers = [];
+  let acc = 0;
+  let next = 0.5;
+  for (let b = 0; b < nb && centers.length < k; b++) {
+    acc += hist[b];
+    while (acc / total >= next / k && centers.length < k) {
+      centers.push(min + b * bin);
+      next += 1;
+    }
+  }
+  for (let it = 0; it < 25; it++) {
+    centers = Array.from(new Set(centers.map((c) => Math.round(c * 10) / 10))).sort((a, b) => a - b);
+    const sum = new Float64Array(centers.length);
+    const cnt = new Float64Array(centers.length);
+    let ci = 0;
+    for (let b = 0; b < nb; b++) {
+      if (!hist[b]) continue;
+      const z = min + b * bin;
+      while (ci < centers.length - 1 && Math.abs(centers[ci + 1] - z) <= Math.abs(centers[ci] - z)) ci++;
+      sum[ci] += z * hist[b];
+      cnt[ci] += hist[b];
+    }
+    let moved = 0;
+    for (let i = 0; i < centers.length; i++) {
+      if (!cnt[i]) continue;
+      const c = sum[i] / cnt[i];
+      moved = Math.max(moved, Math.abs(c - centers[i]));
+      centers[i] = c;
+    }
+    if (moved < 0.05) break;
+  }
+  // The lowest and highest ground keep their own band.
+  centers.push(min, max);
+  centers = centers.map((c) => round1(c)).sort((a, b) => a - b);
+  const levels = [];
+  for (let i = 0; i < centers.length; i++) {
+    if (!levels.length || centers[i] - levels[levels.length - 1] >= 0.5) levels.push(centers[i]);
+  }
+  if (levels.length < 2) return null;
+  const gaps = [];
+  for (let i = 1; i < levels.length; i++) gaps.push(levels[i] - levels[i - 1]);
+  gaps.sort((a, b) => a - b);
+  return { levels, gap: gaps[gaps.length >> 1] };
+}
+
+/** One piece per band per cell, for a fixed step or a level list. */
+function bandLoad(grid, q) {
+  if (!(q && q.levels)) return contourStepLoad(grid, q);
+  let n = 0;
+  for (let r = 0; r < grid.rows; r++) {
+    for (let c = 0; c < grid.cols; c++) {
+      const zs = [at(grid, c, r), at(grid, c + 1, r), at(grid, c + 1, r + 1), at(grid, c, r + 1)].map((p) =>
+        quantizeStep(p.zRel, q)
+      );
+      const lo = Math.min(...zs);
+      const hi = Math.max(...zs);
+      if (hi - lo < SLOPED_FLAT_M) {
+        n += 1;
+        continue;
+      }
+      let k = 0;
+      for (let i = 0; i < q.levels.length; i++) if (q.levels[i] > lo && q.levels[i] <= hi) k++;
+      n += Math.max(1, k);
+    }
+  }
+  return n;
+}
+
+/**
+ * Same output shape as contourMeshFromGrid. Builds each band step that can
+ * fit the floor cap, spends the leftover floors on the leaves farthest from
+ * the native DEM, and keeps the step with the smallest error against it.
+ * Returns null when nothing fits; the caller then uses the default mesh.
+ */
+function adaptiveContourMesh(grid, frame, fine) {
+  const budget = Math.max(1, pastePlanQuadBudget());
+  let maxCell = 0;
+  for (let r = 0; r < grid.rows; r++) {
+    for (let c = 0; c < grid.cols; c++) {
+      const span = contourCellSpan(grid, c, r);
+      if (span > maxCell) maxCell = span;
+    }
+  }
+  const cover = Math.max(ADAPTIVE_STEPS[0], Math.ceil(maxCell));
+  const steps = ADAPTIVE_STEPS.filter((st) => st < cover);
+  steps.push(cover);
+  const base = Math.max(1, grid.cols * grid.rows);
+  let best = null;
+
+  let built = 0;
+  for (let i = 0; i < steps.length && built < ADAPTIVE_CANDIDATES; i++) {
+    const r = tryBandSet(steps[i]);
+    if (r) built += 1;
+  }
+  if (fine.values && fine.values.length) {
+    for (let i = 0; i < ADAPTIVE_LEVEL_COUNTS.length; i++) {
+      const q = bandLevels(fine.values, ADAPTIVE_LEVEL_COUNTS[i]);
+      if (!q) break;
+      if (!tryBandSet(q) && bandLoad(grid, q) > budget) break;
+    }
+  }
+  function tryBandSet(step) {
+    if (bandLoad(grid, step) > budget * 2) return false;
+    let pieces = contourPiecesAtStep(grid, step, base, fine);
+    let n = contourPieceCount(pieces);
+    if (!n || n > budget) return false;
+    let lo = base;
+    let hi = base + Math.max(8, (budget - n) * 4);
+    let guard = 0;
+    while (n < budget && hi > lo + 3 && guard++ < 8) {
+      const mid = Math.max(lo + 4, Math.floor((lo + hi) / 2));
+      const trial = contourPiecesAtStep(grid, step, mid, fine);
+      const tn = contourPieceCount(trial);
+      if (tn > n && tn <= budget && contourJunctionGap(trial.ramps) <= 0.15) {
+        pieces = trial;
+        n = tn;
+        lo = mid;
+      } else if (!(tn > n)) {
+        break;
+      } else {
+        hi = mid;
+      }
+    }
+    const err = fineMeshError(grid, pieces.ramps, pieces.raised, fine.zAt);
+
+    if (err.cover < 0.995) return true;
+    if (!best || err.rms < best.err.rms) best = { pieces, step, err };
+    return true;
+  }
+  if (!best) return null;
+  const clip = emptyClipboard();
+  clip.raisedFloorZones = best.pieces.raised;
+  clip.slopedFloors = best.pieces.ramps;
+  clip.attenuatingZones = [];
+  stampGpsTiePoints(clip, frame);
+  return {
+    grid: grid,
+    clip: clip,
+    raised: best.pieces.raised.length,
+    sloped: best.pieces.ramps.length,
+    slopeGapM: contourVertexGap(best.pieces.ramps),
+    contourStepM: best.step && best.step.levels ? best.step.gap : best.step,
+    bandLevels: best.step && best.step.levels ? best.step.levels.length : undefined,
+    vertMeanM: best.err.mean,
+    vertMaxM: best.err.max,
+    vertRmsM: Math.round(best.err.rms * 100) / 100,
+    cover: best.err.cover,
+    adaptive: true,
   };
 }
 
@@ -2730,8 +3156,20 @@ function contourFits(mesh, budget) {
   return n > 0 && n <= budget;
 }
 
-function buildTerrainClipboard(samples, frame, cols, rows, elevationAt, legacy) {
+function buildTerrainClipboard(samples, frame, cols, rows, elevationAt, legacy, fineGrid) {
   const grid = lattice(samples, frame, cols, rows, elevationAt);
+  if (fineGrid && !legacy && !axisAlignedGrid(grid)) {
+    const stats = fineGridStats(fineGrid, frame);
+    rebaseGrid(grid, stats.minZ);
+    const zAt = (x, y) => {
+      const ll = clipboardToLl(x, y, frame);
+      return elevationAt(ll[0], ll[1]) - grid.minZ;
+    };
+    const values = new Float32Array(fineGrid.z.length);
+    for (let i = 0; i < values.length; i++) values[i] = fineGrid.z[i] - grid.minZ;
+    const mesh = adaptiveContourMesh(grid, frame, { zAt, minLeafM: stats.spacingM, values });
+    if (mesh) return mesh;
+  }
   if (!legacy && !axisAlignedGrid(grid)) {
     const budget = Math.max(1, pastePlanQuadBudget());
     const dense = denserContourLattice(samples, frame, cols, rows, elevationAt);
@@ -2812,7 +3250,9 @@ function terrainFromSamplesCapped(samples, frame, opts) {
   const kind = opts && opts.kind === "surface" ? "surface" : "bare-earth";
   const attribution =
     (opts && opts.attribution) || (kind === "surface" ? GLO30_CREDIT : USGS_3DEP_ATTRIBUTION);
-  const elevationAt = buildElevation(clean);
+  const fineGrid =
+    adaptiveTerrainOn() && samples && samples.fineGrid && samples.fineGrid.z ? samples.fineGrid : null;
+  const elevationAt = fineGrid ? fineElevation(fineGrid) : buildElevation(clean);
   const jsonMax = pasteJsonCeiling(opts);
   // A zero ceiling means the zip already fills the response. Skip the lattice.
   if (skiExperimental && jsonMax <= 0 && cols * rows > PASTE_SOFT_GRID * PASTE_SOFT_GRID) {
@@ -2859,7 +3299,7 @@ function terrainFromSamplesCapped(samples, frame, opts) {
   function rebuild(c, r) {
     if (style === "sloped") {
       return {
-        mesh: buildTerrainClipboard(clean, frame, c, r, elevationAt, opts && opts.legacyMesh),
+        mesh: buildTerrainClipboard(clean, frame, c, r, elevationAt, opts && opts.legacyMesh, fineGrid),
         cols: c,
         rows: r,
       };
@@ -2933,7 +3373,7 @@ function terrainFromSamplesCapped(samples, frame, opts) {
   }
   const cellM = reportedCellM(preset, reliefM, highLat, widthM, lengthM, cols, rows);
   const pasteReduced = skiExperimental && (cols !== requestedCols || rows !== requestedRows);
-  return {
+  const out = {
     reliefM: Math.round((maxS - minS) * 10) / 10,
     minZ: Math.round(minS * 10) / 10,
     maxZ: Math.round(maxS * 10) / 10,
@@ -2963,6 +3403,11 @@ function terrainFromSamplesCapped(samples, frame, opts) {
     datumZ: mesh.grid.minZ,
     haminaSlopeDatumM: 0,
   };
+  if (mesh.adaptive) {
+    out.adaptive = true;
+    out.vertRmsM = mesh.vertRmsM;
+  }
+  return out;
 }
 
 function omittedPaste(src) {
@@ -3898,6 +4343,93 @@ function parseDemSamples(body) {
   return out;
 }
 
+const DEP3_EXPORT_URL = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage";
+/** Adaptive terrain: finest 3DEP raster posting asked for, in meters. */
+const DEP3_FINE_MIN_M = 5;
+const DEP3_FINE_MS = 10000;
+
+/**
+ * Adaptive terrain only. One exportImage call returns the 3DEP surface as a
+ * float TIFF at about the DEM's own posting (5 m at the finest, at most
+ * FINE_GRID_MAX pixels a side), which getSamples cannot (it stops near
+ * 1000 points). The server squares the pixels and pads the extent, so the
+ * TIFF's own origin and pixel size are used. Resolves null on any failure.
+ */
+async function fetch3depFineGrid(frame, fetchFn, signal) {
+  try {
+    const geotiff = require("geotiff");
+    const widthM = frame.widthM > 0 ? frame.widthM : 800;
+    const lengthM = frame.lengthM > 0 ? frame.lengthM : 800;
+    const posting = Math.max(DEP3_FINE_MIN_M, Math.max(widthM, lengthM) / (FINE_GRID_MAX - 1));
+    const w = Math.max(2, Math.min(FINE_GRID_MAX, Math.round(widthM / posting) + 1));
+    const h = Math.max(2, Math.min(FINE_GRID_MAX, Math.round(lengthM / posting) + 1));
+    const padLon = ((+frame.east - +frame.west) / w) * 1;
+    const padLat = ((+frame.north - +frame.south) / h) * 1;
+    const url =
+      DEP3_EXPORT_URL +
+      "?" +
+      new URLSearchParams({
+        bbox: [+frame.west - padLon, +frame.south - padLat, +frame.east + padLon, +frame.north + padLat].join(","),
+        bboxSR: "4326",
+        imageSR: "4326",
+        size: w + 2 + "," + (h + 2),
+        format: "tiff",
+        pixelType: "F32",
+        interpolation: "RSP_BilinearInterpolation",
+        f: "image",
+      });
+    const res = await (fetchFn || fetch)(url, { signal });
+    if (!res || res.ok === false) return null;
+    const buf = await res.arrayBuffer();
+    const tiff = await geotiff.fromArrayBuffer(buf);
+    const image = await tiff.getImage(0);
+    const ras = await image.readRasters({ interleave: true });
+    const origin = image.getOrigin();
+    const pres = image.getResolution();
+    const iw = image.getWidth();
+    const ih = image.getHeight();
+    const nodata = typeof image.getGDALNoData === "function" ? image.getGDALNoData() : null;
+    const ok = (v) =>
+      Number.isFinite(v) && v > -500 && v < 9000 && !(nodata != null && Math.abs(v - +nodata) < 1e-3);
+    const z = new Float32Array(w * h);
+    let good = 0;
+    for (let r = 0; r < h; r++) {
+      const lat = +frame.south + (r / (h - 1)) * (+frame.north - +frame.south);
+      for (let c = 0; c < w; c++) {
+        const lon = +frame.west + (c / (w - 1)) * (+frame.east - +frame.west);
+        // Pixel-is-area: centers sit half a pixel in from the origin.
+        const fx = Math.max(0, Math.min(iw - 1, (lon - origin[0]) / pres[0] - 0.5));
+        const fy = Math.max(0, Math.min(ih - 1, (lat - origin[1]) / pres[1] - 0.5));
+        const x0 = Math.min(iw - 2, Math.floor(fx));
+        const y0 = Math.min(ih - 2, Math.floor(fy));
+        const u = fx - x0;
+        const v = fy - y0;
+        const a = ras[y0 * iw + x0];
+        const b = ras[y0 * iw + x0 + 1];
+        const cc = ras[(y0 + 1) * iw + x0];
+        const d = ras[(y0 + 1) * iw + x0 + 1];
+        if (!ok(a) || !ok(b) || !ok(cc) || !ok(d)) {
+          z[r * w + c] = NaN;
+          continue;
+        }
+        z[r * w + c] = (a * (1 - u) + b * u) * (1 - v) + (cc * (1 - u) + d * u) * v;
+        good++;
+      }
+    }
+    if (good < w * h * 0.98) return null;
+    for (let i = 0; i < z.length; i++) if (Number.isNaN(z[i])) z[i] = z[i > 0 ? i - 1 : i + 1];
+    return { west: +frame.west, south: +frame.south, east: +frame.east, north: +frame.north, cols: w, rows: h, z };
+  } catch {
+    return null;
+  }
+}
+
+/** The fine grid rides on the samples array (not serialized) so every caller of terrainFromSamples keeps it. */
+function attachFineGrid(samples, fine) {
+  if (samples && fine) Object.defineProperty(samples, "fineGrid", { value: fine, enumerable: false, writable: true });
+  return samples;
+}
+
 async function fetchDemSamples(frame, fetchFn, opts) {
   const fetchImpl = fetchFn || fetch;
   const signal = (opts && opts.signal) || AbortSignal.timeout(2000);
@@ -4015,12 +4547,7 @@ function beginParallelSurface(frame, opts) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 8000);
   if (timer.unref) timer.unref();
-  const work = fetchCopernicusDemSamples(frame, {
-    signal: ctrl.signal,
-    geotiff: opts.geotiff,
-    sampleCount: plan.sampleCount,
-    maxRasterSide: plan.maxRasterSide,
-  }).then(
+  const work = fetchCopernicusDemSamples(frame, glo30FetchOpts(plan, { signal: ctrl.signal, geotiff: opts.geotiff })).then(
     (samples) => ({ samples }),
     (error) => ({ error })
   );
@@ -4033,11 +4560,25 @@ function beginParallelSurface(frame, opts) {
       clearTimeout(timer);
       const got = await work;
       if (!got || got.error || !got.samples) return null;
-      const usable = usableDemSamples(got.samples);
+      const usable = attachFineGrid(usableDemSamples(got.samples), got.samples.fineGrid);
       if (usable.length < 4) return null;
       return packSurfaceDem(usable, plan, requested, opts, frame);
     },
   };
+}
+
+/**
+ * GLO-30 read options. Adaptive terrain with the full time plan (the
+ * 128-pixel tier) reads full resolution up to FINE_GRID_MAX pixels and
+ * returns the native node grid beside the samples.
+ */
+function glo30FetchOpts(plan, base) {
+  const out = Object.assign({}, base, { sampleCount: plan.sampleCount, maxRasterSide: plan.maxRasterSide });
+  if (adaptiveTerrainOn() && plan.maxRasterSide >= 128) {
+    out.maxRasterSide = FINE_GRID_MAX;
+    out.fineGridSide = FINE_GRID_MAX;
+  }
+  return out;
 }
 
 function abortedDem() {
@@ -4070,6 +4611,15 @@ async function fetchTerrainDemWork(frame, fetchFn, opts) {
   // which used to cancel GLO-30 before it started. Probe briefly instead.
   const probe = outside && !skipProbe ? linkAbort(parent, DEP3_OUTSIDE_MS) : null;
   let samples = [];
+  // Adaptive terrain: the native 3DEP raster runs beside getSamples. It only
+  // refines the mesh; a miss or a slow read leaves the default samples.
+  const fineJob =
+    adaptiveTerrainOn() && opts && opts.backgroundDem && !outside && frameHas3dep(frame)
+      ? (() => {
+          const ctl = linkAbort(parent, DEP3_FINE_MS);
+          return fetch3depFineGrid(frame, fetchFn, ctl.signal).finally(() => ctl.done());
+        })()
+      : null;
   // terrainStyle is intentionally unused here. Sloped and Raised layers share
   // this read; the mesh is built later from the same samples.
   let demOpts = opts;
@@ -4105,6 +4655,7 @@ async function fetchTerrainDemWork(frame, fetchFn, opts) {
         );
       }
     }
+    if (fineJob) attachFineGrid(usable, await fineJob);
     return {
       samples: usable,
       kind: "bare-earth",
@@ -4126,13 +4677,11 @@ async function fetchTerrainDemWork(frame, fetchFn, opts) {
   const requested = sampleCountForResolution(opts && opts.terrainResolution, frame);
   const plan = glo30SamplePlan(requested, demRemainingMs(opts));
   try {
-    const glo = await fetchCopernicusDemSamples(frame, {
-      signal: parent,
-      geotiff: opts && opts.geotiff,
-      sampleCount: plan.sampleCount,
-      maxRasterSide: plan.maxRasterSide,
-    });
-    const gloUsable = usableDemSamples(glo);
+    const glo = await fetchCopernicusDemSamples(
+      frame,
+      glo30FetchOpts(plan, { signal: parent, geotiff: opts && opts.geotiff })
+    );
+    const gloUsable = attachFineGrid(usableDemSamples(glo), glo.fineGrid);
     if (gloUsable.length < 4) throw new Error("GLO-30 short");
     return packSurfaceDem(gloUsable, plan, requested, opts, frame);
   } catch (e) {
@@ -4218,4 +4767,9 @@ module.exports = {
   terrainResolutionNotes,
   formatCellM,
   autoAxisCount,
+  adaptiveContourMesh,
+  fineElevation,
+  fetch3depFineGrid,
+  attachFineGrid,
+  FINE_GRID_MAX,
 };

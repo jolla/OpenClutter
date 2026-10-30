@@ -1542,6 +1542,10 @@ async function handleClutter(event) {
   exportMode.setStaleFootprints(true);
   exportMode.setShadowTrailers(true);
   exportMode.setStaleTowers(true);
+  // Adaptive terrain (prototype): native-resolution DEM and a mesh that
+  // spends the paste's floors on steep ground. /dev hosts only, and only when
+  // the request sends adaptiveTerrain:true (?adaptiveTerrain=1 on the page).
+  exportMode.setAdaptiveTerrain(exportMode.adaptiveTerrainWanted(testHost, body));
   // From 1.2.31 large draws read the street-map tiles in one shared window
   // with a slow-fail chain, a retry pass and a split (export-mode tiledOsm).
   exportMode.setTiledOsm(exportMode.tiledOsmWanted(testHost));

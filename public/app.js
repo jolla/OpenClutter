@@ -114,6 +114,17 @@ function terrainFloorsOverride() {
   return n;
 }
 
+/** /dev only: ?adaptiveTerrain=1 asks for the adaptive terrain prototype. */
+function adaptiveTerrainOverride() {
+  if (!devPage()) return undefined;
+  try {
+    const raw = new URLSearchParams(location.search || "").get("adaptiveTerrain");
+    return raw === "1" || raw === "true" ? true : undefined;
+  } catch (err) {
+    return undefined;
+  }
+}
+
 function jsonBudgetOverride() {
   if (!devPage()) return undefined;
   let raw = "";
@@ -1619,6 +1630,7 @@ async function fetchTerrainPaste() {
     terrainResolution: "auto",
     terrainStyle: "sloped",
     terrainFloors: terrainFloorsOverride(),
+    adaptiveTerrain: adaptiveTerrainOverride(),
     format: "terrain",
   });
   let last = { terrainClipboard: null, terrainStatus: "Terrain did not return. Export again." };
@@ -2015,6 +2027,7 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
       areaCap: areaCapOverride(),
       jsonBudget: jsonBudgetOverride(),
       terrainFloors: terrainFloorsOverride(),
+      adaptiveTerrain: adaptiveTerrainOverride(),
       lidar: lidarEnabled(),
       mapNotes: clutterChecked("include-map-notes"),
       trees: foliage ? trees : [],
@@ -2139,6 +2152,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       areaCap: areaCapOverride(),
       jsonBudget: jsonBudgetOverride(),
       terrainFloors: terrainFloorsOverride(),
+      adaptiveTerrain: adaptiveTerrainOverride(),
       lidar: lidarEnabled(),
       mapNotes: clutterChecked("include-map-notes"),
       trees: foliage ? trees : [],
