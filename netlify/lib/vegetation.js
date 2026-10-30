@@ -1230,12 +1230,16 @@ function roundCrownParts(parts, row, frame) {
  * forest=crowns prototype (/dev only, export-mode crownStyle). A stemmed
  * tree's bands become regular faceted polygons on one axis over its stem,
  * the look of one rounded crown per tree. The widest band has the plan area
- * of the measured crown and the others keep their dome share of it. A band
- * that would put more than FACET_SPILL of itself outside the measured
- * outline shrinks, and a tree whose bands cannot fit keeps its traced shape,
- * so no canopy is drawn where the height model has none.
+ * of the measured crown and the others keep their dome share of it. The
+ * widest band must keep FACET_SPILL or less of itself outside the measured
+ * outline and still cover FACET_COVER of it; an upper band that spills
+ * shrinks. A tree whose bands cannot fit keeps its traced shape, so no
+ * canopy is drawn where the height model has none and little is lost.
  */
 const FACET_SPILL = 0.15;
+const FACET_COVER = 0.85;
+const FACET_CLIP_SCALES = [1.15, 1.3, 1.5];
+const FACET_CLIP_COVER = 0.9;
 const FACET_SIDES = 10;
 const FACET_SIDES_SMALL = 8;
 const FACET_LONE_MAX_M2 = 400;
@@ -1268,6 +1272,39 @@ function insideShare(ring, outline) {
   return got / a;
 }
 
+/** Largest single piece of a facet inside the measured outline. */
+function clipToOutline(ring, outline) {
+  let inter = null;
+  try {
+    inter = polygonClipping.intersection([closeCrownRing(openCrownRing(ring))], [closeCrownRing(openCrownRing(outline))]);
+  } catch {
+    return null;
+  }
+  let best = null;
+  for (const poly of inter || []) {
+    const r = poly && poly[0];
+    if (r && r.length >= 4 && (!best || ringPxArea(r) > ringPxArea(best))) best = r;
+  }
+  return best ? dropCollinearRing(best) : null;
+}
+
+/** Drop near-duplicate and straight-through vertices a clip leaves behind. */
+function dropCollinearRing(ring) {
+  const open = openCrownRing(ring);
+  if (!open || open.length < 3) return null;
+  const out = [];
+  for (let i = 0; i < open.length; i++) {
+    const a = open[(i - 1 + open.length) % open.length];
+    const b = open[i];
+    const d = open[(i + 1) % open.length];
+    const cross = (b[0] - a[0]) * (d[1] - b[1]) - (b[1] - a[1]) * (d[0] - b[0]);
+    const len = Math.hypot(d[0] - a[0], d[1] - a[1]) || 1;
+    if (Math.abs(cross) / len < 0.05) continue;
+    out.push(b);
+  }
+  return out.length >= 3 ? closeCrownRing(out) : null;
+}
+
 function facetCrownParts(parts, row, frame, stand) {
   if (!Array.isArray(parts) || !parts.length || !row || row.palm || row.tile || row.slopePiece || stand) return false;
   const outline = row.area && row.area.ringPx;
@@ -1294,11 +1331,29 @@ function facetCrownParts(parts, row, frame, stand) {
   // A fixed turn per tree, from where it stands, so neighbours do not line up.
   const phase = (((Math.round(c[0] * 7.13) + Math.round(c[1] * 3.71)) % 97) / 97) * ((2 * Math.PI) / sides);
   const floor = crownSpanFloorPx(frame);
+  // The widest band must also keep the measured crown covered: a crown
+  // that is not round enough for a facet keeps its traced outline.
+  const outlinePx = ringPxArea(outline);
   let widest = null;
-  for (let k = 0; k < 8 && !widest; k++) {
-    const ring = facetRing(c, rM / mpuX, rM / mpuY, sides, phase);
-    if (ringClearsSpan(ring, floor) && insideShare(ring, outline) >= 1 - FACET_SPILL) widest = ring;
-    else rM *= 0.9;
+  const tries = [1, 1.06, 0.94];
+  for (let k = 0; k < tries.length && !widest; k++) {
+    const r = rM * tries[k];
+    const ring = facetRing(c, r / mpuX, r / mpuY, sides, phase);
+    if (!ringClearsSpan(ring, floor)) continue;
+    const inside = insideShare(ring, outline);
+    if (inside < 1 - FACET_SPILL) continue;
+    if ((inside * ringPxArea(ring)) / outlinePx < FACET_COVER) continue;
+    widest = ring;
+    rM = r;
+  }
+  // An uneven crown takes a wider facet cut back to its own outline: round
+  // where the crown is, the measured edge where it is not, and nothing outside.
+  for (let k = 0; k < FACET_CLIP_SCALES.length && !widest; k++) {
+    const r = rM * FACET_CLIP_SCALES[k];
+    const cut = clipToOutline(facetRing(c, r / mpuX, r / mpuY, sides, phase), outline);
+    if (!cut || !ringClearsSpan(cut, floor)) continue;
+    if (ringPxArea(cut) / outlinePx < FACET_CLIP_COVER) continue;
+    widest = cut;
   }
   if (!widest) return false;
   const out = [];
@@ -1306,10 +1361,15 @@ function facetCrownParts(parts, row, frame, stand) {
     const share = parts[i].ringPx ? ringPxArea(parts[i].ringPx) / widestArea : 0;
     let r = rM * Math.sqrt(Math.max(0, Math.min(1, share)));
     let ring = null;
+    if (share >= 0.999) ring = widest;
     for (let k = 0; k < 6 && !ring && r > 0; k++) {
-      const cand = share >= 0.999 ? widest : facetRing(c, r / mpuX, r / mpuY, sides, phase);
+      const cand = facetRing(c, r / mpuX, r / mpuY, sides, phase);
       if (ringClearsSpan(cand, floor) && insideShare(cand, outline) >= 1 - FACET_SPILL) ring = cand;
-      else r *= 0.9;
+      else {
+        const cut = clipToOutline(cand, outline);
+        if (cut && ringClearsSpan(cut, floor) && ringPxArea(cut) >= 0.6 * ringPxArea(cand)) ring = cut;
+        else r *= 0.9;
+      }
     }
     if (!ring) return false;
     out.push(ring);
