@@ -237,7 +237,7 @@ const { supplementFootprints } = require("../lib/roof-mask");
 const { surfaceMasksFromImage, openShareSampler, poleShadowContrast } = require("../lib/surface-mask");
 const { fetchLeafOnPhoto, leafOnGreenSampler } = require("../lib/leaf-on-photo");
 const { checkCanopyOnPhoto, photoCanopyNote, leafyShareSampler, vehicleZoneTest, zonedShareSampler } = require("../lib/photo-canopy");
-const { photoCrownRefiner, photoCrownNote } = require("../lib/photo-crowns");
+const { photoCrownRefiner, photoCrownNote, gridHeightAt } = require("../lib/photo-crowns");
 const { createWaterTest, clearWaterCanopy, dropWaterPoints } = require("../lib/water-mask");
 const { rejectPavementFootprints } = require("../lib/pavement");
 const { rejectShadowless } = require("../lib/cast-shadow");
@@ -1542,6 +1542,9 @@ async function handleClutter(event) {
   exportMode.setStaleFootprints(true);
   exportMode.setShadowTrailers(true);
   exportMode.setStaleTowers(true);
+  // 1.3.5 bug fix (feedback #11): the photo canopy check keeps lidar canopy
+  // 12 m and taller that the photo shows dark, on every host.
+  exportMode.setTallCanopyKeep(true);
   // 1.3.2 adaptive terrain: native-resolution DEM and a mesh that spends the
   // paste's floors on steep ground. /dev hosts only (adaptiveTerrain:false
   // or ?adaptiveTerrain=0 turns it off there). Production stays off.
@@ -2816,7 +2819,7 @@ async function handleClutter(event) {
           : null,
       photoLeafyShare:
         footprintMeta.photoCanopy && footprintMeta.photoCanopy.gate && decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH
-          ? zonedShareSampler(leafyShareSampler(decoded), footprintMeta.photoCanopyZone, frame)
+          ? zonedShareSampler(leafyShareSampler(decoded, { heightAt: chmGrid ? gridHeightAt(chmGrid) : null, frame }), footprintMeta.photoCanopyZone, frame)
           : null,
       leafOnGreenShare: leafOnPhoto ? leafOnGreenSampler(leafOnPhoto, frame.mpuX) : null,
       aerialGreenShare:

@@ -32,10 +32,14 @@
  * mid-dark, brown or grey) or deep shade, and hardly any bright roof, is
  * kept as well: a leaf-off hardwood or a crown in the shade of taller trees
  * looks like that, a parked RV or a gravel pitch does not.
+ * Canopy at least TREE_ONLY_M tall stays unless its photo is lit (a bright
+ * share of BRIGHT_MAX or more): a leaf-off woods over leaf litter reads as
+ * dirt pitch, and the gate above can pass on its grey-green cast.
  * Nothing is added.
  */
 
 const { coniferPixel, openGroundPixel } = require("./surface-mask");
+const exportMode = require("./export-mode");
 
 /** No road vehicle stands this tall: the legal limit is 4 to 4.3 m. */
 const VEHICLE_TOP_M = 5;
@@ -51,6 +55,14 @@ const BRANCH_KEEP = 0.4;
 const SHADE_LUMA = 45;
 const BRIGHT_MAX = 0.15;
 const BRIGHT_LUMA = 170;
+/**
+ * No vehicle, awning or park model stands this tall. A cell or crown piece
+ * this tall is cleared only for a tree cut since the flight, and the photo
+ * of that shows a lit pad, gravel or roof. A dark one is a leaf-off or
+ * shaded crown over leaf litter and stays (feedback #11, export-mode
+ * tallCanopyKeep).
+ */
+const TREE_ONLY_M = 12;
 
 function luma(r, g, b) {
   return 0.299 * r + 0.587 * g + 0.114 * b;
@@ -211,7 +223,8 @@ function readCells(grid, photo, frame, inZone) {
  * open ground. Mutates grid.values. Returns the counts for the stats.
  */
 function checkCanopyOnPhoto(grid, photo, frame, inZone) {
-  const out = { gate: false, tallCells: 0, tallLeafy: 0, cleared: 0, vehicleHeight: 0, bare: 0, branchKept: 0 };
+  const out = { gate: false, tallCells: 0, tallLeafy: 0, cleared: 0, vehicleHeight: 0, bare: 0, branchKept: 0, tallKept: 0 };
+  const keepTall = exportMode.isTallCanopyKeep();
   if (typeof inZone !== "function") return out;
   if (grid && typeof grid.values === "string") grid.values = Buffer.from(grid.values, "base64");
   const read = readCells(grid, photo, frame, inZone);
@@ -229,6 +242,10 @@ function checkCanopyOnPhoto(grid, photo, frame, inZone) {
     if (!(v >= CANOPY_MIN_M) || read.leafy[i] < 0 || read.leafy[i] >= LEAFY_MIN) continue;
     if (read.branch[i] >= BRANCH_KEEP && read.bright[i] < BRIGHT_MAX) {
       out.branchKept++;
+      continue;
+    }
+    if (keepTall && v >= TREE_ONLY_M && read.bright[i] < BRIGHT_MAX) {
+      out.tallKept++;
       continue;
     }
     if (v < VEHICLE_TOP_M) {
@@ -252,11 +269,20 @@ function checkCanopyOnPhoto(grid, photo, frame, inZone) {
  * Share of a crown outline (OpenIntent px, y up) that shows leafy texture on
  * the photo. Null (kept) when the ring has too few pixels on the photo, or
  * when it is mostly bare branches and not bright: a leaf-off hardwood.
+ * opts.heightAt(lon, lat) and opts.frame give the canopy height under the
+ * outline: a piece whose median is TREE_ONLY_M or more and that is not lit
+ * is kept as well (tallCanopyKeep).
  */
-function leafyShareSampler(photo) {
+function leafyShareSampler(photo, opts) {
   if (!photo || !photo.data || !(photo.width > 0) || !(photo.height > 0)) return null;
   const { data: d, width: w, height: h } = photo;
   const gains = grayGains(photo);
+  const o = opts || {};
+  const fr = o.frame;
+  const heightAt =
+    exportMode.isTallCanopyKeep() && typeof o.heightAt === "function" && fr && Number.isFinite(+fr.west) && Number.isFinite(+fr.north)
+      ? o.heightAt
+      : null;
   return function leafyShare(ring) {
     let x0 = Infinity;
     let x1 = -Infinity;
@@ -273,6 +299,7 @@ function leafyShareSampler(photo) {
     let leafy = 0;
     let branch = 0;
     let bright = 0;
+    const hs = heightAt ? [] : null;
     for (let y = Math.ceil(y0); y <= y1; y += step) {
       for (let x = Math.ceil(x0); x <= x1; x += step) {
         let inside = false;
@@ -289,6 +316,12 @@ function leafyShareSampler(photo) {
         if (row < 0 || row >= h || col < 0 || col >= w) continue;
         const k = (row * w + col) * 4;
         n++;
+        if (hs) {
+          const lon = +fr.west + ((col + 0.5) / w) * (+fr.east - +fr.west);
+          const lat = +fr.north - ((row + 0.5) / h) * (+fr.north - +fr.south);
+          const v = heightAt(lon, lat);
+          if (v >= CANOPY_MIN_M) hs.push(v);
+        }
         const std = boxStd(d, w, h, col, row);
         if (luma(d[k], d[k + 1], d[k + 2]) >= BRIGHT_LUMA) bright++;
         if (isLeafy(d, k, gains, std)) leafy++;
@@ -297,6 +330,10 @@ function leafyShareSampler(photo) {
     }
     if (n < 6) return null;
     if (branch / n >= BRANCH_KEEP && bright / n < BRIGHT_MAX) return null;
+    if (hs && hs.length >= n * 0.5 && bright / n < BRIGHT_MAX) {
+      hs.sort((a, b) => a - b);
+      if (hs[hs.length >> 1] >= TREE_ONLY_M) return null;
+    }
     return leafy / n;
   };
 }
@@ -398,6 +435,8 @@ module.exports = {
   roofPixel,
   BRANCH_KEEP,
   VEHICLE_TOP_M,
+  TREE_ONLY_M,
+  BRIGHT_MAX,
   LEAFY_MIN,
   BARE_MIN,
 };

@@ -163,6 +163,23 @@ function isShadowTrailers() {
 // more that the lidar under the roof reads at under 45% of it is kept, not
 // lowered (Block 185 in Austin, 181 m, read 6.6 m in a 2017 flight). On for
 // /dev hosts only until the weekly release turns it on for every host.
+// Tall canopy kept by the photo canopy check (1.3.5, feedback #11): inside
+// an RV park, campground or mobile home park, a lidar canopy cell or crown
+// piece at least 12 m tall that the photo shows dark (no lit pad, gravel or
+// roof) stays. No vehicle, awning or park model stands that tall, and a tree
+// cut since the flight leaves lit ground; a dark reading there is a leaf-off
+// or shaded crown over leaf litter. A bug fix, on for every host;
+// setTallCanopyKeep(false) is the 1.3.4 behaviour.
+let tallCanopyKeep = false;
+
+function setTallCanopyKeep(on) {
+  tallCanopyKeep = !!on;
+}
+
+function isTallCanopyKeep() {
+  return tallCanopyKeep;
+}
+
 let staleTowers = false;
 
 function setStaleTowers(on) {
@@ -260,6 +277,8 @@ function protoWanted(testHost, body, key, envKey) {
 }
 
 module.exports = {
+  setTallCanopyKeep,
+  isTallCanopyKeep,
   setAdaptiveTerrain,
   isAdaptiveTerrain,
   adaptiveTerrainWanted,

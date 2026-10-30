@@ -22,6 +22,7 @@ function photoOf(kind) {
       else if (k === "greygreen") c = odd ? [80, 82, 62] : [112, 114, 92];
       else if (k === "brown") c = odd ? [90, 75, 60] : [125, 108, 90];
       else if (k === "shade") c = odd ? [18, 22, 26] : [30, 34, 36];
+      else if (k === "dirt") c = [150, 135, 115];
       else c = [236, 238, 240];
       const i = (y * w + x) * 4;
       data[i] = c[0];
@@ -174,6 +175,43 @@ describe("leafyShareSampler", () => {
     const ring = (x0) => [[x0, 20], [x0 + 30, 20], [x0 + 30, 50], [x0, 50]];
     assert.ok(share(ring(5)) >= pc.PIECE_LEAFY_MIN);
     assert.ok(share(ring(60)) < pc.PIECE_LEAFY_MIN);
+  });
+});
+
+describe("tall canopy keep (feedback #11)", () => {
+  // Left: tall green pines (gate passes). Middle: 24 m leaf-off woods over
+  // leaf litter (smooth brown, reads as dirt pitch). Right: 15 m crowns over a
+  // bright roof (a tree cut since the flight).
+  const kind = (gx) => (gx < 4 ? "leafy" : gx < 7 ? "dirt" : "roof");
+  const height = (gx) => (gx < 4 ? 20 : gx < 7 ? 24 : 15);
+  it("clears dark tall canopy with the switch off (1.3.4 behaviour)", () => {
+    exportMode.setTallCanopyKeep(false);
+    const grid = gridOf(height);
+    const res = pc.checkCanopyOnPhoto(grid, photoOf(kind), frame, ALL);
+    assert.equal(res.gate, true);
+    assert.equal(grid.values[5], 0);
+  });
+  it("keeps dark canopy 12 m and taller, still clears it over a lit roof", () => {
+    exportMode.setTallCanopyKeep(true);
+    try {
+      const grid = gridOf(height);
+      const res = pc.checkCanopyOnPhoto(grid, photoOf(kind), frame, ALL);
+      assert.equal(res.gate, true);
+      assert.equal(res.tallKept, 30);
+      for (let gy = 0; gy < N; gy++) {
+        assert.equal(grid.values[gy * N + 5], 24, "leaf-off woods stay");
+        assert.equal(grid.values[gy * N + 8], 0, "lit roof cleared");
+      }
+      const tall = gridOf(height);
+      const share = pc.leafyShareSampler(photoOf(kind), {
+        frame,
+        heightAt: (lon, lat) => tall.values[Math.min(N - 1, Math.floor((1 - lat) * N)) * N + Math.min(N - 1, Math.floor(lon * N))],
+      });
+      assert.equal(share([[42, 20], [68, 20], [68, 50], [42, 50]]), null, "tall dark crown piece kept");
+      assert.ok(share([[72, 20], [98, 20], [98, 50], [72, 50]]) < pc.PIECE_LEAFY_MIN, "piece over a lit roof dropped");
+    } finally {
+      exportMode.setTallCanopyKeep(false);
+    }
   });
 });
 
