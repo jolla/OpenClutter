@@ -16,6 +16,8 @@ const { MAX_TREES, maxTreesForBbox, canopyHeightM } = require("./tree-source");
 const { crownsForExport, tracePixels } = require("./canopy-height");
 const { BUILDING_BUFFER_M, createClipSet, clipFoliageRing, dissolveFoliageRings, pointInRing, intersectionAreaPx } = require("./poly-clip");
 const polygonClipping = require("polygon-clipping");
+const exportMode = require("./export-mode");
+const standSplit = require("./stand-split");
 const profile = require("./profile-log");
 
 function pointInAabb(x, y, boxes, pad) {
@@ -371,6 +373,7 @@ function polygonsFromCrowns(crowns, frame) {
       kind: "canopy",
       shape: "polygon",
       segTree: c.segTree === true,
+      banded: c.banded === true,
     });
   }
   return polygons;
@@ -2464,6 +2467,18 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   };
   // A stand wider than one crown ships as tiles about 50 m across, each at
   // the canopy height measured over it, never as one flat sheet.
+  const bandStats = { stands: 0, pieces: 0, gapM2: 0 };
+  const tileCentreHeight = (ll) => {
+    let lon = 0;
+    let lat = 0;
+    const n = ll.length > 1 && ll[0][0] === ll[ll.length - 1][0] ? ll.length - 1 : ll.length;
+    for (let i = 0; i < n; i++) {
+      lon += ll[i][0];
+      lat += ll[i][1];
+    }
+    const h = Number(heightSample(lon / n, lat / n));
+    return h >= 3 && h < 80 ? h : 0;
+  };
   const tileSeats = (seats) => {
     const { mpuX, mpuY } = ringMeters(frame);
     const out = [];
@@ -2474,12 +2489,44 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
         out.push(seat);
         continue;
       }
+      // Prototype (feedback #9, off by default): a piece the canopy grid trace
+      // already cut along its height bands ships whole; any other wide stand
+      // is cut along the canopy's own height bands instead of a 50 m grid.
+      if ((exportMode.isCanopyBands() || exportMode.isMergeTiles()) && seat.banded) {
+        out.push(seat);
+        continue;
+      }
+      if (exportMode.isCanopyBands() && heightSample) {
+        let cut = null;
+        try {
+          cut = standSplit.bandPieces(seat.ringPx, frame, heightSample, { scrubGaps: exportMode.isScrubGaps() });
+        } catch {
+          cut = null;
+        }
+        if (cut && cut.pieces && cut.pieces.length) {
+          bandStats.stands++;
+          bandStats.gapM2 += cut.gapsRemovedM2 || 0;
+          let made = 0;
+          for (const piece of cut.pieces) {
+            if (!piece.ringPx || piece.ringPx.length < 4 || canopyAreaM2(piece.ringPx, frame) < SLIVER_M2) continue;
+            const ll = piece.ringPx.map((p) => pxToLl(p[0], p[1], frame));
+            out.push({ ringPx: piece.ringPx, ground: seat.ground, slopePiece: seat.slopePiece, ll, tile: true, bandH: piece.bandH || 0 });
+            made++;
+          }
+          bandStats.pieces += made;
+          if (made) {
+            tiled++;
+            continue;
+          }
+        }
+      }
       const b = ringBoundsPx(seat.ringPx);
       const sx = STAND_TILE_M / mpuX;
       const sy = STAND_TILE_M / (mpuY || mpuX);
       let made = 0;
-      for (let y = b.minY; y < b.maxY; y += sy) {
-        for (let x = b.minX; x < b.maxX; x += sx) {
+      const boxTiles = [];
+      for (let y = b.minY, gy = 0; y < b.maxY; y += sy, gy++) {
+        for (let x = b.minX, gx = 0; x < b.maxX; x += sx, gx++) {
           const box = clipRingToBox(seat.ringPx, x, y, x + sx, y + sy);
           if (!box || box.length < 4) continue;
           // A box cut of a notched outline can bridge the notch; the roof
@@ -2490,11 +2537,34 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
             const ring = parts[q];
             if (!ring || ring.length < 4 || canopyAreaM2(ring, frame) < SLIVER_M2) continue;
             const ll = ring.map((p) => pxToLl(p[0], p[1], frame));
-            out.push({ ringPx: ring, ground: seat.ground, slopePiece: seat.slopePiece, ll, tile: true });
+            boxTiles.push({ ringPx: ring, ground: seat.ground, slopePiece: seat.slopePiece, ll, tile: true, gx, gy });
             made++;
           }
         }
       }
+      // Prototype (feedback #9, off by default): neighbouring tiles whose
+      // heights agree ship as one piece.
+      if (exportMode.isMergeTiles() && heightSample && boxTiles.length > 1) {
+        let merged = null;
+        try {
+          for (const t of boxTiles) t.h = tileCentreHeight(t.ll);
+          merged = standSplit.mergeTilePieces(boxTiles, frame);
+        } catch {
+          merged = null;
+        }
+        if (merged && merged.length) {
+          bandStats.stands++;
+          bandStats.pieces += merged.length;
+          for (const m of merged) {
+            if (!m.ringPx || m.ringPx.length < 4 || canopyAreaM2(m.ringPx, frame) < SLIVER_M2) continue;
+            const ll = m.ringPx.map((p) => pxToLl(p[0], p[1], frame));
+            out.push({ ringPx: m.ringPx, ground: seat.ground, slopePiece: seat.slopePiece, ll, tile: true, bandH: m.bandH || 0 });
+          }
+          tiled++;
+          continue;
+        }
+      }
+      for (const t of boxTiles) out.push(t);
       if (!made) out.push(seat);
       else tiled++;
     }
@@ -2505,7 +2575,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     // A neighbor crown is here so a shared edge is cut the same way. Its
     // pieces belong to the tile that owns that crown.
     if (area.context) continue;
-    const seats = tileSeats(seatsFor(area));
+    const seats = tileSeats(area.banded ? seatsFor(area).map((st) => Object.assign(st, { banded: true })) : seatsFor(area));
     for (let s = 0; s < seats.length; s++) {
       const seat = seats[s];
       const rowArea = {
@@ -2522,7 +2592,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
           lon += seat.ll[i][0];
           lat += seat.ll[i][1];
         }
-        const localH = Number(heightSample(lon / n, lat / n));
+        const localH = seat.bandH !== undefined ? Number(seat.bandH) : Number(heightSample(lon / n, lat / n));
         if (localH >= 3 && localH < 80 && rowArea.material) {
           const tier = String(rowArea.material.name || "").indexOf("Light") >= 0 ? "light" : "heavy";
           const localMat = materialForVegetation(localH, tier);
@@ -2735,6 +2805,8 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     crownCapped,
     regionCapped,
     standsTiled: tiled,
+    standPieces: bandStats.pieces,
+    scrubGapM2: bandStats.gapM2,
     foliageLifted,
     foliageGeometry,
     foliageCoarsened: coarsened,

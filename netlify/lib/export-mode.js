@@ -197,10 +197,60 @@ function adaptiveTerrainWanted(testHost, body) {
   return !(v === false || v === 0 || v === "0" || v === "false");
 }
 
+// Prototypes for feedback #9 (wide stands read as a grid of 50 m squares).
+// Off by default; /dev hosts turn one on per request (canopyBands:true,
+// mergeTiles:true, scrubGaps:true) or with OC_CANOPY_BANDS=1,
+// OC_MERGE_TILES=1, OC_SCRUB_GAPS=1 in a local run. Never on production.
+// canopyBands: a wide stand is cut along its canopy height bands.
+let canopyBands = false;
+
+function setCanopyBands(on) {
+  canopyBands = !!on;
+}
+
+function isCanopyBands() {
+  return canopyBands;
+}
+
+// mergeTiles: neighbouring 50 m tiles whose heights agree ship as one piece.
+let mergeTiles = false;
+
+function setMergeTiles(on) {
+  mergeTiles = !!on;
+}
+
+function isMergeTiles() {
+  return mergeTiles;
+}
+
+// scrubGaps (with canopyBands): open ground inside a stand is left out.
+let scrubGaps = false;
+
+function setScrubGaps(on) {
+  scrubGaps = !!on;
+}
+
+function isScrubGaps() {
+  return scrubGaps;
+}
+
+/** A prototype switch: only on /dev hosts, and only when asked for. */
+function protoWanted(testHost, body, key, envKey) {
+  if (!testHost) return false;
+  return !!((body && body[key] === true) || process.env[envKey] === "1");
+}
+
 module.exports = {
   setAdaptiveTerrain,
   isAdaptiveTerrain,
   adaptiveTerrainWanted,
+  setCanopyBands,
+  isCanopyBands,
+  setMergeTiles,
+  isMergeTiles,
+  setScrubGaps,
+  isScrubGaps,
+  protoWanted,
   setStaleTowers,
   isStaleTowers,
   setStaleFootprints,
