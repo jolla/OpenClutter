@@ -150,6 +150,50 @@ function stampGpsTiePoints(clip, frame) {
   return clip;
 }
 
+/**
+ * Keep every paste item on the imported aerial, [-widthM, 0] x [-lengthM, 0]
+ * in clipboard meters. Hamina lines the paste up with the map only when the
+ * paste stays inside it: a map note 25 m past the east edge put the whole
+ * terrain paste 25 m east of the aerial (feedback #6). Notes past the edge
+ * are dropped, floor vertices are pinned to it. Tie points are the corners.
+ */
+function fitClipboardToMap(clip, frame) {
+  if (!clip || !frame) return clip;
+  const w = +frame.widthM;
+  const l = +frame.lengthM;
+  if (!(w > 0) || !(l > 0)) return clip;
+  const slack = 0.5;
+  const pin = (v, lo) => +Math.min(0, Math.max(lo, v)).toFixed(4);
+  const inside = (x, y) => x >= -w - slack && x <= slack && y >= -l - slack && y <= slack;
+  if (Array.isArray(clip.mapNotes)) {
+    clip.mapNotes = clip.mapNotes
+      .filter((n) => n && Number.isFinite(+n.x) && Number.isFinite(+n.y) && inside(+n.x, +n.y))
+      .map((n) => Object.assign({}, n, { x: pin(+n.x, -w), y: pin(+n.y, -l) }));
+  }
+  const keys = ["raisedFloorZones", "slopedFloors", "attenuatingZones"];
+  for (let k = 0; k < keys.length; k++) {
+    const list = clip[keys[k]];
+    if (!Array.isArray(list)) continue;
+    for (let i = 0; i < list.length; i++) {
+      const rings = list[i] && list[i].area && list[i].area.coordinates;
+      if (!Array.isArray(rings)) continue;
+      for (let r = 0; r < rings.length; r++) {
+        const ring = rings[r];
+        if (!Array.isArray(ring)) continue;
+        for (let p = 0; p < ring.length; p++) {
+          const pt = ring[p];
+          if (!Array.isArray(pt) || !Number.isFinite(+pt[0]) || !Number.isFinite(+pt[1])) continue;
+          const x = pin(+pt[0], -w);
+          const y = pin(+pt[1], -l);
+          if (x !== pt[0]) pt[0] = x;
+          if (y !== pt[1]) pt[1] = y;
+        }
+      }
+    }
+  }
+  return clip;
+}
+
 function emptyClipboard(id) {
   const clip = {
     header: { type: "HaminaClipboard", version: [1, 0, 0], id: id || uuid(), isCut: false },
@@ -227,6 +271,7 @@ module.exports = {
   gpsTiePoints,
   gpsClipboard,
   stampGpsTiePoints,
+  fitClipboardToMap,
   oiMaterialFromType,
   pickBuildingTypeId,
   clipZone,

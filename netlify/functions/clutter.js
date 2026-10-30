@@ -229,7 +229,7 @@ let sourceCapsOverride = null;
 function setSourceCapsForTests(caps) {
   sourceCapsOverride = caps || null;
 }
-const { gpsClipboard, stampGpsTiePoints } = require("../lib/hamina-clipboard");
+const { gpsClipboard, stampGpsTiePoints, fitClipboardToMap } = require("../lib/hamina-clipboard");
 const { buildMapNotes, stampMapNotes } = require("../lib/map-notes");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
@@ -3133,6 +3133,9 @@ async function handleClutter(event) {
       if (terrainFields.terrainClipboard) stampMapNotes(terrainFields.terrainClipboard, notes);
       stampMapNotes(gpsPaste, notes);
     }
+    // Nothing in Copy terrain may sit past the aerial, or Hamina shifts the paste.
+    if (terrainFields.terrainClipboard) fitClipboardToMap(terrainFields.terrainClipboard, frame);
+    fitClipboardToMap(gpsPaste, frame);
     const timings = stageClock.snapshot({
       areaM2: frame && frame.widthM && frame.lengthM ? frame.widthM * frame.lengthM : 0,
     });
