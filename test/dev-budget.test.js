@@ -117,12 +117,15 @@ describe("1.2.29 /dev Hamina budget", () => {
     assert.equal(prodUi.some((l) => /map image counts/.test(l)), false);
   });
 
-  it("the export function turns the budget and the batch 1 rules on for every host (1.2.41)", () => {
+  it("the export function turns the budget and the batch 1 and batch 2 rules on for every host (1.2.41, 1.3.0)", () => {
     const src = fs.readFileSync(path.join(__dirname, "../netlify/functions/clutter.js"), "utf8");
     assert.match(src, /exportMode\.setBigBudget\(true\);/);
     assert.match(src, /exportMode\.setSiteTypes\(true\);/);
     assert.match(src, /exportMode\.setPhotoCanopy\(true\);/);
-    assert.match(src, /exportMode\.setPhotoCrowns\(testHost\);/);
+    assert.match(src, /exportMode\.setPhotoCrowns\(true\);/);
+    assert.match(src, /exportMode\.setStaleFootprints\(true\);/);
+    assert.match(src, /exportMode\.setShadowTrailers\(true\);/);
+    assert.match(src, /exportMode\.setStaleTowers\(true\);/);
     assert.match(src, /exportMode\.setRvShell\(exportMode\.rvShellWanted\(testHost, body\)\);/);
     assert.match(src, /exportMode\.setParkContext\(exportMode\.parkContextWanted\(testHost, body\)\);/);
   });

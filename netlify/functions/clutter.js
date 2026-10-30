@@ -1534,11 +1534,14 @@ async function handleClutter(event) {
   // photo-shaped crowns stay on /dev hosts: their stale-lidar test fired in
   // a leafy campground (Traverse City KOA) and cut real dense canopy.
   exportMode.setPhotoCanopy(true);
-  exportMode.setPhotoCrowns(testHost);
-  // Stale pad footprints and shaded trailers stay on /dev hosts for now.
-  exportMode.setStaleFootprints(testHost);
-  exportMode.setShadowTrailers(testHost);
-  exportMode.setStaleTowers(testHost);
+  // Production batch 2 (1.3.0): photo-shaped crowns (1.2.39 to 1.2.48), stale
+  // pad footprints and shaded trailers (1.2.44 to 1.2.46) and the stale tower
+  // guard (1.2.57) run on every host. Pass testHost again to put one back on
+  // /dev hosts only.
+  exportMode.setPhotoCrowns(true);
+  exportMode.setStaleFootprints(true);
+  exportMode.setShadowTrailers(true);
+  exportMode.setStaleTowers(true);
   // From 1.2.31 large draws read the street-map tiles in one shared window
   // with a slow-fail chain, a retry pass and a split (export-mode tiledOsm).
   exportMode.setTiledOsm(exportMode.tiledOsmWanted(testHost));
