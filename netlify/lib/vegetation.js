@@ -1226,6 +1226,98 @@ function roundCrownParts(parts, row, frame) {
   }
 }
 
+/**
+ * forest=crowns prototype (/dev only, export-mode crownStyle). A stemmed
+ * tree's bands become regular faceted polygons on one axis over its stem,
+ * the look of one rounded crown per tree. The widest band has the plan area
+ * of the measured crown and the others keep their dome share of it. A band
+ * that would put more than FACET_SPILL of itself outside the measured
+ * outline shrinks, and a tree whose bands cannot fit keeps its traced shape,
+ * so no canopy is drawn where the height model has none.
+ */
+const FACET_SPILL = 0.15;
+const FACET_SIDES = 10;
+const FACET_SIDES_SMALL = 8;
+const FACET_LONE_MAX_M2 = 400;
+
+function facetRing(c, rx, ry, sides, phase) {
+  const ring = [];
+  for (let i = 0; i < sides; i++) {
+    const a = phase + (2 * Math.PI * i) / sides;
+    ring.push([c[0] + rx * Math.cos(a), c[1] + ry * Math.sin(a)]);
+  }
+  ring.push([ring[0][0], ring[0][1]]);
+  return ring;
+}
+
+function insideShare(ring, outline) {
+  const a = ringPxArea(ring);
+  if (!(a > 0)) return 0;
+  let inter = null;
+  try {
+    inter = polygonClipping.intersection([closeCrownRing(openCrownRing(ring))], [closeCrownRing(openCrownRing(outline))]);
+  } catch {
+    return 0;
+  }
+  let got = 0;
+  for (const poly of inter || []) {
+    if (!poly || !poly[0]) continue;
+    got += ringPxArea(poly[0]);
+    for (let h = 1; h < poly.length; h++) got -= ringPxArea(poly[h]);
+  }
+  return got / a;
+}
+
+function facetCrownParts(parts, row, frame, stand) {
+  if (!Array.isArray(parts) || !parts.length || !row || row.palm || row.tile || row.slopePiece || stand) return false;
+  const outline = row.area && row.area.ringPx;
+  if (!outline || outline.length < 4) return false;
+  const mpuX = (frame && (frame.mpuX || frame.mpu)) || 1;
+  const mpuY = (frame && frame.mpuY) || mpuX;
+  const outlineM2 = ringPxArea(outline) * mpuX * mpuY;
+  if (!(outlineM2 > 0)) return false;
+  // A crown with no stem is faceted only when it is one small clump; a
+  // woods or a tree line keeps its traced outline.
+  if (!row.trunk && outlineM2 > FACET_LONE_MAX_M2) return false;
+  const stem = row.trunk && row.trunk.ringPx;
+  if (row.trunk && (!stem || stem.length < 4)) return false;
+  const c = ringCentroidPx(stem || outline);
+  if (!c || !pointInRing(c, outline)) return false;
+  let widestArea = 0;
+  for (let i = 0; i < parts.length; i++) {
+    const a = parts[i].ringPx ? ringPxArea(parts[i].ringPx) : 0;
+    if (a > widestArea) widestArea = a;
+  }
+  if (!(widestArea > 0)) return false;
+  let rM = Math.sqrt(outlineM2 / Math.PI);
+  const sides = rM >= 3 ? FACET_SIDES : FACET_SIDES_SMALL;
+  // A fixed turn per tree, from where it stands, so neighbours do not line up.
+  const phase = (((Math.round(c[0] * 7.13) + Math.round(c[1] * 3.71)) % 97) / 97) * ((2 * Math.PI) / sides);
+  const floor = crownSpanFloorPx(frame);
+  let widest = null;
+  for (let k = 0; k < 8 && !widest; k++) {
+    const ring = facetRing(c, rM / mpuX, rM / mpuY, sides, phase);
+    if (ringClearsSpan(ring, floor) && insideShare(ring, outline) >= 1 - FACET_SPILL) widest = ring;
+    else rM *= 0.9;
+  }
+  if (!widest) return false;
+  const out = [];
+  for (let i = 0; i < parts.length; i++) {
+    const share = parts[i].ringPx ? ringPxArea(parts[i].ringPx) / widestArea : 0;
+    let r = rM * Math.sqrt(Math.max(0, Math.min(1, share)));
+    let ring = null;
+    for (let k = 0; k < 6 && !ring && r > 0; k++) {
+      const cand = share >= 0.999 ? widest : facetRing(c, r / mpuX, r / mpuY, sides, phase);
+      if (ringClearsSpan(cand, floor) && insideShare(cand, outline) >= 1 - FACET_SPILL) ring = cand;
+      else r *= 0.9;
+    }
+    if (!ring) return false;
+    out.push(ring);
+  }
+  for (let i = 0; i < parts.length; i++) parts[i].ringPx = out[i];
+  return true;
+}
+
 function wantedCrownLayers(discrete, thickness, treeCount) {
   const fit = Math.floor((Number(thickness) + 1e-6) / MIN_CROWN_BAND_M);
   if (fit < 2) return 1;
@@ -2711,6 +2803,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   }
   if (prof) profile.add("seat", profile.msSince(tProf));
   let canopyCount = 0;
+  let crownsFaceted = 0;
   if (prof) tProf = profile.now();
   const plans = layerCounts(pending, frame);
   for (let r = 0; r < pending.length; r++) {
@@ -2763,6 +2856,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       ]
     );
     roundCrownParts(parts, row, frame);
+    if (exportMode.isCrownStyle() && facetCrownParts(parts, row, frame, !!stand)) crownsFaceted++;
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
       // An upper band traced on the height grid of a tile can spill past the
@@ -2805,6 +2899,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     crownCapped,
     regionCapped,
     standsTiled: tiled,
+    crownsFaceted,
     standPieces: bandStats.pieces,
     scrubGapM2: bandStats.gapM2,
     foliageLifted,
@@ -2831,4 +2926,5 @@ module.exports = {
   blockerFromRings,
   polygonsFromCrowns,
   assembleFoliage,
+  facetCrownParts,
 };

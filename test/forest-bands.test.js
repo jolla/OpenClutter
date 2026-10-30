@@ -18,7 +18,8 @@ describe("feedback #9 canopyBands prototype", () => {
     assert.equal(exportMode.protoWanted(true, { canopyBands: true }, "canopyBands", "OC_CANOPY_BANDS"), true);
     const src = fs.readFileSync(path.join(__dirname, "../netlify/functions/clutter.js"), "utf8");
     assert.match(src, /const forest = exportMode\.forestMode\(testHost, body\);/);
-    assert.match(src, /exportMode\.setCanopyBands\(forest === "bands"\);/);
+    assert.match(src, /exportMode\.setCanopyBands\(forest === "bands" \|\| forest === "crowns"\);/);
+    assert.match(src, /exportMode\.setCrownStyle\(forest === "crowns"\);/);
   });
 
   it("picks the forest cut only on a /dev host", () => {
