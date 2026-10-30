@@ -24,6 +24,10 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.2** /dev only (Oct 30, 2026): adaptive terrain for Copy terrain, from Jerry's Kalgoorlie Super Pit report (feedback #10 follow-up). Production is unchanged.
+  - The terrain DEM is read at its native spacing (Copernicus GLO-30 at full resolution outside the US, a USGS 3DEP raster beside the usual samples in the US), and the Copy terrain mesh spends its floors where the ground is steep or curved (pit walls, ski runs) and stays coarse on flats. Band heights follow the ground (clustered elevations) instead of a fixed step. The paste stays within the same 1500 floor and 400 KB caps.
+  - Measured against the native DEM: Kalgoorlie Super Pit RMS 14.4 m to 10.1 m (steep ground 18.4 to 14.7 m, worst point 83 to 61 m); Snowbird, UT 17.3 to 13.4 m (worst point 123 to 64 m); Silver View RV 1.6 to 1.3 m; Granite Peak 0.78 to 0.71 m. Pastes use more of the budget (Kalgoorlie 733 to 1492 floors, 181 to 389 KB).
+  - Export-mode switch adaptiveTerrain, on for /dev hosts only. ?adaptiveTerrain=0 on the /dev page turns it off for a comparison export. Production output is byte-identical to 1.3.1.
 - **1.3.1** Bug fixes on every host (Oct 30, 2026).
   - Search (feedback #8): a City, State search such as "Austin, TX" goes to the city. Before, the map could jump to a place named after the city in another town (Austin College in Sherman, TX). A trailing state code or name is now read as the state, and the town with that name in that state comes first. Other searches rank as before.
   - Terrain (feedback #10): Copy terrain works on larger draws outside the US. When USGS 3DEP does not cover a draw, terrain comes from Copernicus GLO-30, and a draw more than about 3.5 km across reads a coarser GLO-30 layer. That layer has no map position of its own, so the read failed and terrain was left out with "USGS 3DEP did not return a usable grid" (Kalgoorlie Super Pit, Western Australia). The coarser layer now takes its position from the full tile. Smaller draws and US draws are unchanged.
