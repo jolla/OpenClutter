@@ -4,6 +4,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## Production releases
 
+- **v1.3.1** (Oct 30, 2026) production fix: the 1.3.1 search and terrain fixes below on top of v1.3.0. /dev and production stay on the same build.
 - **v1.3.0** (Oct 30, 2026) production batch 2: production takes /dev 1.3.0, so both hosts run the same page and the same export rules. New on production since v1.2.58: the 1.2.44 to 1.2.48 RV park and tree crown rules, the 1.2.51 Feedback form, the 1.2.52 shareable links and blocked-network messages, the 1.2.53 early block check, the 1.2.54 place labels and the 1.2.57 tower height fix. The four switches that kept these on /dev hosts (photoCrowns, staleFootprints, shadowTrailers, staleTowers) are now on for every host.
 - **v1.2.58** (Oct 30, 2026) production fix: only the 1.2.58 Copy terrain fallback below on top of v1.2.56. The 1.2.51 to 1.2.57 /dev changes stay on /dev.
 - **v1.2.56** (Oct 29, 2026) production fix: only the 1.2.56 Copy terrain fix below on top of v1.2.50. The 1.2.51 to 1.2.54 changes stay on /dev.
@@ -23,6 +24,9 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.1** Bug fixes on every host (Oct 30, 2026).
+  - Search (feedback #8): a City, State search such as "Austin, TX" goes to the city. Before, the map could jump to a place named after the city in another town (Austin College in Sherman, TX). A trailing state code or name is now read as the state, and the town with that name in that state comes first. Other searches rank as before.
+  - Terrain (feedback #10): Copy terrain works on larger draws outside the US. When USGS 3DEP does not cover a draw, terrain comes from Copernicus GLO-30, and a draw more than about 3.5 km across reads a coarser GLO-30 layer. That layer has no map position of its own, so the read failed and terrain was left out with "USGS 3DEP did not return a usable grid" (Kalgoorlie Super Pit, Western Australia). The coarser layer now takes its position from the full tile. Smaller draws and US draws are unchanged.
 - **1.3.0** Production batch 2 (Oct 30, 2026). Everything below now runs on openclutter.com as well as /dev.
   - Feedback: a Feedback button in the bottom-right corner opens a short form (Bug, Suggestion or Other, a message, up to 3 screenshots, an optional email). Reports go privately to the OpenClutter team. If a network blocks the form, it says so before you type and Send is greyed out.
   - Shareable links: the address bar follows the map and the drawn box, so a site can be bookmarked or sent to someone. Opening the link brings back the view and the box, ready to export.
