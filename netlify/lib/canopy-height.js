@@ -1308,6 +1308,8 @@ function crownsFromChm(grid, opts) {
         // Feedback #9 prototype (off by default): neighbouring blocks of about
         // one height merge into one piece.
         if (blocks && exportMode.isMergeTiles()) blocks = standSplit.mergePixelGroups(blocks, at, w, CROWN_MIN_H);
+        // A merged piece never fills a hole it wraps around.
+        if (blocks && exportMode.isMergeTiles()) blocks = standSplit.holeFreeGroups(blocks, w, mPerX, mPerY);
         if (prof) profile.add("tile-split", profile.msSince(tProf));
         if (blocks) {
           for (let b = 0; b < blocks.length; b++) groups.push(blocks[b]);

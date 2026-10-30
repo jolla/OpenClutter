@@ -9,6 +9,9 @@
 const polygonClipping = require("polygon-clipping");
 
 // mergeTiles
+// A merged piece is cut through any hole this big (see holeFreeGroups).
+const HOLE_MIN_M2 = 100;
+const GAP_MIN_M2 = HOLE_MIN_M2;
 const MERGE_TOL_M = 2.5; // a neighbour joins when its height is within 2.5 m of the first tile
 
 function ringArea(ring) {
@@ -273,3 +276,144 @@ function mergePixelGroups(groups, at, w, minH) {
 }
 
 module.exports.mergePixelGroups = mergePixelGroups;
+
+/** 4-connected parts of a pixel list. */
+function pixelParts(pixels, w) {
+  const id = new Map();
+  for (let i = 0; i < pixels.length; i++) id.set(pixels[i][1] * w + pixels[i][0], i);
+  const seen = new Uint8Array(pixels.length);
+  const parts = [];
+  for (let i = 0; i < pixels.length; i++) {
+    if (seen[i]) continue;
+    seen[i] = 1;
+    const part = [];
+    const stack = [i];
+    while (stack.length) {
+      const k = stack.pop();
+      const p = pixels[k];
+      part.push(p);
+      const nb = [[p[0] - 1, p[1]], [p[0] + 1, p[1]], [p[0], p[1] - 1], [p[0], p[1] + 1]];
+      for (const q of nb) {
+        if (q[0] < 0 || q[0] >= w) continue;
+        const j = id.get(q[1] * w + q[0]);
+        if (j === undefined || seen[j]) continue;
+        seen[j] = 1;
+        stack.push(j);
+      }
+    }
+    parts.push(part);
+  }
+  return parts;
+}
+
+/**
+ * A group with a clear hole inside it (a hole of at least
+ * GAP_MIN_M2 that is still there after a one-cell opening) is cut through the
+ * hole, so the traced outline goes around the open ground instead of across it.
+ */
+function scrubPixelGroups(groups, standSet, w, mPerX, mPerY, depth, minHoleM2) {
+  const out = [];
+  const cellM2 = mPerX * mPerY;
+  const minCells = Math.max(4, Math.round((minHoleM2 || GAP_MIN_M2) / cellM2));
+  for (const g of groups) {
+    if ((depth || 0) > 10 || g.length < minCells * 2) {
+      out.push(g);
+      continue;
+    }
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of g) {
+      if (p[0] < x0) x0 = p[0];
+      if (p[1] < y0) y0 = p[1];
+      if (p[0] > x1) x1 = p[0];
+      if (p[1] > y1) y1 = p[1];
+    }
+    const bw = x1 - x0 + 3;
+    const bh = y1 - y0 + 3;
+    const mine = new Uint8Array(bw * bh);
+    for (const p of g) mine[(p[1] - y0 + 1) * bw + (p[0] - x0 + 1)] = 1;
+    // Outside: flood from the border over cells not in this group.
+    const outside = new Uint8Array(bw * bh);
+    const stack = [0];
+    outside[0] = 1;
+    while (stack.length) {
+      const k = stack.pop();
+      const x = k % bw;
+      const y = (k / bw) | 0;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const X = x + dx;
+        const Y = y + dy;
+        if (X < 0 || Y < 0 || X >= bw || Y >= bh) continue;
+        const q = Y * bw + X;
+        if (outside[q] || mine[q]) continue;
+        outside[q] = 1;
+        stack.push(q);
+      }
+    }
+    // Holes that are open ground (not canopy of another piece), opened by one cell.
+    const open = new Uint8Array(bw * bh);
+    for (let y = 1; y < bh - 1; y++) {
+      for (let x = 1; x < bw - 1; x++) {
+        const k = y * bw + x;
+        if (mine[k] || outside[k]) continue;
+        if (standSet.has((y + y0 - 1) * w + (x + x0 - 1))) continue;
+        open[k] = 1;
+      }
+    }
+    const er = new Uint8Array(bw * bh);
+    for (let y = 1; y < bh - 1; y++) {
+      for (let x = 1; x < bw - 1; x++) {
+        const k = y * bw + x;
+        if (open[k] && open[k - 1] && open[k + 1] && open[k - bw] && open[k + bw]) er[k] = 1;
+      }
+    }
+    let best = null;
+    const seenH = new Uint8Array(bw * bh);
+    for (let k = 0; k < er.length; k++) {
+      if (!er[k] || seenH[k]) continue;
+      const cells = [];
+      const st = [k];
+      seenH[k] = 1;
+      while (st.length) {
+        const a = st.pop();
+        cells.push(a);
+        for (const d of [1, -1, bw, -bw]) {
+          const b = a + d;
+          if (b >= 0 && b < er.length && er[b] && !seenH[b]) {
+            seenH[b] = 1;
+            st.push(b);
+          }
+        }
+      }
+      // Opened area: each kept cell stands for itself plus its ring.
+      if (cells.length * 2 >= minCells && (!best || cells.length > best.length)) best = cells;
+    }
+    if (!best) {
+      out.push(g);
+      continue;
+    }
+    let cx = 0;
+    for (const k of best) cx += k % bw;
+    const cutX = Math.round(cx / best.length) + x0 - 1;
+    const left = g.filter((p) => p[0] < cutX);
+    const right = g.filter((p) => p[0] >= cutX);
+    if (!left.length || !right.length) {
+      out.push(g);
+      continue;
+    }
+    const parts = pixelParts(left, w).concat(pixelParts(right, w));
+    const again = scrubPixelGroups(parts, standSet, w, mPerX, mPerY, (depth || 0) + 1, minHoleM2);
+    for (const a of again) out.push(a);
+  }
+  return out;
+}
+
+/**
+ * A band or merged piece can wrap around a city block or another piece (a
+ * ring of street trees). Its traced outline would fill the middle. A piece
+ * with a hole of HOLE_MIN_M2 or more is cut through the hole instead.
+ */
+function holeFreeGroups(groups, w, mPerX, mPerY) {
+  return scrubPixelGroups(groups, new Set(), w, mPerX, mPerY, 0, HOLE_MIN_M2);
+}
+
+module.exports.holeFreeGroups = holeFreeGroups;
