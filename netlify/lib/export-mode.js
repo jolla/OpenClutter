@@ -159,7 +159,23 @@ function isShadowTrailers() {
   return shadowTrailers;
 }
 
+// Towers the lidar flight predates (1.2.57): a source height of 45 m or
+// more that the lidar under the roof reads at under 45% of it is kept, not
+// lowered (Block 185 in Austin, 181 m, read 6.6 m in a 2017 flight). On for
+// /dev hosts only until the weekly release turns it on for every host.
+let staleTowers = false;
+
+function setStaleTowers(on) {
+  staleTowers = !!on;
+}
+
+function isStaleTowers() {
+  return staleTowers;
+}
+
 module.exports = {
+  setStaleTowers,
+  isStaleTowers,
   setStaleFootprints,
   isStaleFootprints,
   setShadowTrailers,

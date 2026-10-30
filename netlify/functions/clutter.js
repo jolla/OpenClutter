@@ -1538,6 +1538,7 @@ async function handleClutter(event) {
   // Stale pad footprints and shaded trailers stay on /dev hosts for now.
   exportMode.setStaleFootprints(testHost);
   exportMode.setShadowTrailers(testHost);
+  exportMode.setStaleTowers(testHost);
   // From 1.2.31 large draws read the street-map tiles in one shared window
   // with a slow-fail chain, a retry pass and a split (export-mode tiledOsm).
   exportMode.setTiledOsm(exportMode.tiledOsmWanted(testHost));

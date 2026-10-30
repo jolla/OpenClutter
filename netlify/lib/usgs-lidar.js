@@ -20,6 +20,7 @@
  */
 
 const { userAgent } = require("./version");
+const exportMode = require("./export-mode");
 
 const HEIGHT_SOURCE = "usgs-lidar";
 const EPT_BUCKET = "https://s3-us-west-2.amazonaws.com/usgs-lidar-public";
@@ -787,7 +788,8 @@ function missingFootprints(grid, rings) {
  * ground and keeps its height. A tower (TALL_SOURCE_M or more) the lidar reads
  * at under TALL_KEEP_RATIO of its height keeps it too: that is a tower built
  * or topped out after the flight (Block 185 in Austin, 181 m, read 6.6 m in a
- * 2017 flight over its site), the same rule applyLidarSample uses.
+ * 2017 flight over its site), the same rule applyLidarSample uses. On /dev
+ * hosts only (exportMode staleTowers).
  */
 const CHECKED_SOURCES = { overture: true, "overture-floors": true, "ms-global": true, nearby: true };
 const CHECK_MIN_SOURCE_M = 6;
@@ -817,7 +819,7 @@ function checkSourceHeights(features, grid, measure) {
       next.push(feature);
       continue;
     }
-    if (!missing && h >= TALL_SOURCE_M && measured < h * TALL_KEEP_RATIO) {
+    if (exportMode.isStaleTowers() && !missing && h >= TALL_SOURCE_M && measured < h * TALL_KEEP_RATIO) {
       next.push(feature);
       continue;
     }
