@@ -214,9 +214,28 @@ function placesFromElements(elements) {
   return places;
 }
 
+/** A note this close past the map edge is pinned to the edge; farther is off the map. */
+const NOTE_EDGE_SLACK_M = 0.5;
+
+/**
+ * Clipboard meters inside the imported aerial: [-widthM, 0] x [-lengthM, 0].
+ * A paste item past that edge sits in Hamina's grey canvas, and Hamina then
+ * places the whole paste off the aerial, so terrain lands beside the map too.
+ */
+function insideMap(xy, frame) {
+  const w = +frame.widthM;
+  const l = +frame.lengthM;
+  if (!(w > 0) || !(l > 0)) return xy;
+  const s = NOTE_EDGE_SLACK_M;
+  if (xy[0] < -w - s || xy[0] > s || xy[1] < -l - s || xy[1] > s) return null;
+  return [Math.min(0, Math.max(-w, xy[0])), Math.min(0, Math.max(-l, xy[1]))];
+}
+
 function clipboardNote(lon, lat, frame, text) {
-  const xy = llToClipboard(lon, lat, frame);
-  if (!xy || !Number.isFinite(xy[0]) || !Number.isFinite(xy[1])) return null;
+  const raw = llToClipboard(lon, lat, frame);
+  if (!raw || !Number.isFinite(raw[0]) || !Number.isFinite(raw[1])) return null;
+  const xy = insideMap(raw, frame);
+  if (!xy) return null;
   return {
     x: round4(xy[0]),
     y: round4(xy[1]),
