@@ -23,9 +23,10 @@ describe("feedback #9 canopyBands prototype", () => {
   });
 
   it("picks the forest cut only on a /dev host", () => {
-    const saved = [process.env.OC_CANOPY_BANDS, process.env.OC_MERGE_TILES];
+    const saved = [process.env.OC_CANOPY_BANDS, process.env.OC_MERGE_TILES, process.env.OC_FOREST_CROWNS];
     delete process.env.OC_CANOPY_BANDS;
     delete process.env.OC_MERGE_TILES;
+    delete process.env.OC_FOREST_CROWNS;
     try {
       assert.equal(exportMode.forestMode(false, { forest: "bands" }), "off");
       assert.equal(exportMode.forestMode(false, { forest: "merge" }), "off");
@@ -36,6 +37,7 @@ describe("feedback #9 canopyBands prototype", () => {
     } finally {
       if (saved[0] !== undefined) process.env.OC_CANOPY_BANDS = saved[0];
       if (saved[1] !== undefined) process.env.OC_MERGE_TILES = saved[1];
+      if (saved[2] !== undefined) process.env.OC_FOREST_CROWNS = saved[2];
     }
   });
 
