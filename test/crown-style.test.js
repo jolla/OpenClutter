@@ -5,7 +5,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const exportMode = require("../netlify/lib/export-mode");
-const { facetCrownParts } = require("../netlify/lib/vegetation");
+const { facetCrownParts, openEdgeShare, planSceneFacets } = require("../netlify/lib/vegetation");
 
 function circle(cx, cy, r, n) {
   const out = [];
@@ -23,7 +23,8 @@ function area(ring) {
   return Math.abs(a / 2);
 }
 
-const frame = { mpuX: 0.5, mpuY: 0.5 };
+// lon/lat equal pixel x/y, 0.5 m pixels.
+const frame = { west: 0, east: 1000, south: 0, north: 1000, imgW: 1000, imgH: 1000, mpuX: 0.5, mpuY: 0.5 };
 
 describe("forest=crowns prototype", () => {
   it("is off by default and never on a production host", () => {
@@ -54,7 +55,7 @@ describe("forest=crowns prototype", () => {
       { ringPx: circle(100, 100, 7, 12) },
     ];
     const row = { area: { ringPx: outline }, trunk: { ringPx: circle(100.5, 99.5, 0.6, 8) } };
-    assert.equal(facetCrownParts(parts, row, frame), true);
+    assert.equal(facetCrownParts(parts, row, frame, false, true), true);
     const sides = parts.map((p) => p.ringPx.length - 1);
     assert.deepEqual(sides, [10, 10, 10]);
     // The middle band is widest and none spills far past the measured crown.
@@ -80,20 +81,55 @@ describe("forest=crowns prototype", () => {
     const before = outline.map((p) => p.slice());
     const parts = [{ ringPx: outline }];
     const row = { area: { ringPx: outline }, trunk: { ringPx: circle(3, 3, 0.6, 8) } };
-    assert.equal(facetCrownParts(parts, row, frame), false);
+    assert.equal(facetCrownParts(parts, row, frame, false, true), false);
     assert.deepEqual(parts[0].ringPx, before);
   });
 
   it("facets a small clump with no stem, but not a wide one, a stand, a palm or a tile", () => {
     const ring = circle(50, 50, 10, 16);
     const small = [{ ringPx: ring }];
-    assert.equal(facetCrownParts(small, { area: { ringPx: ring } }, frame), true);
+    assert.equal(facetCrownParts(small, { area: { ringPx: ring } }, frame, false, true), true);
     assert.equal(small[0].ringPx.length - 1, 10);
     const wide = circle(100, 100, 50, 24); // 25 m across at 0.5 m per pixel
-    assert.equal(facetCrownParts([{ ringPx: wide }], { area: { ringPx: wide } }, frame), false);
-    assert.equal(facetCrownParts([{ ringPx: ring }], { area: { ringPx: ring } }, frame, true), false);
-    assert.equal(facetCrownParts([{ ringPx: ring }], { area: { ringPx: ring }, slopePiece: true }, frame), false);
-    assert.equal(facetCrownParts([{ ringPx: ring }], { area: { ringPx: ring }, trunk: { ringPx: circle(50, 50, 1, 8) }, palm: true }, frame), false);
-    assert.equal(facetCrownParts([{ ringPx: ring }], { area: { ringPx: ring }, trunk: { ringPx: circle(50, 50, 1, 8) }, tile: true }, frame), false);
+    assert.equal(facetCrownParts([{ ringPx: wide }], { area: { ringPx: wide } }, frame, false, true), false);
+    assert.equal(facetCrownParts([{ ringPx: ring }], { area: { ringPx: ring } }, frame, false, false), false);
+    assert.equal(facetCrownParts([{ ringPx: ring }], { area: { ringPx: ring } }, frame, true, true), false);
+    assert.equal(facetCrownParts([{ ringPx: ring }], { area: { ringPx: ring }, slopePiece: true }, frame, false, true), false);
+    assert.equal(facetCrownParts([{ ringPx: ring }], { area: { ringPx: ring }, trunk: { ringPx: circle(50, 50, 1, 8) }, palm: true }, frame, false, true), false);
+    assert.equal(facetCrownParts([{ ringPx: ring }], { area: { ringPx: ring }, trunk: { ringPx: circle(50, 50, 1, 8) }, tile: true }, frame, false, true), false);
+  });
+
+  it("calls a crown lone only when its edge borders open ground", () => {
+    const ring = circle(100, 100, 10, 16);
+    // Open ground everywhere except the crown itself.
+    const lone = (x, y) => (Math.hypot(x - 100, y - 100) <= 10 ? 8 : 0);
+    assert.ok(openEdgeShare(ring, frame, lone) >= 0.95);
+    // Canopy all around: closed forest.
+    assert.equal(openEdgeShare(ring, frame, () => 12), 0);
+    assert.equal(openEdgeShare(ring, frame, null), 0);
+  });
+
+  it("plans lone crowns that never fuse, keeps closed canopy and drops scraps beside a crown", () => {
+    const stem = (x, y) => ({ ringPx: circle(x, y, 0.6, 8) });
+    const a = { area: { ringPx: circle(100, 100, 10, 24) }, trunk: stem(100, 100) };
+    // Touches a: shrinks to clear it.
+    const b = { area: { ringPx: circle(118, 100, 9, 24) }, trunk: stem(118, 100) };
+    // Inside a woods: kept as traced.
+    const c = { area: { ringPx: circle(400, 400, 10, 24) }, trunk: stem(400, 400) };
+    // A 3 m2 scrap just off a's edge.
+    const d = { area: { ringPx: circle(100, 113, 2, 12) } };
+    const pending = [a, b, c, d];
+    const plans = pending.map(() => ({ stand: false }));
+    const h = (x, y) => {
+      if (Math.hypot(x - 400, y - 400) < 60) return 15;
+      if (Math.hypot(x - 100, y - 100) <= 10 || Math.hypot(x - 118, y - 100) <= 9) return 8;
+      return 0;
+    };
+    const out = planSceneFacets(pending, plans, frame, h);
+    assert.ok(out.plans[0] && out.plans[1]);
+    assert.equal(out.plans[2], null);
+    const gap = Math.hypot(out.plans[0].c[0] - out.plans[1].c[0], 0) * 0.5;
+    assert.ok(out.plans[0].rM + out.plans[1].rM <= gap);
+    assert.deepEqual(out.drop, [false, false, false, true]);
   });
 });
