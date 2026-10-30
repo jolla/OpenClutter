@@ -4138,8 +4138,17 @@ async function fetchTerrainDemWork(frame, fetchFn, opts) {
   } catch (e) {
     if (parent && parent.aborted) throw e;
     if (e && e.name === "AbortError") throw e;
-    // Same warning the zip already uses when 3DEP misses.
-    throw new Error("USGS 3DEP did not return a usable grid");
+    // Name the source that failed and why, so the page says it (outside the
+    // US this read is GLO-30, not 3DEP) and the worker log keeps the cause.
+    const why = String((e && e.message) || e || "no grid")
+      .replace(/^GLO-30\s*/i, "")
+      .slice(0, 160);
+    console.warn("terrain dem: Copernicus GLO-30 read failed: " + why);
+    throw new Error(
+      frameHas3dep(frame)
+        ? "USGS 3DEP did not return a usable grid (GLO-30 fallback: " + why + ")"
+        : "Copernicus GLO-30 elevation read failed (" + why + ")"
+    );
   }
 }
 

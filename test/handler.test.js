@@ -2127,7 +2127,7 @@ describe("dev-host Copernicus fallback", () => {
     assert.match(glo[0], /Copernicus_DSM_COG_10_N51_00_W001_00_DEM\.tif/);
     assert.equal(body.terrainClipboard, null);
     assert.match(body.terrainStatus, /Terrain omitted/);
-    assert.match(body.terrainStatus, /USGS 3DEP did not return a usable grid/);
+    assert.match(body.terrainStatus, /Copernicus GLO-30 elevation read failed/);
   });
 
   it("reads GLO-30 on production when 3DEP is missing and leaves classic hosts on 3DEP", async () => {

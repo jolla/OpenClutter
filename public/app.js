@@ -1702,6 +1702,25 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
   }
   setStatus(lines.join("\n"));
   if (exportCopyReady && !drawHidesCopy) setCopyNote("Paste terrain separately in Hamina.");
+  else if (!terrainOff && !terrainPasteJson && !drawHidesCopy) setCopyNote(terrainMissingNote(data.terrainStatus), true);
+}
+
+/**
+ * Terrain was asked for and did not come back: say so under the button, with
+ * the reason, instead of only in the collapsed Details (the button just went
+ * back to Export OpenIntent, which read as a missing Copy terrain button).
+ */
+function terrainMissingNote(status) {
+  const why = String(status || "")
+    .replace(/^\s*Terrain omitted:\s*/i, "")
+    .replace(/\s*OpenIntent zip is unchanged\.?\s*$/i, "")
+    .replace(/\.\s*$/, "")
+    .trim();
+  return (
+    "Terrain was left out of this export, so there is no Copy terrain" +
+    (why && !/^terrain did not return/i.test(why) ? " (" + why + ")" : "") +
+    ". The OpenIntent file is complete. Export again to get terrain."
+  );
 }
 
 /** Set when the browser's tree canopy lookup was blocked; the export still runs. */
@@ -2252,6 +2271,26 @@ document.getElementById("export").onclick = async () => {
         throw cancelledError();
       }
       const data = await pollExport(queued.jobId);
+      // The job finished without terrain (a failed elevation read on the
+      // worker): read terrain once more on its own before showing the result,
+      // so Copy terrain does not need a second export.
+      if (includeTerrain !== false && qualityPage() && data && !data.terrainClipboard) {
+        setStatus("Terrain did not come back with the export. Reading terrain again.");
+        const paste = await fetchTerrainPaste();
+        checkExportRun(run);
+        if (paste && paste.terrainClipboard) {
+          data.terrainClipboard = paste.terrainClipboard;
+          data.terrainStatus = paste.terrainStatus || "";
+          if (Array.isArray(data.warnings)) {
+            data.warnings = data.warnings.filter((w) => !/terrain omitted|export budget spent/i.test(String(w)));
+          }
+          if (data.steps && typeof data.steps === "object") {
+            data.steps.terrain = Object.assign({}, data.steps.terrain, { done: true, skipped: false, detail: "read again" });
+          }
+        } else if (paste && paste.terrainStatus && !data.terrainStatus) {
+          data.terrainStatus = paste.terrainStatus;
+        }
+      }
       paintExportSteps(data, true);
       // Terrain and the job are kept before the zip download, so a download
       // the browser blocks or drops cannot take Copy terrain with it.
