@@ -92,12 +92,14 @@ function meshRms(t, frame) {
   return { rms: Math.sqrt(sq / n), cover: n / 1600 };
 }
 
-test("adaptive terrain switch is off by default and only a test host can ask for it", () => {
+test("adaptive terrain is off by default, on for /dev hosts, never for production", () => {
   assert.strictEqual(exportMode.isAdaptiveTerrain(), false);
   assert.strictEqual(exportMode.adaptiveTerrainWanted(false, { adaptiveTerrain: true }), false);
-  assert.strictEqual(exportMode.adaptiveTerrainWanted(true, {}), false);
-  assert.strictEqual(exportMode.adaptiveTerrainWanted(true, { adaptiveTerrain: true }), true);
-  assert.strictEqual(exportMode.adaptiveTerrainWanted(true, { adaptiveTerrain: "1" }), true);
+  assert.strictEqual(exportMode.adaptiveTerrainWanted(false, {}), false);
+  assert.strictEqual(exportMode.adaptiveTerrainWanted(true, {}), true);
+  assert.strictEqual(exportMode.adaptiveTerrainWanted(true, null), true);
+  assert.strictEqual(exportMode.adaptiveTerrainWanted(true, { adaptiveTerrain: false }), false);
+  assert.strictEqual(exportMode.adaptiveTerrainWanted(true, { adaptiveTerrain: "0" }), false);
 });
 
 test("with the switch off a fine grid on the samples changes nothing", () => {

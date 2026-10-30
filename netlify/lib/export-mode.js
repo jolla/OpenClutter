@@ -173,12 +173,13 @@ function isStaleTowers() {
   return staleTowers;
 }
 
-// Adaptive terrain (1.3.2 prototype): the DEM is read at its native posting
+// Adaptive terrain (1.3.2, /dev): the DEM is read at its native posting
 // (GLO-30 full resolution, a 3DEP raster beside getSamples) and the Copy
 // terrain mesh spends its floor budget where that DEM is steep or curved
 // (pit walls, ski runs) instead of on a fixed 20x20 lattice. Same 1500 floor
-// and 400 KB paste caps. Off by default; a /dev host turns it on per export
-// with adaptiveTerrain:true.
+// and 400 KB paste caps. Off by default; on for /dev hosts unless the
+// request sends adaptiveTerrain:false (?adaptiveTerrain=0 on the page).
+// Production stays off until the weekly release turns it on.
 let adaptiveTerrain = false;
 
 function setAdaptiveTerrain(on) {
@@ -189,11 +190,11 @@ function isAdaptiveTerrain() {
   return adaptiveTerrain;
 }
 
-/** Only a /dev or preview host that asks for it, until Jerry approves it. */
+/** /dev and preview hosts only; a request can still opt out. */
 function adaptiveTerrainWanted(testHost, body) {
-  if (!testHost || !body) return false;
-  const v = body.adaptiveTerrain;
-  return v === true || v === 1 || v === "1" || v === "true";
+  if (!testHost) return false;
+  const v = body && body.adaptiveTerrain;
+  return !(v === false || v === 0 || v === "0" || v === "false");
 }
 
 module.exports = {

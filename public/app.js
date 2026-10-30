@@ -114,12 +114,12 @@ function terrainFloorsOverride() {
   return n;
 }
 
-/** /dev only: ?adaptiveTerrain=1 asks for the adaptive terrain prototype. */
+/** /dev only: ?adaptiveTerrain=0 turns the adaptive terrain mesh off for a comparison export. */
 function adaptiveTerrainOverride() {
   if (!devPage()) return undefined;
   try {
     const raw = new URLSearchParams(location.search || "").get("adaptiveTerrain");
-    return raw === "1" || raw === "true" ? true : undefined;
+    return raw === "0" || raw === "false" ? false : undefined;
   } catch (err) {
     return undefined;
   }
