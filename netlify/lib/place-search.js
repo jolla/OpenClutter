@@ -7,6 +7,13 @@
  * label matches the typed words plus distance from the view. The anonymous
  * Esri World Geocoding calls were removed: that service needs an ArcGIS
  * token under Esri's terms. Search results (c) OpenStreetMap contributors.
+ *
+ * "City, ST" and "City State" ask for the town itself. Photon lists POIs
+ * with the short state ("Sherman, TX") and towns with the long one
+ * ("Travis, Texas"), so "Austin, Tx" matched Austin College on every word
+ * but the city of Austin on only half. The state is now read as a state on
+ * both sides, a second Photon call asks for places only, and a town whose
+ * name is the typed name, in the typed state, goes first.
  */
 
 function norm(s) {
@@ -25,6 +32,62 @@ const ABBR = {
   bldg: "building", intl: "international", ctr: "center", centre: "center",
   mt: "mount", ft: "fort", pkwy: "parkway", hwy: "highway", univ: "university",
 };
+
+const STATES = {
+  al: "Alabama", ak: "Alaska", az: "Arizona", ar: "Arkansas", ca: "California",
+  co: "Colorado", ct: "Connecticut", de: "Delaware", dc: "District of Columbia",
+  fl: "Florida", ga: "Georgia", hi: "Hawaii", id: "Idaho", il: "Illinois",
+  in: "Indiana", ia: "Iowa", ks: "Kansas", ky: "Kentucky", la: "Louisiana",
+  me: "Maine", md: "Maryland", ma: "Massachusetts", mi: "Michigan", mn: "Minnesota",
+  ms: "Mississippi", mo: "Missouri", mt: "Montana", ne: "Nebraska", nv: "Nevada",
+  nh: "New Hampshire", nj: "New Jersey", nm: "New Mexico", ny: "New York",
+  nc: "North Carolina", nd: "North Dakota", oh: "Ohio", ok: "Oklahoma", or: "Oregon",
+  pa: "Pennsylvania", ri: "Rhode Island", sc: "South Carolina", sd: "South Dakota",
+  tn: "Tennessee", tx: "Texas", ut: "Utah", vt: "Vermont", va: "Virginia",
+  wa: "Washington", wv: "West Virginia", wi: "Wisconsin", wy: "Wyoming",
+  pr: "Puerto Rico",
+  ab: "Alberta", bc: "British Columbia", mb: "Manitoba", nb: "New Brunswick",
+  nl: "Newfoundland and Labrador", ns: "Nova Scotia", on: "Ontario",
+  pe: "Prince Edward Island", qc: "Quebec", sk: "Saskatchewan",
+};
+const STATE_NAMES = Object.values(STATES)
+  .map((n) => ({ n, k: norm(n) }))
+  .sort((a, b) => b.k.length - a.k.length);
+
+/** "TX" -> "Texas"; a full name or anything else comes back as is. */
+function stateName(s) {
+  const t = String(s || "").trim();
+  return /^[A-Za-z]{2}$/.test(t) && STATES[t.toLowerCase()] ? STATES[t.toLowerCase()] : t;
+}
+
+/**
+ * "Austin, Tx", "Austin TX", "Austin Texas" -> { place: "Austin", state: "Texas" }.
+ * Without a comma, a code that is also a word ("Allow me", "open late ok")
+ * needs capitals. Null when the query does not end in a state, is only a
+ * state ("West Virginia"), or leaves no place name.
+ */
+const WORDLIKE = new Set(["al", "co", "de", "ga", "hi", "id", "in", "la", "ma", "me", "mi", "mo", "ms", "mt", "ne", "oh", "ok", "on", "or", "pa", "pe", "ut", "va", "wa"]);
+function stateQuery(raw) {
+  const q = String(raw || "").replace(/\s+/g, " ").trim();
+  const nq = norm(q.replace(/,/g, " "));
+  if (STATE_NAMES.some((s) => s.k === nq)) return null;
+  const m = /^(.*?)(?:,\s*([A-Za-z]{2})|\s([A-Za-z]{2}))\.?$/.exec(q);
+  if (m) {
+    const code = (m[2] || m[3]).toLowerCase();
+    const place = m[1].replace(/[\s,]+$/, "");
+    const ok = m[2] || /^[A-Z]{2}$/.test(m[3]) || !WORDLIKE.has(code);
+    if (STATES[code] && ok && norm(place)) return { place, state: STATES[code] };
+  }
+  for (const { n, k } of STATE_NAMES) {
+    if (!nq.endsWith(" " + k)) continue;
+    const words = k.split(" ").length;
+    const place = q.replace(/,/g, " ").trim().split(/\s+/).slice(0, -words).join(" ").trim();
+    if (norm(place)) return { place, state: n };
+  }
+  return null;
+}
+
+const SETTLEMENT = new Set(["city", "town", "village", "hamlet", "municipality", "borough", "suburb", "locality"]);
 
 function editDistance(a, b) {
   if (Math.abs(a.length - b.length) > 2) return 3;
@@ -77,13 +140,14 @@ function validView(view) {
 
 function photonDetail(p) {
   const street = [p.housenumber, p.street].filter(Boolean).join(" ");
-  return [street, p.city || p.district || p.county, p.state, p.country]
+  return [street, p.city || p.district || p.county, stateName(p.state), p.country]
     .filter((x, i, a) => x && a.indexOf(x) === i && x !== p.name)
     .join(", ");
 }
 
-async function photonSearch(q, view, fetchFn, signal, userAgent) {
-  let url = `https://photon.komoot.io/api/?limit=6&q=${encodeURIComponent(q)}`;
+async function photonSearch(q, view, fetchFn, signal, userAgent, placesOnly = false) {
+  let url = `https://photon.komoot.io/api/?limit=${placesOnly ? 5 : 6}&q=${encodeURIComponent(q)}`;
+  if (placesOnly) url += "&osm_tag=place";
   if (view) url += `&lat=${view.lat}&lon=${view.lon}`;
   const r = await fetchFn(url, { signal, headers: { "user-agent": userAgent } });
   if (!r.ok) return [];
@@ -102,17 +166,21 @@ async function photonSearch(q, view, fetchFn, signal, userAgent) {
         lon: f.geometry.coordinates[0],
         source: "photon",
         rank: i,
+        kind: p.osm_key === "place" ? p.osm_value || "" : "",
+        state: stateName(p.state),
       };
     })
     .filter((x) => x.label);
 }
 
 /** Merge, score, and dedupe. Exported for tests. */
-function rankPlaces(q, view, esri, photon) {
+function rankPlaces(qIn, view, esri, photon) {
+  const sq = stateQuery(qIn);
+  const q = sq ? `${sq.place}, ${sq.state}` : qIn;
   const all = [...(esri || []), ...(photon || [])].map((c) => {
     const match = Math.max(textScore(q, c.text), 0.7 * textScore(q, c.text) + 0.3 * textScore(q, c.label));
     const named = 0.7 * textScore(q, c.text) + 0.3 * textScore(q, c.label);
-    const extra = Math.max(0, norm(c.label).split(" ").length - norm(q).split(" ").length);
+    const extra = Math.max(0, norm(c.label).split(" ").length - norm(sq ? sq.place : q).split(" ").length);
     let near = 0;
     if (view && Number.isFinite(c.lat)) {
       near = 0.25 * Math.exp(-km(view.lat, view.lon, c.lat, c.lon) / 50);
@@ -121,7 +189,10 @@ function rankPlaces(q, view, esri, photon) {
     }
     const order = 0.08 * Math.exp(-c.rank / 2);
     const source = c.source === "esri" ? 0.04 : 0;
-    return { ...c, exact: textScore(q, c.text, false), score: named + near + order + source - 0.02 * Math.min(extra, 5), match };
+    // The town itself, in the typed state, beats POIs that share its name.
+    const town = sq && SETTLEMENT.has(c.kind) && norm(c.label) === norm(sq.place) &&
+      norm(c.state) === norm(sq.state) ? 0.6 : 0;
+    return { ...c, exact: textScore(q, c.text, false), score: named + near + order + source + town - 0.02 * Math.min(extra, 5), match };
   });
   all.sort((a, b) => b.score - a.score);
   const out = [];
@@ -138,8 +209,15 @@ function rankPlaces(q, view, esri, photon) {
 
 async function suggestPlaces(q, viewIn, { fetchFn = fetch, userAgent = "openclutter", timeoutMs = 4000 } = {}) {
   const view = validView(viewIn);
-  const photon = await photonSearch(q, view, fetchFn, AbortSignal.timeout(timeoutMs), userAgent).catch(() => []);
-  return rankPlaces(q, view, [], photon).slice(0, 6).map((c) => ({
+  const signal = AbortSignal.timeout(timeoutMs);
+  const sq = stateQuery(q);
+  const [photon, towns] = await Promise.all([
+    photonSearch(q, view, fetchFn, signal, userAgent).catch(() => []),
+    sq && sq.place.split(/\s+/).length <= 4 && !/\d/.test(sq.place)
+      ? photonSearch(`${sq.place}, ${sq.state}`, view, fetchFn, signal, userAgent, true).catch(() => [])
+      : [],
+  ]);
+  return rankPlaces(q, view, [], [...photon, ...towns]).slice(0, 6).map((c) => ({
     label: c.label,
     detail: c.detail,
     text: c.text,
@@ -164,4 +242,4 @@ async function bestPlace(q, view, opts = {}) {
   return null;
 }
 
-module.exports = { suggestPlaces, bestPlace, rankPlaces, textScore, norm };
+module.exports = { suggestPlaces, bestPlace, rankPlaces, textScore, norm, stateQuery };
