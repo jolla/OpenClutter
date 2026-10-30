@@ -1299,8 +1299,11 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /function noteAreaReplaced/);
     assert.match(app, /function noteDrawInProgress/);
     const afterDownloadFn = app.split("function downloadBlob")[1] || "";
-    // Zip only: the background path, the short path, and Download again.
-    assert.equal((afterDownloadFn.match(/downloadBlob\(/g) || []).length, 3);
+    // The zip on the background path, the short path, and Download again. The
+    // terrain file is only the Terrain JSON link the user clicks, never automatic.
+    assert.equal((afterDownloadFn.match(/downloadBlob\(/g) || []).length, 4);
+    const terrainFileFn = (app.split("function downloadTerrainFile()")[1] || "").split("\n}\n")[0];
+    assert.equal((terrainFileFn.match(/downloadBlob\(/g) || []).length, 1);
     assert.match(app, /downloadBlob\(rec\.blob,/);
     assert.match(app, /b64ToBlob\(data\.zipBase64/);
     assert.match(app, /downloadBlob\(blob,/);

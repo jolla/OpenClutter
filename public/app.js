@@ -1300,11 +1300,40 @@ function paintRedownload() {
     live = exportLive;
   } catch {}
   const show = !!(lastExport && !live && !drawHidesCopy);
-  row.hidden = !show;
+  // The terrain paste is also a file, so it can be had when the clipboard refuses it.
+  const terrainFile = !!(terrainFileReady() && !live && !drawHidesCopy);
+  row.hidden = !(show || terrainFile);
+  link.hidden = !show;
   if (show) {
     const size = lastExport.bytes > 0 ? " (" + formatZipMb(lastExport.bytes) + ")" : "";
     link.textContent = "Download again" + size;
   }
+  const fileLink = document.getElementById("terrain-file");
+  const sep = document.getElementById("terrain-file-sep");
+  if (fileLink) fileLink.hidden = !terrainFile;
+  if (sep) sep.hidden = !(show && terrainFile);
+}
+
+function terrainFileReady() {
+  let json = "";
+  let gpsOnly = false;
+  try {
+    json = terrainPasteJson;
+    gpsOnly = terrainPasteGpsOnly;
+  } catch {}
+  return !!(json && !gpsOnly);
+}
+
+function terrainFileName() {
+  const zip = (lastExport && lastExport.filename) || "";
+  const base = zip.replace(/\.zip$/i, "").replace(/-openintent$/i, "");
+  return (base || "openclutter") + "-terrain.json";
+}
+
+function downloadTerrainFile() {
+  if (!terrainFileReady()) return;
+  downloadBlob(new Blob([terrainPasteJson], { type: "application/json" }), terrainFileName());
+  setCopyNote("Terrain JSON saved. Open it, copy all of its text, and paste in Hamina.");
 }
 
 function rememberExport(rec) {
@@ -1360,6 +1389,11 @@ document.getElementById("redownload").addEventListener("click", (e) => {
   downloadAgain();
 });
 
+document.getElementById("terrain-file").addEventListener("click", (e) => {
+  e.preventDefault();
+  downloadTerrainFile();
+});
+
 function noteAreaReplaced() {
   forgetExport();
   drawHidesCopy = false;
@@ -1367,6 +1401,7 @@ function noteAreaReplaced() {
   exportCopyReady = false;
   terrainPasteJson = "";
   terrainPasteGpsOnly = false;
+  paintRedownload();
   syncIdleExportLabel();
   clearCopyNote();
 }
@@ -1396,6 +1431,7 @@ function rememberTerrain(data, includeTerrain) {
   if (data && includeTerrain !== false && !choice.json) data.terrainStatus = choice.status;
   const button = OpenClutterExport.finishedExportButton(choice);
   exportCopyReady = !!(button.copyReady && drawEpoch === exportEpoch && settingsEpoch === exportSettingsEpoch);
+  paintRedownload();
   return button;
 }
 
@@ -1405,7 +1441,7 @@ async function copyFinishedTerrain() {
     await navigator.clipboard.writeText(terrainPasteJson);
     setCopyNote("Copied. Paste terrain separately in Hamina.");
   } catch (e) {
-    setCopyNote("Could not copy terrain. Allow clipboard access and try Copy terrain again.", true);
+    setCopyNote("Could not copy terrain. Allow clipboard access and try again, or use Terrain JSON.", true);
   }
 }
 
@@ -1985,6 +2021,8 @@ document.getElementById("export").onclick = async () => {
   exportEpoch = drawEpoch;
   exportSettingsEpoch = settingsEpoch;
   exportCopyReady = false;
+  terrainPasteJson = "";
+  terrainPasteGpsOnly = false;
   forgetExport();
   const run = { controller: new AbortController(), cancelled: false, jobId: "" };
   exportRun = run;
@@ -2035,19 +2073,22 @@ document.getElementById("export").onclick = async () => {
       }
       const data = await pollExport(queued.jobId);
       paintExportSteps(data, true);
-      const got = await downloadJobZip(queued.jobId, data.zipFilename);
+      // Terrain and the job are kept before the zip download, so a download
+      // the browser blocks or drops cannot take Copy terrain with it.
       showExportResult(data, includeFoliage, includeTerrain, "");
-      rememberExport({
+      const rec = {
         jobId: queued.jobId,
-        filename: got.name,
-        bytes: got.blob.size,
-        blob: got.blob,
+        filename: data.zipFilename || "openintent.zip",
+        bytes: +data.zipBytes || 0,
         at: Date.now(),
         bbox: Object.assign({}, bbox),
         label: committedLabel,
         includeFoliage: includeFoliage === true,
         includeTerrain: includeTerrain !== false,
-      });
+      };
+      rememberExport(rec);
+      const got = await downloadJobZip(queued.jobId, data.zipFilename);
+      rememberExport(Object.assign(rec, { filename: got.name, bytes: got.blob.size, blob: got.blob }));
       return;
     }
     const fallbackNote =
