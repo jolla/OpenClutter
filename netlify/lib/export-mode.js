@@ -159,7 +159,23 @@ function isShadowTrailers() {
   return shadowTrailers;
 }
 
+// Trees read as roofs (1.2.5x WIP): a roof with no building returns in the
+// lidar, where vegetation returns outnumber unclassified ones, gets no lidar
+// height, and a Microsoft-traced outline over lidar trees that the photo
+// shows green is left out. On for /dev hosts only.
+let treeRoofs = false;
+
+function setTreeRoofs(on) {
+  treeRoofs = !!on;
+}
+
+function isTreeRoofs() {
+  return treeRoofs;
+}
+
 module.exports = {
+  setTreeRoofs,
+  isTreeRoofs,
   setStaleFootprints,
   isStaleFootprints,
   setShadowTrailers,

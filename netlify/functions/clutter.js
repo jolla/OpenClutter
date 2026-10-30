@@ -173,6 +173,7 @@ const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 const PARK_CONTEXT_MS = 20000;
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
 const { dropStaleCampFootprints } = require("../lib/stale-footprints");
+const { dropTreeFootprints } = require("../lib/tree-roofs");
 const { fetchUsgsLidar, applyLidarSample, checkSourceHeights, lidarNote, lidarStatusLine, rankProjects, heightForRing } = require("../lib/usgs-lidar");
 const { fuseLidarCanopy, keepLidarOpen, clearInside, clearThinLinesGrid, vehicleFeatures, lidarCanopyNote } = require("../lib/lidar-canopy");
 const exportJobs = require("../lib/export-jobs");
@@ -1538,6 +1539,7 @@ async function handleClutter(event) {
   // Stale pad footprints and shaded trailers stay on /dev hosts for now.
   exportMode.setStaleFootprints(testHost);
   exportMode.setShadowTrailers(testHost);
+  exportMode.setTreeRoofs(testHost);
   // From 1.2.31 large draws read the street-map tiles in one shared window
   // with a slow-fail chain, a retry pass and a split (export-mode tiledOsm).
   exportMode.setTiledOsm(exportMode.tiledOsmWanted(testHost));
@@ -2272,6 +2274,25 @@ async function handleClutter(event) {
           features = checked.features;
           footprintMeta.lidarHeightFixes = checked.fixed;
           warnings.push("Took " + checked.fixed + " roof height" + (checked.fixed === 1 ? "" : "s") + " from the lidar under the roof where the model height was missing or far too tall.");
+        }
+      }
+      // Microsoft-traced outlines over trees: lidar trees and a green photo both (/dev).
+      if (exportMode.isTreeRoofs() && lidar && !lidar.skipped && lidar.grid && decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH) {
+        try {
+          const treeRoofs = dropTreeFootprints({ features, grid: lidar.grid, photo: decoded, toPx: (lon, lat) => llToPx(lon, lat, frame), mpp: frame.mpuX });
+          if (treeRoofs.dropped.length) {
+            features = treeRoofs.features;
+            footprintMeta.droppedTreeRoofs = treeRoofs.dropped.length;
+            warnings.push(
+              "Left out " +
+                treeRoofs.dropped.length +
+                " building outline" +
+                (treeRoofs.dropped.length === 1 ? "" : "s") +
+                " over trees: the lidar shows only trees there and the photo is green."
+            );
+          }
+        } catch {
+          // The check is optional. The outlines stay.
         }
       }
       lidarCanopy = fuseCanopyFromLidar(lidar);

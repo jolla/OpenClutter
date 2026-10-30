@@ -203,10 +203,10 @@ function dilate(mask, w, h, r) {
  * the leaf-on photo. Returns null when the photo does not cover the ring.
  * mpp is the frame's metres per pixel.
  */
-function leafOnGreenSampler(photo, mpp) {
+function leafOnGreenSampler(photo, mpp, reachM) {
   if (!photo || !photo.data) return null;
   const { have, width: w, height: h } = photo;
-  const reach = mpp > 0 ? Math.round(LEAF_ON_REACH_M / mpp) : 0;
+  const reach = mpp > 0 ? Math.round((reachM >= 0 ? reachM : LEAF_ON_REACH_M) / mpp) : 0;
   const green = dilate(greenMask(photo), w, h, reach);
   return function greenShare(ring) {
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;

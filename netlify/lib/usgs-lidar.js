@@ -20,6 +20,7 @@
  */
 
 const { userAgent } = require("./version");
+const exportMode = require("./export-mode");
 
 const HEIGHT_SOURCE = "usgs-lidar";
 const EPT_BUCKET = "https://s3-us-west-2.amazonaws.com/usgs-lidar-public";
@@ -421,10 +422,56 @@ function samplesInside(grid, ring, field) {
   return { zs, grounds };
 }
 
+/**
+ * Lidar return counts in the cells whose centre is inside a lon/lat ring:
+ * building (class 6), vegetation (classes 3 to 5 or three or more returns),
+ * and unclassified single returns.
+ */
+function returnsInside(grid, ring) {
+  const out = { cells: 0, building: 0, vegetation: 0, unclassified: 0 };
+  if (!grid || !grid.cells || !Array.isArray(ring) || ring.length < 4) return out;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const xy = mercator(ring[i][0], ring[i][1]);
+    if (xy[0] < minX) minX = xy[0];
+    if (xy[1] < minY) minY = xy[1];
+    if (xy[0] > maxX) maxX = xy[0];
+    if (xy[1] > maxY) maxY = xy[1];
+  }
+  const x0 = Math.floor((minX - grid.originX) / grid.cell);
+  const y0 = Math.floor((minY - grid.originY) / grid.cell);
+  const x1 = Math.floor((maxX - grid.originX) / grid.cell);
+  const y1 = Math.floor((maxY - grid.originY) / grid.cell);
+  for (let iy = y0; iy <= y1; iy++) {
+    for (let ix = x0; ix <= x1; ix++) {
+      const rec = grid.cells.get(ix + "," + iy);
+      if (!rec) continue;
+      const c = cellCenter(grid, rec);
+      if (!pointInRing(c[0], c[1], ring)) continue;
+      out.cells++;
+      out.building += rec.bc || 0;
+      out.vegetation += rec.vc || 0;
+      out.unclassified += rec.uc || 0;
+    }
+  }
+  return out;
+}
+
+/** No building returns and more vegetation than unclassified returns: trees, not a roof. */
+function treesNotRoof(counts) {
+  return !!counts && counts.building === 0 && counts.vegetation > counts.unclassified;
+}
+
 function heightForRing(grid, ring) {
   const building = samplesInside(grid, ring, "b");
   let zs = building.zs;
   let grounds = building.grounds;
+  // Tree tops come back as unclassified single returns in dense canopy; with
+  // no building returns and more vegetation than those, there is no roof.
+  if (zs.length < MIN_SAMPLES && exportMode.isTreeRoofs() && treesNotRoof(returnsInside(grid, ring))) return null;
   if (zs.length < MIN_SAMPLES) {
     const roof = samplesInside(grid, ring, "u");
     zs = roof.zs;
@@ -1341,6 +1388,8 @@ module.exports = {
   storageYards,
   traceComponent,
   heightForRing,
+  returnsInside,
+  treesNotRoof,
   lidarStatusLine,
   lidarNote,
   fetchUsgsLidar,
