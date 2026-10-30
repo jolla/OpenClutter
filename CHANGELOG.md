@@ -4,6 +4,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## Production releases
 
+- **v1.3.3** (Oct 30, 2026) production fix: the 1.3.3 Copy terrain fix below on top of v1.3.1. The 1.3.2 adaptive terrain stays on /dev.
 - **v1.3.1** (Oct 30, 2026) production fix: the 1.3.1 search and terrain fixes below on top of v1.3.0. /dev and production stay on the same build.
 - **v1.3.0** (Oct 30, 2026) production batch 2: production takes /dev 1.3.0, so both hosts run the same page and the same export rules. New on production since v1.2.58: the 1.2.44 to 1.2.48 RV park and tree crown rules, the 1.2.51 Feedback form, the 1.2.52 shareable links and blocked-network messages, the 1.2.53 early block check, the 1.2.54 place labels and the 1.2.57 tower height fix. The four switches that kept these on /dev hosts (photoCrowns, staleFootprints, shadowTrailers, staleTowers) are now on for every host.
 - **v1.2.58** (Oct 30, 2026) production fix: only the 1.2.58 Copy terrain fallback below on top of v1.2.56. The 1.2.51 to 1.2.57 /dev changes stay on /dev.
@@ -24,6 +25,10 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.3** Bug fix on every host (Oct 30, 2026): Copy terrain missing after an export (the 1:45 AM report, seen again on the Kalgoorlie Super Pit right after a worker deploy).
+  - A single failed Copernicus GLO-30 read (outside the US) left the whole export without terrain. Each GLO-30 tile read now gets one more try after a short pause.
+  - The reason is now the real one: outside the US the message names the GLO-30 read and its error instead of "USGS 3DEP did not return a usable grid", and the worker log keeps it.
+  - When a background export comes back without terrain, the page reads terrain once more on its own before showing the result, so Copy terrain appears without a second export. If terrain is still missing, a line under the button says terrain was left out, why, and that the OpenIntent file is complete (before, the button just went back to Export OpenIntent and the reason sat in the collapsed Details).
 - **1.3.1** Bug fixes on every host (Oct 30, 2026).
   - Search (feedback #8): a City, State search such as "Austin, TX" goes to the city. Before, the map could jump to a place named after the city in another town (Austin College in Sherman, TX). A trailing state code or name is now read as the state, and the town with that name in that state comes first. Other searches rank as before.
   - Terrain (feedback #10): Copy terrain works on larger draws outside the US. When USGS 3DEP does not cover a draw, terrain comes from Copernicus GLO-30, and a draw more than about 3.5 km across reads a coarser GLO-30 layer. That layer has no map position of its own, so the read failed and terrain was left out with "USGS 3DEP did not return a usable grid" (Kalgoorlie Super Pit, Western Australia). The coarser layer now takes its position from the full tile. Smaller draws and US draws are unchanged.
