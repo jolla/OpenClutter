@@ -25,6 +25,12 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.5** /dev only (Oct 30, 2026): tree heights in leaf-off woods inside a campground or mobile home park (feedback #11). Production is unchanged until the weekly release.
+  - The photo canopy check clears lidar canopy that the current aerial photo shows as a parked vehicle, a roof or open ground. In a leaf-off photo, tall bare hardwoods over leaf litter read as dirt pitch, so whole stretches of 20 to 35 m woods were cut out and only lower pieces were left.
+  - Lidar canopy at least 12 m tall now stays when the photo there is dark (no lit pad, gravel or roof). No vehicle, awning or park model stands that tall, and a tree cut since the flight leaves lit ground, which is still cleared.
+  - Issue #11 box: cleared canopy 57,760 m2 to 7,530 m2, dropped crowns 342 to 68. Lidar trees 15 m and taller with no modeled canopy 24.7% to 7.7%, and within 5 m of the lidar height 42.5% to 51.2%.
+  - Benches: npm test 0 failures; canopy 18 sites 74.67 (current /dev 1.3.4: 74.59; Manuel Antonio 83.2 on both, a 1.3.2 adaptive terrain drift, not this change); site type 12 sites 65.81 (1.3.4: 65.86); Pismo Coast RV precision 96.7; Fort Wilderness widened JSON 5,798,868 B and JSON plus image 9,667,773 B.
+  - Export-mode switch tallCanopyKeep, on for /dev hosts only; ?tallCanopyKeep=0 on the /dev page turns it off for a comparison.
 - **1.3.4** /dev only (Oct 30, 2026): forest export prototypes for feedback #9 (large forests come out as a grid of squares in Hamina). Production is unchanged.
   - Large tree stands were cut into fixed blocks of about 42 to 50 m, each with one height, so a forest showed up as a grid. Two ways to cut them instead are on /dev, picked with ?forest= on the /dev page.
   - ?forest=bands (A, the /dev default): a stand is split where its canopy height changes, in 3 m height bands, so the pieces follow the real canopy. Small pieces (under 400 m2) join a neighbour.

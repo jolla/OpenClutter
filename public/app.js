@@ -125,6 +125,17 @@ function adaptiveTerrainOverride() {
   }
 }
 
+/** /dev only: ?tallCanopyKeep=0 turns the feedback #11 tall canopy keep off for a comparison export. */
+function tallCanopyKeepOverride() {
+  if (!devPage()) return undefined;
+  try {
+    const raw = new URLSearchParams(location.search || "").get("tallCanopyKeep");
+    return raw === "0" || raw === "false" ? false : undefined;
+  } catch (err) {
+    return undefined;
+  }
+}
+
 function jsonBudgetOverride() {
   if (!devPage()) return undefined;
   let raw = "";
@@ -2062,6 +2073,7 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
       terrainFloors: terrainFloorsOverride(),
       adaptiveTerrain: adaptiveTerrainOverride(),
       forest: forestOverride(),
+      tallCanopyKeep: tallCanopyKeepOverride(),
       lidar: lidarEnabled(),
       mapNotes: clutterChecked("include-map-notes"),
       trees: foliage ? trees : [],
@@ -2188,6 +2200,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       terrainFloors: terrainFloorsOverride(),
       adaptiveTerrain: adaptiveTerrainOverride(),
       forest: forestOverride(),
+      tallCanopyKeep: tallCanopyKeepOverride(),
       lidar: lidarEnabled(),
       mapNotes: clutterChecked("include-map-notes"),
       trees: foliage ? trees : [],

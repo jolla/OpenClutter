@@ -168,7 +168,9 @@ function isShadowTrailers() {
 // piece at least 12 m tall that the photo shows dark (no lit pad, gravel or
 // roof) stays. No vehicle, awning or park model stands that tall, and a tree
 // cut since the flight leaves lit ground; a dark reading there is a leaf-off
-// or shaded crown over leaf litter. A bug fix, on for every host;
+// or shaded crown over leaf litter. It keeps lidar canopy the photo check
+// used to clear, so it stays on /dev hosts only until the weekly release
+// (tallCanopyKeep:false or ?tallCanopyKeep=0 turns it off there);
 // setTallCanopyKeep(false) is the 1.3.4 behaviour.
 let tallCanopyKeep = false;
 
@@ -178,6 +180,12 @@ function setTallCanopyKeep(on) {
 
 function isTallCanopyKeep() {
   return tallCanopyKeep;
+}
+
+function tallCanopyKeepWanted(testHost, body) {
+  if (!testHost) return false;
+  const v = body && body.tallCanopyKeep;
+  return !(v === false || v === 0 || v === "0" || v === "false");
 }
 
 let staleTowers = false;
@@ -279,6 +287,7 @@ function protoWanted(testHost, body, key, envKey) {
 module.exports = {
   setTallCanopyKeep,
   isTallCanopyKeep,
+  tallCanopyKeepWanted,
   setAdaptiveTerrain,
   isAdaptiveTerrain,
   adaptiveTerrainWanted,

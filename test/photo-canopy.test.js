@@ -215,6 +215,17 @@ describe("tall canopy keep (feedback #11)", () => {
   });
 });
 
+describe("tall canopy keep switch (feedback #11)", () => {
+  it("is on for /dev hosts only, and ?tallCanopyKeep=0 turns it off there", () => {
+    assert.equal(exportMode.tallCanopyKeepWanted(false, {}), false);
+    assert.equal(exportMode.tallCanopyKeepWanted(false, { tallCanopyKeep: true }), false);
+    assert.equal(exportMode.tallCanopyKeepWanted(true, {}), true);
+    assert.equal(exportMode.tallCanopyKeepWanted(true, null), true);
+    assert.equal(exportMode.tallCanopyKeepWanted(true, { tallCanopyKeep: false }), false);
+    assert.equal(exportMode.tallCanopyKeepWanted(true, { tallCanopyKeep: "0" }), false);
+  });
+});
+
 describe("photo-canopy export mode", () => {
   it("is on for dev hosts only", () => {
     exportMode.setPhotoCanopy(true);

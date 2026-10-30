@@ -1542,9 +1542,11 @@ async function handleClutter(event) {
   exportMode.setStaleFootprints(true);
   exportMode.setShadowTrailers(true);
   exportMode.setStaleTowers(true);
-  // 1.3.5 bug fix (feedback #11): the photo canopy check keeps lidar canopy
-  // 12 m and taller that the photo shows dark, on every host.
-  exportMode.setTallCanopyKeep(true);
+  // Feedback #11 (1.3.5 on /dev): the photo canopy check keeps lidar canopy
+  // 12 m and taller that the photo shows dark. /dev hosts only
+  // (tallCanopyKeep:false or ?tallCanopyKeep=0 turns it off there) until the
+  // weekly release turns it on for every host.
+  exportMode.setTallCanopyKeep(exportMode.tallCanopyKeepWanted(testHost, body));
   // 1.3.2 adaptive terrain: native-resolution DEM and a mesh that spends the
   // paste's floors on steep ground. /dev hosts only (adaptiveTerrain:false
   // or ?adaptiveTerrain=0 turns it off there). Production stays off.
