@@ -1542,6 +1542,10 @@ async function handleClutter(event) {
   exportMode.setStaleFootprints(true);
   exportMode.setShadowTrailers(true);
   exportMode.setStaleTowers(true);
+  // Feedback #9 prototypes: off unless a /dev host asks for one.
+  exportMode.setCanopyBands(exportMode.protoWanted(testHost, body, "canopyBands", "OC_CANOPY_BANDS"));
+  exportMode.setMergeTiles(exportMode.protoWanted(testHost, body, "mergeTiles", "OC_MERGE_TILES"));
+  exportMode.setScrubGaps(exportMode.protoWanted(testHost, body, "scrubGaps", "OC_SCRUB_GAPS"));
   // From 1.2.31 large draws read the street-map tiles in one shared window
   // with a slow-fail chain, a retry pass and a split (export-mode tiledOsm).
   exportMode.setTiledOsm(exportMode.tiledOsmWanted(testHost));

@@ -17,6 +17,8 @@
 
 const { quadkeysForBbox } = require("./ms-global");
 const profile = require("./profile-log");
+const exportMode = require("./export-mode");
+const standSplit = require("./stand-split");
 
 const CHM_ZOOM = 10;
 const MAX_TILES = 4;
@@ -1301,7 +1303,12 @@ function crownsFromChm(grid, opts) {
       // cap then dropped most of them.
       if (area >= TILE_AREA_M2) {
         if (prof) tProf = profile.now();
-        const blocks = tilePixels(pixels, mPerX, mPerY, tileMeters(area));
+        let blocks = null;
+        // Feedback #9 prototypes (off by default): cut along the canopy's own
+        // height bands, or merge neighbouring blocks of about one height.
+        if (exportMode.isCanopyBands()) blocks = standSplit.bandPixelGroups(pixels, at, w, mPerX, mPerY, area);
+        if (!blocks) blocks = tilePixels(pixels, mPerX, mPerY, tileMeters(area));
+        if (blocks && exportMode.isMergeTiles() && !exportMode.isCanopyBands()) blocks = standSplit.mergePixelGroups(blocks, at, w, CROWN_MIN_H);
         if (prof) profile.add("tile-split", profile.msSince(tProf));
         if (blocks) {
           for (let b = 0; b < blocks.length; b++) groups.push(blocks[b]);
@@ -1348,10 +1355,21 @@ function crownsFromChm(grid, opts) {
         }
       }
       if (!groups.length) groups.push(pixels);
+      // Feedback #9 prototype (off by default): open ground inside a wide
+      // stand stays open instead of being bridged by the outline.
+      if (exportMode.isScrubGaps() && area >= SUBSTAND_AREA_M2) {
+        const standSet = new Set();
+        for (let i = 0; i < pixels.length; i++) standSet.add(pixels[i][1] * w + pixels[i][0]);
+        const scrubbed = standSplit.scrubPixelGroups(groups, standSet, w, mPerX, mPerY, 0);
+        groups.length = 0;
+        for (let i = 0; i < scrubbed.length; i++) groups.push(scrubbed[i]);
+      }
       const tiled = groups;
       const split = tiled.length > 1;
+      const banded = (exportMode.isCanopyBands() || exportMode.isMergeTiles()) && area >= TILE_AREA_M2;
       for (let g = 0; g < tiled.length; g++) {
         const crown = crownFromPixels(tiled[g], values, w, grid, mPerX, mPerY, 0, split || area >= SUBSTAND_AREA_M2);
+        if (crown && banded) crown.banded = true;
         if (crown) crowns.push(crown);
       }
     }
