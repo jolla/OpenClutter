@@ -1241,13 +1241,13 @@ const FACET_COVER = 0.85;
 const FACET_CLIP_SCALES = [1.15, 1.3, 1.5];
 const FACET_CLIP_COVER = 0.9;
 // A lone crown on the ~2 m canopy grid: its facet may reach a quarter past
-// the traced cells (under one cell), and must cover two thirds of them.
+// the traced cells (under one cell), and must cover four fifths of them.
 const FACET_LONE_SPILL = 0.25;
-const FACET_LONE_COVER = 0.6;
+const FACET_LONE_COVER = 0.8;
 const FACET_MIN_TIER = 0.55;
-const FACET_MIN_SHRINK = 0.65;
+const FACET_MIN_SHRINK = 0.9;
 const FACET_GAP_M = 0.3;
-const FACET_SCRAP_MAX_M2 = 40;
+const FACET_SCRAP_MAX_M2 = 15;
 const FACET_SCRAP_REACH_M = 2.5;
 const FACET_SIDES = 10;
 const FACET_SIDES_SMALL = 8;
@@ -1399,7 +1399,8 @@ function planFacet(row, frame, why) {
   // A fixed turn per tree, from where it stands, so neighbours do not line up.
   const phase = (((Math.round(c[0] * 7.13) + Math.round(c[1] * 3.71)) % 97) / 97) * ((2 * Math.PI) / sides);
   const floor = crownSpanFloorPx(frame);
-  const scales = [1, 1.06, 0.94, 0.88, 0.82, 0.76];
+  // Keep the measured plan area: a facet is never shrunk to fit.
+  const scales = [1.06, 1, 1.12, 0.96];
   for (let k = 0; k < scales.length; k++) {
     const r = r0 * scales[k];
     const ring = facetRing(c, r / mpuX, r / mpuY, sides, phase);
