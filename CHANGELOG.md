@@ -4,6 +4,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## Production releases
 
+- **v1.2.56** (Oct 29, 2026) production fix: only the 1.2.56 Copy terrain fix below on top of v1.2.50. The 1.2.51 to 1.2.54 changes stay on /dev.
 - **v1.2.50** (Oct 28, 2026) production fix: only the 1.2.50 light pole fix below on top of v1.2.49.
 - **v1.2.49** (Oct 27, 2026) production fix: only the 1.2.49 Cancel fix below on top of v1.2.47.
 - **v1.2.47** (Oct 27, 2026) production fix: only the 1.2.47 terrain change below on top of v1.2.43. The /dev rules from 1.2.44 to 1.2.46 stay on /dev.
@@ -20,6 +21,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.2
 
+- **1.2.56** Copy terrain stays on the map (bug fix, feedback #6). Map notes for a tall building just outside the drawn box were written past the edge of the aerial (in Downtown Austin, a 149 m tower 75 m north of the box). In Hamina those notes sat in the grey canvas and the whole terrain paste, GPS points included, landed about 25 m east of the imported map. Notes are now only placed on the map image, so an off-map building no longer takes one of the four tall obstruction slots, and every Copy terrain and GPS paste item is pinned inside the aerial (floor corners that rounded a few centimeters past the edge are pinned to it). The OpenIntent zip is unchanged. Runs on the Fly worker.
 - **1.2.50** Bug fix on every host: light poles sit on sloped terrain. A pole is one point, and the terrain seat needed at least two, so on a hill (20 m or more of relief) every pole stayed on the floor and was buried in the Copy terrain floors. Each pole now takes the ground under its own 0.3 m width as bottom_height, the same way buildings, RVs and fences are seated. Flat sites are unchanged.
 - **1.2.49** Bug fix on every host: Cancel frees the export machine. When the page cancels an export, the worker process now exits about half a second after it learns of the cancel, even if the connection that started the job was already closed, and it turns away new exports until it has stopped, so a cancelled job can no longer run on to Packing zip beside the next export. Exports that are not cancelled are unchanged.
 - **1.2.47** Bug fix on every host: Copy terrain raised and sloped floors use 20 dB/m at 5 GHz as a solid volume (slabOnly false), so a path through ground is attenuated. They were 0 dB/m before.
