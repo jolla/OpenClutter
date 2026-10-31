@@ -810,7 +810,9 @@ function roadsideVehicles(pad, frame, plate, holes) {
   const aspectMin = v2 ? ROADSIDE_V2.aspect : ROADSIDE_ASPECT;
   const fillMin = v2 ? ROADSIDE_V2.fill : ROADSIDE_FILL;
   const lenR = v2 ? ROADSIDE_V2.len : ROADSIDE_LEN;
-  // Read the window for pools only once a blob gets this far.
+  // Read the window for pools only once a blob gets this far (feedback #12,
+  // export-mode waterEdges).
+  const poolCheck = v2 && require("./export-mode").isWaterEdges();
   let pools;
   const onPool = (ext) => {
     if (pools === undefined) pools = poolWater(plate, x0, y0, bw, bh, Math.min(mpuX, mpuY));
@@ -848,7 +850,7 @@ function roadsideVehicles(pad, frame, plate, holes) {
     // on a court, its apron, or the lounge row on a pool deck sits right
     // beside that colour; a parked unit does not.
     if (ground && courtShare(ext, plate, frame) > ROADSIDE_V2.courtMax) return "court";
-    if (ground && onPool(ext)) return "pool";
+    if (ground && poolCheck && onPool(ext)) return "pool";
     const lon = ext.cx / ext.mLon;
     const lat = ext.cy / 110540;
     const c = llToImagePx(lon, lat, frame);
@@ -926,7 +928,7 @@ function roadsideVehicles(pad, frame, plate, holes) {
         if (hem > 0.18 && cellsP50(cells, x0, y0, bw, plate) < 190) return "gap";
       }
       if (courtShare(ext, plate, frame) > ROADSIDE_V2.courtMax) return "court";
-      if (onPool(ext)) return "pool";
+      if (poolCheck && onPool(ext)) return "pool";
       const lon = ext.cx / ext.mLon;
       const lat = ext.cy / 110540;
       const at = llToImagePx(lon, lat, frame);

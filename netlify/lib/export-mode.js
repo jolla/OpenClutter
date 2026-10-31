@@ -188,6 +188,29 @@ function tallCanopyKeepWanted(testHost, body) {
   return !(v === false || v === 0 || v === "0" || v === "false");
 }
 
+// Feedback #12 and #13 (1.3.8): pool decks and mapped ponds. The roadside RV
+// finder skips light strips around a dark covered pool, and foliage is cut
+// around the photo pond grown from each mapped water outline. Both only
+// remove geometry. /dev hosts only (waterEdges:false or ?waterEdges=0 turns
+// it off there) until the weekly release turns it on for every host;
+// setWaterEdges(false) is the 1.3.7 behaviour. Carried to CPU worker threads
+// with each task.
+let waterEdges = false;
+
+function setWaterEdges(on) {
+  waterEdges = !!on;
+}
+
+function isWaterEdges() {
+  return waterEdges;
+}
+
+function waterEdgesWanted(testHost, body) {
+  if (!testHost) return false;
+  const v = body && body.waterEdges;
+  return !(v === false || v === 0 || v === "0" || v === "false");
+}
+
 let staleTowers = false;
 
 function setStaleTowers(on) {
@@ -298,6 +321,9 @@ function protoWanted(testHost, body, key, envKey) {
 }
 
 module.exports = {
+  setWaterEdges,
+  isWaterEdges,
+  waterEdgesWanted,
   setTallCanopyKeep,
   isTallCanopyKeep,
   tallCanopyKeepWanted,

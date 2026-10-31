@@ -89,3 +89,13 @@ test("osmWaterRings adds nothing where the outline holds no pond water", () => {
   const img = plateOf(400, 200, (x, y) => [FOREST[0] + ((x * 13 + y * 7) % 31) - 15, FOREST[1], FOREST[2]]);
   assert.deepEqual(osmWaterRings(img, FRAME, [[llRing(200, 100, 80, 50)]]), []);
 });
+
+test("waterEdges is on for /dev hosts only and can be turned off there", () => {
+  const exportMode = require("../netlify/lib/export-mode");
+  assert.equal(exportMode.waterEdgesWanted(false, {}), false);
+  assert.equal(exportMode.waterEdgesWanted(false, { waterEdges: true }), false);
+  assert.equal(exportMode.waterEdgesWanted(true, {}), true);
+  assert.equal(exportMode.waterEdgesWanted(true, null), true);
+  assert.equal(exportMode.waterEdgesWanted(true, { waterEdges: false }), false);
+  assert.equal(exportMode.waterEdgesWanted(true, { waterEdges: "0" }), false);
+});

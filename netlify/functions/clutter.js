@@ -1547,6 +1547,11 @@ async function handleClutter(event) {
   // (tallCanopyKeep:false or ?tallCanopyKeep=0 turns it off there) until the
   // weekly release turns it on for every host.
   exportMode.setTallCanopyKeep(exportMode.tallCanopyKeepWanted(testHost, body));
+  // Feedback #12 and #13 (1.3.8): no RVs on a covered pool's deck, foliage
+  // cut around the photo pond of each mapped water outline. /dev hosts only
+  // (waterEdges:false or ?waterEdges=0 turns it off there) until the weekly
+  // release turns it on for every host.
+  exportMode.setWaterEdges(exportMode.waterEdgesWanted(testHost, body));
   // 1.3.2 adaptive terrain: native-resolution DEM and a mesh that spends the
   // paste's floors on steep ground. /dev hosts only (adaptiveTerrain:false
   // or ?adaptiveTerrain=0 turns it off there). Production stays off.
@@ -2446,7 +2451,7 @@ async function handleClutter(event) {
     // (algae) pond reads as conifer above, and an outline drawn off the
     // photo pond left shoreline canopy standing in the water.
     try {
-      const ponds = osmWaterRings(decoded, frame, osmWater);
+      const ponds = exportMode.isWaterEdges() ? osmWaterRings(decoded, frame, osmWater) : [];
       if (ponds.length) {
         maskRings = (maskRings || []).concat(ponds);
         footprintMeta.photoPondRings = ponds.length;

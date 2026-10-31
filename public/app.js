@@ -136,6 +136,17 @@ function tallCanopyKeepOverride() {
   }
 }
 
+/** /dev only: ?waterEdges=0 turns the feedback #12/#13 pool deck and pond cut off for a comparison export. */
+function waterEdgesOverride() {
+  if (!devPage()) return undefined;
+  try {
+    const raw = new URLSearchParams(location.search || "").get("waterEdges");
+    return raw === "0" || raw === "false" ? false : undefined;
+  } catch (err) {
+    return undefined;
+  }
+}
+
 function jsonBudgetOverride() {
   if (!devPage()) return undefined;
   let raw = "";
@@ -2076,6 +2087,7 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
       adaptiveTerrain: adaptiveTerrainOverride(),
       forest: forestOverride(),
       tallCanopyKeep: tallCanopyKeepOverride(),
+      waterEdges: waterEdgesOverride(),
       lidar: lidarEnabled(),
       mapNotes: clutterChecked("include-map-notes"),
       trees: foliage ? trees : [],
@@ -2203,6 +2215,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       adaptiveTerrain: adaptiveTerrainOverride(),
       forest: forestOverride(),
       tallCanopyKeep: tallCanopyKeepOverride(),
+      waterEdges: waterEdgesOverride(),
       lidar: lidarEnabled(),
       mapNotes: clutterChecked("include-map-notes"),
       trees: foliage ? trees : [],
