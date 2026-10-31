@@ -293,12 +293,15 @@ function isCrownStyle() {
   return crownStyle;
 }
 
-// Understory look under forest=crowns (local prototype, wip-understory):
-// OC_UNDERSTORY=shade|tuck|patch. Empty (the 1.3.7 slab) outside crowns.
+// Understory look under forest=crowns. Default "tuck": shade green, stepped
+// 1.5 m back under the crown from open ground. OC_UNDERSTORY=off (or slab)
+// gives the 1.3.7 pale slab; shade or patch pick the other prototypes.
+// Empty outside crowns, so /dev default (bands) and production never change.
 function understoryStyle() {
   if (!crownStyle) return "";
   const v = String(process.env.OC_UNDERSTORY || "").toLowerCase();
-  return ["shade", "tuck", "patch"].includes(v) ? v : "";
+  if (v === "off" || v === "slab") return "";
+  return ["shade", "tuck", "patch"].includes(v) ? v : "tuck";
 }
 
 /** Forest cut on a /dev host when the request does not pick one. */

@@ -49,7 +49,7 @@ test("a strip too narrow to tuck keeps its traced outline", () => {
   assert.strictEqual(u.shapeUnderstory(ring, frame, { style: "tuck", index: idx }), null);
 });
 
-test("understory look is off outside forest=crowns", () => {
+test("understory is tuck by default under forest=crowns, off outside it or with OC_UNDERSTORY=off", () => {
   const prev = process.env.OC_UNDERSTORY;
   process.env.OC_UNDERSTORY = "tuck";
   exportMode.setCrownStyle(false);
@@ -59,6 +59,11 @@ test("understory look is off outside forest=crowns", () => {
   assert.strictEqual(exportMode.understoryStyle(), "tuck");
   assert.strictEqual(understoryOiMaterial(3, 0).display_color, "#3B5530");
   assert.strictEqual(understoryOiMaterial(3, 0).rf_properties.attenuation_per_m, 0.6);
+  process.env.OC_UNDERSTORY = "";
+  assert.strictEqual(exportMode.understoryStyle(), "tuck");
+  process.env.OC_UNDERSTORY = "off";
+  assert.strictEqual(exportMode.understoryStyle(), "");
+  assert.strictEqual(understoryOiMaterial(3, 0).display_color, "#A4B56A");
   exportMode.setCrownStyle(false);
   if (prev == null) delete process.env.OC_UNDERSTORY;
   else process.env.OC_UNDERSTORY = prev;

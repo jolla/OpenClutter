@@ -768,6 +768,7 @@ function canonicalUnderstory(material) {
     if (keys.length !== 6) return null;
     if (!keys.every((k) => ["name", "rf_properties", "top_height", "bottom_height", "display_color", "transparencyEnabled"].includes(k))) return null;
     const canon = understoryOiMaterial(Number(lifted[1]), Number(lifted[2]));
+    if (canon && material.display_color !== canon.display_color && [UNDERSTORY_COLOR, UNDERSTORY_SHADE_COLOR].includes(material.display_color)) canon.display_color = material.display_color;
     if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
     return canon;
   }
@@ -777,6 +778,7 @@ function canonicalUnderstory(material) {
   if (keys.length !== 5) return null;
   if (!keys.every((k) => ["name", "rf_properties", "top_height", "display_color", "transparencyEnabled"].includes(k))) return null;
   const canon = understoryOiMaterial(Number(plain[1]), 0);
+  if (canon && material.display_color !== canon.display_color && [UNDERSTORY_COLOR, UNDERSTORY_SHADE_COLOR].includes(material.display_color)) canon.display_color = material.display_color;
   if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
   return canon;
 }

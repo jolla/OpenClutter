@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * forest=crowns understory prototype (local wip-understory only).
+ * forest=crowns understory (/dev only). Default tuck; OC_UNDERSTORY=off for the slab.
  *
  * The 1.3.7 understory is the stand's full traced outline from the ground to
  * about 3 m. From the side it reads as one pale slab skirting every woods.
