@@ -414,6 +414,187 @@ function surfaceMasksFromImage(decoded, frame) {
   return { waterRings, pavementPolygons, waterM2, pavementM2 };
 }
 
+// Feedback #13: a mapped pond whose photo water is green (algae) reads as a
+// dark conifer, and its OSM outline can sit metres off the photo pond, so
+// shoreline canopy stood in the water. The photo water connected to each
+// mapped water outline becomes a water ring that foliage is cut around.
+const SEED_PAD_M = 20;
+const SEED_SHARE = 0.2;
+const SEED_MIN_M2 = 50;
+const SEED_COLOR_DIST = 35;
+const SEED_STD_MAX = 12;
+const SEED_MAX_POLYS = 40;
+
+/** Pond water colour: algae green with almost no red, or blue to teal. */
+function pondWaterPixel(r, g, b) {
+  const Y = luma(r, g, b);
+  if (g > r + 25 && g > b + 25 && r < 60 && Y < 110) return true;
+  return b > r + 10 && b + 3 >= g && Y < 130;
+}
+
+function ringInsidePx(x, y, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0];
+    const yi = ring[i][1];
+    const xj = ring[j][0];
+    const yj = ring[j][1];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-12) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Photo water around mapped water outlines. Inside each outline the pixels
+ * that look like pond water (at least SEED_SHARE of it and SEED_MIN_M2) give
+ * the pond's colour; from them the region grows over smooth pixels of that
+ * colour up to SEED_PAD_M past the outline. A crown on the bank is textured
+ * and not pond coloured, so it stays.
+ * @param {{data: Uint8Array, width: number, height: number}} decoded JPEG RGBA
+ * @param {object} frame geo frame (west, east, south, north, imgW, imgH, mpuX, mpuY)
+ * @param {Array<Array<Array<[number, number]>>>} waterPolys [outer, ...inner] lon/lat rings
+ * @returns {Array<Array<[number, number]>>} OI (y-up) pixel rings
+ */
+function osmWaterRings(decoded, frame, waterPolys) {
+  if (!decoded || !decoded.data || !frame || !Array.isArray(waterPolys) || !waterPolys.length) return [];
+  const width = decoded.width;
+  const height = decoded.height;
+  if (width !== frame.imgW || height !== frame.imgH) return [];
+  const { llToImagePx } = require("./geo-frame");
+  const mpu = Math.max(0.05, Math.min(frame.mpuX || 1, frame.mpuY || 1));
+  const data = decoded.data;
+  const cellM2 = STRIDE * STRIDE * (frame.mpuX || mpu) * (frame.mpuY || mpu);
+  const padPx = Math.round(SEED_PAD_M / mpu);
+  const polys = [];
+  for (let i = 0; i < waterPolys.length; i++) {
+    const rings = waterPolys[i];
+    if (!Array.isArray(rings) || !rings[0] || rings[0].length < 4) continue;
+    const px = rings.map((r) => r.map((p) => llToImagePx(p[0], p[1], frame)));
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (const p of px[0]) {
+      if (p[0] < x0) x0 = p[0];
+      if (p[1] < y0) y0 = p[1];
+      if (p[0] > x1) x1 = p[0];
+      if (p[1] > y1) y1 = p[1];
+    }
+    x0 = Math.max(0, Math.floor(x0) - padPx);
+    y0 = Math.max(0, Math.floor(y0) - padPx);
+    x1 = Math.min(width - 1, Math.ceil(x1) + padPx);
+    y1 = Math.min(height - 1, Math.ceil(y1) + padPx);
+    if (x1 - x0 < 8 || y1 - y0 < 8) continue;
+    polys.push({ px, x0, y0, x1, y1, area: (x1 - x0) * (y1 - y0) });
+  }
+  polys.sort((a, b) => a.area - b.area);
+  const out = [];
+  for (let pi = 0; pi < polys.length && pi < SEED_MAX_POLYS; pi++) {
+    const P = polys[pi];
+    const cols = Math.ceil((P.x1 - P.x0 + 1) / STRIDE);
+    const rows = Math.ceil((P.y1 - P.y0 + 1) / STRIDE);
+    if (cols * rows > 1500000) continue;
+    const R = new Float32Array(cols * rows);
+    const G = new Float32Array(cols * rows);
+    const B = new Float32Array(cols * rows);
+    const smooth = new Uint8Array(cols * rows);
+    const cand = new Uint8Array(cols * rows);
+    const inside = new Uint8Array(cols * rows);
+    let nIn = 0;
+    let nSeed = 0;
+    for (let y = 0; y < rows; y++) {
+      const py = Math.min(height - 1, P.y0 + y * STRIDE + (STRIDE >> 1));
+      for (let x = 0; x < cols; x++) {
+        const px = Math.min(width - 1, P.x0 + x * STRIDE + (STRIDE >> 1));
+        // Mean colour over 5 x 5 pixels: the photo's grain on a pond is
+        // a few levels either way.
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        let n = 0;
+        let s1 = 0;
+        let s2 = 0;
+        for (let dy = -2; dy <= 2; dy++) {
+          const yy = py + dy;
+          if (yy < 0 || yy >= height) continue;
+          for (let dx = -2; dx <= 2; dx++) {
+            const xx = px + dx;
+            if (xx < 0 || xx >= width) continue;
+            const i = (yy * width + xx) * 4;
+            r += data[i];
+            g += data[i + 1];
+            b += data[i + 2];
+            const Y = luma(data[i], data[i + 1], data[i + 2]);
+            s1 += Y;
+            s2 += Y * Y;
+            n++;
+          }
+        }
+        const k = y * cols + x;
+        R[k] = r / n;
+        G[k] = g / n;
+        B[k] = b / n;
+        const m = s1 / n;
+        smooth[k] = Math.sqrt(Math.max(0, s2 / n - m * m)) < SEED_STD_MAX ? 1 : 0;
+        cand[k] = pondWaterPixel(R[k], G[k], B[k]) ? 1 : 0;
+        let ins = ringInsidePx(px, py, P.px[0]);
+        for (let h = 1; ins && h < P.px.length; h++) if (P.px[h].length >= 4 && ringInsidePx(px, py, P.px[h])) ins = false;
+        if (ins) {
+          inside[k] = 1;
+          nIn++;
+          if (cand[k]) nSeed++;
+        }
+      }
+    }
+    if (!nIn || nSeed / nIn < SEED_SHARE || nSeed * cellM2 < SEED_MIN_M2) continue;
+    // Pond colour: the median of the seeds inside the outline.
+    const rs = [];
+    const gs = [];
+    const bs = [];
+    for (let k = 0; k < cols * rows; k++) {
+      if (inside[k] && cand[k]) {
+        rs.push(R[k]);
+        gs.push(G[k]);
+        bs.push(B[k]);
+      }
+    }
+    const med = (a) => a.sort((u, v) => u - v)[a.length >> 1];
+    const ref = [med(rs), med(gs), med(bs)];
+    const grow = new Uint8Array(cols * rows);
+    for (let k = 0; k < cols * rows; k++) {
+      if (!smooth[k]) continue;
+      const d = Math.hypot(R[k] - ref[0], G[k] - ref[1], B[k] - ref[2]);
+      if (cand[k] || d < SEED_COLOR_DIST) grow[k] = 1;
+    }
+    // Opening by one cell drops one-cell bridges into the bank.
+    const opened = new Uint8Array(cols * rows);
+    for (let y = 1; y < rows - 1; y++) {
+      for (let x = 1; x < cols - 1; x++) {
+        const k = y * cols + x;
+        if (grow[k] && grow[k - 1] && grow[k + 1] && grow[k - cols] && grow[k + cols]) opened[k] = 1;
+      }
+    }
+    const water = new Uint8Array(cols * rows);
+    for (let y = 1; y < rows - 1; y++) {
+      for (let x = 1; x < cols - 1; x++) {
+        const k = y * cols + x;
+        if (grow[k] && (opened[k] || opened[k - 1] || opened[k + 1] || opened[k - cols] || opened[k + cols])) water[k] = 1;
+      }
+    }
+    for (const cells of flood(water, cols, rows, 1)) {
+      let seeded = 0;
+      for (let c = 0; c < cells.length; c++) if (inside[cells[c]] && cand[cells[c]]) seeded++;
+      if (seeded * cellM2 < SEED_MIN_M2) continue;
+      const comp = componentPolygon(cells, cols, rows, STRIDE, P.y1 - P.y0 + 1, data, width);
+      if (!comp) continue;
+      // componentPolygon works in the window; move it to the full image (y up).
+      const ring = comp.polygon[0].map(([x, yUp]) => [x + P.x0, height - (P.y1 - P.y0 + 1 - yUp) - P.y0]);
+      out.push(ring);
+    }
+  }
+  return out;
+}
+
 /**
  * Share of a ring's aerial pixels that read as open ground (lawn, paving,
  * pitch). Ring is OI pixels, y measured up from the image bottom.
@@ -525,6 +706,8 @@ function poleShadowContrast(image, x, y, heightM, mpp) {
 }
 
 module.exports = {
+  osmWaterRings,
+  pondWaterPixel,
   poleShadowContrast,
   openShareSampler,
   surfaceMasksFromImage,

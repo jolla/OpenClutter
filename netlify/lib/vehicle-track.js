@@ -630,6 +630,18 @@ const ROADSIDE_V2 = {
   // A short plain white box with no roof fittings is as likely a van or a
   // truck body: under shadeBareLen it needs at least one vent.
   shadeBareLen: 5,
+  // Feedback #12: a covered or dark pool (dark teal, not a pond's green)
+  // reads as shade, so the light deck strips around it passed as RVs. A
+  // pool is a dark teal patch with a solid core (at least poolCoreM2 more
+  // than poolCoreM inside its edge) and a light deck ring (poolRingM out,
+  // at least poolRingMin of it brighter than poolRingLuma). A unit whose
+  // outer rings lie on that pool more than poolMax of the time is deck.
+  poolCoreM: 1.5,
+  poolCoreM2: 20,
+  poolRingM: [0.5, 2],
+  poolRingLuma: 150,
+  poolRingMin: 0.3,
+  poolMax: 0.06,
 };
 
 const plateTops = new WeakMap();
@@ -798,6 +810,12 @@ function roadsideVehicles(pad, frame, plate, holes) {
   const aspectMin = v2 ? ROADSIDE_V2.aspect : ROADSIDE_ASPECT;
   const fillMin = v2 ? ROADSIDE_V2.fill : ROADSIDE_FILL;
   const lenR = v2 ? ROADSIDE_V2.len : ROADSIDE_LEN;
+  // Read the window for pools only once a blob gets this far.
+  let pools;
+  const onPool = (ext) => {
+    if (pools === undefined) pools = poolWater(plate, x0, y0, bw, bh, Math.min(mpuX, mpuY));
+    return !!pools && poolShare(ext, frame, pools, x0, y0, bw, bh) > ROADSIDE_V2.poolMax;
+  };
   const judge = (cells) => {
     const m2 = cells.length * pxM2;
     if (m2 < ROADSIDE_MIN_M2) return "small";
@@ -830,6 +848,7 @@ function roadsideVehicles(pad, frame, plate, holes) {
     // on a court, its apron, or the lounge row on a pool deck sits right
     // beside that colour; a parked unit does not.
     if (ground && courtShare(ext, plate, frame) > ROADSIDE_V2.courtMax) return "court";
+    if (ground && onPool(ext)) return "pool";
     const lon = ext.cx / ext.mLon;
     const lat = ext.cy / 110540;
     const c = llToImagePx(lon, lat, frame);
@@ -907,6 +926,7 @@ function roadsideVehicles(pad, frame, plate, holes) {
         if (hem > 0.18 && cellsP50(cells, x0, y0, bw, plate) < 190) return "gap";
       }
       if (courtShare(ext, plate, frame) > ROADSIDE_V2.courtMax) return "court";
+      if (onPool(ext)) return "pool";
       const lon = ext.cx / ext.mLon;
       const lat = ext.cy / 110540;
       const at = llToImagePx(lon, lat, frame);
@@ -1329,6 +1349,135 @@ function courtShare(ext, plate, frame) {
     }
   }
   return n ? blue / n : 0;
+}
+
+/** Dark teal pool water or a pool cover, or a painted blue pool. A pond's green is not. */
+function poolPixel(r, g, b) {
+  const l = 0.299 * r + 0.587 * g + 0.114 * b;
+  if (l < 60 && r < g - 8 && b >= g - 8 && r < b - 5) return true;
+  return b > r + 40 && b >= g - 10 && Math.max(r, g, b) - Math.min(r, g, b) > 60;
+}
+
+/**
+ * Pools in a read window (feedback #12): pool-coloured patches with a solid
+ * core and a light deck around them. Returns a window mask of pool pixels,
+ * or null when there is none. Tree shade can be as dark, but it is thin
+ * and ragged and has no deck ring.
+ */
+function poolWater(plate, x0, y0, bw, bh, mpu) {
+  if (!(mpu > 0)) return null;
+  const P = ROADSIDE_V2;
+  const n = bw * bh;
+  const tealMask = new Uint8Array(n);
+  let any = 0;
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
+      const i = ((y + y0) * plate.width + (x + x0)) * 4;
+      if (poolPixel(plate.data[i], plate.data[i + 1], plate.data[i + 2])) {
+        tealMask[y * bw + x] = 1;
+        any++;
+      }
+    }
+  }
+  const pxM2 = mpu * mpu;
+  if (any * pxM2 < P.poolCoreM2) return null;
+  const depth = chamferInside(tealMask, bw, bh);
+  const coreD = 3 * Math.max(1, Math.round(P.poolCoreM / mpu));
+  const label = new Int32Array(n);
+  const out = new Uint8Array(n);
+  let found = false;
+  let next = 0;
+  const stack = [];
+  const r0 = Math.max(1, Math.round(P.poolRingM[0] / mpu));
+  const r1 = Math.max(r0 + 1, Math.round(P.poolRingM[1] / mpu));
+  for (let s = 0; s < n; s++) {
+    if (!tealMask[s] || label[s]) continue;
+    next++;
+    const cells = [];
+    let core = 0;
+    let cx0 = bw;
+    let cy0 = bh;
+    let cx1 = 0;
+    let cy1 = 0;
+    label[s] = next;
+    stack.push(s);
+    while (stack.length) {
+      const k = stack.pop();
+      cells.push(k);
+      if (depth[k] >= coreD) core++;
+      const x = k % bw;
+      const y = (k / bw) | 0;
+      if (x < cx0) cx0 = x;
+      if (y < cy0) cy0 = y;
+      if (x > cx1) cx1 = x;
+      if (y > cy1) cy1 = y;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
+          const j = ny * bw + nx;
+          if (tealMask[j] && !label[j]) {
+            label[j] = next;
+            stack.push(j);
+          }
+        }
+      }
+    }
+    if (core * pxM2 < P.poolCoreM2) continue;
+    // Deck ring: pixels r0 to r1 outside this patch.
+    const ax0 = Math.max(0, cx0 - r1);
+    const ay0 = Math.max(0, cy0 - r1);
+    const ax1 = Math.min(bw - 1, cx1 + r1);
+    const ay1 = Math.min(bh - 1, cy1 + r1);
+    const sw = ax1 - ax0 + 1;
+    const sh = ay1 - ay0 + 1;
+    const own = new Uint8Array(sw * sh);
+    for (let k = 0; k < cells.length; k++) own[(((cells[k] / bw) | 0) - ay0) * sw + ((cells[k] % bw) - ax0)] = 1;
+    const away = chamferOutside(own, sw, sh);
+    let ring = 0;
+    let lit = 0;
+    for (let y = 0; y < sh; y++) {
+      for (let x = 0; x < sw; x++) {
+        const d = away[y * sw + x];
+        if (d < 3 * r0 || d > 3 * r1) continue;
+        const i = ((y + ay0 + y0) * plate.width + (x + ax0 + x0)) * 4;
+        ring++;
+        if (0.299 * plate.data[i] + 0.587 * plate.data[i + 1] + 0.114 * plate.data[i + 2] > P.poolRingLuma) lit++;
+      }
+    }
+    if (!ring || lit / ring < P.poolRingMin) continue;
+    for (let k = 0; k < cells.length; k++) out[cells[k]] = 1;
+    found = true;
+  }
+  return found ? out : null;
+}
+
+/** Share of rings 1 to 4 m outside a roof that lie on a pool from poolWater. */
+function poolShare(ext, frame, pools, x0, y0, bw, bh) {
+  let n = 0;
+  let wet = 0;
+  for (const grow of [2, 5, 8]) {
+    const L = ext.len + grow;
+    const W = ext.wid + grow;
+    const per = Math.max(12, Math.round((L + W) * 2));
+    for (let k = 0; k < per; k++) {
+      const e = (k / per) * 2 * (L + W);
+      let a;
+      let c;
+      if (e < L) [a, c] = [e - L / 2, W / 2];
+      else if (e < L + W) [a, c] = [L / 2, W / 2 - (e - L)];
+      else if (e < 2 * L + W) [a, c] = [L / 2 - (e - L - W), -W / 2];
+      else [a, c] = [-L / 2, -W / 2 + (e - 2 * L - W)];
+      const xy = llToImagePx((ext.cx + ext.ux * a - ext.uy * c) / ext.mLon, (ext.cy + ext.uy * a + ext.ux * c) / 110540, frame);
+      const x = Math.round(xy[0]) - x0;
+      const y = Math.round(xy[1]) - y0;
+      n++;
+      if (x < 0 || y < 0 || x >= bw || y >= bh) continue;
+      if (pools[y * bw + x]) wet++;
+    }
+  }
+  return n ? wet / n : 0;
 }
 
 /**
@@ -4166,6 +4315,8 @@ module.exports = {
   vehicleNear,
   pitchVehicle,
   roadsideVehicles,
+  poolWater,
+  poolShare,
   occupiedCarLayerWork,
   carHitRows,
   finishCarLayer,

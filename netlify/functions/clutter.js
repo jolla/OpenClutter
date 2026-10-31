@@ -234,7 +234,7 @@ const { gpsClipboard, stampGpsTiePoints, fitClipboardToMap } = require("../lib/h
 const { buildMapNotes, stampMapNotes } = require("../lib/map-notes");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
-const { surfaceMasksFromImage, openShareSampler, poleShadowContrast } = require("../lib/surface-mask");
+const { surfaceMasksFromImage, osmWaterRings, openShareSampler, poleShadowContrast } = require("../lib/surface-mask");
 const { fetchLeafOnPhoto, leafOnGreenSampler } = require("../lib/leaf-on-photo");
 const { checkCanopyOnPhoto, photoCanopyNote, leafyShareSampler, vehicleZoneTest, zonedShareSampler } = require("../lib/photo-canopy");
 const { photoCrownRefiner, photoCrownNote, gridHeightAt } = require("../lib/photo-crowns");
@@ -2441,6 +2441,18 @@ async function handleClutter(event) {
     } catch {
       maskRings = [];
       maskPolygons = [];
+    }
+    // Feedback #13: the photo pond around each mapped water outline. A green
+    // (algae) pond reads as conifer above, and an outline drawn off the
+    // photo pond left shoreline canopy standing in the water.
+    try {
+      const ponds = osmWaterRings(decoded, frame, osmWater);
+      if (ponds.length) {
+        maskRings = (maskRings || []).concat(ponds);
+        footprintMeta.photoPondRings = ponds.length;
+      }
+    } catch {
+      /* keep the image masks */
     }
   }
 
