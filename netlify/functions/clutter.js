@@ -1551,10 +1551,11 @@ async function handleClutter(event) {
   // paste's floors on steep ground. /dev hosts only (adaptiveTerrain:false
   // or ?adaptiveTerrain=0 turns it off there). Production stays off.
   exportMode.setAdaptiveTerrain(exportMode.adaptiveTerrainWanted(testHost, body));
-  // Feedback #9 forest prototypes: /dev hosts only (forest=bands|merge|off,
+  // Feedback #9 forest prototypes: /dev hosts only (forest=bands|merge|crowns|off,
   // default bands); production keeps the 1.3.1 blocks.
   const forest = exportMode.forestMode(testHost, body);
-  exportMode.setCanopyBands(forest === "bands");
+  exportMode.setCanopyBands(forest === "bands" || forest === "crowns");
+  exportMode.setCrownStyle(forest === "crowns");
   exportMode.setMergeTiles(forest === "merge");
   exportMode.setScrubGaps(exportMode.protoWanted(testHost, {}, "scrubGaps", "OC_SCRUB_GAPS"));
   // From 1.2.31 large draws read the street-map tiles in one shared window

@@ -258,21 +258,34 @@ function isScrubGaps() {
   return scrubGaps;
 }
 
+// crownStyle (forest=crowns, with canopyBands): every stemmed tree ships as
+// stacked faceted crowns on one axis, sized from its own measured outline.
+let crownStyle = false;
+
+function setCrownStyle(on) {
+  crownStyle = !!on;
+}
+
+function isCrownStyle() {
+  return crownStyle;
+}
+
 /** Forest cut on a /dev host when the request does not pick one. */
 const DEV_FOREST_DEFAULT = "bands";
-const FOREST_MODES = ["bands", "merge", "off"];
+const FOREST_MODES = ["bands", "merge", "crowns", "off"];
 
 /**
  * Which feedback #9 forest cut runs: "bands" (canopyBands), "merge"
- * (mergeTiles) or "off" (the 1.3.1 blocks). Production is always "off".
- * A /dev host takes body.forest (the page sends ?forest=bands|merge|off),
- * then OC_CANOPY_BANDS=1 or OC_MERGE_TILES=1 in a local run, then
+ * (mergeTiles), "crowns" (canopyBands plus crownStyle) or "off" (the 1.3.1 blocks). Production is always "off".
+ * A /dev host takes body.forest (the page sends ?forest=bands|merge|crowns|off),
+ * then OC_FOREST_CROWNS=1, OC_CANOPY_BANDS=1 or OC_MERGE_TILES=1 in a local run, then
  * DEV_FOREST_DEFAULT.
  */
 function forestMode(testHost, body) {
   if (!testHost) return "off";
   const asked = body && typeof body.forest === "string" ? body.forest.toLowerCase() : "";
   if (FOREST_MODES.includes(asked)) return asked;
+  if (process.env.OC_FOREST_CROWNS === "1") return "crowns";
   if (process.env.OC_CANOPY_BANDS === "1") return "bands";
   if (process.env.OC_MERGE_TILES === "1") return "merge";
   return DEV_FOREST_DEFAULT;
@@ -297,6 +310,8 @@ module.exports = {
   isMergeTiles,
   setScrubGaps,
   isScrubGaps,
+  setCrownStyle,
+  isCrownStyle,
   protoWanted,
   forestMode,
   DEV_FOREST_DEFAULT,

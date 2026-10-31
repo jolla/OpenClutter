@@ -18,13 +18,15 @@ describe("feedback #9 canopyBands prototype", () => {
     assert.equal(exportMode.protoWanted(true, { canopyBands: true }, "canopyBands", "OC_CANOPY_BANDS"), true);
     const src = fs.readFileSync(path.join(__dirname, "../netlify/functions/clutter.js"), "utf8");
     assert.match(src, /const forest = exportMode\.forestMode\(testHost, body\);/);
-    assert.match(src, /exportMode\.setCanopyBands\(forest === "bands"\);/);
+    assert.match(src, /exportMode\.setCanopyBands\(forest === "bands" \|\| forest === "crowns"\);/);
+    assert.match(src, /exportMode\.setCrownStyle\(forest === "crowns"\);/);
   });
 
   it("picks the forest cut only on a /dev host", () => {
-    const saved = [process.env.OC_CANOPY_BANDS, process.env.OC_MERGE_TILES];
+    const saved = [process.env.OC_CANOPY_BANDS, process.env.OC_MERGE_TILES, process.env.OC_FOREST_CROWNS];
     delete process.env.OC_CANOPY_BANDS;
     delete process.env.OC_MERGE_TILES;
+    delete process.env.OC_FOREST_CROWNS;
     try {
       assert.equal(exportMode.forestMode(false, { forest: "bands" }), "off");
       assert.equal(exportMode.forestMode(false, { forest: "merge" }), "off");
@@ -35,6 +37,7 @@ describe("feedback #9 canopyBands prototype", () => {
     } finally {
       if (saved[0] !== undefined) process.env.OC_CANOPY_BANDS = saved[0];
       if (saved[1] !== undefined) process.env.OC_MERGE_TILES = saved[1];
+      if (saved[2] !== undefined) process.env.OC_FOREST_CROWNS = saved[2];
     }
   });
 

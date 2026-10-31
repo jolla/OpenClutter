@@ -20,6 +20,7 @@ parentPort.on("message", (msg) => {
       mode.setCanopyBands(msg.canopyBands === true);
       mode.setMergeTiles(msg.mergeTiles === true);
       mode.setScrubGaps(msg.scrubGaps === true);
+      mode.setCrownStyle(msg.crownStyle === true);
       return runTask(msg.task, msg.payload);
     })
     .then(

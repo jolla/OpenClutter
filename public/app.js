@@ -150,7 +150,7 @@ function jsonBudgetOverride() {
   return n;
 }
 
-// Feedback #9 forest cut on /dev only: ?forest=bands|merge|off. Unset keeps
+// Feedback #9 forest cut on /dev only: ?forest=bands|merge|crowns|off. Unset keeps
 // the dev default (bands). Production never sends it.
 function forestOverride() {
   if (!devPage()) return undefined;
@@ -161,7 +161,7 @@ function forestOverride() {
     return undefined;
   }
   raw = String(raw || "").toLowerCase();
-  return raw === "bands" || raw === "merge" || raw === "off" ? raw : undefined;
+  return raw === "bands" || raw === "merge" || raw === "crowns" || raw === "off" ? raw : undefined;
 }
 
 function lidarQueryOn() {
