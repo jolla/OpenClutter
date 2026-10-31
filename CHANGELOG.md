@@ -25,6 +25,12 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.6** /dev only (Oct 30, 2026): tidy faceted tree crowns for lone trees, picked with ?forest=crowns on the /dev page (Jerry's Eino comparison, feedback #9 follow-up). The /dev default stays ?forest=bands (A) and production is unchanged (forest off).
+  - A tree whose crown edge mostly borders open ground (campground, street and yard trees) ships as one faceted crown: 2 or 3 stacked regular polygons on one axis over its trunk, the trunk moved under the crown centre. Each crown keeps its measured plan area, and is used only when it covers at least 80% of the traced crown with at most 25% spilling past it; otherwise the tree keeps its traced shape.
+  - Neighbouring crowns never fuse: a crown shrinks by at most 10% to clear one already placed, or keeps its traced shape. Stemless scraps of 15 m2 or less beside a faceted crown are left out. Closed canopy, stands, palms and slope pieces keep the A bands.
+  - Hamina draws only extruded prisms, so a crown is a stack of flat polygon slabs, not a cone or sphere.
+  - Benches (forest=crowns): npm test 0 failures; canopy 18 sites 75.32 with adaptive terrain off, as A was measured (A 75.61, gate 74.61), 73.88 with /dev adaptive terrain on (plain /dev 1.3.4 is 74.59 there: adaptive terrain plus bands drops Manuel Antonio 96.4 to 83.2); site type 12 sites 65.34 (A 65.86); Pismo Coast RV precision 96.7; Fort Wilderness widened JSON 5,795,828 B and JSON plus image 9,661,002 B.
+  - Shipped on Jerry's OK under the canopy gate on the /dev adaptive terrain run. Known gap: on desert sites a facet that spills onto bare ground can fail the photo checks and drop the tree with its stem (Wynn golf, Vegas tower shadow); a fix is in progress.
 - **1.3.5** /dev only (Oct 30, 2026): tree heights in leaf-off woods inside a campground or mobile home park (feedback #11). Production is unchanged until the weekly release.
   - The photo canopy check clears lidar canopy that the current aerial photo shows as a parked vehicle, a roof or open ground. In a leaf-off photo, tall bare hardwoods over leaf litter read as dirt pitch, so whole stretches of 20 to 35 m woods were cut out and only lower pieces were left.
   - Lidar canopy at least 12 m tall now stays when the photo there is dark (no lit pad, gravel or roof). No vehicle, awning or park model stands that tall, and a tree cut since the flight leaves lit ground, which is still cleared.

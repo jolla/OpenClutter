@@ -232,6 +232,8 @@ function terrainExportEnabled() {
   if (lidarBox && qualityPage() && lidarQueryOn()) lidarBox.checked = true;
   const ver = document.getElementById("app-version");
   if (ver && window.OPENCLUTTER_VERSION) ver.textContent = "v" + window.OPENCLUTTER_VERSION;
+  // What's new lines about /dev-only switches show on /dev pages only.
+  if (devPage()) document.querySelectorAll("#whats-new .whats-new-dev").forEach((li) => (li.hidden = false));
 })();
 
 let bbox = null;
