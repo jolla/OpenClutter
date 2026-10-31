@@ -18,6 +18,7 @@ const { BUILDING_BUFFER_M, createClipSet, clipFoliageRing, dissolveFoliageRings,
 const polygonClipping = require("polygon-clipping");
 const exportMode = require("./export-mode");
 const standSplit = require("./stand-split");
+const understoryStyleLib = require("./understory-style");
 const profile = require("./profile-log");
 
 function pointInAabb(x, y, boxes, pad) {
@@ -3133,6 +3134,13 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   // forest=crowns (/dev): lone trees as tidy faceted crowns; closed canopy keeps its bands.
   const facets = exportMode.isCrownStyle() ? planSceneFacets(pending, plans, frame, heightSample) : null;
   let scrapsDropped = 0;
+  // forest=crowns understory prototype (OC_UNDERSTORY, local only).
+  const uStyle = exportMode.understoryStyle();
+  const uIndex =
+    uStyle === "tuck" || uStyle === "patch"
+      ? understoryStyleLib.footprintIndex(pending.map((p) => p.area && p.area.ringPx), 40)
+      : null;
+  const uStats = { stands: 0, pieces: 0, emptied: 0 };
   for (let r = 0; r < pending.length; r++) {
     const row = pending[r];
     const area = row.area;
@@ -3192,6 +3200,32 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       const sh = facets.plans[r].shift;
       if (sh && row.trunk && row.trunk.ringPx) row.trunk.ringPx = row.trunk.ringPx.map((p) => [p[0] + sh[0], p[1] + sh[1]]);
     }
+    if (uIndex && stand && parts.length >= 2 && parts[0].material && isUnderstoryOiName(parts[0].material.name)) {
+      const u = parts[0];
+      const shaped = understoryStyleLib.shapeUnderstory(u.ringPx, frame, { style: uStyle, index: uIndex, heightSample });
+      if (shaped) {
+        const seatU = Number(u.material.bottom_height) >= 1 ? roundTenths(u.material.bottom_height) : 0;
+        const thickU = roundTenths(Number(u.material.top_height) - seatU);
+        const pieces = [];
+        for (const s of shaped) {
+          let material = u.material;
+          let clip = u.clip;
+          if (s.heightScale < 1) {
+            const h = Math.max(2.1, roundTenths(thickU * s.heightScale));
+            const pair = h < thickU ? understoryClipPair(h, seatU) : null;
+            if (pair) {
+              material = pair.material;
+              clip = { typeId: pair.typeId, clipType: pair.clipType };
+            }
+          }
+          pieces.push({ ringPx: s.ringPx, material, clip, scale: 0.5 });
+        }
+        uStats.stands++;
+        uStats.pieces += pieces.length;
+        if (!pieces.length) uStats.emptied++;
+        parts.splice(0, 1, ...pieces);
+      }
+    }
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
       // An upper band traced on the height grid of a tile can spill past the
@@ -3236,6 +3270,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     standsTiled: tiled,
     crownsFaceted,
     scrapsDropped,
+    understoryShaped: uIndex ? uStats : undefined,
     columnsReshaped,
     standPieces: bandStats.pieces,
     scrubGapM2: bandStats.gapM2,

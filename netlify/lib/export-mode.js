@@ -293,6 +293,14 @@ function isCrownStyle() {
   return crownStyle;
 }
 
+// Understory look under forest=crowns (local prototype, wip-understory):
+// OC_UNDERSTORY=shade|tuck|patch. Empty (the 1.3.7 slab) outside crowns.
+function understoryStyle() {
+  if (!crownStyle) return "";
+  const v = String(process.env.OC_UNDERSTORY || "").toLowerCase();
+  return ["shade", "tuck", "patch"].includes(v) ? v : "";
+}
+
 /** Forest cut on a /dev host when the request does not pick one. */
 const DEV_FOREST_DEFAULT = "bands";
 const FOREST_MODES = ["bands", "merge", "crowns", "off"];
@@ -338,6 +346,7 @@ module.exports = {
   isScrubGaps,
   setCrownStyle,
   isCrownStyle,
+  understoryStyle,
   protoWanted,
   forestMode,
   DEV_FOREST_DEFAULT,

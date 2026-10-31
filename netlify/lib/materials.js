@@ -587,6 +587,11 @@ const LIFTED_TRUNK_NAME = /^Foliage - Trunk (\d+\.\d) @ (\d+\.\d)$/;
  * outdoor range. Paler than the crown so the two layers read apart.
  */
 const UNDERSTORY_COLOR = "#A4B56A";
+/** forest=crowns understory prototype: a shade green under the crown, not a pale slab. */
+const UNDERSTORY_SHADE_COLOR = "#3B5530";
+function understoryColor() {
+  return require("./export-mode").understoryStyle() ? UNDERSTORY_SHADE_COLOR : UNDERSTORY_COLOR;
+}
 const UNDERSTORY_DB = 0.6;
 const UNDERSTORY_NAME = /^Foliage - Understory (\d+\.\d)$/;
 const LIFTED_UNDERSTORY_NAME = /^Foliage - Understory (\d+\.\d) @ (\d+\.\d)$/;
@@ -716,7 +721,7 @@ function understoryOiMaterial(heightM, groundM) {
       rf_properties: { attenuation_per_m: UNDERSTORY_DB },
       top_height: roundTenths(ground + h),
       bottom_height: ground,
-      display_color: UNDERSTORY_COLOR,
+      display_color: understoryColor(),
       transparencyEnabled: true,
     };
   }
@@ -724,7 +729,7 @@ function understoryOiMaterial(heightM, groundM) {
     name,
     rf_properties: { attenuation_per_m: UNDERSTORY_DB },
     top_height: h,
-    display_color: UNDERSTORY_COLOR,
+    display_color: understoryColor(),
     transparencyEnabled: true,
   };
 }
@@ -742,7 +747,7 @@ function understoryClipPair(heightM, groundM) {
     clipType: {
       id,
       name: mat.name,
-      color: UNDERSTORY_COLOR,
+      color: understoryColor(),
       shortcutKey: "",
       topEdge: mat.top_height,
       bottomEdge: lifted ? ground : null,
