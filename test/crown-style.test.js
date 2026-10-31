@@ -154,12 +154,12 @@ describe("crown style column fragments", () => {
     const open = () => 0;
     const lone = columnCrown(pillar(), 0, frame, open);
     assert.ok(lone && lone.trunk && lone.ringPx.length >= 8);
-    assert.ok(lone.crownMat.bottom_height >= 15 && lone.crownMat.top_height === 20);
+    assert.ok(lone.crownMat.bottom_height >= 10 && lone.crownMat.top_height === 20);
     assert.equal(lone.trunk.material.top_height, lone.crownMat.bottom_height);
     const woods = () => 18;
     const edge = columnCrown(pillar(), 0, frame, woods);
     assert.ok(edge && !edge.trunk && edge.ringPx === null);
-    assert.ok(edge.crownMat.bottom_height >= 15);
+    assert.ok(edge.crownMat.bottom_height >= 10);
   });
   it("leaves real crowns and short clumps alone", () => {
     const open = () => 0;

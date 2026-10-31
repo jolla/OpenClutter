@@ -1472,13 +1472,15 @@ const COLUMN_MAX_M2 = 9;
 const COLUMN_MIN_H = 6;
 const COLUMN_RATIO = 2.5;
 const COLUMN_FLOOR_M = 3;
-const COLUMN_CROWN_DEPTH_M = 3.5;
+// Crown depth as a share of the tree height (a narrow conifer top), at least 3.5 m.
+const COLUMN_CROWN_SHARE = 0.45;
+const COLUMN_CROWN_MIN_M = 3.5;
 const COLUMN_LONE_R_M = 1.7;
 const COLUMN_STEM_M = 0.3;
 
 /**
  * A pillar-shaped fragment as a tree part: lone (its edge mostly borders
- * open ground) gives an octagonal crown COLUMN_CROWN_DEPTH_M deep on a stem;
+ * open ground) gives an octagonal crown on a stem, COLUMN_CROWN_SHARE of the height deep;
  * otherwise the traced outline keeps its plan and floats as a shallow crown
  * under the measured top, so the plan view (canopy cover) is unchanged.
  */
@@ -1495,7 +1497,7 @@ function columnCrown(rowArea, ground, frame, heightSample) {
   if (!(m2 > 0) || m2 > COLUMN_MAX_M2) return null;
   const widthM = Math.max(COLUMN_FLOOR_M, 2 * Math.sqrt(m2 / Math.PI));
   if (h - bottom < COLUMN_RATIO * widthM) return null;
-  const parts = individualTreeParts(mat, ground, 0, COLUMN_CROWN_DEPTH_M);
+  const parts = individualTreeParts(mat, ground, 0, Math.max(COLUMN_CROWN_MIN_M, COLUMN_CROWN_SHARE * h));
   if (!parts) return null;
   const c = areaCentroidPx(ring) || ringCentroidPx(ring);
   if (!c) return null;
