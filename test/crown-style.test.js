@@ -143,3 +143,27 @@ describe("forest=crowns prototype", () => {
     assert.deepEqual(out.drop, [false, false, false, true]);
   });
 });
+
+describe("crown style column fragments", () => {
+  const { columnCrown } = require("../netlify/lib/vegetation");
+  const { materialForVegetation } = require("../netlify/lib/materials");
+  const frame = { west: 0, east: 800, south: 0, north: 800, imgW: 800, imgH: 800, mpuX: 0.25, mpuY: 0.25 };
+  const sq = (x, y, h) => [[x - h, y - h], [x + h, y - h], [x + h, y + h], [x - h, y + h], [x - h, y - h]];
+  it("turns a lone pillar into a small crown on a stem and floats one at a canopy edge", () => {
+    const pillar = () => ({ ringPx: sq(400, 400, 5), material: materialForVegetation(20, "heavy") });
+    const open = () => 0;
+    const lone = columnCrown(pillar(), 0, frame, open);
+    assert.ok(lone && lone.trunk && lone.ringPx.length >= 8);
+    assert.ok(lone.crownMat.bottom_height >= 15 && lone.crownMat.top_height === 20);
+    assert.equal(lone.trunk.material.top_height, lone.crownMat.bottom_height);
+    const woods = () => 18;
+    const edge = columnCrown(pillar(), 0, frame, woods);
+    assert.ok(edge && !edge.trunk && edge.ringPx === null);
+    assert.ok(edge.crownMat.bottom_height >= 15);
+  });
+  it("leaves real crowns and short clumps alone", () => {
+    const open = () => 0;
+    assert.equal(columnCrown({ ringPx: sq(400, 400, 20), material: materialForVegetation(20, "heavy") }, 0, frame, open), null);
+    assert.equal(columnCrown({ ringPx: sq(400, 400, 5), material: materialForVegetation(5, "heavy") }, 0, frame, open), null);
+  });
+});

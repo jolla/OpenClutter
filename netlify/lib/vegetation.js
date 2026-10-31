@@ -1465,6 +1465,54 @@ function applyFacet(parts, plan) {
   return true;
 }
 
+// Column fragments (forest=crowns): trunkless crown pieces under
+// COLUMN_MAX_M2 that are at least COLUMN_RATIO times as tall as they are
+// wide (the 3 m span floor counts as the width).
+const COLUMN_MAX_M2 = 9;
+const COLUMN_MIN_H = 6;
+const COLUMN_RATIO = 2.5;
+const COLUMN_FLOOR_M = 3;
+const COLUMN_CROWN_DEPTH_M = 3.5;
+const COLUMN_LONE_R_M = 1.7;
+const COLUMN_STEM_M = 0.3;
+
+/**
+ * A pillar-shaped fragment as a tree part: lone (its edge mostly borders
+ * open ground) gives an octagonal crown COLUMN_CROWN_DEPTH_M deep on a stem;
+ * otherwise the traced outline keeps its plan and floats as a shallow crown
+ * under the measured top, so the plan view (canopy cover) is unchanged.
+ */
+function columnCrown(rowArea, ground, frame, heightSample) {
+  const ring = rowArea && rowArea.ringPx;
+  const mat = rowArea && rowArea.material;
+  if (!ring || ring.length < 4 || !mat || !frame) return null;
+  const h = Number(mat.top_height);
+  const bottom = Number(mat.bottom_height) || 0;
+  if (!(h >= COLUMN_MIN_H)) return null;
+  const mpuX = frame.mpuX || frame.mpu || 1;
+  const mpuY = frame.mpuY || mpuX;
+  const m2 = ringPxArea(ring) * mpuX * mpuY;
+  if (!(m2 > 0) || m2 > COLUMN_MAX_M2) return null;
+  const widthM = Math.max(COLUMN_FLOOR_M, 2 * Math.sqrt(m2 / Math.PI));
+  if (h - bottom < COLUMN_RATIO * widthM) return null;
+  const parts = individualTreeParts(mat, ground, 0, COLUMN_CROWN_DEPTH_M);
+  if (!parts) return null;
+  const c = areaCentroidPx(ring) || ringCentroidPx(ring);
+  if (!c) return null;
+  const lone = heightSample ? openEdgeShare(ring, frame, heightSample) >= FACET_OPEN_MIN : false;
+  if (!lone) return { crownMat: parts.crownMat, crownClip: parts.crownClip, ringPx: null, trunk: null };
+  const phase = (((Math.round(c[0] * 7.13) + Math.round(c[1] * 3.71)) % 97) / 97) * (Math.PI / 4);
+  const crownRing = facetRing(c, COLUMN_LONE_R_M / mpuX, COLUMN_LONE_R_M / mpuY, 8, phase);
+  const stem = circleRingPx(c, COLUMN_STEM_M, mpuX, mpuY, TRUNK_SIDES);
+  if (!stem) return null;
+  return {
+    crownMat: parts.crownMat,
+    crownClip: parts.crownClip,
+    ringPx: crownRing,
+    trunk: { ringPx: stem, material: parts.trunkMat, kind: "trunk", shape: "polygon", clip: parts.trunkClip },
+  };
+}
+
 /**
  * Plan the lone crowns of one scene, largest first. A crown that would touch
  * an already planned neighbour shrinks to clear it (to FACET_MIN_SHRINK of its
@@ -2773,6 +2821,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   }
   let palmCount = 0;
   let spiresDropped = 0;
+  let columnsReshaped = 0;
   let crownCapped = 0;
   let regionCapped = 0;
   let tiled = 0;
@@ -3049,6 +3098,20 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
           if (ground >= 1) foliageLifted++;
         }
       }
+      // forest=crowns (/dev): a tree-top fragment too small to be a tree
+      // used to ship as a full-depth slab blown up to the 3 m floor, a green
+      // pillar. A lone one becomes a small faceted crown on a stem; one at
+      // the edge of a canopy keeps its outline as a shallow floating crown.
+      if (!clip && !trunk && exportMode.isCrownStyle() && !seat.slopePiece && !seat.tile && rowArea.material) {
+        const col = columnCrown(rowArea, ground, frame, heightSample);
+        if (col) {
+          rowArea.material = col.crownMat;
+          clip = col.crownClip;
+          if (col.ringPx) rowArea.ringPx = col.ringPx;
+          trunk = col.trunk;
+          columnsReshaped++;
+        }
+      }
       if (!clip && ground >= 1 && rowArea.material) {
         const lifted = liftFoliagePair(rowArea.material, ground);
         if (lifted) {
@@ -3171,6 +3234,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     standsTiled: tiled,
     crownsFaceted,
     scrapsDropped,
+    columnsReshaped,
     standPieces: bandStats.pieces,
     scrubGapM2: bandStats.gapM2,
     foliageLifted,
@@ -3200,4 +3264,5 @@ module.exports = {
   facetCrownParts,
   openEdgeShare,
   planSceneFacets,
+  columnCrown,
 };
