@@ -425,6 +425,32 @@ const SEED_COLOR_DIST = 35;
 const SEED_STD_MAX = 12;
 const SEED_MAX_POLYS = 40;
 const SEED_EDGE_M = 1.5;
+const SEED_CLOSE_M2 = 2;
+
+/** Cells not set in mask that no path of unset cells joins to the window edge (4-neighbour). */
+function enclosedCells(mask, cols, rows) {
+  const out = new Uint8Array(cols * rows);
+  const seen = new Uint8Array(cols * rows);
+  const stack = [];
+  for (let x = 0; x < cols; x++) {
+    stack.push(x, (rows - 1) * cols + x);
+  }
+  for (let y = 0; y < rows; y++) {
+    stack.push(y * cols, y * cols + cols - 1);
+  }
+  while (stack.length) {
+    const k = stack.pop();
+    if (seen[k] || mask[k]) continue;
+    seen[k] = 1;
+    const x = k % cols;
+    if (x > 0) stack.push(k - 1);
+    if (x < cols - 1) stack.push(k + 1);
+    if (k >= cols) stack.push(k - cols);
+    if (k < (rows - 1) * cols) stack.push(k + cols);
+  }
+  for (let k = 0; k < cols * rows; k++) if (!mask[k] && !seen[k]) out[k] = 1;
+  return out;
+}
 
 /** Pond water colour: algae green with almost no red, or blue to teal. */
 function pondWaterPixel(r, g, b) {
@@ -596,16 +622,26 @@ function osmWaterRings(decoded, frame, waterPolys) {
       for (let c = 0; c < cells.length; c++) keep[cells[c]] = 1;
     }
     const edgeCells = Math.max(1, Math.round(SEED_EDGE_M / (STRIDE * mpu)));
+    const grown = keep.slice();
     for (let it = 0; it < edgeCells; it++) {
-      const prev = keep.slice();
+      const prev = grown.slice();
       for (let y = 1; y < rows - 1; y++) {
         for (let x = 1; x < cols - 1; x++) {
           const k = y * cols + x;
-          if (!prev[k] && (prev[k - 1] || prev[k + 1] || prev[k - cols] || prev[k + cols])) keep[k] = 1;
+          if (!prev[k] && (prev[k - 1] || prev[k + 1] || prev[k - cols] || prev[k + cols])) grown[k] = 1;
         }
       }
     }
-    for (const cells of flood(keep, cols, rows, 1)) {
+    // The ring keeps only its outer edge, so land the growth newly closes
+    // in (a gap of a few cells in ring-shaped water) would be cut as water
+    // (a Las Vegas canopy site lost real trees that way). When the growth
+    // closes land in, this outline keeps its water without the bank growth.
+    const before = enclosedCells(keep, cols, rows);
+    const after = enclosedCells(grown, cols, rows);
+    let closed = 0;
+    for (let k = 0; k < cols * rows; k++) if (after[k] && !before[k] && !grown[k]) closed++;
+    const ringMask = closed * cellM2 > SEED_CLOSE_M2 ? keep : grown;
+    for (const cells of flood(ringMask, cols, rows, 1)) {
       const comp = componentPolygon(cells, cols, rows, STRIDE, P.y1 - P.y0 + 1, data, width);
       if (!comp) continue;
       // componentPolygon works in the window; move it to the full image (y up).

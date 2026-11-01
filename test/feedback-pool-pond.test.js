@@ -126,6 +126,33 @@ test("osmWaterRings does not grow into a pond-coloured patch beside the pond", (
   assert.ok(y0 > 46 && y0 < 50, "south edge stops in the bank: " + y0);
 });
 
+test("osmWaterRings does not close land in when the bank growth shuts a gap", () => {
+  // Two halves of ring-shaped pond water around a wooded island, split by
+  // 5 m land gaps north and south: growing the water into the bank would
+  // join the halves and the ring (outer edge only) would cover the island.
+  const img = plateOf(400, 200, (x, y) => {
+    const nx = (x - 200) / 80;
+    const ny = (y - 100) / 50;
+    const d = nx * nx + ny * ny;
+    const gap = x >= 198 && x < 203;
+    if (d <= 1 && d >= 0.3 && !gap) return [POND[0] + ((x * 7 + y * 3) % 5), POND[1] + ((x * 3 + y * 5) % 5), POND[2]];
+    return [FOREST[0] + ((x * 13 + y * 7) % 31) - 15, FOREST[1] + ((x * 5 + y * 11) % 31) - 15, FOREST[2] + ((x + y) % 21) - 10];
+  });
+  const rings = osmWaterRings(img, FRAME, [[llRing(200, 100, 80, 50)]]);
+  assert.ok(rings.length >= 1, "pond found");
+  const inside = (px, py, ring) => {
+    let c = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i];
+      const [xj, yj] = ring[j];
+      if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) c = !c;
+    }
+    return c;
+  };
+  // Island centre (200, 100); OI y is up, the image is 200 high.
+  for (const r of rings) assert.ok(!inside(200, 100, r), "island left out of the water ring");
+});
+
 test("osmWaterRings adds nothing where the outline holds no pond water", () => {
   const img = plateOf(400, 200, (x, y) => [FOREST[0] + ((x * 13 + y * 7) % 31) - 15, FOREST[1], FOREST[2]]);
   assert.deepEqual(osmWaterRings(img, FRAME, [[llRing(200, 100, 80, 50)]]), []);
