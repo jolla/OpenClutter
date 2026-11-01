@@ -585,21 +585,27 @@ function osmWaterRings(decoded, frame, waterPolys) {
     }
     // Feedback #13 follow-up: the 5 x 5 mean and the opening stop about a
     // metre short of the shore, and lidar crowns left in that strip stood in
-    // the water as thin trees. Grow the water SEED_EDGE_M into the bank.
-    const edgeCells = Math.max(1, Math.round(SEED_EDGE_M / (STRIDE * mpu)));
-    for (let it = 0; it < edgeCells; it++) {
-      const prev = water.slice();
-      for (let y = 1; y < rows - 1; y++) {
-        for (let x = 1; x < cols - 1; x++) {
-          const k = y * cols + x;
-          if (!prev[k] && (prev[k - 1] || prev[k + 1] || prev[k - cols] || prev[k + cols])) water[k] = 1;
-        }
-      }
-    }
+    // the water as thin trees. Keep only the seeded water first, then grow it
+    // SEED_EDGE_M into the bank, so the growth never joins unseeded
+    // pond-coloured patches (dark blue tower shadows) to the pond.
+    const keep = new Uint8Array(cols * rows);
     for (const cells of flood(water, cols, rows, 1)) {
       let seeded = 0;
       for (let c = 0; c < cells.length; c++) if (inside[cells[c]] && cand[cells[c]]) seeded++;
       if (seeded * cellM2 < SEED_MIN_M2) continue;
+      for (let c = 0; c < cells.length; c++) keep[cells[c]] = 1;
+    }
+    const edgeCells = Math.max(1, Math.round(SEED_EDGE_M / (STRIDE * mpu)));
+    for (let it = 0; it < edgeCells; it++) {
+      const prev = keep.slice();
+      for (let y = 1; y < rows - 1; y++) {
+        for (let x = 1; x < cols - 1; x++) {
+          const k = y * cols + x;
+          if (!prev[k] && (prev[k - 1] || prev[k + 1] || prev[k - cols] || prev[k + cols])) keep[k] = 1;
+        }
+      }
+    }
+    for (const cells of flood(keep, cols, rows, 1)) {
       const comp = componentPolygon(cells, cols, rows, STRIDE, P.y1 - P.y0 + 1, data, width);
       if (!comp) continue;
       // componentPolygon works in the window; move it to the full image (y up).

@@ -109,6 +109,23 @@ test("osmWaterRings follows the photo pond past an offset outline (feedback #13)
   assert.ok(x1 < 290 && x1 > 280, "east edge past the photo pond: " + x1);
 });
 
+test("osmWaterRings does not grow into a pond-coloured patch beside the pond", () => {
+  // A dark shadow of the pond's colour 4 m south of the shore and outside
+  // the outline, so unseeded: the bank growth must not join it to the pond.
+  const base = pondImage();
+  const img = plateOf(400, 200, (x, y) => {
+    if (x >= 170 && x < 230 && y >= 154 && y < 190) return [POND[0] + ((x * 7 + y * 3) % 5), POND[1] + ((x * 3 + y * 5) % 5), POND[2]];
+    const i = (y * 400 + x) * 4;
+    return [base.data[i], base.data[i + 1], base.data[i + 2]];
+  });
+  const rings = osmWaterRings(img, FRAME, [[llRing(212, 88, 80, 50)]]);
+  assert.equal(rings.length, 1);
+  // OI y is up: the pond's south shore is y 50, the patch starts at y 46.
+  let y0 = Infinity;
+  for (const p of rings[0]) y0 = Math.min(y0, p[1]);
+  assert.ok(y0 > 46 && y0 < 50, "south edge stops in the bank: " + y0);
+});
+
 test("osmWaterRings adds nothing where the outline holds no pond water", () => {
   const img = plateOf(400, 200, (x, y) => [FOREST[0] + ((x * 13 + y * 7) % 31) - 15, FOREST[1], FOREST[2]]);
   assert.deepEqual(osmWaterRings(img, FRAME, [[llRing(200, 100, 80, 50)]]), []);
