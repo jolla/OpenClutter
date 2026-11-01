@@ -1552,6 +1552,11 @@ async function handleClutter(event) {
   // (waterEdges:false or ?waterEdges=0 turns it off there) until the weekly
   // release turns it on for every host.
   exportMode.setWaterEdges(exportMode.waterEdgesWanted(testHost, body));
+  // 1.3.11 trueMetres: ground-meter plate at every latitude. /dev hosts on
+  // (trueMetres:false or ?trueMetres=0 turns it off there). Production off.
+  require("../lib/geo-frame").setTrueMetres(
+    exportMode.trueMetresWanted(testHost, body, event && event.queryStringParameters),
+  );
   // 1.3.2 adaptive terrain: native-resolution DEM and a mesh that spends the
   // paste's floors on steep ground. /dev hosts only (adaptiveTerrain:false
   // or ?adaptiveTerrain=0 turns it off there). Production stays off.

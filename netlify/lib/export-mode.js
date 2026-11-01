@@ -325,6 +325,18 @@ function forestMode(testHost, body) {
   return DEV_FOREST_DEFAULT;
 }
 
+/**
+ * trueMetres (1.3.11): OpenIntent meters match the ground at every latitude.
+ * /dev hosts on (trueMetres:false or ?trueMetres=0 turns it off there,
+ * ?trueMetres=1 forces it on); production stays off until a release says so.
+ */
+function trueMetresWanted(testHost, body, query) {
+  if (!testHost) return false;
+  const raw = body && body.trueMetres != null ? body.trueMetres : query && query.trueMetres != null ? query.trueMetres : null;
+  if (raw == null || raw === "") return true;
+  return !(raw === false || raw === 0 || raw === "0" || raw === "false");
+}
+
 /** A prototype switch: only on /dev hosts, and only when asked for. */
 function protoWanted(testHost, body, key, envKey) {
   if (!testHost) return false;
@@ -332,6 +344,7 @@ function protoWanted(testHost, body, key, envKey) {
 }
 
 module.exports = {
+  trueMetresWanted,
   setWaterEdges,
   isWaterEdges,
   waterEdgesWanted,

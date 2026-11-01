@@ -70,7 +70,22 @@ function groundMeterStretch(lat) {
  */
 const GROUND_METER_STRETCH = 1.7;
 
+// trueMetres (1.3.11, /dev hosts on, production off): resample onto ground
+// meters at every latitude where the plate stretch is over 2 percent, so
+// OpenIntent meters match the ground north-south below 54N too. Off keeps the
+// old plate, which is short north-south by about cos(lat) there.
+let trueMetres = false;
+
+function setTrueMetres(on) {
+  trueMetres = !!on;
+}
+
+function isTrueMetres() {
+  return trueMetres;
+}
+
 function needsGroundMeterImage(lat) {
+  if (trueMetres && Number.isFinite(lat) && groundMeterStretch(lat) > 1.02) return true;
   return groundMeterStretch(lat) >= GROUND_METER_STRETCH;
 }
 
@@ -1025,6 +1040,8 @@ module.exports = {
   groundMeterStretch,
   GROUND_METER_STRETCH,
   needsGroundMeterImage,
+  setTrueMetres,
+  isTrueMetres,
   geodesicSpans,
   groundMeterPixelSize,
   geoFrame,

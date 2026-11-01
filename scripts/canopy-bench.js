@@ -561,6 +561,30 @@ function loadZip(zipPath, dir) {
 /** A lidar return over one of these roofs is the roof, not canopy. */
 const SOLID_ROOF_NAME = /^(Building|RV|Trailer|Semi|Storage|Car)\b/;
 
+/**
+ * The plate the export drew, from its terrain clipboard tie points (SW and NE
+ * corners). With trueMetres the plate is resampled to ground meters, so the
+ * old degree-aspect guess (esriContentExtent) no longer matches it. Without a
+ * clipboard, fall back to that guess.
+ */
+function plateExtent(site, imgW, imgH) {
+  try {
+    const clip = JSON.parse(fs.readFileSync(path.join(OUT, site.id + ".terrain.json"), "utf8"));
+    const tp = clip && clip.tiePoints;
+    if (tp && tp.length >= 2 && tp.every((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon))) {
+      return {
+        west: Math.min(tp[0].lon, tp[1].lon),
+        east: Math.max(tp[0].lon, tp[1].lon),
+        south: Math.min(tp[0].lat, tp[1].lat),
+        north: Math.max(tp[0].lat, tp[1].lat),
+      };
+    }
+  } catch (_) {
+    /* no clipboard for this run */
+  }
+  return esriContentExtent(site, imgW, imgH);
+}
+
 async function scoreSite(site, zipPath) {
   const dir = path.join(OUT, "unzip-" + site.id);
   const loaded = loadZip(zipPath, dir);
@@ -569,7 +593,7 @@ async function scoreSite(site, zipPath) {
     maxResolutionInMP: 40,
     formatAsRGBA: true,
   });
-  const ext = esriContentExtent(site, raw.width, raw.height);
+  const ext = plateExtent(site, raw.width, raw.height);
   const frame = geoFrame(ext, { imgW: raw.width, imgH: raw.height, maxSpanM: 8000, minSpanM: 1 });
   const areas = loaded.json.floorplans[0].attenuation_areas || [];
   const foliage = [];

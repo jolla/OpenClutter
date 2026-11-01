@@ -606,6 +606,30 @@ function scoreTreeLabels(fc, rings, frame, imgW, imgH) {
   };
 }
 
+/**
+ * The plate the export drew, from its terrain clipboard tie points (SW and NE
+ * corners). With trueMetres the plate is resampled to ground meters, so the
+ * old degree-aspect guess (esriContentExtent) no longer matches it. Without a
+ * clipboard, fall back to that guess.
+ */
+function plateExtent(site, imgW, imgH) {
+  try {
+    const clip = JSON.parse(fs.readFileSync(path.join(OUT, site.id + ".terrain.json"), "utf8"));
+    const tp = clip && clip.tiePoints;
+    if (tp && tp.length >= 2 && tp.every((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon))) {
+      return {
+        west: Math.min(tp[0].lon, tp[1].lon),
+        east: Math.max(tp[0].lon, tp[1].lon),
+        south: Math.min(tp[0].lat, tp[1].lat),
+        north: Math.max(tp[0].lat, tp[1].lat),
+      };
+    }
+  } catch (_) {
+    /* no clipboard for this run */
+  }
+  return esriContentExtent(site, imgW, imgH);
+}
+
 async function scoreObjects(site, zipPath) {
   const loaded = loadZip(zipPath, path.join(OUT, "obj-" + site.id));
   const fp = loaded.json.floorplans[0];
@@ -614,7 +638,7 @@ async function scoreObjects(site, zipPath) {
   const imgW = pxDim.width;
   const imgH = pxDim.length;
   const mpu = mDim.width / pxDim.width;
-  const ext = esriContentExtent(site, imgW, imgH);
+  const ext = plateExtent(site, imgW, imgH);
   const frame = geoFrame(ext, { imgW, imgH, maxSpanM: 8000, minSpanM: 1 });
   const small = [];
   const big = [];
