@@ -2609,11 +2609,14 @@ describe("campus terrain paste stays inside the synchronous response", () => {
     assert.equal(/reduced from/.test(body.terrainStatus), false);
     assert.equal(/past 20×20/.test(body.terrainStatus), false);
     assert.match(body.terrainStatus, /Copy terrain/);
-    assert.match(body.terrainStatus, /Terrain sloped 20×20/);
+    // trueMetres on /dev draws the plate in ground meters, so the grid follows
+    // the box's true aspect: the long side stays at 20.
+    assert.match(body.terrainStatus, /Terrain sloped (20×(1\d|20)|1\d×20) /);
     assert.equal(/omitted/.test(body.terrainStatus), false);
     const quads =
       body.terrainClipboard.slopedFloors.length + body.terrainClipboard.raisedFloorZones.length;
-    assert.equal(quads, 20 * 20);
+    const grid = /Terrain sloped (\d+)×(\d+)/.exec(body.terrainStatus);
+    assert.equal(quads, Number(grid[1]) * Number(grid[2]));
   });
 });
 
