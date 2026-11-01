@@ -424,6 +424,7 @@ const SEED_MIN_M2 = 50;
 const SEED_COLOR_DIST = 35;
 const SEED_STD_MAX = 12;
 const SEED_MAX_POLYS = 40;
+const SEED_EDGE_M = 1.5;
 
 /** Pond water colour: algae green with almost no red, or blue to teal. */
 function pondWaterPixel(r, g, b) {
@@ -448,8 +449,9 @@ function ringInsidePx(x, y, ring) {
  * Photo water around mapped water outlines. Inside each outline the pixels
  * that look like pond water (at least SEED_SHARE of it and SEED_MIN_M2) give
  * the pond's colour; from them the region grows over smooth pixels of that
- * colour up to SEED_PAD_M past the outline. A crown on the bank is textured
- * and not pond coloured, so it stays.
+ * colour up to SEED_PAD_M past the outline, then SEED_EDGE_M into the bank
+ * (the colour test stops short of the shore). A crown on the bank is
+ * textured and not pond coloured, so it stays.
  * @param {{data: Uint8Array, width: number, height: number}} decoded JPEG RGBA
  * @param {object} frame geo frame (west, east, south, north, imgW, imgH, mpuX, mpuY)
  * @param {Array<Array<Array<[number, number]>>>} waterPolys [outer, ...inner] lon/lat rings
@@ -579,6 +581,19 @@ function osmWaterRings(decoded, frame, waterPolys) {
       for (let x = 1; x < cols - 1; x++) {
         const k = y * cols + x;
         if (grow[k] && (opened[k] || opened[k - 1] || opened[k + 1] || opened[k - cols] || opened[k + cols])) water[k] = 1;
+      }
+    }
+    // Feedback #13 follow-up: the 5 x 5 mean and the opening stop about a
+    // metre short of the shore, and lidar crowns left in that strip stood in
+    // the water as thin trees. Grow the water SEED_EDGE_M into the bank.
+    const edgeCells = Math.max(1, Math.round(SEED_EDGE_M / (STRIDE * mpu)));
+    for (let it = 0; it < edgeCells; it++) {
+      const prev = water.slice();
+      for (let y = 1; y < rows - 1; y++) {
+        for (let x = 1; x < cols - 1; x++) {
+          const k = y * cols + x;
+          if (!prev[k] && (prev[k - 1] || prev[k + 1] || prev[k - cols] || prev[k + cols])) water[k] = 1;
+        }
       }
     }
     for (const cells of flood(water, cols, rows, 1)) {

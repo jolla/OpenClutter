@@ -642,6 +642,14 @@ const ROADSIDE_V2 = {
   poolRingLuma: 150,
   poolRingMin: 0.3,
   poolMax: 0.06,
+  // Feedback #12 follow-up: the ring share above depends on how the photo
+  // splits the deck (one export kept a deck strip at the pool's end with
+  // only part of one side facing the water). A roof at least poolDeckMin of
+  // whose rectangle lies within poolDeckM of the pool water is deck too
+  // (that end-deck strip read 0.50; deck strips read 0.67 to 1.0, a unit
+  // parked off the pool 0).
+  poolDeckM: 4,
+  poolDeckMin: 0.3,
 };
 
 const plateTops = new WeakMap();
@@ -816,7 +824,9 @@ function roadsideVehicles(pad, frame, plate, holes) {
   let pools;
   const onPool = (ext) => {
     if (pools === undefined) pools = poolWater(plate, x0, y0, bw, bh, Math.min(mpuX, mpuY));
-    return !!pools && poolShare(ext, frame, pools, x0, y0, bw, bh) > ROADSIDE_V2.poolMax;
+    if (!pools) return false;
+    if (poolShare(ext, frame, pools, x0, y0, bw, bh) > ROADSIDE_V2.poolMax) return true;
+    return poolDeckShare(ext, frame, pools, x0, y0, bw, bh) >= ROADSIDE_V2.poolDeckMin;
   };
   const judge = (cells) => {
     const m2 = cells.length * pxM2;
@@ -1428,10 +1438,11 @@ function poolWater(plate, x0, y0, bw, bh, mpu) {
     }
     if (core * pxM2 < P.poolCoreM2) continue;
     // Deck ring: pixels r0 to r1 outside this patch.
-    const ax0 = Math.max(0, cx0 - r1);
-    const ay0 = Math.max(0, cy0 - r1);
-    const ax1 = Math.min(bw - 1, cx1 + r1);
-    const ay1 = Math.min(bh - 1, cy1 + r1);
+    const rd = Math.max(r1, Math.round(P.poolDeckM / mpu) + 1);
+    const ax0 = Math.max(0, cx0 - rd);
+    const ay0 = Math.max(0, cy0 - rd);
+    const ax1 = Math.min(bw - 1, cx1 + rd);
+    const ay1 = Math.min(bh - 1, cy1 + rd);
     const sw = ax1 - ax0 + 1;
     const sh = ay1 - ay0 + 1;
     const own = new Uint8Array(sw * sh);
@@ -1449,10 +1460,46 @@ function poolWater(plate, x0, y0, bw, bh, mpu) {
       }
     }
     if (!ring || lit / ring < P.poolRingMin) continue;
+    // Deck zone (2): up to poolDeckM out from this water (feedback #12 follow-up).
+    const dk = 3 * Math.max(1, Math.round(P.poolDeckM / mpu));
+    for (let y = 0; y < sh; y++) {
+      for (let x = 0; x < sw; x++) {
+        if (away[y * sw + x] > dk) continue;
+        const k = (y + ay0) * bw + (x + ax0);
+        if (!out[k]) out[k] = 2;
+      }
+    }
     for (let k = 0; k < cells.length; k++) out[cells[k]] = 1;
     found = true;
   }
   return found ? out : null;
+}
+
+/**
+ * Share of a roof's own rectangle (a grid about every 0.5 m, edge included)
+ * that lies on a pool from poolWater or within poolDeckM of its water
+ * (feedback #12 follow-up). A light deck strip read as a roof lies there
+ * whatever way the photo splits it; a unit parked beside a fenced pool does
+ * not.
+ */
+function poolDeckShare(ext, frame, pools, x0, y0, bw, bh) {
+  let n = 0;
+  let wet = 0;
+  const nl = Math.max(2, Math.round(ext.len / 0.5));
+  const nw = Math.max(2, Math.round(ext.wid / 0.5));
+  for (let i = 0; i <= nl; i++) {
+    const a = (i / nl - 0.5) * ext.len;
+    for (let k = 0; k <= nw; k++) {
+      const c = (k / nw - 0.5) * ext.wid;
+      const xy = llToImagePx((ext.cx + ext.ux * a - ext.uy * c) / ext.mLon, (ext.cy + ext.uy * a + ext.ux * c) / 110540, frame);
+      const x = Math.round(xy[0]) - x0;
+      const y = Math.round(xy[1]) - y0;
+      n++;
+      if (x < 0 || y < 0 || x >= bw || y >= bh) continue;
+      if (pools[y * bw + x]) wet++;
+    }
+  }
+  return n ? wet / n : 0;
 }
 
 /** Share of rings 1 to 4 m outside a roof that lie on a pool from poolWater. */
@@ -1476,7 +1523,7 @@ function poolShare(ext, frame, pools, x0, y0, bw, bh) {
       const y = Math.round(xy[1]) - y0;
       n++;
       if (x < 0 || y < 0 || x >= bw || y >= bh) continue;
-      if (pools[y * bw + x]) wet++;
+      if (pools[y * bw + x] === 1) wet++;
     }
   }
   return n ? wet / n : 0;
@@ -4319,6 +4366,7 @@ module.exports = {
   roadsideVehicles,
   poolWater,
   poolShare,
+  poolDeckShare,
   occupiedCarLayerWork,
   carHitRows,
   finishCarLayer,

@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { poolWater } = require("../netlify/lib/vehicle-track");
+const { poolWater, poolDeckShare } = require("../netlify/lib/vehicle-track");
 const { osmWaterRings } = require("../netlify/lib/surface-mask");
 
 function plateOf(w, h, fill) {
@@ -46,6 +46,28 @@ test("poolWater ignores the same dark patch with no deck, and thin shade", () =>
   assert.equal(poolWater(strip, 0, 0, 200, 120, 0.25), null);
 });
 
+test("poolWater marks the deck zone within 4 m of the water (feedback #12 follow-up)", () => {
+  const m = poolWater(poolPlate(true), 0, 0, 200, 120, 0.25);
+  assert.equal(m[60 * 200 + 40], 2, "10 px (2.5 m) off the water is deck zone");
+  assert.equal(m[60 * 200 + 160], 2, "deck zone past the end deck");
+  assert.equal(m[60 * 200 + 10], 0, "grass 10 m off stays");
+});
+
+test("a roof on the pool's end deck is deck, a unit 10 m off is not", () => {
+  const m = poolWater(poolPlate(true), 0, 0, 200, 120, 0.25);
+  const mLon = 111320;
+  const frame = { west: 0, east: (200 * 0.25) / mLon, south: 0, north: (120 * 0.25) / 110540, imgW: 200, imgH: 120 };
+  const at = (px, py, len, wid) => {
+    const lon = frame.west + (px / 200) * (frame.east - frame.west);
+    const lat = frame.north - (py / 120) * (frame.north - frame.south);
+    return { cx: lon * mLon, cy: lat * 110540, ux: 1, uy: 0, mLon, len, wid };
+  };
+  // End deck: 6 x 3 m centred 2 m past the water's east edge.
+  assert.ok(poolDeckShare(at(158, 60, 6, 3), frame, m, 0, 0, 200, 120) >= 0.5);
+  // A unit parked 10 m north-east of the pool.
+  assert.equal(poolDeckShare(at(190, 10, 6, 3), frame, m, 0, 0, 200, 120), 0);
+});
+
 // Feedback #13: a green (algae) pond with its OSM outline drawn 10 m off.
 const FRAME = { west: 0, east: 0.0036, south: 0, north: 0.0018, imgW: 400, imgH: 200, mpuX: 1, mpuY: 1 };
 const POND = [10, 65, 15];
@@ -80,9 +102,11 @@ test("osmWaterRings follows the photo pond past an offset outline (feedback #13)
     x0 = Math.min(x0, p[0]);
     x1 = Math.max(x1, p[0]);
   }
-  // The photo pond spans x 120 to 280; the outline 132 to 292.
-  assert.ok(x0 < 126 && x0 > 110, "west edge on the photo pond: " + x0);
-  assert.ok(x1 < 286 && x1 > 270, "east edge on the photo pond: " + x1);
+  // The photo pond spans x 120 to 280; the outline 132 to 292. The ring
+  // reaches about 1.5 m (here pixels) into the bank, so it is not short of
+  // the shore (feedback #13 follow-up).
+  assert.ok(x0 < 120 && x0 > 110, "west edge past the photo pond: " + x0);
+  assert.ok(x1 < 290 && x1 > 280, "east edge past the photo pond: " + x1);
 });
 
 test("osmWaterRings adds nothing where the outline holds no pond water", () => {
