@@ -1705,7 +1705,10 @@ function corridorLines(records) {
       else if (lanes >= 1 && lanes <= 12) widthM = lanes * LANE_M;
       else widthM = /_link$/.test(hw) ? 5 : ROAD_WIDTH_M[cls] || 7;
     } else continue;
-    out.push(elevated ? { coords, widthM, elevated: true } : { coords, widthM });
+    const line = elevated ? { coords, widthM, elevated: true } : { coords, widthM };
+    // Not serialized: lets the trueMetres dock-truck rail guard find tracks.
+    if (RAIL_TYPES[rail]) Object.defineProperty(line, "rail", { value: true });
+    out.push(line);
   }
   return out;
 }

@@ -1492,6 +1492,26 @@ async function enqueueBackgroundExport(event, body, cors) {
   return json(200, cors, { ok: true, async: true, jobId: id });
 }
 
+/** Closed lon/lat exterior rings of building footprint features. */
+function footprintRingsLL(features) {
+  const out = [];
+  for (const f of features || []) {
+    const g = f && f.geometry;
+    if (!g) continue;
+    const polys = g.type === "Polygon" ? [g.coordinates] : g.type === "MultiPolygon" ? g.coordinates : [];
+    for (const poly of polys) {
+      const r = poly && poly[0];
+      if (!r || r.length < 4) continue;
+      const ring = r.map((p) => [p[0], p[1]]);
+      const a = ring[0];
+      const z = ring[ring.length - 1];
+      if (a[0] !== z[0] || a[1] !== z[1]) ring.push([a[0], a[1]]);
+      out.push(ring);
+    }
+  }
+  return out;
+}
+
 async function handleClutter(event) {
   const cors = {
     "access-control-allow-origin": "*",
@@ -2660,6 +2680,7 @@ async function handleClutter(event) {
             index: i,
             ringPx: preview.overlayRings[i],
             material: preview.oiAreas[i] && preview.oiAreas[i].area_material,
+            terrainSplit: !!(preview.overlayRings[i] && preview.overlayRings[i].terrainSplit),
           });
         }
       }
@@ -2687,6 +2708,13 @@ async function handleClutter(event) {
               imgBuf,
               vehicleFrame: vehicleImagery ? vehicleImagery.frame : null,
               vehicleImgBuf: vehicleImagery ? vehicleImagery.imgBuf : null,
+              // trueMetres: dock-truck holes and dock roofs from the footprints
+              // themselves (lon/lat), not the emitted pieces, whose terrain
+              // split follows the true-aspect grid.
+              dockRingsLL: process.env.OC_DOCK_LL && vehicleImagery ? footprintRingsLL(features) : null,
+              // trueMetres: rail guard and no yard search on terrain-split
+              // dock roofs (see semisAtDocksWork). Off: no guards.
+              dockGuards: vehicleImagery ? { railLines: outdoorRailLines } : null,
             })
           )
           .then((plan) => {
@@ -2874,6 +2902,7 @@ async function handleClutter(event) {
   }
 
   let outdoorFeatures = [];
+  let outdoorRailLines = [];
   let outdoorNotes = [];
   let palmPoints = [];
   let outdoorMiss = false;
@@ -2886,6 +2915,9 @@ async function handleClutter(event) {
       warnings.push(OUTDOOR_MISS);
     } else {
       outdoorFeatures = pack.features || [];
+      outdoorRailLines = (Array.isArray(pack.corridors) ? pack.corridors : [])
+        .filter((c) => c && c.rail && Array.isArray(c.coords) && c.coords.length >= 2)
+        .map((c) => c.coords);
       outdoorNotes = pack.notes || [];
       palmPoints = Array.isArray(pack.palms) ? pack.palms : [];
       takePlaces(pack);

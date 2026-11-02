@@ -1618,6 +1618,23 @@ function extremeTriRatio(ring) {
 }
 
 function capOiRingPx(ring, maxPts, opts) {
+  // trueMetres: opts.yScale (< 1) squashes y back to the pre-trueMetres
+  // plate for the choice of vertices, so a roof keeps the outline it had on
+  // the old plate. The kept vertices are the ring's own points. 1 or unset
+  // (switch off) is the plain path.
+  const yScale = opts && Number(opts.yScale) > 0 && Number(opts.yScale) < 0.999 ? Number(opts.yScale) : 1;
+  if (yScale !== 1 && ring && ring.length) {
+    const back = new Map();
+    const work = ring.map((p) => {
+      const q = [p[0], p[1] * yScale];
+      back.set(q[0] + "," + q[1], p);
+      return q;
+    });
+    const outer = (opts && opts.keepOutPx) || [];
+    const unsquash = (c) => c.map((q) => back.get(q[0] + "," + q[1]) || [q[0], q[1] / yScale]);
+    const out = capOiRingPx(work, maxPts, Object.assign({}, opts, { yScale: 1, keepOutTest: (c) => keepOutHits(outer, unsquash(c)) }));
+    return unsquash(out);
+  }
   const limit = Math.max(3, maxPts | 0);
   const open = uniqueOpenRing(ring);
   if (open.length < 3) return [];
@@ -1657,7 +1674,7 @@ function capOiRingPx(ring, maxPts, opts) {
   let fallback = null;
   for (const c of candidates) {
     if (c.length < 3 || c.length > limit || ringAreaPx(c) <= 1e-4 || ringSelfIntersectsPx(c)) continue;
-    if (keepOutHits(keepOut, c)) continue;
+    if (opts && opts.keepOutTest ? opts.keepOutTest(c) : keepOutHits(keepOut, c)) continue;
     const cc = ringCentroidPx(c);
     const drift = origin && cc ? Math.hypot(cc[0] - origin[0], cc[1] - origin[1]) : 0;
     const area = ringAreaPx(c);
@@ -1693,6 +1710,7 @@ function ringToOi(pts, imgW, imgH, mpuX, opts) {
     keepOutPx: (opts && opts.keepOutPx) || [],
     noHull: !!(opts && opts.noHull),
   };
+  if (opts && Number(opts.yScale) > 0 && Number(opts.yScale) < 0.999) capOpts.yScale = Number(opts.yScale);
   clipped = capOiRingPx(clipped, MAX_OI_RING_VERTS, capOpts);
   if (!clipped || ringVertexCount(clipped) < 3 || ringVertexCount(clipped) > MAX_OI_RING_VERTS) return null;
   if (ringAreaPx(clipped) < 1e-6) return null;
@@ -2323,6 +2341,7 @@ function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSou
 }
 
 /** Overlay uses the detailed clip. Clipboard uses clipPx (exact sliver, or the OI ring on the keep path). */
+let emittingSplitPiece = false;
 function stashBuilding(buckets, frame, affine, clipRing, overlayPts, clipPx, picked) {
   if (picked.clipType) buckets.clipTypes.push(picked.clipType);
   if (picked.measured) buckets.measured++;
@@ -2348,6 +2367,9 @@ function stashBuilding(buckets, frame, affine, clipRing, overlayPts, clipPx, pic
     minY: Math.min(...cys),
     maxY: Math.max(...cys),
   });
+  // Not serialized: the dock-truck yard search skips terrain-split pieces
+  // under trueMetres.
+  if (emittingSplitPiece && src && !src.terrainSplit) Object.defineProperty(src, "terrainSplit", { value: true });
   buckets.overlayRings.push(src);
   buckets.overlayHeights.push(
     picked.buildingHeight || picked.exactHeight || (picked.material && picked.material.top_height) || 0
@@ -2406,6 +2428,9 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     }
   }
   const oiOpts = { keepOutPx };
+  // trueMetres: pick the capped outline's vertices on the old plate (1 when off).
+  const capYScale = legacyAreaScale(frame);
+  if (capYScale !== 1) oiOpts.yScale = capYScale;
   if (keepThin) {
     const b = ringBBox(clippedPts);
     const drawn = Math.min(b.w, b.h);
@@ -2473,6 +2498,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     minY: Math.min(...cys),
     maxY: Math.max(...cys),
   });
+  if (emittingSplitPiece && clippedPts && !clippedPts.terrainSplit) Object.defineProperty(clippedPts, "terrainSplit", { value: true });
   buckets.overlayRings.push(clippedPts);
   buckets.overlayHeights.push(picked.buildingHeight || picked.exactHeight || picked.material.top_height);
   if (picked.lifted) buckets.lifted++;
@@ -2833,6 +2859,7 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
             stats.droppedCap++;
             continue;
           }
+          emittingSplitPiece = parts.length > 1;
           const result = emitBuilding(
             parts[p],
             heightM,
@@ -2848,6 +2875,7 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
             keepThin,
             podium
           );
+          emittingSplitPiece = false;
           if (result === "keep") {
             stats.buildings++;
             if (heightSource === HEIGHT_SOURCE && heightM > 2) {

@@ -68,3 +68,80 @@ test("legacyAreaScale keeps pre-trueMetres size floors (1 when off or on the old
   assert.strictEqual(gf.legacyAreaScale(north), 1);
   gf.setTrueMetres(false);
 });
+
+test("capOiRingPx yScale picks vertices on the old plate and keeps the ring's own points", () => {
+  const { capOiRingPx } = require("../netlify/lib/pipeline");
+  // A stepped roof with 60 vertices, true-metre pixels (y stretched by 1/k).
+  const k = 0.734;
+  const old = [];
+  for (let i = 0; i <= 30; i++) old.push([i * 10, i % 2 ? 4 : 0]);
+  for (let i = 30; i >= 0; i--) old.push([i * 10, 120 + (i % 3 === 0 ? 3 : 0)]);
+  const tall = old.map((p) => [p[0], p[1] / k]);
+  const plain = capOiRingPx(old, 40, { maxEpsPx: 2 });
+  const scaled = capOiRingPx(tall, 40, { maxEpsPx: 2, yScale: k });
+  assert.ok(scaled.length >= 4 && scaled.length <= 41);
+  assert.strictEqual(scaled.length, plain.length);
+  for (let i = 0; i < scaled.length; i++) {
+    assert.ok(Math.abs(scaled[i][0] - plain[i][0]) < 1e-9);
+    assert.ok(Math.abs(scaled[i][1] - plain[i][1] / k) < 1e-6);
+  }
+  const keys = new Set(tall.map((p) => p[0] + "," + p[1]));
+  for (const p of scaled) assert.ok(keys.has(p[0] + "," + p[1]), "kept a point that is not on the ring: " + p);
+  // yScale 1 (switch off) is the plain path.
+  assert.deepStrictEqual(capOiRingPx(tall, 40, { maxEpsPx: 2, yScale: 1 }), capOiRingPx(tall, 40, { maxEpsPx: 2 }));
+});
+
+test("metersToLines measures a point against railway segments", () => {
+  const { metersToLines } = require("../netlify/lib/vehicle-track");
+  const lat = 42.8947;
+  const rail = [[-87.9224, lat - 0.001], [-87.9224, lat + 0.001]];
+  const kx = Math.cos((lat * Math.PI) / 180) * 111320;
+  const near = metersToLines([-87.9224 + 3 / kx, lat], [rail]);
+  const far = metersToLines([-87.9224 + 9 / kx, lat], [rail]);
+  assert.ok(Math.abs(near - 3) < 0.05, "3 m beside the track: " + near);
+  assert.ok(Math.abs(far - 9) < 0.05, "9 m beside the track: " + far);
+  assert.strictEqual(metersToLines([-87.9, lat], []), Infinity);
+});
+
+test("terrain-split building pieces are flagged for the dock yard guard, output unchanged", () => {
+  const { footprintsToClutter } = require("../netlify/lib/pipeline");
+  const map = gf.geoFrame({ west: -87.925, south: 42.892, east: -87.918, north: 42.897, name: "Dock" }, { maxSide: 900, metersPerPx: 1 });
+  const ring = [[-87.923, 42.893], [-87.920, 42.893], [-87.920, 42.895], [-87.923, 42.895], [-87.923, 42.893]];
+  const feat = { type: "Feature", properties: { height: 8 }, geometry: { type: "Polygon", coordinates: [ring] } };
+  function slope(split) {
+    const fn = () => 0;
+    fn.seat = () => 0;
+    fn.split = (r) =>
+      split
+        ? [
+            [[-87.923, 42.893], [-87.9215, 42.893], [-87.9215, 42.895], [-87.923, 42.895], [-87.923, 42.893]],
+            [[-87.9215, 42.893], [-87.920, 42.893], [-87.920, 42.895], [-87.9215, 42.895], [-87.9215, 42.893]],
+          ]
+        : [r];
+    return fn;
+  }
+  const whole = footprintsToClutter([feat], map, null, slope(false));
+  const cut = footprintsToClutter([feat], map, null, slope(true));
+  assert.ok(whole.overlayRings.length >= 1);
+  assert.ok(whole.overlayRings.every((r) => !r.terrainSplit));
+  assert.ok(cut.overlayRings.length >= 2);
+  assert.ok(cut.overlayRings.every((r) => r.terrainSplit === true));
+  // The flag is not part of the serialized rings or areas.
+  assert.ok(!JSON.stringify(cut.overlayRings).includes("terrainSplit"));
+  assert.ok(!JSON.stringify(cut.oiAreas).includes("terrainSplit"));
+  const later = footprintsToClutter([feat], map, null, slope(false));
+  assert.ok(later.overlayRings.every((r) => !r.terrainSplit), "flag does not leak into the next export");
+});
+
+test("dock-truck guards ride only on the trueMetres plate", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const src = fs.readFileSync(path.join(__dirname, "../netlify/lib/detect-parallel.js"), "utf8");
+  assert.match(src, /const guarded = vf !== frame && !!dockGuards;/);
+  assert.match(src, /if \(guarded\) \{\n\s+job\.opts = \{/);
+  const vt = fs.readFileSync(path.join(__dirname, "../netlify/lib/vehicle-track.js"), "utf8");
+  assert.match(vt, /if \(railLines && metersToLines\(c, railLines\) < railM\) continue;/);
+  assert.match(vt, /if \(noYard && noYard\[r\]\) continue;/);
+  const cl = fs.readFileSync(path.join(__dirname, "../netlify/functions/clutter.js"), "utf8");
+  assert.match(cl, /dockGuards: vehicleImagery \? \{ railLines: outdoorRailLines \} : null,/);
+});

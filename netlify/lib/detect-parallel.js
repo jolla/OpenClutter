@@ -498,7 +498,11 @@ function holesNear(boxes, pad) {
   return out;
 }
 
-async function scanVehicles(features, frame, buildings, imgBuf, vehicleFrame) {
+// trueMetres dock trucks: a trailer centre this close to a mapped railway
+// centreline is on the track, not at a dock.
+const RAIL_GUARD_M = 4;
+
+async function scanVehicles(features, frame, buildings, imgBuf, vehicleFrame, dockRingsLL, dockGuards) {
   // trueMetres: plate reads use the pre-trueMetres plate and its frame (vf).
   const vf = vehicleFrame || frame;
   const oc = require("./outdoor-clutter");
@@ -507,17 +511,37 @@ async function scanVehicles(features, frame, buildings, imgBuf, vehicleFrame) {
   const scanned = { pitch: {}, roadside: {}, cars: {}, boats: {}, homes: {}, semis: {}, docks: [], docksReady: false };
   let wantPlate = needsPitchImage(list);
   const dockRings = [];
+  const dockNoYard = [];
   const holes = [];
-  for (let b = 0; b < (buildings || []).length; b++) {
-    const px = buildings[b] && buildings[b].ringPx;
-    if (!px || px.length < 3) continue;
-    const ll = pxRingToLonLat(px, frame);
-    if (!ll || ll.length < 4) continue;
-    const a = ll[0];
-    const end = ll[ll.length - 1];
-    if (a[0] !== end[0] || a[1] !== end[1]) ll.push([a[0], a[1]]);
-    holes.push(ll);
-    if (roofWantsDocks([vf === frame ? px : oc.pxOnFrame(px, frame, vf)], vf)) dockRings.push(ll);
+  // trueMetres only: rail guard and no yard search on terrain-split roofs.
+  const guarded = vf !== frame && !!dockGuards;
+  if (vf !== frame && Array.isArray(dockRingsLL)) {
+    // trueMetres: the footprints themselves, measured on the detector frame.
+    for (let b = 0; b < dockRingsLL.length; b++) {
+      const ll = dockRingsLL[b];
+      if (!ll || ll.length < 4) continue;
+      holes.push(ll);
+      const px = ll.map((p) => llToPx(p[0], p[1], vf));
+      if (px && px.length >= 4 && roofWantsDocks([px], vf)) {
+        dockRings.push(ll);
+        dockNoYard.push(false);
+      }
+    }
+  } else {
+    for (let b = 0; b < (buildings || []).length; b++) {
+      const px = buildings[b] && buildings[b].ringPx;
+      if (!px || px.length < 3) continue;
+      const ll = pxRingToLonLat(px, frame);
+      if (!ll || ll.length < 4) continue;
+      const a = ll[0];
+      const end = ll[ll.length - 1];
+      if (a[0] !== end[0] || a[1] !== end[1]) ll.push([a[0], a[1]]);
+      holes.push(ll);
+      if (roofWantsDocks([vf === frame ? px : oc.pxOnFrame(px, frame, vf)], vf)) {
+        dockRings.push(ll);
+        dockNoYard.push(!!buildings[b].terrainSplit);
+      }
+    }
   }
   if (dockRings.length) wantPlate = true;
   for (let i = 0; i < list.length; i++) {
@@ -616,7 +640,7 @@ async function scanVehicles(features, frame, buildings, imgBuf, vehicleFrame) {
     }
   }
   if (dockRings.length) {
-    jobs.push({
+    const job = {
       op: "docks",
       rings: dockRings,
       holes,
@@ -624,7 +648,15 @@ async function scanVehicles(features, frame, buildings, imgBuf, vehicleFrame) {
       buffer: shared.buffer,
       width: shared.width,
       height: shared.height,
-    });
+    };
+    if (guarded) {
+      job.opts = {
+        noYard: dockNoYard,
+        railLines: Array.isArray(dockGuards.railLines) ? dockGuards.railLines : [],
+        railM: RAIL_GUARD_M,
+      };
+    }
+    jobs.push(job);
   }
   const results = jobs.length ? await runQueue("vehicle-job", jobs) : [];
   for (let i = 0; i < jobs.length; i++) {
@@ -661,7 +693,7 @@ async function outdoorParallel(args) {
   try {
     const vehicleFrame = args && args.vehicleFrame ? args.vehicleFrame : null;
     const vehicleBuf = vehicleFrame && args.vehicleImgBuf ? args.vehicleImgBuf : args.imgBuf;
-    const ready = await scanVehicles(features, frame, args.buildings, vehicleBuf, vehicleFrame);
+    const ready = await scanVehicles(features, frame, args.buildings, vehicleBuf, vehicleFrame, args && args.dockRingsLL, args && args.dockGuards);
     scanned = ready.scanned;
     plate = ready.plate;
   } catch {

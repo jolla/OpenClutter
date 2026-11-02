@@ -4078,11 +4078,43 @@ function yardInsideFootprint(ring, frame, plate) {
   return { yardM2, roofShare: 1 - share, bright: brightFrac, allow };
 }
 
-function semisAtDocks(rings, frame, plate, holes) {
-  return require("./stage-clock").timeSpanSync("vehicle", () => semisAtDocksWork(rings, frame, plate, holes));
+function semisAtDocks(rings, frame, plate, holes, opts) {
+  return require("./stage-clock").timeSpanSync("vehicle", () => semisAtDocksWork(rings, frame, plate, holes, opts));
 }
 
-function semisAtDocksWork(rings, frame, plate, holes) {
+/** Metres from a lon/lat point to the nearest segment of any line. */
+function metersToLines(pt, lines) {
+  let best = Infinity;
+  const kx = Math.cos((pt[1] * Math.PI) / 180) * 111320;
+  const ky = 110540;
+  for (let l = 0; l < (lines || []).length; l++) {
+    const line = lines[l];
+    if (!line || line.length < 2) continue;
+    for (let i = 1; i < line.length; i++) {
+      const ax = (line[i - 1][0] - pt[0]) * kx;
+      const ay = (line[i - 1][1] - pt[1]) * ky;
+      const bx = (line[i][0] - pt[0]) * kx;
+      const by = (line[i][1] - pt[1]) * ky;
+      const dx = bx - ax;
+      const dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      let t = len2 > 0 ? -(ax * dx + ay * dy) / len2 : 0;
+      if (t < 0) t = 0;
+      else if (t > 1) t = 1;
+      const d = Math.hypot(ax + t * dx, ay + t * dy);
+      if (d < best) best = d;
+    }
+  }
+  return best;
+}
+
+// opts (trueMetres only, absent when off): noYard[r] skips the yard search
+// inside dock roof r (a terrain-split piece); railLines drops trailers whose
+// centre is within railM of a mapped railway.
+function semisAtDocksWork(rings, frame, plate, holes, opts) {
+  const noYard = opts && Array.isArray(opts.noYard) ? opts.noYard : null;
+  const railLines = opts && Array.isArray(opts.railLines) && opts.railLines.length ? opts.railLines : null;
+  const railM = opts && opts.railM > 0 ? opts.railM : 4;
   const profile = require("./profile-log");
   const profiling = profile.profileOn();
   const out = [];
@@ -4103,6 +4135,7 @@ function semisAtDocksWork(rings, frame, plate, holes) {
     for (let i = 0; i < found.length; i++) {
       const c = found[i].center;
       if (!c) continue;
+      if (railLines && metersToLines(c, railLines) < railM) continue;
       const ax = axisOf(found[i]);
       let clash = false;
       for (let u = 0; u < used.length; u++) {
@@ -4148,6 +4181,7 @@ function semisAtDocksWork(rings, frame, plate, holes) {
       }
     }
     if (profiling) profile.add("apron-scan", profile.msSince(tProf));
+    if (noYard && noYard[r]) continue;
     tProf = profiling ? profile.now() : 0;
     const yard = yardInsideFootprint(rings[r], frame, plate);
     if (profiling) profile.add("yard-scan", profile.msSince(tProf));
@@ -4327,6 +4361,7 @@ function scoreLayerOverlap(labels, predRings, cellM) {
 }
 
 module.exports = {
+  metersToLines,
   ROADSIDE_V2,
   RV_LENGTH_M,
   RV_WIDTH_M,
