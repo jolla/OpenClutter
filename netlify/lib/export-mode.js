@@ -210,6 +210,27 @@ function waterEdgesWanted(testHost, body) {
   return !(v === false || v === 0 || v === "0" || v === "false");
 }
 
+// Feedback #14: a map note at each light pole the export shipped (merged on
+// a lamp-lined street, at most 40 pole notes). Paste only; the OpenIntent is
+// unchanged. /dev hosts only (poleNotes:false or ?poleNotes=0 turns it off
+// there) until a weekly release turns it on for every host.
+let poleNotes = false;
+
+function setPoleNotes(on) {
+  poleNotes = !!on;
+}
+
+function isPoleNotes() {
+  return poleNotes;
+}
+
+function poleNotesWanted(testHost, body, query) {
+  if (!testHost) return false;
+  const raw = body && body.poleNotes != null ? body.poleNotes : query && query.poleNotes != null ? query.poleNotes : null;
+  if (raw == null || raw === "") return true;
+  return !(raw === false || raw === 0 || raw === "0" || raw === "false");
+}
+
 let staleTowers = false;
 
 function setStaleTowers(on) {
@@ -346,6 +367,9 @@ function protoWanted(testHost, body, key, envKey) {
 }
 
 module.exports = {
+  setPoleNotes,
+  isPoleNotes,
+  poleNotesWanted,
   trueMetresWanted,
   setWaterEdges,
   isWaterEdges,

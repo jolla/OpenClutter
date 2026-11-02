@@ -371,6 +371,144 @@ function genericRestroomName(name) {
   );
 }
 
+// Feedback #14 (poleNotes): a note at every light pole the export shipped, so
+// poles are easy to find on the map. Read from the OpenIntent areas, so a
+// note only stands where a pole object really is (a pole the budget trimmed
+// gets no note). Poles close together share one note: the merge distance
+// grows from 8 m up to 32 m until the notes fit POLE_NOTE_CAP. If a big lot
+// still has more groups than that, one group per map cell is kept (busiest
+// first), so a lamp-lined street cannot flood the map or the paste.
+const POLE_NOTE_CAP = 40;
+const POLE_MERGE_START_M = 8;
+const POLE_MERGE_MAX_M = 32;
+const POLE_NAME = /^Light pole\b/;
+
+/** Light poles from the OpenIntent that actually shipped: position and own height. */
+function poleRowsFromOpenIntent(oi, frame) {
+  const areas =
+    oi && oi.floorplans && oi.floorplans[0] && oi.floorplans[0].attenuation_areas;
+  if (!Array.isArray(areas) || !frame || !(frame.imgW > 0) || !(frame.imgH > 0)) return [];
+  const rows = [];
+  for (let i = 0; i < areas.length; i++) {
+    const area = areas[i];
+    const material = (area && area.area_material) || {};
+    if (!POLE_NAME.test(String(material.name || ""))) continue;
+    const coords = area && area.area && area.area.coordinates;
+    if (!Array.isArray(coords) || !coords.length) continue;
+    let x = 0;
+    let y = 0;
+    let n = 0;
+    for (let c = 0; c < coords.length; c++) {
+      const p = coords[c] && coords[c].coordinate_xyz;
+      if (!p || !Number.isFinite(+p.x) || !Number.isFinite(+p.y)) continue;
+      x += +p.x;
+      y += +p.y;
+      n++;
+    }
+    if (!n) continue;
+    const ll = pxToLl(x / n, y / n, frame);
+    if (!ll || !Number.isFinite(ll[0]) || !Number.isFinite(ll[1])) continue;
+    rows.push({ lon: ll[0], lat: ll[1], heightM: areaThickness(material) });
+  }
+  return rows;
+}
+
+/** Greedy groups: each pole joins the first group whose seed is within sepM. */
+function groupPoles(rows, sepM) {
+  const sorted = rows.slice().sort((a, b) => a.lon - b.lon || a.lat - b.lat);
+  const groups = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const r = sorted[i];
+    let hit = null;
+    for (let g = 0; g < groups.length && sepM > 0; g++) {
+      const seed = groups[g][0];
+      if (metersBetween(r.lon, r.lat, seed.lon, seed.lat) < sepM) {
+        hit = groups[g];
+        break;
+      }
+    }
+    if (hit) hit.push(r);
+    else groups.push([r]);
+  }
+  return groups;
+}
+
+function poleHeightText(group) {
+  const hs = group.map((r) => Math.round(r.heightM || 0)).filter((h) => h > 0);
+  if (!hs.length) return "";
+  const lo = Math.min.apply(null, hs);
+  const hi = Math.max.apply(null, hs);
+  return lo === hi ? lo + " m" : lo + " to " + hi + " m";
+}
+
+/**
+ * Pole notes: "Light pole, 9 m" for one pole, "3 light poles within 16 m,
+ * 9 to 10 m" for a merged group, placed on the pole nearest the group's middle.
+ */
+function poleNotes(rows, frame, cap) {
+  const max = cap > 0 ? cap : POLE_NOTE_CAP;
+  if (!Array.isArray(rows) || !rows.length) return [];
+  let sep = 0;
+  let groups = groupPoles(rows, sep);
+  while (groups.length > max && sep < POLE_MERGE_MAX_M) {
+    sep = sep ? Math.min(POLE_MERGE_MAX_M, sep * 2) : POLE_MERGE_START_M;
+    groups = groupPoles(rows, sep);
+  }
+  // Busiest groups first; past the cap, keep one group per map cell first.
+  groups.sort((a, b) => b.length - a.length || a[0].lon - b[0].lon || a[0].lat - b[0].lat);
+  let chosen = groups;
+  if (groups.length > max) {
+    const cols = Math.max(1, Math.ceil(Math.sqrt(max)));
+    const rowsN = Math.max(1, Math.ceil(max / cols));
+    const cw = (frame.east - frame.west) / cols || 1;
+    const ch = (frame.north - frame.south) / rowsN || 1;
+    const seen = new Set();
+    const first = [];
+    const rest = [];
+    for (let g = 0; g < groups.length; g++) {
+      const p = groups[g][0];
+      const c = Math.min(cols - 1, Math.max(0, Math.floor((p.lon - frame.west) / cw)));
+      const r = Math.min(rowsN - 1, Math.max(0, Math.floor((p.lat - frame.south) / ch)));
+      const key = r + "," + c;
+      if (seen.has(key)) rest.push(groups[g]);
+      else {
+        seen.add(key);
+        first.push(groups[g]);
+      }
+    }
+    chosen = first.concat(rest).slice(0, max);
+  }
+  const out = [];
+  for (let g = 0; g < chosen.length; g++) {
+    const group = chosen[g];
+    let lon = 0;
+    let lat = 0;
+    for (let i = 0; i < group.length; i++) {
+      lon += group[i].lon;
+      lat += group[i].lat;
+    }
+    lon /= group.length;
+    lat /= group.length;
+    let at = group[0];
+    let best = Infinity;
+    for (let i = 0; i < group.length; i++) {
+      const d = metersBetween(lon, lat, group[i].lon, group[i].lat);
+      if (d < best) {
+        best = d;
+        at = group[i];
+      }
+    }
+    const h = poleHeightText(group);
+    const text =
+      group.length === 1
+        ? "Light pole" + (h ? ", " + h : "")
+        : group.length + " light poles within " + Math.round(sep) + " m" + (h ? ", " + h : "");
+    const note = clipboardNote(at.lon, at.lat, frame, text);
+    if (note) out.push(note);
+  }
+  return out;
+}
+
 function buildMapNotes(opts) {
   const frame = opts && opts.frame;
   const places = (opts && opts.places) || [];
@@ -497,7 +635,9 @@ function buildMapNotes(opts) {
     }
   }
 
-  return out.slice(0, 24);
+  const base = out.slice(0, 24);
+  if (!(opts && opts.poleNotes)) return base;
+  return base.concat(poleNotes(poleRowsFromOpenIntent(opts.openintent, frame), frame, POLE_NOTE_CAP));
 }
 
 function stampMapNotes(clip, notes) {
@@ -514,4 +654,7 @@ module.exports = {
   restroomLabel,
   stampMapNotes,
   clipboardNote,
+  poleNotes,
+  poleRowsFromOpenIntent,
+  POLE_NOTE_CAP,
 };

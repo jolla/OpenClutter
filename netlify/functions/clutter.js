@@ -1571,6 +1571,11 @@ async function handleClutter(event) {
   // them off. Pass testHost again to put one back on /dev hosts only.
   exportMode.setTallCanopyKeep(exportMode.tallCanopyKeepWanted(true, body));
   exportMode.setWaterEdges(exportMode.waterEdgesWanted(true, body));
+  // Feedback #14: a map note at each shipped light pole. /dev hosts only
+  // (poleNotes:false or ?poleNotes=0 turns it off there). Production off.
+  exportMode.setPoleNotes(
+    exportMode.poleNotesWanted(testHost, body, event && event.queryStringParameters),
+  );
   // 1.3.11 trueMetres: ground-meter plate at every latitude. /dev hosts on
   // (trueMetres:false or ?trueMetres=0 turns it off there). Production off.
   require("../lib/geo-frame").setTrueMetres(
@@ -3205,6 +3210,7 @@ async function handleClutter(event) {
           features: exportFeatures,
           trees: treePoints,
           openintent: built.openintent,
+          poleNotes: exportMode.isPoleNotes(),
         })
       : [];
     const site = buildSiteV1({
@@ -3264,6 +3270,7 @@ async function handleClutter(event) {
         features: exportFeatures,
         trees: treePoints,
         openintent: built.openintent,
+        poleNotes: exportMode.isPoleNotes(),
       });
       if (terrainFields.terrainClipboard) stampMapNotes(terrainFields.terrainClipboard, notes);
       stampMapNotes(gpsPaste, notes);
