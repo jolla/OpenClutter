@@ -3210,7 +3210,11 @@ function outdoorToOi(items, imgW, imgH, mpuX) {
     const opts = { keepShape: true };
     if (t.thin) {
       // Hold the drawn width. The 3 m / 4 px floor would turn a fence into a road.
-      const b = ringBBox(t.ringPx);
+      // Measure it on the part inside the map (feedback #17): a slanted fence
+      // cut at the map edge is shorter across than the whole line, and holding
+      // the whole line's span stretched the cut piece about 30 m over a road.
+      const inside = clipRingToRect(t.ringPx, imgW, imgH);
+      const b = ringBBox(inside.length >= 3 ? inside : t.ringPx);
       const drawn = Math.min(b.w, b.h);
       opts.minSpanPx = Math.max(drawn * 0.98, 0.05);
       opts.spanFloorPx = Math.min(MIN_OI_SPAN_PX, Math.max(drawn * 0.5, 0.02));
