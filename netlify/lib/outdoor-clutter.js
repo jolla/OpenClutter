@@ -2862,6 +2862,18 @@ function rectDims(px, mx, my) {
  * building centre, for the park-model gap test (nearRoofCents).
  * Returns { rings, cents } in lon/lat.
  */
+/** A pixel ring on frame `from` as a pixel ring on frame `to` (same box, other pixel grid). */
+function pxOnFrame(ring, from, to) {
+  const sx = to.imgW / from.imgW;
+  const sy = to.imgH / from.imgH;
+  return ring.map((p) => [p[0] * sx, p[1] * sy]);
+}
+
+/** Buildings with ringPx moved onto another frame of the same box; lon/lat rings stay. */
+function buildingsOnFrame(buildings, from, to) {
+  return (buildings || []).map((b) => (b && b.ringPx ? Object.assign({}, b, { ringPx: pxOnFrame(b.ringPx, from, to) }) : b));
+}
+
 function devRoadsideHoles(buildings, frame) {
   const rings = [];
   const cents = [];
@@ -2915,6 +2927,9 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
   // so their tuned sizes see the same pixels. Results are lon/lat; geometry
   // below is placed on the true-meter frame. Without it both are one frame.
   const vf = vehicleFrame || frame;
+  // Building outlines on the detector frame, so RV-sized and dock-sized
+  // tests measure what they were tuned on (same box, pixel grid scaled).
+  const vBuildings = vf === frame ? buildings : buildingsOnFrame(buildings, frame, vf);
   const campZones = [];
   const campRoads = [];
   const parkContext = [];
@@ -2967,12 +2982,12 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       for (let i = 0; i < px.length; i++) roofLL.push(pxRingToLonLat(px[i], frame));
       return roofLL;
     }
-    roofLL = devRoadsideHoles(buildings, frame).rings;
+    roofLL = devRoadsideHoles(vBuildings, vf).rings;
     return roofLL;
   }
 
   function roofCentsLL() {
-    return devRoadsideHoles(buildings, frame).cents;
+    return devRoadsideHoles(vBuildings, vf).cents;
   }
 
   features = dropRoadsideUnderRoofs(finalizeVehicles(features, fractionFor, roadsideFor), buildings, frame);
@@ -3022,12 +3037,12 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
   }
   if (isSiteTypes() && frame && buildings && buildings.length) {
     const zoneRings = [];
-    for (let i = 0; i < campZones.length; i++) if (!campZones[i].tentOnly) zoneRings.push(lonLatRingToPx(campZones[i].coords, frame));
+    for (let i = 0; i < campZones.length; i++) if (!campZones[i].tentOnly) zoneRings.push(lonLatRingToPx(campZones[i].coords, vf));
     for (let i = 0; i < (features || []).length; i++) {
       const f = features[i];
-      if (f && f.kind === "mobile-park" && f.coords && f.coords.length >= 4) zoneRings.push(lonLatRingToPx(f.coords, frame));
+      if (f && f.kind === "mobile-park" && f.coords && f.coords.length >= 4) zoneRings.push(lonLatRingToPx(f.coords, vf));
     }
-    const camp = campFootprints(buildings, zoneRings, frame, slopeTop);
+    const camp = campFootprints(vBuildings, zoneRings, vf, slopeTop);
     for (let i = 0; i < camp.updates.length; i++) updates.push(camp.updates[i]);
   }
   const items = [];
@@ -3043,7 +3058,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       const end = ll[ll.length - 1];
       if (a[0] !== end[0] || a[1] !== end[1]) ll.push([a[0], a[1]]);
       holes.push(ll);
-      if (roofWantsDocks([px], frame)) docks.push(ll);
+      if (roofWantsDocks([vf === frame ? px : pxOnFrame(px, frame, vf)], vf)) docks.push(ll);
     }
     const found =
       scanned && scanned.docksReady ? scanned.docks || [] : semisAtDocks(docks, vf, vehiclePlate, holes);
@@ -3364,6 +3379,8 @@ function fitOutdoorBudget(items, kinds, room, opts) {
 }
 
 module.exports = {
+  pxOnFrame,
+  buildingsOnFrame,
   OVERPASS_URL,
   FETCH_MS,
   POLE_CAP,

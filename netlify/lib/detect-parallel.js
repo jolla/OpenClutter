@@ -501,6 +501,8 @@ function holesNear(boxes, pad) {
 async function scanVehicles(features, frame, buildings, imgBuf, vehicleFrame) {
   // trueMetres: plate reads use the pre-trueMetres plate and its frame (vf).
   const vf = vehicleFrame || frame;
+  const oc = require("./outdoor-clutter");
+  const vBuildings = vf === frame ? buildings : oc.buildingsOnFrame(buildings, frame, vf);
   const list = features || [];
   const scanned = { pitch: {}, roadside: {}, cars: {}, boats: {}, homes: {}, semis: {}, docks: [], docksReady: false };
   let wantPlate = needsPitchImage(list);
@@ -515,7 +517,7 @@ async function scanVehicles(features, frame, buildings, imgBuf, vehicleFrame) {
     const end = ll[ll.length - 1];
     if (a[0] !== end[0] || a[1] !== end[1]) ll.push([a[0], a[1]]);
     holes.push(ll);
-    if (roofWantsDocks([px], frame)) dockRings.push(ll);
+    if (roofWantsDocks([vf === frame ? px : oc.pxOnFrame(px, frame, vf)], vf)) dockRings.push(ll);
   }
   if (dockRings.length) wantPlate = true;
   for (let i = 0; i < list.length; i++) {
@@ -536,7 +538,7 @@ async function scanVehicles(features, frame, buildings, imgBuf, vehicleFrame) {
   // /dev (shadowTrailers): roadside reads use the same holes and building
   // centres as planOutdoor (amenity roofs over 320 m2), so the live export
   // and a serial planOutdoor run agree. Prod keeps every building as a hole.
-  const devHoles = mode.isShadowTrailers() ? require("./outdoor-clutter").devRoadsideHoles(buildings, frame) : null;
+  const devHoles = mode.isShadowTrailers() ? oc.devRoadsideHoles(vBuildings, vf) : null;
   const devBoxes = devHoles ? boxRings(devHoles.rings) : null;
   for (let i = 0; i < list.length; i++) {
     const feature = list[i];
