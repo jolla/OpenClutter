@@ -7,6 +7,7 @@ const {
   applyAffine,
   publicFrame,
   CLIPBOARD_ORIGIN,
+  legacyAreaScale,
 } = require("./geo-frame");
 const {
   uuid,
@@ -2277,7 +2278,8 @@ function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSou
   const clipped = clipRingToRect(px, frame.imgW, frame.imgH);
   if (!clipped || clipped.length < 3) return "clip";
   const am = pxRingAreaM2(clipped, frame.mpuX, frame.mpuY);
-  if (!(am >= (keepThin ? 8 : MIN_AREA_M2))) return "tiny";
+  // trueMetres: the tiny floor keeps its pre-trueMetres cut (1 when off).
+  if (!(am * legacyAreaScale(frame) >= (keepThin ? 8 : MIN_AREA_M2))) return "tiny";
   // Mega uses the on-map area and the tight Douglas–Peucker count, not a
   // subsample. A coarse blob above 150,000 m² is still dropped. A concave
   // podium keeps its corners and is not classified as that blob. An outline
@@ -2380,7 +2382,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
   const totalM2 = ringAreaM2(ring, frame.mpd);
   if (dropAsMega(am, totalM2, frame, detailVerts)) return "mega";
   // A static caravan is a real trailer, often narrower than the 3 m sliver floor.
-  if (am < (keepThin ? 8 : MIN_AREA_M2)) return "tiny";
+  if (am * legacyAreaScale(frame) < (keepThin ? 8 : MIN_AREA_M2)) return "tiny";
   const slopeRings = slopeRingsForEmit(ring, simple, clippedPts, frame);
   const minSpan = minOiSpanPx(frame.mpuX);
   if (!keepThin && am < 1000 && thinSliverDrop(clippedPts, minSpan)) {

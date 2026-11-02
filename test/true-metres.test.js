@@ -46,3 +46,25 @@ test("legacy lock keeps the pre-trueMetres plate for the vehicle detectors", () 
   assert.strictEqual(legacy.frame.imgH, off.frame.imgH);
   assert.strictEqual(legacy.jpegBuf, off.jpegBuf);
 });
+
+test("legacyAreaScale keeps pre-trueMetres size floors (1 when off or on the old plate)", () => {
+  const box = { west: -114.57485, east: -114.57321, south: 35.11341, north: 35.11481 };
+  const w = 2222;
+  const legH = Math.round((w * (box.north - box.south)) / (box.east - box.west));
+  const mk = (iw, ih) => gf.unifyFrameMpu(gf.geoFrame(box, { imgW: iw, imgH: ih, maxSpanM: 8000, minSpanM: 1 }));
+  const legacy = mk(w, legH);
+  const sized = gf.groundMeterPixelSize(legacy, w);
+  const truth = mk(sized.imgW, sized.imgH);
+  gf.setTrueMetres(false);
+  assert.strictEqual(gf.legacyAreaScale(truth), 1);
+  assert.strictEqual(gf.legacyAreaScale(legacy), 1);
+  gf.setTrueMetres(true);
+  assert.strictEqual(gf.legacyAreaScale(legacy), 1);
+  const k = gf.legacyAreaScale(truth);
+  assert.ok(Math.abs(k - 1 / gf.groundMeterStretch(35.1141)) < 0.005, String(k));
+  const north = mk(w, w);
+  north.south = 60;
+  north.north = 60.01;
+  assert.strictEqual(gf.legacyAreaScale(north), 1);
+  gf.setTrueMetres(false);
+});

@@ -89,6 +89,27 @@ function needsGroundMeterImage(lat) {
   return groundMeterStretch(lat) >= GROUND_METER_STRETCH;
 }
 
+/**
+ * trueMetres: the area factor from this frame's meters to the
+ * pre-trueMetres plate's meters (N-S was squashed by the local stretch below
+ * 54N). Size floors tuned on the old plate multiply a true area by this so
+ * they keep the same cut. 1 with the switch off, past 54N, or on a frame
+ * that is still on the old plate.
+ */
+function legacyAreaScale(frame) {
+  if (!trueMetres || !frame) return 1;
+  const south = +frame.south;
+  const north = +frame.north;
+  const imgH = +frame.imgH;
+  const mpuY = +(frame.mpuY || frame.mpu);
+  if (!Number.isFinite(south) || !Number.isFinite(north) || !(imgH > 0) || !(mpuY > 0) || !(north > south)) return 1;
+  const lat = (south + north) / 2;
+  if (groundMeterStretch(lat) >= GROUND_METER_STRETCH) return 1;
+  const k = ((north - south) * metersPerDeg(lat).lon) / (imgH * mpuY);
+  if (!(k > 0.4) || k > 0.99) return 1;
+  return k;
+}
+
 /** Geodesic width × length of the JPEG extent. Ignores a unified lengthM. */
 function geodesicSpans(frame) {
   const south = +frame.south;
@@ -1024,6 +1045,7 @@ function applyAffine(lon, lat, affine) {
 
 module.exports = {
   CLIPBOARD_ORIGIN,
+  legacyAreaScale,
   MAX_SPAN_M,
   MIN_SPAN_M,
   spanLimitLabel,
