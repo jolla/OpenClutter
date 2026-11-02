@@ -3466,6 +3466,7 @@ function buildClutter({
   affine,
   name: rawName,
   imgBuf,
+  vehicleImagery,
   treesSource,
   footprintMeta,
   terrain,
@@ -3668,7 +3669,7 @@ function buildClutter({
       if (buildings[i] && buildings[i].ringPx) dockRings.push(buildings[i].ringPx);
     }
     if (includeRvs === true && (needsPitchImage(features) || roofWantsDocks(dockRings, frame))) {
-      vehiclePlate = decodePlate(imgBuf);
+      vehiclePlate = decodePlate(vehicleImagery && vehicleImagery.imgBuf ? vehicleImagery.imgBuf : imgBuf);
     }
     planned = planOutdoor({
       features,
@@ -3681,6 +3682,7 @@ function buildClutter({
           ? { guideway: deckCap, bridge: deckCap, footbridge: Math.max(12, Math.floor(deckCap / 5)) }
           : undefined,
       vehiclePlate,
+      vehicleFrame: vehicleImagery && vehicleImagery.frame ? vehicleImagery.frame : null,
     });
     converted = outdoorToOi(planned.items, frame.imgW, frame.imgH, frame.mpuX);
   }

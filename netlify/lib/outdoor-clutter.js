@@ -2910,7 +2910,11 @@ function devRoadsideHoles(buildings, frame) {
  * A matched garage is not drawn a second time. Water is cut against those
  * same roofs so a pond or a mis-tagged panel block does not cover them.
  */
-function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segmentCaps, vehiclePlate, scanned }) {
+function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segmentCaps, vehiclePlate, vehicleFrame, scanned }) {
+  // trueMetres: the detectors read the pre-trueMetres plate (vehicleFrame)
+  // so their tuned sizes see the same pixels. Results are lon/lat; geometry
+  // below is placed on the true-meter frame. Without it both are one frame.
+  const vf = vehicleFrame || frame;
   const campZones = [];
   const campRoads = [];
   const parkContext = [];
@@ -2934,7 +2938,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
             const key = ringKey(ring);
             if (Object.prototype.hasOwnProperty.call(pitchMap, key)) return pitchMap[key];
           }
-          return pitchVehicle(ring, frame, vehiclePlate);
+          return pitchVehicle(ring, vf, vehiclePlate);
         }
       : null;
   const roadsideMap = scanned && scanned.roadside;
@@ -2947,7 +2951,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
           }
           const holes = roofRingsLL();
           holes.cents = roofCentsLL();
-          return roadsideVehicles(ring, frame, vehiclePlate, holes);
+          return roadsideVehicles(ring, vf, vehiclePlate, holes);
         }
       : null;
   let roofLL = null;
@@ -3042,7 +3046,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       if (roofWantsDocks([px], frame)) docks.push(ll);
     }
     const found =
-      scanned && scanned.docksReady ? scanned.docks || [] : semisAtDocks(docks, frame, vehiclePlate, holes);
+      scanned && scanned.docksReady ? scanned.docks || [] : semisAtDocks(docks, vf, vehiclePlate, holes);
     for (let i = 0; i < found.length; i++) {
       const ringPx = lonLatRingToPx(found[i].coords, frame);
       const material = materialForKind("semi", found[i].heightM || 4.1, found[i].coords, slopeTop, 0);
@@ -3158,7 +3162,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       const homes =
         scanned && scanned.homes && Object.prototype.hasOwnProperty.call(scanned.homes, ringKey(f.coords))
           ? scanned.homes[ringKey(f.coords)] || []
-          : mobileHomesInRing(f.coords, frame, vehiclePlate);
+          : mobileHomesInRing(f.coords, vf, vehiclePlate);
       const mat = measuredOiBuildingMaterial(4);
       if (!mat) continue;
       for (let b = 0; b < homes.length; b++) {
@@ -3177,7 +3181,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       const found =
         scanned && scanned.semis && Object.prototype.hasOwnProperty.call(scanned.semis, ringKey(f.coords))
           ? scanned.semis[ringKey(f.coords)] || []
-          : semisInLot(f.coords, frame, vehiclePlate, holes);
+          : semisInLot(f.coords, vf, vehiclePlate, holes);
       for (let b = 0; b < found.length; b++) {
         const ringPx = lonLatRingToPx(found[b].coords, frame);
         const material = materialForKind("semi", found[b].heightM || 4.1, found[b].coords, slopeTop, 0);
@@ -3193,8 +3197,8 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
         scanned && scanned.boats && Object.prototype.hasOwnProperty.call(scanned.boats, ringKey(f.coords))
           ? scanned.boats[ringKey(f.coords)] || []
           : isSiteTypes()
-            ? boatsOnWater(f.coords, frame, vehiclePlate, roofRingsLL(), f.piers)
-            : boatsOnWater(f.coords, frame, vehiclePlate);
+            ? boatsOnWater(f.coords, vf, vehiclePlate, roofRingsLL(), f.piers)
+            : boatsOnWater(f.coords, vf, vehiclePlate);
       for (let b = 0; b < found.length; b++) {
         const ringPx = lonLatRingToPx(found[b].coords, frame);
         const material = materialForKind("boat", found[b].heightM || 3.5, found[b].coords, slopeTop, 0);
@@ -3238,7 +3242,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
         const found =
           scanned && scanned.cars && Object.prototype.hasOwnProperty.call(scanned.cars, carKey)
             ? scanned.cars[carKey]
-            : occupiedCarLayer(f.coords, frame, vehiclePlate);
+            : occupiedCarLayer(f.coords, vf, vehiclePlate);
         if (found && found.length) carRings = found;
       }
       const bases = carRings || [f.coords];

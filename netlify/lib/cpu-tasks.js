@@ -185,6 +185,7 @@ function planOutdoorTask(payload) {
     parkingRings: payload.parkingRings,
     segmentCaps: payload.segmentCaps,
     vehiclePlate: plate,
+    vehicleFrame: payload.vehicleFrame || null,
     scanned: payload.scanned,
   });
   const frame = payload.frame || {};

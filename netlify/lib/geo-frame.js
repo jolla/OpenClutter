@@ -782,7 +782,10 @@ function lockIsotropicImagery(frame, jpegBuf, opts = {}) {
     return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
   }
   const quality = opts.quality != null ? opts.quality : 85;
-  const groundMeters = needsGroundMeterImage((+frame.south + +frame.north) / 2);
+  // opts.legacy: the pre-trueMetres plate (ground meters only past 54N). The
+  // vehicle detectors read it so their tuned thresholds see the same pixels.
+  const latMid = (+frame.south + +frame.north) / 2;
+  const groundMeters = opts.legacy ? groundMeterStretch(latMid) >= GROUND_METER_STRETCH : needsGroundMeterImage(latMid);
   let imgW = raw.width;
   let imgH = raw.height;
   let outBuf = jpegBuf;

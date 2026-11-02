@@ -231,6 +231,21 @@ function ringIndex(rings, cell) {
   };
 }
 
+/**
+ * Plate pixel for a frame point. With trueMetres the vehicle plate is the
+ * pre-trueMetres image over the same box, so its pixel grid is scaled to the
+ * frame's; on one shared image the scale is 1 and this is the plain lookup.
+ */
+function plateX(p, plate, frame, mx) {
+  const fx = p[0] / mx;
+  return Math.floor(plate.width === frame.imgW ? fx : (fx * plate.width) / frame.imgW);
+}
+
+function plateY(p, plate, frame, my) {
+  const fy = frame.imgH - p[1] / my;
+  return Math.floor(plate.height === frame.imgH ? fy : (fy * plate.height) / frame.imgH);
+}
+
 /** Share of photo samples that are open pad, and that are green. */
 function photoShares(pts, plate, frame, mx, my) {
   if (!plate) return { open: 1, green: 0 };
@@ -238,8 +253,8 @@ function photoShares(pts, plate, frame, mx, my) {
   let open = 0;
   let green = 0;
   for (const p of pts) {
-    const x = Math.floor(p[0] / mx);
-    const y = Math.floor(frame.imgH - p[1] / my);
+    const x = plateX(p, plate, frame, mx);
+    const y = plateY(p, plate, frame, my);
     if (x < 0 || y < 0 || x >= plate.width || y >= plate.height) continue;
     const i = (y * plate.width + x) * 4;
     const r = plate.data[i];
@@ -260,8 +275,8 @@ function photoShares(pts, plate, frame, mx, my) {
 }
 
 function pixelAt(p, plate, frame, mx, my) {
-  const x = Math.floor(p[0] / mx);
-  const y = Math.floor(frame.imgH - p[1] / my);
+  const x = plateX(p, plate, frame, mx);
+  const y = plateY(p, plate, frame, my);
   if (x < 0 || y < 0 || x >= plate.width || y >= plate.height) return null;
   const i = (y * plate.width + x) * 4;
   return [plate.data[i], plate.data[i + 1], plate.data[i + 2]];

@@ -1652,6 +1652,9 @@ async function handleClutter(event) {
       : "none";
 
   let imgBuf = null;
+  // trueMetres: the pre-trueMetres plate for the vehicle detectors (their
+  // thresholds were tuned on it). Null when the plate was not resampled for trueMetres.
+  let vehicleImagery = null;
   let imageryPlate = null;
   let imageryCtx = null;
   let gj;
@@ -1952,11 +1955,16 @@ async function handleClutter(event) {
     imgBuf = fetched[3];
     if (imgBuf) {
       frame = applyImageryMeta(frame, imgMeta, jpegSize(imgBuf), { requestBbox });
+      const preLock = { frame, imgBuf };
       const locked = stageClock.timeSpanSync("aerialStitch", () =>
         lockIsotropicImagery(frame, imgBuf, { maxSide })
       );
       frame = locked.frame;
       imgBuf = locked.jpegBuf;
+      if (locked.groundMeters && require("../lib/geo-frame").isTrueMetres()) {
+        const legacy = lockIsotropicImagery(preLock.frame, preLock.imgBuf, { maxSide, legacy: true });
+        if (!legacy.groundMeters && legacy.frame && legacy.jpegBuf) vehicleImagery = { frame: legacy.frame, imgBuf: legacy.jpegBuf };
+      }
       if (devHost && imageryPlate) warnings.push(mapImageNote(imageryPlate, frame, imgBuf));
       const aerialInfo = imageryCtx ? imagerySource.imageryInfo(imageryCtx) : null;
       if (testHost && aerialInfo && aerialInfo.requested !== "esri") warnings.push(imagerySource.imageryLine(aerialInfo));
@@ -2677,6 +2685,8 @@ async function handleClutter(event) {
                   : undefined,
               terrain,
               imgBuf,
+              vehicleFrame: vehicleImagery ? vehicleImagery.frame : null,
+              vehicleImgBuf: vehicleImagery ? vehicleImagery.imgBuf : null,
             })
           )
           .then((plan) => {
@@ -2802,6 +2812,7 @@ async function handleClutter(event) {
       affine,
       name: body.name,
       imgBuf,
+      vehicleImagery,
       treesSource,
       footprintMeta,
       terrain,
@@ -2952,7 +2963,8 @@ async function handleClutter(event) {
             const placed = applyImageryMeta(f, null, jpegSize(buf), {
               requestBbox: { west: f.west, south: f.south, east: f.east, north: f.north },
             });
-            const locked = lockIsotropicImagery(placed, buf, { maxSide: Math.max(f.imgW, f.imgH) });
+            // Context RVs are detector reads only: the pre-trueMetres plate.
+            const locked = lockIsotropicImagery(placed, buf, { maxSide: Math.max(f.imgW, f.imgH), legacy: true });
             return { frame: locked.frame, buf: locked.jpegBuf };
           },
         })

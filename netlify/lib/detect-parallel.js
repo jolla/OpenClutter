@@ -498,7 +498,9 @@ function holesNear(boxes, pad) {
   return out;
 }
 
-async function scanVehicles(features, frame, buildings, imgBuf) {
+async function scanVehicles(features, frame, buildings, imgBuf, vehicleFrame) {
+  // trueMetres: plate reads use the pre-trueMetres plate and its frame (vf).
+  const vf = vehicleFrame || frame;
   const list = features || [];
   const scanned = { pitch: {}, roadside: {}, cars: {}, boats: {}, homes: {}, semis: {}, docks: [], docksReady: false };
   let wantPlate = needsPitchImage(list);
@@ -545,7 +547,7 @@ async function scanVehicles(features, frame, buildings, imgBuf) {
         op: "roadside",
         key: ringKey(feature.pad),
         ring: feature.pad,
-        frame,
+        frame: vf,
         holes: holesNear(devBoxes || holeBoxes, feature.pad),
         cents: devHoles ? devHoles.cents : undefined,
         buffer: shared.buffer,
@@ -555,10 +557,10 @@ async function scanVehicles(features, frame, buildings, imgBuf) {
     } else if (kind === "rv" || kind === "trailer-candidate") {
       const ring = pitchRingOf(feature);
       if (ring && ring.length >= 3) {
-        jobs.push({ op: "pitch", key: ringKey(ring), ring, frame, buffer: shared.buffer, width: shared.width, height: shared.height });
+        jobs.push({ op: "pitch", key: ringKey(ring), ring, frame: vf, buffer: shared.buffer, width: shared.width, height: shared.height });
       }
     } else if (kind === "car" && feature.coords) {
-      const plan = carHitRows(feature.coords, frame, shared);
+      const plan = carHitRows(feature.coords, vf, shared);
       const key = ringKey(feature.coords);
       if (!plan) {
         scanned.cars[key] = [];
@@ -570,7 +572,7 @@ async function scanVehicles(features, frame, buildings, imgBuf) {
             op: "car-hits",
             key,
             ring: feature.coords,
-            frame,
+            frame: vf,
             buffer: shared.buffer,
             width: shared.width,
             height: shared.height,
@@ -584,7 +586,7 @@ async function scanVehicles(features, frame, buildings, imgBuf) {
         op: "boats",
         key: ringKey(feature.coords),
         ring: feature.coords,
-        frame,
+        frame: vf,
         holes: siteTypes ? holesNear(holeBoxes, feature.coords) : undefined,
         piers: siteTypes ? feature.piers : undefined,
         legacy: !siteTypes,
@@ -593,7 +595,7 @@ async function scanVehicles(features, frame, buildings, imgBuf) {
         height: shared.height,
       });
     } else if (kind === "mobile-park" && feature.coords) {
-      jobs.push({ op: "homes", key: ringKey(feature.coords), ring: feature.coords, frame, buffer: shared.buffer, width: shared.width, height: shared.height });
+      jobs.push({ op: "homes", key: ringKey(feature.coords), ring: feature.coords, frame: vf, buffer: shared.buffer, width: shared.width, height: shared.height });
     } else if (kind === "truck-lot" && feature.coords) {
       const lotHoles = [];
       for (let h = 0; h < list.length; h++) {
@@ -603,7 +605,7 @@ async function scanVehicles(features, frame, buildings, imgBuf) {
         op: "semis",
         key: ringKey(feature.coords),
         ring: feature.coords,
-        frame,
+        frame: vf,
         holes: lotHoles,
         buffer: shared.buffer,
         width: shared.width,
@@ -616,7 +618,7 @@ async function scanVehicles(features, frame, buildings, imgBuf) {
       op: "docks",
       rings: dockRings,
       holes,
-      frame,
+      frame: vf,
       buffer: shared.buffer,
       width: shared.width,
       height: shared.height,
@@ -643,7 +645,7 @@ async function scanVehicles(features, frame, buildings, imgBuf) {
       const part = results[item.start + k];
       if (part && part.hits) hits.push.apply(hits, part.hits);
     }
-    scanned.cars[item.key] = finishCarLayer(hits, frame, item.plan) || [];
+    scanned.cars[item.key] = finishCarLayer(hits, vf, item.plan) || [];
   }
   return { scanned, plate: { width: shared.width, height: shared.height, buffer: shared.buffer } };
 }
@@ -655,15 +657,18 @@ async function outdoorParallel(args) {
   let scanned = null;
   let plate = null;
   try {
-    const ready = await scanVehicles(features, frame, args.buildings, args.imgBuf);
+    const vehicleFrame = args && args.vehicleFrame ? args.vehicleFrame : null;
+    const vehicleBuf = vehicleFrame && args.vehicleImgBuf ? args.vehicleImgBuf : args.imgBuf;
+    const ready = await scanVehicles(features, frame, args.buildings, vehicleBuf, vehicleFrame);
     scanned = ready.scanned;
     plate = ready.plate;
   } catch {
     scanned = null;
     plate = null;
   }
-  if (!plate && args && args.imgBuf && needsPitchImage(features)) {
-    const decoded = decodePlate(Buffer.from(args.imgBuf));
+  const plateBuf = args && args.vehicleFrame && args.vehicleImgBuf ? args.vehicleImgBuf : args && args.imgBuf;
+  if (!plate && plateBuf && needsPitchImage(features)) {
+    const decoded = decodePlate(Buffer.from(plateBuf));
     if (decoded && decoded.data) {
       const shared = new SharedArrayBuffer(decoded.data.byteLength);
       new Uint8Array(shared).set(decoded.data);
@@ -679,6 +684,7 @@ async function outdoorParallel(args) {
       segmentCaps: args.segmentCaps,
       terrain: plainData(args.terrain),
       scanned,
+      vehicleFrame: (args && args.vehicleFrame) || null,
       buffer: plate && plate.buffer,
       width: plate && plate.width,
       height: plate && plate.height,
@@ -699,6 +705,7 @@ async function outdoorParallel(args) {
       segmentCaps: args.segmentCaps,
       terrain: null,
       scanned,
+      vehicleFrame: (args && args.vehicleFrame) || null,
       buffer: plate && plate.buffer,
       width: plate && plate.width,
       height: plate && plate.height,
