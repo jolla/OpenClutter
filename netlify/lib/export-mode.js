@@ -169,8 +169,8 @@ function isShadowTrailers() {
 // roof) stays. No vehicle, awning or park model stands that tall, and a tree
 // cut since the flight leaves lit ground; a dark reading there is a leaf-off
 // or shaded crown over leaf litter. It keeps lidar canopy the photo check
-// used to clear, so it stays on /dev hosts only until the weekly release
-// (tallCanopyKeep:false or ?tallCanopyKeep=0 turns it off there);
+// used to clear. On every host from 1.3.13 (clutter.js passes true;
+// tallCanopyKeep:false or ?tallCanopyKeep=0 turns it off);
 // setTallCanopyKeep(false) is the 1.3.4 behaviour.
 let tallCanopyKeep = false;
 
@@ -191,9 +191,8 @@ function tallCanopyKeepWanted(testHost, body) {
 // Feedback #12 and #13 (1.3.8): pool decks and mapped ponds. The roadside RV
 // finder skips light strips around a dark covered pool, and foliage is cut
 // around the photo pond grown from each mapped water outline. Both only
-// remove geometry. /dev hosts only (waterEdges:false or ?waterEdges=0 turns
-// it off there) until the weekly release turns it on for every host;
-// setWaterEdges(false) is the 1.3.7 behaviour. Carried to CPU worker threads
+// remove geometry. On every host from 1.3.13 (clutter.js passes true;
+// waterEdges:false or ?waterEdges=0 turns it off); setWaterEdges(false) is the 1.3.7 behaviour. Carried to CPU worker threads
 // with each task.
 let waterEdges = false;
 
@@ -306,18 +305,21 @@ function understoryStyle() {
 
 /** Forest cut on a /dev host when the request does not pick one. */
 const DEV_FOREST_DEFAULT = "bands";
+/** Forest cut on a production host (1.3.13, forest fix A). */
+const PROD_FOREST_DEFAULT = "bands";
 const FOREST_MODES = ["bands", "merge", "crowns", "off"];
 
 /**
  * Which feedback #9 forest cut runs: "bands" (canopyBands), "merge"
- * (mergeTiles), "crowns" (canopyBands plus crownStyle) or "off" (the 1.3.1 blocks). Production is always "off".
+ * (mergeTiles), "crowns" (canopyBands plus crownStyle) or "off" (the 1.3.1 blocks).
+ * Production (from 1.3.13) runs "bands", or "off" when body.forest is "off".
  * A /dev host takes body.forest (the page sends ?forest=bands|merge|crowns|off),
  * then OC_FOREST_CROWNS=1, OC_CANOPY_BANDS=1 or OC_MERGE_TILES=1 in a local run, then
  * DEV_FOREST_DEFAULT.
  */
 function forestMode(testHost, body) {
-  if (!testHost) return "off";
   const asked = body && typeof body.forest === "string" ? body.forest.toLowerCase() : "";
+  if (!testHost) return asked === "off" ? "off" : PROD_FOREST_DEFAULT;
   if (FOREST_MODES.includes(asked)) return asked;
   if (process.env.OC_FOREST_CROWNS === "1") return "crowns";
   if (process.env.OC_CANOPY_BANDS === "1") return "bands";
@@ -366,6 +368,7 @@ module.exports = {
   protoWanted,
   forestMode,
   DEV_FOREST_DEFAULT,
+  PROD_FOREST_DEFAULT,
   setStaleTowers,
   isStaleTowers,
   setStaleFootprints,

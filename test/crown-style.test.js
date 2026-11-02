@@ -32,7 +32,7 @@ describe("forest=crowns prototype", () => {
     delete process.env.OC_FOREST_CROWNS;
     try {
       assert.equal(exportMode.isCrownStyle(), false);
-      assert.equal(exportMode.forestMode(false, { forest: "crowns" }), "off");
+      assert.equal(exportMode.forestMode(false, { forest: "crowns" }), "bands");
       assert.equal(exportMode.forestMode(true, { forest: "crowns" }), "crowns");
       assert.equal(exportMode.DEV_FOREST_DEFAULT, "bands");
     } finally {

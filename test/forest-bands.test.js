@@ -22,14 +22,18 @@ describe("feedback #9 canopyBands prototype", () => {
     assert.match(src, /exportMode\.setCrownStyle\(forest === "crowns"\);/);
   });
 
-  it("picks the forest cut only on a /dev host", () => {
+  it("runs bands on production and picks the forest cut on a /dev host", () => {
     const saved = [process.env.OC_CANOPY_BANDS, process.env.OC_MERGE_TILES, process.env.OC_FOREST_CROWNS];
     delete process.env.OC_CANOPY_BANDS;
     delete process.env.OC_MERGE_TILES;
     delete process.env.OC_FOREST_CROWNS;
     try {
-      assert.equal(exportMode.forestMode(false, { forest: "bands" }), "off");
-      assert.equal(exportMode.forestMode(false, { forest: "merge" }), "off");
+      // 1.3.13: production runs bands (forest fix A); forest:"off" is the escape hatch.
+      assert.equal(exportMode.PROD_FOREST_DEFAULT, "bands");
+      assert.equal(exportMode.forestMode(false, {}), "bands");
+      assert.equal(exportMode.forestMode(false, { forest: "bands" }), "bands");
+      assert.equal(exportMode.forestMode(false, { forest: "merge" }), "bands");
+      assert.equal(exportMode.forestMode(false, { forest: "Off" }), "off");
       assert.equal(exportMode.forestMode(true, {}), exportMode.DEV_FOREST_DEFAULT);
       assert.equal(exportMode.forestMode(true, { forest: "merge" }), "merge");
       assert.equal(exportMode.forestMode(true, { forest: "OFF" }), "off");

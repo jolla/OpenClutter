@@ -167,3 +167,8 @@ test("waterEdges is on for /dev hosts only and can be turned off there", () => {
   assert.equal(exportMode.waterEdgesWanted(true, { waterEdges: false }), false);
   assert.equal(exportMode.waterEdgesWanted(true, { waterEdges: "0" }), false);
 });
+
+test("waterEdges runs on every host from 1.3.13", () => {
+  const src = require("fs").readFileSync(require("path").join(__dirname, "../netlify/functions/clutter.js"), "utf8");
+  assert.match(src, /exportMode\.setWaterEdges\(exportMode\.waterEdgesWanted\(true, body\)\);/);
+});

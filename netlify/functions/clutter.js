@@ -1562,16 +1562,15 @@ async function handleClutter(event) {
   exportMode.setStaleFootprints(true);
   exportMode.setShadowTrailers(true);
   exportMode.setStaleTowers(true);
-  // Feedback #11 (1.3.5 on /dev): the photo canopy check keeps lidar canopy
-  // 12 m and taller that the photo shows dark. /dev hosts only
-  // (tallCanopyKeep:false or ?tallCanopyKeep=0 turns it off there) until the
-  // weekly release turns it on for every host.
-  exportMode.setTallCanopyKeep(exportMode.tallCanopyKeepWanted(testHost, body));
-  // Feedback #12 and #13 (1.3.8): no RVs on a covered pool's deck, foliage
-  // cut around the photo pond of each mapped water outline. /dev hosts only
-  // (waterEdges:false or ?waterEdges=0 turns it off there) until the weekly
-  // release turns it on for every host.
-  exportMode.setWaterEdges(exportMode.waterEdgesWanted(testHost, body));
+  // Production release 1.3.13: feedback #11 tall canopy keep (1.3.5, the
+  // photo canopy check keeps lidar canopy 12 m and taller that the photo
+  // shows dark) and feedback #12 and #13 water edges (1.3.8 and 1.3.10, no
+  // RVs on a covered pool's deck, foliage cut around the photo pond of each
+  // mapped water outline) run on every host. tallCanopyKeep:false and
+  // waterEdges:false (?tallCanopyKeep=0, ?waterEdges=0 on /dev) still turn
+  // them off. Pass testHost again to put one back on /dev hosts only.
+  exportMode.setTallCanopyKeep(exportMode.tallCanopyKeepWanted(true, body));
+  exportMode.setWaterEdges(exportMode.waterEdgesWanted(true, body));
   // 1.3.11 trueMetres: ground-meter plate at every latitude. /dev hosts on
   // (trueMetres:false or ?trueMetres=0 turns it off there). Production off.
   require("../lib/geo-frame").setTrueMetres(
@@ -1581,8 +1580,9 @@ async function handleClutter(event) {
   // paste's floors on steep ground. /dev hosts only (adaptiveTerrain:false
   // or ?adaptiveTerrain=0 turns it off there). Production stays off.
   exportMode.setAdaptiveTerrain(exportMode.adaptiveTerrainWanted(testHost, body));
-  // Feedback #9 forest prototypes: /dev hosts only (forest=bands|merge|crowns|off,
-  // default bands); production keeps the 1.3.1 blocks.
+  // Feedback #9 forest cut: production release 1.3.13 runs bands (forest
+  // fix A, canopyBands) on every host; forest:"off" keeps the 1.3.1 blocks.
+  // /dev hosts also pick merge or crowns (forest=bands|merge|crowns|off).
   const forest = exportMode.forestMode(testHost, body);
   exportMode.setCanopyBands(forest === "bands" || forest === "crowns");
   exportMode.setCrownStyle(forest === "crowns");

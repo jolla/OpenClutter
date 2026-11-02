@@ -224,6 +224,11 @@ describe("tall canopy keep switch (feedback #11)", () => {
     assert.equal(exportMode.tallCanopyKeepWanted(true, { tallCanopyKeep: false }), false);
     assert.equal(exportMode.tallCanopyKeepWanted(true, { tallCanopyKeep: "0" }), false);
   });
+
+  it("runs on every host from 1.3.13", () => {
+    const src = require("fs").readFileSync(require("path").join(__dirname, "../netlify/functions/clutter.js"), "utf8");
+    assert.match(src, /exportMode\.setTallCanopyKeep\(exportMode\.tallCanopyKeepWanted\(true, body\)\);/);
+  });
 });
 
 describe("photo-canopy export mode", () => {
