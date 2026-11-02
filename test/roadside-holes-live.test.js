@@ -57,7 +57,8 @@ describe("roadside holes on the live path (/dev shadowTrailers)", () => {
 
   it("scanVehicles sends the same holes and centres to the roadside worker on /dev only", () => {
     const src = require("node:fs").readFileSync(require.resolve("../netlify/lib/detect-parallel.js"), "utf8");
-    assert.match(src, /mode\.isShadowTrailers\(\) \? require\("\.\/outdoor-clutter"\)\.devRoadsideHoles\(buildings, frame\) : null/);
+    assert.match(src, /mode\.isShadowTrailers\(\) \? oc\.devRoadsideHoles\(vBuildings, vf\) : null/);
+    assert.match(src, /vBuildings = vf === frame \? buildings : oc\.buildingsOnFrame\(buildings, frame, vf\)/);
     assert.match(src, /holes: holesNear\(devBoxes \|\| holeBoxes, feature\.pad\)/);
     assert.match(src, /cents: devHoles \? devHoles\.cents : undefined/);
   });
