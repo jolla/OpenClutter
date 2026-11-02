@@ -1,3 +1,22 @@
+# OpenClutter v1.3.13
+
+Released Nov 2, 2026 on openclutter.com and dev.openclutter.com.
+
+## What's new
+
+- **Forests follow the canopy.** Large forests are cut along canopy height bands instead of a grid of about 50 m squares, so tree tops no longer step at every block edge and the file is smaller.
+- **Tall trees in leaf-off photos.** Trees 12 m and taller are no longer cleared when a winter photo shows bare branches over leaf litter.
+- **Water edges.** No RVs on the deck around a covered pool, and no trees standing in a mapped pond.
+
+## Data
+
+No new map data in this release. Buildings read Overture release 2026-10-21.0.
+
+## Git / deploy
+
+- Tag `v1.3.13` on `main`; `dev` is at the same commit.
+- True ground meters (trueMetres), adaptive terrain and the forest=crowns style stay on dev.openclutter.com only.
+
 # OpenClutter v1.3.0
 
 Released Oct 30, 2026 on openclutter.com and dev.openclutter.com.
