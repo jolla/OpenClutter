@@ -147,6 +147,17 @@ function waterEdgesOverride() {
   }
 }
 
+/** /dev only: ?campNodes=0 turns the feedback #15 point-mapped campground read off for a comparison export. */
+function campNodesOverride() {
+  if (!devPage()) return undefined;
+  try {
+    const raw = new URLSearchParams(location.search || "").get("campNodes");
+    return raw === "0" || raw === "false" ? false : undefined;
+  } catch (err) {
+    return undefined;
+  }
+}
+
 /** /dev only: ?trueMetres=0 keeps the old north-south plate for a comparison export; ?trueMetres=1 asks for ground meters. */
 function trueMetresOverride() {
   if (!devPage()) return undefined;
@@ -2102,6 +2113,7 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
       forest: forestOverride(),
       tallCanopyKeep: tallCanopyKeepOverride(),
       waterEdges: waterEdgesOverride(),
+      campNodes: campNodesOverride(),
       trueMetres: trueMetresOverride(),
       lidar: lidarEnabled(),
       mapNotes: clutterChecked("include-map-notes"),
@@ -2231,6 +2243,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       forest: forestOverride(),
       tallCanopyKeep: tallCanopyKeepOverride(),
       waterEdges: waterEdgesOverride(),
+      campNodes: campNodesOverride(),
       trueMetres: trueMetresOverride(),
       lidar: lidarEnabled(),
       mapNotes: clutterChecked("include-map-notes"),

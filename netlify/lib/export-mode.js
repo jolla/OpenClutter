@@ -231,6 +231,27 @@ function poleNotesWanted(testHost, body, query) {
   return !(raw === false || raw === 0 || raw === "0" || raw === "false");
 }
 
+// Feedback #15 (Williams AZ KOA): a campground mapped only as a point
+// (tourism=caravan_site or camp_site node, no outline) got no RV read at all.
+// campNodes gives such a point a read-only park circle; the photo decides
+// each RV, and only a dense cluster near the point is kept. /dev hosts on
+// (campNodes:false or ?campNodes=0 turns it off there); production off.
+let campNodes = false;
+
+function setCampNodes(on) {
+  campNodes = !!on;
+}
+
+function isCampNodes() {
+  return campNodes;
+}
+
+function campNodesWanted(testHost, body) {
+  if (!testHost) return false;
+  const v = body && body.campNodes;
+  return !(v === false || v === 0 || v === "0" || v === "false");
+}
+
 let staleTowers = false;
 
 function setStaleTowers(on) {
@@ -370,6 +391,9 @@ module.exports = {
   setPoleNotes,
   isPoleNotes,
   poleNotesWanted,
+  setCampNodes,
+  isCampNodes,
+  campNodesWanted,
   trueMetresWanted,
   setWaterEdges,
   isWaterEdges,

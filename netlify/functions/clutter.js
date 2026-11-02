@@ -1576,6 +1576,10 @@ async function handleClutter(event) {
   exportMode.setPoleNotes(
     exportMode.poleNotesWanted(testHost, body, event && event.queryStringParameters),
   );
+  // Feedback #15: a campground mapped only as a point gets a read-only park
+  // circle for the photo RV read. /dev hosts only (campNodes:false or
+  // ?campNodes=0 turns it off there); production off.
+  exportMode.setCampNodes(exportMode.campNodesWanted(testHost, body));
   // 1.3.11 trueMetres: ground-meter plate at every latitude. /dev hosts on
   // (trueMetres:false or ?trueMetres=0 turns it off there). Production off.
   require("../lib/geo-frame").setTrueMetres(

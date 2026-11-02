@@ -65,7 +65,7 @@ const { placesFromElements } = require("./map-notes");
 
 const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
 const overpass = require("./overpass");
-const { isResilient, isSiteTypes, isShadowTrailers } = require("./export-mode");
+const { isResilient, isSiteTypes, isShadowTrailers, isCampNodes } = require("./export-mode");
 const FETCH_MS = 3200;
 const POLE_CAP = 48;
 const WALL_CAP = 80;
@@ -109,6 +109,17 @@ const RV_DEDUPE_M = 8;
  * shows there becomes a box; a tile never gets a pad fill.
  */
 const RV_TILE_M = 20;
+/**
+ * campNodes (feedback #15): a campground mapped only as a point is read in a
+ * circle this wide around the point, metres. The photo decides each RV.
+ */
+const CAMP_NODE_R_M = 240;
+/** RVs within this of each other, centre to centre, are one part of a park. */
+const CAMP_NODE_LINK_M = 40;
+/** A kept group has at least this many RVs ... */
+const CAMP_NODE_MIN_RVS = 6;
+/** ... and one of them within this of the mapped point, metres. */
+const CAMP_NODE_NEAR_M = 130;
 const RV_TILE_CAP = 1500;
 /** A mapped campground can pass 400 pitches. The cap used to drop the last row. */
 const RV_CAP = 2400;
@@ -171,6 +182,7 @@ function overpassQuery(bbox, want) {
     parts.push('relation["tourism"="camp_site"](' + box + ");");
     parts.push('node["tourism"="camp_pitch"](' + box + ");");
     parts.push('way["tourism"="camp_pitch"](' + box + ");");
+    parts.push('node["tourism"~"^(caravan_site|camp_site)$"](' + box + ");");
     parts.push('way["highway"~"^(service|track|living_street|residential|unclassified)$"](' + box + ");");
     parts.push('way["leisure"="marina"](' + box + ");");
     parts.push('relation["leisure"="marina"](' + box + ");");
@@ -1046,6 +1058,103 @@ function roadStations(line, spacing) {
   return stations;
 }
 
+/** A circle ring of radius rM around lon, lat (closed, 32 sides). */
+function circleRingLL(lon, lat, rM) {
+  const proj = rvProject(lat);
+  const c = proj.to(lon, lat);
+  const ring = [];
+  for (let k = 0; k < 32; k++) {
+    const a = (k / 32) * Math.PI * 2;
+    ring.push(proj.from(c[0] + Math.cos(a) * rM, c[1] + Math.sin(a) * rM));
+  }
+  ring.push(ring[0]);
+  return ring;
+}
+
+/**
+ * campNodes (feedback #15): a caravan_site or camp_site mapped only as a
+ * point, with no mapped park outline around it, gets a read-only circle so
+ * the photo RV read runs there. Nothing is drawn from the circle itself.
+ */
+function campNodeSites(points, features) {
+  const outlines = [];
+  for (let i = 0; i < features.length; i++) if (features[i] && features[i].kind === "rv-site") outlines.push(features[i]);
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    let mapped = false;
+    for (let k = 0; k < outlines.length && !mapped; k++) if (pointInSite([p.lon, p.lat], outlines[k])) mapped = true;
+    if (mapped) continue;
+    features.push({
+      kind: "rv-site",
+      nodeSite: p.lon.toFixed(7) + "," + p.lat.toFixed(7),
+      tentOnly: tentOnlySite(p.tags),
+      coords: circleRingLL(p.lon, p.lat, CAMP_NODE_R_M),
+      holes: [],
+      closed: true,
+      heightM: 0,
+      explicitHeight: false,
+      rank: 0,
+    });
+  }
+}
+
+/**
+ * Keep a point-mapped park's RVs only where they form the park: a group of
+ * CAMP_NODE_MIN_RVS or more, each within CAMP_NODE_LINK_M of the next, with
+ * one unit within CAMP_NODE_NEAR_M of the mapped point. A truck at the fuel
+ * stop or a trailer in a yard across the road stays out.
+ */
+function keepCampNodeClusters(features) {
+  const list = features || [];
+  const bySite = new Map();
+  for (let i = 0; i < list.length; i++) {
+    const f = list[i];
+    if (!f || !f.nodeSite || (f.kind !== "rv" && f.kind !== "trailer")) continue;
+    if (!bySite.has(f.nodeSite)) bySite.set(f.nodeSite, []);
+    bySite.get(f.nodeSite).push(i);
+  }
+  if (!bySite.size) return list;
+  const drop = new Set();
+  for (const [key, idx] of bySite) {
+    const at = key.split(",").map(Number);
+    const proj = rvProject(at[1]);
+    const home = proj.to(at[0], at[1]);
+    const pts = idx.map((i) => {
+      const c = ringCentroidLL(list[i].coords);
+      return c ? proj.to(c[0], c[1]) : null;
+    });
+    const group = new Array(idx.length).fill(-1);
+    let g = 0;
+    for (let a = 0; a < idx.length; a++) {
+      if (group[a] >= 0 || !pts[a]) continue;
+      group[a] = g;
+      const stack = [a];
+      while (stack.length) {
+        const u = stack.pop();
+        for (let b = 0; b < idx.length; b++) {
+          if (group[b] >= 0 || !pts[b]) continue;
+          if (Math.hypot(pts[u][0] - pts[b][0], pts[u][1] - pts[b][1]) <= CAMP_NODE_LINK_M) {
+            group[b] = g;
+            stack.push(b);
+          }
+        }
+      }
+      g++;
+    }
+    const size = new Array(g).fill(0);
+    const near = new Array(g).fill(Infinity);
+    for (let a = 0; a < idx.length; a++) {
+      if (group[a] < 0) continue;
+      size[group[a]]++;
+      near[group[a]] = Math.min(near[group[a]], Math.hypot(pts[a][0] - home[0], pts[a][1] - home[1]));
+    }
+    const kept = new Array(g).fill(false);
+    for (let k = 0; k < g; k++) kept[k] = size[k] >= CAMP_NODE_MIN_RVS && near[k] <= CAMP_NODE_NEAR_M;
+    for (let a = 0; a < idx.length; a++) if (group[a] < 0 || !kept[group[a]]) drop.add(idx[a]);
+  }
+  return drop.size ? list.filter((_, i) => !drop.has(i)) : list;
+}
+
 /**
  * One metal box per pitch inside a caravan or camp site.
  * A site with no pitches gets a box every ~12 m on both sides of an internal road.
@@ -1068,6 +1177,22 @@ function rvBoxes(features) {
     const site = sites[s];
     const origin = ringCentroidLL(site.coords);
     if (!origin) continue;
+    const firstBox = boxes.length;
+    if (site.nodeSite) {
+      // campNodes: read-only windows over the circle; the point is the only
+      // map evidence, so every unit comes from the photo (tagged for the
+      // cluster check in planOutdoor).
+      if (site.tentOnly) continue;
+      // Two window grids half a tile apart, so a unit cut by one grid's
+      // edge is whole in the other (the same unit seen twice is one box).
+      const proj = rvProject(origin[1]);
+      const grids = [[], []];
+      interiorTiles(grids[0], [], proj, site, []);
+      interiorTiles(grids[1], [], proj, site, [], RV_TILE_M / 2);
+      for (let k = 0; k < grids.length; k++) for (let b = 0; b < grids[k].length && boxes.length < rvCap(); b++) boxes.push(grids[k][b]);
+      for (let k = firstBox; k < boxes.length; k++) boxes[k].nodeSite = site.nodeSite;
+      continue;
+    }
     const proj = rvProject(origin[1]);
     const insidePitches = [];
     for (let p = 0; p < pitches.length; p++) {
@@ -1186,7 +1311,8 @@ function roadDistance(x, y, lines) {
  * (pitchUse "road"): a roof found there becomes a box, empty ground stays
  * empty, and pad fills (rv-pads.js) still follow mapped roads only.
  */
-function interiorTiles(boxes, placed, proj, site, siteRoads) {
+function interiorTiles(boxes, placed, proj, site, siteRoads, shiftM) {
+  const shift = shiftM > 0 ? shiftM : 0;
   let x0 = Infinity;
   let y0 = Infinity;
   let x1 = -Infinity;
@@ -1241,8 +1367,8 @@ function interiorTiles(boxes, placed, proj, site, siteRoads) {
     return hit >= n * 0.9;
   };
   let n = 0;
-  for (let y = y0 + half; y < y1 && n < RV_TILE_CAP; y += RV_TILE_M) {
-    for (let x = x0 + half; x < x1 && n < RV_TILE_CAP && boxes.length < rvCap(); x += RV_TILE_M) {
+  for (let y = y0 + half + shift; y < y1 && n < RV_TILE_CAP; y += RV_TILE_M) {
+    for (let x = x0 + half + shift; x < x1 && n < RV_TILE_CAP && boxes.length < rvCap(); x += RV_TILE_M) {
       if (!pointInSite(proj.from(x, y), site)) continue;
       // The strips beside the mapped roads are read already. A tile is
       // read wherever they leave ground uncovered: a strip can stop short
@@ -1376,6 +1502,7 @@ function parseOverpass(payload, want, bbox, deckCap) {
   const elements = (payload && payload.elements) || [];
   const features = [];
   const railRecords = [];
+  const campPoints = [];
   let openWater = 0;
   for (let i = 0; i < elements.length; i++) {
     const el = elements[i];
@@ -1408,6 +1535,8 @@ function parseOverpass(payload, want, bbox, deckCap) {
           explicitHeight: false,
           rank: 0,
         });
+      } else if (on.rvs && isSiteTypes() && isCampNodes() && isRvSiteTags(tags)) {
+        campPoints.push({ lon, lat, tags });
       } else if (on.rvs && isRvPitchTags(tags)) {
         features.push({
           kind: "rv-pitch",
@@ -1611,6 +1740,7 @@ function parseOverpass(payload, want, bbox, deckCap) {
       }
     }
   }
+  if (campPoints.length) campNodeSites(campPoints, features);
   const boxes = on.rvs ? rvBoxes(features) : [];
   const boats = on.rvs ? boatBoxes(features) : [];
   if (on.rvs && piers.length) {
@@ -1620,6 +1750,7 @@ function parseOverpass(payload, want, bbox, deckCap) {
   const plain = [];
   for (let i = 0; i < features.length; i++) {
     const kind = features[i] && features[i].kind;
+    if (kind === "rv-site" && features[i].nodeSite) continue;
     if (kind === "rv-site" && isSiteTypes() && features[i].coords && features[i].coords.length >= 4) {
       // The site outline is kept (never drawn) so a footprint inside it
       // that is sized like an RV can be read as one.
@@ -1964,7 +2095,7 @@ function elementsFromMapXml(xml, bbox) {
     if (isSiteTypes() && (isMarinaTags(tags) || isMooringTags(tags) || tags.residential === "mobile_home" || tags.man_made === "pier")) pushWay(tags, pts);
   }
   for (const node of nodes.values()) {
-    if (isPoleNode(node.tags) || isRvPitchTags(node.tags) || (isSiteTypes() && isMooringTags(node.tags)) || (node.tags && node.tags.natural === "tree" && require("./vegetation").isPalmTags(node.tags))) {
+    if (isPoleNode(node.tags) || isRvPitchTags(node.tags) || (isSiteTypes() && isMooringTags(node.tags)) || (isCampNodes() && isRvSiteTags(node.tags)) || (node.tags && node.tags.natural === "tree" && require("./vegetation").isPalmTags(node.tags))) {
       elements.push({ type: "node", lon: node.lon, lat: node.lat, tags: node.tags });
     }
   }
@@ -2993,7 +3124,7 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
     return devRoadsideHoles(vBuildings, vf).cents;
   }
 
-  features = dropRoadsideUnderRoofs(finalizeVehicles(features, fractionFor, roadsideFor), buildings, frame);
+  features = keepCampNodeClusters(dropRoadsideUnderRoofs(finalizeVehicles(features, fractionFor, roadsideFor), buildings, frame));
   const guideCap = segmentCaps && segmentCaps.guideway > 0 ? segmentCaps.guideway | 0 : GUIDEWAY_SEGMENT_CAP;
   const bridgeCap = segmentCaps && segmentCaps.bridge > 0 ? segmentCaps.bridge | 0 : BRIDGE_SEGMENT_CAP;
   const footCap = segmentCaps && segmentCaps.footbridge > 0 ? segmentCaps.footbridge | 0 : FOOTBRIDGE_SEGMENT_CAP;
@@ -3412,6 +3543,8 @@ module.exports = {
   overpassQuery,
   corridorLines,
   rvBoxes,
+  keepCampNodeClusters,
+  CAMP_NODE_R_M,
   parseOverpass,
   featuresFromMapXml,
   guidewayFeatures,
