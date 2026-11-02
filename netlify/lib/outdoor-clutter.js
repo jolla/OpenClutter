@@ -65,7 +65,7 @@ const { placesFromElements } = require("./map-notes");
 
 const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
 const overpass = require("./overpass");
-const { isResilient, isSiteTypes, isShadowTrailers, isCampNodes } = require("./export-mode");
+const { isResilient, isSiteTypes, isShadowTrailers, isCampNodes, isSeaWater } = require("./export-mode");
 const FETCH_MS = 3200;
 const POLE_CAP = 48;
 const WALL_CAP = 80;
@@ -2074,8 +2074,23 @@ function elementsFromMapXml(xml, bbox) {
     elements.push({ type: "way", tags, geometry });
   }
   const waterWayIds = new Set();
+  const sea = isSeaWater();
+  const coastParts = [];
+  const landPts = [];
+  const waterGroups = [];
   for (const [id, way] of ways) {
     const tags = way.tags || {};
+    if (sea) {
+      if (tags.natural === "coastline") {
+        coastParts.push(wayPoints(way));
+        continue;
+      }
+      if (isLandMarkTags(tags)) {
+        const lp = wayPoints(way);
+        for (let p = 0; p < lp.length; p++) landPts.push(lp[p]);
+      }
+    }
+    if (sea && isDryWaterTags(tags)) continue;
     if (isWaterWay(tags) || isParkingWay(tags)) waterWayIds.add(id);
     const pts = wayPoints(way);
     if (isWaterWay(tags) || isParkingWay(tags)) {
@@ -2102,7 +2117,7 @@ function elementsFromMapXml(xml, bbox) {
   for (let r = 0; r < relations.length; r++) {
     const rel = relations[r];
     const tags = rel.tags || {};
-    const water = isWaterWay(tags);
+    const water = isWaterWay(tags) && !(sea && isDryWaterTags(tags));
     const parking = isParkingWay(tags);
     if (isRvSiteTags(tags)) {
       const parts = [];
@@ -2172,13 +2187,93 @@ function elementsFromMapXml(xml, bbox) {
     }
     if (!parts.length || tagged === parts.length) continue;
     const chains = stitchChains(parts);
+    if (sea && water && bbox) {
+      // seaWater: islands (inner members) are land, and a river outer that
+      // leaves the tile is clipped exactly instead of corner-joined.
+      const inners = [];
+      for (let m = 0; m < rel.members.length; m++) {
+        const member = rel.members[m];
+        if (member.type !== "way" || member.role !== "inner") continue;
+        const way = ways.get(member.ref);
+        if (!way) continue;
+        const pts = wayPoints(way);
+        if (pts.length >= 2) inners.push(pts);
+      }
+      const holes = stitchChains(inners).filter((c) => isClosed(c) && c.length >= 4);
+      const openChains = [];
+      const closedRings = [];
+      for (let c = 0; c < chains.length; c++) {
+        if (isClosed(chains[c])) closedRings.push(chains[c]);
+        else openChains.push(chains[c]);
+      }
+      waterGroups.push({ chains: openChains, closed: closedRings, holes, oriented: false, tags });
+      continue;
+    }
     for (let c = 0; c < chains.length; c++) {
       const closed = isClosed(chains[c]);
       const rings = closed ? clipClosedRing(chains[c], bbox) : closeOpenWater(chains[c], bbox);
       for (let k = 0; k < rings.length; k++) pushWay(tags, rings[k]);
     }
   }
+  if (sea && bbox) {
+    const seaLib = require("./sea-water");
+    const box = { west: +bbox.west, south: +bbox.south, east: +bbox.east, north: +bbox.north };
+    const coast = seaLib.chainForward(coastParts.filter((p) => p && p.length >= 2));
+    if (coast.length) waterGroups.unshift({ chains: coast, oriented: true, tags: { natural: "water", water: "sea" } });
+    const helpers = { clipLineRuns, closeRight: closeWaterRingRaw };
+    const seaDone = [];
+    for (let g = 0; g < waterGroups.length; g++) {
+      const grp = waterGroups[g];
+      const parts = [];
+      if (grp.chains && grp.chains.length) {
+        const got = seaLib.groupWater(grp, box, landPts, helpers);
+        if (got) parts.push(got.multi);
+      }
+      if (grp.closed && grp.closed.length) {
+        const cm = seaLib.clipRingsToBox(grp.closed, box);
+        if (cm) parts.push(cm);
+      }
+      let got = parts.length ? { multi: seaLib.unionAll(parts) } : null;
+      if (got && grp.holes && grp.holes.length) {
+        const hm = seaLib.clipRingsToBox(grp.holes, box);
+        got = hm ? { multi: seaLib.subtractDone(got.multi, [hm]) } : got;
+      }
+      if (!got || !got.multi) continue;
+      // Coastline and a sea or harbour relation often trace the same shore:
+      // emit each stretch of water once.
+      const multi = seaLib.subtractDone(got.multi, seaDone);
+      if (!multi) continue;
+      seaDone.push(multi);
+      const wt = waterGroups[g].tags || {};
+      const outTags = { natural: "water", water: wt.water || (waterGroups[g].oriented ? "sea" : "river"), seaWater: "yes" };
+      const rings = seaLib.waterPieces(multi, box);
+      for (let k = 0; k < rings.length; k++) pushWay(outTags, rings[k]);
+    }
+  }
   return elements;
+}
+
+/**
+ * seaWater: an intermittent or seasonal river or lake (Todd River at Alice
+ * Springs) is a dry, often wooded bed most of the year. Do not paint it as
+ * water or clear trees from it.
+ */
+function isDryWaterTags(tags) {
+  if (!tags || !isWaterWay(tags)) return false;
+  if (tags.intermittent === "yes") return true;
+  if (tags.seasonal && tags.seasonal !== "no") return true;
+  return tags.water === "wadi";
+}
+
+/** Streets and buildings: marks that a side of a shore is land (seaWater). */
+function isLandMarkTags(tags) {
+  if (!tags) return false;
+  if (tags.bridge && tags.bridge !== "no") return false;
+  if (tags.man_made === "pier" || tags.man_made === "breakwater") return false;
+  if (tags.building && tags.building !== "no") return true;
+  const hw = tags.highway;
+  if (!hw || hw === "proposed" || hw === "construction") return false;
+  return true;
 }
 
 function stitchChains(parts) {
@@ -2291,6 +2386,33 @@ function cornerAt(t, box) {
 
 /** Water sits to the right of the shore. Close along the box, clockwise. */
 function closeWaterRing(line, box) {
+  const ring = closeWaterRingOld(line, box);
+  return ring ? subsample(ring, 36) : null;
+}
+
+/**
+ * seaWater: close a shore run along the box clockwise from its end back to
+ * its start, corners in walking order (closeWaterRing lists them by corner
+ * index, which crosses itself when the walk passes the north-west corner).
+ */
+function closeWaterRingRaw(line, box) {
+  if (!line || line.length < 2) return null;
+  const t0 = edgeT(line[0], box);
+  const t1 = edgeT(line[line.length - 1], box);
+  if (t0 == null || t1 == null) return null;
+  let dest = t0;
+  if (dest <= t1) dest += 4;
+  const extra = [];
+  for (let c = 0; c < 8; c++) {
+    if (c > t1 + 1e-9 && c < dest - 1e-9) extra.push(cornerAt(c, box));
+  }
+  const ring = line.concat(extra);
+  if (ring.length < 3) return null;
+  ring.push(ring[0]);
+  return ring;
+}
+
+function closeWaterRingOld(line, box) {
   if (!line || line.length < 2) return null;
   const t0 = edgeT(line[0], box);
   const t1 = edgeT(line[line.length - 1], box);
@@ -2306,7 +2428,7 @@ function closeWaterRing(line, box) {
   const ring = line.concat(extra);
   if (ring.length < 3) return null;
   ring.push(ring[0]);
-  return subsample(ring, 36);
+  return ring;
 }
 
 function closeOpenWater(pts, box) {
@@ -3513,6 +3635,7 @@ function fitOutdoorBudget(items, kinds, room, opts) {
 }
 
 module.exports = {
+  _closeWaterRingRaw: closeWaterRingRaw,
   pxOnFrame,
   buildingsOnFrame,
   OVERPASS_URL,

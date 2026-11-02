@@ -1581,6 +1581,9 @@ async function handleClutter(event) {
   // circle for the photo RV read. /dev hosts only (campNodes:false or
   // ?campNodes=0 turns it off there); production off.
   exportMode.setCampNodes(exportMode.campNodesWanted(testHost, body));
+  // seaWater: sea from coastlines and big river or lake relations by side.
+  // /dev hosts only (seaWater:false or ?seaWater=0 turns it off there).
+  exportMode.setSeaWater(exportMode.seaWaterWanted(testHost, body));
   // 1.3.11 trueMetres: ground-meter plate at every latitude. /dev hosts on
   // (trueMetres:false or ?trueMetres=0 turns it off there). Production off.
   require("../lib/geo-frame").setTrueMetres(

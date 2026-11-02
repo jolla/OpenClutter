@@ -252,6 +252,27 @@ function campNodesWanted(testHost, body) {
   return !(v === false || v === 0 || v === "0" || v === "false");
 }
 
+// seaWater: the sea from coastlines, and a large river or lake whose
+// multipolygon outline mostly lies outside the draw, become water areas (the
+// side with far fewer roads and buildings; unclear sides are left out).
+// /dev hosts only (seaWater:false or ?seaWater=0 turns it off there).
+// Read on the main thread only (street-map parse).
+let seaWater = false;
+
+function setSeaWater(on) {
+  seaWater = !!on;
+}
+
+function isSeaWater() {
+  return seaWater;
+}
+
+function seaWaterWanted(testHost, body) {
+  if (!testHost) return false;
+  const v = body && body.seaWater;
+  return !(v === false || v === 0 || v === "0" || v === "false");
+}
+
 let staleTowers = false;
 
 function setStaleTowers(on) {
@@ -394,6 +415,9 @@ module.exports = {
   setCampNodes,
   isCampNodes,
   campNodesWanted,
+  setSeaWater,
+  isSeaWater,
+  seaWaterWanted,
   trueMetresWanted,
   setWaterEdges,
   isWaterEdges,
