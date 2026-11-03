@@ -402,6 +402,16 @@ function trueMetresWanted(testHost, body, query) {
   return !(raw === false || raw === 0 || raw === "0" || raw === "false");
 }
 
+// Feedback #18 prototype: a drawn box turned on the map (rotate, degrees
+// clockwise from north for the box's top edge) exports square to that box.
+// /dev hosts only and only when the request sends rotate; production and a
+// request without it get the north-up export unchanged (rotate-export.js).
+function rotateWanted(testHost, body, query) {
+  if (!testHost) return 0;
+  const raw = body && body.rotate != null ? body.rotate : query && query.rotate != null ? query.rotate : null;
+  return require("./rotate-export").normalizeRotate(raw);
+}
+
 /** A prototype switch: only on /dev hosts, and only when asked for. */
 function protoWanted(testHost, body, key, envKey) {
   if (!testHost) return false;
@@ -409,6 +419,7 @@ function protoWanted(testHost, body, key, envKey) {
 }
 
 module.exports = {
+  rotateWanted,
   setPoleNotes,
   isPoleNotes,
   poleNotesWanted,

@@ -461,6 +461,98 @@ const OUTLINE = {
 const drawn = new L.FeatureGroup();
 map.addLayer(drawn);
 
+// Feedback #18 prototype, /dev only and only with ?rotate=1: a small round
+// handle above a drawn box turns it. Drag the handle to turn the box about
+// its center (snaps to whole degrees, and to north-up within 2 degrees);
+// double-click it to put the box back north-up. The export then comes out
+// square to the turned box. Without ?rotate=1 nothing here runs.
+function rotatePage() {
+  if (!devPage()) return false;
+  try {
+    return new URLSearchParams(location.search || "").get("rotate") === "1";
+  } catch (err) {
+    return false;
+  }
+}
+
+let boxRotate = 0;
+let rotateOutline = null;
+let rotateHandle = null;
+
+function boxFrame(bounds) {
+  const lat0 = (bounds.getSouth() + bounds.getNorth()) / 2;
+  const lon0 = (bounds.getWest() + bounds.getEast()) / 2;
+  const kx = 111320 * Math.cos((lat0 * Math.PI) / 180);
+  const ky = 110540;
+  return { lat0, lon0, kx, ky, w: (bounds.getEast() - bounds.getWest()) * kx, l: (bounds.getNorth() - bounds.getSouth()) * ky };
+}
+
+function boxPoint(f, a, b, deg) {
+  const t = (deg * Math.PI) / 180;
+  const e = a * Math.cos(t) + b * Math.sin(t);
+  const n = -a * Math.sin(t) + b * Math.cos(t);
+  return [f.lat0 + n / f.ky, f.lon0 + e / f.kx];
+}
+
+function turnedCorners(bounds, deg) {
+  const f = boxFrame(bounds);
+  return [
+    boxPoint(f, -f.w / 2, -f.l / 2, deg),
+    boxPoint(f, f.w / 2, -f.l / 2, deg),
+    boxPoint(f, f.w / 2, f.l / 2, deg),
+    boxPoint(f, -f.w / 2, f.l / 2, deg),
+  ];
+}
+
+function placeRotateHandle(bounds) {
+  const f = boxFrame(bounds);
+  if (rotateOutline) rotateOutline.setLatLngs(turnedCorners(bounds, boxRotate));
+  if (rotateHandle) rotateHandle.setLatLng(boxPoint(f, 0, f.l / 2 + Math.max(8, f.l * 0.08), boxRotate));
+}
+
+function attachRotateHandle(bounds) {
+  boxRotate = 0;
+  rotateOutline = null;
+  rotateHandle = null;
+  if (!rotatePage() || !bounds) return;
+  drawn.clearLayers();
+  rotateOutline = L.polygon(turnedCorners(bounds, 0), OUTLINE);
+  drawn.addLayer(rotateOutline);
+  rotateHandle = L.marker(bounds.getCenter(), {
+    draggable: true,
+    keyboard: false,
+    title: "Drag to turn the box. Double-click for north-up.",
+    icon: L.divIcon({ className: "rotate-handle", iconSize: [14, 14] }),
+  });
+  drawn.addLayer(rotateHandle);
+  placeRotateHandle(bounds);
+  rotateHandle.on("drag", (ev) => {
+    const f = boxFrame(bounds);
+    const ll = ev.target.getLatLng();
+    let deg = (Math.atan2((ll.lng - f.lon0) * f.kx, (ll.lat - f.lat0) * f.ky) * 180) / Math.PI;
+    deg = Math.round(deg);
+    if (Math.abs(deg) <= 2) deg = 0;
+    boxRotate = deg;
+    if (rotateOutline) rotateOutline.setLatLngs(turnedCorners(bounds, boxRotate));
+    setStatus(boxRotate ? "Turned " + boxRotate + " degrees. Ready to export." : "Ready to export.");
+  });
+  rotateHandle.on("dragend", () => {
+    placeRotateHandle(bounds);
+    noteAreaReplaced();
+  });
+  rotateHandle.on("dblclick", () => {
+    boxRotate = 0;
+    placeRotateHandle(bounds);
+    noteAreaReplaced();
+    setStatus("Ready to export.");
+  });
+}
+
+/** rotate for the export request: only a turned box on a ?rotate=1 page. */
+function rotateForExport() {
+  return rotatePage() && boxRotate ? boxRotate : undefined;
+}
+
 /** Finished outline; the chip returns here if a redraw is cancelled. */
 let committedBounds = null;
 /** Null uses the box readout. A polygon readout is the closed ring. */
@@ -771,6 +863,7 @@ function resumeDrawMode() {
 
 function applyExtent(bounds, label) {
   noteAreaReplaced();
+  boxRotate = 0;
   committedBounds = bounds;
   committedLabel = label == null ? null : label;
   bbox = chipBbox(bounds);
@@ -840,6 +933,7 @@ function commitBox(start, end) {
   if (!map.hasLayer(drawn)) map.addLayer(drawn);
   sketchHidden = false;
   applyExtent(bounds, null);
+  attachRotateHandle(bounds);
   resumeDrawMode();
 }
 
@@ -1088,6 +1182,7 @@ mapEl.addEventListener(
     noteTouch(ev);
     if (ev.target.closest && ev.target.closest(".leaflet-control")) return;
     if (ev.target.closest && ev.target.closest(".area-clear")) return;
+    if (ev.target.closest && ev.target.closest(".rotate-handle")) return;
     if (ev.pointerType === "touch" && touchIds.size >= 2) {
       pinchGesture = true;
       abortDrawForPinch();
@@ -1694,6 +1789,7 @@ async function fetchTerrainPaste() {
     terrainFloors: terrainFloorsOverride(),
     adaptiveTerrain: adaptiveTerrainOverride(),
     trueMetres: trueMetresOverride(),
+    rotate: rotateForExport(),
     format: "terrain",
   });
   let last = { terrainClipboard: null, terrainStatus: "Terrain did not return. Export again." };
@@ -2092,6 +2188,7 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       ...bbox,
+      rotate: rotateForExport(),
       name: document.getElementById("q").value || "Site",
       includeFoliage: foliage,
       includeWater: clutterChecked("include-water"),
@@ -2220,6 +2317,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
     body: JSON.stringify({
       // A polygon exports as this axis-aligned box. The API frame is west/south/east/north.
       ...bbox,
+      rotate: rotateForExport(),
       name: document.getElementById("q").value || "Site",
       includeFoliage: foliage,
       includeWater: clutterChecked("include-water"),
@@ -2519,6 +2617,7 @@ function applyUrlBox(box) {
   if (!map.hasLayer(drawn)) map.addLayer(drawn);
   sketchHidden = false;
   applyExtent(bounds, null);
+  attachRotateHandle(bounds);
   resumeDrawMode();
 }
 

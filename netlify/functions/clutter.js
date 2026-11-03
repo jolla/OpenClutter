@@ -163,7 +163,7 @@ async function runBackgroundExport(event, onProgress) {
 }
 const imagerySource = require("../lib/imagery-source");
 const { normalizeAerial } = require("../lib/aerial-normalize");
-const { geoFrame, capEsriExportFrame, llToPx, esriImageryUrl, esriImageryMetaUrl, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV } = require("../lib/geo-frame");
+const { geoFrame, capEsriExportFrame, llToPx, esriImageryUrl, esriImageryMetaUrl, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV, publicFrame } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings, parseAreaCapOverride, parseJsonBudgetOverride, raisedDeckCap, MAX_BUILDINGS, MAX_ATTENUATION_AREAS, DEFAULT_AREA_CAP } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { buildSiteV1 } = require("../lib/site-v1");
@@ -1367,6 +1367,8 @@ async function respondTerrainAside(frame, body, event, cors) {
   const fields = terrainBundleFields(terrain, warnings);
   return json(200, cors, {
     ok: true,
+    // Feedback #18 prototype: the turned-box wrapper needs the frame.
+    ...(body && body.rotateFrame === true && isDevTestHost(event) ? { frame: publicFrame(frame) } : {}),
     terrainFilename: fields.terrainFilename,
     terrainClipboard: fields.terrainClipboard,
     terrainStatus: fields.terrainStatus,
@@ -1512,7 +1514,43 @@ function footprintRingsLL(features) {
   return out;
 }
 
+/**
+ * Feedback #18 prototype (/dev hosts only, off unless the request sends
+ * rotate): run the north-up export on the north-up box that holds the turned
+ * box, then cut the turned box out of it (rotate-export.js). Every other
+ * request goes straight to the north-up export, unchanged.
+ */
 async function handleClutter(event) {
+  if (!event || event.httpMethod !== "POST") return handleClutterNorthUp(event);
+  let body;
+  try {
+    body = JSON.parse(event.body || "{}");
+  } catch {
+    return handleClutterNorthUp(event);
+  }
+  const deg = exportMode.rotateWanted(isDevTestHost(event), body, event.queryStringParameters);
+  if (!deg) return handleClutterNorthUp(event);
+  // A queued job runs this again on the worker with the same body.
+  if ((body.async === true || body.async === "true") && !isBackgroundExport()) return handleClutterNorthUp(event);
+  const fmt = body.format || "bundle";
+  if (fmt !== "bundle" && fmt !== "terrain") return handleClutterNorthUp(event);
+  const rotateExport = require("../lib/rotate-export");
+  const rect = rotateExport.rotatedRect(body, deg);
+  if (!rect) return handleClutterNorthUp(event);
+  const inner = Object.assign({}, body, rotateExport.expandedBounds(rect), { rotate: 0, rotateFrame: true });
+  const res = await handleClutterNorthUp(Object.assign({}, event, { body: JSON.stringify(inner), isBase64Encoded: false }));
+  if (!res || res.statusCode !== 200) return res;
+  let payload;
+  try {
+    payload = JSON.parse(res.body);
+  } catch {
+    return res;
+  }
+  const next = rotateExport.rotateResult(payload, rect);
+  return Object.assign({}, res, { body: JSON.stringify(next) });
+}
+
+async function handleClutterNorthUp(event) {
   const cors = {
     "access-control-allow-origin": "*",
     "access-control-allow-headers": "content-type",
