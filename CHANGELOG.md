@@ -4,6 +4,8 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## Production releases
 
+- **v1.3.18** (Nov 5, 2026) production fix: production takes /dev 1.3.18. New on production since v1.3.16 is the 1.3.17 Overpass failover below (one server at a time, a 30 minute pause for a blocking server, a note when an export read a street-map copy more than 3 days old). seaWater (1.3.18), poleNotes (1.3.14), campNodes (1.3.15), trueMetres, adaptive terrain and forest=crowns stay on /dev hosts only.
+- **v1.3.16** (Nov 2, 2026) production fix: the 1.3.16 fence fix below (feedback #17) on top of v1.3.13. The 1.3.14 and 1.3.15 /dev changes stay on /dev.
 - **v1.3.13** (Nov 2, 2026) weekly production release: production takes /dev 1.3.12 with three /dev switches turned on for every host: forest bands (feedback #9, forest fix A, canopyBands), tall canopy keep (feedback #11) and water edges (feedback #12 and #13). trueMetres, adaptive terrain and forest=crowns or merge stay on /dev hosts only.
 - **v1.3.3** (Oct 30, 2026) production fix: the 1.3.3 Copy terrain fix below on top of v1.3.1. The 1.3.2 adaptive terrain stays on /dev.
 - **v1.3.1** (Oct 30, 2026) production fix: the 1.3.1 search and terrain fixes below on top of v1.3.0. /dev and production stay on the same build.

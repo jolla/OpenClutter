@@ -1,3 +1,22 @@
+# OpenClutter v1.3.18
+
+Released Nov 5, 2026 on openclutter.com. dev.openclutter.com runs the same build.
+
+## What's new
+
+- **Steadier street-map reads.** The OpenStreetMap read (Overpass) asks one server at a time, in order, and leaves a server alone for 30 minutes when it blocks this site, so an export no longer fails when the main server is overloaded.
+- **Stale map note.** When an export had to use a street-map copy more than 3 days old, the export says so and names the copy's date.
+- **Fence fix (from v1.3.16).** A slanted fence cut by the map edge stays on its line instead of stretching across a road.
+
+## Data
+
+No new map data in this release.
+
+## Git / deploy
+
+- Tag `v1.3.18` on `main`; `dev` is at the same commit.
+- Sea and river water sides (seaWater), light pole map notes (poleNotes), campground points (campNodes), true ground meters (trueMetres), adaptive terrain and the forest=crowns style stay on dev.openclutter.com only.
+
 # OpenClutter v1.3.13
 
 Released Nov 2, 2026 on openclutter.com and dev.openclutter.com.
