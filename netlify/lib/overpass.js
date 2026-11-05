@@ -7,14 +7,25 @@
  * caller's slots are taken, 504 or a "runtime error" remark when the
  * server is busy, or no answer at all. A single fetch per endpoint loses
  * the street map on a busy minute. This client:
- *   - asks each endpoint in turn, and starts the next one beside a slow
- *     first answer (one extra request, never a burst),
+ *   - asks one endpoint at a time, in order, and moves to the next only
+ *     after the current one failed or ran out its share of the read's
+ *     window (sequential failover; never two servers for the same read),
  *   - honours Retry-After and the /api/status slot time on a 429, and
  *     pauses that endpoint (the main instance asks for 30 s),
- *   - backs off with jitter after 5xx answers and timeouts,
+ *   - treats a 406 as a block on this address and leaves that endpoint
+ *     alone for BAN_PAUSE_MS (no status probe, no retry loop),
+ *   - backs off with jitter after 5xx answers and timeouts, and skips a
+ *     server for DEAD_PAUSE_MS after DEAD_AFTER silent timeouts in a row,
  *   - caps requests in flight per endpoint inside this process,
  *   - coalesces identical reads and keeps a short-lived copy of each
- *     answer (OSM data, ODbL; credited in ATTRIBUTION.txt).
+ *     answer (OSM data, ODbL; credited in ATTRIBUTION.txt),
+ *   - when OPENCLUTTER_OVERPASS_CACHE_DIR is set (benches and local runs,
+ *     never a deployed host), keeps every answer on disk keyed by the
+ *     query or bbox, so reruns read the same data without asking a server,
+ *     and keeps endpoint pauses there across processes.
+ * OPENCLUTTER_OVERPASS_ENDPOINTS (comma list of endpoint ids, in order)
+ * limits a local run to some servers. Every request carries the app's
+ * identifying user agent (lib/version.js).
  * The caller's signal or deadline is final. A read that is still missing
  * then returns ok:false and the export keeps its existing warning.
  *
@@ -35,6 +46,9 @@
  */
 
 const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+const zlib = require("node:zlib");
 
 const ENDPOINTS = [
   { id: "overpass-api.de", base: "https://overpass-api.de/api", slots: 2, pause429Ms: 30000, status: true },
@@ -65,10 +79,17 @@ function errorCode(e) {
   return "";
 }
 
-/** Start the next endpoint beside a first answer this slow. */
-const HEDGE_MS = 15000;
 /** Longest wait on one request. */
 const ATTEMPT_MS = 60000;
+/** Shortest share of the window one server gets while another is left to ask. */
+const MIN_ATTEMPT_MS = 15000;
+/** Window kept back for the next server while one is being asked. */
+const RESERVE_MS = 25000;
+/** A 406 is a block on this address: leave that server alone this long. */
+const BAN_PAUSE_MS = 30 * 60 * 1000;
+/** Silent timeouts in a row before a server is skipped for DEAD_PAUSE_MS. */
+const DEAD_AFTER = 2;
+const DEAD_PAUSE_MS = 10 * 60 * 1000;
 const STATUS_MS = 4000;
 const BACKOFF_BASE_MS = 1500;
 const BACKOFF_MAX_MS = 20000;
@@ -85,14 +106,105 @@ let logFn = (line) => console.log(line);
 let fetchOverride = null;
 let nowFn = Date.now;
 let sleepOverride = null;
+/** Tests shrink the per-request timer by this factor. */
+let timerScale = 1;
 
 function endpointState(ep) {
   let s = state.get(ep.id);
   if (!s) {
-    s = { active: 0, queue: [], pausedUntil: 0, fails: 0 };
+    s = { active: 0, queue: [], pausedUntil: 0, fails: 0, silent: 0 };
+    const saved = loadSavedPauses()[ep.id];
+    if (saved > nowFn()) s.pausedUntil = saved;
     state.set(ep.id, s);
   }
   return s;
+}
+
+/** Endpoints this process may ask: all, or OPENCLUTTER_OVERPASS_ENDPOINTS in that order. */
+function endpoints() {
+  const want = String(process.env.OPENCLUTTER_OVERPASS_ENDPOINTS || "").split(",").map((v) => v.trim()).filter(Boolean);
+  if (!want.length) return ENDPOINTS;
+  const out = [];
+  for (const id of want) {
+    const ep = ENDPOINTS.find((e) => e.id === id);
+    if (ep && out.indexOf(ep) < 0) out.push(ep);
+  }
+  return out.length ? out : ENDPOINTS;
+}
+
+/** Disk copy directory, or "" when off (every deployed host). */
+function cacheDir() {
+  return String(process.env.OPENCLUTTER_OVERPASS_CACHE_DIR || "").trim();
+}
+
+function diskKey(kind, payload) {
+  return crypto.createHash("sha256").update(kind + "\n" + String(payload)).digest("hex");
+}
+
+function diskPath(dir, kind, payload) {
+  const k = diskKey(kind, payload);
+  return path.join(dir, kind, k.slice(0, 2), k + ".gz");
+}
+
+function diskGet(kind, payload) {
+  const dir = cacheDir();
+  if (!dir) return null;
+  try {
+    const text = zlib.gunzipSync(fs.readFileSync(diskPath(dir, kind, payload))).toString("utf8");
+    return bodyOk(kind, text) ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+function diskSet(kind, payload, text) {
+  const dir = cacheDir();
+  if (!dir || !bodyOk(kind, text)) return;
+  try {
+    const file = diskPath(dir, kind, payload);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = file + "." + process.pid + ".tmp";
+    fs.writeFileSync(tmp, zlib.gzipSync(Buffer.from(text, "utf8")));
+    fs.renameSync(tmp, file);
+  } catch {
+    /* the disk copy is optional */
+  }
+}
+
+let savedPauses = null;
+function pausesFile() {
+  const dir = cacheDir();
+  return dir ? path.join(dir, "endpoint-pauses.json") : "";
+}
+
+function loadSavedPauses() {
+  if (savedPauses) return savedPauses;
+  savedPauses = {};
+  const file = pausesFile();
+  if (!file) return savedPauses;
+  try {
+    const got = JSON.parse(fs.readFileSync(file, "utf8"));
+    for (const k of Object.keys(got || {})) if (Number.isFinite(+got[k])) savedPauses[k] = +got[k];
+  } catch {
+    /* none saved */
+  }
+  return savedPauses;
+}
+
+/** Long pauses (a block, a dead server) outlive this process when the disk copy is on. */
+function pauseLong(ep, until) {
+  const s = endpointState(ep);
+  s.pausedUntil = Math.max(s.pausedUntil, until);
+  const file = pausesFile();
+  if (!file) return;
+  const all = loadSavedPauses();
+  all[ep.id] = s.pausedUntil;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(all));
+  } catch {
+    /* optional */
+  }
 }
 
 function rawFetch() {
@@ -272,8 +384,16 @@ function log(tag, ep, kind, status, ms, n, extra) {
  * One request to one endpoint. Resolves { ok, status, text, retryMs }.
  * Never throws for a network failure.
  */
-async function attempt(ep, kind, payload, opts, n, outer) {
-  const ua = opts.ua || "OpenClutter/1.0 (+https://openclutter.com)";
+function defaultUa() {
+  try {
+    return require("./version").userAgent;
+  } catch {
+    return "openclutter (https://github.com/jolla/OpenClutter)";
+  }
+}
+
+async function attempt(ep, kind, payload, opts, n, outer, limitMs) {
+  const ua = opts.ua || defaultUa();
   const got = await acquire(ep, outer);
   if (!got) return { ok: false, status: "aborted", text: "" };
   const t0 = nowFn();
@@ -284,7 +404,8 @@ async function attempt(ep, kind, payload, opts, n, outer) {
     else outer.addEventListener("abort", onOuter, { once: true });
   }
   const left = Math.max(1000, opts.deadlineAt - nowFn());
-  const timer = setTimeout(() => ctrl.abort(), Math.min(ATTEMPT_MS, left));
+  const allowMs = Math.min(ATTEMPT_MS, left, limitMs > 0 ? limitMs : Infinity);
+  const timer = setTimeout(() => ctrl.abort(), allowMs / timerScale);
   if (typeof timer.unref === "function") timer.unref();
   const s = endpointState(ep);
   try {
@@ -292,6 +413,7 @@ async function attempt(ep, kind, payload, opts, n, outer) {
     const r = await rawFetch()(req.url, Object.assign({}, req.init, { signal: ctrl.signal }));
     const text = await readText(r);
     const ms = nowFn() - t0;
+    s.silent = 0;
     if (!(typeof r.status === "number" && r.status > 0)) {
       // Not an HTTP answer this client can read (a stub without a status).
       if (r.ok && bodyOk(kind, text)) return { ok: true, status: 200, text };
@@ -320,7 +442,16 @@ async function attempt(ep, kind, payload, opts, n, outer) {
       log(opts.tag, ep, kind, r.status + "-remark", ms, n, "backoff=" + wait);
       return { ok: false, status: r.status, text: "" };
     }
-    if (r.status === 429 || r.status === 406) {
+    if (r.status === 406) {
+      // overpass-api.de answers 406 to an address it has blocked by hand
+      // for heavy use. Asking again only prolongs it.
+      s.fails += 1;
+      const wait = BAN_PAUSE_MS + jitter();
+      pauseLong(ep, nowFn() + wait);
+      log(opts.tag, ep, kind, 406, ms, n, "blocked pause=" + Math.round(wait));
+      return { ok: false, status: 406, text: "" };
+    }
+    if (r.status === 429) {
       let wait = retryAfterMs(r.headers && r.headers.get && r.headers.get("retry-after"), nowFn());
       let slot = -1;
       if (!wait) {
@@ -343,13 +474,22 @@ async function attempt(ep, kind, payload, opts, n, outer) {
     const code = errorCode(e);
     if (!aborted && !ctrl.signal.aborted && REFUSED_CODES.has(code) && ms < REFUSED_MAX_MS) {
       s.fails += 1;
-      s.pausedUntil = Math.max(s.pausedUntil, nowFn() + REFUSED_PAUSE_MS);
+      pauseLong(ep, nowFn() + REFUSED_PAUSE_MS);
       log(opts.tag, ep, kind, "refused", ms, n, "code=" + code + " pause=" + REFUSED_PAUSE_MS);
     } else if (!aborted) {
       s.fails += 1;
-      const wait = backoffMs(s.fails);
-      s.pausedUntil = Math.max(s.pausedUntil, nowFn() + wait);
-      log(opts.tag, ep, kind, ctrl.signal.aborted ? "timeout" : "neterr", ms, n, "backoff=" + wait + (code ? " code=" + code : ""));
+      const timedOut = ctrl.signal.aborted;
+      // A server that sends nothing for a whole fair share, twice in a row,
+      // is skipped for a while instead of eating every read's window.
+      if (timedOut && allowMs >= MIN_ATTEMPT_MS) s.silent += 1;
+      if (timedOut && s.silent >= DEAD_AFTER) {
+        pauseLong(ep, nowFn() + DEAD_PAUSE_MS);
+        log(opts.tag, ep, kind, "timeout", ms, n, "silent=" + s.silent + " pause=" + DEAD_PAUSE_MS);
+      } else {
+        const wait = backoffMs(s.fails);
+        s.pausedUntil = Math.max(s.pausedUntil, nowFn() + wait);
+        log(opts.tag, ep, kind, timedOut ? "timeout" : "neterr", ms, n, "backoff=" + wait + (code ? " code=" + code : ""));
+      }
     } else {
       log(opts.tag, ep, kind, "cancelled", ms, n);
     }
@@ -370,28 +510,24 @@ function backoffMs(fails) {
 function regularFails(failed) {
   if (!failed) return 0;
   let n = 0;
-  for (const ep of ENDPOINTS) if (!ep.lastResort && failed.has(ep.id)) n++;
+  for (const ep of endpoints()) if (!ep.lastResort && failed.has(ep.id)) n++;
   return n;
 }
 
 function nextEndpoint(skip, failed) {
+  const list = endpoints();
   const now = nowFn();
+  const open = (ep) => !(skip && skip.has(ep.id)) && !(failed && failed.has(ep.id)) && endpointState(ep).pausedUntil <= now;
+  // A regular server not asked yet in this read and free now comes first.
+  for (const ep of list) if (!ep.lastResort && open(ep)) return { ep, waitMs: 0 };
+  // Two regular servers failed this read: the last resort before waiting
+  // on a server that already failed.
+  if (regularFails(failed) >= 2) {
+    for (const ep of list) if (ep.lastResort && open(ep)) return { ep, waitMs: 0 };
+  }
   let best = null;
   let soonest = Infinity;
-  // Two regular servers failed this read: a regular one not tried yet,
-  // then the last resort, before waiting on a server that already failed.
-  if (regularFails(failed) >= 2) {
-    for (const ep of ENDPOINTS) {
-      if (ep.lastResort || (skip && skip.has(ep.id)) || failed.has(ep.id)) continue;
-      if (endpointState(ep).pausedUntil <= now) return { ep, waitMs: 0 };
-    }
-    for (const ep of ENDPOINTS) {
-      if (!ep.lastResort || (skip && skip.has(ep.id)) || failed.has(ep.id)) continue;
-      if (endpointState(ep).pausedUntil <= now) return { ep, waitMs: 0 };
-    }
-  }
-  for (let i = 0; i < ENDPOINTS.length; i++) {
-    const ep = ENDPOINTS[i];
+  for (const ep of list) {
     if (ep.lastResort || (skip && skip.has(ep.id))) continue;
     const s = endpointState(ep);
     if (s.pausedUntil <= now) return { ep, waitMs: 0 };
@@ -403,8 +539,7 @@ function nextEndpoint(skip, failed) {
   // Every regular server is busy or refused: a last resort that is free
   // now beats a wait longer than LAST_RESORT_WAIT_MS.
   if (!best || soonest - now > LAST_RESORT_WAIT_MS) {
-    for (let i = 0; i < ENDPOINTS.length; i++) {
-      const ep = ENDPOINTS[i];
+    for (const ep of list) {
       if (!ep.lastResort || (skip && skip.has(ep.id))) continue;
       const s = endpointState(ep);
       if (s.pausedUntil <= now) return { ep, waitMs: 0 };
@@ -419,11 +554,27 @@ function nextEndpoint(skip, failed) {
 }
 
 /**
- * The network part: endpoints in order, a hedge beside a slow answer,
- * pauses and backoff, until one answers or the deadline passes.
+ * How long one server may take in this read. The last server that can
+ * still be asked gets the rest of the window (up to ATTEMPT_MS); while
+ * another is left, RESERVE_MS stays back for it. Tile reads
+ * (opts.slowFailMs, export-mode tiledOsm) give each server a third of
+ * what is left, never under slowFailMs, since two tiles share the window.
+ */
+function attemptLimitMs(ep, failed, opts, skip) {
+  const now = nowFn();
+  const left = Math.max(0, opts.deadlineAt - now);
+  const more = endpoints().some((e) => e !== ep && !(skip && skip.has(e.id)) && !(failed && failed.has(e.id)) && endpointState(e).pausedUntil < opts.deadlineAt - 1000);
+  if (!more) return Math.min(ATTEMPT_MS, left);
+  if (opts.slowFailMs > 0) return Math.min(ATTEMPT_MS, Math.max(opts.slowFailMs, Math.round(left / 3)));
+  return Math.min(ATTEMPT_MS, Math.max(Math.min(MIN_ATTEMPT_MS, Math.round(left / 2)), left - RESERVE_MS));
+}
+
+/**
+ * The network part: one server at a time, in order, with pauses and
+ * backoff, until one answers or the deadline passes. Never two servers
+ * for the same read at once.
  */
 async function fetchAcross(kind, payload, opts) {
-  if (opts.slowFailMs > 0) return fetchAcrossSlowFail(kind, payload, opts);
   const outer = new AbortController();
   const parent = opts.signal;
   const onParent = () => outer.abort();
@@ -433,17 +584,15 @@ async function fetchAcross(kind, payload, opts) {
   }
   const deadlineTimer = setTimeout(() => outer.abort(), Math.max(0, opts.deadlineAt - nowFn()));
   if (typeof deadlineTimer.unref === "function") deadlineTimer.unref();
+  const tileRead = opts.slowFailMs > 0;
   let n = 0;
   let lastStatus = 0;
   const failed = new Set();
-  const tracked = (ep) =>
-    attempt(ep, kind, payload, opts, n, outer.signal).then((r) => {
-      if (r && !r.ok && !r.final && r.status !== "aborted") failed.add(ep.id);
-      return r;
-    });
+  // Tile reads: a server that sent an empty or cut-off body is not asked again in this read.
+  const spent = new Set();
   try {
     while (!outer.signal.aborted && nowFn() < opts.deadlineAt) {
-      const pick = nextEndpoint(null, failed);
+      const pick = nextEndpoint(spent, failed);
       if (!pick) break;
       if (pick.waitMs > 0) {
         if (nowFn() + pick.waitMs >= opts.deadlineAt) break;
@@ -451,35 +600,15 @@ async function fetchAcross(kind, payload, opts) {
         continue;
       }
       n += 1;
-      const running = new Set([pick.ep.id]);
-      const races = [tracked(pick.ep)];
-      let settledFirst = false;
-      const hedgeWait = new AbortController();
-      const onOuterStop = () => hedgeWait.abort();
-      outer.signal.addEventListener("abort", onOuterStop, { once: true });
-      races[0].then(() => {
-        settledFirst = true;
-        hedgeWait.abort();
-        outer.signal.removeEventListener("abort", onOuterStop);
-      });
-      // Hedge: one more endpoint beside a slow first answer, and the next
-      // one in turn while the first is still out and the hedge failed.
-      const hedge = sleep(HEDGE_MS, hedgeWait.signal).then(async () => {
-        let last = null;
-        while (!settledFirst && !outer.signal.aborted) {
-          const other = nextEndpoint(running, failed);
-          if (!other || other.waitMs > 0) break;
-          running.add(other.ep.id);
-          n += 1;
-          last = await tracked(other.ep);
-          if (last && (last.ok || last.final)) break;
-        }
-        return last;
-      });
-      const winner = await firstOk([races[0], hedge]);
-      if (winner && winner.ok) return winner;
-      if (winner && winner.final) return winner;
-      lastStatus = (winner && winner.status) || lastStatus;
+      const r = await attempt(pick.ep, kind, payload, opts, n, outer.signal, attemptLimitMs(pick.ep, failed, opts, spent));
+      if (r && r.ok) return r;
+      if (!r || r.status === "aborted") break;
+      // A 400 is the query itself. Outside tile reads an empty or cut-off
+      // 200 ends the read as before; a tile read moves to the next server.
+      if (r.final && (r.status === 400 || !tileRead)) return r;
+      failed.add(pick.ep.id);
+      lastStatus = r.status || lastStatus;
+      if (r.final) spent.add(pick.ep.id);
     }
     return { ok: false, status: lastStatus || "deadline", text: "" };
   } finally {
@@ -487,108 +616,6 @@ async function fetchAcross(kind, payload, opts) {
     outer.abort();
     if (parent) parent.removeEventListener("abort", onParent);
   }
-}
-
-/**
- * Large-draw tile reads (export-mode tiledOsm, 1.2.31). A server that has
- * not answered after opts.slowFailMs counts as failed for this read, so the
- * next regular server starts beside it, and once two regular servers have
- * failed or gone slow, the last resort (openstreetmap.fr). A slow server
- * keeps running: whichever answers first with a whole body wins. A cut-off
- * or empty 200 is a failure of that server, not of the read; only a 400 (the
- * query itself) ends it. The caller's deadline is final.
- */
-function fetchAcrossSlowFail(kind, payload, opts) {
-  const outer = new AbortController();
-  const parent = opts.signal;
-  const onParent = () => outer.abort();
-  if (parent) {
-    if (parent.aborted) outer.abort();
-    else parent.addEventListener("abort", onParent, { once: true });
-  }
-  const failed = new Set();
-  const running = new Set();
-  let n = 0;
-  let pending = 0;
-  let waiting = false;
-  let lastStatus = 0;
-  let done = false;
-  return new Promise((resolve) => {
-    const deadlineTimer = setTimeout(() => finish({ ok: false, status: lastStatus || "deadline", text: "" }), Math.max(0, opts.deadlineAt - nowFn()));
-    if (typeof deadlineTimer.unref === "function") deadlineTimer.unref();
-    function finish(res) {
-      if (done) return;
-      done = true;
-      clearTimeout(deadlineTimer);
-      outer.abort();
-      if (parent) parent.removeEventListener("abort", onParent);
-      resolve(res);
-    }
-    outer.signal.addEventListener("abort", () => finish({ ok: false, status: lastStatus || "aborted", text: "" }), { once: true });
-    function launch() {
-      if (done || waiting) return;
-      const pick = nextEndpoint(running, failed);
-      if (!pick) {
-        if (pending === 0) finish({ ok: false, status: lastStatus || "none", text: "" });
-        return;
-      }
-      if (pick.waitMs > 0) {
-        if (pending > 0) return;
-        if (nowFn() + pick.waitMs >= opts.deadlineAt) return finish({ ok: false, status: lastStatus || "deadline", text: "" });
-        waiting = true;
-        sleep(pick.waitMs + jitter(), outer.signal).then(() => {
-          waiting = false;
-          launch();
-        });
-        return;
-      }
-      const ep = pick.ep;
-      running.add(ep.id);
-      n += 1;
-      pending += 1;
-      const slowStop = new AbortController();
-      sleep(opts.slowFailMs, slowStop.signal).then(() => {
-        if (done || slowStop.signal.aborted) return;
-        failed.add(ep.id);
-        log(opts.tag, ep, kind, "slow", opts.slowFailMs, n, "next");
-        launch();
-      });
-      attempt(ep, kind, payload, opts, n, outer.signal).then((r) => {
-        slowStop.abort();
-        pending -= 1;
-        if (done) return;
-        if (r && r.ok) return finish(r);
-        if (r && r.final && r.status === 400) return finish(r);
-        lastStatus = (r && r.status) || lastStatus;
-        if (!r || r.status !== "aborted") failed.add(ep.id);
-        // A server with a backoff may be asked again once it ends; one that
-        // failed without one (an empty or cut-off body) is not asked again.
-        if (endpointState(ep).pausedUntil > nowFn()) running.delete(ep.id);
-        launch();
-      });
-    }
-    launch();
-  });
-}
-
-/** First ok result; otherwise the last one once all settle. */
-function firstOk(promises) {
-  return new Promise((resolve) => {
-    let left = promises.length;
-    let last = null;
-    for (const p of promises) {
-      Promise.resolve(p).then(
-        (res) => {
-          if (res && (res.ok || res.final)) return resolve(res);
-          if (res) last = res;
-          if (--left === 0) resolve(last);
-        },
-        () => {
-          if (--left === 0) resolve(last);
-        }
-      );
-    }
-  });
 }
 
 /**
@@ -623,6 +650,17 @@ async function request(opts) {
   const key = memoKey(kind, payload);
   const hit = memoGet(key);
   if (hit) return Object.assign({ cached: true }, hit);
+  const disk = diskGet(kind, payload);
+  if (disk) {
+    const value = { ok: true, status: 200, text: disk };
+    memoSet(key, value);
+    try {
+      logFn("overpass" + (o.tag ? " " + o.tag : "") + " disk " + kind + " bytes=" + disk.length);
+    } catch {
+      /* logging is optional */
+    }
+    return Object.assign({ cached: true, disk: true }, value);
+  }
   if (inflight.has(key)) return waitWithSignal(inflight.get(key), o.signal);
   const deadlineAt = nowFn() + (o.deadlineMs > 0 ? o.deadlineMs : DEFAULT_DEADLINE_MS);
   // The shared read keeps going when one caller leaves; it stops at its own deadline.
@@ -633,7 +671,10 @@ async function request(opts) {
     signal: null,
     slowFailMs: o.slowFailMs > 0 ? o.slowFailMs : 0,
   }).then((res) => {
-    if (res && res.ok) memoSet(key, { ok: true, status: res.status, text: res.text });
+    if (res && res.ok) {
+      memoSet(key, { ok: true, status: res.status, text: res.text });
+      diskSet(kind, payload, res.text);
+    }
     return res;
   });
   inflight.set(key, work);
@@ -716,11 +757,13 @@ function resetForTests(opts) {
   state.clear();
   memo.clear();
   inflight.clear();
+  savedPauses = null;
   const o = opts || {};
   fetchOverride = o.fetch || null;
   logFn = o.log || (() => {});
   nowFn = o.now || Date.now;
   sleepOverride = o.sleep || null;
+  timerScale = o.timerScale > 0 ? o.timerScale : 1;
 }
 
 module.exports = {
@@ -728,8 +771,14 @@ module.exports = {
   REFUSED_PAUSE_MS,
   LAST_RESORT_WAIT_MS,
   errorCode,
-  HEDGE_MS,
   ATTEMPT_MS,
+  MIN_ATTEMPT_MS,
+  RESERVE_MS,
+  BAN_PAUSE_MS,
+  DEAD_AFTER,
+  DEAD_PAUSE_MS,
+  endpoints,
+  diskKey,
   MEMO_MS,
   request,
   logLegacy,

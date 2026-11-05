@@ -64,19 +64,24 @@ afterEach(() => {
 });
 
 describe("1.2.31 slow-fail chain for tile reads", () => {
-  it("moves on from hanging servers to the last resort", async () => {
+  it("moves on from hanging servers to the last resort, one server at a time", async () => {
+    let active = 0;
+    let peak = 0;
     const t = setup((h, init) => {
-      if (h === "overpass-api.de" || h === "overpass.private.coffee") return hang(init);
-      if (h === "maps.mail.ru") return Promise.resolve(res(504, "<html>504 Gateway Time-out</html>"));
-      return Promise.resolve(res(200, JSON_OK));
+      active += 1;
+      peak = Math.max(peak, active);
+      const done = (p) => p.finally(() => (active -= 1));
+      if (h === "overpass-api.de" || h === "overpass.private.coffee") return done(hang(init));
+      if (h === "maps.mail.ru") return done(Promise.resolve(res(504, "<html>504 Gateway Time-out</html>")));
+      return done(Promise.resolve(res(200, JSON_OK)));
     });
     const t0 = Date.now();
     const got = await read({ deadlineMs: 3000, slowFailMs: 40 });
     assert.equal(got.ok, true);
-    assert.ok(Date.now() - t0 < 1000);
-    assert.deepEqual(t.calls.slice(0, 2), ["overpass-api.de", "overpass.private.coffee"]);
-    assert.equal(t.calls.includes("overpass.openstreetmap.fr"), true);
-    assert.ok(t.lines.some((l) => /overpass-api\.de interpreter status=slow/.test(l)));
+    assert.ok(Date.now() - t0 < 2500);
+    assert.equal(peak, 1);
+    assert.deepEqual(t.calls, ["overpass-api.de", "overpass.private.coffee", "maps.mail.ru", "overpass.openstreetmap.fr"]);
+    assert.ok(t.lines.some((l) => /overpass-api\.de interpreter status=timeout/.test(l)));
   });
 
   it("skips a refused server at once and still reaches an answer", async () => {
@@ -92,18 +97,44 @@ describe("1.2.31 slow-fail chain for tile reads", () => {
     assert.ok(t.lines.some((l) => /status=refused/.test(l)));
   });
 
-  it("rejects a cut-off last-resort body and keeps the slow server's whole answer", async () => {
-    const t = setup((h, init) => {
+  it("keeps a slow server's whole answer inside its share of the window", async () => {
+    const t = setup((h) => {
       if (h === "overpass-api.de") return later(250, res(200, JSON_OK));
-      if (h === "overpass.private.coffee") return hang(init);
-      if (h === "maps.mail.ru") return Promise.resolve(res(504, "x"));
-      return Promise.resolve(res(200, CUT));
+      return Promise.resolve(res(200, JSON_OK));
     });
     const got = await read({ deadlineMs: 3000, slowFailMs: 40 });
     assert.equal(got.ok, true);
     assert.equal(got.text, JSON_OK);
+    assert.deepEqual(t.calls, ["overpass-api.de"]);
+  });
+
+  it("rejects a cut-off last-resort body and asks a regular server again", async () => {
+    let first = true;
+    const t = setup((h) => {
+      if (h === "overpass-api.de") {
+        if (first) {
+          first = false;
+          return Promise.resolve(res(504, "x"));
+        }
+        return Promise.resolve(res(200, JSON_OK));
+      }
+      if (h === "overpass.openstreetmap.fr") return Promise.resolve(res(200, CUT));
+      return Promise.resolve(res(504, "x"));
+    });
+    const got = await read({ deadlineMs: 8000, slowFailMs: 40 });
+    assert.equal(got.ok, true);
+    assert.equal(got.text, JSON_OK);
     assert.ok(t.calls.includes("overpass.openstreetmap.fr"));
     assert.ok(t.lines.some((l) => /openstreetmap\.fr interpreter status=200-nobody/.test(l)));
+  });
+
+  it("gives up at once when every server sends an empty body, without asking any twice", async () => {
+    const t = setup(() => Promise.resolve(res(200, "")));
+    const t0 = Date.now();
+    const got = await read({ deadlineMs: 3000, slowFailMs: 40 });
+    assert.equal(got.ok, false);
+    assert.ok(Date.now() - t0 < 500);
+    assert.deepEqual(t.calls, ["overpass-api.de", "overpass.private.coffee", "maps.mail.ru", "overpass.openstreetmap.fr"]);
   });
 
   it("ends on a 400 and gives up at the deadline when every server hangs", async () => {

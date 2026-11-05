@@ -21,6 +21,12 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+// Benches read Overpass through a disk copy keyed by query and bbox, so a
+// rerun asks no server for a site it already has (OPENCLUTTER_OVERPASS_CACHE_DIR=""
+// in the environment turns it off). Run benches one at a time.
+if (process.env.OPENCLUTTER_OVERPASS_CACHE_DIR === undefined) {
+  process.env.OPENCLUTTER_OVERPASS_CACHE_DIR = path.join(os.homedir(), ".cache", "openclutter", "overpass");
+}
 const { execFileSync } = require("child_process");
 const jpeg = require("jpeg-js");
 const { esriContentExtent, geoFrame, imagePxToLl, llToPx, pxToLl } = require("../netlify/lib/geo-frame");

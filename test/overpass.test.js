@@ -18,7 +18,7 @@ function res(status, text, headers) {
   };
 }
 
-/** Real waits scaled down 1000x, so the 15 s hedge is 15 ms and stays after a quick answer. */
+/** Real waits scaled down 1000x. */
 function fastSleep(ms, signal) {
   return new Promise((resolve) => {
     const t = setTimeout(resolve, Math.max(0, ms / 1000));
@@ -158,19 +158,27 @@ describe("overpass client", () => {
     assert.deepEqual(hosts, ["overpass-api.de", "overpass.private.coffee", "maps.mail.ru", "overpass.openstreetmap.fr"]);
   });
 
-  it("keeps hedging past a failed hedge while the first answer hangs", async () => {
+  it("asks one server at a time and moves on when one hangs", async () => {
+    let active = 0;
+    let peak = 0;
     setup((url, init) => {
       const h = hostOf(url);
+      active += 1;
+      peak = Math.max(peak, active);
+      const done = (p) => p.finally(() => (active -= 1));
       if (h === "overpass-api.de") {
-        return new Promise((resolve, reject) => {
-          init.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
-        });
+        return done(
+          new Promise((resolve, reject) => {
+            init.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+          })
+        );
       }
-      if (h === "overpass.openstreetmap.fr") return res(200, JSON_OK);
-      return res(504, "busy");
+      if (h === "overpass.openstreetmap.fr") return done(Promise.resolve(res(200, JSON_OK)));
+      return done(Promise.resolve(res(504, "busy")));
     });
-    const got = await overpass.request({ kind: "interpreter", query: "q-hang", deadlineMs: 5000 });
+    const got = await overpass.request({ kind: "interpreter", query: "q-hang", deadlineMs: 400 });
     assert.equal(got.ok, true);
+    assert.equal(peak, 1);
     assert.deepEqual(calls.map((c) => hostOf(c.url)), ["overpass-api.de", "overpass.private.coffee", "maps.mail.ru", "overpass.openstreetmap.fr"]);
   });
 
@@ -248,6 +256,146 @@ describe("overpass client", () => {
     });
     await Promise.all([1, 2, 3, 4, 5].map((i) => overpass.request({ kind: "interpreter", query: "q" + i, deadlineMs: 5000 })));
     assert.ok(peak <= overpass.ENDPOINTS[0].slots, String(peak));
+  });
+
+  it("leaves a server that answers 406 alone for the block pause, with no status probe", async () => {
+    setup((url) => {
+      if (hostOf(url) === "overpass-api.de") return res(406, "Not Acceptable");
+      return res(200, JSON_OK);
+    });
+    const a = await overpass.request({ kind: "interpreter", query: "q406a", deadlineMs: 5000 });
+    const b = await overpass.request({ kind: "interpreter", query: "q406b", deadlineMs: 5000 });
+    assert.equal(a.ok && b.ok, true);
+    assert.ok(!calls.some((c) => c.url.includes("/status")));
+    assert.deepEqual(calls.map((c) => hostOf(c.url)), ["overpass-api.de", "overpass.private.coffee", "overpass.private.coffee"]);
+    assert.ok(lines.some((l) => /status=406 .*blocked pause=18\d{5}/.test(l)), lines.join("\n"));
+  });
+
+  it("skips a server after two silent timeouts in a row", async () => {
+    let clock = Date.now();
+    overpass.resetForTests({
+      now: () => clock,
+      fetch: async (url, init) => {
+        calls.push({ url });
+        if (hostOf(url) === "overpass-api.de") {
+          return new Promise((resolve, reject) => {
+            init.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+          });
+        }
+        return res(200, JSON_OK);
+      },
+      log: (l) => lines.push(l),
+      sleep: fastSleep,
+      timerScale: 1000,
+    });
+    for (const q of ["qs1", "qs2", "qs3"]) {
+      const got = await overpass.request({ kind: "interpreter", query: q, deadlineMs: 90000 });
+      assert.equal(got.ok, true);
+      // Past the ordinary backoff, inside the 10 min skip.
+      clock += 60000;
+    }
+    assert.deepEqual(calls.map((c) => hostOf(c.url)), ["overpass-api.de", "overpass.private.coffee", "overpass-api.de", "overpass.private.coffee", "overpass.private.coffee"]);
+    assert.ok(lines.some((l) => /overpass-api\.de interpreter status=timeout .*silent=2 pause=600000/.test(l)), lines.join("\n"));
+  });
+
+  it("gives the first server most of the window and keeps a reserve for the next", async () => {
+    let seen = 0;
+    overpass.resetForTests({
+      fetch: async (url, init) => {
+        calls.push({ url });
+        const t0 = Date.now();
+        if (seen) return res(200, JSON_OK);
+        await new Promise((resolve) => init.signal.addEventListener("abort", resolve, { once: true }));
+        seen = Date.now() - t0;
+        throw Object.assign(new Error("aborted"), { name: "AbortError" });
+      },
+      log: (l) => lines.push(l),
+      sleep: fastSleep,
+      timerScale: 1000,
+    });
+    await overpass.request({ kind: "interpreter", query: "q-share", deadlineMs: 90000 });
+    // 60 s of a 90 s window (scaled 1000x), so a second server still has 25 s or more.
+    assert.ok(seen >= 50 && seen < 75, String(seen));
+  });
+
+  it("only asks the servers a local run names", async () => {
+    process.env.OPENCLUTTER_OVERPASS_ENDPOINTS = "openstreetmap.fr";
+    try {
+      setup(() => res(200, JSON_OK));
+      const got = await overpass.request({ kind: "interpreter", query: "q-only", deadlineMs: 5000 });
+      assert.equal(got.ok, true);
+      assert.deepEqual(calls.map((c) => hostOf(c.url)), ["overpass.openstreetmap.fr"]);
+    } finally {
+      delete process.env.OPENCLUTTER_OVERPASS_ENDPOINTS;
+    }
+  });
+
+  it("sends the app's identifying user agent by default", async () => {
+    setup(() => res(200, JSON_OK));
+    await overpass.request({ kind: "interpreter", query: "q-ua", deadlineMs: 5000 });
+    const { userAgent } = require("../netlify/lib/version");
+    assert.equal(calls[0].init.headers["user-agent"], userAgent);
+    assert.match(userAgent, /^openclutter\/\d+\.\d+\.\d+ \(https:\/\/github\.com\/jolla\/OpenClutter\)$/);
+  });
+
+  it("keeps answers on disk by query when a cache dir is set, and never a failed read", async () => {
+    const os = require("node:os");
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oc-overpass-"));
+    process.env.OPENCLUTTER_OVERPASS_CACHE_DIR = dir;
+    try {
+      setup((url) => (hostOf(url) === "overpass-api.de" ? res(200, MAP_XML) : res(504, "busy")));
+      const a = await overpass.request({ kind: "map", bbox: box, deadlineMs: 5000 });
+      assert.equal(a.ok, true);
+      assert.equal(calls.length, 1);
+      // A new process: no in-memory copy, the disk copy answers.
+      setup(() => {
+        throw new Error("no network expected");
+      });
+      const b = await overpass.request({ kind: "map", bbox: box, deadlineMs: 5000 });
+      assert.equal(b.ok, true);
+      assert.equal(b.disk, true);
+      assert.equal(b.text, MAP_XML);
+      assert.equal(calls.length, 1);
+      // A different box is a different key; a failed read leaves nothing.
+      setup(() => res(400, "bad"));
+      const c = await overpass.request({ kind: "map", bbox: Object.assign({}, box, { west: box.west - 0.001 }), deadlineMs: 5000 });
+      assert.equal(c.ok, false);
+      const files = [];
+      (function walk(d) {
+        for (const f of fs.readdirSync(d, { withFileTypes: true })) f.isDirectory() ? walk(path.join(d, f.name)) : files.push(f.name);
+      })(dir);
+      assert.equal(files.filter((f) => f.endsWith(".gz")).length, 1);
+    } finally {
+      delete process.env.OPENCLUTTER_OVERPASS_CACHE_DIR;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a block pause across processes when the cache dir is set", async () => {
+    const os = require("node:os");
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oc-overpass-"));
+    process.env.OPENCLUTTER_OVERPASS_CACHE_DIR = dir;
+    try {
+      setup((url) => (hostOf(url) === "overpass-api.de" ? res(406, "") : res(200, JSON_OK)));
+      await overpass.request({ kind: "interpreter", query: "q-p1", deadlineMs: 5000 });
+      assert.ok(fs.existsSync(path.join(dir, "endpoint-pauses.json")));
+      setup(() => res(200, JSON_OK));
+      await overpass.request({ kind: "interpreter", query: "q-p2", deadlineMs: 5000 });
+      assert.deepEqual(calls.map((c) => hostOf(c.url)), ["overpass-api.de", "overpass.private.coffee", "overpass.private.coffee"]);
+    } finally {
+      delete process.env.OPENCLUTTER_OVERPASS_CACHE_DIR;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("asks the same servers as before while overpass-api.de answers", async () => {
+    setup(() => res(200, JSON_OK));
+    for (let i = 0; i < 3; i++) await overpass.request({ kind: "interpreter", query: "q-healthy" + i, deadlineMs: 5000 });
+    assert.deepEqual(calls.map((c) => hostOf(c.url)), ["overpass-api.de", "overpass-api.de", "overpass-api.de"]);
   });
 
   it("is off unless the export turns it on", async () => {
