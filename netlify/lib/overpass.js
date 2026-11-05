@@ -54,6 +54,7 @@ const ENDPOINTS = [
   { id: "overpass-api.de", base: "https://overpass-api.de/api", slots: 2, pause429Ms: 30000, status: true },
   { id: "private.coffee", base: "https://overpass.private.coffee/api", slots: 3, pause429Ms: 10000, status: true },
   { id: "maps.mail.ru", base: "https://maps.mail.ru/osm/tools/overpass/api", slots: 2, pause429Ms: 10000, status: false },
+  // Last resort: its copy was dated 2026-08-10 in Nov 2026 (staleNote names the date in the export).
   { id: "openstreetmap.fr", base: "https://overpass.openstreetmap.fr/api", slots: 1, pause429Ms: 30000, status: false, lastResort: true },
 ];
 
@@ -644,6 +645,46 @@ function bboxPayload(bbox) {
  * @returns {Promise<{ok:boolean, status:number|string, text:string, cached?:boolean}>}
  */
 async function request(opts) {
+  const res = await requestRead(opts);
+  if (res && res.ok) noteOsmBase(res.text);
+  return res;
+}
+
+/**
+ * Stale copies. overpass.openstreetmap.fr (the last resort) can be weeks
+ * behind. Every answer names its copy in osm_base; an export that used one
+ * older than STALE_BASE_MS says so in its warnings (staleNote), whichever
+ * server or cache it came from.
+ */
+const STALE_BASE_MS = 3 * 24 * 60 * 60 * 1000;
+let oldestBase = 0;
+
+function osmBaseOf(text) {
+  const head = String(text || "").slice(0, 1200);
+  const m = /osm_base="([^"]+)"/.exec(head) || /"timestamp_osm_base"\s*:\s*"([^"]+)"/.exec(head);
+  if (!m) return 0;
+  const t = Date.parse(m[1]);
+  return Number.isFinite(t) ? t : 0;
+}
+
+function noteOsmBase(text) {
+  const t = osmBaseOf(text);
+  if (t > 0 && nowFn() - t > STALE_BASE_MS && (!oldestBase || t < oldestBase)) oldestBase = t;
+}
+
+/** Start of an export: forget the last one's stale copy. */
+function resetStaleUse() {
+  oldestBase = 0;
+}
+
+/** Export warning when this export read a stale street-map copy, else "". */
+function staleNote() {
+  if (!oldestBase) return "";
+  const day = new Date(oldestBase).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+  return "Street map read from a backup OpenStreetMap copy dated " + day + " (the main servers did not answer), so map changes after that date are missing.";
+}
+
+async function requestRead(opts) {
   const o = opts || {};
   const kind = o.kind === "map" ? "map" : "interpreter";
   const payload = kind === "map" ? bboxPayload(o.bbox) : String(o.query || "");
@@ -758,6 +799,7 @@ function resetForTests(opts) {
   memo.clear();
   inflight.clear();
   savedPauses = null;
+  oldestBase = 0;
   const o = opts || {};
   fetchOverride = o.fetch || null;
   logFn = o.log || (() => {});
@@ -781,6 +823,10 @@ module.exports = {
   diskKey,
   MEMO_MS,
   request,
+  staleNote,
+  resetStaleUse,
+  osmBaseOf,
+  STALE_BASE_MS,
   logLegacy,
   requestJson,
   retryAfterMs,

@@ -1535,6 +1535,7 @@ async function handleClutter(event) {
   // Overpass retries and fallback, and the sharper-plate wait, run on every
   // host. On /dev hosts legacyFetch:true replays the earlier paths.
   exportMode.setResilient(!(testHost && body.legacyFetch === true));
+  require("../lib/overpass").resetStaleUse();
   // Production batch 1 (1.2.41): the /dev export rules run on every host.
   // Each switch stays, so putting one back on /dev only is a one-line change
   // (pass testHost again). The request opt-outs rvShell:false and
@@ -3092,6 +3093,8 @@ async function handleClutter(event) {
     }
   }
   if (shrinkNote && warnings.indexOf(shrinkNote) < 0) warnings.push(shrinkNote);
+  const staleOsm = require("../lib/overpass").staleNote();
+  if (staleOsm && warnings.indexOf(staleOsm) < 0) warnings.push(staleOsm);
   if (includeFoliage && built.stats) reportProgress({ stage: "Trees " + (built.stats.treesKept || 0) });
   if (includeFoliage) {
     reportProgress({

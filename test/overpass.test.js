@@ -398,6 +398,29 @@ describe("overpass client", () => {
     assert.deepEqual(calls.map((c) => hostOf(c.url)), ["overpass-api.de", "overpass-api.de", "overpass-api.de"]);
   });
 
+  it("names a stale street-map copy once per export and stays quiet for a fresh one", async () => {
+    let clock = Date.parse("2026-11-04T12:00:00Z");
+    const fresh = '<?xml version="1.0"?><osm version="0.6"><meta osm_base="2026-11-04T11:58:00Z"/><node id="1" lat="1" lon="2"/></osm>';
+    const old = '{"version":0.6,"osm3s":{"timestamp_osm_base":"2026-08-10T00:10:23Z"},"elements":[]}';
+    overpass.resetForTests({
+      fetch: async (url) => (hostOf(url) === "overpass-api.de" ? res(200, fresh) : res(200, old)),
+      log: () => {},
+      now: () => clock,
+    });
+    await overpass.request({ kind: "map", bbox: box, deadlineMs: 5000 });
+    assert.equal(overpass.staleNote(), "");
+    process.env.OPENCLUTTER_OVERPASS_ENDPOINTS = "openstreetmap.fr";
+    try {
+      await overpass.request({ kind: "interpreter", query: "q-stale", deadlineMs: 5000 });
+    } finally {
+      delete process.env.OPENCLUTTER_OVERPASS_ENDPOINTS;
+    }
+    assert.match(overpass.staleNote(), /backup OpenStreetMap copy dated Aug 10, 2026/);
+    overpass.resetStaleUse();
+    assert.equal(overpass.staleNote(), "");
+    assert.equal(overpass.osmBaseOf(fresh), Date.parse("2026-11-04T11:58:00Z"));
+  });
+
   it("is off unless the export turns it on", async () => {
     const tiles = require("../netlify/lib/osm-tiles");
     let hit = 0;
