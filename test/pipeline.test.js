@@ -1518,7 +1518,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(app, /function moveHoverPan/);
     const hoverAt = app.indexOf('"pointermove"');
     const hoverBody = app.slice(hoverAt, app.indexOf("let blockMapDblClick"));
-    assert.match(hoverBody, /spacePan && panPointer == null && activePointer == null && hoverPanPointer\(ev\)/);
+    assert.match(hoverBody, /spacePan && panPointer == null && activePointer == null && resizePointer == null && hoverPanPointer\(ev\)/);
     assert.match(hoverBody, /moveHoverPan\(ev\)/);
     assert.match(hoverBody, /"pointerleave"/);
     assert.match(app, /window\.addEventListener\("blur"/);

@@ -424,6 +424,8 @@
     }
     /* Feedback #18 prototype (?rotate=1 on /dev): the turn handle above a drawn box. */
     .rotate-handle { background: #0e1116; border: 2px solid #3fb950; border-radius: 50%; cursor: grab; box-sizing: border-box; }
+    .corner-handle { background: #0e1116; border: 2px solid #3fb950; border-radius: 2px; cursor: grab; box-sizing: border-box; touch-action: none; }
+    body.export-locked .corner-handle { pointer-events: none; }
     .leaflet-tooltip.area-chip .area-clear {
       pointer-events: auto;
       margin: 0 0 0 6px;
@@ -686,6 +688,7 @@
   <script src="/tree-detect.js"></script>
   <script src="/bbox-area.js"></script>
   <script src="/site-draw.js"></script>
+  <script src="/box-resize.js"></script>
   <script src="/export-progress.js"></script>
   <script src="/export-client.js"></script>
   <script src="/version.js"></script>
