@@ -219,11 +219,21 @@ function rawFetch() {
   return fetch;
 }
 
+function keepTimer(timer) {
+  // Production unrefs so a finished export does not sit on a timer. Under
+  // resetForTests the mocked fetch often settles only when one of these
+  // timers aborts it. Leaving that timer unref'd lets the test runner see
+  // an idle event loop while the read is still pending, and it cancels
+  // every later test in the file.
+  if (fetchOverride) return timer;
+  if (timer && typeof timer.unref === "function") timer.unref();
+  return timer;
+}
+
 function sleep(ms, signal) {
   if (sleepOverride) return sleepOverride(ms, signal);
   return new Promise((resolve) => {
-    const t = setTimeout(done, Math.max(0, ms));
-    if (typeof t.unref === "function") t.unref();
+    const t = keepTimer(setTimeout(done, Math.max(0, ms)));
     function done() {
       if (signal) signal.removeEventListener("abort", done);
       clearTimeout(t);
@@ -406,8 +416,7 @@ async function attempt(ep, kind, payload, opts, n, outer, limitMs) {
   }
   const left = Math.max(1000, opts.deadlineAt - nowFn());
   const allowMs = Math.min(ATTEMPT_MS, left, limitMs > 0 ? limitMs : Infinity);
-  const timer = setTimeout(() => ctrl.abort(), allowMs / timerScale);
-  if (typeof timer.unref === "function") timer.unref();
+  const timer = keepTimer(setTimeout(() => ctrl.abort(), allowMs / timerScale));
   const s = endpointState(ep);
   try {
     const req = requestFor(ep, kind, payload, ua);
@@ -583,8 +592,7 @@ async function fetchAcross(kind, payload, opts) {
     if (parent.aborted) outer.abort();
     else parent.addEventListener("abort", onParent, { once: true });
   }
-  const deadlineTimer = setTimeout(() => outer.abort(), Math.max(0, opts.deadlineAt - nowFn()));
-  if (typeof deadlineTimer.unref === "function") deadlineTimer.unref();
+  const deadlineTimer = keepTimer(setTimeout(() => outer.abort(), Math.max(0, opts.deadlineAt - nowFn())));
   const tileRead = opts.slowFailMs > 0;
   let n = 0;
   let lastStatus = 0;
