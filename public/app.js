@@ -478,6 +478,10 @@ function rotatePage() {
 let boxRotate = 0;
 let rotateOutline = null;
 let rotateHandle = null;
+let boxOutline = null;
+let cornerHandles = null;
+let resizeDrag = null;
+let resizePointer = null;
 
 function boxFrame(bounds) {
   const lat0 = (bounds.getSouth() + bounds.getNorth()) / 2;
@@ -508,6 +512,7 @@ function placeRotateHandle(bounds) {
   const f = boxFrame(bounds);
   if (rotateOutline) rotateOutline.setLatLngs(turnedCorners(bounds, boxRotate));
   if (rotateHandle) rotateHandle.setLatLng(boxPoint(f, 0, f.l / 2 + Math.max(8, f.l * 0.08), boxRotate));
+  placeCornerHandles(bounds);
 }
 
 function attachRotateHandle(bounds) {
@@ -516,6 +521,8 @@ function attachRotateHandle(bounds) {
   rotateHandle = null;
   if (!rotatePage() || !bounds) return;
   drawn.clearLayers();
+  boxOutline = null;
+  cornerHandles = null;
   rotateOutline = L.polygon(turnedCorners(bounds, 0), OUTLINE);
   drawn.addLayer(rotateOutline);
   rotateHandle = L.marker(bounds.getCenter(), {
@@ -527,25 +534,165 @@ function attachRotateHandle(bounds) {
   drawn.addLayer(rotateHandle);
   placeRotateHandle(bounds);
   rotateHandle.on("drag", (ev) => {
-    const f = boxFrame(bounds);
+    const live = committedBounds;
+    if (!live) return;
+    const f = boxFrame(live);
     const ll = ev.target.getLatLng();
     let deg = (Math.atan2((ll.lng - f.lon0) * f.kx, (ll.lat - f.lat0) * f.ky) * 180) / Math.PI;
     deg = Math.round(deg);
     if (Math.abs(deg) <= 2) deg = 0;
     boxRotate = deg;
-    if (rotateOutline) rotateOutline.setLatLngs(turnedCorners(bounds, boxRotate));
+    if (rotateOutline) rotateOutline.setLatLngs(turnedCorners(live, boxRotate));
+    placeCornerHandles(live);
     setStatus(boxRotate ? "Turned " + boxRotate + " degrees. Ready to export." : "Ready to export.");
   });
   rotateHandle.on("dragend", () => {
-    placeRotateHandle(bounds);
+    if (committedBounds) placeRotateHandle(committedBounds);
     noteAreaReplaced();
   });
   rotateHandle.on("dblclick", () => {
     boxRotate = 0;
-    placeRotateHandle(bounds);
+    if (committedBounds) placeRotateHandle(committedBounds);
     noteAreaReplaced();
     setStatus("Ready to export.");
   });
+}
+
+function dropBoxGraphics() {
+  boxOutline = null;
+  cornerHandles = null;
+  rotateOutline = null;
+  rotateHandle = null;
+}
+
+function syncSelectionShape(bounds) {
+  if (rotateOutline) placeRotateHandle(bounds);
+  else if (boxOutline && typeof boxOutline.setBounds === "function") boxOutline.setBounds(bounds);
+  if (!rotateOutline) placeCornerHandles(bounds);
+}
+
+function paintResizedRect(rect, commit) {
+  const nextBox = OpenClutterBoxResize.bboxFromRect(rect);
+  if (!nextBox) return;
+  const bounds = L.latLngBounds([nextBox.south, nextBox.west], [nextBox.north, nextBox.east]);
+  committedBounds = bounds;
+  committedLabel = null;
+  bbox = OpenClutterBoxResize.bboxFromRect(rect);
+  showAreaChip(bounds, null, true);
+  syncExportReady();
+  syncDrawHint();
+  syncSelectionShape(bounds);
+  if (commit) {
+    noteAreaReplaced();
+    if (exportBtn.disabled) setStatus(areaLimitMessage() || "Area is outside the export size limits.", true);
+    else setStatus(boxRotate ? "Turned " + boxRotate + " degrees. Ready to export." : "Ready to export.");
+    writeUrlState();
+  }
+}
+
+function attachCornerHandles(bounds) {
+  if (!bounds || !window.OpenClutterBoxResize) return;
+  cornerHandles = [];
+  for (let i = 0; i < 4; i++) {
+    const marker = L.marker(bounds.getCenter(), {
+      keyboard: false,
+      interactive: true,
+      zIndexOffset: 600,
+      title: "Drag to resize",
+      icon: L.divIcon({ className: "corner-handle", iconSize: [14, 14], iconAnchor: [7, 7] }),
+    });
+    marker.cornerIndex = i;
+    drawn.addLayer(marker);
+    cornerHandles.push(marker);
+  }
+  placeCornerHandles(bounds);
+}
+
+function placeCornerHandles(bounds) {
+  if (!cornerHandles || !bounds || !window.OpenClutterBoxResize) return;
+  const rect = OpenClutterBoxResize.rectFromBBox(chipBbox(bounds), boxRotate);
+  if (!rect) return;
+  for (let i = 0; i < cornerHandles.length; i++) {
+    const ll = OpenClutterBoxResize.cornerLatLng(rect, i);
+    if (ll) cornerHandles[i].setLatLng([ll.lat, ll.lng]);
+  }
+}
+
+function dropActiveCornerResize() {
+  if (!resizeDrag) return;
+  const id = resizeDrag.pointerId;
+  resizeDrag = null;
+  resizePointer = null;
+  try {
+    mapEl.releasePointerCapture(id);
+  } catch (e) {
+    /* capture is optional */
+  }
+}
+
+function moveCornerResize(ev) {
+  if (!resizeDrag || ev.pointerId !== resizeDrag.pointerId || !window.OpenClutterBoxResize) return;
+  const pt = pointFromEvent(ev);
+  if (!resizeDrag.hiding) {
+    resizeDrag.hiding = true;
+    noteDrawInProgress();
+  }
+  const next = OpenClutterBoxResize.update(resizeDrag.session, pt.lat, pt.lng);
+  if (next) paintResizedRect(next, false);
+}
+
+function finishCornerResize(commit) {
+  const drag = resizeDrag;
+  if (!drag) return;
+  resizeDrag = null;
+  resizePointer = null;
+  try {
+    mapEl.releasePointerCapture(drag.pointerId);
+  } catch (e) {
+    /* already released */
+  }
+  const changed = !!(commit && drag.session.moved);
+  const rect = changed ? drag.session.current : OpenClutterBoxResize.cancel(drag.session);
+  if (rect) paintResizedRect(rect, changed);
+  if (!changed && drag.hiding) noteDrawCancelled();
+  syncDrawMode();
+}
+
+function cornerIndexFromEvent(ev) {
+  const el = ev.target && ev.target.closest && ev.target.closest(".corner-handle");
+  if (!el || !cornerHandles) return -1;
+  for (let i = 0; i < cornerHandles.length; i++) {
+    const markerEl = cornerHandles[i].getElement && cornerHandles[i].getElement();
+    if (markerEl === el) return i;
+  }
+  return -1;
+}
+
+function onCornerPointerDown(ev) {
+  const corner = cornerIndexFromEvent(ev);
+  if (corner < 0) return;
+  if (panGesture(ev)) return;
+  if (exportLocked()) return;
+  if (ev.button != null && ev.button !== 0) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  focusMapForKeys();
+  startCornerResize(corner, ev);
+}
+
+function startCornerResize(corner, ev) {
+  if (resizeDrag || exportLocked() || !bbox || committedLabel || !window.OpenClutterBoxResize) return;
+  const rect = OpenClutterBoxResize.rectFromBBox(bbox, boxRotate);
+  const session = rect && OpenClutterBoxResize.begin(rect, corner);
+  if (!session) return;
+  resizeDrag = { pointerId: ev.pointerId, session: session, hiding: false };
+  resizePointer = ev.pointerId;
+  try {
+    mapEl.setPointerCapture(ev.pointerId);
+  } catch (e) {
+    /* capture is optional; moves over the map still resize */
+  }
+  syncDrawMode();
 }
 
 /** rotate for the export request: only a turned box on a ?rotate=1 page. */
@@ -737,7 +884,7 @@ function syncDrawMode() {
   if (map.touchZoom && !map.touchZoom.enabled()) map.touchZoom.enable();
   if (map.scrollWheelZoom && !map.scrollWheelZoom.enabled()) map.scrollWheelZoom.enable();
   container.style.touchAction = "none";
-  if (panPointer != null) {
+  if (resizePointer != null || panPointer != null) {
     container.style.cursor = "grabbing";
     return;
   }
@@ -910,8 +1057,10 @@ function showIdleStatus() {
 }
 
 function clearFinishedShape() {
+  dropActiveCornerResize();
   noteAreaReplaced();
   drawn.clearLayers();
+  dropBoxGraphics();
   if (!map.hasLayer(drawn)) map.addLayer(drawn);
   committedBounds = null;
   committedLabel = null;
@@ -927,21 +1076,27 @@ function clearFinishedShape() {
 
 function commitBox(start, end) {
   clearRubber();
+  dropActiveCornerResize();
   const bounds = L.latLngBounds([start.lat, start.lng], [end.lat, end.lng]);
   drawn.clearLayers();
-  drawn.addLayer(L.rectangle(bounds, OUTLINE));
+  dropBoxGraphics();
+  boxOutline = L.rectangle(bounds, OUTLINE);
+  drawn.addLayer(boxOutline);
   if (!map.hasLayer(drawn)) map.addLayer(drawn);
   sketchHidden = false;
   applyExtent(bounds, null);
   attachRotateHandle(bounds);
+  attachCornerHandles(bounds);
   resumeDrawMode();
 }
 
 function commitPolygon(vertices) {
   clearRubber();
+  dropActiveCornerResize();
   const latlngs = [];
   for (let i = 0; i < vertices.length; i++) latlngs.push([vertices[i].lat, vertices[i].lng]);
   drawn.clearLayers();
+  dropBoxGraphics();
   const layer = L.polygon(latlngs, OUTLINE);
   drawn.addLayer(layer);
   if (!map.hasLayer(drawn)) map.addLayer(drawn);
@@ -1162,6 +1317,7 @@ function focusMapForKeys() {
 }
 
 function abortDrawForPinch() {
+  if (resizeDrag) finishCornerResize(false);
   if (activePointer != null) {
     try {
       mapEl.releasePointerCapture(activePointer);
@@ -1221,6 +1377,15 @@ mapEl.addEventListener(
 mapEl.addEventListener(
   "pointermove",
   (ev) => {
+    if (resizePointer != null && ev.pointerId === resizePointer) {
+      if (pinchGesture) {
+        finishCornerResize(false);
+        return;
+      }
+      ev.preventDefault();
+      moveCornerResize(ev);
+      return;
+    }
     if (pinchGesture) return;
     if (ev.pointerId === panPointer) {
       ev.preventDefault();
@@ -1228,7 +1393,7 @@ mapEl.addEventListener(
       return;
     }
     if (hoverPanPointer(ev)) lastMapMouse = { x: ev.clientX, y: ev.clientY };
-    if (spacePan && panPointer == null && activePointer == null && hoverPanPointer(ev)) {
+    if (spacePan && panPointer == null && activePointer == null && resizePointer == null && hoverPanPointer(ev)) {
       ev.preventDefault();
       moveHoverPan(ev);
       return;
@@ -1275,7 +1440,14 @@ function endPinchPointer(ev) {
   return true;
 }
 
+mapEl.addEventListener("pointerdown", onCornerPointerDown, true);
+
 mapEl.addEventListener("pointerup", (ev) => {
+  if (resizeDrag && ev.pointerId === resizeDrag.pointerId) {
+    finishCornerResize(!pinchGesture);
+    endPinchPointer(ev);
+    return;
+  }
   if (endPinchPointer(ev)) return;
   if (ev.pointerId === panPointer) {
     endPan();
@@ -1290,6 +1462,11 @@ mapEl.addEventListener("pointerup", (ev) => {
 });
 
 mapEl.addEventListener("pointercancel", (ev) => {
+  if (resizeDrag && ev.pointerId === resizeDrag.pointerId) {
+    finishCornerResize(false);
+    endPinchPointer(ev);
+    return;
+  }
   if (endPinchPointer(ev)) return;
   if (ev.pointerId === panPointer) {
     endPan();
@@ -1365,10 +1542,15 @@ mapEl.addEventListener(
 window.addEventListener("keydown", (ev) => {
   // The Feedback dialog owns the keyboard while it is open (Space, arrows, Escape).
   if (feedbackOpen()) return;
+  if (ev.key === "Escape" && resizeDrag) {
+    ev.preventDefault();
+    finishCornerResize(false);
+    return;
+  }
   if (ev.code === "Space" && !typingTarget(ev.target)) {
     releasePanelFocus();
     ev.preventDefault();
-    if (panPointer == null) releaseDrawPress();
+    if (panPointer == null && resizePointer == null) releaseDrawPress();
     if (!spacePan) hoverPanLast = lastMapMouse;
     spacePan = true;
     syncDrawMode();
@@ -1415,9 +1597,11 @@ window.addEventListener("keyup", (ev) => {
 
 // A Space release outside the page never arrives, so losing focus ends the pan.
 window.addEventListener("blur", () => {
+  if (resizeDrag) finishCornerResize(false);
   if (spacePan) stopSpacePan();
 });
 document.addEventListener("visibilitychange", () => {
+  if (document.hidden && resizeDrag) finishCornerResize(false);
   if (document.hidden && spacePan) stopSpacePan();
 });
 
@@ -2611,13 +2795,17 @@ function sameBox(a, b) {
 function applyUrlBox(box) {
   if (!box || exportLocked()) return;
   if (bbox && sameBox(bbox, box)) return;
+  dropActiveCornerResize();
   const bounds = L.latLngBounds([box.south, box.west], [box.north, box.east]);
   drawn.clearLayers();
-  drawn.addLayer(L.rectangle(bounds, OUTLINE));
+  dropBoxGraphics();
+  boxOutline = L.rectangle(bounds, OUTLINE);
+  drawn.addLayer(boxOutline);
   if (!map.hasLayer(drawn)) map.addLayer(drawn);
   sketchHidden = false;
   applyExtent(bounds, null);
   attachRotateHandle(bounds);
+  attachCornerHandles(bounds);
   resumeDrawMode();
 }
 
