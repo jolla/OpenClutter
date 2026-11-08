@@ -185,6 +185,35 @@
     return cloneRect(session.start);
   }
 
+  /**
+   * Bearing used to place corners and to build the resize frame.
+   * The export sends a bearing only when the rotate switch is on
+   * (?rotate=1). A leftover nonzero degree on any other page would
+   * draw corners the request does not turn, so the switch off means 0.
+   */
+  function bearingForPage(rotateOn, deg) {
+    const n = +deg;
+    if (!rotateOn || !Number.isFinite(n)) return 0;
+    return n;
+  }
+
+  /**
+   * The box an export should send if a corner drag is still down.
+   * Commit keeps the preview the pointer is on. Anything else, including
+   * a press that has not moved, is the box from pointer-down. The returned
+   * rect is a copy, so a later cancel cannot change what was sent.
+   */
+  function settledRect(session, commit) {
+    if (!session) return null;
+    if (commit && session.moved) return cloneRect(session.current);
+    return cancel(session);
+  }
+
+  /** Corner handles belong to a plain rectangle. A polygon readout does not. */
+  function cornerHandlesFor(label) {
+    return label == null;
+  }
+
   return {
     MIN_SIDE_M: MIN_SIDE_M,
     CORNER_SIGN: CORNER_SIGN,
@@ -195,5 +224,8 @@
     begin: begin,
     update: update,
     cancel: cancel,
+    bearingForPage: bearingForPage,
+    settledRect: settledRect,
+    cornerHandlesFor: cornerHandlesFor,
   };
 });
