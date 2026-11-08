@@ -208,6 +208,15 @@ function pauseLong(ep, until) {
   }
 }
 
+function unrefTimer(timer) {
+  // Production reads use a real socket, which keeps the loop alive, and an
+  // unref'd deadline must not hold a finished export open. A test's mock
+  // fetch has no socket, so the same unref lets Node 22's runner treat the
+  // file as finished on beforeExit and cancel the rest of it. Hold the
+  // timer while a mock fetch is installed.
+  if (!fetchOverride && timer && typeof timer.unref === "function") timer.unref();
+}
+
 function rawFetch() {
   if (fetchOverride) return fetchOverride;
   try {
@@ -223,7 +232,7 @@ function sleep(ms, signal) {
   if (sleepOverride) return sleepOverride(ms, signal);
   return new Promise((resolve) => {
     const t = setTimeout(done, Math.max(0, ms));
-    if (typeof t.unref === "function") t.unref();
+    unrefTimer(t);
     function done() {
       if (signal) signal.removeEventListener("abort", done);
       clearTimeout(t);
@@ -407,7 +416,7 @@ async function attempt(ep, kind, payload, opts, n, outer, limitMs) {
   const left = Math.max(1000, opts.deadlineAt - nowFn());
   const allowMs = Math.min(ATTEMPT_MS, left, limitMs > 0 ? limitMs : Infinity);
   const timer = setTimeout(() => ctrl.abort(), allowMs / timerScale);
-  if (typeof timer.unref === "function") timer.unref();
+  unrefTimer(timer);
   const s = endpointState(ep);
   try {
     const req = requestFor(ep, kind, payload, ua);
@@ -584,7 +593,7 @@ async function fetchAcross(kind, payload, opts) {
     else parent.addEventListener("abort", onParent, { once: true });
   }
   const deadlineTimer = setTimeout(() => outer.abort(), Math.max(0, opts.deadlineAt - nowFn()));
-  if (typeof deadlineTimer.unref === "function") deadlineTimer.unref();
+  unrefTimer(deadlineTimer);
   const tileRead = opts.slowFailMs > 0;
   let n = 0;
   let lastStatus = 0;

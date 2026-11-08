@@ -1639,6 +1639,9 @@ async function handleClutterNorthUp(event) {
   exportMode.setCrownStyle(forest === "crowns");
   exportMode.setMergeTiles(forest === "merge");
   exportMode.setScrubGaps(exportMode.protoWanted(testHost, {}, "scrubGaps", "OC_SCRUB_GAPS"));
+  // Tree edges: canopy outlines follow the crowns, not grid stair steps.
+  // /dev hosts only (smoothEdges:false turns it off there). Production off.
+  exportMode.setSmoothEdges(exportMode.smoothEdgesWanted(testHost, body));
   // From 1.2.31 large draws read the street-map tiles in one shared window
   // with a slow-fail chain, a retry pass and a split (export-mode tiledOsm).
   exportMode.setTiledOsm(exportMode.tiledOsmWanted(testHost));

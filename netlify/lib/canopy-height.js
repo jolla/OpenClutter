@@ -659,6 +659,78 @@ function dropCollinearPx(ring) {
   return out.length >= 3 ? out : open;
 }
 
+/**
+ * Corner cutting on a traced pixel outline (Chaikin, closed). Each pass
+ * cuts every corner a quarter of the way along its two edges, at most
+ * maxCut cells, so a one-cell stair becomes the diagonal through its middle
+ * and a long straight side keeps its length. A traced outline has about as
+ * many inside corners as outside ones, so the area stays the same.
+ */
+const SMOOTH_MIN_CELLS = 24;
+
+function cutCorners(open, passes, maxCut) {
+  let cur = open;
+  for (let k = 0; k < passes; k++) {
+    if (!cur || cur.length < 3) return open;
+    const out = [];
+    for (let i = 0; i < cur.length; i++) {
+      const p = cur[i];
+      const q = cur[(i + 1) % cur.length];
+      const len = Math.hypot(q[0] - p[0], q[1] - p[1]);
+      if (!(len > 1e-9)) continue;
+      const t = Math.min(0.25, maxCut / len);
+      out.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
+      out.push([q[0] - (q[0] - p[0]) * t, q[1] - (q[1] - p[1]) * t]);
+    }
+    cur = out;
+  }
+  return cur;
+}
+
+/**
+ * smoothEdges: move a simplified outline out along its corner normals until
+ * it holds the traced area again (at most maxM cells), so cutting the stair
+ * corners does not shave canopy off the stand.
+ */
+function restoreArea(open, target, maxM) {
+  const a0 = polyArea(open);
+  const have = Math.abs(a0);
+  if (!(target > have) || open.length < 3) return open;
+  let per = 0;
+  for (let i = 0; i < open.length; i++) {
+    const p = open[i];
+    const q = open[(i + 1) % open.length];
+    per += Math.hypot(q[0] - p[0], q[1] - p[1]);
+  }
+  if (!(per > 0)) return open;
+  const d = Math.min(maxM, (target - have) / per);
+  const sgn = a0 > 0 ? 1 : -1;
+  const out = [];
+  for (let i = 0; i < open.length; i++) {
+    const a = open[(i + open.length - 1) % open.length];
+    const p = open[i];
+    const b = open[(i + 1) % open.length];
+    const n1 = [p[1] - a[1], -(p[0] - a[0])];
+    const n2 = [b[1] - p[1], -(b[0] - p[0])];
+    const l1 = Math.hypot(n1[0], n1[1]) || 1;
+    const l2 = Math.hypot(n2[0], n2[1]) || 1;
+    let nx = n1[0] / l1 + n2[0] / l2;
+    let ny = n1[1] / l1 + n2[1] / l2;
+    const ln = Math.hypot(nx, ny);
+    if (!(ln > 1e-6)) {
+      out.push(p);
+      continue;
+    }
+    nx /= ln;
+    ny /= ln;
+    // A sharp corner moves further along its bisector; capped at twice the step.
+    const cosHalf = Math.max(0.5, (nx * n1[0]) / l1 + (ny * n1[1]) / l1);
+    const k = (sgn * d) / cosHalf;
+    out.push([p[0] + nx * k, p[1] + ny * k]);
+  }
+  return out;
+}
+
 function douglas(pts, eps) {
   if (pts.length < 3) return pts.slice();
   const keep = new Array(pts.length).fill(false);
@@ -1174,7 +1246,10 @@ function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH, medianTop
   // Shoelace area can look full while the chord sits outside the cells and
   // the bays are uncovered, so the test is the cells themselves.
   if (prof) tProf = profile.now();
-  const traced = dropCollinearPx(ring);
+  // smoothEdges: a stand's grid stair steps are cut. A crown of a few cells
+  // keeps its traced cells, so a small tree does not lose its corners.
+  const smoothed = exportMode.isSmoothEdges() && pixels.length >= SMOOTH_MIN_CELLS;
+  const traced = smoothed ? cutCorners(dropCollinearPx(ring), 2, 0.5) : dropCollinearPx(ring);
   let maxVerts = CROWN_MAX_VERTS;
   let open = simplifyContour(traced, maxVerts);
   if (prof) profile.add("simplify", profile.msSince(tProf));
@@ -1202,6 +1277,7 @@ function crownFromPixels(pixels, values, w, grid, mPerX, mPerY, hintH, medianTop
     }
   }
   if (open.length < 3) return null;
+  if (smoothed) open = restoreArea(open, Math.abs(polyArea(ring)), 0.5);
   const dLon = +grid.east - +grid.west;
   const dLat = +grid.north - +grid.south;
   const ringLonLat = open.map(([ix, iy]) => [

@@ -307,6 +307,27 @@ function adaptiveTerrainWanted(testHost, body) {
   return !(v === false || v === 0 || v === "0" || v === "false");
 }
 
+// smoothEdges: a canopy outline traced on the height grid is cut at its
+// pixel corners before it is simplified, so a stand edge runs along the
+// crowns instead of in grid stair steps. /dev hosts only (smoothEdges:false
+// turns it off there; OC_SMOOTH_EDGES=0 or 1 in a local run). Production off.
+let smoothEdges = false;
+
+function setSmoothEdges(on) {
+  smoothEdges = !!on;
+}
+
+function isSmoothEdges() {
+  return smoothEdges;
+}
+
+function smoothEdgesWanted(testHost, body) {
+  if (!testHost) return false;
+  if (process.env.OC_SMOOTH_EDGES === "0") return false;
+  const v = body && body.smoothEdges;
+  return !(v === false || v === 0 || v === "0" || v === "false");
+}
+
 // Prototypes for feedback #9 (wide stands read as a grid of 50 m squares).
 // Off by default and never on production. /dev hosts pick one with
 // forestMode (below); scrubGaps only with OC_SCRUB_GAPS=1 in a local run.
@@ -420,6 +441,9 @@ function protoWanted(testHost, body, key, envKey) {
 
 module.exports = {
   rotateWanted,
+  setSmoothEdges,
+  isSmoothEdges,
+  smoothEdgesWanted,
   setPoleNotes,
   isPoleNotes,
   poleNotesWanted,

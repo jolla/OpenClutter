@@ -22,6 +22,7 @@ parentPort.on("message", (msg) => {
       mode.setMergeTiles(msg.mergeTiles === true);
       mode.setScrubGaps(msg.scrubGaps === true);
       mode.setCrownStyle(msg.crownStyle === true);
+      mode.setSmoothEdges(msg.smoothEdges === true);
       return runTask(msg.task, msg.payload);
     })
     .then(
