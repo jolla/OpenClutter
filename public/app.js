@@ -585,9 +585,30 @@ function paintResizedRect(rect, commit) {
   if (commit) {
     noteAreaReplaced();
     if (exportBtn.disabled) setStatus(areaLimitMessage() || "Area is outside the export size limits.", true);
-    else setStatus(boxRotate ? "Turned " + boxRotate + " degrees. Ready to export." : "Ready to export.");
+    else {
+      const bearing = selectionBearing();
+      setStatus(bearing ? "Turned " + bearing + " degrees. Ready to export." : "Ready to export.");
+    }
     writeUrlState();
   }
+}
+
+/** Degrees the corners and the export share. Off the rotate switch this is 0. */
+function selectionBearing() {
+  if (!window.OpenClutterBoxResize) return rotatePage() && boxRotate ? boxRotate : 0;
+  return OpenClutterBoxResize.bearingForPage(!!rotatePage(), boxRotate);
+}
+
+function removeCornerHandles() {
+  if (!cornerHandles) return;
+  for (let i = 0; i < cornerHandles.length; i++) {
+    try {
+      drawn.removeLayer(cornerHandles[i]);
+    } catch (e) {
+      /* already gone */
+    }
+  }
+  cornerHandles = null;
 }
 
 function attachCornerHandles(bounds) {
@@ -610,7 +631,7 @@ function attachCornerHandles(bounds) {
 
 function placeCornerHandles(bounds) {
   if (!cornerHandles || !bounds || !window.OpenClutterBoxResize) return;
-  const rect = OpenClutterBoxResize.rectFromBBox(chipBbox(bounds), boxRotate);
+  const rect = OpenClutterBoxResize.rectFromBBox(chipBbox(bounds), selectionBearing());
   if (!rect) return;
   for (let i = 0; i < cornerHandles.length; i++) {
     const ll = OpenClutterBoxResize.cornerLatLng(rect, i);
@@ -652,7 +673,7 @@ function finishCornerResize(commit) {
     /* already released */
   }
   const changed = !!(commit && drag.session.moved);
-  const rect = changed ? drag.session.current : OpenClutterBoxResize.cancel(drag.session);
+  const rect = OpenClutterBoxResize.settledRect(drag.session, commit);
   if (rect) paintResizedRect(rect, changed);
   if (!changed && drag.hiding) noteDrawCancelled();
   syncDrawMode();
@@ -682,7 +703,7 @@ function onCornerPointerDown(ev) {
 
 function startCornerResize(corner, ev) {
   if (resizeDrag || exportLocked() || !bbox || committedLabel || !window.OpenClutterBoxResize) return;
-  const rect = OpenClutterBoxResize.rectFromBBox(bbox, boxRotate);
+  const rect = OpenClutterBoxResize.rectFromBBox(bbox, selectionBearing());
   const session = rect && OpenClutterBoxResize.begin(rect, corner);
   if (!session) return;
   resizeDrag = { pointerId: ev.pointerId, session: session, hiding: false };
@@ -1013,6 +1034,7 @@ function applyExtent(bounds, label) {
   boxRotate = 0;
   committedBounds = bounds;
   committedLabel = label == null ? null : label;
+  if (window.OpenClutterBoxResize && !OpenClutterBoxResize.cornerHandlesFor(committedLabel)) removeCornerHandles();
   bbox = chipBbox(bounds);
   showAreaChip(bounds, committedLabel, true);
   syncExportReady();
@@ -2569,6 +2591,9 @@ document.getElementById("export").onclick = async () => {
     else exportBtn.classList.add("cancel-armed");
     return;
   }
+  // Enter on the Export button can arrive while a corner is still held.
+  // Settle that drag first so the request is the box that stays on the map.
+  if (resizeDrag) finishCornerResize(true);
   if (copyTerrainLabelReady()) {
     await copyFinishedTerrain();
     return;

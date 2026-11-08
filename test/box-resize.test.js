@@ -178,6 +178,60 @@ describe("rectangle corner resize", () => {
   });
 });
 
+describe("selection bearing, export settle, and corner handles", () => {
+  it("keeps corners on the north-up box when the rotate switch is off", () => {
+    assert.equal(R.bearingForPage(false, 34), 0);
+    assert.equal(R.bearingForPage(false, -20), 0);
+    assert.equal(R.bearingForPage(true, 34), 34);
+    assert.equal(R.bearingForPage(true, 0), 0);
+    assert.equal(R.bearingForPage(true, "nope"), 0);
+    const aligned = R.rectFromBBox(BOX, R.bearingForPage(false, 34));
+    const turned = R.rectFromBBox(BOX, 34);
+    const frame = R.bboxFromRect(aligned);
+    const exported = rotateExport.rotatedRect(frame, R.bearingForPage(false, 34));
+    assert.equal(exported.deg, 0);
+    close(exported.widthM, aligned.widthM, 1e-6);
+    close(exported.lengthM, aligned.lengthM, 1e-6);
+    for (let i = 0; i < 4; i++) {
+      const corner = R.cornerLatLng(aligned, i);
+      const onEdge =
+        (Math.abs(corner.lng - frame.west) < 1e-9 || Math.abs(corner.lng - frame.east) < 1e-9) &&
+        (Math.abs(corner.lat - frame.south) < 1e-9 || Math.abs(corner.lat - frame.north) < 1e-9);
+      assert.equal(onEdge, true);
+      const raw = R.cornerLatLng(turned, i);
+      assert.ok(Math.abs(raw.lat - corner.lat) > 1e-6 || Math.abs(raw.lng - corner.lng) > 1e-6);
+    }
+  });
+
+  it("settles an open drag before export so a later cancel cannot change the sent box", () => {
+    const start = rectAt(0);
+    const session = R.begin(start, 2);
+    const to = outward(start, 2, 1.35);
+    R.update(session, to.lat, to.lng);
+    assert.equal(session.moved, true);
+    const sent = R.settledRect(session, true);
+    const reverted = R.cancel(session);
+    assert.ok(sent.widthM > start.widthM + 1);
+    assert.ok(sent.lengthM > start.lengthM + 1);
+    assert.equal(sent.deg, 0);
+    assert.equal(reverted.widthM, start.widthM);
+    assert.equal(reverted.lengthM, start.lengthM);
+    assert.ok(Math.abs(sent.widthM - reverted.widthM) > 1);
+    const held = R.begin(rectAt(34), 1);
+    const unchanged = R.settledRect(held, true);
+    assert.equal(unchanged.widthM, held.start.widthM);
+    assert.equal(unchanged.deg, 34);
+    assert.equal(R.settledRect(null, true), null);
+  });
+
+  it("does not offer corner handles for a polygon readout", () => {
+    assert.equal(R.cornerHandlesFor(null), true);
+    assert.equal(R.cornerHandlesFor(undefined), true);
+    assert.equal(R.cornerHandlesFor({ text: "1,000 m²", html: "1,000 m²" }), false);
+    assert.equal(R.cornerHandlesFor(""), false);
+  });
+});
+
 describe("corner handles on the map page", () => {
   const root = path.join(__dirname, "../public");
   const app = fs.readFileSync(path.join(root, "app.js"), "utf8");
@@ -206,7 +260,7 @@ describe("corner handles on the map page", () => {
     assert.match(paint, /if \(commit\) \{\n    noteAreaReplaced\(\)/);
     assert.equal(/boxRotate = 0/.test(paint), false);
     const finish = app.slice(app.indexOf("function finishCornerResize"), app.indexOf("function cornerIndexFromEvent"));
-    assert.match(finish, /OpenClutterBoxResize\.cancel/);
+    assert.match(finish, /OpenClutterBoxResize\.settledRect/);
     assert.match(finish, /noteDrawCancelled/);
     assert.match(finish, /paintResizedRect\(rect, changed\)/);
     const move = app.slice(app.indexOf("function moveCornerResize"), app.indexOf("function finishCornerResize"));
