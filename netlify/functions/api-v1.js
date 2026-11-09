@@ -252,7 +252,7 @@ async function createSite(event, body, rlHeaders) {
     body: JSON.stringify(exportBody(bbox, body)),
   };
   try {
-    await jobs.createJob(id);
+    await jobs.createJob(id, { headers: event.headers || {} });
     await jobs.updateJob(id, { api: "v1", name: typeof body.name === "string" ? body.name.slice(0, 200) : null });
   } catch {
     return apiError(503, "upstream_unavailable", "Job store is unavailable.", rlHeaders);

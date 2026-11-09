@@ -274,10 +274,12 @@ describe("net errors: page wiring", () => {
   const app = fs.readFileSync(path.join(root, "public/app.js"), "utf8");
   const html = fs.readFileSync(path.join(root, "public/index.html"), "utf8");
 
-  it("sends every app request except the fire-and-forget cancel through guardedFetch", () => {
+  it("sends every app request except fire-and-forget cancel and the usage ping through guardedFetch", () => {
     const raw = app.match(/(^|[^.\w])fetch\(/g) || [];
-    assert.equal(raw.length, 1);
+    assert.equal(raw.length, 2);
     assert.match(app, /fetch\(exportApi\.url\("\/api\/export-cancel/);
+    assert.match(app, /function sendUsagePing\(\)/);
+    assert.match(app, /keepalive:\s*true/);
     for (const p of ["/api/clutter", "/api/export-status", "/api/export-file"]) {
       assert.equal(new RegExp('OpenClutterNet\\.guardedFetch\\(\\s*"' + p.replace(/\//g, "\\/")).test(app), false, p + " goes through exportApi");
     }

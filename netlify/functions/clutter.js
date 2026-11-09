@@ -1466,7 +1466,7 @@ async function enqueueBackgroundExport(event, body, cors) {
     body: JSON.stringify(innerBody),
   };
   try {
-    await exportJobs.createJob(id);
+    await exportJobs.createJob(id, { headers: (event && event.headers) || {} });
   } catch (err) {
     const name = err && err.name ? err.name : "blobs-write";
     return fallbackExport(cors, bound ? name : "event-has-no-blobs");

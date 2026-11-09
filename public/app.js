@@ -271,6 +271,34 @@ function terrainExportEnabled() {
   if (devPage()) document.querySelectorAll("#whats-new .whats-new-dev").forEach((li) => (li.hidden = false));
 })();
 
+// One anonymous page-load ping. Fire and forget: a failure stays here.
+// Do Not Track, Global Privacy Control, and an automated browser skip it.
+// fetch keepalive with credentials omitted does not send or set a cookie.
+function sendUsagePing() {
+  try {
+    var nav = window.navigator || {};
+    var dnt = nav.doNotTrack || window.doNotTrack || nav.msDoNotTrack;
+    if (dnt === "1" || dnt === "yes" || nav.globalPrivacyControl === true || nav.webdriver === true) return;
+    var url = "/api/usage";
+    if (typeof window.OPENCLUTTER_API_BASE === "string" && window.OPENCLUTTER_API_BASE) {
+      url = String(window.OPENCLUTTER_API_BASE).replace(/\/+$/, "") + "/api/usage";
+    }
+    var cross = url.indexOf("http") === 0;
+    if (typeof fetch === "function") {
+      fetch(url, {
+        method: "POST",
+        keepalive: true,
+        cache: "no-store",
+        credentials: "omit",
+        mode: cross ? "cors" : "same-origin",
+      }).catch(function () {});
+      return;
+    }
+    if (typeof nav.sendBeacon === "function") nav.sendBeacon(url, "");
+  } catch (err) {}
+}
+sendUsagePing();
+
 let bbox = null;
 let terrainPasteGpsOnly = false;
 

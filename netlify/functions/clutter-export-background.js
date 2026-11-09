@@ -55,7 +55,12 @@ exports.handler = async (event) => {
   if (await jobs.jobCancelled(jobId)) return { statusCode: 202, body: "" };
 
   const fly = await handOffExport(jobId, inner);
-  if (fly.handed || fly.stay) return { statusCode: 202, body: "" };
+  if (fly.handed || fly.stay) {
+    // The Fly process writes the finished job. This read counts that finish
+    // when the worker copy of the code does not (no worker redeploy yet).
+    await jobs.readJob(jobId).catch(() => null);
+    return { statusCode: 202, body: "" };
+  }
   // Cancelled on the page: never run it again here.
   if (await jobs.jobCancelled(jobId)) return { statusCode: 202, body: "" };
   if (fly.fallback && fly.reason === "heartbeat-stale") {

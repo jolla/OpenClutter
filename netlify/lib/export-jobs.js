@@ -16,6 +16,7 @@
  */
 
 const { markStage, stageKey } = require("./export-progress");
+const usage = require("./usage");
 
 const STORE_NAME = "openclutter-exports";
 const TTL_MS = 24 * 60 * 60 * 1000;
@@ -135,11 +136,35 @@ function freshJob(id) {
   return withStageMark(job, job.stage);
 }
 
-async function createJob(id) {
+function exportCountField(state) {
+  if (state === "done") return "exportsDone";
+  if (state === "cancelled") return "exportsCancelled";
+  if (state === "error" || state === "failed") return "exportsError";
+  return "";
+}
+
+async function createJob(id, meta) {
   const store = await openStore();
   const job = freshJob(id);
+  let attr = null;
+  if (meta && meta.headers) {
+    try {
+      attr = await usage.attribute(meta.headers, meta.now);
+    } catch {
+      attr = null;
+    }
+  }
+  if (attr) {
+    job.usageHost = attr.host;
+    if (attr.visitor) {
+      job.usageVisitor = attr.visitor;
+      job.usageMonth = attr.month;
+      job.usageAt = attr.now;
+    }
+  }
   await store.setJSON(jobKey(id), job);
   maybeSweepExpired().catch(() => {});
+  if (attr && attr.visitor) await usage.recordStart(attr).catch(() => {});
   return job;
 }
 
@@ -197,6 +222,12 @@ async function readJob(id) {
     await store.delete(zipKey(id)).catch(() => {});
     await store.delete(siteKey(id)).catch(() => {});
     return null;
+  }
+  // A Fly worker that has not been redeployed writes done or error without
+  // a usage stamp. The Netlify read (status poll, or the background function
+  // after the worker answers) claims that finish once.
+  if (isTerminalState(job.state) && !job.usageCounted) {
+    await claimTerminalUsage(id).catch(() => {});
   }
   return job;
 }
@@ -378,8 +409,14 @@ async function updateJob(id, patch) {
       const cur = loaded.job || freshJob(id);
       const merged = mergeJobPatch(cur, patch);
       if (merged.unchanged) return cur;
+      const entering = !isTerminalState(cur.state) && isTerminalState(merged.job.state);
+      const field = entering && !cur.usageCounted ? exportCountField(merged.job.state) : "";
+      if (field) merged.job.usageCounted = merged.job.state;
       const wrote = await saveJobRecord(store, id, merged.job, loaded.etag);
-      if (wrote) return merged.job;
+      if (wrote) {
+        if (field) await usage.recordFinish(merged.job).catch(() => {});
+        return merged.job;
+      }
     }
     const last = await loadJobRecord(store, id);
     return last.job || freshJob(id);
@@ -435,8 +472,43 @@ async function takeZip(id) {
 
 async function deleteJob(id) {
   const store = await openStore();
+  let job = null;
+  try {
+    job = await store.get(jobKey(id), { type: "json" });
+  } catch {
+    job = null;
+  }
   await store.delete(jobKey(id)).catch(() => {});
   await store.delete(zipKey(id)).catch(() => {});
+  // createJob counted a start. The only callers delete a job that never
+  // left the queue (the background invoke did not accept it).
+  if (job && job.state === "queued" && job.usageVisitor) {
+    await usage.undoStart(job).catch(() => {});
+  }
+}
+
+/**
+ * Count a finished job that was stored without a usage stamp. The etag
+ * write makes a second claim a no-op. Missing job records are left alone.
+ */
+async function claimTerminalUsage(id) {
+  if (!validJobId(id)) return null;
+  return withJobLock(id, async () => {
+    const store = await openStore();
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const loaded = await loadJobRecord(store, id);
+      const cur = loaded.job;
+      if (!cur || cur.usageCounted || !isTerminalState(cur.state)) return cur;
+      const field = exportCountField(cur.state);
+      if (!field) return cur;
+      const next = Object.assign({}, cur, { usageCounted: cur.state, updatedAt: Date.now() });
+      const wrote = await saveJobRecord(store, id, next, loaded.etag);
+      if (!wrote) continue;
+      await usage.recordFinish(next).catch(() => {});
+      return next;
+    }
+    return null;
+  });
 }
 
 /**

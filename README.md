@@ -59,6 +59,30 @@ npm run overture:index  # rebuild the Overture buildings index for a new release
 
 More detail on the pipeline and the Fly worker is in [HANDOFF.md](HANDOFF.md) and [docs/fly-worker.md](docs/fly-worker.md). Release history is in [CHANGELOG.md](CHANGELOG.md).
 
+## Usage counts
+
+OpenClutter counts anonymous totals of page views and exports by day, week, and month. The page sends one small request when it loads. There are no cookies, and raw IP addresses are not stored. A browser with Do Not Track or Global Privacy Control set is not counted, and neither is an export from that browser. The same note is in How it works on the page.
+
+A visitor id is the hash of a random monthly salt, the IP, and the user agent. The salt lives in the Netlify Blobs store `openclutter-usage` for that America/Chicago month. It is not an environment variable. The salt and the per-visitor records are deleted on the 4th day of the next month, after the month's totals have been saved. Only those totals are kept. An id from one month cannot be matched to the next.
+
+`prod` is openclutter.com (and www.openclutter.com). `dev` is dev.openclutter.com. Every other host is `other`. Each period reports page views, unique users, exporting users (at least one export started), exports started, done, error, and cancelled, the mean and median exports started among exporting users, a histogram (1, 2-3, 4-10, 11+), and two ratios: exports started per page view, and exporting users per unique user.
+
+A week that starts in one month and ends in the next counts a person once on each side, so that week's unique users can be high. The response sets `approx` on those weeks. Two events for the same visitor at the same moment can miss or double one increment until the month is reconciled.
+
+`GET /api/usage` returns the aggregates only. With no date it returns the last 30 days, 12 weeks, or 12 months. When `OPENCLUTTER_API_KEY_HASHES` is set (the same key list as the draft `/v1` API), the request needs `Authorization: Bearer <key>` or `X-OpenClutter-Key`. When that variable is empty, the read is public. The counts contain no personal data.
+
+```bash
+curl -sS "https://openclutter.com/api/usage?period=day&date=2026-11-09"
+curl -sS "https://openclutter.com/api/usage?period=day&from=2026-10-11&to=2026-11-09"
+curl -sS "https://openclutter.com/api/usage?period=week"
+curl -sS "https://openclutter.com/api/usage?period=month"
+curl -sS -H "Authorization: Bearer YOUR_KEY" "https://dev.openclutter.com/api/usage?period=day&date=2026-11-09"
+```
+
+An export is tied to the same visitor id from the moment it is created on Netlify. A finish (done, error, or cancelled) is counted on the Chicago day the job was created. The in-process benches call the export function directly and do not create a job or load the page, so they are not counted. There is no bench header or query flag on those calls.
+
+The Fly worker writes the finished job into the same job record. It does not see the IP. The visitor id is already on the job. This site counts that finish when the Netlify background function sees the worker's answer, and when something reads export status, so a Fly worker redeploy is not required for the usual path. A finish is missed only when the worker writes it after Netlify has stopped watching and nothing reads status. Redeploying the Fly worker makes that write count on its own, including the missed case. Job creation and Cancel run on Netlify either way.
+
 ## Data credits
 
 Map images: Powered by Esri (Source: Esri, Vantor, Earthstar Geographics, and the GIS User Community), or USDA NAIP and national orthophotos on /dev. Vector data from OpenStreetMap, Microsoft Global ML Building Footprints and Overture Maps Foundation is available under the Open Database License (ODbL) 1.0. Canopy, elevation and other sources keep their own licenses.
