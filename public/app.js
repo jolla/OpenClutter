@@ -495,7 +495,7 @@ map.addLayer(drawn);
 // double-click it to put the box back north-up. The export then comes out
 // square to the turned box. Without ?rotate=1 nothing here runs.
 function rotatePage() {
-  if (!devPage()) return false;
+  // Every page from 1.3.20; ?rotate=1 stays the switch that shows the handle.
   try {
     return new URLSearchParams(location.search || "").get("rotate") === "1";
   } catch (err) {

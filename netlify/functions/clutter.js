@@ -1528,7 +1528,10 @@ async function handleClutter(event) {
   } catch {
     return handleClutterNorthUp(event);
   }
-  const deg = exportMode.rotateWanted(isDevTestHost(event), body, event.queryStringParameters);
+  // Feedback #18 turned box: every host from 1.3.20 when the request sends
+  // rotate (the page sends it only with ?rotate=1). Pass isDevTestHost(event)
+  // again to put it back on /dev hosts only.
+  const deg = exportMode.rotateWanted(true, body, event.queryStringParameters);
   if (!deg) return handleClutterNorthUp(event);
   // A queued job runs this again on the worker with the same body.
   if ((body.async === true || body.async === "true") && !isBackgroundExport()) return handleClutterNorthUp(event);
@@ -1610,18 +1613,18 @@ async function handleClutterNorthUp(event) {
   // them off. Pass testHost again to put one back on /dev hosts only.
   exportMode.setTallCanopyKeep(exportMode.tallCanopyKeepWanted(true, body));
   exportMode.setWaterEdges(exportMode.waterEdgesWanted(true, body));
-  // Feedback #14: a map note at each shipped light pole. /dev hosts only
-  // (poleNotes:false or ?poleNotes=0 turns it off there). Production off.
+  // Production release 1.3.20: feedback #14 pole map notes (a map note at
+  // each shipped light pole, Copy terrain only), feedback #15 campground
+  // points (a point-mapped campground gets a read-only park circle for the
+  // photo RV read) and seaWater (sea from coastlines and big river or lake
+  // relations by side) run on every host. poleNotes:false, campNodes:false
+  // and seaWater:false still turn them off. Pass testHost again to put one
+  // back on /dev hosts only.
   exportMode.setPoleNotes(
-    exportMode.poleNotesWanted(testHost, body, event && event.queryStringParameters),
+    exportMode.poleNotesWanted(true, body, event && event.queryStringParameters),
   );
-  // Feedback #15: a campground mapped only as a point gets a read-only park
-  // circle for the photo RV read. /dev hosts only (campNodes:false or
-  // ?campNodes=0 turns it off there); production off.
-  exportMode.setCampNodes(exportMode.campNodesWanted(testHost, body));
-  // seaWater: sea from coastlines and big river or lake relations by side.
-  // /dev hosts only (seaWater:false or ?seaWater=0 turns it off there).
-  exportMode.setSeaWater(exportMode.seaWaterWanted(testHost, body));
+  exportMode.setCampNodes(exportMode.campNodesWanted(true, body));
+  exportMode.setSeaWater(exportMode.seaWaterWanted(true, body));
   // 1.3.11 trueMetres: ground-meter plate at every latitude. /dev hosts on
   // (trueMetres:false or ?trueMetres=0 turns it off there). Production off.
   require("../lib/geo-frame").setTrueMetres(
@@ -1640,8 +1643,9 @@ async function handleClutterNorthUp(event) {
   exportMode.setMergeTiles(forest === "merge");
   exportMode.setScrubGaps(exportMode.protoWanted(testHost, {}, "scrubGaps", "OC_SCRUB_GAPS"));
   // Tree edges: canopy outlines follow the crowns, not grid stair steps.
-  // /dev hosts only (smoothEdges:false turns it off there). Production off.
-  exportMode.setSmoothEdges(exportMode.smoothEdgesWanted(testHost, body));
+  // Every host from 1.3.20 (smoothEdges:false turns it off). Pass testHost
+  // again to put it back on /dev hosts only.
+  exportMode.setSmoothEdges(exportMode.smoothEdgesWanted(true, body));
   // From 1.2.31 large draws read the street-map tiles in one shared window
   // with a slow-fail chain, a retry pass and a split (export-mode tiledOsm).
   exportMode.setTiledOsm(exportMode.tiledOsmWanted(testHost));

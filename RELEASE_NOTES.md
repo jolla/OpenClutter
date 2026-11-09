@@ -1,3 +1,27 @@
+# OpenClutter v1.3.20
+
+Released Nov 9, 2026 on openclutter.com. dev.openclutter.com runs the same build.
+
+## What's new
+
+- **Resize from a corner.** Drag a corner of a finished box to resize it; the opposite corner stays put.
+- **Move and clear.** Drag inside a finished box to move it. The small x by its corner, Delete or Backspace clears it.
+- **Light pole map notes (feedback #14).** Copy terrain adds a map note at each light pole, so poles are easy to find. The OpenIntent file is unchanged.
+- **RVs at point-mapped campgrounds (feedback #15).** A campground mapped only as a point now gets its RVs read from the photo (Williams AZ KOA: 0 to 30 RVs).
+- **Sea and large water.** The sea and big rivers or lakes that run past the drawn area are drawn as water.
+- **Turned export box (feedback #18).** Open the page with ?rotate=1 to get a turn handle on the box; the export comes out square to the turned box.
+- **Smoother tree edges.** Forest outlines follow the crowns instead of stair steps on the height grid.
+- **Anonymous usage counts.** Page views and exports are counted by day, week and month with no cookies and no stored IP addresses.
+
+## Data
+
+No new map data in this release.
+
+## Git / deploy
+
+- Tag `v1.3.20` on `main`; `dev` is at the same commit.
+- True ground meters (trueMetres), adaptive terrain and the forest=crowns style stay on dev.openclutter.com only.
+
 # OpenClutter v1.3.18
 
 Released Nov 5, 2026 on openclutter.com. dev.openclutter.com runs the same build.
