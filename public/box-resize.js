@@ -14,6 +14,12 @@
  *
  * Distances are meters at the anchor latitude (111320·cos(lat), 110540),
  * the same scale as bbox-area.js and geo-frame.js. Browser + Node.
+ *
+ * A move keeps that same rectangle and changes only the center. Width,
+ * length, and bearing are copied from the rectangle at pointer-down, so
+ * they cannot drift. The pointer may grab anywhere inside; the center
+ * moves by the same lat/lng delta as the pointer. A center shift under
+ * the same threshold as a corner resize (about 1 cm) is not a new area.
  */
 (function (root, factory) {
   const lib = factory();
@@ -153,6 +159,81 @@
     };
   }
 
+  /** Local east/north meters of (lat, lng) inside the rectangle's own axes. */
+  function localMeters(rect, lat, lng) {
+    const mpd = metersPerDeg(rect.lat0);
+    const east = (+lng - rect.lon0) * mpd.lon;
+    const north = (+lat - rect.lat0) * mpd.lat;
+    const t = (rect.deg * Math.PI) / 180;
+    const cos = Math.cos(t);
+    const sin = Math.sin(t);
+    return { a: cos * east - sin * north, b: sin * east + cos * north };
+  }
+
+  function usableRect(rect) {
+    if (!rect) return false;
+    if (![rect.lon0, rect.lat0, rect.widthM, rect.lengthM, rect.deg].every(Number.isFinite)) return false;
+    return rect.widthM > 0 && rect.lengthM > 0;
+  }
+
+  /**
+   * True when (lat, lng) is inside the rectangle, including the edge.
+   * A fifth of a meter of slack keeps a press on the stroke inside.
+   * Corner handles are a separate hit target and win over this test.
+   */
+  function containsPoint(rect, lat, lng) {
+    if (!usableRect(rect) || !Number.isFinite(+lat) || !Number.isFinite(+lng)) return false;
+    const p = localMeters(rect, lat, lng);
+    const slack = 0.2;
+    return Math.abs(p.a) <= rect.widthM / 2 + slack && Math.abs(p.b) <= rect.lengthM / 2 + slack;
+  }
+
+  /**
+   * Screen point `pad` pixels past `tip`, away from `origin`.
+   * Used to park the clear control just outside a corner.
+   */
+  function pointBeyond(origin, tip, pad) {
+    if (!origin || !tip) return null;
+    if (![origin.x, origin.y, tip.x, tip.y].every(Number.isFinite)) return null;
+    const dist = +pad;
+    if (!Number.isFinite(dist) || dist < 0) return null;
+    const dx = tip.x - origin.x;
+    const dy = tip.y - origin.y;
+    const len = Math.hypot(dx, dy) || 1;
+    return { x: tip.x + (dx / len) * dist, y: tip.y + (dy / len) * dist };
+  }
+
+  /**
+   * Move session. `lat`/`lng` are the pointer at press, not the center,
+   * so a grab away from the middle still tracks the pointer one for one.
+   * The center moves by the pointer's lat/lng delta.
+   */
+  function beginMove(rect, lat, lng) {
+    if (!usableRect(rect) || !Number.isFinite(+lat) || !Number.isFinite(+lng)) return null;
+    return {
+      start: cloneRect(rect),
+      current: cloneRect(rect),
+      moved: false,
+      lat: +lat,
+      lng: +lng,
+    };
+  }
+
+  function updateMove(session, lat, lng) {
+    if (!session) return null;
+    if (!Number.isFinite(+lat) || !Number.isFinite(+lng)) return session.current;
+    const next = {
+      lon0: session.start.lon0 + (+lng - session.lng),
+      lat0: session.start.lat0 + (+lat - session.lat),
+      widthM: session.start.widthM,
+      lengthM: session.start.lengthM,
+      deg: session.start.deg,
+    };
+    session.current = next;
+    session.moved = changed(session.start, next);
+    return next;
+  }
+
   function changed(a, b) {
     if (!a || !b) return true;
     if (a.deg !== b.deg) return true;
@@ -198,7 +279,7 @@
   }
 
   /**
-   * The box an export should send if a corner drag is still down.
+   * The box an export should send if a corner drag or a move is still down.
    * Commit keeps the preview the pointer is on. Anything else, including
    * a press that has not moved, is the box from pointer-down. The returned
    * rect is a copy, so a later cancel cannot change what was sent.
@@ -224,6 +305,10 @@
     begin: begin,
     update: update,
     cancel: cancel,
+    containsPoint: containsPoint,
+    pointBeyond: pointBeyond,
+    beginMove: beginMove,
+    updateMove: updateMove,
     bearingForPage: bearingForPage,
     settledRect: settledRect,
     cornerHandlesFor: cornerHandlesFor,
