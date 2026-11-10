@@ -29,6 +29,10 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.21** (Nov 10, 2026): terrain demo bug fixes, every host on /dev (production gets them with the next promotion). Background exports run them after the export worker is next deployed.
+  - USGS 3DEP first in the US: a failed or empty 3DEP read inside its coverage is retried up to 4 times (2, 4, 6 s waits, only while at least 10 s of the terrain budget is left) before Copernicus GLO-30 is used. USGS answers with short bursts of fast 502 errors, and one bad answer sent Bingham Canyon UT and Meteor Crater AZ to the GLO-30 surface model.
+  - No fake trees on steep bare ground: lidar canopy height on a slope steeper than 0.7 (rise over run across the 3x3 ground cells) is measured from the high side, not the lowest ground in reach, so crater walls and pit benches no longer turn rock and shrubs into 4 to 9 m crowns (Meteor Crater 1,067 trees before). With terrain on, a canopy piece on ground steeper than 0.45 that shows no foliage on the photo is left out, with a map note.
+  - One water body, one surface: a lake, pond or pit lake is no longer cut along the terrain cells and seated on each piece's own shore. Overlapping or touching still water shares the lowest seat (Berkeley Pit: 10 pieces at 0.1 to 24 m before, one surface now). Rivers, streams and canals still follow the slope.
 - **1.3.20** (Nov 9, 2026): weekly production release, every host. New on production since v1.3.18:
   - Corner resize: drag a corner of a finished box to resize it. The opposite corner stays put and the box keeps its bearing; each side is at least 2 m.
   - Move and clear: drag inside a finished box to move it (width, length and bearing stay the same; a drag that starts outside draws a new box). A small x outside the north-east corner, Delete or Backspace clears the area. Escape or a lost pointer puts a moved box back.
