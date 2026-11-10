@@ -92,6 +92,38 @@ function gridLattice(frame, cellM) {
   };
 }
 
+/**
+ * Ground under a canopy cell. On flat ground this is the class-2 minimum
+ * (groundAt). On a steep slope that minimum sits at the downhill edge of the
+ * cell, or a few cells downhill when the cell has no ground return, so a
+ * rock face or a 1 m shrub on a crater wall read as a 4 to 9 m crown (Meteor
+ * Crater, 2026-11-10: three quarters of its lidar canopy cells stood on
+ * slopes of 0.7 or more). Where the ground around the cell rises at least
+ * STEEP_GROUND per metre, the highest ground in the 3 x 3 block is used
+ * instead. A real crown on that slope keeps most of its height.
+ */
+const STEEP_GROUND = 0.4;
+function canopyGroundAt(grid, ix, iy) {
+  const g = groundAt(grid, ix, iy);
+  if (g == null) return g;
+  let lo = Infinity;
+  let hi = -Infinity;
+  let n = 0;
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const r = grid.cells.get(ix + dx + "," + (iy + dy));
+      if (!r || r.g == null) continue;
+      n++;
+      if (r.g < lo) lo = r.g;
+      if (r.g > hi) hi = r.g;
+    }
+  }
+  if (n < 3) return g;
+  const cellM = grid.cellGroundM > 0 ? grid.cellGroundM : grid.cell > 0 ? grid.cell : 2;
+  if (!((hi - lo) / (2 * cellM) >= STEEP_GROUND)) return g;
+  return Math.max(g, hi);
+}
+
 /** Per-cell lidar canopy heights. Returns Map key -> { h, ok, evidence }. */
 function lidarCells(grid, opts) {
   const leafOff = !!opts.leafOff;
@@ -113,7 +145,7 @@ function lidarCells(grid, opts) {
   const minN = Math.max(3, Math.round(nMed * 0.3));
   const out = new Map();
   for (const [key, rec] of grid.cells) {
-    const g = groundAt(grid, rec.ix, rec.iy);
+    const g = canopyGroundAt(grid, rec.ix, rec.iy);
     const ok = rec.n >= minN && g != null;
     let h = 0;
     let evidence = false;
@@ -1092,6 +1124,8 @@ function lidarCanopyNote(stats) {
 }
 
 module.exports = {
+  canopyGroundAt,
+  STEEP_GROUND,
   fuseLidarCanopy,
   keepLidarOpen,
   clearInside,

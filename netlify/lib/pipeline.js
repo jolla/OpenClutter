@@ -3406,6 +3406,7 @@ const LEAF_ON_MIN_GREEN = 0.05;
 // be leaf-on (median measured crown at least this green) before a crown it
 // shows as open, foliage-free ground is dropped.
 const { PIECE_LEAFY_MIN } = require("./photo-canopy");
+const { steepCanopyNote } = require("./steep-canopy");
 const STALE_LIDAR_YEARS = 4;
 const STALE_MIN_CROWNS = 8;
 const STALE_LEAF_ON_GREEN = 0.5;
@@ -3539,6 +3540,7 @@ function buildClutter({
   aerialOpenShare,
   aerialGreenShare,
   photoLeafyShare,
+  steepLeafyShare,
   leafOnGreenShare,
   leafOnSource,
   imagery,
@@ -3998,6 +4000,25 @@ function buildClutter({
     if (leafOnDropped && Array.isArray(warnings)) {
       warnings.push("Left out " + leafOnDropped + " canopy pieces with no summer foliage on the " + (leafOnSource || "leaf-on orthophoto") + ".");
     }
+  }
+  // Steep bare ground: a canopy piece on a pit wall, crater slope or rock
+  // face that shows no foliage on the current photo is rock read as canopy
+  // (steep-canopy.js). Dropped with its stem. Flat ground is not read.
+  let steepDropped = 0;
+  if (typeof steepLeafyShare === "function" && treePieces.length) {
+    for (let i = treePieces.length - 1; i >= 0; i--) {
+      const crown = (treePieces[i].areas || []).find((a) => a && !isTrunkArea(a));
+      const coords = crown && crown.area && crown.area.coordinates;
+      if (!coords || coords.length < 3) continue;
+      const share = steepLeafyShare(coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]));
+      if (share !== null && share < PIECE_LEAFY_MIN) {
+        treePieces.splice(i, 1);
+        steepDropped++;
+      }
+    }
+    if (footprintMeta) footprintMeta.steepBareCanopy = steepDropped;
+    const note = steepCanopyNote(steepDropped);
+    if (note && Array.isArray(warnings)) warnings.push(note);
   }
   let treeThinned = 0;
   let treeThinStep = 0;

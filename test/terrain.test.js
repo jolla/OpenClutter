@@ -2925,6 +2925,116 @@ describe("Finland terrain does not wait on 3DEP", () => {
       /Copernicus GLO-30 elevation read failed \(HTTP 404\)/
     );
   });
+
+  function usSamples(n, base) {
+    const out = [];
+    const side = Math.max(2, Math.round(Math.sqrt(n)));
+    for (let r = 0; r < side; r++) {
+      for (let c = 0; c < side; c++) {
+        out.push({
+          location: {
+            x: vegas.west + ((c + 0.5) / side) * (vegas.east - vegas.west),
+            y: vegas.south + ((r + 0.5) / side) * (vegas.north - vegas.south),
+          },
+          value: String(base + r * 3),
+        });
+      }
+    }
+    return out;
+  }
+
+  it("retries a US 3DEP error and keeps bare earth instead of GLO-30", async () => {
+    const glo = gloGeotiff(() => 900);
+    const seen = [];
+    const fetchFn = async (url) => {
+      seen.push(String(url));
+      if (seen.length === 1) return { ok: false, status: 504, json: async () => ({}) };
+      if (seen.length === 2) return { ok: true, json: async () => ({ error: { message: "Error performing getSamples" } }) };
+      return { ok: true, json: async () => ({ samples: usSamples(16, 600) }) };
+    };
+    const pack = await fetchTerrainDem(vegas, fetchFn, {
+      allowSurfaceFallback: true,
+      geotiff: glo.geotiff,
+      terrainResolution: "auto",
+      backgroundDem: true,
+      dep3RetryWaitMs: 5,
+    });
+    assert.equal(seen.length, 3);
+    assert.equal(pack.kind, "bare-earth");
+    assert.equal(pack.attribution, "USGS 3DEP");
+    assert.equal(glo.urls.length, 0);
+  });
+
+  it("retries a US 3DEP answer with no usable samples", async () => {
+    const glo = gloGeotiff(() => 900);
+    let calls = 0;
+    const fetchFn = async () => {
+      calls++;
+      return { ok: true, json: async () => ({ samples: calls === 1 ? [] : usSamples(16, 600) }) };
+    };
+    const pack = await fetchTerrainDem(vegas, fetchFn, {
+      allowSurfaceFallback: true,
+      geotiff: glo.geotiff,
+      terrainResolution: "auto",
+      dep3RetryWaitMs: 5,
+    });
+    assert.equal(calls, 2);
+    assert.equal(pack.kind, "bare-earth");
+    assert.equal(glo.urls.length, 0);
+  });
+
+  it("falls back to GLO-30 in the US only after the 3DEP retries also fail", async () => {
+    const glo = gloGeotiff(() => 900);
+    let calls = 0;
+    const fetchFn = async () => {
+      calls++;
+      return { ok: false, status: 503, json: async () => ({}) };
+    };
+    const pack = await fetchTerrainDem(vegas, fetchFn, {
+      allowSurfaceFallback: true,
+      geotiff: glo.geotiff,
+      terrainResolution: "auto",
+      dep3RetryWaitMs: 5,
+    });
+    assert.equal(calls, 5);
+    assert.equal(pack.kind, "surface");
+    assert.equal(pack.attribution, GLO30_CREDIT);
+    assert.equal(glo.urls.length, 1);
+  });
+
+  it("does not retry 3DEP when the DEM slice is too short", async () => {
+    const glo = gloGeotiff(() => 900);
+    let calls = 0;
+    const fetchFn = async () => {
+      calls++;
+      return { ok: false, status: 503, json: async () => ({}) };
+    };
+    const pack = await fetchTerrainDem(vegas, fetchFn, {
+      allowSurfaceFallback: true,
+      geotiff: glo.geotiff,
+      terrainResolution: "auto",
+      budgetMs: 4500,
+      dep3RetryWaitMs: 5,
+    });
+    assert.equal(calls, 1);
+    assert.equal(pack.kind, "surface");
+  });
+
+  it("does not retry 3DEP outside coverage", async () => {
+    const glo = gloGeotiff(() => 40);
+    let calls = 0;
+    const fetchFn = async () => {
+      calls++;
+      return { ok: false, status: 503, json: async () => ({}) };
+    };
+    const pack = await fetchTerrainDem(hamina, fetchFn, {
+      allowSurfaceFallback: true,
+      geotiff: glo.geotiff,
+      terrainResolution: "auto",
+    });
+    assert.equal(calls, 1);
+    assert.equal(pack.kind, "surface");
+  });
 });
 
 describe("Finland paste quads are square ground meters", () => {

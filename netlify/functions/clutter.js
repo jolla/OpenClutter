@@ -237,6 +237,7 @@ const { supplementFootprints } = require("../lib/roof-mask");
 const { surfaceMasksFromImage, osmWaterRings, openShareSampler, poleShadowContrast } = require("../lib/surface-mask");
 const { fetchLeafOnPhoto, leafOnGreenSampler } = require("../lib/leaf-on-photo");
 const { checkCanopyOnPhoto, photoCanopyNote, leafyShareSampler, vehicleZoneTest, zonedShareSampler } = require("../lib/photo-canopy");
+const { steepTerrainZone } = require("../lib/steep-canopy");
 const { photoCrownRefiner, photoCrownNote, gridHeightAt } = require("../lib/photo-crowns");
 const { createWaterTest, clearWaterCanopy, dropWaterPoints } = require("../lib/water-mask");
 const { rejectPavementFootprints } = require("../lib/pavement");
@@ -2887,6 +2888,16 @@ async function handleClutterNorthUp(event) {
     }
     if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage build-clutter\n");
     const leafOnPhoto = leafOnJob ? await leafOnJob : null;
+    // Steep bare ground (pit benches, crater walls) read as canopy by the
+    // height model or the lidar: read those pieces on the photo.
+    let steepZone = null;
+    if (includeFoliage && demSamples && demSamples.length && decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH) {
+      try {
+        steepZone = steepTerrainZone(demSamples, frame);
+      } catch {
+        steepZone = null;
+      }
+    }
     if (imageryCtx && imageryCtx.esriCitationJob && imageryCtx.esriCitation === undefined) {
       await Promise.race([imageryCtx.esriCitationJob, new Promise((r) => setTimeout(r, 300))]);
     }
@@ -2943,6 +2954,9 @@ async function handleClutterNorthUp(event) {
         footprintMeta.photoCanopy && footprintMeta.photoCanopy.gate && decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH
           ? zonedShareSampler(leafyShareSampler(decoded, { heightAt: chmGrid ? gridHeightAt(chmGrid) : null, frame }), footprintMeta.photoCanopyZone, frame)
           : null,
+      steepLeafyShare: steepZone
+        ? zonedShareSampler(leafyShareSampler(decoded, { frame }), steepZone, frame)
+        : null,
       leafOnGreenShare: leafOnPhoto ? leafOnGreenSampler(leafOnPhoto, frame.mpuX) : null,
       aerialGreenShare:
         decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH && footprintMeta.lidarCanopyStats

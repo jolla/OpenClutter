@@ -351,6 +351,14 @@ function isWaterWay(tags) {
   return false;
 }
 
+/** A river, stream or canal area runs downhill; a lake, pond or pit is level. */
+function flowingWater(tags) {
+  if (!tags) return false;
+  if (tags.waterway === "riverbank" || tags.waterway === "canal" || tags.waterway === "river") return true;
+  const w = String(tags.water || "");
+  return w === "river" || w === "stream" || w === "canal" || w === "stream_pool" || w === "rapids" || w === "wastewater_channel" || w === "ditch";
+}
+
 function isPoleNode(tags) {
   if (!tags) return false;
   if (tags.highway === "street_lamp") return true;
@@ -1636,6 +1644,7 @@ function parseOverpass(payload, want, bbox, deckCap) {
         continue;
       }
       const h = heightFor("water", tags);
+      const flowing = flowingWater(tags);
       features.push({
         kind: "water",
         coords,
@@ -1643,6 +1652,7 @@ function parseOverpass(payload, want, bbox, deckCap) {
         heightM: h.heightM,
         explicitHeight: false,
         rank: 0,
+        ...(flowing ? { flowing: true } : {}),
       });
       continue;
     }
@@ -2818,6 +2828,93 @@ function guidewayLineRings(coords, frame, halfM, maxRings) {
 }
 
 /** Closed areas that climb a hill become one piece per downhill seat. */
+function pxBox(ring) {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const p = ring[i];
+    if (p[0] < x0) x0 = p[0];
+    if (p[0] > x1) x1 = p[0];
+    if (p[1] < y0) y0 = p[1];
+    if (p[1] > y1) y1 = p[1];
+  }
+  return [x0, y0, x1, y1];
+}
+
+function bottomOf(material) {
+  const b = material ? Number(material.bottom_height) : 0;
+  return Number.isFinite(b) && b >= LIFT_LOCAL_M ? b : 0;
+}
+
+/**
+ * Water pieces that overlap or touch (a lake drawn by OSM and the water mask,
+ * or a lake cut by a building) are one water body, and a water body is level.
+ * Every piece of a group takes the lowest seat in the group, which is the
+ * water line. Mutates items. Returns the number of pieces moved.
+ */
+const WATER_TOUCH_PX = 2;
+function levelWaterItems(items) {
+  const idx = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (it && it.kind === "water" && !it.flowing && it.ringPx && it.ringPx.length >= 4 && it.material) idx.push(i);
+  }
+  if (idx.length < 2) return 0;
+  const boxes = idx.map((i) => pxBox(items[i].ringPx));
+  const parent = idx.map((_, k) => k);
+  const find = (k) => {
+    while (parent[k] !== k) {
+      parent[k] = parent[parent[k]];
+      k = parent[k];
+    }
+    return k;
+  };
+  for (let a = 0; a < idx.length; a++) {
+    for (let b = a + 1; b < idx.length; b++) {
+      const A = boxes[a];
+      const B = boxes[b];
+      const t = WATER_TOUCH_PX;
+      if (A[2] + t < B[0] || B[2] + t < A[0] || A[3] + t < B[1] || B[3] + t < A[1]) continue;
+      if (find(a) === find(b)) continue;
+      let joined = intersectionAreaPx(items[idx[a]].ringPx, items[idx[b]].ringPx) > 0;
+      if (!joined) {
+        // Touching along a cut edge: a vertex of one within a couple of
+        // pixels of the other's vertices.
+        const ra = items[idx[a]].ringPx;
+        const rb = items[idx[b]].ringPx;
+        for (let i = 0; i < ra.length && !joined; i++) {
+          for (let j = 0; j < rb.length; j++) {
+            if (Math.abs(ra[i][0] - rb[j][0]) <= t && Math.abs(ra[i][1] - rb[j][1]) <= t) {
+              joined = true;
+              break;
+            }
+          }
+        }
+      }
+      if (joined) parent[find(a)] = find(b);
+    }
+  }
+  const low = new Map();
+  for (let k = 0; k < idx.length; k++) {
+    const r = find(k);
+    const m = items[idx[k]].material;
+    const cur = low.get(r);
+    if (!cur || bottomOf(m) < bottomOf(cur)) low.set(r, m);
+  }
+  let moved = 0;
+  for (let k = 0; k < idx.length; k++) {
+    const it = items[idx[k]];
+    const m = low.get(find(k));
+    if (m && bottomOf(m) !== bottomOf(it.material)) {
+      it.material = Object.assign({}, m);
+      moved++;
+    }
+  }
+  return moved;
+}
+
 function slopeAreaParts(slopeTop, coords) {
   if (!coords || coords.length < 4) return [];
   const parts = slopeTop && typeof slopeTop.split === "function" ? slopeTop.split(coords) : null;
@@ -3518,7 +3615,10 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       }
       const bases = carRings || [f.coords];
       for (let b = 0; b < bases.length; b++) {
-      const parts = slopeAreaParts(slopeTop, bases[b]);
+      // Water is level: one body is one surface at one height. Cutting a
+      // lake along the terrain cells seated each piece on its own shore
+      // (Berkeley Pit, 2026-11-10: pieces at 0, 6, 18 and 24 m).
+      const parts = f.kind === "water" && !f.flowing ? [bases[b]] : slopeAreaParts(slopeTop, bases[b]);
       const cuts =
         f.kind === "water" || f.kind === "car" || (f.kind === "parking" && f.structure === false)
           ? buildingRingsPx(buildings, frame)
@@ -3533,12 +3633,13 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
           const lonlat = untouched ? parts[p] : pxRingToLonLat(ringPx, frame);
           const material = materialForKind(f.kind, f.heightM, lonlat, slopeTop, 0);
           if (!material) continue;
-          items.push({ ringPx, material, kind: f.kind, thin: false });
+          items.push(f.flowing ? { ringPx, material, kind: f.kind, thin: false, flowing: true } : { ringPx, material, kind: f.kind, thin: false });
         }
       }
       }
     }
   }
+  levelWaterItems(items);
   const notes = [];
   if (shortWalls) notes.push("Short walls were left out.");
   if (isSiteTypes() && frame && campZones.length) {
@@ -3635,6 +3736,7 @@ function fitOutdoorBudget(items, kinds, room, opts) {
 }
 
 module.exports = {
+  levelWaterItems,
   _closeWaterRingRaw: closeWaterRingRaw,
   pxOnFrame,
   buildingsOnFrame,

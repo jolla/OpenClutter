@@ -498,6 +498,16 @@ const DEP3_HOLES = [
 const DEP3_OUTSIDE_MS = 400;
 /** Probe count. A 576-point getSamples is what makes an out-of-coverage miss slow. */
 const DEP3_PROBE_SAMPLES = 4;
+/**
+ * Extra 3DEP reads inside coverage after an error or an empty answer. The
+ * ImageServer answers 502 in bursts of about 8 to 10 s (seen from the box on
+ * 2026-11-10), so the waits (2, 4, 6, 8 s) span about 20 s.
+ */
+const DEP3_RETRIES = 4;
+/** Wait before the next 3DEP read (times the attempt number). */
+const DEP3_RETRY_WAIT_MS = 2000;
+/** Retry only when the wait plus this much of the DEM clock is left. */
+const DEP3_RETRY_MIN_MS = 10000;
 
 const RAISED_KEYS = ["area", "height", "attenuationDbPerMeter", "slabOnly"];
 const SLOPED_KEYS = [
@@ -4623,17 +4633,47 @@ async function fetchTerrainDemWork(frame, fetchFn, opts) {
   // terrainStyle is intentionally unused here. Sloped and Raised layers share
   // this read; the mesh is built later from the same samples.
   let demOpts = opts;
+  // Inside 3DEP coverage a getSamples that errors or comes back short is
+  // usually transient (the same US draw returned bare earth a few minutes
+  // later). Retry it while the clock allows before reading GLO-30, so a US
+  // export only gets the surface DSM when 3DEP is really unavailable.
+  const retries = !probe && !skipProbe && frameHas3dep(frame) ? DEP3_RETRIES : 0;
+  const readStart = Date.now();
   if (!skipProbe) {
-    try {
-      demOpts = probe
-        ? Object.assign({}, opts, { signal: probe.signal, sampleCount: DEP3_PROBE_SAMPLES })
-        : opts;
-      samples = await fetchDemSamples(frame, fetchFn, demOpts);
-    } catch (e) {
-      if (parent && parent.aborted && !surfaceEarly) throw e;
-      if (!allowSurface) throw e;
-    } finally {
-      if (probe) probe.done();
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      let failure = null;
+      let threw = false;
+      try {
+        demOpts = probe
+          ? Object.assign({}, opts, { signal: probe.signal, sampleCount: DEP3_PROBE_SAMPLES })
+          : opts;
+        samples = await fetchDemSamples(frame, fetchFn, demOpts);
+        if (usableDemSamples(samples).length < 4) failure = new Error("3DEP returned " + (samples || []).length + " usable samples");
+      } catch (e) {
+        if (parent && parent.aborted && !surfaceEarly) throw e;
+        failure = e;
+        threw = true;
+        samples = [];
+      } finally {
+        if (probe) probe.done();
+      }
+      if (!failure) break;
+      if (parent && parent.aborted) break;
+      const why = String((failure && failure.message) || failure).slice(0, 160);
+      // budgetMs is a fixed slice, so take off what the reads already used.
+      const slice = demRemainingMs(opts);
+      const left = slice == null ? null : opts.budgetMs != null && opts.budgetMs !== "" ? slice - (Date.now() - readStart) : slice;
+      const waitMs =
+        (opts && Number.isFinite(+opts.dep3RetryWaitMs) ? Math.max(0, +opts.dep3RetryWaitMs) : DEP3_RETRY_WAIT_MS) *
+        (attempt + 1);
+      const again = attempt < retries && (left == null || left >= waitMs + DEP3_RETRY_MIN_MS);
+      if (retries) console.warn("terrain dem: USGS 3DEP read " + (attempt + 1) + " failed: " + why + (again ? ", retrying" : ""));
+      if (!again) {
+        if (threw && !allowSurface) throw failure;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      if (parent && parent.aborted) break;
     }
   }
   const usable = usableDemSamples(samples);
