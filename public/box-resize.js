@@ -268,9 +268,10 @@
 
   /**
    * Bearing used to place corners and to build the resize frame.
-   * The export sends a bearing only when the rotate switch is on
-   * (?rotate=1). A leftover nonzero degree on any other page would
-   * draw corners the request does not turn, so the switch off means 0.
+   * The export sends a bearing only when the turn handle is on
+   * (on by default; ?rotate=0 hides it). A leftover nonzero degree
+   * with the handle hidden would draw corners the request does not
+   * turn, so the handle off means 0.
    */
   function bearingForPage(rotateOn, deg) {
     const n = +deg;

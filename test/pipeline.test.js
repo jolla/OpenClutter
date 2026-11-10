@@ -1451,7 +1451,10 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(html, /id="export"[^>]*disabled/);
     assert.match(html, /\.area-clear \{/);
     assert.match(app, /class="area-clear"/);
-    assert.match(app, /aria-label="Clear">x</);
+    assert.match(app, /title="Clear area"/);
+    assert.match(app, /aria-label="Clear area"/);
+    assert.match(app, /<svg /);
+    assert.equal(/aria-label="Clear">x</.test(app), false);
     assert.equal(/\u2014/.test(html.slice(hintAt, hintAt + 180)), false);
     assert.equal(/finish-shape/.test(html), false);
     assert.equal(/Finish shape/.test(html + app), false);

@@ -200,12 +200,23 @@ describe("move and clear on the map page", () => {
     assert.match(app, /scrollWheelZoom/);
   });
 
+  it("the turn handle is on unless the page is opened with ?rotate=0", () => {
+    const start = app.indexOf("function rotatePage");
+    const body = app.slice(start, app.indexOf("let boxRotate"));
+    assert.match(body, /get\("rotate"\) !== "0"/);
+    assert.equal(/get\("rotate"\) === "1"/.test(body), false);
+    assert.match(app, /function attachRotateHandle/);
+  });
+
   it("the clear control is only on a finished rectangle, and Delete clears from the map", () => {
     assert.match(html, /\.area-clear \{/);
     assert.match(html, /width: 28px;/);
     assert.match(html, /height: 28px;/);
     assert.match(app, /class="area-clear"/);
-    assert.match(app, /aria-label="Clear">x</);
+    assert.match(app, /title="Clear area"/);
+    assert.match(app, /aria-label="Clear area"/);
+    assert.match(app, /<svg /);
+    assert.equal(/aria-label="Clear">x</.test(app), false);
     assert.match(app, /cornerLatLng\(rect, 2\)/);
     assert.match(app, /pointBeyond\(mid, tip, CLEAR_PAD_PX\)/);
     const allow = app.slice(app.indexOf("function areaClearAllowed"), app.indexOf("function removeClearControl"));

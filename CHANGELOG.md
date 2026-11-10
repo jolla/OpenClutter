@@ -29,6 +29,9 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.22** (Nov 10, 2026): page-only, every host on /dev (production gets them with the next promotion). The export worker is unchanged.
+  - Clear area: the corner control is a small muted grey trash can (hover makes it a little clearer), with the accessible name Clear area. Same place and behavior as the 1.3.20 x: it clears a finished rectangle so it can be redrawn. Delete and Backspace still clear it.
+  - Turn handle on by default: a finished box shows the 1.3.20 rotate handle without ?rotate=1. Drag it to turn the box, double-click it for north-up. ?rotate=0 hides the handle and sends no bearing.
 - **1.3.21** (Nov 10, 2026): terrain demo bug fixes, every host on /dev (production gets them with the next promotion). Background exports run them after the export worker is next deployed.
   - USGS 3DEP first in the US: a failed or empty 3DEP read inside its coverage is retried up to 4 times (2, 4, 6 s waits, only while at least 10 s of the terrain budget is left) before Copernicus GLO-30 is used. USGS answers with short bursts of fast 502 errors, and one bad answer sent Bingham Canyon UT and Meteor Crater AZ to the GLO-30 surface model.
   - No fake trees on steep bare ground: lidar canopy height on a slope steeper than 0.7 (rise over run across the 3x3 ground cells) is measured from the high side, not the lowest ground in reach, so crater walls and pit benches no longer turn rock and shrubs into 4 to 9 m crowns (Meteor Crater 1,067 trees before). With terrain on, a canopy piece on ground steeper than 0.45 that shows no foliage on the photo is left out, with a map note.

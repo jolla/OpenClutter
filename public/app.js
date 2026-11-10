@@ -489,17 +489,16 @@ const OUTLINE = {
 const drawn = new L.FeatureGroup();
 map.addLayer(drawn);
 
-// Feedback #18 prototype, /dev only and only with ?rotate=1: a small round
-// handle above a drawn box turns it. Drag the handle to turn the box about
-// its center (snaps to whole degrees, and to north-up within 2 degrees);
-// double-click it to put the box back north-up. The export then comes out
-// square to the turned box. Without ?rotate=1 nothing here runs.
+// Feedback #18: a small round handle above a drawn box turns it. Drag the
+// handle to turn the box about its center (snaps to whole degrees, and to
+// north-up within 2 degrees); double-click it to put the box back north-up.
+// The export then comes out square to the turned box. The handle is on by
+// default from 1.3.22. ?rotate=0 hides it and sends no bearing.
 function rotatePage() {
-  // Every page from 1.3.20; ?rotate=1 stays the switch that shows the handle.
   try {
-    return new URLSearchParams(location.search || "").get("rotate") === "1";
+    return new URLSearchParams(location.search || "").get("rotate") !== "0";
   } catch (err) {
-    return false;
+    return true;
   }
 }
 
@@ -628,7 +627,7 @@ function paintResizedRect(rect, commit) {
   }
 }
 
-/** Degrees the corners and the export share. Off the rotate switch this is 0. */
+/** Degrees the corners and the export share. Hidden handle (?rotate=0) means 0. */
 function selectionBearing() {
   if (!window.OpenClutterBoxResize) return rotatePage() && boxRotate ? boxRotate : 0;
   return OpenClutterBoxResize.bearingForPage(!!rotatePage(), boxRotate);
@@ -835,7 +834,7 @@ function pointerInsideFinishedArea(ev) {
   return OpenClutterBoxResize.containsPoint(rect, pt.lat, pt.lng);
 }
 
-/** rotate for the export request: only a turned box on a ?rotate=1 page. */
+/** rotate for the export request: only when the turn handle is on. */
 function rotateForExport() {
   return rotatePage() && boxRotate ? boxRotate : undefined;
 }
@@ -899,7 +898,7 @@ function hideAreaChip() {
 }
 
 function clearButtonHtml() {
-  return '<button type="button" class="area-clear" title="Clear area" aria-label="Clear">x</button>';
+  return '<button type="button" class="area-clear" title="Clear area" aria-label="Clear area"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path fill="currentColor" d="M11 1.75V3h2.25a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1 0-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75ZM4.496 6.675l.66 6.6a.25.25 0 0 0 .249.225h5.19a.25.25 0 0 0 .249-.225l.66-6.6a.75.75 0 0 1 1.492.149l-.66 6.6A1.748 1.748 0 0 1 10.595 15h-5.19a1.75 1.75 0 0 1-1.741-1.575l-.66-6.6a.75.75 0 1 1 1.492-.15ZM6.5 1.75V3h3V1.75a.25.25 0 0 0-.25-.25h-2.5a.25.25 0 0 0-.25.25Z"/></svg></button>';
 }
 
 function clearControlEvent(ev) {
