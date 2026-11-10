@@ -100,27 +100,41 @@ function gridLattice(frame, cellM) {
  * Crater, 2026-11-10: three quarters of its lidar canopy cells stood on
  * slopes of 0.7 or more). Where the ground around the cell rises at least
  * STEEP_GROUND per metre, the highest ground in the 3 x 3 block is used
- * instead. A real crown on that slope keeps most of its height.
+ * instead. A real crown on that slope keeps most of its height. At 0.4 the
+ * palo verde on the Saguaro hills (canopy bench arizona-desert) lost half
+ * its recall; at 0.7, with the run measured between the lowest and highest
+ * ground cell, it keeps 98% of its cells and Meteor Crater still drops two
+ * thirds of its fake ones.
  */
-const STEEP_GROUND = 0.4;
+const STEEP_GROUND = 0.7;
 function canopyGroundAt(grid, ix, iy) {
   const g = groundAt(grid, ix, iy);
   if (g == null) return g;
   let lo = Infinity;
   let hi = -Infinity;
+  let loAt = null;
+  let hiAt = null;
   let n = 0;
   for (let dy = -1; dy <= 1; dy++) {
     for (let dx = -1; dx <= 1; dx++) {
       const r = grid.cells.get(ix + dx + "," + (iy + dy));
       if (!r || r.g == null) continue;
       n++;
-      if (r.g < lo) lo = r.g;
-      if (r.g > hi) hi = r.g;
+      if (r.g < lo) {
+        lo = r.g;
+        loAt = [dx, dy];
+      }
+      if (r.g > hi) {
+        hi = r.g;
+        hiAt = [dx, dy];
+      }
     }
   }
-  if (n < 3) return g;
+  if (n < 3 || !loAt || !hiAt) return g;
   const cellM = grid.cellGroundM > 0 ? grid.cellGroundM : grid.cell > 0 ? grid.cell : 2;
-  if (!((hi - lo) / (2 * cellM) >= STEEP_GROUND)) return g;
+  // Rise over the run between the lowest and the highest ground cell.
+  const run = Math.max(1, Math.hypot(hiAt[0] - loAt[0], hiAt[1] - loAt[1])) * cellM;
+  if (!((hi - lo) / run >= STEEP_GROUND)) return g;
   return Math.max(g, hi);
 }
 
