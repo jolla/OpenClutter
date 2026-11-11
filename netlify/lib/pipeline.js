@@ -3584,7 +3584,11 @@ function buildClutter({
   const buildingCeiling =
     areaCap > MAX_ATTENUATION_AREAS ? Math.max(MAX_BUILDINGS, areaCap) : MAX_BUILDINGS;
   if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage footprints\n");
-  const fp = footprintsToClutter(featureList, frame, affine, slopeTop, { buildingCeiling });
+  const fp = require("./stage-clock").timeSubstageSync(
+    "footprintsToClutter",
+    () => footprintsToClutter(featureList, frame, affine, slopeTop, { buildingCeiling }),
+    "features=" + featureList.length
+  );
   if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage footprints-done\n");
   const foliageOn = includeFoliage === true;
   const veg = foliagePack
@@ -3707,19 +3711,24 @@ function buildClutter({
     if (includeRvs === true && (needsPitchImage(features) || roofWantsDocks(dockRings, frame))) {
       vehiclePlate = decodePlate(vehicleImagery && vehicleImagery.imgBuf ? vehicleImagery.imgBuf : imgBuf);
     }
-    planned = planOutdoor({
-      features,
-      frame,
-      slopeTop,
-      buildings,
-      parkingRings: includeParking === true && outdoorOn && outdoorMiss !== true ? fp.parkingRings : [],
-      segmentCaps:
-        deckCap > 0
-          ? { guideway: deckCap, bridge: deckCap, footbridge: Math.max(12, Math.floor(deckCap / 5)) }
-          : undefined,
-      vehiclePlate,
-      vehicleFrame: vehicleImagery && vehicleImagery.frame ? vehicleImagery.frame : null,
-    });
+    planned = require("./stage-clock").timeSubstageSync(
+      "planOutdoor",
+      () =>
+        planOutdoor({
+          features,
+          frame,
+          slopeTop,
+          buildings,
+          parkingRings: includeParking === true && outdoorOn && outdoorMiss !== true ? fp.parkingRings : [],
+          segmentCaps:
+            deckCap > 0
+              ? { guideway: deckCap, bridge: deckCap, footbridge: Math.max(12, Math.floor(deckCap / 5)) }
+              : undefined,
+          vehiclePlate,
+          vehicleFrame: vehicleImagery && vehicleImagery.frame ? vehicleImagery.frame : null,
+        }),
+      "features=" + features.length
+    );
     converted = outdoorToOi(planned.items, frame.imgW, frame.imgH, frame.mpuX);
   }
   if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage outdoor-done\n");

@@ -65,6 +65,7 @@ const { placesFromElements } = require("./map-notes");
 
 const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
 const overpass = require("./overpass");
+const stageClock = require("./stage-clock");
 const { isResilient, isSiteTypes, isShadowTrailers, isCampNodes, isSeaWater } = require("./export-mode");
 const FETCH_MS = 3200;
 const POLE_CAP = 48;
@@ -3639,7 +3640,8 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
       }
     }
   }
-  levelWaterItems(items);
+  const waterN = items.reduce((n, it) => n + (it && it.kind === "water" && !it.flowing ? 1 : 0), 0);
+  stageClock.timeSubstageSync("levelWaterItems", () => levelWaterItems(items), "water=" + waterN + " items=" + items.length);
   const notes = [];
   if (shortWalls) notes.push("Short walls were left out.");
   if (isSiteTypes() && frame && campZones.length) {

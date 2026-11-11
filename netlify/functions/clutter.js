@@ -2901,7 +2901,7 @@ async function handleClutterNorthUp(event) {
     if (imageryCtx && imageryCtx.esriCitationJob && imageryCtx.esriCitation === undefined) {
       await Promise.race([imageryCtx.esriCitationJob, new Promise((r) => setTimeout(r, 300))]);
     }
-    return buildClutter({
+    return stageClock.timeSubstageSync("buildClutter", () => buildClutter({
       palmPoints,
       frame,
       footprintsGeojson: { type: "FeatureCollection", features: list },
@@ -2964,7 +2964,7 @@ async function handleClutterNorthUp(event) {
           : null,
       leafOnSource: leafOnPhoto ? leafOnPhoto.source : "",
       imagery: imageryCtx ? imagerySource.imageryInfo(imageryCtx) : null,
-    });
+    }));
   }
 
   let shrinkNote = "";

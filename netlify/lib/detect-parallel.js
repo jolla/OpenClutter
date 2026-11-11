@@ -1,5 +1,7 @@
 "use strict";
 
+const stageClock = require("./stage-clock");
+
 /**
  * Run canopy tracing, foliage clipping, and vehicle scans on the CPU
  * pool. Canopy and foliage are many small tiles on a pull queue: a
@@ -435,7 +437,11 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
       nonzero: grid.nonzero | 0,
     }))
   );
-  const merged = mergeFoliage(assembled, meta);
+  const merged = stageClock.timeSubstageSync(
+    "mergeFoliage",
+    () => mergeFoliage(assembled, meta),
+    "parts=" + assembled.length
+  );
   return merged;
 }
 
@@ -693,7 +699,11 @@ async function outdoorParallel(args) {
   try {
     const vehicleFrame = args && args.vehicleFrame ? args.vehicleFrame : null;
     const vehicleBuf = vehicleFrame && args.vehicleImgBuf ? args.vehicleImgBuf : args.imgBuf;
-    const ready = await scanVehicles(features, frame, args.buildings, vehicleBuf, vehicleFrame, args && args.dockRingsLL, args && args.dockGuards);
+    const ready = await stageClock.timeSubstage(
+      "scanVehicles",
+      () => scanVehicles(features, frame, args.buildings, vehicleBuf, vehicleFrame, args && args.dockRingsLL, args && args.dockGuards),
+      "features=" + features.length
+    );
     scanned = ready.scanned;
     plate = ready.plate;
   } catch {
@@ -710,7 +720,7 @@ async function outdoorParallel(args) {
     }
   }
   try {
-    const raw = await runOne("plan-outdoor", {
+    const raw = await stageClock.timeSubstage("planOutdoor", () => runOne("plan-outdoor", {
       features,
       frame,
       buildings: args.buildings || [],
@@ -722,7 +732,7 @@ async function outdoorParallel(args) {
       buffer: plate && plate.buffer,
       width: plate && plate.width,
       height: plate && plate.height,
-    });
+    }), "features=" + features.length);
     if (typeof raw === "string") return JSON.parse(raw);
     return raw;
   } catch (err) {

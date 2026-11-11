@@ -84,6 +84,11 @@ function snapshot(extra) {
     }
   }
   cached.sort();
+  const substages = {};
+  const names = Object.keys(spans);
+  for (let i = 0; i < names.length; i++) {
+    if (names[i].slice(0, 4) === "sub:") substages[names[i].slice(4)] = spans[names[i]] | 0;
+  }
   const more = extra || {};
   return {
     geocodeMs: spans.geocode | 0,
@@ -106,7 +111,38 @@ function snapshot(extra) {
     totalMs: clock ? Date.now() - clock.t0 : 0,
     cached,
     areaM2: more.areaM2 > 0 ? Math.round(more.areaM2) : 0,
+    substages,
   };
+}
+
+function logSubstage(event, name, extra) {
+  let line = "substage " + event + " " + name;
+  if (extra) line += " " + extra;
+  process.stderr.write(line + "\n");
+}
+
+function timeSubstageSync(name, fn, extra) {
+  const t0 = Date.now();
+  logSubstage("start", name, extra);
+  const endSpan = beginSpan("sub:" + name);
+  try {
+    return fn();
+  } finally {
+    endSpan();
+    logSubstage("done", name, "duration " + ((Date.now() - t0) / 1000).toFixed(1) + "s");
+  }
+}
+
+async function timeSubstage(name, fn, extra) {
+  const t0 = Date.now();
+  logSubstage("start", name, extra);
+  const endSpan = beginSpan("sub:" + name);
+  try {
+    return await fn();
+  } finally {
+    endSpan();
+    logSubstage("done", name, "duration " + ((Date.now() - t0) / 1000).toFixed(1) + "s");
+  }
 }
 
 module.exports = {
@@ -115,6 +151,9 @@ module.exports = {
   beginSpan,
   timeSpan,
   timeSpanSync,
+  timeSubstage,
+  timeSubstageSync,
+  logSubstage,
   noteCache,
   snapshot,
 };
