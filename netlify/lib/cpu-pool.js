@@ -290,6 +290,15 @@ async function runQueue(task, payloads) {
       if (i >= list.length) return;
       const payload = list[i];
       const tileId = payload && payload.tileId != null ? payload.tileId : task + "-" + i;
+      if (process.env.OPENCLUTTER_STAGE_LOG) {
+        let extra = "";
+        if (payload && payload.polygons) extra += " polygons=" + payload.polygons.length;
+        if (payload && payload.width) {
+          extra += " grid=" + payload.width + "x" + payload.height;
+          if (payload.seedY0 != null) extra += " y=" + payload.seedY0 + ".." + payload.seedY1;
+        }
+        process.stderr.write("substage start tile " + tileId + " " + task + extra + "\n");
+      }
       out[i] = await runOn(workerIndex, task, payload, {
         balance: true,
         onTime(info) {
