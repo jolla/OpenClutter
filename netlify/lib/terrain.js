@@ -4287,6 +4287,9 @@ function splitRingByFloor(terrain, ring, opts) {
   function ringsFromGroups(groups) {
     const pieces = [];
     for (const group of groups.values()) {
+      if (process.env.OPENCLUTTER_STAGE_LOG && group.length > 8) {
+        try { require("fs").writeSync(2, "substage splitRingByFloor-group n=" + group.length + "\n"); } catch (_) {}
+      }
       // A long pit-wall group can hang inside polygon-clipping. Clip the
       // stand to each convex cell instead, which stays linear in the ring.
       if (keepPartial && group.length > 40) {

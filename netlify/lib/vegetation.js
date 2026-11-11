@@ -2954,6 +2954,12 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
         out.push(seat);
         continue;
       }
+      // A single stand over a pit wall can be square-kilometres. Band and
+      // 50 m boolean splits on that ring are the leftover Trees hang.
+      if (m2 > 80000) {
+        out.push(seat);
+        continue;
+      }
       // Prototype (feedback #9, off by default): a piece the canopy grid trace
       // already cut along its height bands ships whole; any other wide stand
       // is cut along the canopy's own height bands instead of a 50 m grid.
@@ -3043,6 +3049,14 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     // pieces belong to the tile that owns that crown.
     if (area.context) continue;
     const tOne = Date.now();
+    if (stageLog) {
+      stageWrite(
+        "substage foliage-assemble-seat-start verts=" +
+          ((area.ringPx && area.ringPx.length) || 0) +
+          " m2=" +
+          Math.round(canopyAreaM2(area.ringPx, frame) || 0)
+      );
+    }
     const seats = tileSeats(area.banded ? seatsFor(area).map((st) => Object.assign(st, { banded: true })) : seatsFor(area));
     if (stageLog && Date.now() - tOne > 1000) {
       stageWrite(
