@@ -344,14 +344,14 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
       chmGrid: grid ? copyGrid(grid) : null,
     });
   }
-  const masked = await runOne("canopy-mask", {
+  const masked = await stageClock.timeSubstage("canopy-mask", () => runOne("canopy-mask", {
     grid: copyGrid(grid),
     frame,
     buildingRings: (opts && opts.buildingRings) || [],
     maskRings: (opts && opts.maskRings) || [],
     maskPolygons: (opts && opts.maskPolygons) || [],
     hits: (opts && opts.canopyHits) || [],
-  });
+  }));
   const bands = bandsForGrid(grid, threads);
   const tilePayloads = [];
   if (masked && masked.values && masked.nonzero > 0 && masked.width > 1) {
@@ -378,7 +378,7 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
       });
     }
   }
-  const traced = tilePayloads.length ? await runQueue("canopy-tile", tilePayloads) : [];
+  const traced = tilePayloads.length ? await stageClock.timeSubstage("canopy-tiles", () => runQueue("canopy-tile", tilePayloads), "tiles=" + tilePayloads.length) : [];
   let crowns = [];
   for (let i = 0; i < traced.length; i++) {
     const part = traced[i] && traced[i].crowns;
@@ -414,7 +414,7 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
   const terrain = plainData(opts.terrain);
   const chmShared = shareValues(grid);
   const foliageBase = tilePayloads.length;
-  const assembled = await runQueue(
+  const assembled = await stageClock.timeSubstage("foliage-assemble", () => runQueue(
     "foliage-assemble",
     groups.map((group, i) => ({
       tileId: "canopy-" + (foliageBase + i),
@@ -436,7 +436,7 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
       height: grid.height | 0,
       nonzero: grid.nonzero | 0,
     }))
-  );
+  ), "tiles=" + groups.length);
   const merged = stageClock.timeSubstageSync(
     "mergeFoliage",
     () => mergeFoliage(assembled, meta),

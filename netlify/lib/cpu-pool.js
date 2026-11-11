@@ -146,15 +146,22 @@ function setExportLog(jobId, log) {
 }
 
 function noteTile(tileId, info) {
-  if (!logState.jobId || !info) return;
-  const line = tileTimingLine(
-    logState.jobId,
-    tileId,
-    info.threadId,
-    info.startedAt - logState.t0,
-    info.finishedAt - info.startedAt
-  );
-  logState.log(line);
+  if (!info) return;
+  if (logState.jobId) {
+    const line = tileTimingLine(
+      logState.jobId,
+      tileId,
+      info.threadId,
+      info.startedAt - logState.t0,
+      info.finishedAt - info.startedAt
+    );
+    logState.log(line);
+    return;
+  }
+  if (process.env.OPENCLUTTER_STAGE_LOG) {
+    const duration = ((info.finishedAt - info.startedAt) / 1000).toFixed(1);
+    process.stderr.write("substage done tile " + tileId + " thread " + info.threadId + " duration " + duration + "s\n");
+  }
 }
 
 function workerFile() {
