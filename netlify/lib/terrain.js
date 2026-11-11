@@ -4199,36 +4199,61 @@ function splitRingByFloor(terrain, ring, opts) {
   const hostArea = meterAreaAbs(bldg);
   const useRamps =
     terrain.clipboard && terrain.clipboard.slopedFloors && terrain.clipboard.slopedFloors.length > 0;
+  function unionAll(geoms) {
+    let list = geoms.slice();
+    while (list.length > 1) {
+      const next = [];
+      for (let i = 0; i < list.length; i += 2) {
+        if (i + 1 >= list.length) {
+          next.push(list[i]);
+          continue;
+        }
+        try {
+          next.push(polygonClipping.union(list[i], list[i + 1]));
+        } catch {
+          next.push(list[i]);
+          next.push(list[i + 1]);
+        }
+      }
+      list = next;
+    }
+    return list[0] || null;
+  }
   function ringsFromGroups(groups) {
     const pieces = [];
     for (const group of groups.values()) {
-      // Intersect each terrain cell with the subject first, after cropping
-      // the subject to that cell, then union the small hits. Unioning every
-      // ramp strip and then cutting the whole stand was hour-scale on a
-      // deep pit (Bingham).
-      let mask = null;
-      let ok = true;
-      for (let i = 0; i < group.length; i++) {
-        const cell = group[i].clip;
-        const tight = clipRingToBbox(bldg, ringBounds(cell), 0.5);
-        if (!tight) continue;
-        let piece = null;
-        try {
-          piece = polygonClipping.intersection([[tight]], [[cell]]);
-        } catch {
-          piece = null;
+      // Pairwise union of the terrain cells, then one intersection with the
+      // cropped stand. Incremental union of every ramp, or of every
+      // already-cut hit, was hour-scale on a deep pit.
+      const cells = [];
+      for (let i = 0; i < group.length; i++) cells.push([[group[i].clip]]);
+      if (!cells.length) continue;
+      const mask = cells.length === 1 ? cells[0] : unionAll(cells);
+      if (!mask) continue;
+      let subject = [[bldg]];
+      try {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const poly of mask) {
+          const ring = poly && poly[0];
+          if (!ring) continue;
+          const b = ringBounds(ring);
+          if (b.minX < minX) minX = b.minX;
+          if (b.minY < minY) minY = b.minY;
+          if (b.maxX > maxX) maxX = b.maxX;
+          if (b.maxY > maxY) maxY = b.maxY;
         }
-        if (!piece || !piece.length) continue;
-        try {
-          mask = mask ? polygonClipping.union(mask, piece) : piece;
-        } catch {
-          ok = false;
-          mask = null;
-          break;
-        }
+        const tight = Number.isFinite(minX) ? clipRingToBbox(bldg, { minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY }, 0.5) : null;
+        if (tight) subject = [[tight]];
+      } catch {
+        subject = [[bldg]];
       }
-      if (!ok || !mask) continue;
-      const rings = ringsFromClipGeom(mask, frame, keepPartial ? 12 : 30);
+      let hit;
+      try {
+        hit = polygonClipping.intersection(subject, mask);
+      } catch {
+        continue;
+      }
+      const rings = ringsFromClipGeom(hit, frame, keepPartial ? 12 : 30);
       for (let i = 0; i < rings.length; i++) pieces.push(rings[i]);
     }
     return pieces;
