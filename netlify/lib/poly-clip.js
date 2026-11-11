@@ -897,7 +897,64 @@ function ringsMinus(subject, cuts) {
   return pieces;
 }
 
-function clipFoliageRing(ring, clipSet) {
+
+function clipRingToBbox(ring, bb, pad) {
+  if (!ring || !bb) return null;
+  const p = pad > 0 ? pad : 0;
+  const minX = bb.minX - p;
+  const maxX = bb.maxX + p;
+  const minY = bb.minY - p;
+  const maxY = bb.maxY + p;
+  const rb = bounds(ring);
+  if (rb.maxX < minX || rb.minX > maxX || rb.maxY < minY || rb.minY > maxY) return null;
+  if (rb.minX >= minX && rb.maxX <= maxX && rb.minY >= minY && rb.maxY <= maxY) {
+    return closeRing(openRing(ring));
+  }
+  let r = ring;
+  r = clipHalfPlane(r, (pt) => pt[0] >= minX, (a, b) => {
+    const t = (minX - a[0]) / (b[0] - a[0] || 1e-12);
+    return [minX, a[1] + t * (b[1] - a[1])];
+  });
+  if (!r) return null;
+  r = clipHalfPlane(r, (pt) => pt[0] <= maxX, (a, b) => {
+    const t = (maxX - a[0]) / (b[0] - a[0] || 1e-12);
+    return [maxX, a[1] + t * (b[1] - a[1])];
+  });
+  if (!r) return null;
+  r = clipHalfPlane(r, (pt) => pt[1] >= minY, (a, b) => {
+    const t = (minY - a[1]) / (b[1] - a[1] || 1e-12);
+    return [a[0] + t * (b[0] - a[0]), minY];
+  });
+  if (!r) return null;
+  r = clipHalfPlane(r, (pt) => pt[1] <= maxY, (a, b) => {
+    const t = (maxY - a[1]) / (b[1] - a[1] || 1e-12);
+    return [a[0] + t * (b[0] - a[0]), maxY];
+  });
+  return r;
+}
+
+function clipGeomToBbox(geom, bb, pad) {
+  const out = [];
+  for (const poly of geom || []) {
+    if (!poly || !poly.length) continue;
+    const rings = [];
+    for (const ring of poly) {
+      const clipped = clipRingToBbox(ring, bb, pad);
+      if (clipped && openRing(clipped).length >= 3) rings.push(clipped);
+    }
+    if (rings.length) out.push(rings);
+  }
+  return out.length ? out : null;
+}
+
+// Opening more than a handful of roof holes in one ring is unreliable and
+// can stall polygon-clipping on a large stand or a site-wide pavement mask.
+// Split the subject first, and crop every mask to the subject bbox.
+const CLIP_HIT_SPLIT = 4;
+const CLIP_VERT_SPLIT = 96;
+const CLIP_SPLIT_DEPTH = 6;
+
+function clipFoliageRing(ring, clipSet, depth) {
   const closed = orientPositive(ring);
   if (closed.length < 4) return [];
   if (!clipSet) return [closed];
@@ -923,6 +980,20 @@ function clipFoliageRing(ring, clipSet) {
     }
   }
   if (!geoms.length) return [closed];
+  const verts = openRing(closed).length;
+  const depthNow = depth | 0;
+  if (depthNow < CLIP_SPLIT_DEPTH && (geoms.length > CLIP_HIT_SPLIT || verts > CLIP_VERT_SPLIT)) {
+    const parts = splitRingBox(closed);
+    const halved = parts.length === 2 ? parts : splitRing(closed);
+    if (halved.length === 2) {
+      const out = [];
+      for (let s = 0; s < halved.length; s++) {
+        const pieces = clipFoliageRing(halved[s], clipSet, depthNow + 1);
+        for (let k = 0; k < pieces.length; k++) out.push(pieces[k]);
+      }
+      if (out.length) return out;
+    }
+  }
   // One roof at a time. Unioning every footprint first filled the gap between
   // campground roofs and erased the tree row that sits there. A buffer that
   // blows up is not allowed to remove more than the roof plus its rim.
@@ -948,7 +1019,8 @@ function clipFoliageRing(ring, clipSet) {
     // the overlap. A miter that runs away from the roof is cut as the
     // footprint ring instead.
     const sane = maskArea > 0 && maskArea < rim * 3;
-    const useMask = sane ? mask : [[hit.ring]];
+    const useMask = clipGeomToBbox(sane ? mask : [[hit.ring]], bb, Math.max(2, clipSet.bufferPx || 0) + 2);
+    if (!useMask) continue;
     let overlap = 0;
     try {
       overlap = multiAreaPx(polygonClipping.intersection(geom, useMask));
@@ -1058,6 +1130,8 @@ module.exports = {
   intersectionAreaPx,
   createClipSet,
   clipFoliageRing,
+  clipRingToBbox,
+  clipGeomToBbox,
   simpleExteriorRings,
   dissolveFoliageRings,
   ringsMinus,

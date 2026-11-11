@@ -303,3 +303,58 @@ describe("foliage rings stay off buildings and water", () => {
     }
   });
 });
+
+describe("foliage clip stays cheap on large masks", () => {
+  const { createClipSet, clipFoliageRing, pointInRing, intersectionAreaPx } = require("../netlify/lib/poly-clip");
+
+  function denseRect(x0, y0, x1, y1, step) {
+    const ring = [];
+    for (let x = x0; x < x1; x += step) ring.push([x, y0]);
+    for (let y = y0; y < y1; y += step) ring.push([x1, y]);
+    for (let x = x1; x > x0; x -= step) ring.push([x, y1]);
+    for (let y = y1; y > y0; y -= step) ring.push([x0, y]);
+    ring.push([x0, y0]);
+    return ring;
+  }
+
+  it("clips a small canopy against a huge pavement ring quickly", () => {
+    const canopy = rect(100, 100, 140, 140);
+    const pavement = denseRect(120, 0, 4000, 4000, 2);
+    assert.ok(pavement.length > 4000, "pavement ring is dense");
+    const t0 = Date.now();
+    const pieces = clipFoliageRing(canopy, createClipSet([], [], [[pavement]], 4));
+    const ms = Date.now() - t0;
+    assert.ok(ms < 2000, "clip finished in " + ms + "ms");
+    assert.ok(pieces.length >= 1, "keeps the uncut side of the canopy");
+    const keptLeft = pieces.some((piece) => pointInRing([110, 120], piece));
+    const keptRight = pieces.some((piece) => pointInRing([130, 120], piece));
+    assert.equal(keptLeft, true);
+    assert.equal(keptRight, false);
+  });
+
+  it("clips a large stand off many buildings quickly", () => {
+    const stand = rect(0, 0, 800, 800);
+    const buildings = [];
+    for (let y = 40; y < 760; y += 40) {
+      for (let x = 40; x < 760; x += 40) buildings.push(rect(x, y, x + 12, y + 12));
+    }
+    assert.ok(buildings.length > 200);
+    const t0 = Date.now();
+    const pieces = clipFoliageRing(stand, createClipSet(buildings, [], [], 4));
+    const ms = Date.now() - t0;
+    assert.ok(ms < 4000, "clip finished in " + ms + "ms");
+    assert.ok(pieces.length >= 1, "stand remains around the roofs");
+    assert.equal(pointInRing([46, 46], pieces.find((p) => p) || []), false);
+    let onRoof = 0;
+    for (const piece of pieces) {
+      if (pointInRing([46, 46], piece)) onRoof++;
+    }
+    assert.equal(onRoof, 0, "roof center is not inside foliage");
+    // A point in the aisle between buildings stays in the stand.
+    let inAisle = 0;
+    for (const piece of pieces) {
+      if (pointInRing([20, 20], piece)) inAisle++;
+    }
+    assert.ok(inAisle >= 1, "aisle canopy is kept");
+  });
+});

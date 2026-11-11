@@ -2653,7 +2653,49 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   polygons.sort((a, b) => ringPxArea(b.ringPx) - ringPxArea(a.ringPx));
   let ownedPolygons = 0;
   for (let i = 0; i < polygons.length; i++) if (!polygons[i].context) ownedPolygons++;
+  const stageLog = process.env.OPENCLUTTER_STAGE_LOG;
+  if (stageLog) {
+    let verts = 0;
+    let maxV = 0;
+    for (let i = 0; i < polygons.length; i++) {
+      const n = polygons[i].ringPx ? polygons[i].ringPx.length : 0;
+      verts += n;
+      if (n > maxV) maxV = n;
+    }
+    let extras = 0;
+    let extraVerts = 0;
+    let extraMax = 0;
+    const buildings = clipSet && clipSet.buildings ? clipSet.buildings.length : 0;
+    if (clipSet && clipSet.extras) {
+      extras = clipSet.extras.length;
+      for (let i = 0; i < clipSet.extras.length; i++) {
+        const n = clipSet.extras[i].ring ? clipSet.extras[i].ring.length : 0;
+        extraVerts += n;
+        if (n > extraMax) extraMax = n;
+      }
+    }
+    process.stderr.write(
+      "substage foliage-assemble-detail polygons=" +
+        polygons.length +
+        " owned=" +
+        ownedPolygons +
+        " verts=" +
+        verts +
+        " maxVerts=" +
+        maxV +
+        " buildings=" +
+        buildings +
+        " extras=" +
+        extras +
+        " extraVerts=" +
+        extraVerts +
+        " extraMax=" +
+        extraMax +
+        "\n"
+    );
+  }
   if (prof) tProf = profile.now();
+  const tClip = Date.now();
   // A lidar-segmented tree partitions measured cells with its neighbours, so
   // it skips the overlap trim: that trim cut neighbouring trees into slivers
   // and dropped them. Each one is clipped to roofs and water on its own.
@@ -2670,12 +2712,23 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     pushCanopy(poly.ringPx, poly.material, "polygon", poly.context);
   }
   if (prof) profile.add("clip", profile.msSince(tProf));
+  if (stageLog) {
+    process.stderr.write(
+      "substage foliage-assemble-clip areas=" + oiAreas.length + " seg=" + segAreas.length + " duration " + ((Date.now() - tClip) / 1000).toFixed(1) + "s\n"
+    );
+  }
 
   // Clip against roofs, water, and ski runs, then dissolve so two patches do
   // not paint green on green. Clipboard follows the dissolved rings.
   if (prof) tProf = profile.now();
+  const tDissolve = Date.now();
   const dissolved = dissolveFoliageRings(oiAreas, clipSet).concat(segAreas);
   if (prof) profile.add("dissolve", profile.msSince(tProf));
+  if (stageLog) {
+    process.stderr.write(
+      "substage foliage-assemble-dissolve areas=" + dissolved.length + " duration " + ((Date.now() - tDissolve) / 1000).toFixed(1) + "s\n"
+    );
+  }
   oiAreas.length = 0;
   overlayRings.length = 0;
   const slopeTop = opts && typeof opts.slopeTop === "function" ? opts.slopeTop : null;
