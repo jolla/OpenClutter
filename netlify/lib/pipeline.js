@@ -94,13 +94,14 @@ const DEV_TOTAL_BUDGET = 9700000;
 /** Lowest JSON budget the image rule can leave; a bigger image is the user's map choice. */
 const DEV_JSON_FLOOR = 1000000;
 /**
- * /dev-host budget after Hamina raised its import cap to 50 MiB of
- * uncompressed project JSON (and 50 MiB compressed). 45 MiB leaves a
- * safety margin under 50 MiB = 52,428,800. The map image is a separate
- * blob upload and does not come out of this budget. Production keeps
- * DEV_JSON_BUDGET / DEV_TOTAL_BUDGET.
+ * /dev JSON budget. Change this one number after the Hamina import bisect.
+ * 15,000,000 bytes imported on test-eu (Jerry Bot, 11 Nov 2026); 30,000,000
+ * failed with "Couldn't import the document". 14 MB is a safe default under
+ * the size that is known to work. The map image is a separate blob upload
+ * and does not come out of this budget. Production keeps DEV_JSON_BUDGET /
+ * DEV_TOTAL_BUDGET. A /dev override may still go up to DEV_HOST_JSON_MAX.
  */
-const DEV_HOST_JSON_BUDGET = 45 * 1024 * 1024;
+const DEV_HOST_JSON_BUDGET = 14 * 1000 * 1000;
 /** Override ceiling on /dev; 50 MiB is the new Hamina hard cap. */
 const DEV_HOST_JSON_MAX = 50 * 1024 * 1024;
 /** Sanity cap on /dev so a large wooded draw can fill the JSON budget. */
@@ -420,8 +421,8 @@ function coverageSummary(stats) {
     const json = stats.jsonBudget > 0 ? stats.jsonBudget : DEV_HOST_JSON_BUDGET;
     line +=
       " Byte budget " +
-      (json / (1024 * 1024)).toFixed(2) +
-      " MiB of JSON (map image is a separate upload). Sanity cap " +
+      (json / 1e6).toFixed(2) +
+      " MB of JSON (map image is a separate upload). Sanity cap " +
       (cap || DEV_HOST_AREA_CAP) +
       ".";
   } else if (stats && stats.totalBudget > 0) {

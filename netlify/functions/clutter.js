@@ -1593,7 +1593,7 @@ async function handleClutterNorthUp(event) {
   // From 1.2.29 the raised Hamina budget: 5.8 MB of JSON and 9.7 MB of JSON
   // plus map image (production used 4.9 MB of JSON before 1.2.41).
   exportMode.setBigBudget(true);
-  // Raised Hamina caps (Nov 2026): ~45 MiB of JSON and a 4.9 MB paste
+  // Raised Hamina caps (Nov 2026): DEV_HOST_JSON_BUDGET of JSON and a 4.9 MB paste
   // ceiling, /dev hosts only. Production stays on the 5.8 / 9.7 MB budget.
   exportMode.setDevImportCaps(testHost);
   // 1.2.37 lidar canopy checked on the photo runs on every host. The 1.2.39

@@ -123,11 +123,11 @@ describe("1.2.29 /dev Hamina budget", () => {
     assert.equal(prodUi.some((l) => /map image counts/.test(l)), false);
   });
 
-  it("on /dev hosts uses 45 MiB of JSON and does not shrink it by the map image", () => {
+  it("on /dev hosts uses DEV_HOST_JSON_BUDGET of JSON and does not shrink it by the map image", () => {
     exportMode.setBigBudget(true);
     exportMode.setDevImportCaps(true);
-    assert.equal(DEV_HOST_JSON_BUDGET, 45 * 1024 * 1024);
-    assert.ok(DEV_HOST_JSON_BUDGET < 50 * 1024 * 1024);
+    assert.equal(DEV_HOST_JSON_BUDGET, 14 * 1000 * 1000);
+    assert.ok(DEV_HOST_JSON_BUDGET < 15 * 1000 * 1000);
     assert.equal(effectiveJsonBudget(0, 0), DEV_HOST_JSON_BUDGET);
     assert.equal(effectiveJsonBudget(0, 8e6), DEV_HOST_JSON_BUDGET);
     assert.equal(effectiveJsonBudget(0, 20e6), DEV_HOST_JSON_BUDGET);
@@ -138,7 +138,10 @@ describe("1.2.29 /dev Hamina budget", () => {
     assert.equal("totalBudget" in dev.stats, false);
     assert.equal(dev.stats.devImportCaps, true);
     assert.equal(dev.stats.imageBytes, 4500000);
-    assert.match(dev.stats.summary, /Byte budget 45\.00 MiB of JSON \(map image is a separate upload\)\. Sanity cap 60000\./);
+    const mb = (DEV_HOST_JSON_BUDGET / 1e6).toFixed(2);
+    assert.match(dev.stats.summary, new RegExp(
+      "Byte budget " + mb + " MB of JSON \\(map image is a separate upload\\)\\. Sanity cap 60000\\."
+    ));
     assert.equal(/\u2014/.test(dev.stats.summary), false);
   });
 
