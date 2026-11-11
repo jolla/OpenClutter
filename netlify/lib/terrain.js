@@ -238,6 +238,98 @@ function lambdaPayloadBytes(handlerResult) {
   if (!handlerResult) return 0;
   return Buffer.byteLength(JSON.stringify(handlerResult), "utf8");
 }
+/**
+ * Highest floor Planner Plus accepts in a paste. A raised floor taller than
+ * this is rejected with "Too big: expected number to be <=1000" and the whole
+ * paste fails (feedback #19, Bingham Canyon UT, 1,493 m of relief). Ground
+ * more than this above the lowest sample is pasted flat at this height:
+ * raised floors are capped, a ramp that crosses it ends at it, and a ramp
+ * wholly above it becomes a pad at it. Floor counts stay the same.
+ */
+const HAMINA_FLOOR_MAX_M = 1000;
+
+function capRaisedPad(zone, cap) {
+  if (!(zone && zone.height > cap)) return zone;
+  zone.height = cap;
+  return zone;
+}
+
+/** A sloped quad above the cap: the same xy ring as a raised pad at the cap. */
+function slopedToCapPad(zone, cap) {
+  const ring = zone && zone.area && zone.area.coordinates && zone.area.coordinates[0];
+  if (!ring) return null;
+  return raisedFromRing(
+    ring.map(function (p) {
+      return [p[0], p[1]];
+    }),
+    cap
+  );
+}
+
+/**
+ * Keep every Copy terrain height at or under HAMINA_FLOOR_MAX_M. Nested
+ * raised layers (style "raised") keep only the first plate above the cap,
+ * now at the cap, since the higher plates sit inside it. Returns the number
+ * of floors changed, 0 when the paste already fits.
+ */
+function capPasteHeights(clip, style, cap) {
+  if (!clip) return 0;
+  const limit = cap > 0 ? cap : HAMINA_FLOOR_MAX_M;
+  let changed = 0;
+  let raised = Array.isArray(clip.raisedFloorZones) ? clip.raisedFloorZones : [];
+  if (style === "raised") {
+    let first = Infinity;
+    for (let i = 0; i < raised.length; i++) {
+      const h = raised[i] && raised[i].height;
+      if (h > limit && h < first) first = h;
+    }
+    if (first < Infinity) {
+      const kept = [];
+      for (let i = 0; i < raised.length; i++) {
+        const z = raised[i];
+        if (!(z && z.height > limit)) {
+          kept.push(z);
+          continue;
+        }
+        changed++;
+        if (z.height === first) kept.push(capRaisedPad(z, limit));
+      }
+      raised = kept;
+    }
+  } else {
+    for (let i = 0; i < raised.length; i++) {
+      if (raised[i] && raised[i].height > limit) {
+        capRaisedPad(raised[i], limit);
+        changed++;
+      }
+    }
+  }
+  const sloped = Array.isArray(clip.slopedFloors) ? clip.slopedFloors : [];
+  const keptSloped = [];
+  for (let i = 0; i < sloped.length; i++) {
+    const zone = sloped[i];
+    const ring = zone && zone.area && zone.area.coordinates && zone.area.coordinates[0];
+    if (!ring || !ring.some((p) => p[2] > limit)) {
+      keptSloped.push(zone);
+      continue;
+    }
+    changed++;
+    const low = Math.min.apply(null, ring.map((p) => p[2]));
+    if (!(low < limit)) {
+      const pad = slopedToCapPad(zone, limit);
+      if (pad) raised.push(pad);
+      continue;
+    }
+    for (let k = 0; k < ring.length; k++) if (ring[k][2] > limit) ring[k][2] = limit;
+    keptSloped.push(zone);
+  }
+  if (changed) {
+    clip.raisedFloorZones = raised;
+    if (Array.isArray(clip.slopedFloors)) clip.slopedFloors = keptSloped;
+  }
+  return changed;
+}
+
 /** Auto will not paste cells smaller than this, even on a tiny hill. */
 const MIN_CELL_M = 1;
 const TERRAIN_RESOLUTIONS = {
@@ -3381,6 +3473,11 @@ function terrainFromSamplesCapped(samples, frame, opts) {
     pasteBytes = JSON.stringify(mesh.clip).length;
     byteGuard += 1;
   }
+  const heightCapped = capPasteHeights(mesh.clip, style, HAMINA_FLOOR_MAX_M);
+  if (heightCapped) {
+    mesh.raised = (mesh.clip.raisedFloorZones || []).length;
+    mesh.sloped = (mesh.clip.slopedFloors || []).length;
+  }
   const cellM = reportedCellM(preset, reliefM, highLat, widthM, lengthM, cols, rows);
   const pasteReduced = skiExperimental && (cols !== requestedCols || rows !== requestedRows);
   const out = {
@@ -3403,6 +3500,7 @@ function terrainFromSamplesCapped(samples, frame, opts) {
     clipboard: mesh.clip,
     raised: mesh.raised,
     sloped: mesh.sloped,
+    heightCapM: heightCapped ? HAMINA_FLOOR_MAX_M : undefined,
     slopeGapM: mesh.slopeGapM || 0,
     contourStepM: mesh.contourStepM,
     vertMeanM: mesh.vertMeanM,
@@ -3462,7 +3560,9 @@ function terrainGroundM(terrain, lon, lat) {
   if (!terrain || !Number.isFinite(terrain.datumZ)) return 0;
   const z = terrain.elevationAt ? terrain.elevationAt(+lon, +lat) : terrain.samples ? idw(terrain.samples, +lon, +lat) : NaN;
   if (!Number.isFinite(z)) return 0;
-  return Math.max(0, round1(z - terrain.datumZ));
+  const ground = Math.max(0, round1(z - terrain.datumZ));
+  // Objects seat on the pasted plateau where the paste is capped (feedback #19).
+  return terrain.heightCapM > 0 ? Math.min(terrain.heightCapM, ground) : ground;
 }
 
 function ringPointCount(ring) {
@@ -4316,6 +4416,13 @@ function terrainBundleFields(terrain, warnings) {
         (slopedStyle && terrain.slopeGapM > 0
           ? " Shared edges differ by up to " + formatCellM(terrain.slopeGapM) + " m."
           : "") +
+        (terrain.heightCapM > 0
+          ? " Ground more than " +
+            terrain.heightCapM +
+            " m above the lowest point is pasted flat at " +
+            terrain.heightCapM +
+            " m, the highest floor Hamina accepts."
+          : "") +
         " Use Copy terrain and paste it in Planner Plus. Do not import it as OpenIntent.",
     };
   }
@@ -4743,6 +4850,8 @@ async function fetchTerrainDemWork(frame, fetchFn, opts) {
 
 module.exports = {
   TERRAIN_DB_PER_M,
+  HAMINA_FLOOR_MAX_M,
+  capPasteHeights,
   terrainAttenDb,
   DEM_URL,
   USGS_3DEP_ATTRIBUTION,
