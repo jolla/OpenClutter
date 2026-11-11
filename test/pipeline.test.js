@@ -11,7 +11,7 @@ const {
   CLIPBOARD_COLLECTION_KEYS,
   pickBuildingTypeId,
 } = require("../netlify/lib/hamina-clipboard");
-const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, isDrawSubject, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS, capBuildingsAndTrees, dropNestedDuplicateRoofs, parseAreaCapOverride, parseJsonBudgetOverride, raisedAreaHolds, vehicleCutNote, raisedDeckCap, coverageSummary, MAX_ATTENUATION_AREAS, OPENINTENT_JSON_BUDGET, JSON_BUDGET_MAX } = require("../netlify/lib/pipeline");
+const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, isDrawSubject, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS, capBuildingsAndTrees, dropNestedDuplicateRoofs, parseAreaCapOverride, parseJsonBudgetOverride, raisedAreaHolds, vehicleCutNote, raisedDeckCap, coverageSummary, MAX_ATTENUATION_AREAS, OPENINTENT_JSON_BUDGET, JSON_BUDGET_MAX, DEV_HOST_AREA_CAP, DEV_HOST_JSON_MAX } = require("../netlify/lib/pipeline");
 const { OI_BUILDING_NAMES, isVegetationOiName, isUnderstoryOiName, isPoisonedOiName } = require("../netlify/lib/materials");
 const { zipStore, unzipStore, zipUnderLimit } = require("../netlify/lib/zip-store");
 const { version: APP_VERSION } = require("../netlify/lib/version");
@@ -1647,15 +1647,17 @@ describe("attenuation cap keeps discrete trees", () => {
 });
 
 describe("dev area cap override", () => {
-  it("accepts 982 through 8000 and ignores anything else", () => {
+  it("accepts 982 through 60,000 and ignores anything else", () => {
     assert.equal(parseAreaCapOverride(982), 982);
     assert.equal(parseAreaCapOverride(1500), 1500);
     assert.equal(parseAreaCapOverride(8000), 8000);
     assert.equal(parseAreaCapOverride("3000"), 3000);
     assert.equal(parseAreaCapOverride(" 1500 "), 1500);
+    assert.equal(parseAreaCapOverride(8001), 8001);
+    assert.equal(parseAreaCapOverride(9000), 9000);
+    assert.equal(parseAreaCapOverride(DEV_HOST_AREA_CAP), DEV_HOST_AREA_CAP);
     assert.equal(parseAreaCapOverride(981), 0);
-    assert.equal(parseAreaCapOverride(8001), 0);
-    assert.equal(parseAreaCapOverride(9000), 0);
+    assert.equal(parseAreaCapOverride(DEV_HOST_AREA_CAP + 1), 0);
     assert.equal(parseAreaCapOverride(1500.5), 0);
     assert.equal(parseAreaCapOverride("1500.5"), 0);
     assert.equal(parseAreaCapOverride("foo"), 0);
@@ -1696,15 +1698,18 @@ describe("dev area cap override", () => {
     assert.equal(/\u2014/.test(budgeted), false);
   });
 
-  it("accepts a dev JSON budget from 4.9 MB through 5 MiB", () => {
+  it("accepts a dev JSON budget from 4.9 MB through 50 MiB", () => {
     assert.equal(OPENINTENT_JSON_BUDGET, 4900000);
     assert.equal(JSON_BUDGET_MAX, 5242880);
+    assert.equal(DEV_HOST_JSON_MAX, 50 * 1024 * 1024);
     assert.equal(parseJsonBudgetOverride(4900000), 4900000);
     assert.equal(parseJsonBudgetOverride(5000000), 5000000);
     assert.equal(parseJsonBudgetOverride("5000000"), 5000000);
     assert.equal(parseJsonBudgetOverride(5242880), 5242880);
+    assert.equal(parseJsonBudgetOverride(5242881), 5242881);
+    assert.equal(parseJsonBudgetOverride(DEV_HOST_JSON_MAX), DEV_HOST_JSON_MAX);
     assert.equal(parseJsonBudgetOverride(4899999), 0);
-    assert.equal(parseJsonBudgetOverride(5242881), 0);
+    assert.equal(parseJsonBudgetOverride(DEV_HOST_JSON_MAX + 1), 0);
     assert.equal(parseJsonBudgetOverride(4500000.5), 0);
     assert.equal(parseJsonBudgetOverride("4.5e6"), 0);
     assert.equal(parseJsonBudgetOverride(""), 0);

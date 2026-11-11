@@ -90,27 +90,41 @@ function roofMaterial(label, height, base, roofDb) {
  */
 function shellRvAreas(areas, opts) {
   const roofDb = opts && Number(opts.roofDb) > 0 ? Number(opts.roofDb) : RV_ROOF_DB;
+  const maxWalls =
+    opts && Number(opts.maxWalls) > 0 ? Number(opts.maxWalls) : Infinity;
   const out = [];
   const walls = [];
   const wallMats = new Map();
   const roofMats = new Map();
   let shells = 0;
+  let solidsKept = 0;
   for (const a of areas || []) {
     const s = parseShellArea(a);
     if (!s) {
       out.push(a);
       continue;
     }
-    const wm = wallMaterial(s.label, s.height, s.base);
-    if (!wallMats.has(wm.name)) wallMats.set(wm.name, wm);
-    const rm = roofMaterial(s.label, s.height, s.base, roofDb);
-    if (!roofMats.has(rm.name)) roofMats.set(rm.name, rm);
     const pts = s.coords.map((c) => c.coordinate_xyz);
+    const segs = [];
     for (let i = 0; i + 1 < pts.length; i++) {
       const p = pts[i];
       const q = pts[i + 1];
       if (p.x === q.x && p.y === q.y) continue;
-      walls.push({ wall_type: wm.name, start_point: { x: p.x, y: p.y }, end_point: { x: q.x, y: q.y } });
+      segs.push({ start: p, end: q });
+    }
+    // Hamina skips a map with more than 20,000 wall segments. Overflow
+    // RVs stay solid blocks so the floor plan still imports.
+    if (walls.length + segs.length > maxWalls) {
+      out.push(a);
+      solidsKept++;
+      continue;
+    }
+    const wm = wallMaterial(s.label, s.height, s.base);
+    if (!wallMats.has(wm.name)) wallMats.set(wm.name, wm);
+    const rm = roofMaterial(s.label, s.height, s.base, roofDb);
+    if (!roofMats.has(rm.name)) roofMats.set(rm.name, rm);
+    for (const seg of segs) {
+      walls.push({ wall_type: wm.name, start_point: { x: seg.start.x, y: seg.start.y }, end_point: { x: seg.end.x, y: seg.end.y } });
     }
     out.push({ area: a.area, area_material: { ...rm, rf_properties: { ...rm.rf_properties } } });
     shells++;
@@ -121,6 +135,7 @@ function shellRvAreas(areas, opts) {
     wallMaterials: [...wallMats.values()],
     roofMaterials: [...roofMats.values()],
     shells,
+    solidsKept,
   };
 }
 

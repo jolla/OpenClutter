@@ -14,6 +14,9 @@ const {
   DEV_JSON_BUDGET,
   DEV_TOTAL_BUDGET,
   DEV_JSON_FLOOR,
+  DEV_HOST_JSON_BUDGET,
+  DEV_HOST_AREA_CAP,
+  effectiveAreaCap,
 } = require("../netlify/lib/pipeline");
 const { exportSummaryLines } = require("../public/export-client");
 
@@ -39,7 +42,10 @@ function scene(imgBuf, extra) {
   }, extra || {}));
 }
 
-afterEach(() => exportMode.setBigBudget(false));
+afterEach(() => {
+  exportMode.setBigBudget(false);
+  exportMode.setDevImportCaps(false);
+});
 
 describe("1.2.29 /dev Hamina budget", () => {
   it("is off by default and production keeps the 4.9 MB JSON-only budget", () => {
@@ -117,9 +123,37 @@ describe("1.2.29 /dev Hamina budget", () => {
     assert.equal(prodUi.some((l) => /map image counts/.test(l)), false);
   });
 
+  it("on /dev hosts uses 45 MiB of JSON and does not shrink it by the map image", () => {
+    exportMode.setBigBudget(true);
+    exportMode.setDevImportCaps(true);
+    assert.equal(DEV_HOST_JSON_BUDGET, 45 * 1024 * 1024);
+    assert.ok(DEV_HOST_JSON_BUDGET < 50 * 1024 * 1024);
+    assert.equal(effectiveJsonBudget(0, 0), DEV_HOST_JSON_BUDGET);
+    assert.equal(effectiveJsonBudget(0, 8e6), DEV_HOST_JSON_BUDGET);
+    assert.equal(effectiveJsonBudget(0, 20e6), DEV_HOST_JSON_BUDGET);
+    assert.equal(effectiveJsonBudget(15e6, 8e6), 15e6);
+    assert.equal(effectiveAreaCap(0), DEV_HOST_AREA_CAP);
+    const dev = scene(Buffer.alloc(4500000));
+    assert.equal(dev.stats.jsonBudget, DEV_HOST_JSON_BUDGET);
+    assert.equal("totalBudget" in dev.stats, false);
+    assert.equal(dev.stats.devImportCaps, true);
+    assert.equal(dev.stats.imageBytes, 4500000);
+    assert.match(dev.stats.summary, /Byte budget 45\.00 MiB of JSON \(map image is a separate upload\)\. Sanity cap 60000\./);
+    assert.equal(/\u2014/.test(dev.stats.summary), false);
+  });
+
+  it("production and a non-dev bigBudget host keep the 5.8 / 9.7 MB budget", () => {
+    exportMode.setBigBudget(true);
+    exportMode.setDevImportCaps(false);
+    assert.equal(effectiveJsonBudget(0, 4500000), 5200000);
+    assert.equal(effectiveAreaCap(0), 8000);
+    assert.equal(effectiveAreaCap(12000), 12000);
+  });
+
   it("the export function turns the budget and the batch 1 and batch 2 rules on for every host (1.2.41, 1.3.0)", () => {
     const src = fs.readFileSync(path.join(__dirname, "../netlify/functions/clutter.js"), "utf8");
     assert.match(src, /exportMode\.setBigBudget\(true\);/);
+    assert.match(src, /exportMode\.setDevImportCaps\(testHost\);/);
     assert.match(src, /exportMode\.setSiteTypes\(true\);/);
     assert.match(src, /exportMode\.setPhotoCanopy\(true\);/);
     assert.match(src, /exportMode\.setPhotoCrowns\(true\);/);

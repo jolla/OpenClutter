@@ -101,4 +101,19 @@ describe("RV shell", () => {
     assert.equal(out.areas[1].area_material.name, "Trailer roof 3.2");
     assert.equal(out.areas[1].area_material.bottom_height, 3);
   });
+
+  it("keeps overflow RVs as solid blocks once the wall-segment guard is reached", () => {
+    const list = [bldg];
+    for (let i = 0; i < 6; i++) list.push(rv("RV 3.5", 3.5));
+    const out = shellRvAreas(list, { maxWalls: 16 });
+    assert.equal(out.walls.length, 16);
+    assert.equal(out.shells, 4);
+    assert.equal(out.solidsKept, 2);
+    assert.ok(out.walls.length <= 16);
+    // Overflow units keep the solid RV material, not a roof slab without walls.
+    assert.equal(out.areas[0], bldg);
+    assert.equal(out.areas[5].area_material.name, "RV 3.5");
+    assert.equal(out.areas[6].area_material.name, "RV 3.5");
+    assert.equal(out.areas[1].area_material.name, "RV roof 3.5");
+  });
 });

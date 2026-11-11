@@ -46,6 +46,8 @@ const {
   TERRAIN_PASTE_JSON_MAX,
   TERRAIN_PASTE_MAX_FLOORS,
   TERRAIN_PASTE_MAX_BYTES,
+  DEV_PASTE_MAX_FLOORS,
+  DEV_PASTE_MAX_BYTES,
   parseTerrainFloorOverride,
   LAMBDA_SYNC_PAYLOAD_MAX,
   EXPORT_PAYLOAD_BUDGET,
@@ -3949,6 +3951,25 @@ describe("terrain paste stays the size Hamina accepted", () => {
     assert.ok(n > 0);
     assert.ok(n <= 150, "floors " + n);
     assert.ok(JSON.stringify(terrain.clipboard).length <= 150 * 480);
+  });
+
+  it("on /dev raises the paste caps but stays under 4.94 MiB", () => {
+    const mode = require("../netlify/lib/export-mode");
+    mode.setDevImportCaps(true);
+    try {
+      assert.equal(DEV_PASTE_MAX_FLOORS, 6000);
+      assert.equal(DEV_PASTE_MAX_BYTES, 4900000);
+      assert.ok(DEV_PASTE_MAX_BYTES < 4.94 * 1024 * 1024);
+      const frame = geoFrame({ west: -118.36, south: 34.13, east: -118.345, north: 34.145, name: "Dev cap hill" });
+      const terrain = terrainFromSamples(hillSamples(frame, 18), frame, { terrainStyle: "sloped" });
+      const floors = terrain.sloped + terrain.raised;
+      assert.ok(floors > 0);
+      assert.ok(floors <= DEV_PASTE_MAX_FLOORS, "floors " + floors);
+      assert.ok(JSON.stringify(terrain.clipboard).length <= DEV_PASTE_MAX_BYTES);
+    } finally {
+      mode.setDevImportCaps(false);
+    }
+    assert.equal(pastePlanQuadBudget(), TERRAIN_PASTE_MAX_FLOORS);
   });
 });
 

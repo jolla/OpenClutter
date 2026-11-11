@@ -164,7 +164,7 @@ async function runBackgroundExport(event, onProgress) {
 const imagerySource = require("../lib/imagery-source");
 const { normalizeAerial } = require("../lib/aerial-normalize");
 const { geoFrame, capEsriExportFrame, llToPx, esriImageryUrl, esriImageryMetaUrl, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV, publicFrame } = require("../lib/geo-frame");
-const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings, parseAreaCapOverride, parseJsonBudgetOverride, raisedDeckCap, MAX_BUILDINGS, MAX_ATTENUATION_AREAS, DEFAULT_AREA_CAP } = require("../lib/pipeline");
+const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings, parseAreaCapOverride, parseJsonBudgetOverride, raisedDeckCap, effectiveAreaCap, MAX_BUILDINGS, MAX_ATTENUATION_AREAS } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { buildSiteV1 } = require("../lib/site-v1");
 const { fetchSlopeForest } = require("../lib/slope-forest");
@@ -1593,6 +1593,9 @@ async function handleClutterNorthUp(event) {
   // From 1.2.29 the raised Hamina budget: 5.8 MB of JSON and 9.7 MB of JSON
   // plus map image (production used 4.9 MB of JSON before 1.2.41).
   exportMode.setBigBudget(true);
+  // Raised Hamina caps (Nov 2026): ~45 MiB of JSON and a 4.9 MB paste
+  // ceiling, /dev hosts only. Production stays on the 5.8 / 9.7 MB budget.
+  exportMode.setDevImportCaps(testHost);
   // 1.2.37 lidar canopy checked on the photo runs on every host. The 1.2.39
   // photo-shaped crowns stay on /dev hosts: their stale-lidar test fired in
   // a leafy campground (Traverse City KOA) and cut real dense canopy.
@@ -2659,7 +2662,7 @@ async function handleClutterNorthUp(event) {
         ? Math.min(SITE_V1_FOLIAGE_MAX, foliageCapFor(list ? list.length : 0) * 3)
         : foliageCapFor(list ? list.length : 0);
     const slopeTop = demUnderFootprint(terrain);
-    const areaCap = areaCapOverride > 0 ? areaCapOverride | 0 : DEFAULT_AREA_CAP;
+    const areaCap = areaCapOverride > 0 ? areaCapOverride | 0 : effectiveAreaCap(0);
     const buildingCeiling =
       areaCap > MAX_ATTENUATION_AREAS ? Math.max(MAX_BUILDINGS, areaCap) : MAX_BUILDINGS;
     let foliagePack = null;

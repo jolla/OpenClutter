@@ -212,19 +212,32 @@ const PASTE_BUILD_MAX_QUADS = 12000;
  */
 const TERRAIN_PASTE_MAX_FLOORS = 1500;
 const TERRAIN_PASTE_MAX_BYTES = 400 * 1024;
+/**
+ * /dev hosts (export-mode devImportCaps): spend more of the 4.94 MiB
+ * inline-metadata / paste room on steep ground. 6000 floors is the
+ * existing probe ceiling (a ~9k sloped mesh has locked Planner Plus).
+ * 4,900,000 bytes stays under about 4.94 MiB.
+ */
+const DEV_PASTE_MAX_FLOORS = 6000;
+const DEV_PASTE_MAX_BYTES = 4900000;
 /** Dev-only ?terrainFloors= probe. Outside this range the default cap stays. */
 const TERRAIN_FLOORS_MIN = 100;
 const TERRAIN_FLOORS_MAX = 6000;
 /** Floor budget for the mesh currently being built. terrainFromSamples sets it. */
 let activePasteFloors = TERRAIN_PASTE_MAX_FLOORS;
 
+function defaultPasteFloors() {
+  return require("./export-mode").isDevImportCaps() ? DEV_PASTE_MAX_FLOORS : TERRAIN_PASTE_MAX_FLOORS;
+}
+
 function terrainPasteFloorCap(opts) {
+  const fallback = defaultPasteFloors();
   const raw = opts && opts.terrainFloors;
-  if (raw == null || raw === "" || typeof raw === "boolean") return TERRAIN_PASTE_MAX_FLOORS;
+  if (raw == null || raw === "" || typeof raw === "boolean") return fallback;
   const text = typeof raw === "number" ? String(raw) : String(raw).trim();
-  if (!/^\d+$/.test(text)) return TERRAIN_PASTE_MAX_FLOORS;
+  if (!/^\d+$/.test(text)) return fallback;
   const n = Number(text);
-  if (n < TERRAIN_FLOORS_MIN || n > TERRAIN_FLOORS_MAX) return TERRAIN_PASTE_MAX_FLOORS;
+  if (n < TERRAIN_FLOORS_MIN || n > TERRAIN_FLOORS_MAX) return fallback;
   return n;
 }
 
@@ -244,6 +257,9 @@ function parseTerrainFloorOverride(value) {
 
 /** Byte ceiling. A floor probe above 1500 may exceed 400 KB so the ceiling can be found. */
 function pasteByteCap() {
+  if (require("./export-mode").isDevImportCaps()) {
+    return DEV_PASTE_MAX_BYTES;
+  }
   if (activePasteFloors > TERRAIN_PASTE_MAX_FLOORS) {
     return Math.max(TERRAIN_PASTE_MAX_BYTES, activePasteFloors * 480);
   }
@@ -5183,6 +5199,8 @@ module.exports = {
   TERRAIN_PASTE_JSON_MAX,
   TERRAIN_PASTE_MAX_FLOORS,
   TERRAIN_PASTE_MAX_BYTES,
+  DEV_PASTE_MAX_FLOORS,
+  DEV_PASTE_MAX_BYTES,
   TERRAIN_FLOORS_MIN,
   TERRAIN_FLOORS_MAX,
   PASTE_BUILD_MAX_QUADS,

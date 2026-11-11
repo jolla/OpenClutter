@@ -80,6 +80,21 @@ function isBigBudget() {
   return bigBudget;
 }
 
+// Hamina import caps reported Nov 2026: uncompressed project JSON may
+// reach 50 MiB, and the compressed blob must also stay at or under 50 MiB.
+// Remaining inline metadata stays under about 4.94 MiB. /dev hosts (testHost)
+// may use the raised JSON budget and the larger paste room. Production keeps
+// the 5.8 MB JSON / 9.7 MB JSON-plus-image budget from 1.2.29. Off by default.
+let devImportCaps = false;
+
+function setDevImportCaps(on) {
+  devImportCaps = !!on;
+}
+
+function isDevImportCaps() {
+  return devImportCaps;
+}
+
 // Large-draw street-map reads (1.2.31): one shared window across the
 // Overpass tiles, two tiles at a time, a 20 s slow-fail to the next server
 // and the last resort, a retry pass and a 2x2 split for missing tiles, and a
@@ -491,6 +506,8 @@ module.exports = {
   tiledOsmWanted,
   setBigBudget,
   isBigBudget,
+  setDevImportCaps,
+  isDevImportCaps,
   setResilient,
   isResilient,
   setSiteTypes,
