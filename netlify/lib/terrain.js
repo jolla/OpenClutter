@@ -4186,6 +4186,71 @@ function canopyPieceCap(terrain) {
  * keeps those pieces when a woods would otherwise collapse back to one ring
  * seated on the summit.
  */
+
+function clipHalf(ring, inside, intersect) {
+  const pts = ring && ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? ring.slice(0, -1) : (ring || []).slice();
+  if (pts.length < 3) return null;
+  const out = [];
+  for (let i = 0; i < pts.length; i++) {
+    const cur = pts[i];
+    const prev = pts[(i + pts.length - 1) % pts.length];
+    const curIn = inside(cur);
+    const prevIn = inside(prev);
+    if (curIn) {
+      if (!prevIn) out.push(intersect(prev, cur));
+      out.push(cur.slice());
+    } else if (prevIn) {
+      out.push(intersect(prev, cur));
+    }
+  }
+  if (out.length < 3) return null;
+  const a = out[0];
+  const b = out[out.length - 1];
+  if (a[0] !== b[0] || a[1] !== b[1]) out.push([a[0], a[1]]);
+  return out.length >= 4 ? out : null;
+}
+
+/** Subject ring clipped to a convex quad without polygon-clipping. */
+function clipRingToConvexQuad(ring, quad) {
+  const q = [];
+  for (let i = 0; i < (quad || []).length; i++) {
+    const p = quad[i];
+    if (!p || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) continue;
+    const last = q[q.length - 1];
+    if (last && last[0] === p[0] && last[1] === p[1]) continue;
+    q.push([p[0], p[1]]);
+  }
+  if (q.length >= 2 && q[0][0] === q[q.length - 1][0] && q[0][1] === q[q.length - 1][1]) q.pop();
+  if (q.length < 3) return null;
+  let area = 0;
+  for (let i = 0; i < q.length; i++) {
+    const a = q[i];
+    const b = q[(i + 1) % q.length];
+    area += a[0] * b[1] - b[0] * a[1];
+  }
+  const ccw = area > 0;
+  let r = ring;
+  for (let i = 0; i < q.length; i++) {
+    const a = q[i];
+    const b = q[(i + 1) % q.length];
+    const edx = b[0] - a[0];
+    const edy = b[1] - a[1];
+    const inside = ccw
+      ? (p) => edx * (p[1] - a[1]) - edy * (p[0] - a[0]) >= -1e-9
+      : (p) => edx * (p[1] - a[1]) - edy * (p[0] - a[0]) <= 1e-9;
+    const intersect = (p, s) => {
+      const dx = s[0] - p[0];
+      const dy = s[1] - p[1];
+      const den = edx * dy - edy * dx || 1e-12;
+      const t = ((a[0] - p[0]) * dy - (a[1] - p[1]) * dx) / den;
+      return [a[0] + t * edx, a[1] + t * edy];
+    };
+    r = clipHalf(r, inside, intersect);
+    if (!r) return null;
+  }
+  return r;
+}
+
 function splitRingByFloor(terrain, ring, opts) {
   const maxPieces = opts && opts.maxPieces > 1 ? opts.maxPieces | 0 : SPLIT_MAX_PIECES;
   const keepPartial = !!(opts && opts.keepPartial);
@@ -4222,6 +4287,17 @@ function splitRingByFloor(terrain, ring, opts) {
   function ringsFromGroups(groups) {
     const pieces = [];
     for (const group of groups.values()) {
+      // A long pit-wall group can hang inside polygon-clipping. Clip the
+      // stand to each convex cell instead, which stays linear in the ring.
+      if (keepPartial && group.length > 40) {
+        for (let i = 0; i < group.length; i++) {
+          const cut = clipRingToConvexQuad(bldg, group[i].clip);
+          if (!cut) continue;
+          const rings = ringsFromClipGeom([[cut]], frame, 12);
+          for (let k = 0; k < rings.length; k++) pieces.push(rings[k]);
+        }
+        continue;
+      }
       // Pairwise union of the terrain cells, then one intersection with the
       // cropped stand. Incremental union of every ramp, or of every
       // already-cut hit, was hour-scale on a deep pit.
