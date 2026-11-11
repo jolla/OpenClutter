@@ -387,20 +387,55 @@ function pickFeature(elements, box) {
   return { name: displayName(best.tags), score: bestScore, element: best };
 }
 
+const LANDMARK_OVERPASS = "https://overpass.openstreetmap.fr/api/interpreter";
+
+/**
+ * Landmark names are not export geometry, so a slightly stale Overpass
+ * copy is fine. Ask openstreetmap.fr first with a short timeout, so the
+ * Netlify function can finish inside the sync budget. Tests inject
+ * requestJson and skip the live call.
+ */
+async function fetchLandmarkOsm(box, opts) {
+  const o = opts || {};
+  const query = landmarkQuery(box);
+  const ua = o.userAgent || "openclutter";
+  if (o.requestJson) {
+    return o.requestJson(query, { ua, deadlineMs: o.deadlineMs || 8000, tag: "reverse-landmark" });
+  }
+  const timeoutMs = o.overpassTimeoutMs || 8000;
+  try {
+    const fetchImpl = o.osmFetch || fetch;
+    const r = await fetchImpl(LANDMARK_OVERPASS, {
+      method: "POST",
+      headers: {
+        "user-agent": ua,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: "data=" + encodeURIComponent(query),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (r.ok) {
+      const data = await r.json();
+      if (data && Array.isArray(data.elements)) return data;
+    }
+  } catch {
+    /* fall through to the shared client if the caller still has time */
+  }
+  try {
+    const requestJson = o.fallbackRequestJson || require("./overpass").requestJson;
+    return await requestJson(query, { ua, deadlineMs: 4000, tag: "reverse-landmark" });
+  } catch {
+    return null;
+  }
+}
+
 async function labelForBox(box, opts) {
   const o = opts || {};
-  const requestJson = o.requestJson || require("./overpass").requestJson;
   const nominatimReverse = o.nominatimReverse || require("./nominatim").nominatimReverse;
   const ua = o.userAgent;
   const center = boxCenter(box);
   const featP = Promise.resolve()
-    .then(() =>
-      requestJson(landmarkQuery(box), {
-        ua,
-        deadlineMs: o.deadlineMs || 10000,
-        tag: "reverse-landmark",
-      })
-    )
+    .then(() => fetchLandmarkOsm(box, o))
     .catch(() => null);
   const nomP = Promise.resolve()
     .then(() =>
@@ -432,5 +467,7 @@ module.exports = {
   regionAbbrev,
   featureScore,
   pickFeature,
+  fetchLandmarkOsm,
   labelForBox,
+  LANDMARK_OVERPASS,
 };

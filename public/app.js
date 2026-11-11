@@ -1963,7 +1963,7 @@ async function fillAreaName(seq, box) {
       encodeURIComponent(box.east);
     const r = await OpenClutterNet.guardedFetch(
       "/api/reverse?" + q,
-      { signal: AbortSignal.timeout(12000) },
+      { signal: AbortSignal.timeout(20000) },
       { step: "Place name" }
     );
     if (!r.ok) return;

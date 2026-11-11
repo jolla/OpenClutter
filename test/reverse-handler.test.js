@@ -13,12 +13,31 @@ const BERKELEY = {
   east: "-112.460980",
 };
 
+const PIT = {
+  elements: [
+    {
+      type: "way",
+      id: 35740942,
+      bounds: { minlat: 46.01, minlon: -112.52, maxlat: 46.025, maxlon: -112.5 },
+      center: { lat: 46.0171152, lon: -112.511297 },
+      tags: {
+        name: "Berkeley Pit",
+        natural: "water",
+        wikidata: "Q820869",
+        wikipedia: "en:Berkeley Pit",
+      },
+    },
+  ],
+};
+
 const origJson = overpass.requestJson;
 const origReverse = nominatim.nominatimReverse;
+const origFetch = global.fetch;
 
 afterEach(() => {
   overpass.requestJson = origJson;
   nominatim.nominatimReverse = origReverse;
+  global.fetch = origFetch;
 });
 
 describe("nominatim reverse URL", () => {
@@ -39,22 +58,12 @@ describe("reverse handler", () => {
   });
 
   it("returns Berkeley Pit - Butte, MT from Overpass plus Nominatim", async () => {
-    overpass.requestJson = async () => ({
-      elements: [
-        {
-          type: "way",
-          id: 35740942,
-          bounds: { minlat: 46.01, minlon: -112.52, maxlat: 46.025, maxlon: -112.5 },
-          center: { lat: 46.0171152, lon: -112.511297 },
-          tags: {
-            name: "Berkeley Pit",
-            natural: "water",
-            wikidata: "Q820869",
-            wikipedia: "en:Berkeley Pit",
-          },
-        },
-      ],
-    });
+    global.fetch = async (url) => {
+      if (String(url).includes("openstreetmap.fr")) {
+        return { ok: true, json: async () => PIT };
+      }
+      throw new Error("unexpected fetch " + url);
+    };
     nominatim.nominatimReverse = async () => ({
       ok: true,
       data: {
@@ -75,8 +84,11 @@ describe("reverse handler", () => {
   });
 
   it("returns an empty label when both lookups fail", async () => {
-    overpass.requestJson = async () => {
+    global.fetch = async () => {
       throw new Error("overpass down");
+    };
+    overpass.requestJson = async () => {
+      throw new Error("overpass fallback down");
     };
     nominatim.nominatimReverse = async () => {
       throw new Error("nominatim down");

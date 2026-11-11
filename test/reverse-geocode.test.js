@@ -217,3 +217,25 @@ describe("labelForBox", () => {
     assert.equal(empty.label, "");
   });
 });
+
+describe("fetchLandmarkOsm", () => {
+  it("asks openstreetmap.fr first when requestJson is not injected", async () => {
+    const { fetchLandmarkOsm, LANDMARK_OVERPASS } = require("../netlify/lib/reverse-geocode");
+    const calls = [];
+    const osm = await fetchLandmarkOsm(BERKELEY_BOX, {
+      userAgent: "openclutter-test",
+      osmFetch: async (url, init) => {
+        calls.push({ url, method: init.method, ua: init.headers["user-agent"] });
+        return {
+          ok: true,
+          json: async () => ({ elements: BERKELEY_ELEMENTS }),
+        };
+      },
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, LANDMARK_OVERPASS);
+    assert.equal(calls[0].method, "POST");
+    assert.equal(calls[0].ua, "openclutter-test");
+    assert.equal(osm.elements[0].tags.name, "Berkeley Pit");
+  });
+});
