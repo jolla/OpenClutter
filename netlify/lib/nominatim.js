@@ -29,6 +29,25 @@ function searchUrl(q, env) {
   return endpoint(env) + "?format=json&limit=5&q=" + encodeURIComponent(q);
 }
 
+const DEFAULT_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse";
+
+function reverseEndpoint(env) {
+  const search = endpoint(env);
+  if (/\/search$/i.test(search)) return search.replace(/\/search$/i, "/reverse");
+  if (/\/reverse$/i.test(search)) return search;
+  return DEFAULT_REVERSE_URL;
+}
+
+function reverseUrl(lat, lon, env) {
+  return (
+    reverseEndpoint(env) +
+    "?format=jsonv2&addressdetails=1&zoom=14&lat=" +
+    encodeURIComponent(lat) +
+    "&lon=" +
+    encodeURIComponent(lon)
+  );
+}
+
 function sharedStore() {
   if (storeOverride !== undefined) return storeOverride;
   if (process.env.OPENCLUTTER_SHARED_LIMIT === "0") return null;
@@ -83,13 +102,35 @@ async function nominatimSearch(q, opts) {
   return { ok: true, status: 200, data: Array.isArray(data) ? data : [] };
 }
 
+/** One Nominatim reverse geocode, paced on the same 1 request per second slot. */
+async function nominatimReverse(lat, lon, opts) {
+  const o = opts || {};
+  const fetchImpl = o.fetch || fetch;
+  const now = Date.now();
+  const slot = await reserveSlot(now);
+  const wait = slot - Date.now();
+  if (wait > MAX_WAIT_MS) return { ok: false, status: 429, data: null };
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  const r = await fetchImpl(reverseUrl(lat, lon, o.env), {
+    headers: { "user-agent": o.userAgent || "openclutter", "accept-language": "en" },
+    signal: AbortSignal.timeout(o.timeoutMs || 8000),
+  });
+  if (!r.ok) return { ok: false, status: r.status, data: null };
+  const data = await r.json();
+  return { ok: true, status: 200, data: data && typeof data === "object" ? data : null };
+}
+
 module.exports = {
   DEFAULT_URL,
+  DEFAULT_REVERSE_URL,
   GAP_MS,
   endpoint,
   searchUrl,
+  reverseEndpoint,
+  reverseUrl,
   reserveSlot,
   nominatimSearch,
+  nominatimReverse,
   /** Tests: swap the shared store. Resets this process's clock, as a new instance would have. */
   _setStore(s) {
     storeOverride = s;

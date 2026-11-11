@@ -634,6 +634,7 @@ function paintResizedRect(rect, commit) {
     }
     writeUrlState();
   }
+  scheduleAreaName(false);
 }
 
 /** Degrees the corners and the export share. Hidden handle (?rotate=0) means 0. */
@@ -1258,6 +1259,7 @@ function applyExtent(bounds, label) {
   else setStatus("Ready to export.");
   writeUrlState();
   if (!exportBtn.disabled) checkExportPost();
+  scheduleAreaName(true);
 }
 
 // Some proxies pass GETs and swap POSTs for a block page, so a finished draw
@@ -1302,6 +1304,7 @@ function clearFinishedShape() {
   drawn.clearLayers();
   dropBoxGraphics();
   if (!map.hasLayer(drawn)) map.addLayer(drawn);
+  cancelAreaName();
   committedBounds = null;
   committedLabel = null;
   bbox = null;
@@ -1916,6 +1919,71 @@ let suggestItems = [];
 let suggestActive = -1;
 let suggestSeq = 0;
 let suggestTimer = null;
+let searchTyped = false;
+let lastAutoName = "";
+let areaNameTimer = null;
+let areaNameSeq = 0;
+
+function cancelAreaName() {
+  clearTimeout(areaNameTimer);
+  areaNameTimer = null;
+  areaNameSeq++;
+}
+
+function scheduleAreaName(resetTyped) {
+  if (resetTyped) {
+    searchTyped = false;
+    lastAutoName = "";
+  }
+  cancelAreaName();
+  const box = bbox;
+  const seq = ++areaNameSeq;
+  const delay = resetTyped ? 0 : 500;
+  areaNameTimer = setTimeout(function () {
+    fillAreaName(seq, box);
+  }, delay);
+}
+
+async function fillAreaName(seq, box) {
+  if (!box || searchTyped || exportLocked()) return;
+  const cur = searchInput.value;
+  if (cur.trim() && cur !== lastAutoName) {
+    searchTyped = true;
+    return;
+  }
+  try {
+    const q =
+      "south=" +
+      encodeURIComponent(box.south) +
+      "&west=" +
+      encodeURIComponent(box.west) +
+      "&north=" +
+      encodeURIComponent(box.north) +
+      "&east=" +
+      encodeURIComponent(box.east);
+    const r = await OpenClutterNet.guardedFetch(
+      "/api/reverse?" + q,
+      { signal: AbortSignal.timeout(12000) },
+      { step: "Place name" }
+    );
+    if (!r.ok) return;
+    const data = await r.json().catch(function () {
+      return null;
+    });
+    if (seq !== areaNameSeq || searchTyped || !bbox || !sameBox(bbox, box)) return;
+    const label = data && typeof data.label === "string" ? data.label.trim() : "";
+    if (!label) return;
+    const now = searchInput.value;
+    if (now.trim() && now !== lastAutoName) {
+      searchTyped = true;
+      return;
+    }
+    searchInput.value = label;
+    lastAutoName = label;
+  } catch (err) {
+    /* A failed lookup leaves the search box as it is. */
+  }
+}
 
 function viewParams() {
   const c = map.getCenter();
@@ -1957,6 +2025,7 @@ function renderSuggest() {
 }
 
 searchInput.addEventListener("input", () => {
+  searchTyped = true;
   clearTimeout(suggestTimer);
   const q = searchInput.value.trim();
   const seq = ++suggestSeq;
@@ -2022,6 +2091,7 @@ async function runSearch(q, extra) {
 }
 
 function pickSuggestion(s) {
+  searchTyped = true;
   searchInput.value = s.text || s.label;
   if (Number.isFinite(s.lat) && Number.isFinite(s.lon)) {
     suggestSeq++;
@@ -2033,6 +2103,7 @@ function pickSuggestion(s) {
 
 document.getElementById("search").onsubmit = (e) => {
   e.preventDefault();
+  searchTyped = true;
   runSearch(searchInput.value.trim());
 };
 
