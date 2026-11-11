@@ -1,5 +1,7 @@
 "use strict";
 
+const fs = require("fs");
+
 const { llToPx, pxToLl, pxToClipboard, applyAffine } = require("./geo-frame");
 const { clipZone } = require("./hamina-clipboard");
 const {
@@ -2654,6 +2656,13 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   let ownedPolygons = 0;
   for (let i = 0; i < polygons.length; i++) if (!polygons[i].context) ownedPolygons++;
   const stageLog = process.env.OPENCLUTTER_STAGE_LOG;
+  const stageWrite = (line) => {
+    try {
+      fs.writeSync(2, line + "\n");
+    } catch {
+      process.stderr.write(line + "\n");
+    }
+  };
   if (stageLog) {
     let verts = 0;
     let maxV = 0;
@@ -2674,7 +2683,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
         if (n > extraMax) extraMax = n;
       }
     }
-    process.stderr.write(
+    stageWrite(
       "substage foliage-assemble-detail polygons=" +
         polygons.length +
         " owned=" +
@@ -2713,8 +2722,8 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   }
   if (prof) profile.add("clip", profile.msSince(tProf));
   if (stageLog) {
-    process.stderr.write(
-      "substage foliage-assemble-clip areas=" + oiAreas.length + " seg=" + segAreas.length + " duration " + ((Date.now() - tClip) / 1000).toFixed(1) + "s\n"
+    stageWrite(
+      "substage foliage-assemble-clip areas=" + oiAreas.length + " seg=" + segAreas.length + " duration " + ((Date.now() - tClip) / 1000).toFixed(1) + "s"
     );
   }
 
@@ -2725,8 +2734,8 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   const dissolved = dissolveFoliageRings(oiAreas, clipSet).concat(segAreas);
   if (prof) profile.add("dissolve", profile.msSince(tProf));
   if (stageLog) {
-    process.stderr.write(
-      "substage foliage-assemble-dissolve areas=" + dissolved.length + " duration " + ((Date.now() - tDissolve) / 1000).toFixed(1) + "s\n"
+    stageWrite(
+      "substage foliage-assemble-dissolve areas=" + dissolved.length + " duration " + ((Date.now() - tDissolve) / 1000).toFixed(1) + "s"
     );
   }
   oiAreas.length = 0;
@@ -3027,11 +3036,26 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     return out;
   };
   if (prof) tProf = profile.now();
+  const tSeats = Date.now();
+  let seatedAreas = 0;
   for (const area of dissolved) {
     // A neighbor crown is here so a shared edge is cut the same way. Its
     // pieces belong to the tile that owns that crown.
     if (area.context) continue;
+    const tOne = Date.now();
     const seats = tileSeats(area.banded ? seatsFor(area).map((st) => Object.assign(st, { banded: true })) : seatsFor(area));
+    if (stageLog && Date.now() - tOne > 1000) {
+      stageWrite(
+        "substage foliage-assemble-seat verts=" +
+          ((area.ringPx && area.ringPx.length) || 0) +
+          " seats=" +
+          seats.length +
+          " duration " +
+          ((Date.now() - tOne) / 1000).toFixed(1) +
+          "s"
+      );
+    }
+    seatedAreas++;
     for (let s = 0; s < seats.length; s++) {
       const seat = seats[s];
       const rowArea = {
@@ -3180,6 +3204,17 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     }
   }
   if (prof) profile.add("seat", profile.msSince(tProf));
+  if (stageLog) {
+    stageWrite(
+      "substage foliage-assemble-seats areas=" +
+        seatedAreas +
+        " pending=" +
+        pending.length +
+        " duration " +
+        ((Date.now() - tSeats) / 1000).toFixed(1) +
+        "s"
+    );
+  }
   let canopyCount = 0;
   let crownsFaceted = 0;
   if (prof) tProf = profile.now();

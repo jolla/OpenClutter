@@ -67,6 +67,7 @@
 const { llToClipboard, clipboardToLl, needsGroundMeterImage } = require("./geo-frame");
 const exportMode = require("./export-mode");
 const polygonClipping = require("polygon-clipping");
+const { clipRingToBbox, bounds: ringBounds } = require("./poly-clip");
 const { emptyClipboard, stampGpsTiePoints } = require("./hamina-clipboard");
 const { fetchCopernicusDemSamples, GLO30_CREDIT } = require("./copernicus-dem");
 
@@ -4201,23 +4202,33 @@ function splitRingByFloor(terrain, ring, opts) {
   function ringsFromGroups(groups) {
     const pieces = [];
     for (const group of groups.values()) {
+      // Intersect each terrain cell with the subject first, after cropping
+      // the subject to that cell, then union the small hits. Unioning every
+      // ramp strip and then cutting the whole stand was hour-scale on a
+      // deep pit (Bingham).
       let mask = null;
+      let ok = true;
       for (let i = 0; i < group.length; i++) {
+        const cell = group[i].clip;
+        const tight = clipRingToBbox(bldg, ringBounds(cell), 0.5);
+        if (!tight) continue;
+        let piece = null;
         try {
-          mask = mask ? polygonClipping.union(mask, [[group[i].clip]]) : [[group[i].clip]];
+          piece = polygonClipping.intersection([[tight]], [[cell]]);
         } catch {
+          piece = null;
+        }
+        if (!piece || !piece.length) continue;
+        try {
+          mask = mask ? polygonClipping.union(mask, piece) : piece;
+        } catch {
+          ok = false;
           mask = null;
           break;
         }
       }
-      if (!mask) continue;
-      let hit;
-      try {
-        hit = polygonClipping.intersection([[bldg]], mask);
-      } catch {
-        continue;
-      }
-      const rings = ringsFromClipGeom(hit, frame, keepPartial ? 12 : 30);
+      if (!ok || !mask) continue;
+      const rings = ringsFromClipGeom(mask, frame, keepPartial ? 12 : 30);
       for (let i = 0; i < rings.length; i++) pieces.push(rings[i]);
     }
     return pieces;
@@ -4229,6 +4240,17 @@ function splitRingByFloor(terrain, ring, opts) {
     const cells = (useRamps ? rampStrips(terrain, band).concat(raisedStrips(terrain)) : terrainFloorCells(terrain)).filter(
       (cell) => boundsOverlap(xy, cell.clip)
     );
+    // A pit wall at a 2.5 m band can yield thousands of strips under one
+    // woods. Widen the band first so the unions stay countable.
+    if (process.env.OPENCLUTTER_STAGE_LOG && cells.length > 80) {
+      try {
+        require("fs").writeSync(2, "substage splitRingByFloor cells=" + cells.length + " band=" + band + " groups=?\n");
+      } catch (_) {}
+    }
+    if (cells.length > 400 && band < 8) {
+      band = 8;
+      continue;
+    }
     if (cells.length < 2) {
       if (!groups) return [ring];
       break;
