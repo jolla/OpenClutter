@@ -2744,10 +2744,39 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   const heightSample = opts && typeof opts.heightSample === "function" ? opts.heightSample : null;
   let foliageLifted = 0;
   const pending = [];
-  const seatsFor = (area) => {
-    const one = (ringPx, ground, slopePiece) => [{ ringPx, ground, slopePiece: !!slopePiece }];
-    if (!slopeTop || !area.ringPx || area.ringPx.length < 4) return one(area.ringPx, 0, false);
-    const ll = area.ringPx.map((p) => pxToLl(p[0], p[1], frame));
+  const oneSeat = (ringPx, ground, slopePiece) => [{ ringPx, ground, slopePiece: !!slopePiece }];
+  // Cut a large stand into ~200 m tiles before the slope split. Intersecting
+  // the whole pit woods with a union of ramp cells hung Trees; each tile
+  // meets only a few cells, so the boolean stays small. 50 m tiles produced
+  // thousands of pieces and a long crown-stack on Bingham. A ski-hill still
+  // seats south and north tiles on their own ground, and the run stays open
+  // because each box is clipped to the same mask.
+  const PRE_SPLIT_TILE_M = 200;
+  const gridStandTiles = (ringPx) => {
+    const m2 = canopyAreaM2(ringPx, frame);
+    if (!(m2 > STAND_TILE_MAX_M2)) return [ringPx];
+    const { mpuX, mpuY } = ringMeters(frame);
+    const b = ringBoundsPx(ringPx);
+    const sx = PRE_SPLIT_TILE_M / mpuX;
+    const sy = PRE_SPLIT_TILE_M / (mpuY || mpuX);
+    const out = [];
+    for (let y = b.minY; y < b.maxY; y += sy) {
+      for (let x = b.minX; x < b.maxX; x += sx) {
+        const box = clipRingToBox(ringPx, x, y, x + sx, y + sy);
+        if (!box || box.length < 4) continue;
+        const parts = clipSet ? clipFoliageRing(box, clipSet) || [] : [box];
+        for (let q = 0; q < parts.length; q++) {
+          const ring = parts[q];
+          if (!ring || ring.length < 4 || canopyAreaM2(ring, frame) < SLIVER_M2) continue;
+          out.push(ring);
+        }
+      }
+    }
+    return out.length ? out : [ringPx];
+  };
+  const seatsForRing = (ringPx) => {
+    if (!slopeTop || !ringPx || ringPx.length < 4) return oneSeat(ringPx, 0, false);
+    const ll = ringPx.map((p) => pxToLl(p[0], p[1], frame));
     let split = typeof slopeTop.splitCanopy === "function" ? slopeTop.splitCanopy(ll) : null;
     // A traced crown with a jagged edge loses area in the cut, so the whole
     // ring comes back and sits on one sample. The outline that actually ships
@@ -2769,7 +2798,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     }
     // A long unsplit ring used to sit on the uphill sample, so the downhill
     // side floated. Relief over 3 m uses the downhill ground instead.
-    if (!split || split.length < 2) return one(area.ringPx, groundOf(ll), false);
+    if (!split || split.length < 2) return oneSeat(ringPx, groundOf(ll), false);
     const seats = [];
     for (let i = 0; i < split.length; i++) {
       const px = [];
@@ -2790,7 +2819,24 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       seats.push({ ringPx: px, ground, slopePiece: true, ll: split[i] });
     }
     if (seats.length >= 2) return mergeSlivers(seats);
-    return one(area.ringPx, groundOf(ll), false);
+    return oneSeat(ringPx, groundOf(ll), false);
+  };
+  const seatsFor = (area) => {
+    if (!slopeTop || !area.ringPx || area.ringPx.length < 4) return oneSeat(area.ringPx, 0, false);
+    const tiles = gridStandTiles(area.ringPx);
+    if (tiles.length <= 1) return seatsForRing(tiles[0] || area.ringPx);
+    const seats = [];
+    for (let i = 0; i < tiles.length; i++) {
+      const part = seatsForRing(tiles[i]);
+      for (let k = 0; k < part.length; k++) {
+        // Already cut to a pre-split tile and local ground. Do not 50 m
+        // tile or merge slivers across the whole woods; that union hung
+        // and the follow-on crown stack ran for many minutes.
+        seats.push(Object.assign({ banded: true }, part[k]));
+      }
+    }
+    if (seats.length) return seats;
+    return oneSeat(area.ringPx, groundOf(area.ringPx.map((p) => pxToLl(p[0], p[1], frame))), false);
   };
   // A slope cut leaves slivers of a few square metres. Each one used to ship
   // as its own full-height prism, which reads as a thin green column. A
@@ -3243,7 +3289,11 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       ? understoryStyleLib.footprintIndex(pending.map((p) => p.area && p.area.ringPx), 40)
       : null;
   const uStats = { stands: 0, pieces: 0, emptied: 0 };
+  const tStack = Date.now();
   for (let r = 0; r < pending.length; r++) {
+    if (stageLog && r > 0 && r % 200 === 0) {
+      stageWrite("substage foliage-assemble-stack " + r + "/" + pending.length + " duration " + ((Date.now() - tStack) / 1000).toFixed(1) + "s");
+    }
     const row = pending[r];
     const area = row.area;
     if (facets && facets.drop[r]) {

@@ -4290,20 +4290,46 @@ function splitRingByFloor(terrain, ring, opts) {
       if (process.env.OPENCLUTTER_STAGE_LOG && group.length > 8) {
         try { require("fs").writeSync(2, "substage splitRingByFloor-group n=" + group.length + "\n"); } catch (_) {}
       }
-      // A long pit-wall group can hang inside polygon-clipping. Clip the
-      // stand to each convex cell instead, which stays linear in the ring.
-      if (keepPartial && group.length > 40) {
+      // Canopy splits: intersect the stand with one ramp cell at a time.
+      // Crop the stand to that cell first so the boolean is small. Unioning
+      // the ramps and then cutting the whole woods hung Bingham on groups
+      // of only 11-18 cells. A linear clip to the convex cell avoids
+      // polygon-clipping on the hang path. Cell-wise clips already form
+      // the height band once the stand is pre-split into small tiles.
+      // Building splits keep the exact union-then-cut path.
+      if (keepPartial) {
+        const standBb = ringBounds(bldg);
+        const hits = [];
         for (let i = 0; i < group.length; i++) {
-          const cut = clipRingToConvexQuad(bldg, group[i].clip);
-          if (!cut) continue;
-          const rings = ringsFromClipGeom([[cut]], frame, 12);
+          const cell = group[i].clip;
+          const bb = ringBounds(cell);
+          if (bb.maxX < standBb.minX || bb.minX > standBb.maxX || bb.maxY < standBb.minY || bb.minY > standBb.maxY) continue;
+          const tight = clipRingToBbox(bldg, bb, 0.5);
+          if (!tight) continue;
+          const cut = clipRingToConvexQuad(tight, cell);
+          if (cut) {
+            hits.push([[cut]]);
+            continue;
+          }
+          let piece = null;
+          try {
+            piece = polygonClipping.intersection([[tight]], [[cell]]);
+          } catch {
+            piece = null;
+          }
+          if (piece && piece.length) hits.push(piece);
+        }
+        if (!hits.length) continue;
+        // Do not union the cell hits. Unioning even a handful of pit-wall
+        // clips can reconstruct a large woods and hang. Each pre-split
+        // tile is small, so the cell-wise clips already form the height
+        // band and still seat a ski-hill on local ground.
+        for (let i = 0; i < hits.length; i++) {
+          const rings = ringsFromClipGeom(hits[i], frame, 12);
           for (let k = 0; k < rings.length; k++) pieces.push(rings[k]);
         }
         continue;
       }
-      // Pairwise union of the terrain cells, then one intersection with the
-      // cropped stand. Incremental union of every ramp, or of every
-      // already-cut hit, was hour-scale on a deep pit.
       const cells = [];
       for (let i = 0; i < group.length; i++) cells.push([[group[i].clip]]);
       if (!cells.length) continue;
@@ -4332,7 +4358,7 @@ function splitRingByFloor(terrain, ring, opts) {
       } catch {
         continue;
       }
-      const rings = ringsFromClipGeom(hit, frame, keepPartial ? 12 : 30);
+      const rings = ringsFromClipGeom(hit, frame, 30);
       for (let i = 0; i < rings.length; i++) pieces.push(rings[i]);
     }
     return pieces;
