@@ -29,6 +29,8 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.23** (Nov 10, 2026): page-only, every host on /dev (production gets them with the next promotion). The export worker is unchanged.
+  - Clear area: same 28px control and 14px trash can as 1.3.22, with a little more contrast. The can is near-white on a faint dark chip with a light edge and a short shadow, so it stays visible on Esri imagery. Hover and focus give it a red tint.
 - **1.3.22** (Nov 10, 2026): page-only, every host on /dev (production gets them with the next promotion). The export worker is unchanged.
   - Clear area: the corner control is a small muted grey trash can (hover makes it a little clearer), with the accessible name Clear area. Same place and behavior as the 1.3.20 x: it clears a finished rectangle so it can be redrawn. Delete and Backspace still clear it.
   - Turn handle on by default: a finished box shows the 1.3.20 rotate handle without ?rotate=1. Drag it to turn the box, double-click it for north-up. ?rotate=0 hides the handle and sends no bearing.
