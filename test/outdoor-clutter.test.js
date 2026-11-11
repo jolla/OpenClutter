@@ -735,22 +735,22 @@ describe("outdoor clutter fetch", () => {
   it("keeps the page toggles on and the counts off the headline", () => {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     const app = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
-    assert.match(html, /id="include-water"/);
-    assert.equal(/id="include-water"[^>]*checked/.test(html), false);
+    assert.equal(/id="include-water"/.test(html), false);
+    assert.equal(/id="include-cars"/.test(html), false);
+    assert.equal(/>\s*Water\s*</.test(html), false);
+    assert.equal(/>\s*Cars\s*</.test(html), false);
     for (const id of ["include-parking", "include-walls", "include-poles", "include-rvs"]) {
       assert.match(html, new RegExp('id="' + id + '" checked'));
     }
-    assert.match(html, /id="include-cars"/);
-    assert.equal(/id="include-cars"[^>]*checked/.test(html), false);
-    assert.match(html, />\s*Water\s*</);
     assert.match(html, />\s*Parking\s*</);
-    assert.match(html, />\s*Cars\s*</);
     assert.match(html, />\s*Walls\s*</);
     assert.match(html, />\s*Poles\s*</);
-    assert.match(app, /includeWater: clutterChecked\("include-water"\)/);
+    assert.match(app, /includeWater: false/);
     assert.match(app, /includePoles: clutterChecked\("include-poles"\)/);
     assert.match(app, /includeRvs: clutterChecked\("include-rvs"\)/);
-    assert.match(app, /includeCars: clutterChecked\("include-cars"\)/);
+    assert.match(app, /includeCars: false/);
+    assert.equal(/includeWater: clutterChecked\("include-water"\)/.test(app), false);
+    assert.equal(/includeCars: clutterChecked\("include-cars"\)/.test(app), false);
     assert.match(app, /function clutterChecked\(id\) \{\n  const input = document\.getElementById\(id\);\n  if \(!input\) return true;/);
     assert.match(html, />\s*RVs\s*</);
     const headline = app.slice(app.indexOf("function exportHeadline"), app.indexOf("function setCopyNote"));

@@ -29,6 +29,9 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.25** (Nov 11, 2026): page-only, every host on /dev (production gets them with the next promotion). The export worker is unchanged.
+  - While an export runs, the turn handle and corner resize squares are hidden the same way the clear-area trash can already was. Dragging inside the box to move it, and redrawing, stay locked until the export finishes, errors, or is cancelled.
+  - Water and Cars are off the settings panel. The page always sends both off, which was already the default, even if an old saved page had them on. Sea, lake, and pit-lake water in the OpenIntent file still need includeWater on the API; Copy terrain and clearing trees over water do not use that flag and stay as they are.
 - **1.3.23** (Nov 10, 2026): page-only, every host on /dev (production gets them with the next promotion). The export worker is unchanged.
   - Clear area: same 28px control and 14px trash can as 1.3.22, with a little more contrast. The can is near-white on a faint dark chip with a light edge and a short shadow, so it stays visible on Esri imagery. Hover and focus give it a red tint.
 - **1.3.22** (Nov 10, 2026): page-only, every host on /dev (production gets them with the next promotion). The export worker is unchanged.

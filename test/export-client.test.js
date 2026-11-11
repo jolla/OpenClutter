@@ -373,7 +373,7 @@ describe("Copy terrain after a background result", () => {
     fire("change", { tagName: "SUMMARY" });
     assert.equal(changes, 0);
     // Any control inside, including ones added later, counts.
-    fire("change", { tagName: "INPUT", id: "include-water" });
+    fire("change", { tagName: "INPUT", id: "include-parking" });
     fire("change", { tagName: "SELECT", id: "map-quality" });
     fire("input", { tagName: "INPUT", id: "some-future-setting" });
     assert.equal(changes, 3);
@@ -398,9 +398,7 @@ describe("Copy terrain after a background result", () => {
     const panelHtml = html.slice(start, html.indexOf("</details>", start));
     for (const id of [
       "include-foliage",
-      "include-water",
       "include-parking",
-      "include-cars",
       "include-walls",
       "include-poles",
       "include-rvs",
@@ -412,6 +410,8 @@ describe("Copy terrain after a background result", () => {
     ]) {
       assert.ok(panelHtml.includes('id="' + id + '"'), id + " is inside the settings panel");
     }
+    assert.equal(panelHtml.includes('id="include-water"'), false);
+    assert.equal(panelHtml.includes('id="include-cars"'), false);
   });
 
   it("locks drawing while an export runs and offers Cancel on the Exporting button", () => {
@@ -420,9 +420,14 @@ describe("Copy terrain after a background result", () => {
     assert.match(html, /<span id="export-cancel" aria-hidden="true">Cancel<\/span>/);
     assert.match(html, /#export\.exporting:hover #export-cancel \{ display: inline; \}/);
     assert.match(html, /#export\.exporting\.cancel-armed #export-cancel \{ display: inline; \}/);
-    const down = app.slice(app.indexOf('"pointerdown",'), app.indexOf('"pointermove",'));
+    const down = app.slice(
+      app.indexOf('mapEl.addEventListener(\n  "pointerdown"'),
+      app.indexOf('mapEl.addEventListener(\n  "pointermove"')
+    );
     // Pan gestures run before the lock check, so the map still pans during an export.
     assert.ok(down.indexOf("panGesture(ev)") < down.indexOf("if (exportLocked()) return;"));
+    assert.match(down, /if \(panGesture\(ev\)\)/);
+    assert.match(down, /if \(exportLocked\(\)\) return;/);
     const click = app.slice(app.indexOf('document.getElementById("export").onclick'), app.indexOf("if (copyTerrainLabelReady())"));
     assert.match(click, /if \(exportLocked\(\)\)/);
     assert.match(click, /how === "mouse" \|\| exportBtn\.classList\.contains\("cancel-armed"\)/);

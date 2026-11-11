@@ -565,6 +565,10 @@ function attachRotateHandle(bounds) {
   drawn.addLayer(rotateHandle);
   placeRotateHandle(bounds);
   rotateHandle.on("drag", (ev) => {
+    if (exportLocked()) {
+      if (committedBounds) placeRotateHandle(committedBounds);
+      return;
+    }
     const live = committedBounds;
     if (!live) return;
     const f = boxFrame(live);
@@ -579,10 +583,15 @@ function attachRotateHandle(bounds) {
     setStatus(boxRotate ? "Turned " + boxRotate + " degrees. Ready to export." : "Ready to export.");
   });
   rotateHandle.on("dragend", () => {
+    if (exportLocked()) {
+      if (committedBounds) placeRotateHandle(committedBounds);
+      return;
+    }
     if (committedBounds) placeRotateHandle(committedBounds);
     noteAreaReplaced();
   });
   rotateHandle.on("dblclick", () => {
+    if (exportLocked()) return;
     boxRotate = 0;
     if (committedBounds) placeRotateHandle(committedBounds);
     noteAreaReplaced();
@@ -2610,6 +2619,10 @@ function syncExportLock() {
   const locked = exportLocked();
   document.body.classList.toggle("export-locked", locked);
   if (!locked) disarmExportCancel();
+  if (rotateHandle && rotateHandle.dragging) {
+    if (locked) rotateHandle.dragging.disable();
+    else rotateHandle.dragging.enable();
+  }
   syncDrawMode();
   if (committedBounds && !sketchHidden && !rubber) placeClearControl(committedBounds);
 }
@@ -2667,12 +2680,12 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
       rotate: rotateForExport(),
       name: document.getElementById("q").value || "Site",
       includeFoliage: foliage,
-      includeWater: clutterChecked("include-water"),
+      includeWater: false,
       includeParking: clutterChecked("include-parking"),
       includeWalls: clutterChecked("include-walls"),
       includePoles: clutterChecked("include-poles"),
       includeRvs: clutterChecked("include-rvs"),
-      includeCars: clutterChecked("include-cars"),
+      includeCars: false,
       includeTerrain: terrain,
       deferTerrain: false,
       terrainResolution: terrain ? "auto" : undefined,
@@ -2796,12 +2809,12 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       rotate: rotateForExport(),
       name: document.getElementById("q").value || "Site",
       includeFoliage: foliage,
-      includeWater: clutterChecked("include-water"),
+      includeWater: false,
       includeParking: clutterChecked("include-parking"),
       includeWalls: clutterChecked("include-walls"),
       includePoles: clutterChecked("include-poles"),
       includeRvs: clutterChecked("include-rvs"),
-      includeCars: clutterChecked("include-cars"),
+      includeCars: false,
       includeTerrain: terrain,
       deferTerrain: terrain && qualityPage(),
       terrainResolution: terrain ? "auto" : undefined,

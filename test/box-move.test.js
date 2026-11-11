@@ -208,6 +208,31 @@ describe("move and clear on the map page", () => {
     assert.match(app, /function attachRotateHandle/);
   });
 
+  it("hides the turn handle, corner squares, and clear control while an export runs", () => {
+    const lockCss = html.slice(html.indexOf("body.export-locked .area-clear"), html.indexOf(".hint[hidden]"));
+    assert.match(lockCss, /body\.export-locked \.area-clear/);
+    assert.match(lockCss, /body\.export-locked \.rotate-handle/);
+    assert.match(lockCss, /body\.export-locked \.corner-handle/);
+    assert.match(lockCss, /visibility:\s*hidden/);
+    assert.match(lockCss, /pointer-events:\s*none/);
+    const rotateDrag = app.slice(app.indexOf('rotateHandle.on("drag"'), app.indexOf('rotateHandle.on("dragend"'));
+    assert.match(rotateDrag, /if \(exportLocked\(\)\)/);
+    const rotateEnd = app.slice(app.indexOf('rotateHandle.on("dragend"'), app.indexOf('rotateHandle.on("dblclick"'));
+    assert.match(rotateEnd, /if \(exportLocked\(\)\)/);
+    const rotateDbl = app.slice(app.indexOf('rotateHandle.on("dblclick"'), app.indexOf("function dropBoxGraphics"));
+    assert.match(rotateDbl, /if \(exportLocked\(\)\) return/);
+    const lockFn = app.slice(app.indexOf("function syncExportLock"), app.indexOf("function disarmExportCancel"));
+    assert.match(lockFn, /classList\.toggle\("export-locked"/);
+    assert.match(lockFn, /rotateHandle\.dragging\.disable\(\)/);
+    assert.match(lockFn, /rotateHandle\.dragging\.enable\(\)/);
+    const startMove = app.slice(app.indexOf("function startAreaMove"), app.indexOf("function moveAreaDrag"));
+    assert.match(startMove, /exportLocked\(\)/);
+    const startResize = app.slice(app.indexOf("function startCornerResize"), app.indexOf("function dropActiveAreaMove"));
+    assert.match(startResize, /exportLocked\(\)/);
+    const down = app.slice(app.indexOf("function onCornerPointerDown"), app.indexOf("function startCornerResize"));
+    assert.match(down, /exportLocked\(\)\) return/);
+  });
+
   it("the clear control is only on a finished rectangle, and Delete clears from the map", () => {
     assert.match(html, /\.area-clear \{/);
     assert.match(html, /width: 28px;/);
