@@ -1,7 +1,7 @@
 "use strict";
 
 const { userAgent: UA } = require("../lib/version");
-const { suggestPlaces } = require("../lib/place-search");
+const { suggestPlaces, SUGGEST_TIMEOUT_MS } = require("../lib/place-search");
 
 /** Autocomplete for the search box: Photon (OpenStreetMap), ranked near the view. */
 exports.handler = async (event) => {
@@ -18,9 +18,12 @@ exports.handler = async (event) => {
   const lon = parseFloat(params.lon);
   const view = Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon } : null;
   try {
-    const list = await suggestPlaces(q, view, { userAgent: UA, timeoutMs: 3000 });
+    const list = await suggestPlaces(q, view, { userAgent: UA, timeoutMs: SUGGEST_TIMEOUT_MS });
+    // Do not cache an empty miss: a timeout or a brief Photon gap would stick for 5 minutes.
+    if (!list.length) headers["cache-control"] = "no-store";
     return { statusCode: 200, headers, body: JSON.stringify(list) };
   } catch {
+    headers["cache-control"] = "no-store";
     return { statusCode: 200, headers, body: "[]" };
   }
 };

@@ -207,7 +207,11 @@ function rankPlaces(qIn, view, esri, photon) {
   return out;
 }
 
-async function suggestPlaces(q, viewIn, { fetchFn = fetch, userAgent = "openclutter", timeoutMs = 4000 } = {}) {
+// Photon can take several seconds when it is busy; 8s is under the
+// default Netlify function limit and long enough for a slow reply.
+const SUGGEST_TIMEOUT_MS = 8000;
+
+async function suggestPlaces(q, viewIn, { fetchFn = fetch, userAgent = "openclutter", timeoutMs = SUGGEST_TIMEOUT_MS } = {}) {
   const view = validView(viewIn);
   const signal = AbortSignal.timeout(timeoutMs);
   const sq = stateQuery(q);
@@ -242,4 +246,4 @@ async function bestPlace(q, view, opts = {}) {
   return null;
 }
 
-module.exports = { suggestPlaces, bestPlace, rankPlaces, textScore, norm, stateQuery };
+module.exports = { suggestPlaces, bestPlace, rankPlaces, textScore, norm, stateQuery, SUGGEST_TIMEOUT_MS };
