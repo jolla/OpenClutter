@@ -46,5 +46,5 @@ Contains information from OpenStreetMap (c) OpenStreetMap contributors, Microsof
 ## Service use
 
 - OpenStreetMap data is read from Overpass, not the OSM editing API.
-- Nominatim is called only after a user search (never for autocomplete), at most 1 request per second across the app, with an identifying User-Agent. The endpoint is `NOMINATIM_URL` so the provider can be switched without a code change.
+- Nominatim is called only after a user search (never for autocomplete), at most 1 request per second across the app, with an identifying User-Agent and a Referer of https://openclutter.com/. The endpoint is `NOMINATIM_URL` so the provider can be switched without a code change.
 - Esri World Imagery export images are not written to the Netlify Blobs source cache. A finished zip is kept for 24 hours so Download again works.

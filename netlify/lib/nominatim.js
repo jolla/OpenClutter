@@ -6,7 +6,8 @@
  *     each call reserves the next free second in a shared blob with a
  *     conditional write, and waits for it. Without a blob store (tests,
  *     local runs) the same reservation is kept in process.
- *   - an identifying User-Agent with a project contact URL.
+ *   - an identifying User-Agent with a project contact URL, and a
+ *     Referer of https://openclutter.com/.
  *   - the endpoint is NOMINATIM_URL, so the provider can be switched
  *     without a code change. Nominatim is only asked after a user search,
  *     never for autocomplete.
@@ -16,6 +17,17 @@ const DEFAULT_URL = "https://nominatim.openstreetmap.org/search";
 const GAP_MS = 1000;
 const MAX_WAIT_MS = 6000;
 const SLOT_KEY = "nominatim-next-slot";
+
+const REFERER = "https://openclutter.com/";
+
+function requestHeaders(userAgent) {
+  return {
+    "user-agent": userAgent || "openclutter",
+    "accept-language": "en",
+    referer: REFERER,
+  };
+}
+
 
 let localNext = 0;
 let storeOverride;
@@ -94,7 +106,7 @@ async function nominatimSearch(q, opts) {
   if (wait > MAX_WAIT_MS) return { ok: false, status: 429, data: [] };
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   const r = await fetchImpl(searchUrl(q, o.env), {
-    headers: { "user-agent": o.userAgent || "openclutter", "accept-language": "en" },
+    headers: requestHeaders(o.userAgent),
     signal: AbortSignal.timeout(o.timeoutMs || 8000),
   });
   if (!r.ok) return { ok: false, status: r.status, data: [] };
@@ -112,7 +124,7 @@ async function nominatimReverse(lat, lon, opts) {
   if (wait > MAX_WAIT_MS) return { ok: false, status: 429, data: null };
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   const r = await fetchImpl(reverseUrl(lat, lon, o.env), {
-    headers: { "user-agent": o.userAgent || "openclutter", "accept-language": "en" },
+    headers: requestHeaders(o.userAgent),
     signal: AbortSignal.timeout(o.timeoutMs || 8000),
   });
   if (!r.ok) return { ok: false, status: r.status, data: null };
@@ -123,7 +135,9 @@ async function nominatimReverse(lat, lon, opts) {
 module.exports = {
   DEFAULT_URL,
   DEFAULT_REVERSE_URL,
+  REFERER,
   GAP_MS,
+  requestHeaders,
   endpoint,
   searchUrl,
   reverseEndpoint,

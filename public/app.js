@@ -1919,6 +1919,11 @@ let suggestItems = [];
 let suggestActive = -1;
 let suggestSeq = 0;
 let suggestTimer = null;
+let suggestAbort = null;
+const suggestCache = new Map();
+const geocodeCache = new Map();
+const SUGGEST_CACHE_MS = 30 * 60 * 1000;
+const GEOCODE_CACHE_MS = 24 * 60 * 60 * 1000;
 let searchTyped = false;
 let lastAutoName = "";
 let areaNameTimer = null;
@@ -1990,6 +1995,39 @@ function viewParams() {
   return "&lat=" + c.lat.toFixed(5) + "&lon=" + c.lng.toFixed(5);
 }
 
+function viewCacheKey() {
+  const c = map.getCenter();
+  return c.lat.toFixed(2) + "," + c.lng.toFixed(2);
+}
+
+function readSearchCache(store, key, ttl) {
+  const e = store.get(key);
+  if (!e) return null;
+  if (Date.now() - e.at > ttl) {
+    store.delete(key);
+    return null;
+  }
+  return e.list;
+}
+
+function writeSearchCache(store, key, list) {
+  if (!list || !list.length) return;
+  store.set(key, { at: Date.now(), list });
+  if (store.size > 80) {
+    const first = store.keys().next().value;
+    if (first !== key) store.delete(first);
+  }
+}
+
+function abortSuggest() {
+  clearTimeout(suggestTimer);
+  suggestTimer = null;
+  if (suggestAbort) {
+    suggestAbort.abort();
+    suggestAbort = null;
+  }
+}
+
 function closeSuggest() {
   suggestItems = [];
   suggestActive = -1;
@@ -2026,19 +2064,31 @@ function renderSuggest() {
 
 searchInput.addEventListener("input", () => {
   searchTyped = true;
-  clearTimeout(suggestTimer);
+  abortSuggest();
   const q = searchInput.value.trim();
   const seq = ++suggestSeq;
   if (q.length < 2) return closeSuggest();
+  const ckey = q.toLowerCase() + "\t" + viewCacheKey();
+  const cached = readSearchCache(suggestCache, ckey, SUGGEST_CACHE_MS);
+  if (cached) {
+    suggestItems = cached;
+    suggestActive = -1;
+    renderSuggest();
+    return;
+  }
+  const ac = new AbortController();
+  suggestAbort = ac;
   suggestTimer = setTimeout(async () => {
     try {
-      const r = await OpenClutterNet.guardedFetch("/api/suggest?q=" + encodeURIComponent(q) + viewParams(), undefined, { step: "Search" });
+      const r = await OpenClutterNet.guardedFetch("/api/suggest?q=" + encodeURIComponent(q) + viewParams(), { signal: ac.signal }, { step: "Search" });
       const list = r.ok ? await r.json() : [];
       if (seq !== suggestSeq) return;
       suggestItems = Array.isArray(list) ? list : [];
       suggestActive = -1;
       renderSuggest();
+      writeSearchCache(suggestCache, ckey, suggestItems);
     } catch (err) {
+      if (err && err.name === "AbortError") return;
       // Enter still searches. A blocked API says so once, here, while typing.
       if (err && err.blocked && seq === suggestSeq && !exportLocked()) setStatus(err.message, true);
     }
@@ -2072,17 +2122,22 @@ function flyToHit(hit) {
 
 async function runSearch(q, extra) {
   suggestSeq++;
-  clearTimeout(suggestTimer);
+  abortSuggest();
   closeSuggest();
   if (!exportLocked()) setStatus("Searching…");
   try {
-    const r = await OpenClutterNet.guardedFetch("/api/geocode?q=" + encodeURIComponent(q) + viewParams() + (extra || ""), undefined, {
-      step: "Search",
-    });
-    const hits = await r.json().catch(() => {
-      throw new Error("Search got an unreadable reply. Try again.");
-    });
-    if (!r.ok) throw new Error(hits.error || "Geocode failed");
+    const ckey = String(q || "").toLowerCase() + "\t" + viewCacheKey() + "\t" + (extra || "");
+    let hits = readSearchCache(geocodeCache, ckey, GEOCODE_CACHE_MS);
+    if (!hits) {
+      const r = await OpenClutterNet.guardedFetch("/api/geocode?q=" + encodeURIComponent(q) + viewParams() + (extra || ""), undefined, {
+        step: "Search",
+      });
+      hits = await r.json().catch(() => {
+        throw new Error("Search got an unreadable reply. Try again.");
+      });
+      if (!r.ok) throw new Error(hits.error || "Geocode failed");
+      writeSearchCache(geocodeCache, ckey, hits);
+    }
     if (!hits.length) throw new Error("No results. Try the street address.");
     flyToHit(hits[0]);
   } catch (err) {
