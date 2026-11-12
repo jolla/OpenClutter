@@ -67,6 +67,8 @@
 const { llToClipboard, clipboardToLl, needsGroundMeterImage } = require("./geo-frame");
 const exportMode = require("./export-mode");
 const polygonClipping = require("polygon-clipping");
+const { spawnSync } = require("child_process");
+const path = require("path");
 const { clipRingToBbox, bounds: ringBounds } = require("./poly-clip");
 const { emptyClipboard, stampGpsTiePoints } = require("./hamina-clipboard");
 const { fetchCopernicusDemSamples, GLO30_CREDIT } = require("./copernicus-dem");
@@ -82,6 +84,33 @@ const TERRAIN_DB_PER_M = 20;
 
 function terrainAttenDb() {
   return TERRAIN_DB_PER_M;
+}
+
+// A pathological polygon-clipping union can hang a Trees tile for minutes
+// even on two or three tiny rings. The slope split is given a wall-clock
+// budget; a single boolean that overruns it is killed in a child process
+// and the stand ships unsplit on one floor.
+const CANOPY_SPLIT_BUDGET_MS = 3000;
+const CANOPY_BOOLEAN_BUDGET_MS = 500;
+const CLIP_BUDGET_WORKER = path.join(__dirname, "clip-budget-worker.js");
+
+function unionAllTimed(geoms, ms) {
+  if (!geoms || !geoms.length) return null;
+  if (geoms.length === 1) return geoms[0];
+  const res = spawnSync(process.execPath, [CLIP_BUDGET_WORKER], {
+    input: JSON.stringify(geoms),
+    timeout: ms,
+    maxBuffer: 32 * 1024 * 1024,
+    encoding: "utf8",
+    cwd: path.join(__dirname, "..", ".."),
+  });
+  if (res.error || res.status !== 0 || !res.stdout) return null;
+  try {
+    const out = JSON.parse(res.stdout);
+    return out == null ? null : out;
+  } catch {
+    return null;
+  }
 }
 
 const FLAT_M = 0.5;
@@ -4262,6 +4291,30 @@ function splitRingByFloor(terrain, ring, opts) {
   const bldg = closeClipRing(xy);
   if (!bldg) return [ring];
   const hostArea = meterAreaAbs(bldg);
+  const tStand0 = Date.now();
+  let splitBudgetTripped = false;
+  const noteBudget = (why) => {
+    if (splitBudgetTripped) return;
+    splitBudgetTripped = true;
+    const msg =
+      "warning canopy slope-split budget: " +
+      why +
+      " area=" +
+      Math.round(hostArea) +
+      " ms=" +
+      (Date.now() - tStand0) +
+      "\n";
+    try { require("fs").writeSync(2, msg); } catch (_) {}
+  };
+  const standBudgetLeft = () => {
+    if (!keepPartial) return true;
+    if (splitBudgetTripped) return false;
+    if (Date.now() - tStand0 > CANOPY_SPLIT_BUDGET_MS) {
+      noteBudget("stand time");
+      return false;
+    }
+    return true;
+  };
   const useRamps =
     terrain.clipboard && terrain.clipboard.slopedFloors && terrain.clipboard.slopedFloors.length > 0;
   function unionAll(geoms) {
@@ -4286,41 +4339,102 @@ function splitRingByFloor(terrain, ring, opts) {
   }
   function ringsFromGroups(groups) {
     const pieces = [];
-    for (const group of groups.values()) {
-      if (process.env.OPENCLUTTER_STAGE_LOG && group.length > 8) {
-        try { require("fs").writeSync(2, "substage splitRingByFloor-group n=" + group.length + "\n"); } catch (_) {}
-      }
-      // A large pit woods hung when it was cut against a union of sloped
-      // ramps. Clip that stand to each cell instead, and do not union the
-      // hits. Smaller stands, and the 200 m pre-split tiles of a large
-      // woods, keep the exact union-then-cut path so pieces do not overlap.
-      if (keepPartial && meterAreaAbs(bldg) > 80000) {
-        const standBb = ringBounds(bldg);
-        const hits = [];
-        for (let i = 0; i < group.length; i++) {
-          const cell = group[i].clip;
-          const bb = ringBounds(cell);
-          if (bb.maxX < standBb.minX || bb.minX > standBb.maxX || bb.maxY < standBb.minY || bb.minY > standBb.maxY) continue;
-          const tight = clipRingToBbox(bldg, bb, 0.5);
-          if (!tight) continue;
-          const cut = clipRingToConvexQuad(tight, cell);
-          if (cut) {
-            hits.push([[cut]]);
-            continue;
-          }
-          let piece = null;
+    const noteSplit = (msg) => {
+      if (!process.env.OPENCLUTTER_STAGE_LOG) return;
+      try { require("fs").writeSync(2, "substage splitRingByFloor-" + msg + "\n"); } catch (_) {}
+    };
+    const collectHits = (group, exact) => {
+      const standBb = ringBounds(bldg);
+      noteSplit("collect n=" + group.length + " exact=" + (exact ? 1 : 0) + " stand=" + bldg.length + " area=" + Math.round(meterAreaAbs(bldg)));
+      const hits = [];
+      for (let i = 0; i < group.length; i++) {
+        const cell = group[i].clip;
+        const bb = ringBounds(cell);
+        if (bb.maxX < standBb.minX || bb.minX > standBb.maxX || bb.maxY < standBb.minY || bb.minY > standBb.maxY) continue;
+        const tight = clipRingToBbox(bldg, bb, 0.5);
+        if (!tight) continue;
+        const cellTight = clipRingToBbox(cell, standBb, 0.5) || cell;
+        // Exact boolean only for a small cell ring. A long sloped strip
+        // intersected with the stand hung Sunrise Cove for minutes.
+        // Oak Creek still needs the exact quad cuts so the later union
+        // of hits does not leave overlapping pieces.
+        let piece = null;
+        const cellBox = ringBounds(cellTight);
+        const cellBoxA = (cellBox.w || 0) * (cellBox.h || 0);
+        const cellA = meterAreaAbs(cellTight);
+        const skinny = cellBoxA > 0 && cellA > 0 && cellBoxA > cellA * 8;
+        if (exact && !skinny && tight.length <= 64 && cellTight.length <= 8) {
           try {
-            piece = polygonClipping.intersection([[tight]], [[cell]]);
+            piece = polygonClipping.intersection([[tight]], [[cellTight]]);
           } catch {
             piece = null;
           }
-          if (piece && piece.length) hits.push(piece);
         }
+        if (piece && piece.length) {
+          hits.push(piece);
+          continue;
+        }
+        const cut = clipRingToConvexQuad(tight, cellTight);
+        if (cut) hits.push([[cut]]);
+      }
+      return hits;
+    };
+    const emitHits = (hits, simplify) => {
+      for (let i = 0; i < hits.length; i++) {
+        const rings = ringsFromClipGeom(hits[i], frame, simplify);
+        for (let k = 0; k < rings.length; k++) pieces.push(rings[k]);
+      }
+    };
+    for (const group of groups.values()) {
+      if (!standBudgetLeft()) return pieces;
+      if (group.length > 8) noteSplit("group n=" + group.length);
+      // Canopy (keepPartial): never union the raw sloped ramp cells.
+      // That boolean hung Bingham and Sunrise Cove. Intersect the stand
+      // with each cell (bbox skip first), then union those already-cut
+      // hits so pieces do not overlap. A still-huge stand skips the
+      // union of hits; 200 m pre-split tiles take this path instead.
+      if (keepPartial) {
+        if (meterAreaAbs(bldg) > 80000) {
+          emitHits(collectHits(group, false), 12);
+          continue;
+        }
+        const hits = collectHits(group, true);
         if (!hits.length) continue;
-        for (let i = 0; i < hits.length; i++) {
-          const rings = ringsFromClipGeom(hits[i], frame, 12);
-          for (let k = 0; k < rings.length; k++) pieces.push(rings[k]);
+        if (hits.length === 1) {
+          emitHits(hits, 30);
+          continue;
         }
+        let hitVerts = 0;
+        let maxHit = 0;
+        for (let i = 0; i < hits.length; i++) {
+          const poly = hits[i];
+          for (let a = 0; a < (poly || []).length; a++) {
+            for (let r = 0; r < (poly[a] || []).length; r++) {
+              const n = (poly[a][r] || []).length;
+              hitVerts += n;
+              if (n > maxHit) maxHit = n;
+            }
+          }
+        }
+        // A union of already-cut hits hung when a piece was a long sloped
+        // sliver. Emit the cell-wise hits instead; Oak Creek still unions
+        // small quad cuts, which stay under this budget.
+        if (hitVerts > 120 || maxHit > 24) {
+          noteSplit("skip-union n=" + hits.length + " verts=" + hitVerts + " max=" + maxHit + " area=" + Math.round(meterAreaAbs(bldg)));
+          emitHits(hits, 30);
+          continue;
+        }
+        noteSplit("union-hits n=" + hits.length + " verts=" + hitVerts + " stand=" + bldg.length + " area=" + Math.round(meterAreaAbs(bldg)));
+        if (!standBudgetLeft()) return pieces;
+        const mask = unionAllTimed(hits, CANOPY_BOOLEAN_BUDGET_MS);
+        if (mask == null) {
+          noteBudget("union timeout n=" + hits.length + " verts=" + hitVerts);
+          return pieces;
+        }
+        noteSplit("union-hits-done n=" + hits.length);
+        if (!mask) continue;
+        const rings = ringsFromClipGeom(mask, frame, 30);
+        for (let i = 0; i < rings.length; i++) pieces.push(rings[i]);
         continue;
       }
       const cells = [];
@@ -4356,18 +4470,27 @@ function splitRingByFloor(terrain, ring, opts) {
     }
     return pieces;
   }
+
   let band = SPLIT_FLOOR_M;
   let groups = null;
   let pieces = null;
   while (band < 80) {
+    if (keepPartial && !standBudgetLeft()) {
+      return [ring];
+    }
+    if (process.env.OPENCLUTTER_STAGE_LOG && keepPartial) {
+      try {
+        require("fs").writeSync(2, "substage splitRingByFloor-band-start band=" + band + " stand=" + bldg.length + " area=" + Math.round(hostArea) + "\n");
+      } catch (_) {}
+    }
     const cells = (useRamps ? rampStrips(terrain, band).concat(raisedStrips(terrain)) : terrainFloorCells(terrain)).filter(
       (cell) => boundsOverlap(xy, cell.clip)
     );
     // A pit wall at a 2.5 m band can yield thousands of strips under one
     // woods. Widen the band first so the unions stay countable.
-    if (process.env.OPENCLUTTER_STAGE_LOG && cells.length > 80) {
+    if (process.env.OPENCLUTTER_STAGE_LOG) {
       try {
-        require("fs").writeSync(2, "substage splitRingByFloor cells=" + cells.length + " band=" + band + " groups=?\n");
+        require("fs").writeSync(2, "substage splitRingByFloor cells=" + cells.length + " band=" + band + " groups=? area=" + Math.round(hostArea) + "\n");
       } catch (_) {}
     }
     if (cells.length > 400 && band < 8) {
@@ -4391,13 +4514,16 @@ function splitRingByFloor(terrain, ring, opts) {
       continue;
     }
     pieces = ringsFromGroups(groups);
+    if (splitBudgetTripped) return [ring];
     if (pieces.length <= maxPieces) break;
     pieces = null;
     band *= 2;
   }
+  if (splitBudgetTripped) return [ring];
   if ((!pieces || pieces.length < 2) && groups && groups.size >= 2 && (groups.size <= maxPieces || keepPartial)) {
     pieces = ringsFromGroups(groups);
   }
+  if (splitBudgetTripped) return [ring];
   if (!pieces || pieces.length < 2) return [ring];
   if (pieces.length > maxPieces) {
     const trimmed = largestPieces(pieces, maxPieces, frame);
@@ -4410,17 +4536,31 @@ function splitRingByFloor(terrain, ring, opts) {
     pieces = trimmed;
   }
   const cleaned = [];
+  if (process.env.OPENCLUTTER_STAGE_LOG && keepPartial) {
+    try {
+      require("fs").writeSync(2, "substage splitRingByFloor-cleanup n=" + pieces.length + " area=" + Math.round(hostArea) + "\n");
+    } catch (_) {}
+  }
   for (let i = 0; i < pieces.length; i++) {
     const clip = closeClipRing(ringToClipboard(pieces[i], frame));
     if (!clip) continue;
     let geom = null;
-    try {
-      geom = polygonClipping.union([[clip]]);
-    } catch {
-      geom = null;
+    // Self-union of a long sloped canopy piece can hang. Buildings still
+    // clean every ring; a woods keeps the already-cut piece when it is large.
+    if (!keepPartial) {
+      try {
+        geom = polygonClipping.union([[clip]]);
+      } catch {
+        geom = null;
+      }
     }
     const rings = geom ? ringsFromClipGeom(geom, frame, keepPartial ? 12 : 30) : [pieces[i]];
     for (let k = 0; k < rings.length; k++) cleaned.push(rings[k]);
+  }
+  if (process.env.OPENCLUTTER_STAGE_LOG && keepPartial) {
+    try {
+      require("fs").writeSync(2, "substage splitRingByFloor-cleanup-done n=" + cleaned.length + "\n");
+    } catch (_) {}
   }
   if (cleaned.length >= 2 && cleaned.length <= maxPieces) {
     pieces = cleaned;
