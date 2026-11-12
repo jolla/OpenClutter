@@ -2754,7 +2754,9 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   const PRE_SPLIT_TILE_M = 200;
   const gridStandTiles = (ringPx) => {
     const m2 = canopyAreaM2(ringPx, frame);
-    if (!(m2 > STAND_TILE_MAX_M2)) return [ringPx];
+    // Only the pit-sized woods hung. Pre-tiling every stand above 6,000 m2
+    // left overlapping pieces on smaller sites (oak-creek-commercial).
+    if (!(m2 > 80000)) return [ringPx];
     const { mpuX, mpuY } = ringMeters(frame);
     const b = ringBoundsPx(ringPx);
     const sx = PRE_SPLIT_TILE_M / mpuX;

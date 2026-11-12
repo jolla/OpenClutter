@@ -4290,14 +4290,11 @@ function splitRingByFloor(terrain, ring, opts) {
       if (process.env.OPENCLUTTER_STAGE_LOG && group.length > 8) {
         try { require("fs").writeSync(2, "substage splitRingByFloor-group n=" + group.length + "\n"); } catch (_) {}
       }
-      // Canopy splits: intersect the stand with one ramp cell at a time.
-      // Crop the stand to that cell first so the boolean is small. Unioning
-      // the ramps and then cutting the whole woods hung Bingham on groups
-      // of only 11-18 cells. A linear clip to the convex cell avoids
-      // polygon-clipping on the hang path. Cell-wise clips already form
-      // the height band once the stand is pre-split into small tiles.
-      // Building splits keep the exact union-then-cut path.
-      if (keepPartial) {
+      // A large pit woods hung when it was cut against a union of sloped
+      // ramps. Clip that stand to each cell instead, and do not union the
+      // hits. Smaller stands, and the 200 m pre-split tiles of a large
+      // woods, keep the exact union-then-cut path so pieces do not overlap.
+      if (keepPartial && meterAreaAbs(bldg) > 80000) {
         const standBb = ringBounds(bldg);
         const hits = [];
         for (let i = 0; i < group.length; i++) {
@@ -4320,10 +4317,6 @@ function splitRingByFloor(terrain, ring, opts) {
           if (piece && piece.length) hits.push(piece);
         }
         if (!hits.length) continue;
-        // Do not union the cell hits. Unioning even a handful of pit-wall
-        // clips can reconstruct a large woods and hang. Each pre-split
-        // tile is small, so the cell-wise clips already form the height
-        // band and still seat a ski-hill on local ground.
         for (let i = 0; i < hits.length; i++) {
           const rings = ringsFromClipGeom(hits[i], frame, 12);
           for (let k = 0; k < rings.length; k++) pieces.push(rings[k]);
