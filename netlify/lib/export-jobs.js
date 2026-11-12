@@ -133,7 +133,11 @@ function freshJob(id) {
     expiresAt: now + TTL_MS,
     updatedAt: now,
   };
-  return withStageMark(job, job.stage);
+  withStageMark(job, job.stage);
+  // Keep the Fetching aerial progress mark, but do not tell the page the
+  // aerial read has started while the job is only waiting for a worker.
+  job.stageLabel = "Waiting for a worker";
+  return job;
 }
 
 function exportCountField(state) {

@@ -26,6 +26,11 @@ const { HEARTBEAT_STALE_MS } = jobs;
 const FALLBACK_NOTE = "Fly worker did not accept this export. It is running on the Netlify background path.";
 const RERUN_NOTE = "The export worker stopped. The job was run here instead.";
 const HANDOFF_MS = 14 * 60 * 1000 + 30 * 1000;
+// If Fly holds the POST (a busy machine did not answer 409, or a stopped
+// machine never started) the job stays queued with no heartbeat. Do not
+// wait HEARTBEAT_STALE_MS (5 min) or HANDOFF_MS (14.5 min) in that case.
+// 45 s leaves room for autostart, then Netlify runs the job.
+const ACCEPT_MS = 45 * 1000;
 const HEARTBEAT_POLL_MS = 5 * 1000;
 // The page polls for 15 minutes. The background function stops one minute
 // before the platform kills it. A second run needs at least two minutes
@@ -117,6 +122,7 @@ function clockFns() {
     sleepFn: typeof deps.sleep === "function" ? deps.sleep : sleep,
     pollMs: deps.pollMs != null ? deps.pollMs : HEARTBEAT_POLL_MS,
     staleMs: deps.staleMs != null ? deps.staleMs : HEARTBEAT_STALE_MS,
+    acceptMs: deps.acceptMs != null ? deps.acceptMs : ACCEPT_MS,
   };
 }
 
@@ -207,7 +213,7 @@ function isBusyResult(result) {
 }
 
 async function handOffOnce(jobId, inner, fetchImpl, cfg) {
-  const { nowFn, sleepFn, pollMs, staleMs } = clockFns();
+  const { nowFn, sleepFn, pollMs, staleMs, acceptMs } = clockFns();
   const fetchFn = fetchImpl || globalThis.fetch;
   const startedAt = nowFn();
   const controller = new AbortController();
@@ -265,6 +271,15 @@ async function handOffOnce(jobId, inner, fetchImpl, cfg) {
       if (decision.action !== "wait") {
         controller.abort();
         return toResult(decision);
+      }
+      const accepted = !!(decision.job && (decision.job.worker === "fly" || decision.job.heartbeatAt));
+      if (!accepted && nowFn() - startedAt >= acceptMs) {
+        controller.abort();
+        const latest = await jobs.readJob(jobId).catch(() => null);
+        if (latest && (latest.worker === "fly" || latest.heartbeatAt)) {
+          return watchAfterDrop(jobId, startedAt, nowFn, sleepFn, pollMs, staleMs);
+        }
+        return { skipped: false, handed: false, fallback: true, stay: false, reason: "invoke-timeout" };
       }
       await Promise.race([
         fetchPromise.then(() => "done", () => "done"),
@@ -341,6 +356,7 @@ module.exports = {
   FALLBACK_NOTE,
   RERUN_NOTE,
   HANDOFF_MS,
+  ACCEPT_MS,
   HEARTBEAT_STALE_MS,
   HEARTBEAT_POLL_MS,
   PAGE_MS,
