@@ -4,6 +4,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## Production releases
 
+- **v1.3.30** (Nov 12, 2026) production fix: only the 1.3.30 search-suggestion timeout below on top of v1.3.20 (and the 1.3.29 timeout). The 1.3.21 to 1.3.28 /dev changes stay on /dev.
 - **v1.3.29** (Nov 12, 2026) production fix: only the 1.3.29 search-suggestion timeout below on top of v1.3.20. The 1.3.21 to 1.3.28 /dev changes stay on /dev.
 - **v1.3.20** (Nov 9, 2026) weekly production release: production takes /dev 1.3.20 with five /dev switches turned on for every host: pole map notes (feedback #14, poleNotes), campground points (feedback #15, campNodes), sea and large-water sides (seaWater), the turned export box (feedback #18, rotate; the handle shows on pages opened with ?rotate=1) and smoother tree edges (smoothEdges). The page changes (corner resize, move and clear the drawn area) and the anonymous usage counter ship on every host. trueMetres, adaptive terrain and forest=crowns or merge stay on /dev hosts only.
 - **v1.3.18** (Nov 5, 2026) production fix: production takes /dev 1.3.18. New on production since v1.3.16 is the 1.3.17 Overpass failover below (one server at a time, a 30 minute pause for a blocking server, a note when an export read a street-map copy more than 3 days old). seaWater (1.3.18), poleNotes (1.3.14), campNodes (1.3.15), trueMetres, adaptive terrain and forest=crowns stay on /dev hosts only.
@@ -30,6 +31,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.30** (Nov 12, 2026): follow-up to the 1.3.29 search fix on every host. Photon was answering in 10 to 12 seconds, so the 8 second wait still returned no suggestions. Search now waits up to 18 seconds, and the suggest and geocode functions are allowed 26 seconds so the Netlify gateway does not stop them at 10 seconds. The export path is unchanged; the heavy export gates were not rerun.
 - **1.3.29** (Nov 12, 2026): bug fix on every host. Search suggestions were empty when Photon (the OpenStreetMap place search) took longer than 3 seconds, and the suggest function gave up. It now waits up to 8 seconds, and an empty miss is not cached. Enter-to-search uses the same wait. The page already ignores a late reply after you have typed further. The export path is unchanged; the heavy export gates were not rerun.
 - **1.3.20** (Nov 9, 2026): weekly production release, every host. New on production since v1.3.18:
   - Corner resize: drag a corner of a finished box to resize it. The opposite corner stays put and the box keeps its bearing; each side is at least 2 m.
