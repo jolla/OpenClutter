@@ -2,7 +2,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { geocodeQueries } = require("../netlify/lib/geocode-query");
+const { geocodeQueries, preferredNominatimQuery } = require("../netlify/lib/geocode-query");
 
 describe("geocode queries", () => {
   it("splits the bilingual Pointe-Claire street and drops the postal code", () => {
@@ -19,5 +19,16 @@ describe("geocode queries", () => {
     assert.deepEqual(geocodeQueries("298 Lakeshore Road, Pointe-Claire"), [
       "298 Lakeshore Road, Pointe-Claire",
     ]);
+  });
+
+  it("sends one bilingual English query to Nominatim", () => {
+    assert.equal(
+      preferredNominatimQuery("298 Chem. du Bord-du-Lac-Lakeshore, Pointe-Claire, QC H9S 4L3"),
+      "298 Lakeshore Road, Pointe-Claire, QC"
+    );
+    assert.equal(
+      preferredNominatimQuery("298 Lakeshore Road, Pointe-Claire"),
+      "298 Lakeshore Road, Pointe-Claire"
+    );
   });
 });

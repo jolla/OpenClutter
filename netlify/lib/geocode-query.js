@@ -62,4 +62,14 @@ function geocodeQueries(raw) {
   return out.slice(0, 4);
 }
 
-module.exports = { geocodeQueries };
+/**
+ * One Nominatim query for a user search. The policy allows one request
+ * per search, so bilingual streets use the English "Road" form (the
+ * typied hyphenated name plus a postal code often misses).
+ */
+function preferredNominatimQuery(raw) {
+  const queries = geocodeQueries(raw);
+  return queries[2] || queries[0] || tidy(raw);
+}
+
+module.exports = { geocodeQueries, preferredNominatimQuery };

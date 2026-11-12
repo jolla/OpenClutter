@@ -6,8 +6,9 @@
 [functions]
   node_bundler = "esbuild"
 
-# Suggest and geocode wait on Photon. The default function clock is 10s,
-# which is shorter than a slow Photon reply. 26s is the regular-function max.
+# Geocode races Photon and Nominatim. Suggest waits 3s for Photon. The
+# default function clock is 10s; 26s is the regular-function max, enough
+# for a paced Nominatim slot plus the fetch.
 [functions."suggest"]
   timeout = 26
 

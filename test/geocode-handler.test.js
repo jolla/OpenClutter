@@ -4,6 +4,7 @@ const { describe, it, after, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
 const { handler } = require("../netlify/functions/geocode");
 const nominatim = require("../netlify/lib/nominatim");
+const searchCache = require("../netlify/lib/search-cache");
 
 const PLACE = [
   {
@@ -17,10 +18,14 @@ function jsonResponse(data, ok = true) {
   return { ok, status: ok ? 200 : 502, json: async () => data, text: async () => "" };
 }
 
-describe("geocode handler (Photon, then Nominatim)", () => {
+describe("geocode handler (Photon and Nominatim in parallel)", () => {
   const orig = global.fetch;
   const origUrl = process.env.NOMINATIM_URL;
-  beforeEach(() => nominatim._setStore(null));
+  beforeEach(() => {
+    nominatim._setStore(null);
+    searchCache._setStore(null);
+    searchCache._clear();
+  });
   after(() => {
     global.fetch = orig;
     if (origUrl === undefined) delete process.env.NOMINATIM_URL;
@@ -74,6 +79,29 @@ describe("geocode handler (Photon, then Nominatim)", () => {
     assert.equal(calls.some((u) => u.includes("nominatim.openstreetmap.org")), false);
     delete process.env.NOMINATIM_URL;
     assert.equal(nominatim.endpoint({ NOMINATIM_URL: "http://insecure.example/search" }), nominatim.DEFAULT_URL);
+  });
+
+  it("sends one Nominatim request with an identifying User-Agent and Referer", async () => {
+    const headers = [];
+    let nomi = 0;
+    global.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes("photon")) return jsonResponse({ features: [] });
+      nomi++;
+      headers.push(init && init.headers);
+      return jsonResponse(PLACE);
+    };
+    const res = await handler({
+      httpMethod: "GET",
+      queryStringParameters: { q: "298 Chem. du Bord-du-Lac-Lakeshore, Pointe-Claire, QC H9S 4L3" },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(nomi, 1);
+    const h = headers[0] || {};
+    const ua = h["user-agent"] || h["User-Agent"];
+    const ref = h.referer || h.Referer;
+    assert.match(String(ua), /openclutter\//);
+    assert.equal(ref, nominatim.REFERER);
   });
 });
 

@@ -207,14 +207,21 @@ function rankPlaces(qIn, view, esri, photon) {
   return out;
 }
 
-// Photon can take well over 8s when it is busy (10 to 12s observed
-// 12 Nov 2026). 18s stays under the 26s Netlify limit set on the
-// suggest and geocode functions.
-const SUGGEST_TIMEOUT_MS = 18000;
+// As-you-type suggestions must not hang the box if Photon is slow or
+// down. 3s is short enough to drop an empty list and keep typing;
+// Enter races Nominatim instead of waiting here. 8s is the cap for
+// the Photon side of an Enter search, so a brief pause can still win.
+const SUGGEST_TIMEOUT_MS = 3000;
+const GEOCODE_PHOTON_TIMEOUT_MS = 8000;
 
-async function suggestPlaces(q, viewIn, { fetchFn = fetch, userAgent = "openclutter", timeoutMs = SUGGEST_TIMEOUT_MS } = {}) {
+function searchSignal(timeoutMs, extra) {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return extra ? AbortSignal.any([timeout, extra]) : timeout;
+}
+
+async function suggestPlaces(q, viewIn, { fetchFn = fetch, userAgent = "openclutter", timeoutMs = SUGGEST_TIMEOUT_MS, signal: extra } = {}) {
   const view = validView(viewIn);
-  const signal = AbortSignal.timeout(timeoutMs);
+  const signal = searchSignal(timeoutMs, extra);
   const sq = stateQuery(q);
   const [photon, towns] = await Promise.all([
     photonSearch(q, view, fetchFn, signal, userAgent).catch(() => []),
@@ -247,4 +254,4 @@ async function bestPlace(q, view, opts = {}) {
   return null;
 }
 
-module.exports = { suggestPlaces, bestPlace, rankPlaces, textScore, norm, stateQuery, SUGGEST_TIMEOUT_MS };
+module.exports = { suggestPlaces, bestPlace, rankPlaces, textScore, norm, stateQuery, SUGGEST_TIMEOUT_MS, GEOCODE_PHOTON_TIMEOUT_MS };
