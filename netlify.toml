@@ -6,6 +6,14 @@
 [functions]
   node_bundler = "esbuild"
 
+# Suggest and geocode wait on Photon. The default function clock is 10s,
+# which is shorter than a slow Photon reply. 26s is the regular-function max.
+[functions."suggest"]
+  timeout = 26
+
+[functions."geocode"]
+  timeout = 26
+
 # esbuild emits clutter.js and does not copy fs reads. The Hamina laser grid
 # has to be listed or a Finland export throws ENOENT and the gateway returns 502.
 [functions."clutter"]

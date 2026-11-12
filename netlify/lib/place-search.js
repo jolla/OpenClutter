@@ -207,9 +207,10 @@ function rankPlaces(qIn, view, esri, photon) {
   return out;
 }
 
-// Photon can take several seconds when it is busy; 8s is under the
-// default Netlify function limit and long enough for a slow reply.
-const SUGGEST_TIMEOUT_MS = 8000;
+// Photon can take well over 8s when it is busy (10 to 12s observed
+// 12 Nov 2026). 18s stays under the 26s Netlify limit set on the
+// suggest and geocode functions.
+const SUGGEST_TIMEOUT_MS = 18000;
 
 async function suggestPlaces(q, viewIn, { fetchFn = fetch, userAgent = "openclutter", timeoutMs = SUGGEST_TIMEOUT_MS } = {}) {
   const view = validView(viewIn);

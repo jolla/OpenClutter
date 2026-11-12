@@ -78,8 +78,8 @@ describe("place search ranking", () => {
     assert.deepEqual(await suggestPlaces("sphere", null, { fetchFn }), []);
   });
 
-  it("waits 8 seconds for Photon by default, under the Netlify function limit", () => {
-    assert.equal(SUGGEST_TIMEOUT_MS, 8000);
+  it("waits 18 seconds for Photon by default, under the Netlify function limit", () => {
+    assert.equal(SUGGEST_TIMEOUT_MS, 18000);
   });
 
   it("keeps a slow Photon reply that finishes inside timeoutMs", async () => {
