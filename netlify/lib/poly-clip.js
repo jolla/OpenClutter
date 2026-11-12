@@ -954,7 +954,162 @@ const CLIP_HIT_SPLIT = 4;
 const CLIP_VERT_SPLIT = 96;
 const CLIP_SPLIT_DEPTH = 6;
 
-function clipFoliageRing(ring, clipSet, depth) {
+function clipFoliageRing1326(ring, clipSet) {
+  const closed = orientPositive(ring);
+  if (closed.length < 4) return [];
+  if (!clipSet) return [closed];
+  const bb = bounds(closed);
+  const geoms = [];
+  const buildingHits = [];
+  for (const b of clipSet.buildings) {
+    if (!bboxHit(bb, b.bbox, clipSet.bufferPx)) continue;
+    const g = geomForBuilding(b, clipSet.bufferPx);
+    if (g && g.length) {
+      geoms.push(g);
+      buildingHits.push(b);
+    }
+  }
+  const waterHits = [];
+  for (const extra of clipSet.extras) {
+    if (!bboxHit(bb, extra.bbox, clipSet.bufferPx)) continue;
+    // Every mask keeps its own entry, so pavement, bright roofs and road
+    // corridors clip too, and the water entries stay aligned with geoms.
+    if (extra.geom && extra.geom.length) {
+      geoms.push(extra.geom);
+      waterHits.push(extra);
+    }
+  }
+  if (!geoms.length) return [closed];
+  // One roof at a time. Unioning every footprint first filled the gap between
+  // campground roofs and erased the tree row that sits there. A buffer that
+  // blows up is not allowed to remove more than the roof plus its rim.
+  const hits = buildingHits.concat(waterHits);
+  let geom = [[closed]];
+  let area = Math.abs(signedArea(closed));
+  for (let i = 0; i < geoms.length; i++) {
+    const mask = geoms[i];
+    const hit = hits[i];
+    if (!mask || !mask.length || !hit || !hit.ring) continue;
+    const roof = Math.abs(signedArea(hit.ring));
+    let peri = 0;
+    const open = openRing(hit.ring);
+    for (let k = 0; k < open.length; k++) {
+      const a = open[k];
+      const b = open[(k + 1) % open.length];
+      peri += Math.hypot(b[0] - a[0], b[1] - a[1]);
+    }
+    const maskArea = multiAreaPx(mask);
+    const rim = roof + (clipSet.bufferPx || 0) * peri + 80;
+    // Budget against the whole mask accepts a boolean that deletes the stand
+    // whenever the mask is larger than that stand. The lost area has to match
+    // the overlap. A miter that runs away from the roof is cut as the
+    // footprint ring instead.
+    const sane = maskArea > 0 && maskArea < rim * 3;
+    const useMask = sane ? mask : [[hit.ring]];
+    let overlap = 0;
+    try {
+      overlap = multiAreaPx(polygonClipping.intersection(geom, useMask));
+    } catch {
+      overlap = 0;
+    }
+    if (!(overlap > 0.5)) continue;
+    const budget = overlap + Math.max(80, overlap * 0.08);
+    let next = null;
+    try {
+      next = polygonClipping.difference(geom, useMask);
+    } catch {
+      next = null;
+    }
+    let nextArea = multiAreaPx(next);
+    if (!(nextArea > 0) || nextArea < area - budget) {
+      let raw = null;
+      try {
+        raw = polygonClipping.difference(geom, [[hit.ring]]);
+      } catch {
+        raw = null;
+      }
+      let rawOverlap = roof;
+      try {
+        rawOverlap = multiAreaPx(polygonClipping.intersection(geom, [[hit.ring]]));
+      } catch {
+        rawOverlap = roof;
+      }
+      const rawArea = multiAreaPx(raw);
+      const rawBudget = Math.max(rawOverlap, 0) + Math.max(80, rawOverlap * 0.08);
+      if (!(rawArea > 0) || rawArea < area - rawBudget) {
+        if (roof >= area * 0.8) return [];
+        continue;
+      }
+      next = raw;
+      nextArea = rawArea;
+    }
+    geom = next;
+    area = nextArea;
+  }
+  const diff = area < Math.abs(signedArea(closed)) - 0.5 ? geom : null;
+  // A cut that would erase the stand is skipped above. Keeping the outline
+  // leaves a roof sliver for the exporter to trim, instead of deleting the row.
+  if (!diff) return [closed];
+  const raw = openHoles(diff);
+  const maxEps = Math.max(1.1, Math.min(2.2, clipSet.bufferPx * 0.4));
+  const rawRings = [];
+  let rawArea = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const closed = closeRing(openRing(raw[i]));
+    if (closed.length < 4) continue;
+    rawRings.push(closed);
+    rawArea += Math.abs(signedArea(closed));
+  }
+  const pieces = [];
+  for (const s of raw) {
+    for (const piece of piecesUnderCap(s, MAX_FOLIAGE_VERTS, maxEps)) {
+      let blocked = false;
+      for (const b of buildingHits) {
+        if (mostlyRoof(piece, b.ring)) {
+          blocked = true;
+          break;
+        }
+      }
+      if (blocked) continue;
+      for (const w of waterHits) {
+        if (mostlyRoof(piece, w.ring)) {
+          blocked = true;
+          break;
+        }
+      }
+      if (!blocked) pieces.push(piece);
+    }
+  }
+  let pieceArea = 0;
+  let covered = 0;
+  for (let i = 0; i < pieces.length; i++) {
+    pieceArea += Math.abs(signedArea(pieces[i]));
+    for (let k = 0; k < rawRings.length; k++) {
+      try {
+        covered += intersectionAreaPx(pieces[i], rawRings[k]);
+      } catch {
+        covered += 0;
+      }
+    }
+  }
+  // A thin tree row is a few percent of the crown it hangs off. Dropping that
+  // piece, or chording across it, still leaves most of the shoelace area, so
+  // the old 10% test kept the simplified slice and lost the row. The exporter
+  // splits the uncut difference.
+  if (rawArea > 8 && (pieceArea < rawArea * 0.98 || covered < rawArea * 0.98)) return rawRings;
+  return pieces;
+}
+
+function clipFoliageRing(ring, clipSet) {
+  // 1.3.26 clip is the primary path so official canopy stays bit-identical.
+  // If that boolean drops the whole stand (it can fail on a huge ring with
+  // many roofs), use the bbox-split clip so the stand still remains.
+  const pieces = clipFoliageRing1326(ring, clipSet);
+  if (pieces && pieces.length) return pieces;
+  return clipFoliageRingCheap(ring, clipSet);
+}
+
+function clipFoliageRingCheap(ring, clipSet, depth) {
   const closed = orientPositive(ring);
   if (closed.length < 4) return [];
   if (!clipSet) return [closed];
@@ -988,7 +1143,7 @@ function clipFoliageRing(ring, clipSet, depth) {
     if (halved.length === 2) {
       const out = [];
       for (let s = 0; s < halved.length; s++) {
-        const pieces = clipFoliageRing(halved[s], clipSet, depthNow + 1);
+        const pieces = clipFoliageRingCheap(halved[s], clipSet, depthNow + 1);
         for (let k = 0; k < pieces.length; k++) out.push(pieces[k]);
       }
       if (out.length) return out;

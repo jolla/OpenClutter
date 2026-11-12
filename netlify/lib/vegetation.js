@@ -18,6 +18,9 @@ const { MAX_TREES, maxTreesForBbox, canopyHeightM } = require("./tree-source");
 const { crownsForExport, tracePixels } = require("./canopy-height");
 const { BUILDING_BUFFER_M, createClipSet, clipFoliageRing, dissolveFoliageRings, pointInRing, intersectionAreaPx } = require("./poly-clip");
 const polygonClipping = require("polygon-clipping");
+const { spawnSync } = require("child_process");
+const path = require("path");
+const v8 = require("v8");
 const exportMode = require("./export-mode");
 const standSplit = require("./stand-split");
 const understoryStyleLib = require("./understory-style");
@@ -2143,6 +2146,98 @@ function closeCrownRing(pts) {
   return out.length >= 4 ? out : null;
 }
 
+
+function mergeSliversWork(seats, frame) {
+  const mpu = (frame.mpuX || 1) * (frame.mpuY || frame.mpuX || 1);
+  const list = seats.slice();
+  for (let pass = 0; pass < 3; pass++) {
+    let changed = false;
+    list.sort((a, b) => ringPxArea(a.ringPx) - ringPxArea(b.ringPx));
+    for (let i = 0; i < list.length; i++) {
+      const small = list[i];
+      if (!small || ringPxArea(small.ringPx) * mpu >= SLIVER_M2) continue;
+      let best = -1;
+      let bestRing = null;
+      for (let j = list.length - 1; j >= 0; j--) {
+        if (j === i || !list[j]) continue;
+        let u = null;
+        try {
+          u = polygonClipping.union([closeCrownRing(openCrownRing(small.ringPx))], [closeCrownRing(openCrownRing(list[j].ringPx))]);
+        } catch {
+          u = null;
+        }
+        if (u && u.length === 1 && u[0][0] && u[0][0].length >= 4) {
+          best = j;
+          bestRing = u[0][0];
+          break;
+        }
+      }
+      if (best < 0) {
+        list[i] = null;
+        changed = true;
+        continue;
+      }
+      list[best] = Object.assign({}, list[best], { ringPx: bestRing, ll: null });
+      list[i] = null;
+      changed = true;
+    }
+    for (let i = list.length - 1; i >= 0; i--) if (!list[i]) list.splice(i, 1);
+    if (!changed) break;
+  }
+  return list.length ? list : seats;
+}
+
+const MERGE_SLIVERS_WORKER = path.join(__dirname, "merge-slivers-worker.js");
+const MERGE_SLIVERS_BUDGET_MS = Math.max(
+  1000,
+  parseInt(process.env.OPENCLUTTER_MERGE_BUDGET_MS || "30000", 10) || 30000
+);
+
+function mergeSliversGuarded(seats, frame) {
+  if (!seats || seats.length < 2) return seats;
+  const mpu = (frame && frame.mpuX ? frame.mpuX : 1) * (frame && (frame.mpuY || frame.mpuX) ? frame.mpuY || frame.mpuX : 1);
+  let hasSliver = false;
+  for (let i = 0; i < seats.length; i++) {
+    if (seats[i] && ringPxArea(seats[i].ringPx) * mpu < SLIVER_M2) {
+      hasSliver = true;
+      break;
+    }
+  }
+  if (!hasSliver) return seats;
+  if (process.env.OPENCLUTTER_MERGE_INPROCESS === "1") return mergeSliversWork(seats, frame);
+  const t0 = Date.now();
+  const res = spawnSync(process.execPath, [MERGE_SLIVERS_WORKER], {
+    input: v8.serialize({
+      seats,
+      frame: { mpuX: frame && frame.mpuX, mpuY: frame && frame.mpuY },
+    }),
+    timeout: MERGE_SLIVERS_BUDGET_MS,
+    maxBuffer: 32 * 1024 * 1024,
+    cwd: path.join(__dirname, "..", ".."),
+    env: Object.assign({}, process.env, { OPENCLUTTER_MERGE_INPROCESS: "1" }),
+  });
+  const timedOut = !!(res.error && (res.error.code === "ETIMEDOUT" || res.error.killed));
+  if (!timedOut && res.status === 0 && res.stdout && res.stdout.length) {
+    try {
+      const out = v8.deserialize(Buffer.isBuffer(res.stdout) ? res.stdout : Buffer.from(res.stdout));
+      if (out && Array.isArray(out.seats) && out.seats.length) return out.seats;
+    } catch (_) {}
+  }
+  try {
+    require("fs").writeSync(
+      2,
+      "warning slope-split merge-slivers " +
+        (timedOut ? "timeout" : "error") +
+        " wall=" +
+        (Date.now() - t0) +
+        " n=" +
+        seats.length +
+        "\n"
+    );
+  } catch (_) {}
+  return seats;
+}
+
 function largestExterior(multi) {
   let best = null;
   let bestA = 0;
@@ -2744,41 +2839,10 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   const heightSample = opts && typeof opts.heightSample === "function" ? opts.heightSample : null;
   let foliageLifted = 0;
   const pending = [];
-  const oneSeat = (ringPx, ground, slopePiece) => [{ ringPx, ground, slopePiece: !!slopePiece }];
-  // Cut a large stand into ~200 m tiles before the slope split. Intersecting
-  // the whole pit woods with a union of ramp cells hung Trees; each tile
-  // meets only a few cells, so the boolean stays small. 50 m tiles produced
-  // thousands of pieces and a long crown-stack on Bingham. A ski-hill still
-  // seats south and north tiles on their own ground, and the run stays open
-  // because each box is clipped to the same mask.
-  const PRE_SPLIT_TILE_M = 200;
-  const gridStandTiles = (ringPx) => {
-    const m2 = canopyAreaM2(ringPx, frame);
-    // Only the pit-sized woods hung. Pre-tiling every stand above 6,000 m2
-    // left overlapping pieces on smaller sites (oak-creek-commercial).
-    if (!(m2 > 80000)) return [ringPx];
-    const { mpuX, mpuY } = ringMeters(frame);
-    const b = ringBoundsPx(ringPx);
-    const sx = PRE_SPLIT_TILE_M / mpuX;
-    const sy = PRE_SPLIT_TILE_M / (mpuY || mpuX);
-    const out = [];
-    for (let y = b.minY; y < b.maxY; y += sy) {
-      for (let x = b.minX; x < b.maxX; x += sx) {
-        const box = clipRingToBox(ringPx, x, y, x + sx, y + sy);
-        if (!box || box.length < 4) continue;
-        const parts = clipSet ? clipFoliageRing(box, clipSet) || [] : [box];
-        for (let q = 0; q < parts.length; q++) {
-          const ring = parts[q];
-          if (!ring || ring.length < 4 || canopyAreaM2(ring, frame) < SLIVER_M2) continue;
-          out.push(ring);
-        }
-      }
-    }
-    return out.length ? out : [ringPx];
-  };
-  const seatsForRing = (ringPx) => {
-    if (!slopeTop || !ringPx || ringPx.length < 4) return oneSeat(ringPx, 0, false);
-    const ll = ringPx.map((p) => pxToLl(p[0], p[1], frame));
+  const seatsFor = (area) => {
+    const one = (ringPx, ground, slopePiece) => [{ ringPx, ground, slopePiece: !!slopePiece }];
+    if (!slopeTop || !area.ringPx || area.ringPx.length < 4) return one(area.ringPx, 0, false);
+    const ll = area.ringPx.map((p) => pxToLl(p[0], p[1], frame));
     let split = typeof slopeTop.splitCanopy === "function" ? slopeTop.splitCanopy(ll) : null;
     // A traced crown with a jagged edge loses area in the cut, so the whole
     // ring comes back and sits on one sample. The outline that actually ships
@@ -2800,7 +2864,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     }
     // A long unsplit ring used to sit on the uphill sample, so the downhill
     // side floated. Relief over 3 m uses the downhill ground instead.
-    if (!split || split.length < 2) return oneSeat(ringPx, groundOf(ll), false);
+    if (!split || split.length < 2) return one(area.ringPx, groundOf(ll), false);
     const seats = [];
     for (let i = 0; i < split.length; i++) {
       const px = [];
@@ -2821,67 +2885,12 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       seats.push({ ringPx: px, ground, slopePiece: true, ll: split[i] });
     }
     if (seats.length >= 2) return mergeSlivers(seats);
-    return oneSeat(ringPx, groundOf(ll), false);
-  };
-  const seatsFor = (area) => {
-    if (!slopeTop || !area.ringPx || area.ringPx.length < 4) return oneSeat(area.ringPx, 0, false);
-    const tiles = gridStandTiles(area.ringPx);
-    if (tiles.length <= 1) return seatsForRing(tiles[0] || area.ringPx);
-    const seats = [];
-    for (let i = 0; i < tiles.length; i++) {
-      const part = seatsForRing(tiles[i]);
-      for (let k = 0; k < part.length; k++) {
-        // Already cut to a pre-split tile and local ground. Do not 50 m
-        // tile or merge slivers across the whole woods; that union hung
-        // and the follow-on crown stack ran for many minutes.
-        seats.push(Object.assign({ banded: true }, part[k]));
-      }
-    }
-    if (seats.length) return seats;
-    return oneSeat(area.ringPx, groundOf(area.ringPx.map((p) => pxToLl(p[0], p[1], frame))), false);
+    return one(area.ringPx, groundOf(ll), false);
   };
   // A slope cut leaves slivers of a few square metres. Each one used to ship
   // as its own full-height prism, which reads as a thin green column. A
   // sliver joins the neighbour it touches; it sits on that neighbour's ground.
-  const mergeSlivers = (seats) => {
-    const mpu = (frame.mpuX || 1) * (frame.mpuY || frame.mpuX || 1);
-    const list = seats.slice();
-    for (let pass = 0; pass < 3; pass++) {
-      let changed = false;
-      list.sort((a, b) => ringPxArea(a.ringPx) - ringPxArea(b.ringPx));
-      for (let i = 0; i < list.length; i++) {
-        const small = list[i];
-        if (!small || ringPxArea(small.ringPx) * mpu >= SLIVER_M2) continue;
-        let best = -1;
-        let bestRing = null;
-        for (let j = list.length - 1; j >= 0; j--) {
-          if (j === i || !list[j]) continue;
-          let u = null;
-          try {
-            u = polygonClipping.union([closeCrownRing(openCrownRing(small.ringPx))], [closeCrownRing(openCrownRing(list[j].ringPx))]);
-          } catch {
-            u = null;
-          }
-          if (u && u.length === 1 && u[0][0] && u[0][0].length >= 4) {
-            best = j;
-            bestRing = u[0][0];
-            break;
-          }
-        }
-        if (best < 0) {
-          list[i] = null;
-          changed = true;
-          continue;
-        }
-        list[best] = Object.assign({}, list[best], { ringPx: bestRing, ll: null });
-        list[i] = null;
-        changed = true;
-      }
-      for (let i = list.length - 1; i >= 0; i--) if (!list[i]) list.splice(i, 1);
-      if (!changed) break;
-    }
-    return list.length ? list : seats;
-  };
+  const mergeSlivers = (seats) => mergeSliversGuarded(seats, frame);
   const seatNear = (ll) => {
     let lon = 0;
     let lat = 0;
@@ -2999,12 +3008,6 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       const seat = seats[i];
       const m2 = seat.ringPx ? canopyAreaM2(seat.ringPx, frame) : 0;
       if (!(m2 > STAND_TILE_MAX_M2)) {
-        out.push(seat);
-        continue;
-      }
-      // A single stand over a pit wall can be square-kilometres. Band and
-      // 50 m boolean splits on that ring are the leftover Trees hang.
-      if (m2 > 80000) {
         out.push(seat);
         continue;
       }
@@ -3439,6 +3442,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
 }
 
 module.exports = {
+  mergeSliversWork,
   isPalmTags,
   palmCentres,
   heightContourRing,

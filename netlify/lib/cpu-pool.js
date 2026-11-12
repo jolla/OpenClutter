@@ -210,6 +210,34 @@ function onMessage(msg) {
   } else slot.reject(new Error(msg.error || "worker failed"));
 }
 
+function spawnPoolWorker(index) {
+  const worker = new Worker(workerFile(), { workerData: { index } });
+  if (typeof worker.unref === "function") worker.unref();
+  worker.on("message", onMessage);
+  worker.on("error", (err) => {
+    const message = err && err.message ? err.message : "worker failed";
+    const doomed = [];
+    for (const [id, slot] of pending) {
+      if (slot.workerIndex === index) doomed.push(id);
+    }
+    for (const id of doomed) {
+      const slot = pending.get(id);
+      pending.delete(id);
+      if (slot) slot.reject(new Error(message));
+    }
+  });
+  return worker;
+}
+
+function replacePoolWorker(index) {
+  if (!workers || !workers[index]) return;
+  const old = workers[index];
+  workers[index] = spawnPoolWorker(index);
+  try {
+    old.terminate().catch(() => {});
+  } catch (_) {}
+}
+
 function ensurePool() {
   if (failed) return null;
   if (workers) return workers;
@@ -219,18 +247,29 @@ function ensurePool() {
   }
   const n = threadCount();
   workers = [];
-  for (let i = 0; i < n; i++) {
-    const worker = new Worker(workerFile(), { workerData: { index: i } });
-    if (typeof worker.unref === "function") worker.unref();
-    worker.on("message", onMessage);
-    worker.on("error", (err) => {
-      const message = err && err.message ? err.message : "worker failed";
-      for (const slot of pending.values()) slot.reject(new Error(message));
-      pending.clear();
-    });
-    workers.push(worker);
-  }
+  for (let i = 0; i < n; i++) workers.push(spawnPoolWorker(i));
   return workers;
+}
+
+const FOLIAGE_TILE_BUDGET_MS = Math.max(
+  10000,
+  parseInt(process.env.OPENCLUTTER_TILE_BUDGET_MS || "180000", 10) || 180000
+);
+
+function logTileTimeout(tileHint, wall) {
+  try {
+    require("fs").writeSync(
+      2,
+      "warning foliage-assemble tile timeout wall=" + wall + " " + (tileHint || "") + "\n"
+    );
+  } catch (_) {}
+}
+
+function foliageAssembleFallback(payload) {
+  // Re-run the tile on the main thread without a slope split so a hung
+  // seatsFor or merge cannot stall Trees. Clip and dissolve still run.
+  const copy = Object.assign({}, payload, { terrain: null });
+  return runInline("foliage-assemble", copy);
 }
 
 function runInline(task, payload) {
@@ -253,18 +292,50 @@ function runOn(workerIndex, task, payload, hooks) {
   if (hooks && hooks.balance) index = freestWorker(pool.length, index);
   const worker = pool[index];
   bumpBusy(index, 1);
+  const tileHint = payload && payload.tileId != null ? String(payload.tileId) : task;
+  const budget = task === "foliage-assemble" ? FOLIAGE_TILE_BUDGET_MS : 0;
+  const startedAt = Date.now();
+  let timer = null;
   const job = new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject, onTime });
+    pending.set(id, { resolve, reject, onTime, workerIndex: index });
+    if (budget > 0) {
+      timer = setTimeout(() => {
+        if (!pending.has(id)) return;
+        const slot = pending.get(id);
+        pending.delete(id);
+        const wall = Date.now() - startedAt;
+        logTileTimeout(tileHint, wall);
+        try {
+          replacePoolWorker(index);
+        } catch (_) {}
+        let fallback = null;
+        try {
+          fallback = foliageAssembleFallback(payload);
+        } catch (err) {
+          fallback = null;
+        }
+        if (slot && slot.onTime) {
+          try {
+            slot.onTime({ threadId: "timeout", startedAt, finishedAt: Date.now() });
+          } catch (_) {}
+        }
+        if (slot) slot.resolve(fallback);
+      }, budget);
+    }
     try {
       // Threads keep their own module state: carry the export's rule set.
       const mode = require("./export-mode");
       worker.postMessage({ id, task, payload, siteTypes: mode.isSiteTypes(), shadowTrailers: mode.isShadowTrailers(), waterEdges: mode.isWaterEdges(), canopyBands: mode.isCanopyBands(), mergeTiles: mode.isMergeTiles(), scrubGaps: mode.isScrubGaps(), crownStyle: mode.isCrownStyle(), smoothEdges: mode.isSmoothEdges() });
     } catch (err) {
       pending.delete(id);
+      if (timer) clearTimeout(timer);
       reject(err);
     }
   });
-  job.finally(() => bumpBusy(index, -1));
+  job.finally(() => {
+    if (timer) clearTimeout(timer);
+    bumpBusy(index, -1);
+  });
   return job;
 }
 

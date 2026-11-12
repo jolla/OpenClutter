@@ -69,6 +69,7 @@ const exportMode = require("./export-mode");
 const polygonClipping = require("polygon-clipping");
 const { spawnSync } = require("child_process");
 const path = require("path");
+const v8 = require("v8");
 const { clipRingToBbox, bounds: ringBounds } = require("./poly-clip");
 const { emptyClipboard, stampGpsTiePoints } = require("./hamina-clipboard");
 const { fetchCopernicusDemSamples, GLO30_CREDIT } = require("./copernicus-dem");
@@ -86,12 +87,9 @@ function terrainAttenDb() {
   return TERRAIN_DB_PER_M;
 }
 
-// A pathological polygon-clipping boolean can hang Trees or a building
-// floor split for minutes, even on two or three tiny rings. The slope
-// split is given a wall-clock budget; a single boolean that overruns it
-// is killed in a child process and the ring ships unsplit on one floor.
-const SPLIT_BUDGET_MS = 3000;
-const SPLIT_BOOLEAN_BUDGET_MS = 500;
+// Stand-level slope-split timeouts live in splitRingByFloor (1.3.26
+// algorithm in a killable child). These helpers remain for the cell-wise
+// fallback only.
 const CLIP_BUDGET_WORKER = path.join(__dirname, "clip-budget-worker.js");
 
 function clipOpTimed(op, args, ms) {
@@ -4288,7 +4286,14 @@ function clipRingToConvexQuad(ring, quad) {
   return r;
 }
 
-function splitRingByFloor(terrain, ring, opts) {
+
+/**
+ * 1.3.26 slope split, unchanged. Normal gate sites take this path in a
+ * killable child so the result stays byte-identical to 1.3.26. A hang is
+ * killed at SPLIT_STAND_BUDGET_MS and the stand uses the cell-wise fallback
+ * (or ships unsplit if that cannot cover the footprint).
+ */
+function splitRingByFloor1326(terrain, ring, opts) {
   const maxPieces = opts && opts.maxPieces > 1 ? opts.maxPieces | 0 : SPLIT_MAX_PIECES;
   const keepPartial = !!(opts && opts.keepPartial);
   if (!terrain || !ring || ring.length < 4) return [ring];
@@ -4299,194 +4304,39 @@ function splitRingByFloor(terrain, ring, opts) {
   const bldg = closeClipRing(xy);
   if (!bldg) return [ring];
   const hostArea = meterAreaAbs(bldg);
-  const tStand0 = Date.now();
-  let splitBudgetTripped = false;
-  const noteBudget = (why) => {
-    if (splitBudgetTripped) return;
-    splitBudgetTripped = true;
-    const msg =
-      "warning slope-split budget: " +
-      why +
-      " area=" +
-      Math.round(hostArea) +
-      " ms=" +
-      (Date.now() - tStand0) +
-      "\n";
-    try { require("fs").writeSync(2, msg); } catch (_) {}
-  };
-  const standBudgetLeft = () => {
-    if (splitBudgetTripped) return false;
-    if (Date.now() - tStand0 > SPLIT_BUDGET_MS) {
-      noteBudget("stand time");
-      return false;
-    }
-    return true;
-  };
   const useRamps =
     terrain.clipboard && terrain.clipboard.slopedFloors && terrain.clipboard.slopedFloors.length > 0;
   function ringsFromGroups(groups) {
     const pieces = [];
-    const noteSplit = (msg) => {
-      if (!process.env.OPENCLUTTER_STAGE_LOG) return;
-      try { require("fs").writeSync(2, "substage splitRingByFloor-" + msg + "\n"); } catch (_) {}
-    };
-    const collectHits = (group, exact) => {
-      const standBb = ringBounds(bldg);
-      noteSplit("collect n=" + group.length + " exact=" + (exact ? 1 : 0) + " stand=" + bldg.length + " area=" + Math.round(meterAreaAbs(bldg)));
-      const hits = [];
-      for (let i = 0; i < group.length; i++) {
-        const cell = group[i].clip;
-        const bb = ringBounds(cell);
-        if (bb.maxX < standBb.minX || bb.minX > standBb.maxX || bb.maxY < standBb.minY || bb.minY > standBb.maxY) continue;
-        const tight = clipRingToBbox(bldg, bb, 0.5);
-        if (!tight) continue;
-        const cellTight = clipRingToBbox(cell, standBb, 0.5) || cell;
-        // Exact boolean only for a small cell ring. A long sloped strip
-        // intersected with the stand hung Sunrise Cove for minutes.
-        // Oak Creek still needs the exact quad cuts so the later union
-        // of hits does not leave overlapping pieces.
-        let piece = null;
-        const cellBox = ringBounds(cellTight);
-        const cellBoxA = (cellBox.w || 0) * (cellBox.h || 0);
-        const cellA = meterAreaAbs(cellTight);
-        const skinny = cellBoxA > 0 && cellA > 0 && cellBoxA > cellA * 8;
-        if (exact && !skinny && tight.length <= 64 && cellTight.length <= 8) {
-          try {
-            piece = polygonClipping.intersection([[tight]], [[cellTight]]);
-          } catch {
-            piece = null;
-          }
-        }
-        if (piece && piece.length) {
-          hits.push(piece);
-          continue;
-        }
-        const cut = clipRingToConvexQuad(tight, cellTight);
-        if (cut) hits.push([[cut]]);
-      }
-      return hits;
-    };
-    const emitHits = (hits, simplify) => {
-      for (let i = 0; i < hits.length; i++) {
-        const rings = ringsFromClipGeom(hits[i], frame, simplify);
-        for (let k = 0; k < rings.length; k++) pieces.push(rings[k]);
-      }
-    };
     for (const group of groups.values()) {
-      if (!standBudgetLeft()) return pieces;
-      if (group.length > 8) noteSplit("group n=" + group.length);
-      // Canopy (keepPartial): never union the raw sloped ramp cells.
-      // That boolean hung Bingham and Sunrise Cove. Intersect the stand
-      // with each cell (bbox skip first), then union those already-cut
-      // hits so pieces do not overlap. A still-huge stand skips the
-      // union of hits; 200 m pre-split tiles take this path instead.
-      if (keepPartial) {
-        if (meterAreaAbs(bldg) > 80000) {
-          emitHits(collectHits(group, false), 12);
-          continue;
+      let mask = null;
+      for (let i = 0; i < group.length; i++) {
+        try {
+          mask = mask ? polygonClipping.union(mask, [[group[i].clip]]) : [[group[i].clip]];
+        } catch {
+          mask = null;
+          break;
         }
-        const hits = collectHits(group, true);
-        if (!hits.length) continue;
-        if (hits.length === 1) {
-          emitHits(hits, 30);
-          continue;
-        }
-        let hitVerts = 0;
-        let maxHit = 0;
-        for (let i = 0; i < hits.length; i++) {
-          const poly = hits[i];
-          for (let a = 0; a < (poly || []).length; a++) {
-            for (let r = 0; r < (poly[a] || []).length; r++) {
-              const n = (poly[a][r] || []).length;
-              hitVerts += n;
-              if (n > maxHit) maxHit = n;
-            }
-          }
-        }
-        // A union of already-cut hits hung when a piece was a long sloped
-        // sliver. Emit the cell-wise hits instead; Oak Creek still unions
-        // small quad cuts, which stay under this budget.
-        if (hitVerts > 120 || maxHit > 24) {
-          noteSplit("skip-union n=" + hits.length + " verts=" + hitVerts + " max=" + maxHit + " area=" + Math.round(meterAreaAbs(bldg)));
-          emitHits(hits, 30);
-          continue;
-        }
-        noteSplit("union-hits n=" + hits.length + " verts=" + hitVerts + " stand=" + bldg.length + " area=" + Math.round(meterAreaAbs(bldg)));
-        if (!standBudgetLeft()) return pieces;
-        const mask = unionAllTimed(hits, SPLIT_BOOLEAN_BUDGET_MS);
-        if (mask == null) {
-          noteBudget("union timeout n=" + hits.length + " verts=" + hitVerts);
-          return pieces;
-        }
-        noteSplit("union-hits-done n=" + hits.length);
-        if (!mask) continue;
-        const rings = ringsFromClipGeom(mask, frame, 30);
-        for (let i = 0; i < rings.length; i++) pieces.push(rings[i]);
-        continue;
-      }
-      const cells = [];
-      for (let i = 0; i < group.length; i++) cells.push([[group[i].clip]]);
-      if (!cells.length) continue;
-      const mask = cells.length === 1 ? cells[0] : unionAllTimed(cells, SPLIT_BOOLEAN_BUDGET_MS);
-      if (cells.length > 1 && mask == null) {
-        noteBudget("union timeout n=" + cells.length);
-        return pieces;
       }
       if (!mask) continue;
-      let subject = [[bldg]];
+      let hit;
       try {
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const poly of mask) {
-          const ring = poly && poly[0];
-          if (!ring) continue;
-          const b = ringBounds(ring);
-          if (b.minX < minX) minX = b.minX;
-          if (b.minY < minY) minY = b.minY;
-          if (b.maxX > maxX) maxX = b.maxX;
-          if (b.maxY > maxY) maxY = b.maxY;
-        }
-        const tight = Number.isFinite(minX) ? clipRingToBbox(bldg, { minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY }, 0.5) : null;
-        if (tight) subject = [[tight]];
+        hit = polygonClipping.intersection([[bldg]], mask);
       } catch {
-        subject = [[bldg]];
+        continue;
       }
-      let hit = intersectionTimed(subject, mask, SPLIT_BOOLEAN_BUDGET_MS);
-      if (hit == null) {
-        noteBudget("intersect timeout");
-        return pieces;
-      }
-      const rings = ringsFromClipGeom(hit, frame, 30);
+      const rings = ringsFromClipGeom(hit, frame, keepPartial ? 12 : 30);
       for (let i = 0; i < rings.length; i++) pieces.push(rings[i]);
     }
     return pieces;
   }
-
   let band = SPLIT_FLOOR_M;
   let groups = null;
   let pieces = null;
   while (band < 80) {
-    if (!standBudgetLeft()) {
-      return [ring];
-    }
-    if (process.env.OPENCLUTTER_STAGE_LOG && keepPartial) {
-      try {
-        require("fs").writeSync(2, "substage splitRingByFloor-band-start band=" + band + " stand=" + bldg.length + " area=" + Math.round(hostArea) + "\n");
-      } catch (_) {}
-    }
     const cells = (useRamps ? rampStrips(terrain, band).concat(raisedStrips(terrain)) : terrainFloorCells(terrain)).filter(
       (cell) => boundsOverlap(xy, cell.clip)
     );
-    // A pit wall at a 2.5 m band can yield thousands of strips under one
-    // woods. Widen the band first so the unions stay countable.
-    if (process.env.OPENCLUTTER_STAGE_LOG) {
-      try {
-        require("fs").writeSync(2, "substage splitRingByFloor cells=" + cells.length + " band=" + band + " groups=? area=" + Math.round(hostArea) + "\n");
-      } catch (_) {}
-    }
-    if (cells.length > 400 && band < 8) {
-      band = 8;
-      continue;
-    }
     if (cells.length < 2) {
       if (!groups) return [ring];
       break;
@@ -4504,16 +4354,13 @@ function splitRingByFloor(terrain, ring, opts) {
       continue;
     }
     pieces = ringsFromGroups(groups);
-    if (splitBudgetTripped) return [ring];
     if (pieces.length <= maxPieces) break;
     pieces = null;
     band *= 2;
   }
-  if (splitBudgetTripped) return [ring];
   if ((!pieces || pieces.length < 2) && groups && groups.size >= 2 && (groups.size <= maxPieces || keepPartial)) {
     pieces = ringsFromGroups(groups);
   }
-  if (splitBudgetTripped) return [ring];
   if (!pieces || pieces.length < 2) return [ring];
   if (pieces.length > maxPieces) {
     const trimmed = largestPieces(pieces, maxPieces, frame);
@@ -4526,32 +4373,17 @@ function splitRingByFloor(terrain, ring, opts) {
     pieces = trimmed;
   }
   const cleaned = [];
-  if (process.env.OPENCLUTTER_STAGE_LOG && keepPartial) {
-    try {
-      require("fs").writeSync(2, "substage splitRingByFloor-cleanup n=" + pieces.length + " area=" + Math.round(hostArea) + "\n");
-    } catch (_) {}
-  }
   for (let i = 0; i < pieces.length; i++) {
     const clip = closeClipRing(ringToClipboard(pieces[i], frame));
     if (!clip) continue;
     let geom = null;
-    // Self-union of a long sloped canopy piece can hang. Buildings still
-    // clean every ring; a woods keeps the already-cut piece when it is large.
-    if (!keepPartial) {
-      if (!standBudgetLeft()) return [ring];
-      geom = clipOpTimed("union", [[[clip]]], SPLIT_BOOLEAN_BUDGET_MS);
-      if (geom == null) {
-        noteBudget("cleanup union timeout");
-        return [ring];
-      }
+    try {
+      geom = polygonClipping.union([[clip]]);
+    } catch {
+      geom = null;
     }
     const rings = geom ? ringsFromClipGeom(geom, frame, keepPartial ? 12 : 30) : [pieces[i]];
     for (let k = 0; k < rings.length; k++) cleaned.push(rings[k]);
-  }
-  if (process.env.OPENCLUTTER_STAGE_LOG && keepPartial) {
-    try {
-      require("fs").writeSync(2, "substage splitRingByFloor-cleanup-done n=" + cleaned.length + "\n");
-    } catch (_) {}
   }
   if (cleaned.length >= 2 && cleaned.length <= maxPieces) {
     pieces = cleaned;
@@ -4569,7 +4401,212 @@ function splitRingByFloor(terrain, ring, opts) {
   return pieces;
 }
 
+function cloneForSplit(value, seen) {
+  if (value == null || typeof value === "number" || typeof value === "string" || typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "function" || typeof value === "symbol") return undefined;
+  if (typeof value === "bigint") return Number(value);
+  if (!seen) seen = new Map();
+  if (seen.has(value)) return seen.get(value);
+  if (Buffer.isBuffer(value)) return Buffer.from(value);
+  if (ArrayBuffer.isView(value)) {
+    return new value.constructor(value);
+  }
+  if (Array.isArray(value)) {
+    const out = new Array(value.length);
+    seen.set(value, out);
+    for (let i = 0; i < value.length; i++) out[i] = cloneForSplit(value[i], seen);
+    return out;
+  }
+  if (typeof value === "object") {
+    const out = {};
+    seen.set(value, out);
+    const keys = Object.keys(value);
+    for (let i = 0; i < keys.length; i++) {
+      const copied = cloneForSplit(value[keys[i]], seen);
+      if (copied !== undefined) out[keys[i]] = copied;
+    }
+    return out;
+  }
+  return undefined;
+}
+
+function snapshotTerrainForSplit(terrain) {
+  if (!terrain) return null;
+  const useRamps =
+    terrain.clipboard && terrain.clipboard.slopedFloors && terrain.clipboard.slopedFloors.length > 0;
+  if (!useRamps) {
+    try {
+      terrainFloorCells(terrain);
+    } catch (_) {}
+  }
+  return cloneForSplit({
+    frame: terrain.frame,
+    clipboard: terrain.clipboard,
+    gridCols: terrain.gridCols,
+    gridRows: terrain.gridRows,
+    kind: terrain.kind,
+    reliefM: terrain.reliefM,
+    raised: terrain.raised,
+    sloped: terrain.sloped,
+    _floorCells: terrain._floorCells || null,
+  });
+}
+
+function logSplit(line) {
+  try {
+    require("fs").writeSync(2, line + (line.endsWith("\n") ? "" : "\n"));
+  } catch (_) {}
+}
+
+let splitTimeoutsThisExport = 0;
+
+function resetSplitGuard() {
+  splitTimeoutsThisExport = 0;
+}
+
+function splitRingByFloorFallback(terrain, ring, opts) {
+  const maxPieces = opts && opts.maxPieces > 1 ? opts.maxPieces | 0 : SPLIT_MAX_PIECES;
+  const keepPartial = !!(opts && opts.keepPartial);
+  if (!terrain || !ring || ring.length < 4) return [ring];
+  const extent = floorExtentUnderRing(terrain, ring);
+  if (!(extent.max - extent.min > SPLIT_FLOOR_M)) return [ring];
+  const frame = terrain.frame;
+  const xy = frame ? ringToClipboard(ring, frame) : [];
+  const bldg = closeClipRing(xy);
+  if (!bldg) return [ring];
+  const hostArea = meterAreaAbs(bldg);
+  const useRamps =
+    terrain.clipboard && terrain.clipboard.slopedFloors && terrain.clipboard.slopedFloors.length > 0;
+  const band = SPLIT_FLOOR_M;
+  const cells = (useRamps ? rampStrips(terrain, band).concat(raisedStrips(terrain)) : terrainFloorCells(terrain)).filter(
+    (cell) => boundsOverlap(xy, cell.clip)
+  );
+  if (cells.length < 2) return [ring];
+  const standBb = ringBounds(bldg);
+  const pieces = [];
+  for (let i = 0; i < cells.length; i++) {
+    const cell = cells[i].clip;
+    const bb = ringBounds(cell);
+    if (bb.maxX < standBb.minX || bb.minX > standBb.maxX || bb.maxY < standBb.minY || bb.minY > standBb.maxY) continue;
+    const tight = clipRingToBbox(bldg, bb, 0.5);
+    if (!tight) continue;
+    const cellTight = clipRingToBbox(cell, standBb, 0.5) || cell;
+    const cut = clipRingToConvexQuad(tight, cellTight);
+    if (!cut) continue;
+    const rings = ringsFromClipGeom([[cut]], frame, keepPartial ? 12 : 30);
+    for (let k = 0; k < rings.length; k++) pieces.push(rings[k]);
+    if (pieces.length > maxPieces * 4) break;
+  }
+  if (pieces.length < 2) return [ring];
+  const kept = pieces.length > maxPieces ? largestPieces(pieces, maxPieces, frame) : pieces;
+  if (kept.length < 2) return [ring];
+  let area = 0;
+  for (let i = 0; i < kept.length; i++) area += pieceClipboardArea(kept[i], frame);
+  if (area < hostArea * (keepPartial ? 0.7 : 0.7)) return [ring];
+  return kept;
+}
+
+const SPLIT_STAND_WORKER = path.join(__dirname, "split-stand-worker.js");
+// Temporary default until 1.3.26 gate sites are profiled. Bingham hung for
+// an hour, so 60 s still kills a stuck stand. After profiling, set this to
+// about 3-5x the slowest normal stand.
+const SPLIT_STAND_BUDGET_MS = Math.max(
+  1000,
+  parseInt(process.env.OPENCLUTTER_SPLIT_BUDGET_MS || "60000", 10) || 60000
+);
+const SPLIT_TIMEOUT_CAP = Math.max(
+  1,
+  parseInt(process.env.OPENCLUTTER_SPLIT_TIMEOUT_CAP || "5", 10) || 5
+);
+
+function splitRingByFloor(terrain, ring, opts) {
+  if (process.env.OPENCLUTTER_SPLIT_INPROCESS === "1") {
+    return splitRingByFloor1326(terrain, ring, opts);
+  }
+  // Flat ground and tiny rings never enter the 1.3.26 boolean. Skip the
+  // child so a site of many level pads does not pay spawn cost.
+  if (!terrain || !ring || ring.length < 4) return [ring];
+  const extent = floorExtentUnderRing(terrain, ring);
+  if (!(extent.max - extent.min > SPLIT_FLOOR_M)) return [ring];
+  const keepPartial = !!(opts && opts.keepPartial);
+  const hostArea = (() => {
+    try {
+      const frame = terrain && terrain.frame;
+      const xy = frame ? ringToClipboard(ring, frame) : [];
+      const bldg = closeClipRing(xy);
+      return bldg ? meterAreaAbs(bldg) : 0;
+    } catch (_) {
+      return 0;
+    }
+  })();
+  if (splitTimeoutsThisExport >= SPLIT_TIMEOUT_CAP) {
+    const pieces = splitRingByFloorFallback(terrain, ring, opts);
+    logSplit(
+      "warning slope-split cap: using fallback after " +
+        splitTimeoutsThisExport +
+        " timeouts area=" +
+        Math.round(hostArea) +
+        " keepPartial=" +
+        (keepPartial ? 1 : 0)
+    );
+    return pieces;
+  }
+  const t0 = Date.now();
+  const res = spawnSync(process.execPath, [SPLIT_STAND_WORKER], {
+    input: v8.serialize({
+      terrain: snapshotTerrainForSplit(terrain),
+      ring,
+      opts: opts || {},
+    }),
+    timeout: SPLIT_STAND_BUDGET_MS,
+    maxBuffer: 32 * 1024 * 1024,
+    cwd: path.join(__dirname, "..", ".."),
+    env: Object.assign({}, process.env, { OPENCLUTTER_SPLIT_INPROCESS: "1" }),
+  });
+  const wall = Date.now() - t0;
+  const timedOut = !!(res.error && (res.error.code === "ETIMEDOUT" || res.error.killed));
+  if (!timedOut && res.status === 0 && res.stdout && res.stdout.length) {
+    try {
+      const out = v8.deserialize(Buffer.isBuffer(res.stdout) ? res.stdout : Buffer.from(res.stdout));
+      if (out && Array.isArray(out.pieces) && out.pieces.length) {
+        logSplit(
+          "slope-split profile ms=" +
+            (out.ms != null ? out.ms : wall) +
+            " wall=" +
+            wall +
+            " area=" +
+            Math.round(hostArea) +
+            " keepPartial=" +
+            (keepPartial ? 1 : 0) +
+            " pieces=" +
+            out.pieces.length
+        );
+        return out.pieces;
+      }
+    } catch (_) {}
+  }
+  splitTimeoutsThisExport += 1;
+  const why = timedOut ? "timeout" : "worker-error status=" + res.status + " " + ((res.error && res.error.code) || "");
+  logSplit(
+    "warning slope-split " +
+      why +
+      " wall=" +
+      wall +
+      " area=" +
+      Math.round(hostArea) +
+      " keepPartial=" +
+      (keepPartial ? 1 : 0) +
+      " nTimeouts=" +
+      splitTimeoutsThisExport
+  );
+  return splitRingByFloorFallback(terrain, ring, opts);
+}
+
+
 function slopeSampler(terrain) {
+  resetSplitGuard();
   const fn = (ring) => slopeTopUnderRing(terrain, ring);
   fn.seat = (ring) => slopeSeatUnderRing(terrain, ring);
   fn.split = (ring) => splitRingByFloor(terrain, ring);
@@ -5172,6 +5209,8 @@ module.exports = {
   slopeTopUnderRing,
   slopeSeatUnderRing,
   splitRingByFloor,
+  splitRingByFloor1326,
+  resetSplitGuard,
   SPLIT_FLOOR_M,
   SPLIT_MAX_PIECES,
   siteWarrantsLift,
