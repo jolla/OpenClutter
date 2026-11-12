@@ -86,19 +86,17 @@ function terrainAttenDb() {
   return TERRAIN_DB_PER_M;
 }
 
-// A pathological polygon-clipping union can hang a Trees tile for minutes
-// even on two or three tiny rings. The slope split is given a wall-clock
-// budget; a single boolean that overruns it is killed in a child process
-// and the stand ships unsplit on one floor.
-const CANOPY_SPLIT_BUDGET_MS = 3000;
-const CANOPY_BOOLEAN_BUDGET_MS = 500;
+// A pathological polygon-clipping boolean can hang Trees or a building
+// floor split for minutes, even on two or three tiny rings. The slope
+// split is given a wall-clock budget; a single boolean that overruns it
+// is killed in a child process and the ring ships unsplit on one floor.
+const SPLIT_BUDGET_MS = 3000;
+const SPLIT_BOOLEAN_BUDGET_MS = 500;
 const CLIP_BUDGET_WORKER = path.join(__dirname, "clip-budget-worker.js");
 
-function unionAllTimed(geoms, ms) {
-  if (!geoms || !geoms.length) return null;
-  if (geoms.length === 1) return geoms[0];
+function clipOpTimed(op, args, ms) {
   const res = spawnSync(process.execPath, [CLIP_BUDGET_WORKER], {
-    input: JSON.stringify(geoms),
+    input: JSON.stringify({ op, args }),
     timeout: ms,
     maxBuffer: 32 * 1024 * 1024,
     encoding: "utf8",
@@ -111,6 +109,16 @@ function unionAllTimed(geoms, ms) {
   } catch {
     return null;
   }
+}
+
+function unionAllTimed(geoms, ms) {
+  if (!geoms || !geoms.length) return null;
+  if (geoms.length === 1) return geoms[0];
+  return clipOpTimed("unionAll", geoms, ms);
+}
+
+function intersectionTimed(a, b, ms) {
+  return clipOpTimed("intersection", [a, b], ms);
 }
 
 const FLAT_M = 0.5;
@@ -4297,7 +4305,7 @@ function splitRingByFloor(terrain, ring, opts) {
     if (splitBudgetTripped) return;
     splitBudgetTripped = true;
     const msg =
-      "warning canopy slope-split budget: " +
+      "warning slope-split budget: " +
       why +
       " area=" +
       Math.round(hostArea) +
@@ -4307,9 +4315,8 @@ function splitRingByFloor(terrain, ring, opts) {
     try { require("fs").writeSync(2, msg); } catch (_) {}
   };
   const standBudgetLeft = () => {
-    if (!keepPartial) return true;
     if (splitBudgetTripped) return false;
-    if (Date.now() - tStand0 > CANOPY_SPLIT_BUDGET_MS) {
+    if (Date.now() - tStand0 > SPLIT_BUDGET_MS) {
       noteBudget("stand time");
       return false;
     }
@@ -4317,26 +4324,6 @@ function splitRingByFloor(terrain, ring, opts) {
   };
   const useRamps =
     terrain.clipboard && terrain.clipboard.slopedFloors && terrain.clipboard.slopedFloors.length > 0;
-  function unionAll(geoms) {
-    let list = geoms.slice();
-    while (list.length > 1) {
-      const next = [];
-      for (let i = 0; i < list.length; i += 2) {
-        if (i + 1 >= list.length) {
-          next.push(list[i]);
-          continue;
-        }
-        try {
-          next.push(polygonClipping.union(list[i], list[i + 1]));
-        } catch {
-          next.push(list[i]);
-          next.push(list[i + 1]);
-        }
-      }
-      list = next;
-    }
-    return list[0] || null;
-  }
   function ringsFromGroups(groups) {
     const pieces = [];
     const noteSplit = (msg) => {
@@ -4426,7 +4413,7 @@ function splitRingByFloor(terrain, ring, opts) {
         }
         noteSplit("union-hits n=" + hits.length + " verts=" + hitVerts + " stand=" + bldg.length + " area=" + Math.round(meterAreaAbs(bldg)));
         if (!standBudgetLeft()) return pieces;
-        const mask = unionAllTimed(hits, CANOPY_BOOLEAN_BUDGET_MS);
+        const mask = unionAllTimed(hits, SPLIT_BOOLEAN_BUDGET_MS);
         if (mask == null) {
           noteBudget("union timeout n=" + hits.length + " verts=" + hitVerts);
           return pieces;
@@ -4440,7 +4427,11 @@ function splitRingByFloor(terrain, ring, opts) {
       const cells = [];
       for (let i = 0; i < group.length; i++) cells.push([[group[i].clip]]);
       if (!cells.length) continue;
-      const mask = cells.length === 1 ? cells[0] : unionAll(cells);
+      const mask = cells.length === 1 ? cells[0] : unionAllTimed(cells, SPLIT_BOOLEAN_BUDGET_MS);
+      if (cells.length > 1 && mask == null) {
+        noteBudget("union timeout n=" + cells.length);
+        return pieces;
+      }
       if (!mask) continue;
       let subject = [[bldg]];
       try {
@@ -4459,11 +4450,10 @@ function splitRingByFloor(terrain, ring, opts) {
       } catch {
         subject = [[bldg]];
       }
-      let hit;
-      try {
-        hit = polygonClipping.intersection(subject, mask);
-      } catch {
-        continue;
+      let hit = intersectionTimed(subject, mask, SPLIT_BOOLEAN_BUDGET_MS);
+      if (hit == null) {
+        noteBudget("intersect timeout");
+        return pieces;
       }
       const rings = ringsFromClipGeom(hit, frame, 30);
       for (let i = 0; i < rings.length; i++) pieces.push(rings[i]);
@@ -4475,7 +4465,7 @@ function splitRingByFloor(terrain, ring, opts) {
   let groups = null;
   let pieces = null;
   while (band < 80) {
-    if (keepPartial && !standBudgetLeft()) {
+    if (!standBudgetLeft()) {
       return [ring];
     }
     if (process.env.OPENCLUTTER_STAGE_LOG && keepPartial) {
@@ -4548,10 +4538,11 @@ function splitRingByFloor(terrain, ring, opts) {
     // Self-union of a long sloped canopy piece can hang. Buildings still
     // clean every ring; a woods keeps the already-cut piece when it is large.
     if (!keepPartial) {
-      try {
-        geom = polygonClipping.union([[clip]]);
-      } catch {
-        geom = null;
+      if (!standBudgetLeft()) return [ring];
+      geom = clipOpTimed("union", [[[clip]]], SPLIT_BOOLEAN_BUDGET_MS);
+      if (geom == null) {
+        noteBudget("cleanup union timeout");
+        return [ring];
       }
     }
     const rings = geom ? ringsFromClipGeom(geom, frame, keepPartial ? 12 : 30) : [pieces[i]];

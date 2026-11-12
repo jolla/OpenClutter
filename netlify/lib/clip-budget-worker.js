@@ -1,22 +1,14 @@
 "use strict";
 
-// Child process for a time-budgeted polygon-clipping union. The parent
-// kills this process when the boolean exceeds the stand's budget so a
-// hang cannot stall Trees. Stdin is a JSON array of clip geoms.
+// Child process for a time-budgeted polygon-clipping boolean. The parent
+// kills this process when the operation exceeds the ring's budget so a
+// hang cannot stall Trees or a building floor split. Stdin is
+// { op: "unionAll"|"union"|"intersection", args: ... }.
 const path = require("path");
 const polygonClipping = require(path.join(__dirname, "..", "..", "node_modules", "polygon-clipping"));
 
-let raw = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk) => {
-  raw += chunk;
-});
-process.stdin.on("end", () => {
-  const geoms = JSON.parse(raw);
-  if (!Array.isArray(geoms) || !geoms.length) {
-    process.stdout.write("null");
-    return;
-  }
+function unionAll(geoms) {
+  if (!Array.isArray(geoms) || !geoms.length) return null;
   let list = geoms.slice();
   while (list.length > 1) {
     const next = [];
@@ -34,5 +26,25 @@ process.stdin.on("end", () => {
     }
     list = next;
   }
-  process.stdout.write(JSON.stringify(list[0] == null ? null : list[0]));
+  return list[0] == null ? null : list[0];
+}
+
+let raw = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  raw += chunk;
+});
+process.stdin.on("end", () => {
+  let out = null;
+  try {
+    const msg = JSON.parse(raw);
+    const op = msg && msg.op;
+    const args = msg && msg.args;
+    if (op === "unionAll") out = unionAll(args);
+    else if (op === "union") out = polygonClipping.union(...args);
+    else if (op === "intersection") out = polygonClipping.intersection(args[0], args[1]);
+  } catch {
+    out = null;
+  }
+  process.stdout.write(JSON.stringify(out));
 });
