@@ -2,7 +2,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { rankPlaces, textScore, suggestPlaces, stateQuery } = require("../netlify/lib/place-search");
+const { rankPlaces, textScore, suggestPlaces, stateQuery, SUGGEST_TIMEOUT_MS } = require("../netlify/lib/place-search");
 
 describe("place search ranking", () => {
   it("forgives a typo and an abbreviation", () => {
@@ -76,5 +76,68 @@ describe("place search ranking", () => {
   it("returns an empty list when both services fail", async () => {
     const fetchFn = async () => ({ ok: false, status: 503, json: async () => ({}) });
     assert.deepEqual(await suggestPlaces("sphere", null, { fetchFn }), []);
+  });
+
+  it("waits 8 seconds for Photon by default, under the Netlify function limit", () => {
+    assert.equal(SUGGEST_TIMEOUT_MS, 8000);
+  });
+
+  it("keeps a slow Photon reply that finishes inside timeoutMs", async () => {
+    const fetchFn = async (_url, init) => {
+      await new Promise((resolve, reject) => {
+        const t = setTimeout(resolve, 40);
+        const signal = init && init.signal;
+        if (!signal) return;
+        if (signal.aborted) {
+          clearTimeout(t);
+          reject(signal.reason || Object.assign(new Error("aborted"), { name: "AbortError" }));
+          return;
+        }
+        signal.addEventListener("abort", () => {
+          clearTimeout(t);
+          reject(signal.reason || Object.assign(new Error("aborted"), { name: "AbortError" }));
+        });
+      });
+      return {
+        ok: true,
+        json: async () => ({
+          features: [{
+            geometry: { coordinates: [-87.65, 41.85] },
+            properties: { name: "Chicago", osm_key: "place", osm_value: "city", state: "Illinois", country: "United States" },
+          }],
+        }),
+      };
+    };
+    const list = await suggestPlaces("Chicago", null, { fetchFn, timeoutMs: 200 });
+    assert.equal(list[0].label, "Chicago");
+  });
+
+  it("returns an empty list when Photon exceeds timeoutMs", async () => {
+    const fetchFn = async (_url, init) => {
+      await new Promise((resolve, reject) => {
+        const t = setTimeout(resolve, 200);
+        const signal = init && init.signal;
+        if (!signal) return;
+        if (signal.aborted) {
+          clearTimeout(t);
+          reject(signal.reason || Object.assign(new Error("aborted"), { name: "AbortError" }));
+          return;
+        }
+        signal.addEventListener("abort", () => {
+          clearTimeout(t);
+          reject(signal.reason || Object.assign(new Error("aborted"), { name: "AbortError" }));
+        });
+      });
+      return {
+        ok: true,
+        json: async () => ({
+          features: [{
+            geometry: { coordinates: [-87.65, 41.85] },
+            properties: { name: "Chicago", osm_key: "place", osm_value: "city", state: "Illinois", country: "United States" },
+          }],
+        }),
+      };
+    };
+    assert.deepEqual(await suggestPlaces("Chicago", null, { fetchFn, timeoutMs: 30 }), []);
   });
 });
