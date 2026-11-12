@@ -29,6 +29,9 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.28** (Nov 12, 2026): /dev hosts only (production stays on the 5.8 MB JSON / 9.7 MB JSON-plus-image budget). The export worker needs a redeploy for this to apply on live /dev jobs.
+  - OpenIntent JSON on /dev may use 14 MB, pending a Hamina import bisect (15 MB imported on test-eu; 30 MB did not). The map image is a separate blob and does not come out of that budget. Copy terrain paste on /dev may use up to 6000 floors and 4.9 MB, still under about 4.94 MiB of inline metadata. Area sanity cap on /dev is 60,000. Each map keeps at most 19,000 wall segments.
+
 - **1.3.26** (Nov 11, 2026): page-only, every host on /dev (production gets it with the next promotion). The export worker is unchanged.
   - After a box is drawn, or when a share link already has a box, the search field fills with the nearest notable named feature and the city (Berkeley Pit - Butte, MT). US and Canadian places use a state or province abbreviation; elsewhere the form is City, Country. If no landmark is close, only the city is used. A name typed since the last draw is left alone. Move and resize wait a short moment before updating. Lookups that fail leave the field unchanged.
 - **1.3.25** (Nov 11, 2026): page-only, every host on /dev (production gets them with the next promotion). The export worker is unchanged.
