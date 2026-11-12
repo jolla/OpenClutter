@@ -59,6 +59,17 @@ describe("export jobs", { concurrency: 1 }, () => {
     setEnvironmentContext({ siteID: "", token: "" });
   });
 
+  it("labels a queued job as waiting for a worker", async () => {
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    const id = "11111111-1111-4111-8111-111111111111";
+    await jobs.createJob(id);
+    const job = await jobs.readJob(id);
+    assert.equal(job.state, "queued");
+    assert.equal(job.stage, "Fetching aerial");
+    assert.equal(job.stageLabel, "Waiting for a worker");
+  });
+
   it("a late heartbeat after done leaves state done", async () => {
     const store = memoryStore();
     jobs.setExportStoreForTests(store);

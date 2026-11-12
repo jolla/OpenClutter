@@ -2621,6 +2621,7 @@ function showExportProgress(job) {
   const line = document.getElementById("status-line");
   let stageText = (job && (job.stageLabel || job.stage)) || "Fetching aerial";
   if (/^Fetching map$/i.test(stageText)) stageText = "Fetching aerial";
+  if (job && job.state === "queued") stageText = "Waiting for a worker";
   if (line) {
     line.textContent = stageText;
     line.classList.remove("done");

@@ -137,6 +137,41 @@ describe("fly worker handoff", { concurrency: 1 }, () => {
     assert.ok(waits.includes(3000) && waits.includes(6000));
   });
 
+  it("falls back when Fly holds the handoff POST and never accepts the job", async () => {
+    saveEnv();
+    process.env.FLY_WORKER_URL = "https://openclutter-export.fly.dev";
+    process.env.FLY_WORKER_SECRET = "local-secret";
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    await jobs.createJob(JOB);
+    let now = 1000;
+    setHandoffDepsForTests({
+      now: () => now,
+      sleep: async (ms) => {
+        now += ms;
+      },
+      pollMs: 10,
+      acceptMs: 40,
+    });
+    const fakeFetch = async (url, init) => {
+      await new Promise((_, reject) => {
+        const sig = init && init.signal;
+        if (!sig) return;
+        const fail = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        if (sig.aborted) {
+          fail();
+          return;
+        }
+        sig.addEventListener("abort", fail);
+      });
+    };
+    const result = await handOffExport(JOB, innerEvent(), fakeFetch);
+    assert.equal(result.fallback, true);
+    assert.equal(result.handed, false);
+    assert.equal(result.reason, "invoke-timeout");
+    assert.ok(now >= 1040);
+  });
+
   it("keeps the Netlify background path when the worker does not accept the job", async () => {
     saveEnv();
     process.env.FLY_WORKER_URL = "https://openclutter-export.fly.dev";
