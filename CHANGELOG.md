@@ -4,6 +4,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## Production releases
 
+- **v1.3.29** (Nov 12, 2026) production fix: only the 1.3.29 search-suggestion timeout below on top of v1.3.20. The 1.3.21 to 1.3.28 /dev changes stay on /dev.
 - **v1.3.20** (Nov 9, 2026) weekly production release: production takes /dev 1.3.20 with five /dev switches turned on for every host: pole map notes (feedback #14, poleNotes), campground points (feedback #15, campNodes), sea and large-water sides (seaWater), the turned export box (feedback #18, rotate; the handle shows on pages opened with ?rotate=1) and smoother tree edges (smoothEdges). The page changes (corner resize, move and clear the drawn area) and the anonymous usage counter ship on every host. trueMetres, adaptive terrain and forest=crowns or merge stay on /dev hosts only.
 - **v1.3.18** (Nov 5, 2026) production fix: production takes /dev 1.3.18. New on production since v1.3.16 is the 1.3.17 Overpass failover below (one server at a time, a 30 minute pause for a blocking server, a note when an export read a street-map copy more than 3 days old). seaWater (1.3.18), poleNotes (1.3.14), campNodes (1.3.15), trueMetres, adaptive terrain and forest=crowns stay on /dev hosts only.
 - **v1.3.16** (Nov 2, 2026) production fix: the 1.3.16 fence fix below (feedback #17) on top of v1.3.13. The 1.3.14 and 1.3.15 /dev changes stay on /dev.
@@ -29,6 +30,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.29** (Nov 12, 2026): bug fix on every host. Search suggestions were empty when Photon (the OpenStreetMap place search) took longer than 3 seconds, and the suggest function gave up. It now waits up to 8 seconds, and an empty miss is not cached. Enter-to-search uses the same wait. The page already ignores a late reply after you have typed further. The export path is unchanged; the heavy export gates were not rerun.
 - **1.3.28** (Nov 12, 2026): /dev hosts only (production stays on the 5.8 MB JSON / 9.7 MB JSON-plus-image budget). The export worker needs a redeploy for this to apply on live /dev jobs.
   - OpenIntent JSON on /dev may use 14 MB, pending a Hamina import bisect (15 MB imported on test-eu; 30 MB did not). The map image is a separate blob and does not come out of that budget. Copy terrain paste on /dev may use up to 6000 floors and 4.9 MB, still under about 4.94 MiB of inline metadata. Area sanity cap on /dev is 60,000. Each map keeps at most 19,000 wall segments.
 
