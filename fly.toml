@@ -32,7 +32,7 @@ primary_region = "ord"
   # With every machine busy the proxy refuses, and Netlify retries against
   # Fly a few times (netlify/lib/fly-handoff.js) before it runs the job
   # itself. fly/worker.js still answers 409 if two ever land together.
-  # Machine count: fly scale count 4. Idle machines exit after 5 minutes.
+  # Machine count: fly scale count 8. Idle machines exit after 5 minutes.
   [http_service.concurrency]
     type = "requests"
     soft_limit = 1

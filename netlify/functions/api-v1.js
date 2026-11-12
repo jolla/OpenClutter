@@ -251,23 +251,30 @@ async function createSite(event, body, rlHeaders) {
     path: "/api/clutter",
     body: JSON.stringify(exportBody(bbox, body)),
   };
+  let job;
   try {
-    await jobs.createJob(id, { headers: event.headers || {} });
-    await jobs.updateJob(id, { api: "v1", name: typeof body.name === "string" ? body.name.slice(0, 200) : null });
+    job = await jobs.createJob(id, { headers: event.headers || {} });
+    job = await jobs.updateJob(id, { api: "v1", name: typeof body.name === "string" ? body.name.slice(0, 200) : null });
   } catch {
     return apiError(503, "upstream_unavailable", "Job store is unavailable.", rlHeaders);
   }
-  try {
-    const res = await deps.fetch(backgroundUrl(event.headers), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jobId: id, event: inner }),
-      signal: AbortSignal.timeout(8000),
-    });
-    if (res.status !== 202 && res.status !== 200) throw new Error("invoke " + res.status);
-  } catch {
-    await jobs.deleteJob(id).catch(() => {});
-    return apiError(503, "upstream_unavailable", "Could not start the build. Try again.", rlHeaders);
+  const url = backgroundUrl(event.headers);
+  const payload = { jobId: id, event: inner };
+  await jobs.saveInvoke(id, { url, payload }).catch(() => {});
+  if (!(job && job.concurrencyWait)) {
+    try {
+      const res = await deps.fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.status !== 202 && res.status !== 200) throw new Error("invoke " + res.status);
+      await jobs.markInvokeStarted(id).catch(() => {});
+    } catch {
+      await jobs.deleteJob(id).catch(() => {});
+      return apiError(503, "upstream_unavailable", "Could not start the build. Try again.", rlHeaders);
+    }
   }
   const q = event.queryStringParameters || {};
   const waitS = Math.min(MAX_WAIT_S, Math.max(0, +(q.wait || (body.options && body.options.waitSeconds) || 0) || 0));
@@ -280,7 +287,7 @@ async function createSite(event, body, rlHeaders) {
       if (job && job.state === "error") return respond(200, statusView(id, job), rlHeaders);
     }
   }
-  const job = (await jobs.readJob(id).catch(() => null)) || { state: "queued", createdAt: deps.now() };
+  job = (await jobs.readJob(id).catch(() => null)) || { state: "queued", createdAt: deps.now() };
   return respond(202, statusView(id, job), Object.assign({ location: "/v1/sites/" + id }, rlHeaders));
 }
 

@@ -17,6 +17,7 @@
 
 const { markStage, stageKey } = require("./export-progress");
 const usage = require("./usage");
+const exportLimit = require("./export-limit");
 
 const STORE_NAME = "openclutter-exports";
 const TTL_MS = 24 * 60 * 60 * 1000;
@@ -73,6 +74,10 @@ function jobKey(id) {
 
 function zipKey(id) {
   return "job/" + id + "/zip";
+}
+
+function invokeKey(id) {
+  return exportLimit.invokeKey(id);
 }
 
 function validJobId(id) {
@@ -166,6 +171,12 @@ async function createJob(id, meta) {
       job.usageAt = attr.now;
     }
   }
+  const decision = await exportLimit.registerJob(store, job).catch(() => ({ start: true }));
+  if (!decision.start) {
+    job.concurrencyWait = true;
+    job.queueReason = exportLimit.USER_WAIT_REASON;
+    job.stageLabel = exportLimit.USER_WAIT_LABEL;
+  }
   await store.setJSON(jobKey(id), job);
   maybeSweepExpired().catch(() => {});
   if (attr && attr.visitor) await usage.recordStart(attr).catch(() => {});
@@ -187,7 +198,7 @@ async function sweepExpired(now) {
   let reads = 0;
   let dropped = 0;
   for (const key of keys) {
-    const zipMatch = /^job\/([^/]+)\/(zip|site-v1)$/.exec(key);
+    const zipMatch = /^job\/([^/]+)\/(zip|site-v1|invoke)$/.exec(key);
     if (zipMatch) {
       if (!have.has(jobKey(zipMatch[1]))) {
         await store.delete(key).catch(() => {});
@@ -203,6 +214,13 @@ async function sweepExpired(now) {
       await store.delete(key).catch(() => {});
       await store.delete(zipKey(m[1])).catch(() => {});
       await store.delete(siteKey(m[1])).catch(() => {});
+      await store.delete(invokeKey(m[1])).catch(() => {});
+      if (job.usageVisitor) {
+        const released = await exportLimit.releaseJob(store, job).catch(() => ({ promoted: [] }));
+        for (const pid of (released && released.promoted) || []) {
+          await kickStart(pid).catch(() => {});
+        }
+      }
       dropped += 1;
     }
   }
@@ -225,6 +243,13 @@ async function readJob(id) {
     await store.delete(jobKey(id)).catch(() => {});
     await store.delete(zipKey(id)).catch(() => {});
     await store.delete(siteKey(id)).catch(() => {});
+    await store.delete(invokeKey(id)).catch(() => {});
+    if (job.usageVisitor) {
+      const released = await exportLimit.releaseJob(store, job).catch(() => ({ promoted: [] }));
+      for (const pid of (released && released.promoted) || []) {
+        await kickStart(pid).catch(() => {});
+      }
+    }
     return null;
   }
   // A Fly worker that has not been redeployed writes done or error without
@@ -419,6 +444,12 @@ async function updateJob(id, patch) {
       const wrote = await saveJobRecord(store, id, merged.job, loaded.etag);
       if (wrote) {
         if (field) await usage.recordFinish(merged.job).catch(() => {});
+        if (entering && merged.job.usageVisitor) {
+          const released = await exportLimit.releaseJob(store, merged.job).catch(() => ({ promoted: [] }));
+          for (const pid of (released && released.promoted) || []) {
+            await kickStart(pid).catch(() => {});
+          }
+        }
         return merged.job;
       }
     }
@@ -484,10 +515,15 @@ async function deleteJob(id) {
   }
   await store.delete(jobKey(id)).catch(() => {});
   await store.delete(zipKey(id)).catch(() => {});
+  await store.delete(invokeKey(id)).catch(() => {});
   // createJob counted a start. The only callers delete a job that never
   // left the queue (the background invoke did not accept it).
   if (job && job.state === "queued" && job.usageVisitor) {
     await usage.undoStart(job).catch(() => {});
+    const released = await exportLimit.releaseJob(store, job).catch(() => ({ promoted: [] }));
+    for (const pid of (released && released.promoted) || []) {
+      await kickStart(pid).catch(() => {});
+    }
   }
 }
 
@@ -576,6 +612,97 @@ async function writeHeartbeat(id, stage, extra) {
   return updateJob(id, patch);
 }
 
+
+let invokeFetch = globalThis.fetch;
+let invokeFetchOverride = null;
+
+function setInvokeFetchForTests(fn) {
+  invokeFetchOverride = fn;
+}
+
+function currentInvokeFetch() {
+  return invokeFetchOverride || invokeFetch;
+}
+
+async function markInvokeStarted(id) {
+  if (!validJobId(id)) return null;
+  return withJobLock(id, async () => {
+    const store = await openStore();
+    const loaded = await loadJobRecord(store, id);
+    const cur = loaded.job;
+    if (!cur || cur.invokeStartedAt) return cur;
+    const next = Object.assign({}, cur, { invokeStartedAt: Date.now(), updatedAt: Date.now() });
+    const wrote = await saveJobRecord(store, id, next, loaded.etag);
+    return wrote ? next : cur;
+  });
+}
+
+async function saveInvoke(id, rec) {
+  if (!validJobId(id) || !rec) return;
+  const store = await openStore();
+  await store.setJSON(invokeKey(id), rec);
+}
+
+async function readInvoke(id) {
+  if (!validJobId(id)) return null;
+  const store = await openStore();
+  return store.get(invokeKey(id), { type: "json" });
+}
+
+/**
+ * Start a queued job that already has a slot (just promoted, or a retry
+ * after the first invoke failed). No-op if the job is not queued, has no
+ * stored invoke, is still waiting for a per-user slot, or was already
+ * started.
+ */
+async function kickStart(id) {
+  if (!validJobId(id)) return false;
+  const job = await readJob(id).catch(() => null);
+  if (!job || job.state !== "queued") return false;
+  const rec = await readInvoke(id).catch(() => null);
+  if (!rec || !rec.url || !rec.payload) return false;
+  const store = await openStore();
+  if (job.usageVisitor && !(await exportLimit.isActiveSlot(store, job))) return false;
+  const claimed = await withJobLock(id, async () => {
+    const loaded = await loadJobRecord(store, id);
+    const cur = loaded.job;
+    if (!cur || cur.state !== "queued" || cur.invokeStartedAt) return false;
+    const next = Object.assign({}, cur, {
+      invokeStartedAt: Date.now(),
+      concurrencyWait: false,
+      queueReason: null,
+      updatedAt: Date.now(),
+    });
+    next.stageLabel = "Waiting for a worker";
+    const wrote = await saveJobRecord(store, id, next, loaded.etag);
+    return !!wrote;
+  });
+  if (!claimed) return false;
+  try {
+    const res = await currentInvokeFetch()(rec.url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(rec.payload),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.status !== 202 && res.status !== 200) throw new Error("invoke " + res.status);
+    return true;
+  } catch {
+    await withJobLock(id, async () => {
+      const loaded = await loadJobRecord(store, id);
+      const cur = loaded.job;
+      if (!cur || cur.state !== "queued") return cur;
+      const next = Object.assign({}, cur, {
+        invokeStartedAt: null,
+        updatedAt: Date.now(),
+      });
+      await saveJobRecord(store, id, next, loaded.etag);
+      return next;
+    }).catch(() => {});
+    return false;
+  }
+}
+
 module.exports = {
   TTL_MS,
   sweepExpired,
@@ -606,4 +733,9 @@ module.exports = {
   jobCancelled,
   mergeJobPatch,
   stageMovesForward,
+  saveInvoke,
+  markInvokeStarted,
+  readInvoke,
+  kickStart,
+  setInvokeFetchForTests,
 };
