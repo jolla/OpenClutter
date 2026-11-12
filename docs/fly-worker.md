@@ -125,10 +125,10 @@ fly secrets set \
   NETLIFY_AUTH_TOKEN='paste-the-personal-access-token'
 
 flyctl deploy --local-only
-fly scale count 4
+fly scale count 8
 ```
 
-`fly scale count 4` is the whole pool: up to four exports at once, one per machine (`soft_limit` and `hard_limit` are 1). The proxy sends a new export to a free machine and starts a stopped one. When all four are busy the proxy refuses, and Netlify retries Fly after 3, 6 and 10 seconds before it runs the job itself. Each machine runs about 1 minute per export plus up to 5 idle minutes, about $0.02 an export at the performance-4x rate below. Stopped machines only bill their small root disk. The process exits after 5 minutes with no export, which stops the machine. The next export starts it. Fly autostop is off, so it does not stop a machine that still has a job in memory. There is no periodic health check. `GET /health` is only for a manual check. `flyctl deploy --local-only` builds on the machine running the deploy, not on Fly's remote builder.
+`fly scale count 8` is the whole pool: up to eight exports at once, one per machine (`soft_limit` and `hard_limit` are 1). The proxy sends a new export to a free machine and starts a stopped one. When all eight are busy the proxy refuses, and Netlify retries Fly after 3, 6 and 10 seconds before it runs the job itself. Each machine runs about 1 minute per export plus up to 5 idle minutes, about $0.02 an export at the performance-4x rate below. Stopped machines only bill their small root disk. The process exits after 5 minutes with no export, which stops the machine. The next export starts it. Fly autostop is off, so it does not stop a machine that still has a job in memory. There is no periodic health check. `GET /health` is only for a manual check. `flyctl deploy --local-only` builds on the machine running the deploy, not on Fly's remote builder.
 
 On Netlify, set the URL and the same secret for production and for the `dev` branch. A context that is missing either value keeps the current background export.
 

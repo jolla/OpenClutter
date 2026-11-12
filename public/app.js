@@ -2621,7 +2621,7 @@ function showExportProgress(job) {
   const line = document.getElementById("status-line");
   let stageText = (job && (job.stageLabel || job.stage)) || "Fetching aerial";
   if (/^Fetching map$/i.test(stageText)) stageText = "Fetching aerial";
-  if (job && job.state === "queued") stageText = "Waiting for a worker";
+  if (job && job.state === "queued") stageText = job.stageLabel || "Waiting for a worker";
   if (line) {
     line.textContent = stageText;
     line.classList.remove("done");
@@ -2789,7 +2789,7 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
 
 async function pollExport(jobId) {
   const run = exportRun;
-  const started = Date.now();
+  let started = Date.now();
   const ceiling = 15 * 60 * 1000;
   let misses = 0;
   let blocked = null;
@@ -2822,6 +2822,11 @@ async function pollExport(jobId) {
     checkExportRun(run);
     showExportProgress(data);
     if (data.state === "done") return data;
+    // A third export waiting on the per-user cap has not started work yet,
+    // so do not spend the 15-minute page clock on that wait.
+    if (data.state === "queued" && (data.concurrencyWait || data.queueReason === "user-limit")) {
+      started = Date.now();
+    }
     await sleep(1500);
     checkExportRun(run);
   }

@@ -31,6 +31,10 @@ exports.handler = async (event) => {
     return json(503, { error: "Export status is unavailable. Export again." });
   }
   if (!job) return json(404, { error: "This export expired. Export again." });
+  if (job.state === "queued") {
+    await jobs.kickStart(id).catch(() => {});
+    job = (await jobs.readJob(id).catch(() => job)) || job;
+  }
   const beat = String(job.heartbeatStage || "");
   const stored = String(job.stage || "");
   const live =
@@ -51,7 +55,13 @@ exports.handler = async (event) => {
     ok: job.state !== "error",
     state: job.state,
     stage: view.stage || job.stage,
-    stageLabel: finished ? job.stageLabel || job.stage : (mark && mark.label) || view.stage || job.stage,
+    stageLabel: finished
+      ? job.stageLabel || job.stage
+      : job.state === "queued"
+        ? job.stageLabel || "Waiting for a worker"
+        : (mark && mark.label) || view.stage || job.stage,
+    concurrencyWait: job.state === "queued" && !!job.concurrencyWait,
+    queueReason: job.state === "queued" ? job.queueReason || null : null,
     progress: finished ? 1 : liveFraction(view),
     percent: pct,
     progressCeiling: finished ? 1 : mark ? mark.ceiling : job.progressCeiling == null ? 0 : job.progressCeiling,

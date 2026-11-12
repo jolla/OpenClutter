@@ -1466,8 +1466,9 @@ async function enqueueBackgroundExport(event, body, cors) {
     rawPath: event.rawPath || "",
     body: JSON.stringify(innerBody),
   };
+  let job;
   try {
-    await exportJobs.createJob(id, { headers: (event && event.headers) || {} });
+    job = await exportJobs.createJob(id, { headers: (event && event.headers) || {} });
   } catch (err) {
     const name = err && err.name ? err.name : "blobs-write";
     return fallbackExport(cors, bound ? name : "event-has-no-blobs");
@@ -1477,17 +1478,23 @@ async function enqueueBackgroundExport(event, body, cors) {
     await exportJobs.deleteJob(id).catch(() => {});
     return fallbackExport(cors, "no-deploy-url");
   }
+  const payload = { jobId: id, event: inner };
+  await exportJobs.saveInvoke(id, { url, payload }).catch(() => {});
+  if (job && job.concurrencyWait) {
+    return json(200, cors, { ok: true, async: true, jobId: id, waiting: true });
+  }
   try {
     const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jobId: id, event: inner }),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(8000),
     });
     if (res.status !== 202 && res.status !== 200) {
       await exportJobs.deleteJob(id).catch(() => {});
       return fallbackExport(cors, "invoke-" + res.status);
     }
+    await exportJobs.markInvokeStarted(id).catch(() => {});
   } catch {
     await exportJobs.deleteJob(id).catch(() => {});
     return fallbackExport(cors, "invoke-failed");
