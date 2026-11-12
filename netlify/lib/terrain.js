@@ -213,10 +213,14 @@ const PASTE_BUILD_MAX_QUADS = 12000;
 const TERRAIN_PASTE_MAX_FLOORS = 1500;
 const TERRAIN_PASTE_MAX_BYTES = 400 * 1024;
 /**
- * /dev hosts (export-mode devImportCaps): spend more of the 4.94 MiB
- * inline-metadata / paste room on steep ground. 6000 floors is the
- * existing probe ceiling (a ~9k sloped mesh has locked Planner Plus).
- * 4,900,000 bytes stays under about 4.94 MiB.
+ * /dev hosts (export-mode devImportCaps): the Copy terrain paste may use
+ * more of the 4.94 MiB inline-metadata room when a ?terrainFloors= probe
+ * is set. 6000 floors is the probe ceiling (a ~9k sloped mesh has locked
+ * Planner Plus). 4,900,000 bytes stays under about 4.94 MiB.
+ *
+ * The default mesh stays at 1500 floors on every host. Raising the default
+ * to 6000 on /dev (1.3.28) made slope-split of large steep sites such as
+ * Bingham Canyon run past the 15-minute page timeout.
  */
 const DEV_PASTE_MAX_FLOORS = 6000;
 const DEV_PASTE_MAX_BYTES = 4900000;
@@ -227,7 +231,7 @@ const TERRAIN_FLOORS_MAX = 6000;
 let activePasteFloors = TERRAIN_PASTE_MAX_FLOORS;
 
 function defaultPasteFloors() {
-  return require("./export-mode").isDevImportCaps() ? DEV_PASTE_MAX_FLOORS : TERRAIN_PASTE_MAX_FLOORS;
+  return TERRAIN_PASTE_MAX_FLOORS;
 }
 
 function terrainPasteFloorCap(opts) {

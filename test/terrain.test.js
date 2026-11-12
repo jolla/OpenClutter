@@ -3953,7 +3953,7 @@ describe("terrain paste stays the size Hamina accepted", () => {
     assert.ok(JSON.stringify(terrain.clipboard).length <= 150 * 480);
   });
 
-  it("on /dev raises the paste caps but stays under 4.94 MiB", () => {
+  it("on /dev raises the paste byte cap but keeps the 1500-floor default", () => {
     const mode = require("../netlify/lib/export-mode");
     mode.setDevImportCaps(true);
     try {
@@ -3964,8 +3964,16 @@ describe("terrain paste stays the size Hamina accepted", () => {
       const terrain = terrainFromSamples(hillSamples(frame, 18), frame, { terrainStyle: "sloped" });
       const floors = terrain.sloped + terrain.raised;
       assert.ok(floors > 0);
-      assert.ok(floors <= DEV_PASTE_MAX_FLOORS, "floors " + floors);
+      assert.ok(floors <= TERRAIN_PASTE_MAX_FLOORS, "default floors " + floors);
       assert.ok(JSON.stringify(terrain.clipboard).length <= DEV_PASTE_MAX_BYTES);
+      const probed = terrainFromSamples(hillSamples(frame, 18), frame, {
+        terrainStyle: "sloped",
+        terrainFloors: 6000,
+      });
+      const probedFloors = probed.sloped + probed.raised;
+      assert.ok(probedFloors > 0);
+      assert.ok(probedFloors <= DEV_PASTE_MAX_FLOORS, "probe floors " + probedFloors);
+      assert.ok(JSON.stringify(probed.clipboard).length <= DEV_PASTE_MAX_BYTES);
     } finally {
       mode.setDevImportCaps(false);
     }
