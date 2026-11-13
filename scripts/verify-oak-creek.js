@@ -130,10 +130,16 @@ function checkZip(zipBuf) {
     if (mismatches) failures.push("area_material not equal to catalog entry: " + mismatches);
     const fp = oi.floorplans[0] || {};
     const rootKeys = Object.keys(oi).sort().join(",");
-    if (rootKeys !== "area_materials,floorplans,openintent_version,switches,wall_materials") {
+    const prodKeys = "area_materials,floorplans,openintent_version,switches,wall_materials";
+    const devKeys = "area_materials,floorplans,hamina_properties,openintent_version,switches,wall_materials";
+    if (rootKeys !== prodKeys && rootKeys !== devKeys) {
       failures.push("root keys " + rootKeys);
     }
     if (oi.openintent_version !== "2.0.1") failures.push("openintent_version " + oi.openintent_version);
+    if (oi.hamina_properties) {
+      const env = oi.hamina_properties.environment;
+      if (env !== "Outdoor (Trees / Foliage)") failures.push("hamina_properties.environment " + env);
+    }
     if (!String(fp.map_uri || "").startsWith("file://images/")) failures.push("map_uri " + fp.map_uri);
     const sample = areaList[0] && areaList[0].area_material;
     if (sample && ("itu_material_type" in sample || "bottom_height" in sample)) {

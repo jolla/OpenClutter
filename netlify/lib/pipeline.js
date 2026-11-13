@@ -141,6 +141,8 @@ function effectiveAreaCap(override) {
 /** In-bounds pixel vertices. Two decimals is 0.01 px. Meters and feet are not repeated. */
 const OI_PIXEL_DECIMALS = 2;
 const OPENINTENT_VERSION = "2.0.1";
+/** Hamina project type written on /dev OpenIntent exports (1.3.34). */
+const HAMINA_ENVIRONMENT = "Outdoor (Trees / Foliage)";
 const STOCK_MATERIAL_NAMES = OI_BUILDING_NAMES.slice();
 
 const ZIP_README =
@@ -3334,6 +3336,20 @@ function buildOpenIntent(frame, name, imgName, areas, materials) {
     area_materials: areaMaterials || documentMaterials(areas),
     openintent_version: OPENINTENT_VERSION,
   };
+  if (require("./export-mode").isHaminaEnvironment()) {
+    // Version and hamina_properties first, matching Hamina's example, so
+    // the area-cache head scan sees them even on a large floorplans array.
+    const withEnv = {
+      openintent_version: oi.openintent_version,
+      hamina_properties: { environment: HAMINA_ENVIRONMENT },
+      floorplans: oi.floorplans,
+      wall_materials: oi.wall_materials,
+      switches: oi.switches,
+      area_materials: oi.area_materials,
+    };
+    if (wallSegments && wallSegments.length) withEnv.floorplans[0].wall_segments = wallSegments;
+    return withEnv;
+  }
   if (wallSegments && wallSegments.length) oi.floorplans[0].wall_segments = wallSegments;
   return oi;
 }
@@ -4410,6 +4426,7 @@ module.exports = {
   MIN_OI_SPAN_PX,
   MIN_OI_SPAN_M,
   OPENINTENT_VERSION,
+  HAMINA_ENVIRONMENT,
   OI_FLOORPLAN_HEIGHT_M,
   OI_FLOORPLAN_HEIGHT_FT,
   STOCK_MATERIAL_NAMES,

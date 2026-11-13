@@ -104,6 +104,39 @@ describe("area cache", () => {
     );
   });
 
+  it("recognises OpenIntent with hamina_properties and drops a cached body that lacks it", async () => {
+    const pad = "x".repeat(400);
+    const newHead = '{"hamina_properties":{"environment":"Outdoor (Trees / Foliage)"},"floorplans":[' + pad + "]}";
+    assert.equal(cache.looksLikeFinalGeometry(Buffer.from(newHead)), true);
+    assert.throws(() => cache.assertRaw(Buffer.from(newHead)), /raw source bytes only/);
+    assert.equal(
+      cache.looksLikeFinalGeometry({
+        openintent_version: "2.0.1",
+        hamina_properties: { environment: "Outdoor (Trees / Foliage)" },
+        floorplans: [],
+      }),
+      true
+    );
+    const oldBody = Buffer.from('{"openintent_version":"2.0.1","floorplans":[]}');
+    assert.equal(cache.looksLikeFinalGeometry(oldBody), true);
+    const store = memoryStore();
+    const key = cache.cacheKey("trees", "detect", "stale-oi");
+    await store.setJSON(key + "/meta", {
+      source: "trees",
+      resolution: "detect",
+      tile: "stale-oi",
+      savedAt: Date.now(),
+      bytes: oldBody.length,
+      status: 200,
+      contentType: "application/json",
+    });
+    await store.set(key + "/body", oldBody);
+    const hit = await cache.readRaw(store, key, Date.now());
+    assert.equal(hit, null);
+    assert.equal(await store.get(key + "/body"), null);
+    assert.equal(await store.get(key + "/meta"), null);
+  });
+
   it("fetches missing tiles with a concurrency cap and merges background partials", async () => {
     const store = memoryStore();
     let active = 0;

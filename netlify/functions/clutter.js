@@ -1603,6 +1603,13 @@ async function handleClutterNorthUp(event) {
   // Raised Hamina caps (Nov 2026): DEV_HOST_JSON_BUDGET of JSON and a 4.9 MB paste
   // ceiling, /dev hosts only. Production stays on the 5.8 / 9.7 MB budget.
   exportMode.setDevImportCaps(testHost);
+  // 1.3.34 hamina_properties.environment: set the Hamina project type on
+  // OpenIntent import. /dev hosts only (haminaEnvironment:false or
+  // ?haminaEnvironment=0 turns it off there). Production stays off until
+  // the weekly release. Copy terrain (HaminaClipboard) is unchanged.
+  exportMode.setHaminaEnvironment(
+    exportMode.haminaEnvironmentWanted(testHost, body, event && event.queryStringParameters),
+  );
   // 1.2.37 lidar canopy checked on the photo runs on every host. The 1.2.39
   // photo-shaped crowns stay on /dev hosts: their stale-lidar test fired in
   // a leafy campground (Traverse City KOA) and cut real dense canopy.

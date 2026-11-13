@@ -117,11 +117,12 @@ function looksLikeFinalGeometry(body) {
       return true;
     }
     if (body.openintent_version || body.openIntent) return true;
+    if (body.hamina_properties) return true;
     return false;
   }
   const buf = Buffer.isBuffer(body) ? body : Buffer.from(String(body));
   const head = buf.slice(0, 280).toString("utf8");
-  if (/"openintent_version"/.test(head) || /"attenuation_areas"/.test(head)) return true;
+  if (/"openintent_version"/.test(head) || /"attenuation_areas"/.test(head) || /"hamina_properties"/.test(head)) return true;
   if (/^\s*\{\s*"type"\s*:\s*"Feature/.test(head)) return true;
   return false;
 }
@@ -187,6 +188,20 @@ async function readRaw(store, key, now) {
   if (!raw) return null;
   const body = Buffer.from(raw);
   if (!body.length) return null;
+  // Never serve a final OpenIntent or GeoJSON body, including an older
+  // export that lacks hamina_properties. Drop it so the next fetch stores
+  // raw source bytes.
+  if (looksLikeFinalGeometry(body)) {
+    try {
+      if (typeof target.delete === "function") {
+        await target.delete(key + "/body");
+        await target.delete(key + "/meta");
+      }
+    } catch {
+      /* leave the bad entry if delete is unavailable */
+    }
+    return null;
+  }
   return { body, meta };
 }
 

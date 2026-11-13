@@ -448,6 +448,33 @@ function rotateWanted(testHost, body, query) {
   return require("./rotate-export").normalizeRotate(raw);
 }
 
+// hamina_properties.environment on the OpenIntent root (1.3.34): Hamina
+// sets the project type from this on import. /dev hosts only
+// (haminaEnvironment:false or ?haminaEnvironment=0 turns it off there).
+// Production stays off until the weekly release. The clipboard paste has
+// no equivalent root key.
+let haminaEnvironment = false;
+
+function setHaminaEnvironment(on) {
+  haminaEnvironment = !!on;
+}
+
+function isHaminaEnvironment() {
+  return haminaEnvironment;
+}
+
+function haminaEnvironmentWanted(testHost, body, query) {
+  if (!testHost) return false;
+  const raw =
+    body && body.haminaEnvironment != null
+      ? body.haminaEnvironment
+      : query && query.haminaEnvironment != null
+        ? query.haminaEnvironment
+        : null;
+  if (raw == null || raw === "") return true;
+  return !(raw === false || raw === 0 || raw === "0" || raw === "false");
+}
+
 /** A prototype switch: only on /dev hosts, and only when asked for. */
 function protoWanted(testHost, body, key, envKey) {
   if (!testHost) return false;
@@ -455,6 +482,9 @@ function protoWanted(testHost, body, key, envKey) {
 }
 
 module.exports = {
+  setHaminaEnvironment,
+  isHaminaEnvironment,
+  haminaEnvironmentWanted,
   rotateWanted,
   setSmoothEdges,
   isSmoothEdges,
