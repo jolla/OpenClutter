@@ -141,8 +141,11 @@ function effectiveAreaCap(override) {
 /** In-bounds pixel vertices. Two decimals is 0.01 px. Meters and feet are not repeated. */
 const OI_PIXEL_DECIMALS = 2;
 const OPENINTENT_VERSION = "2.0.1";
-/** Hamina project type written on /dev OpenIntent exports (1.3.34). */
-const HAMINA_ENVIRONMENT = "Outdoor (Trees / Foliage)";
+/** Hamina project types written on /dev OpenIntent exports (1.3.34). */
+const HAMINA_ENVIRONMENT_TREES = "Outdoor (Trees / Foliage)";
+const HAMINA_ENVIRONMENT_OPEN = "Outdoor (Open)";
+/** @deprecated use HAMINA_ENVIRONMENT_TREES; kept as the trees/foliage value. */
+const HAMINA_ENVIRONMENT = HAMINA_ENVIRONMENT_TREES;
 const STOCK_MATERIAL_NAMES = OI_BUILDING_NAMES.slice();
 
 const ZIP_README =
@@ -3283,6 +3286,30 @@ function isTrunkArea(a) {
   return !!(m && /^Foliage - Trunk /.test(String(m.name || "")));
 }
 
+function areaHasFoliage(areas, materials) {
+  const veg = require("./materials");
+  const names = [];
+  for (const m of materials || []) {
+    if (m && m.name) names.push(m.name);
+  }
+  for (const a of areas || []) {
+    if (isTrunkArea(a)) return true;
+    const n = a && a.area_material && a.area_material.name;
+    if (n) names.push(n);
+  }
+  for (const n of names) {
+    if (veg.isVegetationOiName(n) || veg.isUnderstoryOiName(n)) return true;
+    if (veg.isPoisonedOiName(n)) return true;
+    if (String(n).indexOf("Foliage") === 0 || String(n).indexOf("Tree Trunk") === 0) return true;
+  }
+  return false;
+}
+
+/** Project type Hamina should apply on OpenIntent import. */
+function haminaEnvironmentFor(areas, materials) {
+  return areaHasFoliage(areas, materials) ? HAMINA_ENVIRONMENT_TREES : HAMINA_ENVIRONMENT_OPEN;
+}
+
 function buildOpenIntent(frame, name, imgName, areas, materials) {
   const mpu = frame.mpuX || frame.mpu || frame.widthM / frame.imgW;
   let wallSegments = null;
@@ -3341,7 +3368,7 @@ function buildOpenIntent(frame, name, imgName, areas, materials) {
     // the area-cache head scan sees them even on a large floorplans array.
     const withEnv = {
       openintent_version: oi.openintent_version,
-      hamina_properties: { environment: HAMINA_ENVIRONMENT },
+      hamina_properties: { environment: haminaEnvironmentFor(areas, oi.area_materials) },
       floorplans: oi.floorplans,
       wall_materials: oi.wall_materials,
       switches: oi.switches,
@@ -4427,6 +4454,9 @@ module.exports = {
   MIN_OI_SPAN_M,
   OPENINTENT_VERSION,
   HAMINA_ENVIRONMENT,
+  HAMINA_ENVIRONMENT_TREES,
+  HAMINA_ENVIRONMENT_OPEN,
+  haminaEnvironmentFor,
   OI_FLOORPLAN_HEIGHT_M,
   OI_FLOORPLAN_HEIGHT_FT,
   STOCK_MATERIAL_NAMES,

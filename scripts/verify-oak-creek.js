@@ -138,7 +138,8 @@ function checkZip(zipBuf) {
     if (oi.openintent_version !== "2.0.1") failures.push("openintent_version " + oi.openintent_version);
     if (oi.hamina_properties) {
       const env = oi.hamina_properties.environment;
-      if (env !== "Outdoor (Trees / Foliage)") failures.push("hamina_properties.environment " + env);
+      const allowed = ["Outdoor (Trees / Foliage)", "Outdoor (Open)"];
+      if (!allowed.includes(env)) failures.push("hamina_properties.environment " + env);
     }
     if (!String(fp.map_uri || "").startsWith("file://images/")) failures.push("map_uri " + fp.map_uri);
     const sample = areaList[0] && areaList[0].area_material;

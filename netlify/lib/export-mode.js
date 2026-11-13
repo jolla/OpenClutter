@@ -449,7 +449,8 @@ function rotateWanted(testHost, body, query) {
 }
 
 // hamina_properties.environment on the OpenIntent root (1.3.34): Hamina
-// sets the project type from this on import. /dev hosts only
+// sets the project type from this on import, "Outdoor (Trees / Foliage)"
+// when the zip has canopy or "Outdoor (Open)" when it does not. /dev hosts only
 // (haminaEnvironment:false or ?haminaEnvironment=0 turns it off there).
 // Production stays off until the weekly release. The clipboard paste has
 // no equivalent root key.
