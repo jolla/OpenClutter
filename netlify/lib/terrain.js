@@ -3833,11 +3833,101 @@ function dist2ToRing(ring, x, y) {
  * under it. A ramp is one z. A point a few centimeters off a quad still uses
  * the height on that edge.
  */
+const ZONE_BUCKET_M = 32;
+
+/**
+ * Bucket grid over the pasted quads, built once per terrain. A ski hill has
+ * thousands of quads, and every floor sample scanned all of them (#20).
+ * Only quads whose padded box covers the bucket are listed there, so the
+ * answer is the same as the full scan.
+ */
+function zoneBuckets(terrain, zones) {
+  const cached = terrain && terrain._zoneBuckets;
+  if (cached && cached.clipboard === terrain.clipboard && cached.n === zones.length) return cached;
+  const boxes = [];
+  let L = Infinity;
+  let B = Infinity;
+  for (let i = 0; i < zones.length; i++) {
+    const quad = zones[i].area && zones[i].area.coordinates && zones[i].area.coordinates[0];
+    if (!quad || quad.length < 4) {
+      boxes.push(null);
+      continue;
+    }
+    // Every corner, not just the first four, so the buckets list a superset.
+    const pb = pointBox(quad);
+    const box = { L: pb.l, R: pb.r, B: pb.b, T: pb.t };
+    boxes.push(box);
+    if (box.L < L) L = box.L;
+    if (box.B < B) B = box.B;
+  }
+  const map = new Map();
+  if (L < Infinity) {
+    for (let i = 0; i < boxes.length; i++) {
+      const box = boxes[i];
+      if (!box) continue;
+      const c0 = Math.floor((box.L - FLOOR_EDGE_M - L) / ZONE_BUCKET_M);
+      const c1 = Math.floor((box.R + FLOOR_EDGE_M - L) / ZONE_BUCKET_M);
+      const r0 = Math.floor((box.B - FLOOR_EDGE_M - B) / ZONE_BUCKET_M);
+      const r1 = Math.floor((box.T + FLOOR_EDGE_M - B) / ZONE_BUCKET_M);
+      for (let r = r0; r <= r1; r++) {
+        for (let c = c0; c <= c1; c++) {
+          const key = r * 100003 + c;
+          let list = map.get(key);
+          if (!list) map.set(key, (list = []));
+          list.push(i);
+        }
+      }
+    }
+  }
+  const out = { clipboard: terrain && terrain.clipboard, n: zones.length, L, B, map };
+  if (terrain && typeof terrain === "object") {
+    Object.defineProperty(terrain, "_zoneBuckets", { value: out, enumerable: false, writable: true, configurable: true });
+  }
+  return out;
+}
+
+const NO_ZONES = [];
+
+/** Indices of quads listed in any bucket under the ring's box, in order. A superset of the quads whose box meets the ring. */
+function zonesNearRing(terrain, zones, xy) {
+  const idx = zoneBuckets(terrain, zones);
+  if (!(idx.L < Infinity)) return NO_ZONES;
+  let l = Infinity;
+  let r = -Infinity;
+  let b = Infinity;
+  let t = -Infinity;
+  const n = ringPointCount(xy);
+  for (let i = 0; i < n; i++) {
+    if (xy[i][0] < l) l = xy[i][0];
+    if (xy[i][0] > r) r = xy[i][0];
+    if (xy[i][1] < b) b = xy[i][1];
+    if (xy[i][1] > t) t = xy[i][1];
+  }
+  if (!(l <= r) || !(b <= t)) return NO_ZONES;
+  const pad = 1;
+  const c0 = Math.floor((l - pad - idx.L) / ZONE_BUCKET_M);
+  const c1 = Math.floor((r + pad - idx.L) / ZONE_BUCKET_M);
+  const r0 = Math.floor((b - pad - idx.B) / ZONE_BUCKET_M);
+  const r1 = Math.floor((t + pad - idx.B) / ZONE_BUCKET_M);
+  const seen = new Set();
+  for (let rr = r0; rr <= r1; rr++) {
+    for (let cc = c0; cc <= c1; cc++) {
+      const list = idx.map.get(rr * 100003 + cc);
+      if (!list) continue;
+      for (let k = 0; k < list.length; k++) seen.add(list[k]);
+    }
+  }
+  return Array.from(seen).sort((p, q) => p - q);
+}
+
 function visiblePastedFloorZ(terrain, zones, x, y) {
   const edge2 = FLOOR_EDGE_M * FLOOR_EDGE_M;
   let best = null;
-  for (let i = 0; i < zones.length; i++) {
-    const zone = zones[i];
+  const idx = zoneBuckets(terrain, zones);
+  const key = Math.floor((y - idx.B) / ZONE_BUCKET_M) * 100003 + Math.floor((x - idx.L) / ZONE_BUCKET_M);
+  const cand = idx.map.get(key) || NO_ZONES;
+  for (let j = 0; j < cand.length; j++) {
+    const zone = zones[cand[j]];
     const quad = zone.area && zone.area.coordinates && zone.area.coordinates[0];
     if (!quad || quad.length < 4) continue;
     const box = quadBox(quad);
@@ -3869,7 +3959,9 @@ function pastedFloorExtent(terrain, xy) {
   const pts = [];
   const nv = ringPointCount(xy);
   for (let k = 0; k < nv; k++) pts.push(xy[k]);
-  for (let i = 0; i < zones.length; i++) {
+  const near = zonesNearRing(terrain, zones, xy);
+  for (let j = 0; j < near.length; j++) {
+    const i = near[j];
     const quad = zones[i].area && zones[i].area.coordinates && zones[i].area.coordinates[0];
     if (!quad || quad.length < 4 || !boundsOverlap(xy, quad)) continue;
     const over = overlapVertices(xy, quad);
@@ -4481,9 +4573,55 @@ function logSplit(line) {
 }
 
 let splitTimeoutsThisExport = 0;
+// Feedback #20: a foliage tile near its time budget, or rerun after the
+// budget killed it, still seats every stand on the terrain under it. The
+// remaining stands take the cell-wise cut with no child process.
+let splitCellsAfter = 0;
+let splitCellsOnly = false;
+let splitCellsLogged = false;
+const SPLIT_CELL_BANDS = [SPLIT_FLOOR_M, 8, 1e9];
+const SPLIT_SOFT_GRACE_MS = 20000;
 
-function resetSplitGuard() {
+function resetSplitGuard(opts) {
   splitTimeoutsThisExport = 0;
+  splitCellsAfter = opts && opts.cellsAfter > 0 ? +opts.cellsAfter : 0;
+  splitCellsOnly = !!(opts && opts.cellsOnly);
+  splitCellsLogged = false;
+}
+
+function splitCellsNow() {
+  return splitCellsOnly || (splitCellsAfter > 0 && Date.now() > splitCellsAfter);
+}
+
+function pointBox(ring) {
+  let l = Infinity;
+  let r = -Infinity;
+  let b = Infinity;
+  let t = -Infinity;
+  const n = ringPointCount(ring);
+  for (let i = 0; i < n; i++) {
+    if (ring[i][0] < l) l = ring[i][0];
+    if (ring[i][0] > r) r = ring[i][0];
+    if (ring[i][1] < b) b = ring[i][1];
+    if (ring[i][1] > t) t = ring[i][1];
+  }
+  return { l, r, b, t };
+}
+
+function cachedCellBoxes(terrain, useRamps, band) {
+  const key = (useRamps ? "r" : "c") + band;
+  if (!terrain._cellBoxes) {
+    Object.defineProperty(terrain, "_cellBoxes", { value: {}, enumerable: false, writable: true });
+  }
+  if (terrain._cellBoxes[key]) return terrain._cellBoxes[key];
+  const cells = useRamps ? rampStrips(terrain, band).concat(raisedStrips(terrain)) : terrainFloorCells(terrain);
+  const out = [];
+  for (let i = 0; i < cells.length; i++) {
+    const bx = pointBox(cells[i].clip);
+    out.push({ cell: cells[i], l: bx.l, r: bx.r, b: bx.b, t: bx.t });
+  }
+  terrain._cellBoxes[key] = out;
+  return out;
 }
 
 function splitRingByFloorFallback(terrain, ring, opts) {
@@ -4499,10 +4637,18 @@ function splitRingByFloorFallback(terrain, ring, opts) {
   const hostArea = meterAreaAbs(bldg);
   const useRamps =
     terrain.clipboard && terrain.clipboard.slopedFloors && terrain.clipboard.slopedFloors.length > 0;
-  const band = SPLIT_FLOOR_M;
-  const cells = (useRamps ? rampStrips(terrain, band).concat(raisedStrips(terrain)) : terrainFloorCells(terrain)).filter(
-    (cell) => boundsOverlap(xy, cell.clip)
-  );
+  const band = opts && opts.cellBand > 0 ? +opts.cellBand : SPLIT_FLOOR_M;
+  // Strips and their boxes are built once per terrain and band. A rerun
+  // tile cuts thousands of stands and rebuilt every strip for each one.
+  const all = cachedCellBoxes(terrain, useRamps, band);
+  const box = pointBox(xy);
+  const cells = [];
+  for (let i = 0; i < all.length; i++) {
+    const c = all[i];
+    if (box.l <= c.r + FLOOR_TOUCH_M && box.r + FLOOR_TOUCH_M >= c.l && box.b <= c.t + FLOOR_TOUCH_M && box.t + FLOOR_TOUCH_M >= c.b) {
+      cells.push(c.cell);
+    }
+  }
   if (cells.length < 2) return [ring];
   const standBb = ringBounds(bldg);
   const pieces = [];
@@ -4526,6 +4672,98 @@ function splitRingByFloorFallback(terrain, ring, opts) {
   for (let i = 0; i < kept.length; i++) area += pieceClipboardArea(kept[i], frame);
   if (area < hostArea * (keepPartial ? 0.7 : 0.7)) return [ring];
   return kept;
+}
+
+/**
+ * Feedback #20: a woods piece that still climbs more than this keeps its
+ * downhill seat, so the uphill side of a short understory is inside the
+ * hill. The 1.3.26 split widens its bands to stay under the piece cap, and
+ * on a ski hill a piece can climb a whole 10 m ramp.
+ */
+const REFINE_RELIEF_M = 3;
+const REFINE_MAX_PIECES = 16;
+const REFINE_MIN_M2 = 30;
+const REFINE_MIN_SPAN_M = 4;
+
+function halveRing(r, axis) {
+  const bb = ringBounds(r);
+  const lo = Object.assign({}, bb);
+  const hi = Object.assign({}, bb);
+  if (axis === 0) {
+    const mid = (bb.minX + bb.maxX) / 2;
+    lo.maxX = mid;
+    hi.minX = mid;
+  } else {
+    const mid = (bb.minY + bb.maxY) / 2;
+    lo.maxY = mid;
+    hi.minY = mid;
+  }
+  const out = [];
+  const parts = [clipRingToBbox(r, lo, 0), clipRingToBbox(r, hi, 0)];
+  for (let i = 0; i < parts.length; i++) {
+    const c = parts[i] && closeClipRing(parts[i]);
+    if (!c || meterAreaAbs(c) < 1) continue;
+    // A strip narrower than the OpenIntent span floor is dropped on export,
+    // which leaves a gap in the woods. Keep the piece whole instead.
+    const pb = ringBounds(c);
+    const m2 = meterAreaAbs(c);
+    if (Math.min(pb.w, pb.h) < REFINE_MIN_SPAN_M || m2 < REFINE_MIN_M2 || m2 / Math.max(pb.w, pb.h) < REFINE_MIN_SPAN_M / 2) return [];
+    out.push(c);
+  }
+  return out;
+}
+
+function clipRelief(terrain, r) {
+  const ext = pastedFloorExtent(terrain, r);
+  return ext ? ext.max - ext.min : 0;
+}
+
+/**
+ * Halve one woods piece in clipboard meters until each part climbs no more
+ * than REFINE_RELIEF_M, so each part meets its own downhill ground. Box clips
+ * only: no boolean union, so it cannot hang, and it does not depend on how a
+ * ramp quad is wound. The piece comes back whole when it is mild, or when
+ * the cut would drop more than 5% of it.
+ */
+function refineCanopyPiece(terrain, ring, maxPieces) {
+  if (!terrain || !ring || ring.length < 4 || !terrain.frame) return [ring];
+  const cap = maxPieces > 1 ? maxPieces | 0 : REFINE_MAX_PIECES;
+  const frame = terrain.frame;
+  const root = closeClipRing(ringToClipboard(ring, frame));
+  if (!root) return [ring];
+  if (!(clipRelief(terrain, root) > REFINE_RELIEF_M)) return [ring];
+  const hostArea = meterAreaAbs(root);
+  const queue = [root];
+  const done = [];
+  while (queue.length) {
+    const r = queue.shift();
+    const area = meterAreaAbs(r);
+    if (done.length + queue.length + 2 > cap || area < 2 * REFINE_MIN_M2 || !(clipRelief(terrain, r) > REFINE_RELIEF_M)) {
+      done.push(r);
+      continue;
+    }
+    // Cut across the grade: keep the halving whose steeper half climbs less.
+    let best = null;
+    let bestRelief = Infinity;
+    for (let axis = 0; axis < 2; axis++) {
+      const halves = halveRing(r, axis);
+      if (halves.length < 2) continue;
+      const rel = Math.max(clipRelief(terrain, halves[0]), clipRelief(terrain, halves[1]));
+      if (rel < bestRelief) {
+        bestRelief = rel;
+        best = halves;
+      }
+    }
+    if (!best) done.push(r);
+    else queue.push(best[0], best[1]);
+  }
+  if (done.length < 2) return [ring];
+  const pieces = ringsFromClipGeom(done.map((r) => [r]), frame, 1);
+  if (pieces.length < 2) return [ring];
+  let area = 0;
+  for (let i = 0; i < pieces.length; i++) area += pieceClipboardArea(pieces[i], frame);
+  if (area < hostArea * 0.95) return [ring];
+  return pieces;
 }
 
 const SPLIT_STAND_WORKER = path.join(__dirname, "split-stand-worker.js");
@@ -4561,6 +4799,23 @@ function splitRingByFloor(terrain, ring, opts) {
       return 0;
     }
   })();
+  if (splitCellsNow()) {
+    if (!splitCellsLogged) {
+      splitCellsLogged = true;
+      logSplit("warning slope-split tile budget: quick cut for the rest of this tile" + (splitCellsOnly ? " (rerun)" : ""));
+    }
+    // A woods takes the box-halving cut: no boolean union, so it cannot
+    // hang, and each part climbs at most REFINE_RELIEF_M where the cap allows.
+    if (keepPartial) return refineCanopyPiece(terrain, ring, opts && opts.maxPieces);
+    // Fine bands first. A footprint that needs more pieces than the cap
+    // takes coarser bands, then one piece per floor cell, before it ships
+    // as one ring on its downhill ground.
+    for (let b = 0; b < SPLIT_CELL_BANDS.length; b++) {
+      const pieces = splitRingByFloorFallback(terrain, ring, Object.assign({}, opts, { cellBand: SPLIT_CELL_BANDS[b] }));
+      if (pieces && pieces.length >= 2) return pieces;
+    }
+    return [ring];
+  }
   if (splitTimeoutsThisExport >= SPLIT_TIMEOUT_CAP) {
     const pieces = splitRingByFloorFallback(terrain, ring, opts);
     logSplit(
@@ -4580,7 +4835,9 @@ function splitRingByFloor(terrain, ring, opts) {
       ring,
       opts: opts || {},
     }),
-    timeout: SPLIT_STAND_BUDGET_MS,
+    // Past the soft tile budget the remaining stands take the box cut, so a
+    // stand that starts just before it may not run the tile past its budget.
+    timeout: splitCellsAfter > 0 ? Math.min(SPLIT_STAND_BUDGET_MS, Math.max(2000, splitCellsAfter + SPLIT_SOFT_GRACE_MS - Date.now())) : SPLIT_STAND_BUDGET_MS,
     maxBuffer: 32 * 1024 * 1024,
     cwd: path.join(__dirname, "..", ".."),
     env: Object.assign({}, process.env, { OPENCLUTTER_SPLIT_INPROCESS: "1" }),
@@ -4625,11 +4882,12 @@ function splitRingByFloor(terrain, ring, opts) {
 }
 
 
-function slopeSampler(terrain) {
-  resetSplitGuard();
+function slopeSampler(terrain, guard) {
+  resetSplitGuard(guard);
   const fn = (ring) => slopeTopUnderRing(terrain, ring);
   fn.seat = (ring) => slopeSeatUnderRing(terrain, ring);
   fn.split = (ring) => splitRingByFloor(terrain, ring);
+  fn.refine = (ring) => refineCanopyPiece(terrain, ring);
   fn.splitCanopy = (ring) => {
     // Bands that cannot cover the stand are discarded by splitRingByFloor,
     // which returns the whole ring. A ski hill still sits on its downhill
@@ -4660,11 +4918,11 @@ function restoreElevation(terrain) {
   return terrain;
 }
 
-function demUnderFootprint(terrain) {
+function demUnderFootprint(terrain, guard) {
   if (!terrain || terrain.pasteOmitted || !terrain.clipboard) return null;
   const zones = (terrain.raised || 0) + (terrain.sloped || 0);
   if (!(zones > 0)) return null;
-  return slopeSampler(terrain);
+  return slopeSampler(terrain, guard);
 }
 
 function terrainSourceLabel(terrain) {

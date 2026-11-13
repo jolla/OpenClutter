@@ -2839,6 +2839,22 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   const heightSample = opts && typeof opts.heightSample === "function" ? opts.heightSample : null;
   let foliageLifted = 0;
   const pending = [];
+  const ringLlToPx = (ring) => {
+    const px = [];
+    for (let k = 0; k < ring.length; k++) {
+      const p = llToPx(ring[k][0], ring[k][1], frame);
+      if (!Number.isFinite(p[0]) || !Number.isFinite(p[1])) continue;
+      const prev = px[px.length - 1];
+      if (prev && prev[0] === p[0] && prev[1] === p[1]) continue;
+      px.push(p);
+    }
+    if (px.length >= 3) {
+      const a = px[0];
+      const b = px[px.length - 1];
+      if (a[0] !== b[0] || a[1] !== b[1]) px.push([a[0], a[1]]);
+    }
+    return px.length >= 4 ? px : null;
+  };
   const seatsFor = (area) => {
     const one = (ringPx, ground, slopePiece) => [{ ringPx, ground, slopePiece: !!slopePiece }];
     if (!slopeTop || !area.ringPx || area.ringPx.length < 4) return one(area.ringPx, 0, false);
@@ -2862,10 +2878,51 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
         }
       }
     }
+    // Feedback #20: a piece that still climbs a whole ramp sits on its
+    // downhill edge, and a short understory on it is inside the hill uphill.
+    // Halve those pieces until each part climbs at most 5 m.
+    const refined = (rings) => {
+      if (typeof slopeTop.refine !== "function") return rings;
+      const out = [];
+      for (let i = 0; i < rings.length; i++) {
+        const more = slopeTop.refine(rings[i]);
+        if (more && more.length >= 2) for (let k = 0; k < more.length; k++) out.push(more[k]);
+        else out.push(rings[i]);
+      }
+      return out;
+    };
     // A long unsplit ring used to sit on the uphill sample, so the downhill
     // side floated. Relief over 3 m uses the downhill ground instead.
-    if (!split || split.length < 2) return one(area.ringPx, groundOf(ll), false);
+    if (!split || split.length < 2) {
+      const again = refined([ll]);
+      if (again.length < 2) return one(area.ringPx, groundOf(ll), false);
+      split = again;
+    } else {
+      split = refined(split);
+    }
     const seats = [];
+    // A sliver that joins its neighbour can reach onto the next ramp or
+    // plate. Cut that merged piece again so it does not climb the hill.
+    const recut = (merged) => {
+      if (typeof slopeTop.refine !== "function" || !merged || merged.length < 2) return merged;
+      const out = [];
+      for (let i = 0; i < merged.length; i++) {
+        const m = merged[i];
+        const mll = m.ringPx.map((p) => pxToLl(p[0], p[1], frame));
+        const more = slopeTop.refine(mll);
+        if (!more || more.length < 2) {
+          out.push(m);
+          continue;
+        }
+        for (let k = 0; k < more.length; k++) {
+          const px = ringLlToPx(more[k]);
+          if (!px) continue;
+          const ground = typeof slopeTop.seat === "function" ? Number(slopeTop.seat(more[k])) || 0 : Number(slopeTop(more[k])) || 0;
+          out.push({ ringPx: px, ground, slopePiece: true, ll: more[k] });
+        }
+      }
+      return out;
+    };
     for (let i = 0; i < split.length; i++) {
       const px = [];
       for (let k = 0; k < split[i].length; k++) {
@@ -2884,7 +2941,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       const ground = typeof slopeTop.seat === "function" ? Number(slopeTop.seat(split[i])) || 0 : Number(slopeTop(split[i])) || 0;
       seats.push({ ringPx: px, ground, slopePiece: true, ll: split[i] });
     }
-    if (seats.length >= 2) return mergeSlivers(seats);
+    if (seats.length >= 2) return recut(mergeSlivers(seats));
     return one(area.ringPx, groundOf(ll), false);
   };
   // A slope cut leaves slivers of a few square metres. Each one used to ship

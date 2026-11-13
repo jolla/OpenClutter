@@ -96,12 +96,30 @@ function canopyTile(payload) {
   return { crowns: crowns || [] };
 }
 
+// Feedback #20: past this share of the tile budget the slope split moves
+// to the quick cut, so a slow tile finishes seated on the terrain
+// instead of being killed and rerun.
+const TILE_SPLIT_SOFT_MS = Math.max(
+  5000,
+  parseInt(process.env.OPENCLUTTER_TILE_SPLIT_SOFT_MS || "120000", 10) || 120000
+);
+
 function foliageAssemble(payload) {
+  try {
+    return foliageAssembleSeated(payload);
+  } finally {
+    // The split guard is per tile; a later sampler starts clean.
+    require("./terrain").resetSplitGuard();
+  }
+}
+
+function foliageAssembleSeated(payload) {
   const { assembleFoliage } = require("./vegetation");
   const { restoreElevation, demUnderFootprint } = require("./terrain");
   const { sampleChmGrid } = require("./canopy-height");
   const terrain = payload.terrain ? restoreElevation(payload.terrain) : null;
-  const slopeTop = terrain ? demUnderFootprint(terrain) : null;
+  const guard = payload.splitCellsOnly ? { cellsOnly: true } : { cellsAfter: Date.now() + TILE_SPLIT_SOFT_MS };
+  const slopeTop = terrain ? demUnderFootprint(terrain, guard) : null;
   const grid = payload.chmBuffer ? gridFromPayload(payload) : payload.chmGrid;
   const opts = {
     buildingRings: payload.buildingRings,

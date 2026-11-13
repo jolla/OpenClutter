@@ -266,9 +266,10 @@ function logTileTimeout(tileHint, wall) {
 }
 
 function foliageAssembleFallback(payload) {
-  // Re-run the tile on the main thread without a slope split so a hung
-  // seatsFor or merge cannot stall Trees. Clip and dissolve still run.
-  const copy = Object.assign({}, payload, { terrain: null });
+  // Re-run the tile on the main thread with the quick slope cut only, so a
+  // hung 1.3.26 split cannot stall Trees. The terrain stays: without
+  // it every stand in the tile sat at 0 m, under the sloped floor (#20).
+  const copy = Object.assign({}, payload, { splitCellsOnly: true });
   return runInline("foliage-assemble", copy);
 }
 
