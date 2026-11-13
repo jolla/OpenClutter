@@ -146,6 +146,14 @@ const HAMINA_ENVIRONMENT_TREES = "Outdoor (Trees / Foliage)";
 const HAMINA_ENVIRONMENT_OPEN = "Outdoor (Open)";
 /** @deprecated use HAMINA_ENVIRONMENT_TREES; kept as the trees/foliage value. */
 const HAMINA_ENVIRONMENT = HAMINA_ENVIRONMENT_TREES;
+/**
+ * /dev OpenIntent project-type threshold (1.3.34). Count foliage
+ * attenuation areas in the zip (canopy, understory, or trunk). Buildings,
+ * walls, RVs, vehicles, and water do not count. If the count is at least
+ * this many, hamina_properties.environment is "Outdoor (Trees / Foliage)";
+ * below it, "Outdoor (Open)".
+ */
+const HAMINA_FOLIAGE_AREA_MIN = 1;
 const STOCK_MATERIAL_NAMES = OI_BUILDING_NAMES.slice();
 
 const ZIP_README =
@@ -3286,28 +3294,31 @@ function isTrunkArea(a) {
   return !!(m && /^Foliage - Trunk /.test(String(m.name || "")));
 }
 
-function areaHasFoliage(areas, materials) {
+function isFoliageMaterialName(name) {
+  if (!name) return false;
   const veg = require("./materials");
-  const names = [];
-  for (const m of materials || []) {
-    if (m && m.name) names.push(m.name);
+  if (veg.isVegetationOiName(name) || veg.isUnderstoryOiName(name) || veg.isPoisonedOiName(name)) {
+    return true;
   }
+  const s = String(name);
+  return s.indexOf("Foliage") === 0 || s.indexOf("Tree Trunk") === 0;
+}
+
+/** Number of foliage attenuation areas in an OpenIntent area list. */
+function foliageAreaCount(areas) {
+  let n = 0;
   for (const a of areas || []) {
-    if (isTrunkArea(a)) return true;
-    const n = a && a.area_material && a.area_material.name;
-    if (n) names.push(n);
+    if (isTrunkArea(a) || isFoliageMaterialName(a && a.area_material && a.area_material.name)) n++;
   }
-  for (const n of names) {
-    if (veg.isVegetationOiName(n) || veg.isUnderstoryOiName(n)) return true;
-    if (veg.isPoisonedOiName(n)) return true;
-    if (String(n).indexOf("Foliage") === 0 || String(n).indexOf("Tree Trunk") === 0) return true;
-  }
-  return false;
+  return n;
 }
 
 /** Project type Hamina should apply on OpenIntent import. */
 function haminaEnvironmentFor(areas, materials) {
-  return areaHasFoliage(areas, materials) ? HAMINA_ENVIRONMENT_TREES : HAMINA_ENVIRONMENT_OPEN;
+  const count = foliageAreaCount(areas);
+  if (count >= HAMINA_FOLIAGE_AREA_MIN) return HAMINA_ENVIRONMENT_TREES;
+  // Catalog-only foliage (no areas shipped) does not cross the threshold.
+  return HAMINA_ENVIRONMENT_OPEN;
 }
 
 function buildOpenIntent(frame, name, imgName, areas, materials) {
@@ -4456,6 +4467,8 @@ module.exports = {
   HAMINA_ENVIRONMENT,
   HAMINA_ENVIRONMENT_TREES,
   HAMINA_ENVIRONMENT_OPEN,
+  HAMINA_FOLIAGE_AREA_MIN,
+  foliageAreaCount,
   haminaEnvironmentFor,
   OI_FLOORPLAN_HEIGHT_M,
   OI_FLOORPLAN_HEIGHT_FT,

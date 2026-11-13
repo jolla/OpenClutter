@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { geoFrame } = require("../netlify/lib/geo-frame");
-const { buildClutter, OPENINTENT_VERSION, HAMINA_ENVIRONMENT, HAMINA_ENVIRONMENT_TREES, HAMINA_ENVIRONMENT_OPEN, haminaEnvironmentFor } = require("../netlify/lib/pipeline");
+const { buildClutter, OPENINTENT_VERSION, HAMINA_ENVIRONMENT, HAMINA_ENVIRONMENT_TREES, HAMINA_ENVIRONMENT_OPEN, HAMINA_FOLIAGE_AREA_MIN, foliageAreaCount, haminaEnvironmentFor } = require("../netlify/lib/pipeline");
 const exportMode = require("../netlify/lib/export-mode");
 const { emptyClipboard } = require("../netlify/lib/hamina-clipboard");
 const { canopyHitsGrid } = require("./canopy-grid");
@@ -128,7 +128,11 @@ describe("hamina_properties.environment on /dev OpenIntent exports", () => {
     assert.deepEqual(oiZip.hamina_properties, { environment: "Outdoor (Trees / Foliage)" });
   });
 
-  it("picks the Hamina environment from whether the areas include foliage", () => {
+  it("picks the Hamina environment from the foliage-area threshold", () => {
+    assert.equal(HAMINA_FOLIAGE_AREA_MIN, 1);
+    assert.equal(foliageAreaCount([]), 0);
+    assert.equal(foliageAreaCount([{ area_material: { name: "Building - One Floor" } }]), 0);
+    assert.equal(foliageAreaCount([{ area_material: { name: "Foliage - Heavy 11.2 @ 3.0" } }]), 1);
     assert.equal(haminaEnvironmentFor([], []), "Outdoor (Open)");
     assert.equal(
       haminaEnvironmentFor([{ area_material: { name: "Building - One Floor" } }]),
@@ -138,10 +142,8 @@ describe("hamina_properties.environment on /dev OpenIntent exports", () => {
       haminaEnvironmentFor([{ area_material: { name: "Foliage - Heavy 11.2 @ 3.0" } }]),
       "Outdoor (Trees / Foliage)"
     );
-    assert.equal(
-      haminaEnvironmentFor([], [{ name: "Foliage - Light" }]),
-      "Outdoor (Trees / Foliage)"
-    );
+    // A foliage material in the catalog, with no foliage areas, stays Open.
+    assert.equal(haminaEnvironmentFor([], [{ name: "Foliage - Light" }]), "Outdoor (Open)");
   });
 
   it("is wired to /dev hosts only", () => {
