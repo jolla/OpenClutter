@@ -245,6 +245,173 @@ function clipPointMapper(frame, grid) {
   };
 }
 
+/**
+ * Feedback #21: Planner Plus takes a sloped floor only as an open ring of
+ * exactly four xyz corners, the first edge at one low z and the opposite edge
+ * at one higher z ("Sloped floor coordinates are not valid!" otherwise).
+ * Raised floors from Copy terrain are open four-corner rings too. Cutting a
+ * turned quad at the box edge leaves a triangle, pentagon or hexagon, and the
+ * old code also repeated the first corner, so every turned sloped floor was
+ * rejected. A cut piece is sliced into bands between its corner levels (z for
+ * a sloped floor, x for a raised one). Each band is a four-corner piece; a
+ * band that ends in a point gets a 5 cm edge there so it keeps four corners.
+ */
+const TIP_M = 0.05;
+
+function sameXy2(a, b) {
+  return Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9;
+}
+
+function signedArea(ring) {
+  let a = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const p = ring[i], q = ring[(i + 1) % ring.length];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return a / 2;
+}
+
+/** Hamina's sloped-floor rule (same as terrain.planarSlopedRamp). */
+function validSlopedRing(ring) {
+  if (!ring || ring.length !== 4) return false;
+  for (let i = 0; i < 4; i++) {
+    const p = ring[i];
+    if (!p || p.length !== 3 || !p.every(Number.isFinite)) return false;
+    if (sameXy2(p, ring[(i + 1) % 4])) return false;
+  }
+  if (ring[0][2] !== ring[1][2] || ring[2][2] !== ring[3][2]) return false;
+  if (!(ring[2][2] > ring[0][2])) return false;
+  return Math.abs(signedArea(ring)) > 5e-5;
+}
+
+function validFlatRing(ring) {
+  if (!ring || ring.length !== 4) return false;
+  for (let i = 0; i < 4; i++) {
+    const p = ring[i];
+    if (!p || !p.every(Number.isFinite)) return false;
+    if (sameXy2(p, ring[(i + 1) % 4])) return false;
+  }
+  return Math.abs(signedArea(ring)) > 5e-5;
+}
+
+/** Keep the part of a ring where key(p) lies in [lo, hi]; extra coordinates interpolate. */
+function clipRingByKey(ring, key, lo, hi) {
+  let pts = ring;
+  const lerp = (a, b, t) => a.map((v, k) => v + ((b[k] != null ? b[k] : v) - v) * t);
+  for (const [inside, level] of [[(p) => key(p) >= lo, lo], [(p) => key(p) <= hi, hi]]) {
+    const next = [];
+    for (let i = 0; i < pts.length; i++) {
+      const cur = pts[i], prev = pts[(i + pts.length - 1) % pts.length];
+      const ci = inside(cur), pi = inside(prev);
+      const cross = () => {
+        const kp = key(prev), kc = key(cur);
+        const p = lerp(prev, cur, (level - kp) / (kc - kp));
+        return p;
+      };
+      if (ci) {
+        if (!pi) next.push(cross());
+        next.push(cur);
+      } else if (pi) next.push(cross());
+    }
+    pts = next;
+    if (!pts.length) break;
+  }
+  return pts;
+}
+
+/**
+ * Slice a convex piece into four-corner bands between its distinct levels.
+ * level(p) is the band key; dir is the direction along a level (unit xy).
+ * setLevel(p, L) returns p with the band key fixed to exactly L (z for a
+ * sloped floor). Each band ring is [lo a, lo b, hi b, hi a], counterclockwise.
+ */
+function sliceIntoBands(ring, level, dir, setLevel) {
+  const levels = Array.from(new Set(ring.map(level))).sort((a, b) => a - b);
+  const out = [];
+  for (let i = 0; i + 1 < levels.length; i++) {
+    const lo = levels[i], hi = levels[i + 1];
+    const band = clipRingByKey(ring, level, lo, hi);
+    if (band.length < 3) continue;
+    const ends = [lo, hi].map((L) => {
+      const span = Math.max(1e-6, (hi - lo) * 1e-6);
+      const pts = band.filter((p) => Math.abs(level(p) - L) <= span);
+      if (!pts.length) return null;
+      let a = pts[0], b = pts[0];
+      const t = (p) => p[0] * dir[0] + p[1] * dir[1];
+      for (const p of pts) {
+        if (t(p) < t(a)) a = p;
+        if (t(p) > t(b)) b = p;
+      }
+      if (t(b) - t(a) < TIP_M / 2) {
+        const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+        a = a.slice(); b = b.slice();
+        a[0] = mx - (dir[0] * TIP_M) / 2; a[1] = my - (dir[1] * TIP_M) / 2;
+        b[0] = mx + (dir[0] * TIP_M) / 2; b[1] = my + (dir[1] * TIP_M) / 2;
+      }
+      return [setLevel(a, L), setLevel(b, L)];
+    });
+    if (!ends[0] || !ends[1]) continue;
+    let q = [ends[0][0], ends[0][1], ends[1][1], ends[1][0]];
+    if (signedArea(q) < 0) q = [ends[0][1], ends[0][0], ends[1][0], ends[1][1]];
+    out.push(q);
+  }
+  return out;
+}
+
+/** Plane fit z = gx*x + gy*y + c; returns the unit direction along a contour. */
+function contourDir(ring) {
+  const n = ring.length;
+  let sx = 0, sy = 0, sz = 0;
+  for (const p of ring) { sx += p[0]; sy += p[1]; sz += p[2]; }
+  const mx = sx / n, my = sy / n, mz = sz / n;
+  let xx = 0, xy = 0, yy = 0, xz = 0, yz = 0;
+  for (const p of ring) {
+    const dx = p[0] - mx, dy = p[1] - my, dz = p[2] - mz;
+    xx += dx * dx; xy += dx * dy; yy += dy * dy; xz += dx * dz; yz += dy * dz;
+  }
+  const det = xx * yy - xy * xy;
+  let gx, gy;
+  if (Math.abs(det) > 1e-12) {
+    gx = (xz * yy - yz * xy) / det;
+    gy = (yz * xx - xz * xy) / det;
+  } else {
+    // Fall back to the first edge, which is the low contour of a Hamina ramp.
+    const ex = ring[1][0] - ring[0][0], ey = ring[1][1] - ring[0][1];
+    const len = Math.hypot(ex, ey) || 1;
+    return [ex / len, ey / len];
+  }
+  const len = Math.hypot(gx, gy);
+  if (!(len > 0)) return [1, 0];
+  return [-gy / len, gx / len];
+}
+
+function roundPt(p) {
+  return p.map((v, i) => round(v, i < 2 ? 4 : 3));
+}
+
+/** One mapped floor ring (open, xy or xyz) -> pasteable open four-corner rings. */
+function floorPieces(outer, grid, sloped) {
+  const cut = clipRingToBox(outer, -grid.wM, -grid.lM, 0, 0);
+  if (!cut || ringArea(cut) < 0.01) return [];
+  const whole = cut.length === 4 && outer.length === 4 && cut.every((p, i) => p === outer[i]);
+  let pieces;
+  if (whole) pieces = [cut];
+  else if (sloped) {
+    const r3 = cut.map((p) => p.slice(0, 2).concat([round(p[2], 3)]));
+    pieces = sliceIntoBands(r3, (p) => p[2], contourDir(r3), (p, L) => [p[0], p[1], L]);
+  } else {
+    pieces = sliceIntoBands(cut, (p) => p[0], [0, 1], (p, L) => [L].concat(p.slice(1)));
+  }
+  const out = [];
+  // A 5 cm tip edge at the box edge stays on the map.
+  const clamp = (p) => [Math.min(0, Math.max(-grid.wM, p[0])), Math.min(0, Math.max(-grid.lM, p[1]))].concat(p.slice(2));
+  for (const piece of pieces) {
+    const ring = piece.map((p) => roundPt(clamp(p)));
+    if (sloped ? validSlopedRing(ring) : validFlatRing(ring)) out.push(ring);
+  }
+  return out;
+}
+
 function rotateClipboard(clip, frame, grid) {
   if (!clip) return clip;
   const map = clipPointMapper(frame, grid);
@@ -252,17 +419,27 @@ function rotateClipboard(clip, frame, grid) {
   for (const k of ["raisedFloorZones", "slopedFloors", "attenuatingZones", "scopeZones", "holeInFloorZones"]) {
     const list = clip[k];
     if (!Array.isArray(list) || !list.length) continue;
+    const floor = k === "raisedFloorZones" || k === "slopedFloors";
     const next = [];
     for (const item of list) {
       const rings = item && item.area && item.area.coordinates;
       if (!Array.isArray(rings) || !Array.isArray(rings[0])) continue;
-      const outer = rings[0].map((pt) => {
+      let src = rings[0];
+      if (floor && src.length > 1 && sameXy2(src[0], src[src.length - 1])) src = src.slice(0, -1);
+      const outer = src.map((pt) => {
         const q = map(+pt[0], +pt[1]);
         return pt.length > 2 ? [q[0], q[1]].concat(pt.slice(2)) : q;
       });
+      if (floor) {
+        // Copy terrain floors stay open rings of four corners.
+        for (const ring of floorPieces(outer, grid, k === "slopedFloors")) {
+          next.push(Object.assign({}, item, { area: Object.assign({}, item.area, { coordinates: [ring] }) }));
+        }
+        continue;
+      }
       const cut = clipRingToBox(outer, -grid.wM, -grid.lM, 0, 0);
       if (!cut || ringArea(cut) < 0.01) continue;
-      const ring = cut.map((p) => p.map((v, i) => round(v, i < 2 ? 4 : 3)));
+      const ring = cut.map(roundPt);
       ring.push(ring[0].slice());
       next.push(Object.assign({}, item, { area: Object.assign({}, item.area, { coordinates: [ring] }) }));
     }
@@ -360,5 +537,7 @@ module.exports = {
   rotateOpenIntent,
   rotateClipboard,
   clipRingToBox,
+  floorPieces,
+  validSlopedRing,
   MARGIN_M,
 };

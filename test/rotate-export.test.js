@@ -84,3 +84,51 @@ test("clipboard items move with the box and leave nothing past the map", () => {
   assert.strictEqual(clip.tiePoints.length, 2);
   assert.strictEqual(clip.tiePoints[1].x, 0);
 });
+
+// Feedback #21: Planner Plus rejects any sloped floor that is not an open ring
+// of four corners with the first edge low and the opposite edge high.
+test("turned Copy terrain floors stay open four-corner rings Planner Plus accepts", () => {
+  for (const deg of [29, -29, 45, 90, 137]) {
+    const rect = R.rotatedRect({ west: 148.53652, south: -22.9834, east: 148.54293, north: -22.97257 }, deg);
+    const frame = frameFor(R.expandedBounds(rect), 1500);
+    const g = R.outputGrid(rect, frame);
+    // A north-up mesh like Copy terrain: 12 x 14 cells, south-north ramps
+    // (low edge first, open rings) and flat raised pads, all inside the frame.
+    const nx = 12, ny = 14, cw = frame.widthM / nx, ch = frame.lengthM / ny;
+    const sloped = [], raised = [];
+    for (let r = 0; r < ny; r++) {
+      for (let c = 0; c < nx; c++) {
+        const x0 = -frame.widthM + c * cw, x1 = x0 + cw, y0 = -frame.lengthM + r * ch, y1 = y0 + ch;
+        if ((r + c) % 3 === 0) {
+          raised.push({ area: { type: "Polygon", coordinates: [[[x0, y0], [x1, y0], [x1, y1], [x0, y1]]] }, height: 2 });
+        } else {
+          const zs = r * 3, zn = r * 3 + 3;
+          sloped.push({ area: { type: "Polygon", coordinates: [[[x0, y0, zs], [x1, y0, zs], [x1, y1, zn], [x0, y1, zn]]] } });
+        }
+      }
+    }
+    const area = (ring) => Math.abs(ring.reduce((s, p, i) => {
+      const q = ring[(i + 1) % ring.length];
+      return s + p[0] * q[1] - q[0] * p[1];
+    }, 0)) / 2;
+    const clip = { slopedFloors: sloped, raisedFloorZones: raised };
+    R.rotateClipboard(clip, frame, g);
+    assert.ok(clip.slopedFloors.length > 0 && clip.raisedFloorZones.length > 0);
+    let total = 0;
+    for (const f of clip.slopedFloors) {
+      const ring = f.area.coordinates[0];
+      assert.ok(R.validSlopedRing(ring), deg + " bad sloped " + JSON.stringify(ring));
+      for (const p of ring) assert.ok(p[0] >= -g.wM - 1e-3 && p[0] <= 1e-3 && p[1] >= -g.lM - 1e-3 && p[1] <= 1e-3);
+      total += area(ring);
+    }
+    for (const f of clip.raisedFloorZones) {
+      const ring = f.area.coordinates[0];
+      assert.strictEqual(ring.length, 4, deg + " raised ring " + JSON.stringify(ring));
+      assert.ok(area(ring) > 0);
+      for (const p of ring) assert.ok(p[0] >= -g.wM - 1e-3 && p[0] <= 1e-3 && p[1] >= -g.lM - 1e-3 && p[1] <= 1e-3);
+      total += area(ring);
+    }
+    // The pieces still cover the turned box.
+    assert.ok(Math.abs(total - g.wM * g.lM) / (g.wM * g.lM) < 0.002, deg + " cover " + total + " vs " + g.wM * g.lM);
+  }
+});
