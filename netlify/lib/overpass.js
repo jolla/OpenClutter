@@ -7,9 +7,14 @@
  * caller's slots are taken, 504 or a "runtime error" remark when the
  * server is busy, or no answer at all. A single fetch per endpoint loses
  * the street map on a busy minute. This client:
- *   - asks one endpoint at a time, in order, and moves to the next only
- *     after the current one failed or ran out its share of the read's
- *     window (sequential failover; never two servers for the same read),
+ *   - asks endpoints in order and moves on after a failure or a short
+ *     per-attempt cap (ATTEMPT_MS, about 20 s) so a hang does not burn
+ *     the whole window; if the first server is still silent after
+ *     HEDGE_MS, a second regular server is asked in parallel and the
+ *     first good answer wins (the loser is cancelled and is not counted
+ *     as a silent timeout); the last-resort server is never in a race,
+ *     and the last server that can still be asked gets the rest of the
+ *     read's window so a slow only-answerer is still used,
  *   - honours Retry-After and the /api/status slot time on a 429, and
  *     pauses that endpoint (the main instance asks for 30 s),
  *   - treats a 406 as a block on this address and leaves that endpoint
@@ -80,12 +85,14 @@ function errorCode(e) {
   return "";
 }
 
-/** Longest wait on one request. */
-const ATTEMPT_MS = 60000;
+/** Longest wait on one request while another server can still be asked. */
+const ATTEMPT_MS = 20000;
 /** Shortest share of the window one server gets while another is left to ask. */
 const MIN_ATTEMPT_MS = 15000;
 /** Window kept back for the next server while one is being asked. */
 const RESERVE_MS = 25000;
+/** After this long with no answer, a second regular server is asked too. */
+const HEDGE_MS = 5000;
 /** A 406 is a block on this address: leave that server alone this long. */
 const BAN_PAUSE_MS = 30 * 60 * 1000;
 /** Silent timeouts in a row before a server is skipped for DEAD_PAUSE_MS. */
@@ -103,6 +110,8 @@ const DEFAULT_DEADLINE_MS = 90000;
 const state = new Map();
 const memo = new Map();
 const inflight = new Map();
+/** Signals aborted because a hedged partner already answered. */
+const hedgeCancels = new WeakSet();
 let logFn = (line) => console.log(line);
 let fetchOverride = null;
 let nowFn = Date.now;
@@ -500,6 +509,16 @@ async function attempt(ep, kind, payload, opts, n, outer, limitMs) {
         s.pausedUntil = Math.max(s.pausedUntil, nowFn() + wait);
         log(opts.tag, ep, kind, timedOut ? "timeout" : "neterr", ms, n, "backoff=" + wait + (code ? " code=" + code : ""));
       }
+    } else if (hedgeCancels.has(outer)) {
+      // The partner answered; this hang should still count toward skipping
+      // a dead server, same as a silent timeout.
+      s.silent += 1;
+      if (s.silent >= DEAD_AFTER) {
+        pauseLong(ep, nowFn() + DEAD_PAUSE_MS);
+        log(opts.tag, ep, kind, "timeout", ms, n, "silent=" + s.silent + " pause=" + DEAD_PAUSE_MS);
+      } else {
+        log(opts.tag, ep, kind, "cancelled", ms, n, "silent=" + s.silent);
+      }
     } else {
       log(opts.tag, ep, kind, "cancelled", ms, n);
     }
@@ -564,25 +583,54 @@ function nextEndpoint(skip, failed) {
 }
 
 /**
- * How long one server may take in this read. The last server that can
- * still be asked gets the rest of the window (up to ATTEMPT_MS); while
- * another is left, RESERVE_MS stays back for it. Tile reads
+ * How long one server may take in this read. While another server can
+ * still be asked, ATTEMPT_MS caps the hang so failover happens in about
+ * 20 s. The last server that can still be asked gets the rest of the
+ * window, with no short cap, so a slow only-answerer is not cut off.
+ * While another is left, RESERVE_MS also stays back for it. Tile reads
  * (opts.slowFailMs, export-mode tiledOsm) give each server a third of
- * what is left, never under slowFailMs, since two tiles share the window.
+ * what is left, never under slowFailMs, since a few tiles share the window.
  */
 function attemptLimitMs(ep, failed, opts, skip) {
   const now = nowFn();
   const left = Math.max(0, opts.deadlineAt - now);
   const more = endpoints().some((e) => e !== ep && !(skip && skip.has(e.id)) && !(failed && failed.has(e.id)) && endpointState(e).pausedUntil < opts.deadlineAt - 1000);
-  if (!more) return Math.min(ATTEMPT_MS, left);
+  if (!more) return left;
   if (opts.slowFailMs > 0) return Math.min(ATTEMPT_MS, Math.max(opts.slowFailMs, Math.round(left / 3)));
   return Math.min(ATTEMPT_MS, Math.max(Math.min(MIN_ATTEMPT_MS, Math.round(left / 2)), left - RESERVE_MS));
 }
 
+/** A second regular server to ask in parallel once the first is silent. */
+function nextRacePartner(primary, spent, failed) {
+  if (!primary || primary.lastResort) return null;
+  const now = nowFn();
+  for (const ep of endpoints()) {
+    if (ep === primary || ep.lastResort) continue;
+    if (spent && spent.has(ep.id)) continue;
+    if (failed && failed.has(ep.id)) continue;
+    if (endpointState(ep).pausedUntil > now) continue;
+    return ep;
+  }
+  return null;
+}
+
+function linkAbort(parent, child) {
+  if (!parent) return () => {};
+  if (parent.aborted) {
+    child.abort();
+    return () => {};
+  }
+  const onParent = () => child.abort();
+  parent.addEventListener("abort", onParent, { once: true });
+  return () => parent.removeEventListener("abort", onParent);
+}
+
 /**
- * The network part: one server at a time, in order, with pauses and
- * backoff, until one answers or the deadline passes. Never two servers
- * for the same read at once.
+ * The network part: endpoints in order, with pauses and backoff, until
+ * one answers or the deadline passes. A hang is capped at ATTEMPT_MS
+ * while another server remains, then a hedged second regular server may
+ * run at the same time (first good answer wins). The last remaining
+ * server gets the rest of the window.
  */
 async function fetchAcross(kind, payload, opts) {
   const outer = new AbortController();
@@ -610,7 +658,77 @@ async function fetchAcross(kind, payload, opts) {
         continue;
       }
       n += 1;
-      const r = await attempt(pick.ep, kind, payload, opts, n, outer.signal, attemptLimitMs(pick.ep, failed, opts, spent));
+      const limit = attemptLimitMs(pick.ep, failed, opts, spent);
+      const partner = nextRacePartner(pick.ep, spent, failed);
+      const primaryCtrl = new AbortController();
+      const unlinkPrimary = linkAbort(outer.signal, primaryCtrl);
+      const primaryP = attempt(pick.ep, kind, payload, opts, n, primaryCtrl.signal, limit);
+      let r;
+      let partnerUsed = false;
+      let unlinkPartner = () => {};
+      try {
+        // Only hedge when the attempt is longer than HEDGE_MS; a short
+        // share of the window should fail over serially, one at a time.
+        if (!partner || limit <= HEDGE_MS) {
+          r = await primaryP;
+        } else {
+          let primarySettled = null;
+          const hedgeWait = Math.min(HEDGE_MS, limit);
+          const hedged = await Promise.race([
+            primaryP.then((res) => {
+              primarySettled = res;
+              return { from: "primary", res };
+            }),
+            sleep(hedgeWait, outer.signal).then(() => ({ from: "hedge" })),
+          ]);
+          if (primarySettled) {
+            r = primarySettled;
+          } else if (outer.signal.aborted) {
+            primaryCtrl.abort();
+            r = await primaryP;
+          } else {
+            n += 1;
+            partnerUsed = true;
+            const partnerCtrl = new AbortController();
+            unlinkPartner = linkAbort(outer.signal, partnerCtrl);
+            const partnerLimit = attemptLimitMs(partner, failed, opts, spent);
+            const partnerP = attempt(partner, kind, payload, opts, n, partnerCtrl.signal, partnerLimit);
+            const first = await Promise.race([
+              primaryP.then((res) => ({ from: "primary", res })),
+              partnerP.then((res) => ({ from: "partner", res })),
+            ]);
+            if (first.res && first.res.ok) {
+              if (first.from === "primary") partnerCtrl.abort();
+              else {
+                hedgeCancels.add(primaryCtrl.signal);
+                primaryCtrl.abort();
+              }
+              await (first.from === "primary" ? partnerP : primaryP);
+              r = first.res;
+            } else if (first.res && first.res.final && (first.res.status === 400 || !tileRead)) {
+              if (first.from === "primary") partnerCtrl.abort();
+              else primaryCtrl.abort();
+              await (first.from === "primary" ? partnerP : primaryP);
+              r = first.res;
+              if (first.from === "primary") failed.add(pick.ep.id);
+              else failed.add(partner.id);
+            } else if (first.from === "primary") {
+              failed.add(pick.ep.id);
+              lastStatus = first.res && first.res.status ? first.res.status : lastStatus;
+              if (first.res && first.res.final) spent.add(pick.ep.id);
+              r = await partnerP;
+            } else {
+              failed.add(partner.id);
+              lastStatus = first.res && first.res.status ? first.res.status : lastStatus;
+              if (first.res && first.res.final) spent.add(partner.id);
+              r = await primaryP;
+            }
+          }
+        }
+      } finally {
+        unlinkPrimary();
+        unlinkPartner();
+      }
       if (r && r.ok) return r;
       if (!r || r.status === "aborted") break;
       // A 400 is the query itself. Outside tile reads an empty or cut-off
@@ -619,6 +737,10 @@ async function fetchAcross(kind, payload, opts) {
       failed.add(pick.ep.id);
       lastStatus = r.status || lastStatus;
       if (r.final) spent.add(pick.ep.id);
+      if (partnerUsed) {
+        failed.add(partner.id);
+        if (r.final) spent.add(partner.id);
+      }
     }
     return { ok: false, status: lastStatus || "deadline", text: "" };
   } finally {
@@ -823,6 +945,7 @@ module.exports = {
   LAST_RESORT_WAIT_MS,
   errorCode,
   ATTEMPT_MS,
+  HEDGE_MS,
   MIN_ATTEMPT_MS,
   RESERVE_MS,
   BAN_PAUSE_MS,

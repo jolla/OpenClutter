@@ -20,8 +20,9 @@ const MAP_RESILIENT_MS = 100000;
 const MAX_TILES = 16;
 /** tiledOsm (1.2.31): one window shared by every tile of a large draw. */
 const TILED_BUDGET_MS = 105000;
-/** tiledOsm: tiles in flight (overpass-api.de gives one caller two slots). */
-const TILED_CONCURRENCY = 2;
+/** tiledOsm: tiles in flight. overpass-api.de still caps one caller at two
+ * slots; the extra tile can use another endpoint. */
+const TILED_CONCURRENCY = 3;
 /** tiledOsm: a server silent this long counts as failed for that tile. */
 const TILED_SLOW_FAIL_MS = 20000;
 /** tiledOsm: a retry or split pass starts only with this much window left. */

@@ -154,13 +154,13 @@ describe("1.2.31 tiled street-map read", () => {
   it("plans four tiles for the widened Fort Wilderness draw with the shipped limits", () => {
     assert.equal(planTiles(FW_WIDE).length, 4);
     assert.equal(TILED_BUDGET_MS, 105000);
-    assert.equal(TILED_CONCURRENCY, 2);
+    assert.equal(TILED_CONCURRENCY, 3);
     assert.equal(TILED_SLOW_FAIL_MS, 20000);
     const q = splitTile(planTiles(FW_WIDE)[0]);
     assert.equal(q.length, 4);
   });
 
-  it("keeps two tiles in flight, retries a missed tile, then splits one that misses twice", async () => {
+  it("keeps three tiles in flight, retries a missed tile, then splits one that misses twice", async () => {
     const seen = new Map();
     let inFlight = 0;
     let peak = 0;
@@ -184,7 +184,7 @@ describe("1.2.31 tiled street-map read", () => {
         return [{ type: "way", id: Math.round(tile.west * 1e6) + Math.round(tile.south * 1e6) }];
       },
     });
-    assert.equal(peak, 2);
+    assert.equal(peak, 3);
     assert.deepEqual(got.osmTiles, { total: 4, missing: 0, retried: 2, split: 1, splitMissing: 0 });
     assert.equal(got.incomplete, false);
     assert.deepEqual(got.notes, []);

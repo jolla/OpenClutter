@@ -298,13 +298,16 @@ describe("overpass client", () => {
     assert.ok(lines.some((l) => /overpass-api\.de interpreter status=timeout .*silent=2 pause=600000/.test(l)), lines.join("\n"));
   });
 
-  it("gives the first server most of the window and keeps a reserve for the next", async () => {
+  it("caps a hang at about 20 s while another server can still be asked", async () => {
     let seen = 0;
     overpass.resetForTests({
       fetch: async (url, init) => {
         calls.push({ url });
         const t0 = Date.now();
-        if (seen) return res(200, JSON_OK);
+        const h = hostOf(url);
+        // The hedged partner fails fast so the first hang can use its full 20 s cap.
+        if (h === "overpass.private.coffee") return res(504, "busy");
+        if (h !== "overpass-api.de") return res(200, JSON_OK);
         await new Promise((resolve) => init.signal.addEventListener("abort", resolve, { once: true }));
         seen = Date.now() - t0;
         throw Object.assign(new Error("aborted"), { name: "AbortError" });
@@ -314,8 +317,73 @@ describe("overpass client", () => {
       timerScale: 1000,
     });
     await overpass.request({ kind: "interpreter", query: "q-share", deadlineMs: 90000 });
-    // 60 s of a 90 s window (scaled 1000x), so a second server still has 25 s or more.
-    assert.ok(seen >= 50 && seen < 75, String(seen));
+    // ATTEMPT_MS 20 s, scaled 1000x, while other servers remain.
+    assert.ok(seen >= 15 && seen < 30, String(seen));
+    assert.equal(overpass.ATTEMPT_MS, 20000);
+    assert.equal(overpass.HEDGE_MS, 5000);
+  });
+
+  it("asks a second regular server after a short hang and keeps the first good answer", async () => {
+    let deSeen = 0;
+    let peak = 0;
+    let active = 0;
+    overpass.resetForTests({
+      fetch: async (url, init) => {
+        calls.push({ url });
+        const h = hostOf(url);
+        active += 1;
+        peak = Math.max(peak, active);
+        try {
+          if (h === "overpass-api.de") {
+            const t0 = Date.now();
+            await new Promise((resolve, reject) => {
+              init.signal.addEventListener("abort", () => {
+                deSeen = Date.now() - t0;
+                reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+              }, { once: true });
+            });
+          }
+          return res(200, JSON_OK);
+        } finally {
+          active -= 1;
+        }
+      },
+      log: (l) => lines.push(l),
+      sleep: fastSleep,
+      timerScale: 1000,
+    });
+    const got = await overpass.request({ kind: "interpreter", query: "q-hedge", deadlineMs: 90000 });
+    assert.equal(got.ok, true);
+    assert.ok(peak >= 2, String(peak));
+    // HEDGE_MS 5 s scaled 1000x, well under the 20 s cap.
+    assert.ok(deSeen >= 3 && deSeen < 15, String(deSeen));
+    const hosts = calls.map((c) => hostOf(c.url));
+    assert.ok(hosts.includes("overpass-api.de"));
+    assert.ok(hosts.includes("overpass.private.coffee"));
+    assert.ok(!hosts.includes("overpass.openstreetmap.fr"));
+  });
+
+  it("lets the last remaining server use the rest of the window, past the 20 s cap", async () => {
+    let frSeen = 0;
+    overpass.resetForTests({
+      fetch: async (url) => {
+        calls.push({ url });
+        const h = hostOf(url);
+        if (h !== "overpass.openstreetmap.fr") return res(504, "busy");
+        const t0 = Date.now();
+        await new Promise((r) => setTimeout(r, 30));
+        frSeen = Date.now() - t0;
+        return res(200, JSON_OK);
+      },
+      log: (l) => lines.push(l),
+      sleep: fastSleep,
+      timerScale: 1000,
+    });
+    const got = await overpass.request({ kind: "interpreter", query: "q-last-slow", deadlineMs: 90000 });
+    assert.equal(got.ok, true);
+    // 30 ms real wait is longer than a scaled 20 s cap (20 ms) and shorter
+    // than the leftover 90 s window (90 ms scaled).
+    assert.ok(frSeen >= 25, String(frSeen));
   });
 
   it("only asks the servers a local run names", async () => {
