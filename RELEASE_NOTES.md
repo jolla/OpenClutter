@@ -1,3 +1,29 @@
+# OpenClutter v1.3.38
+
+Released Nov 16, 2026 on openclutter.com. dev.openclutter.com runs the same build.
+
+## What's new
+
+- **True scale.** Buildings and clutter export at their real size at every latitude.
+- **Hamina project type.** An OpenIntent import sets the project to Outdoor (Trees / Foliage) when the area has tree cover, or Outdoor (Open) when it does not.
+- **Turn the export box.** A finished box has a turn handle; the export comes out square to the turned box, including Copy terrain. ?rotate=0 hides the handle.
+- **Clear the area.** A muted trash can next to the box clears it.
+- **Search auto-fill.** After you draw a box, the search field fills with the nearest landmark and the city. A name you type yourself is left alone.
+- **Water and Cars.** Those options are off the settings panel; exports leave both off.
+- **Hillside trees (feedback #20).** Woods on a sloped hill sit on the floor instead of under it.
+- **Turned terrain paste (feedback #21).** Copy terrain from a turned box pastes into Planner Plus.
+- **Steadier street-map reads.** A hanging OpenStreetMap server is dropped after about 20 seconds, so a small export no longer waits a minute on a dead server.
+- **Terrain and Copy terrain fixes.** US terrain retries the national elevation source before falling back; no fake trees on crater walls or pit benches; one level surface per lake or pond; Copy terrain floors stay at or under 1000 m.
+
+## Data
+
+No new map data in this release.
+
+## Git / deploy
+
+- Tag `v1.3.38` on `main`; `dev` is at the same commit.
+- Adaptive terrain, the forest=crowns style and the 14 MB /dev JSON budget stay on dev.openclutter.com only.
+
 # OpenClutter v1.3.20
 
 Released Nov 9, 2026 on openclutter.com. dev.openclutter.com runs the same build.

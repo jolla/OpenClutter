@@ -1368,8 +1368,10 @@ async function respondTerrainAside(frame, body, event, cors) {
   const fields = terrainBundleFields(terrain, warnings);
   return json(200, cors, {
     ok: true,
-    // Feedback #18 prototype: the turned-box wrapper needs the frame.
-    ...(body && body.rotateFrame === true && isDevTestHost(event) ? { frame: publicFrame(frame) } : {}),
+    // Feedback #18: the turned-box wrapper needs the frame. Every host from
+    // 1.3.38 (1.3.20 already ran rotate on every host, but this aside only
+    // returned frame on /dev, so a turned box on prod stayed north-up).
+    ...(body && body.rotateFrame === true ? { frame: publicFrame(frame) } : {}),
     terrainFilename: fields.terrainFilename,
     terrainClipboard: fields.terrainClipboard,
     terrainStatus: fields.terrainStatus,
@@ -1603,12 +1605,13 @@ async function handleClutterNorthUp(event) {
   // Raised Hamina caps (Nov 2026): DEV_HOST_JSON_BUDGET of JSON and a 4.9 MB paste
   // ceiling, /dev hosts only. Production stays on the 5.8 / 9.7 MB budget.
   exportMode.setDevImportCaps(testHost);
-  // 1.3.34 hamina_properties.environment: set the Hamina project type on
-  // OpenIntent import. /dev hosts only (haminaEnvironment:false or
-  // ?haminaEnvironment=0 turns it off there). Production stays off until
-  // the weekly release. Copy terrain (HaminaClipboard) is unchanged.
+  // Production release 1.3.38: hamina_properties.environment (1.3.34) sets
+  // the Hamina project type on OpenIntent import, on every host.
+  // haminaEnvironment:false or ?haminaEnvironment=0 turns it off. Pass
+  // testHost again to put it back on /dev hosts only. Copy terrain
+  // (HaminaClipboard) is unchanged.
   exportMode.setHaminaEnvironment(
-    exportMode.haminaEnvironmentWanted(testHost, body, event && event.queryStringParameters),
+    exportMode.haminaEnvironmentWanted(true, body, event && event.queryStringParameters),
   );
   // 1.2.37 lidar canopy checked on the photo runs on every host. The 1.2.39
   // photo-shaped crowns stay on /dev hosts: their stale-lidar test fired in
@@ -1643,10 +1646,11 @@ async function handleClutterNorthUp(event) {
   );
   exportMode.setCampNodes(exportMode.campNodesWanted(true, body));
   exportMode.setSeaWater(exportMode.seaWaterWanted(true, body));
-  // 1.3.11 trueMetres: ground-meter plate at every latitude. /dev hosts on
-  // (trueMetres:false or ?trueMetres=0 turns it off there). Production off.
+  // Production release 1.3.38: 1.3.11 trueMetres, ground-meter plate at
+  // every latitude, on every host. trueMetres:false or ?trueMetres=0 turns
+  // it off. Pass testHost again to put it back on /dev hosts only.
   require("../lib/geo-frame").setTrueMetres(
-    exportMode.trueMetresWanted(testHost, body, event && event.queryStringParameters),
+    exportMode.trueMetresWanted(true, body, event && event.queryStringParameters),
   );
   // 1.3.2 adaptive terrain: native-resolution DEM and a mesh that spends the
   // paste's floors on steep ground. /dev hosts only (adaptiveTerrain:false

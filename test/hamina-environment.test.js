@@ -146,11 +146,11 @@ describe("hamina_properties.environment on /dev OpenIntent exports", () => {
     assert.equal(haminaEnvironmentFor([], [{ name: "Foliage - Light" }]), "Outdoor (Open)");
   });
 
-  it("is wired to /dev hosts only", () => {
+  it("is wired to every host from 1.3.38 (pass testHost to put it back on /dev only)", () => {
     const src = fs.readFileSync(path.join(__dirname, "../netlify/functions/clutter.js"), "utf8");
     assert.match(
       src,
-      /exportMode\.setHaminaEnvironment\(\s*exportMode\.haminaEnvironmentWanted\(testHost, body, event && event\.queryStringParameters\),\s*\);/
+      /exportMode\.setHaminaEnvironment\(\s*exportMode\.haminaEnvironmentWanted\(true, body, event && event\.queryStringParameters\),\s*\);/
     );
     assert.equal(exportMode.haminaEnvironmentWanted(false, {}), false);
     assert.equal(exportMode.haminaEnvironmentWanted(true, {}), true);

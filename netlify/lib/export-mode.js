@@ -428,8 +428,9 @@ function forestMode(testHost, body) {
 
 /**
  * trueMetres (1.3.11): OpenIntent meters match the ground at every latitude.
- * /dev hosts on (trueMetres:false or ?trueMetres=0 turns it off there,
- * ?trueMetres=1 forces it on); production stays off until a release says so.
+ * On when the caller passes a true testHost (every host from 1.3.38;
+ * trueMetres:false or ?trueMetres=0 turns it off, ?trueMetres=1 forces it
+ * on). Pass testHost again at the call site to put it back on /dev only.
  */
 function trueMetresWanted(testHost, body, query) {
   if (!testHost) return false;
@@ -438,10 +439,10 @@ function trueMetresWanted(testHost, body, query) {
   return !(raw === false || raw === 0 || raw === "0" || raw === "false");
 }
 
-// Feedback #18 prototype: a drawn box turned on the map (rotate, degrees
-// clockwise from north for the box's top edge) exports square to that box.
-// /dev hosts only and only when the request sends rotate; production and a
-// request without it get the north-up export unchanged (rotate-export.js).
+// Feedback #18: a drawn box turned on the map (rotate, degrees clockwise
+// from north for the box's top edge) exports square to that box. On when
+// the caller passes a true testHost and the request sends rotate (every
+// host from 1.3.20). A request without rotate stays north-up.
 function rotateWanted(testHost, body, query) {
   if (!testHost) return 0;
   const raw = body && body.rotate != null ? body.rotate : query && query.rotate != null ? query.rotate : null;
@@ -450,10 +451,10 @@ function rotateWanted(testHost, body, query) {
 
 // hamina_properties.environment on the OpenIntent root (1.3.34): Hamina
 // sets the project type from this on import, "Outdoor (Trees / Foliage)"
-// when the zip has canopy or "Outdoor (Open)" when it does not. /dev hosts only
-// (haminaEnvironment:false or ?haminaEnvironment=0 turns it off there).
-// Production stays off until the weekly release. The clipboard paste has
-// no equivalent root key.
+// when the zip has canopy or "Outdoor (Open)" when it does not. On when
+// the caller passes a true testHost (every host from 1.3.38;
+// haminaEnvironment:false or ?haminaEnvironment=0 turns it off). The
+// clipboard paste has no equivalent root key.
 let haminaEnvironment = false;
 
 function setHaminaEnvironment(on) {
