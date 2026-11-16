@@ -1847,7 +1847,7 @@ async function handleClutterNorthUp(event) {
     }
     if (includeFoliage) {
       forestJob = beginOptional((signal) =>
-        fetchSlopeForest(requestBbox, { signal, ua: UA, timeoutMs: background ? 25000 : 8000, tile: background })
+        fetchSlopeForest(requestBbox, { signal, ua: UA, timeoutMs: background ? 45000 : 8000, tile: background })
       );
     }
     detailJob = beginOptional((signal) =>

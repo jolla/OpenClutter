@@ -336,8 +336,7 @@ function forestFromElements(json, bbox) {
   return { ok: true, wood: keptWood, pistes: keptPistes, notes };
 }
 
-async function fetchSlopeForest(bbox, opts) {
-  const timeoutMs = (opts && opts.timeoutMs) > 0 ? opts.timeoutMs : 8000;
+async function overpassForest(bbox, q, opts, timeoutMs) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   const parent = opts && opts.signal;
@@ -347,28 +346,17 @@ async function fetchSlopeForest(bbox, opts) {
     else parent.addEventListener("abort", onAbort, { once: true });
   }
   const ua = (opts && opts.ua) || "openclutter";
-  const q = queryFor(bbox);
   try {
-    if (!(opts && opts.fetchImpl) && !(opts && opts.overture === false)) {
-      try {
-        const maps = await fetchStreetMaps(bbox, {
-          signal: ctrl.signal,
-          ua,
-          tile: !!(opts && opts.tile),
-        });
-        if (maps && maps.source === "overture" && Array.isArray(maps.elements)) {
-          return forestFromElements({ elements: maps.elements }, bbox);
-        }
-      } catch (e) {
-        if (ctrl.signal.aborted) return { ok: false, wood: [], pistes: [], notes: [] };
-      }
-    }
-    let last = null;
     if (isResilient()) {
-      const json = await overpass.requestJson(q, { signal: ctrl.signal, ua, deadlineMs: Math.max(1000, timeoutMs - 500) });
+      const json = await overpass.requestJson(q, {
+        signal: ctrl.signal,
+        ua,
+        deadlineMs: Math.max(1000, timeoutMs - 500),
+      });
       if (!json) return { ok: false, wood: [], pistes: [], notes: [] };
       return forestFromElements(json, bbox);
     }
+    let last = null;
     for (let i = 0; i < OVERPASS_URLS.length; i++) {
       if (ctrl.signal.aborted) return { ok: false, wood: [], pistes: [], notes: [] };
       try {
@@ -396,6 +384,42 @@ async function fetchSlopeForest(bbox, opts) {
     if (parent) parent.removeEventListener("abort", onAbort);
   }
 }
+
+async function fetchSlopeForest(bbox, opts) {
+  const timeoutMs = (opts && opts.timeoutMs) > 0 ? opts.timeoutMs : 8000;
+  const ua = (opts && opts.ua) || "openclutter";
+  const q = queryFor(bbox);
+  if (!(opts && opts.fetchImpl) && !(opts && opts.overture === false)) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const parent = opts && opts.signal;
+    const onAbort = () => ctrl.abort();
+    if (parent) {
+      if (parent.aborted) ctrl.abort();
+      else parent.addEventListener("abort", onAbort, { once: true });
+    }
+    try {
+      const streetFetch = (opts && opts.fetchStreetMaps) || fetchStreetMaps;
+      const maps = await streetFetch(bbox, {
+        signal: ctrl.signal,
+        ua,
+        tile: !!(opts && opts.tile),
+      });
+      if (maps && maps.source === "overture" && Array.isArray(maps.elements)) {
+        return forestFromElements({ elements: maps.elements }, bbox);
+      }
+    } catch {
+      // Street-map wait missed the budget (or Overture failed). The 1.3.38
+      // Overpass forest query still fills the canopy mask.
+    } finally {
+      clearTimeout(timer);
+      if (parent) parent.removeEventListener("abort", onAbort);
+    }
+  }
+  const forestOverpass = (opts && opts.fetchOverpassForest) || overpassForest;
+  return forestOverpass(bbox, q, opts, timeoutMs);
+}
+
 
 module.exports = {
   PISTE_HALF_M,

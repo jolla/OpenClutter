@@ -2,13 +2,18 @@
 
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
-const { gapQuery, GAP_DEADLINE_MS, fetchStreetMaps, resetForTests } = require("../netlify/lib/street-map");
+const { gapQuery, GAP_DEADLINE_MS, capGapDeadline, fetchStreetMaps, resetForTests } = require("../netlify/lib/street-map");
 
 const BOX = { west: -90.5276, south: 41.5786, east: -90.523, north: 41.5823 };
 
 describe("street-map gap query", () => {
   it("caps the gap Overpass wait at 25 seconds so it does not gate a successful Overture read", () => {
     assert.equal(GAP_DEADLINE_MS, 25000);
+    assert.equal(capGapDeadline(105000), 25000);
+    assert.equal(capGapDeadline(90000), 25000);
+    assert.equal(capGapDeadline(10000), 10000);
+    assert.equal(capGapDeadline(0), 25000);
+    assert.equal(capGapDeadline(undefined), 25000);
   });
 
   it("asks for camp, building parts, palms, moorings, and area:highway, not for ordinary roads or fences", () => {
@@ -72,6 +77,20 @@ describe("street-map coordinator", () => {
     assert.equal(got.xmls[0], "<osm></osm>");
     assert.notEqual(got.source, "overture");
     assert.match((got.notes || []).join(" "), /Overture street-map read failed/);
+  });
+
+  it("does not let a long outdoor deadline stretch the gap Overpass wait past 25 seconds", async () => {
+    let gapDeadline = null;
+    await fetchStreetMaps(BOX, {
+      deadlineMs: 105000,
+      fetchOvertureStreet: async () => ({ ok: true, elements: [], notes: [], themes: {} }),
+      fetchGapOverpass: async (_bbox, o) => {
+        gapDeadline = o && o.deadlineMs;
+        return { ok: true, elements: [] };
+      },
+      fetchOsmMaps: async () => ({ xmls: [], elements: [] }),
+    });
+    assert.equal(gapDeadline, 25000);
   });
 
   it("reuses one in-flight read for a second caller of the same box", async () => {

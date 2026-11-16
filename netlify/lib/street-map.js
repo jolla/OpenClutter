@@ -82,13 +82,18 @@ function dedupeElements(batches) {
   return out;
 }
 
+function capGapDeadline(deadlineMs) {
+  if (deadlineMs > 0 && deadlineMs < GAP_DEADLINE_MS) return deadlineMs;
+  return GAP_DEADLINE_MS;
+}
+
 async function fetchGapOverpass(bbox, opts) {
   const o = opts || {};
   const q = gapQuery(bbox);
   const json = await overpass.requestJson(q, {
     signal: o.signal,
     ua: o.ua,
-    deadlineMs: o.deadlineMs > 0 ? o.deadlineMs : GAP_DEADLINE_MS,
+    deadlineMs: capGapDeadline(o.deadlineMs),
     tag: "gap",
   });
   if (!json || !Array.isArray(json.elements)) return { ok: false, elements: [] };
@@ -135,7 +140,7 @@ async function fetchStreetMapsWork(bbox, opts) {
   const ovtWork = stageClock.timeSpan("overture", () =>
     ovtFetch(bbox, { signal: null, deadlineMs: o.overtureDeadlineMs })
   );
-  const gapDeadline = o.deadlineMs > 0 ? o.deadlineMs : GAP_DEADLINE_MS;
+  const gapDeadline = capGapDeadline(o.deadlineMs);
   const gapWork = stageClock.timeSpan("overpass", () =>
     gapFetch(bbox, { ua: o.ua, signal: null, deadlineMs: gapDeadline })
   );
@@ -196,6 +201,7 @@ function resetForTests() {
 module.exports = {
   gapQuery,
   GAP_DEADLINE_MS,
+  capGapDeadline,
   fetchGapOverpass,
   fetchStreetMaps,
   dedupeElements,
