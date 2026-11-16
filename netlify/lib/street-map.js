@@ -15,6 +15,7 @@ const stageClock = require("./stage-clock");
 
 const streetCache = new Map();
 const STREET_CACHE_MS = 120000;
+const GAP_DEADLINE_MS = 25000;
 
 function gapQuery(bbox) {
   const box = [+bbox.south, +bbox.west, +bbox.north, +bbox.east].join(",");
@@ -87,7 +88,7 @@ async function fetchGapOverpass(bbox, opts) {
   const json = await overpass.requestJson(q, {
     signal: o.signal,
     ua: o.ua,
-    deadlineMs: o.deadlineMs > 0 ? o.deadlineMs : 90000,
+    deadlineMs: o.deadlineMs > 0 ? o.deadlineMs : GAP_DEADLINE_MS,
     tag: "gap",
   });
   if (!json || !Array.isArray(json.elements)) return { ok: false, elements: [] };
@@ -131,11 +132,11 @@ async function fetchStreetMapsWork(bbox, opts) {
   const gapFetch = o.fetchGapOverpass || fetchGapOverpass;
   const fullFetch = o.fetchOsmMaps || fetchOsmMaps;
 
-  const ovtWork = stageClock.timeSpan("overture-street", () =>
+  const ovtWork = stageClock.timeSpan("overture", () =>
     ovtFetch(bbox, { signal: null, deadlineMs: o.overtureDeadlineMs })
   );
-  const gapDeadline = o.deadlineMs > 0 ? o.deadlineMs : 90000;
-  const gapWork = stageClock.timeSpan("overpass-gap", () =>
+  const gapDeadline = o.deadlineMs > 0 ? o.deadlineMs : GAP_DEADLINE_MS;
+  const gapWork = stageClock.timeSpan("overpass", () =>
     gapFetch(bbox, { ua: o.ua, signal: null, deadlineMs: gapDeadline })
   );
 
@@ -162,7 +163,9 @@ async function fetchStreetMapsWork(bbox, opts) {
       overtureThemes: ovt.themes || {},
     };
   }
-  return fullFetch(bbox, o);
+  const full = await fullFetch(bbox, o);
+  const notes = [].concat(full.notes || [], ["Overture street-map read failed; used the full Overpass path."]);
+  return Object.assign({}, full, { notes, source: full.source || "overpass" });
 }
 
 async function fetchStreetMaps(bbox, opts) {
@@ -192,6 +195,7 @@ function resetForTests() {
 
 module.exports = {
   gapQuery,
+  GAP_DEADLINE_MS,
   fetchGapOverpass,
   fetchStreetMaps,
   dedupeElements,
