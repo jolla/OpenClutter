@@ -32,6 +32,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.39** (Nov 16, 2026): /dev only. The street map (roads, parking, water, woods, barriers, and lights) is read from Overture Maps transportation and base themes, the same free Azure GeoParquet path as buildings. A smaller Overpass query runs in parallel for features Overture does not cover well (camp areas and pitches, building parts, palms, moorings, area:highway, and a few others). If the Overture read fails, the existing full Overpass path is used. The gap Overpass wait is capped at 25 seconds, and the last-resort Overpass server is asked after the only regular server fails. Woods still come from the 1.3.38 Overpass forest query if the street-map read misses the forest budget. Precision over recall. The export worker needs a redeploy; it serves every host.
 - **1.3.38** (Nov 16, 2026): weekly production release, every host. New on production since v1.3.33:
   - True ground meters (1.3.11, 1.3.12): OpenIntent meters match the ground at every latitude. Detected RVs, trailers and boats are still read on the old plate and placed on the true-meter frame. trueMetres:false or ?trueMetres=0 turns it off.
   - Hamina project type (1.3.34): OpenIntent zips set hamina_properties.environment to "Outdoor (Trees / Foliage)" when the zip has canopy, or "Outdoor (Open)" when it does not. haminaEnvironment:false or ?haminaEnvironment=0 turns it off. Copy terrain is unchanged.
