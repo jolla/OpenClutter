@@ -57,7 +57,8 @@ const {
   finalizeVehicles,
   boatBoxes,
 } = require("./vehicle-track");
-const { fetchOsmMaps, ringKey, bboxSpanM, TILE_SPAN_M } = require("./osm-tiles");
+const { ringKey, bboxSpanM, TILE_SPAN_M } = require("./osm-tiles");
+const { fetchStreetMaps } = require("./street-map");
 const { intersectionAreaPx, ringsMinus } = require("./poly-clip");
 const { LIFT_LOCAL_M } = require("./terrain");
 const { outdoorMaterial, liftedOutdoorMaterial, measuredOiBuildingMaterial } = require("./materials");
@@ -2532,7 +2533,7 @@ async function fetchOutdoorClutter(bbox, want, opts) {
   const tile = !!(opts && opts.tile);
   const deckCap = opts && opts.deckCap > 0 ? opts.deckCap | 0 : 0;
   try {
-    const maps = await fetchOsmMaps(bbox, {
+    const maps = await fetchStreetMaps(bbox, {
       signal: ctrl.signal,
       ua,
       tile,

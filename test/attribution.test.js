@@ -59,7 +59,7 @@ describe("export credit", () => {
     assert.match(txt, /The vector data in this file .* is made available under the ODbL/);
     assert.match(txt, /\(c\) OpenStreetMap contributors/);
     assert.match(txt, /Microsoft Global ML Building Footprints, ODbL/);
-    assert.match(txt, /Overture Maps Foundation, buildings theme \(ODbL\)/);
+    assert.match(txt, /Overture Maps Foundation, buildings, transportation, and base themes \(ODbL\)/);
     assert.match(txt, /CHMv2.*\(c\) 2016 Vantor\. CC BY 4\.0/);
     assert.match(txt, /DINOv3 License/);
     assert.match(txt, /\(c\) ESA WorldCover project 2021 \/ Contains modified Copernicus Sentinel data \(2021\) processed by ESA WorldCover consortium/);

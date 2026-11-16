@@ -10,6 +10,7 @@
 
 const polygonClipping = require("polygon-clipping");
 const overpass = require("./overpass");
+const { fetchStreetMaps } = require("./street-map");
 const { isResilient } = require("./export-mode");
 
 const OVERPASS_URLS = [
@@ -348,6 +349,20 @@ async function fetchSlopeForest(bbox, opts) {
   const ua = (opts && opts.ua) || "openclutter";
   const q = queryFor(bbox);
   try {
+    if (!(opts && opts.fetchImpl) && !(opts && opts.overture === false)) {
+      try {
+        const maps = await fetchStreetMaps(bbox, {
+          signal: ctrl.signal,
+          ua,
+          tile: !!(opts && opts.tile),
+        });
+        if (maps && maps.source === "overture" && Array.isArray(maps.elements)) {
+          return forestFromElements({ elements: maps.elements }, bbox);
+        }
+      } catch (e) {
+        if (ctrl.signal.aborted) return { ok: false, wood: [], pistes: [], notes: [] };
+      }
+    }
     let last = null;
     if (isResilient()) {
       const json = await overpass.requestJson(q, { signal: ctrl.signal, ua, deadlineMs: Math.max(1000, timeoutMs - 500) });

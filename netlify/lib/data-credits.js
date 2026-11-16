@@ -33,9 +33,9 @@ const SOURCES = [
   {
     id: "overture",
     name: "Overture Maps Foundation buildings",
-    role: "building footprints and heights",
+    role: "building footprints and heights, streets, water, woods, barriers, and parking",
     credit:
-      "Overture Maps Foundation, buildings theme (ODbL), which includes (c) OpenStreetMap contributors, " +
+      "Overture Maps Foundation, buildings, transportation, and base themes (ODbL), which includes (c) OpenStreetMap contributors, " +
       "Microsoft (ODbL), Esri Community Maps contributors (CC BY 4.0), and Google Open Buildings (CC BY 4.0); " +
       "see https://docs.overturemaps.org/attribution/",
     license: "ODbL 1.0",

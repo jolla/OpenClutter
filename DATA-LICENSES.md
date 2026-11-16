@@ -14,7 +14,7 @@ Contains information from OpenStreetMap (c) OpenStreetMap contributors, Microsof
 |---|---|---|---|
 | OpenStreetMap (via Overpass, Photon, Nominatim) | building parts, poles, lamps, water, parking, walls, rail, map notes, place search | (c) OpenStreetMap contributors | ODbL 1.0 |
 | Microsoft Global ML Building Footprints | building footprints and heights | Microsoft Global ML Building Footprints, ODbL | ODbL 1.0 |
-| Overture Maps Foundation buildings | building footprints and heights | Overture Maps Foundation; includes OpenStreetMap, Microsoft, Esri Community Maps contributors (CC BY 4.0), Google Open Buildings (CC BY 4.0). See https://docs.overturemaps.org/attribution/ | ODbL 1.0 |
+| Overture Maps Foundation buildings, transportation, and base | building footprints and heights, streets, water, woods, barriers, and parking | Overture Maps Foundation; includes OpenStreetMap, Microsoft, Esri Community Maps contributors (CC BY 4.0), Google Open Buildings (CC BY 4.0). See https://docs.overturemaps.org/attribution/ | ODbL 1.0 |
 | FEMA USA Structures | US building footprints | Courtesy of FEMA | Public domain |
 | Meta / WRI CHMv2 canopy height | canopy outlines and heights | Meta and World Resources Institute (WRI) - 2026. Version 2 High Resolution Canopy Height Maps (CHMv2). Source imagery for CHM (c) 2016 Vantor | CC BY 4.0 (AWS Open Data Registry). The CHMv2 paper also names the DINOv3 License; that conflict is unresolved |
 | ESA WorldCover 2021 | tree cover gap fill | (c) ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium | CC BY 4.0 |

@@ -16,7 +16,8 @@
 
 const polygonClipping = require("polygon-clipping");
 const { guidewaysFromElements, guidewaysFromParsedWays, bridgesFromElements, bridgesFromParsedWays } = require("./outdoor-clutter");
-const { fetchOsmMaps, ringKey, bboxSpanM, TILE_SPAN_M } = require("./osm-tiles");
+const { ringKey, bboxSpanM, TILE_SPAN_M } = require("./osm-tiles");
+const { fetchStreetMaps } = require("./street-map");
 const overpass = require("./overpass");
 const { isResilient, isSiteTypes } = require("./export-mode");
 const { placesFromElements } = require("./map-notes");
@@ -643,7 +644,7 @@ async function fetchBuildingDetail(bbox, opts) {
   try {
     if (!ctrl.signal.aborted) {
       try {
-        const maps = await fetchOsmMaps(bbox, {
+        const maps = await fetchStreetMaps(bbox, {
           signal: ctrl.signal,
           ua,
           tile,
