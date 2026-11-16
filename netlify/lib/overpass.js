@@ -543,15 +543,24 @@ function regularFails(failed) {
   return n;
 }
 
+function regularCount() {
+  let n = 0;
+  for (const ep of endpoints()) if (!ep.lastResort) n++;
+  return n;
+}
+
 function nextEndpoint(skip, failed) {
   const list = endpoints();
   const now = nowFn();
   const open = (ep) => !(skip && skip.has(ep.id)) && !(failed && failed.has(ep.id)) && endpointState(ep).pausedUntil <= now;
   // A regular server not asked yet in this read and free now comes first.
   for (const ep of list) if (!ep.lastResort && open(ep)) return { ep, waitMs: 0 };
-  // Two regular servers failed this read: the last resort before waiting
-  // on a server that already failed.
-  if (regularFails(failed) >= 2) {
+  // After two regular servers fail (or the only regular, when the list has
+  // just one), use the last resort before waiting on a server that already
+  // failed. A 25 s gap budget never reaches a last resort if the client
+  // keeps retrying a single regular server.
+  const lastResortAfter = Math.min(2, Math.max(1, regularCount()));
+  if (regularFails(failed) >= lastResortAfter) {
     for (const ep of list) if (ep.lastResort && open(ep)) return { ep, waitMs: 0 };
   }
   let best = null;

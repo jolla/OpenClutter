@@ -158,6 +158,26 @@ describe("overpass client", () => {
     assert.deepEqual(hosts, ["overpass-api.de", "overpass.private.coffee", "maps.mail.ru", "overpass.openstreetmap.fr"]);
   });
 
+  it("moves to the last resort once the only regular server fails in one read", async () => {
+    const prev = process.env.OPENCLUTTER_OVERPASS_ENDPOINTS;
+    process.env.OPENCLUTTER_OVERPASS_ENDPOINTS = "overpass-api.de,openstreetmap.fr";
+    try {
+      setup((url) => {
+        const h = hostOf(url);
+        if (h === "overpass-api.de") return res(502, "busy");
+        if (h === "overpass.openstreetmap.fr") return res(200, JSON_OK);
+        return res(504, "busy");
+      });
+      const got = await overpass.request({ kind: "interpreter", query: "q-one-regular", deadlineMs: 5000 });
+      assert.equal(got.ok, true);
+      const hosts = calls.map((c) => hostOf(c.url));
+      assert.deepEqual(hosts, ["overpass-api.de", "overpass.openstreetmap.fr"]);
+    } finally {
+      if (prev == null) delete process.env.OPENCLUTTER_OVERPASS_ENDPOINTS;
+      else process.env.OPENCLUTTER_OVERPASS_ENDPOINTS = prev;
+    }
+  });
+
   it("asks one server at a time and moves on when one hangs", async () => {
     let active = 0;
     let peak = 0;
