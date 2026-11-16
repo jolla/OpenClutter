@@ -4,6 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   RELEASE,
+  STREET_DEADLINE_MS,
   groupsForThemeBbox,
   tagsFromInfrastructure,
   tagsFromWater,
@@ -15,6 +16,7 @@ const {
   asGeometry,
   wkbToGeom,
   bboxHitsCoords,
+  ringHitsBbox,
   elementsFromRows,
   elementsFromGeometry,
 } = require("../netlify/lib/overture-street");
@@ -23,6 +25,10 @@ const KOA = { west: -112.15926, south: 35.32465, east: -112.15474, north: 35.329
 const WAL = { west: -90.5276, south: 41.5786, east: -90.523, north: 41.5823 };
 
 describe("Overture street index", () => {
+  it("gives the Azure read 30 seconds before falling back to Overpass", () => {
+    assert.equal(STREET_DEADLINE_MS, 30000);
+  });
+
   it("pins the same release as buildings and finds KOA and Walmart row groups", () => {
     assert.equal(RELEASE, "2026-10-21.0");
     const roadKoa = groupsForThemeBbox("segment", KOA);
@@ -186,5 +192,21 @@ describe("Overture street geometry", () => {
     );
     assert.equal(els.length, 1);
     assert.equal(els[0].tags.amenity, "parking");
+  });
+
+  it("keeps a wood that only covers the south-west corner of the draw", () => {
+    const poly = {
+      type: "Polygon",
+      coordinates: [[
+        [-112.1595, 35.3244],
+        [-112.1590, 35.3244],
+        [-112.1590, 35.3248],
+        [-112.1595, 35.3248],
+        [-112.1595, 35.3244],
+      ]],
+    };
+    const els = elementsFromGeometry("wood-sw", { natural: "wood" }, poly, KOA);
+    assert.equal(els.length, 1);
+    assert.equal(true, ringHitsBbox(poly.coordinates[0], KOA));
   });
 });

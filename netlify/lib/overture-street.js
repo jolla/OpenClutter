@@ -15,7 +15,7 @@ const { RELEASE } = require("./overture");
 
 const AZURE_ROOT = "https://overturemapswestus2.blob.core.windows.net/release/" + RELEASE + "/";
 const GROUP_STRIDE = 26;
-const STREET_DEADLINE_MS = 15000;
+const STREET_DEADLINE_MS = 30000;
 const THEME_CONCURRENCY = 5;
 const GROUP_READ_CONCURRENCY = 4;
 
@@ -509,6 +509,27 @@ function pointInRing(pt, ring) {
   return inside;
 }
 
+function ringHitsBbox(ring, bbox) {
+  if (!bbox) return true;
+  if (bboxHitsCoords(ring, bbox)) return true;
+  if (!ring || ring.length < 4) return false;
+  const w = +bbox.west;
+  const s = +bbox.south;
+  const e = +bbox.east;
+  const n = +bbox.north;
+  const pts = [
+    [w, s],
+    [w, n],
+    [e, s],
+    [e, n],
+    [(w + e) / 2, (s + n) / 2],
+  ];
+  for (let i = 0; i < pts.length; i++) {
+    if (pointInRing(pts[i], ring)) return true;
+  }
+  return false;
+}
+
 function rowInBbox(row, bbox) {
   const b = row && row.bbox;
   if (!bbox || !b) return true;
@@ -544,10 +565,7 @@ function elementsFromGeometry(idBase, tags, geom, bbox) {
   function emitPolygon(rings, suffix) {
     if (!rings || !rings[0] || rings[0].length < 4) return;
     const outer = closeRing(rings[0]);
-    if (bbox && !bboxHitsCoords(outer, bbox) && !bboxHitsCoords(closeRing(rings[0]), bbox)) {
-      // Covered box: all vertices outside but the ring contains the draw.
-      if (!pointInRing([(+bbox.west + +bbox.east) / 2, (+bbox.south + +bbox.north) / 2], outer)) return;
-    }
+    if (bbox && !ringHitsBbox(outer, bbox)) return;
     if (rings.length === 1) {
       emitWay(outer, suffix);
       return;
@@ -731,6 +749,7 @@ module.exports = {
   asGeometry,
   wkbToGeom,
   bboxHitsCoords,
+  ringHitsBbox,
   elementsFromGeometry,
   elementsFromRows,
   fetchOvertureStreet,

@@ -2,11 +2,15 @@
 
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
-const { gapQuery, fetchStreetMaps, resetForTests } = require("../netlify/lib/street-map");
+const { gapQuery, GAP_DEADLINE_MS, fetchStreetMaps, resetForTests } = require("../netlify/lib/street-map");
 
 const BOX = { west: -90.5276, south: 41.5786, east: -90.523, north: 41.5823 };
 
 describe("street-map gap query", () => {
+  it("caps the gap Overpass wait at 25 seconds so it does not gate a successful Overture read", () => {
+    assert.equal(GAP_DEADLINE_MS, 25000);
+  });
+
   it("asks for camp, building parts, palms, moorings, and area:highway, not for ordinary roads or fences", () => {
     const q = gapQuery(BOX);
     assert.match(q, /building:part/);
@@ -67,6 +71,7 @@ describe("street-map coordinator", () => {
     assert.equal(full, 1);
     assert.equal(got.xmls[0], "<osm></osm>");
     assert.notEqual(got.source, "overture");
+    assert.match((got.notes || []).join(" "), /Overture street-map read failed/);
   });
 
   it("reuses one in-flight read for a second caller of the same box", async () => {
