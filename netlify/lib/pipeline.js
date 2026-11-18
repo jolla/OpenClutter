@@ -3399,14 +3399,54 @@ function buildOpenIntent(frame, name, imgName, areas, materials) {
  * A chunk is one building, one tree (crown, layers, and stem), or one
  * outdoor area. The next chunk is omitted whole when it would pass the budget.
  */
-function overJsonBudget(frame, name, imgName, chunks, budget) {
+function overJsonBudget(frame, name, imgName, chunks, budget, sizer) {
   const limit = budget > 0 ? budget : OPENINTENT_JSON_BUDGET;
   const flat = [];
   for (let i = 0; i < chunks.length; i++) {
     const a = chunks[i] && chunks[i].areas;
     if (a) for (let j = 0; j < a.length; j++) flat.push(a[j]);
   }
-  return Buffer.byteLength(JSON.stringify(buildOpenIntent(frame, name, imgName, flat))) > limit;
+  const oi = buildOpenIntent(frame, name, imgName, flat);
+  return (sizer ? sizer(oi) : Buffer.byteLength(JSON.stringify(oi))) > limit;
+}
+
+/**
+ * Exact UTF-8 byte length of JSON.stringify(oi) without stringifying every
+ * area on every call. The document is stringified with an empty area list,
+ * then each area's bytes are added once ("[" + areas joined by "," + "]").
+ * An area's bytes are kept until its outline or material object is
+ * replaced (thinTreeOutlines replaces area.area), so the budget checks and
+ * the trim search pay for each area about once instead of per probe.
+ */
+function makeOpenIntentSizer() {
+  const cache = new WeakMap();
+  function areaBytes(a) {
+    if (a === null || typeof a !== "object") {
+      const s = JSON.stringify(a);
+      return s === undefined ? 4 : Buffer.byteLength(s);
+    }
+    const hit = cache.get(a);
+    if (hit && hit.area === a.area && hit.mat === a.area_material) return hit.bytes;
+    const s = JSON.stringify(a);
+    const bytes = s === undefined ? 4 : Buffer.byteLength(s);
+    cache.set(a, { area: a.area, mat: a.area_material, bytes });
+    return bytes;
+  }
+  return function sizeOf(oi) {
+    const fp = oi && oi.floorplans && oi.floorplans[0];
+    const list = fp && Array.isArray(fp.attenuation_areas) ? fp.attenuation_areas : null;
+    if (!list) return Buffer.byteLength(JSON.stringify(oi));
+    fp.attenuation_areas = [];
+    let bytes;
+    try {
+      bytes = Buffer.byteLength(JSON.stringify(oi));
+    } finally {
+      fp.attenuation_areas = list;
+    }
+    for (let i = 0; i < list.length; i++) bytes += areaBytes(list[i]);
+    if (list.length > 1) bytes += list.length - 1;
+    return bytes;
+  };
 }
 
 /** Plan area of an OpenIntent area ring, in its own units. */
@@ -3509,7 +3549,7 @@ const STALE_LEAF_ON_GREEN = 0.5;
 const STALE_MAX_GREEN = 0.05;
 const STALE_OPEN_SHARE = 0.85;
 
-function fitChunksToJsonBudget(frame, name, imgName, chunks, budget) {
+function fitChunksToJsonBudget(frame, name, imgName, chunks, budget, sizer) {
   const limit = budget > 0 ? budget : OPENINTENT_JSON_BUDGET;
   const src = [];
   for (let i = 0; i < (chunks || []).length; i++) {
@@ -3523,22 +3563,38 @@ function fitChunksToJsonBudget(frame, name, imgName, chunks, budget) {
     for (let j = 0; j < areas.length; j++) flat.push(areas[j]);
     ends.push(flat.length);
   }
-  const sizeAt = (n) => Buffer.byteLength(JSON.stringify(buildOpenIntent(frame, name, imgName, flat.slice(0, n))));
+  const exactAt = (n) => Buffer.byteLength(JSON.stringify(buildOpenIntent(frame, name, imgName, flat.slice(0, n))));
+  const sizeAt = sizer ? (n) => sizer(buildOpenIntent(frame, name, imgName, flat.slice(0, n))) : exactAt;
   if (!ends.length) {
-    return { areas: [], chunks: [], bytes: sizeAt(0), trimmed: false };
+    return { areas: [], chunks: [], bytes: exactAt(0), trimmed: false };
   }
-  let lo = 0;
-  let hi = ends.length;
-  while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2);
-    if (sizeAt(ends[mid - 1]) <= limit) lo = mid;
-    else hi = mid - 1;
+  const search = (size) => {
+    let lo = 0;
+    let hi = ends.length;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (size(ends[mid - 1]) <= limit) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  };
+  let lo = search(sizeAt);
+  let n = lo === 0 ? 0 : ends[lo - 1];
+  let bytes = exactAt(n);
+  if (sizer) {
+    // Check the cut with the full stringify: the kept prefix fits and the
+    // next chunk would not. Any miss reruns the old exact search.
+    const nextOver = lo >= ends.length || exactAt(ends[lo]) > limit;
+    if (!((bytes <= limit || lo === 0) && nextOver)) {
+      lo = search(exactAt);
+      n = lo === 0 ? 0 : ends[lo - 1];
+      bytes = exactAt(n);
+    }
   }
-  const n = lo === 0 ? 0 : ends[lo - 1];
   return {
     areas: flat.slice(0, n),
     chunks: src.slice(0, lo),
-    bytes: sizeAt(n),
+    bytes,
     trimmed: lo < src.length,
   };
 }
@@ -4150,26 +4206,28 @@ function buildClutter({
   // When the scene will not fit the byte budget, the trim drops the tail.
   // The trees are then ranked by the canopy each one covers per byte, so a
   // crowd of small stemmed trees cannot push large stands out of the scene.
-  if (treePieces.length > 1 && overJsonBudget(frame, name, imgName, chunks.concat(treePieces, latePieces), jsonByteBudget)) {
+  const jsonSizer = makeOpenIntentSizer();
+  const stageClock = require("./stage-clock");
+  if (treePieces.length > 1 && stageClock.timeSpanSync("sub:jsonBudgetCheck", () => overJsonBudget(frame, name, imgName, chunks.concat(treePieces, latePieces), jsonByteBudget, jsonSizer))) {
     // First thin the crown outlines a little at a time, so the trim drops
     // fewer trees. Stems keep their shape.
     if (require("./export-mode").isSiteTypes()) {
       const mpu = frame.mpuX || frame.mpu || frame.widthM / frame.imgW;
       for (let s = 0; s < TREE_THIN_STEPS_M.length; s++) {
-        treeThinned = thinTreeOutlines(treePieces, TREE_THIN_STEPS_M[s] / mpu);
+        treeThinned = stageClock.timeSpanSync("sub:treeThin", () => thinTreeOutlines(treePieces, TREE_THIN_STEPS_M[s] / mpu));
         treeThinStep = TREE_THIN_STEPS_M[s];
-        if (!overJsonBudget(frame, name, imgName, chunks.concat(treePieces, latePieces), jsonByteBudget)) break;
+        if (!stageClock.timeSpanSync("sub:jsonBudgetCheck", () => overJsonBudget(frame, name, imgName, chunks.concat(treePieces, latePieces), jsonByteBudget, jsonSizer))) break;
       }
       if (treeThinned && Array.isArray(warnings)) {
         warnings.push("Simplified tree outlines to within " + treeThinStep + " m to fit more of the canopy in the OpenIntent byte budget.");
       }
     }
-    rankPiecesByCover(treePieces);
+    stageClock.timeSpanSync("sub:treeRank", () => rankPiecesByCover(treePieces));
   }
   for (let i = 0; i < treePieces.length; i++) chunks.push(treePieces[i]);
   for (let i = 0; i < latePieces.length; i++) chunks.push(latePieces[i]);
   const fitted = require("./stage-clock").timeSpanSync("jsonBuild", () =>
-    fitChunksToJsonBudget(frame, name, imgName, chunks, jsonByteBudget)
+    fitChunksToJsonBudget(frame, name, imgName, chunks, jsonByteBudget, jsonSizer)
   );
   areas = fitted.areas;
   let buildingEmitted = 0;
@@ -4506,6 +4564,9 @@ module.exports = {
   expandOiCoordTriples,
   emitPixelVertex,
   fitChunksToJsonBudget,
+  overJsonBudget,
+  buildOpenIntent,
+  makeOpenIntentSizer,
   thinTreeOutlines,
   treesToOi,
   outdoorToOi,
