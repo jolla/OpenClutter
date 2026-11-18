@@ -1,6 +1,6 @@
 "use strict";
 
-// 1.3.40: the byte-budget checks add cached per-area bytes to one stringify
+// 1.3.41: the byte-budget checks add cached per-area bytes to one stringify
 // of the document shell. The sum must equal the full stringify, and the trim
 // must keep the same chunks as the old full-stringify search.
 const { describe, it, afterEach } = require("node:test");

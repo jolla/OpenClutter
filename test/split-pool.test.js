@@ -1,6 +1,6 @@
 "use strict";
 
-// 1.3.40: slope splits run in one persistent thread per Node thread. The
+// 1.3.41: slope splits run in one persistent thread per Node thread. The
 // pieces must match the in-process 1.3.26 split and the old child process,
 // and a hung stand must still be cut off at the budget.
 process.env.OPENCLUTTER_SPLIT_THREAD_TEST = "1";

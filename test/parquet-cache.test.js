@@ -1,6 +1,6 @@
 "use strict";
 
-// 1.3.42: Overture range reads, file lengths and footers are kept per process.
+// 1.3.41: Overture range reads, file lengths and footers are kept per process.
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const pc = require("../netlify/lib/parquet-cache");

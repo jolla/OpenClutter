@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Process-level cache for Overture GeoParquet range reads (1.3.42).
+ * Process-level cache for Overture GeoParquet range reads (1.3.41).
  *
  * Overture release files are immutable, so a byte range read once is the
  * same bytes for every later export on this machine. Kept here:
