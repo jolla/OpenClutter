@@ -83,14 +83,16 @@ const DEFAULT_AREA_CAP = AREA_CAP_MAX;
 const OPENINTENT_JSON_BUDGET = 4900000;
 const JSON_BUDGET_MAX = 5242880;
 /**
- * /dev budget from 1.2.29 (export-mode bigBudget). Hamina test-eu, Oct 24
- * 2026, with a 3,865,174-byte map image in every file: JSON 5,999,442
- * imported, 6,248,068 was refused at once as too large. The cap is either
- * about 6,000,000 bytes of JSON or about 10 MB of JSON plus image, so /dev
- * keeps under both: 5.8 MB of JSON and 9.7 MB of JSON plus map image.
+ * Production host budget (export-mode bigBudget). 1.2.29 set 5.8 MB of JSON
+ * and 9.7 MB of JSON plus map image after an Oct 24 test-eu import. Hamina
+ * has since raised its import limits. A test-eu bisect on Nov 17, 2026
+ * imported 16 MB of JSON, and 17.5 MB imported but rendered a blank map,
+ * so the real limit is between 17.5 and 19 MB. 1.3.40 raises the total to
+ * 14 MB and scales the JSON part in proportion (5.8 / 9.7 of 14 MB), so
+ * the JSON stays well under 14 MB even with no image.
  */
-const DEV_JSON_BUDGET = 5800000;
-const DEV_TOTAL_BUDGET = 9700000;
+const DEV_TOTAL_BUDGET = 14000000;
+const DEV_JSON_BUDGET = 8370000;
 /** Lowest JSON budget the image rule can leave; a bigger image is the user's map choice. */
 const DEV_JSON_FLOOR = 1000000;
 /**
@@ -118,9 +120,9 @@ const WALL_SEGMENT_SOFT_MAX = 19000;
 
 /**
  * JSON byte budget for one export. Production (bigBudget off) is the 1.2.17
- * rule: the dev override or 4.9 MB, image not counted. On /dev the JSON
- * budget is 5.8 MB (or the override), and JSON plus map image stays at or
- * under 9.7 MB.
+ * rule: the dev override or 4.9 MB, image not counted. On a bigBudget host
+ * the JSON budget is DEV_JSON_BUDGET (or the override), and JSON plus map
+ * image stays at or under DEV_TOTAL_BUDGET.
  */
 function effectiveJsonBudget(override, imageBytes) {
   const base = override > 0 ? override | 0 : 0;

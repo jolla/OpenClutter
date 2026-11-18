@@ -1599,11 +1599,11 @@ async function handleClutterNorthUp(event) {
   // From 1.2.26 worst-case pads learn the pad pattern from the whole park
   // when a mapped park runs past the draw. parkContext:false turns it off.
   exportMode.setParkContext(exportMode.parkContextWanted(testHost, body));
-  // From 1.2.29 the raised Hamina budget: 5.8 MB of JSON and 9.7 MB of JSON
-  // plus map image (production used 4.9 MB of JSON before 1.2.41).
+  // Hamina budget: DEV_JSON_BUDGET of JSON and DEV_TOTAL_BUDGET of JSON plus
+  // map image (8.37 / 14 MB from 1.3.40, 5.8 / 9.7 MB from 1.2.29).
   exportMode.setBigBudget(true);
   // Raised Hamina caps (Nov 2026): DEV_HOST_JSON_BUDGET of JSON and a 4.9 MB paste
-  // ceiling, /dev hosts only. Production stays on the 5.8 / 9.7 MB budget.
+  // ceiling, /dev hosts only. Production stays on DEV_JSON_BUDGET / DEV_TOTAL_BUDGET.
   exportMode.setDevImportCaps(testHost);
   // Production release 1.3.38: hamina_properties.environment (1.3.34) sets
   // the Hamina project type on OpenIntent import, on every host.
@@ -3164,8 +3164,8 @@ async function handleClutterNorthUp(event) {
   // The image does not count toward Hamina's JSON limit. Compress it only
   // when the zip itself cannot fit in Netlify's function response.
   if (background && built.zip && !exportJobs.zipDownloadFits(built.zip.length) && imgBuf) {
-    // On /dev (1.2.29) a smaller image frees JSON room under the 9.7 MB
-    // total, so the rebuilt JSON can grow; keep 200 KB spare for it.
+    // On /dev (1.2.29) a smaller image frees JSON room under the
+    // DEV_TOTAL_BUDGET total, so the rebuilt JSON can grow; keep 200 KB spare for it.
     const room =
       exportJobs.ZIP_DOWNLOAD_MAX - (built.zip.length - imgBuf.length) - (exportMode.isBigBudget() ? 200000 : 0);
     const smaller = compressJpegToMax(imgBuf, Math.max(180000, room));

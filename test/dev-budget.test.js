@@ -56,19 +56,22 @@ describe("1.2.29 /dev Hamina budget", () => {
     assert.equal(effectiveJsonBudget(5000000, 9000000), 5000000);
   });
 
-  it("gives /dev 5.8 MB of JSON and at most 9.7 MB of JSON plus map image", () => {
+  it("gives bigBudget hosts 8.37 MB of JSON and at most 14 MB of JSON plus map image (1.3.40)", () => {
     exportMode.setBigBudget(true);
-    assert.equal(DEV_JSON_BUDGET, 5800000);
-    assert.equal(DEV_TOTAL_BUDGET, 9700000);
-    assert.equal(effectiveJsonBudget(0, 0), 5800000);
-    assert.equal(effectiveJsonBudget(0, 3865174), 5800000);
-    assert.equal(effectiveJsonBudget(0, 3900000), 5800000);
-    assert.equal(effectiveJsonBudget(0, 4500000), 5200000);
-    assert.equal(effectiveJsonBudget(0, 9000000), DEV_JSON_FLOOR);
+    assert.equal(DEV_JSON_BUDGET, 8370000);
+    assert.equal(DEV_TOTAL_BUDGET, 14000000);
+    // The JSON part is the old 5.8 / 9.7 share of the new total.
+    assert.ok(Math.abs(DEV_JSON_BUDGET - (14000000 * 5.8) / 9.7) < 2000);
+    assert.equal(effectiveJsonBudget(0, 0), 8370000);
+    assert.equal(effectiveJsonBudget(0, 3865174), 8370000);
+    assert.equal(effectiveJsonBudget(0, 4196284), 8370000);
+    assert.equal(effectiveJsonBudget(0, 6000000), 8000000);
+    assert.equal(effectiveJsonBudget(0, 13500000), DEV_JSON_FLOOR);
     assert.equal(effectiveJsonBudget(5000000, 3000000), 5000000);
-    for (const img of [0, 1e6, 3865174, 4e6, 5e6, 8e6]) {
+    for (const img of [0, 1e6, 3865174, 4e6, 5e6, 8e6, 12e6]) {
       const b = effectiveJsonBudget(0, img);
       assert.ok(b <= DEV_JSON_BUDGET && (b + img <= DEV_TOTAL_BUDGET || b === DEV_JSON_FLOOR), String(img));
+      assert.ok(b <= 14000000);
     }
   });
 
@@ -82,14 +85,14 @@ describe("1.2.29 /dev Hamina budget", () => {
 
   it("/dev scene stats use the image-aware budget", () => {
     exportMode.setBigBudget(true);
-    const dev = scene(Buffer.alloc(4500000));
-    assert.equal(dev.stats.jsonBudget, 5200000);
-    assert.equal(dev.stats.totalBudget, 9700000);
-    assert.equal(dev.stats.imageBytes, 4500000);
-    assert.match(dev.stats.summary, /Byte budget 5\.20 MB of JSON \(9\.70 MB with the map image\)\./);
+    const dev = scene(Buffer.alloc(6000000));
+    assert.equal(dev.stats.jsonBudget, 8000000);
+    assert.equal(dev.stats.totalBudget, 14000000);
+    assert.equal(dev.stats.imageBytes, 6000000);
+    assert.match(dev.stats.summary, /Byte budget 8\.00 MB of JSON \(14\.00 MB with the map image\)\./);
     assert.equal(/\u2014/.test(dev.stats.summary), false);
     const small = scene(Buffer.alloc(2000000));
-    assert.equal(small.stats.jsonBudget, 5800000);
+    assert.equal(small.stats.jsonBudget, 8370000);
   });
 
   it("the trim still drops the tail when /dev is over the budget", () => {
@@ -107,9 +110,9 @@ describe("1.2.29 /dev Hamina budget", () => {
     });
     assert.match(line, /Stopped at the 5\.20 MB byte budget\. The 4\.50 MB map image counts toward the 9\.70 MB Hamina total\./);
     const full = coverageSummary({
-      buildings: 1, openIntentJsonBytes: 5790000, jsonBudget: 5800000, stoppedBy: "bytes", totalBudget: 9700000, imageBytes: 3000000,
+      buildings: 1, openIntentJsonBytes: 8360000, jsonBudget: 8370000, stoppedBy: "bytes", totalBudget: 14000000, imageBytes: 3000000,
     });
-    assert.match(full, /Stopped at the 5\.80 MB byte budget\.$/);
+    assert.match(full, /Stopped at the 8\.37 MB byte budget\.$/);
     const ui = exportSummaryLines(
       { stats: { buildings: 1, openIntentJsonBytes: 5190000, jsonBudget: 5200000, stoppedBy: "bytes", totalBudget: 9700000, imageBytes: 4500000 } },
       { foliageOn: false, terrainOn: false }
@@ -145,10 +148,11 @@ describe("1.2.29 /dev Hamina budget", () => {
     assert.equal(/\u2014/.test(dev.stats.summary), false);
   });
 
-  it("production and a non-dev bigBudget host keep the 5.8 / 9.7 MB budget", () => {
+  it("production and a non-dev bigBudget host use the 8.37 / 14 MB budget", () => {
     exportMode.setBigBudget(true);
     exportMode.setDevImportCaps(false);
-    assert.equal(effectiveJsonBudget(0, 4500000), 5200000);
+    assert.equal(effectiveJsonBudget(0, 4500000), 8370000);
+    assert.equal(effectiveJsonBudget(0, 7000000), 7000000);
     assert.equal(effectiveAreaCap(0), 8000);
     assert.equal(effectiveAreaCap(12000), 12000);
   });

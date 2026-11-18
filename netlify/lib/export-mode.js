@@ -67,8 +67,8 @@ function parkContextWanted(testHost, body) {
   return !(body && body.parkContext === false);
 }
 
-// Hamina import budget (1.2.29): 5.8 MB of OpenIntent JSON and at most
-// 9.7 MB of JSON plus map image. On for every host since 1.2.41 (before
+// Hamina import budget (1.2.29, raised in 1.3.40): DEV_JSON_BUDGET of
+// OpenIntent JSON and at most DEV_TOTAL_BUDGET of JSON plus map image. On for every host since 1.2.41 (before
 // that production kept the 4.9 MB JSON-only budget).
 let bigBudget = false;
 
@@ -84,7 +84,7 @@ function isBigBudget() {
 // reach 50 MiB, and the compressed blob must also stay at or under 50 MiB.
 // Remaining inline metadata stays under about 4.94 MiB. /dev hosts (testHost)
 // may use the raised JSON budget and the larger paste room. Production keeps
-// the 5.8 MB JSON / 9.7 MB JSON-plus-image budget from 1.2.29. Off by default.
+// the DEV_JSON_BUDGET / DEV_TOTAL_BUDGET budget in pipeline.js. Off by default.
 let devImportCaps = false;
 
 function setDevImportCaps(on) {
