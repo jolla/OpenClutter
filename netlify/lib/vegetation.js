@@ -19,6 +19,7 @@ const { crownsForExport, tracePixels } = require("./canopy-height");
 const { BUILDING_BUFFER_M, createClipSet, clipFoliageRing, dissolveFoliageRings, pointInRing, intersectionAreaPx } = require("./poly-clip");
 const polygonClipping = require("polygon-clipping");
 const { spawnSync } = require("child_process");
+const splitPool = require("./split-pool");
 const path = require("path");
 const v8 = require("v8");
 const exportMode = require("./export-mode");
@@ -2206,6 +2207,27 @@ function mergeSliversGuarded(seats, frame) {
   if (!hasSliver) return seats;
   if (process.env.OPENCLUTTER_MERGE_INPROCESS === "1") return mergeSliversWork(seats, frame);
   const t0 = Date.now();
+  if (!splitPool.useChild()) {
+    const got = splitPool.mergeInThread(
+      seats,
+      { mpuX: frame && frame.mpuX, mpuY: frame && frame.mpuY },
+      MERGE_SLIVERS_BUDGET_MS
+    );
+    if (got.seats && got.seats.length) return got.seats;
+    try {
+      require("fs").writeSync(
+        2,
+        "warning slope-split merge-slivers " +
+          (got.timedOut ? "timeout" : "error") +
+          " wall=" +
+          (Date.now() - t0) +
+          " n=" +
+          seats.length +
+          " thread=1\n"
+      );
+    } catch (_) {}
+    return seats;
+  }
   const res = spawnSync(process.execPath, [MERGE_SLIVERS_WORKER], {
     input: v8.serialize({
       seats,

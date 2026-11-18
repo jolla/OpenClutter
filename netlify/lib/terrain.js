@@ -70,6 +70,7 @@ const polygonClipping = require("polygon-clipping");
 const { spawnSync } = require("child_process");
 const path = require("path");
 const v8 = require("v8");
+const splitPool = require("./split-pool");
 const { clipRingToBbox, bounds: ringBounds } = require("./poly-clip");
 const { emptyClipboard, stampGpsTiePoints } = require("./hamina-clipboard");
 const { fetchCopernicusDemSamples, GLO30_CREDIT } = require("./copernicus-dem");
@@ -4829,15 +4830,51 @@ function splitRingByFloor(terrain, ring, opts) {
     return pieces;
   }
   const t0 = Date.now();
+  // Past the soft tile budget the remaining stands take the box cut, so a
+  // stand that starts just before it may not run the tile past its budget.
+  const budgetMs = splitCellsAfter > 0 ? Math.min(SPLIT_STAND_BUDGET_MS, Math.max(2000, splitCellsAfter + SPLIT_SOFT_GRACE_MS - Date.now())) : SPLIT_STAND_BUDGET_MS;
+  if (!splitPool.useChild()) {
+    const got = splitPool.splitInThread(terrain, ring, opts, budgetMs, snapshotTerrainForSplit);
+    const wallT = Date.now() - t0;
+    if (got.pieces && got.pieces.length) {
+      logSplit(
+        "slope-split profile ms=" +
+          (got.ms != null ? got.ms : wallT) +
+          " wall=" +
+          wallT +
+          " area=" +
+          Math.round(hostArea) +
+          " keepPartial=" +
+          (keepPartial ? 1 : 0) +
+          " pieces=" +
+          got.pieces.length +
+          " thread=1"
+      );
+      return got.pieces;
+    }
+    splitTimeoutsThisExport += 1;
+    logSplit(
+      "warning slope-split " +
+        (got.timedOut ? "timeout" : "worker-error " + (got.error || "")) +
+        " wall=" +
+        wallT +
+        " area=" +
+        Math.round(hostArea) +
+        " keepPartial=" +
+        (keepPartial ? 1 : 0) +
+        " nTimeouts=" +
+        splitTimeoutsThisExport +
+        " thread=1"
+    );
+    return splitRingByFloorFallback(terrain, ring, opts);
+  }
   const res = spawnSync(process.execPath, [SPLIT_STAND_WORKER], {
     input: v8.serialize({
       terrain: snapshotTerrainForSplit(terrain),
       ring,
       opts: opts || {},
     }),
-    // Past the soft tile budget the remaining stands take the box cut, so a
-    // stand that starts just before it may not run the tile past its budget.
-    timeout: splitCellsAfter > 0 ? Math.min(SPLIT_STAND_BUDGET_MS, Math.max(2000, splitCellsAfter + SPLIT_SOFT_GRACE_MS - Date.now())) : SPLIT_STAND_BUDGET_MS,
+    timeout: budgetMs,
     maxBuffer: 32 * 1024 * 1024,
     cwd: path.join(__dirname, "..", ".."),
     env: Object.assign({}, process.env, { OPENCLUTTER_SPLIT_INPROCESS: "1" }),
