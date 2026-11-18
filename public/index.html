@@ -423,6 +423,10 @@
       font-weight: 500;
     }
     /* Feedback #18: the turn handle above a drawn box (on by default; ?rotate=0 hides it). */
+    .dp-control { background: #0e1116; color: #e6edf3; padding: 6px 8px; font: 12px/1.4 system-ui, sans-serif; }
+    .dp-control .dp-toggle { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+    .dp-control .dp-legend { margin-top: 4px; }
+    .dp-swatch { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 2px; vertical-align: -1px; }
     .rotate-handle { background: #0e1116; border: 2px solid #3fb950; border-radius: 50%; cursor: grab; box-sizing: border-box; }
     .corner-handle { background: #0e1116; border: 2px solid #3fb950; border-radius: 2px; cursor: grab; box-sizing: border-box; touch-action: none; }
     /* Clear sits just outside the box corner. 28px is the touch target; the 14px trash can is unchanged. */
@@ -725,6 +729,7 @@
   <script src="/box-resize.js"></script>
   <script src="/export-progress.js"></script>
   <script src="/export-client.js"></script>
+  <script src="/detection-preview.js"></script>
   <script src="/version.js"></script>
   <script src="/app.js"></script>
   <script src="/feedback.js"></script>

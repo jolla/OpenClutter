@@ -538,6 +538,30 @@ function turnedCorners(bounds, deg) {
   ];
 }
 
+/**
+ * Dev only, ?preview=1: after an export, draw what the zip holds on the map
+ * (buildings, trees, vehicles, walls, water) with a Detections checkbox.
+ */
+function showDetectionPreview(blob) {
+  const P = window.OpenClutterPreview;
+  if (!P || !P.previewWanted(location.search, devPage()) || !blob || !bbox) return;
+  const bounds = L.latLngBounds([bbox.south, bbox.west], [bbox.north, bbox.east]);
+  const corners = turnedCorners(bounds, boxRotate || 0);
+  P.showFromZip(L, map, blob, corners).catch((err) => {
+    if (window.console) console.warn("detection preview", err);
+  });
+}
+
+function hideDetectionPreview() {
+  const p = window.__ocPreview;
+  if (!p) return;
+  try {
+    p.control.remove();
+    map.removeLayer(p.layer);
+  } catch (err) {}
+  window.__ocPreview = null;
+}
+
 function placeRotateHandle(bounds) {
   const f = boxFrame(bounds);
   if (rotateOutline) rotateOutline.setLatLngs(turnedCorners(bounds, boxRotate));
@@ -1308,6 +1332,7 @@ function clearFinishedShape() {
   committedBounds = null;
   committedLabel = null;
   bbox = null;
+  hideDetectionPreview();
   sketchHidden = false;
   clearRubber();
   hideAreaChip();
@@ -3118,6 +3143,7 @@ document.getElementById("export").onclick = async () => {
       rememberExport(rec);
       const got = await downloadJobZip(queued.jobId, data.zipFilename);
       rememberExport(Object.assign(rec, { filename: got.name, bytes: got.blob.size, blob: got.blob }));
+      showDetectionPreview(got.blob);
       return;
     }
     const fallbackNote =
@@ -3140,6 +3166,7 @@ document.getElementById("export").onclick = async () => {
     const shortBlob = b64ToBlob(data.zipBase64, "application/zip");
     downloadBlob(shortBlob, data.zipFilename || "openintent.zip");
     rememberExport({ filename: data.zipFilename || "openintent.zip", bytes: shortBlob.size, blob: shortBlob, at: Date.now() });
+    showDetectionPreview(shortBlob);
     if (paste && paste.terrainClipboard) {
       const keptNotes = data.terrainClipboard && data.terrainClipboard.mapNotes;
       data.terrainClipboard = paste.terrainClipboard;
