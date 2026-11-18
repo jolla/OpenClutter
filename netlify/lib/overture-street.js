@@ -627,7 +627,10 @@ function loadReader() {
   return {
     asyncBufferFromUrl: hp.asyncBufferFromUrl,
     parquetReadObjects: hp.parquetReadObjects,
+    parquetMetadataAsync: hp.parquetMetadataAsync,
     compressors: comp.compressors,
+    // Real reads go through the process-level range and footer cache.
+    processCache: true,
   };
 }
 
@@ -669,11 +672,25 @@ async function readTheme(theme, bbox, reader, signal) {
   const rows = [];
   const filter = bboxRowFilter(bbox);
   const files = [...byFile.entries()];
+  const byFileRows = new Map();
   await poolMap(files, GROUP_READ_CONCURRENCY, async ([file, gs]) => {
     if (signal && signal.aborted) throw new Error("The operation was aborted due to timeout");
     const url = AZURE_ROOT + "theme=" + theme.theme + "/type=" + theme.type + "/" + file;
-    const source = await reader.asyncBufferFromUrl({ url, requestInit: { signal } });
-    for (const g of gs) {
+    const pc = reader.processCache ? require("./parquet-cache") : null;
+    const source = pc
+      ? await pc.cachedSource(reader, url, signal)
+      : await reader.asyncBufferFromUrl({ url, requestInit: { signal } });
+    // One footer per file, shared by its row groups (and later exports).
+    let metadata = null;
+    if (pc) {
+      try {
+        metadata = await pc.cachedMetadata(reader, url, source);
+      } catch (e) {
+        if (signal && signal.aborted || isAbortError(e)) throw e;
+        metadata = null;
+      }
+    }
+    const readGroup = async (g) => {
       if (signal && signal.aborted) throw new Error("The operation was aborted due to timeout");
       const base = {
         file: source,
@@ -682,16 +699,24 @@ async function readTheme(theme, bbox, reader, signal) {
         rowStart: g.rowStart,
         rowEnd: g.rowStart + g.rowCount,
       };
-      let got;
+      if (metadata) base.metadata = metadata;
       try {
-        got = await reader.parquetReadObjects({ ...base, filter, usePageIndex: true });
+        return await reader.parquetReadObjects({ ...base, filter, usePageIndex: true });
       } catch (e) {
         if (signal && signal.aborted || isAbortError(e)) throw e;
-        got = await reader.parquetReadObjects(base);
+        return reader.parquetReadObjects(base);
       }
-      for (let i = 0; i < (got || []).length; i++) rows.push(got[i]);
-    }
+    };
+    // Groups of one file in parallel once the footer is known; rows keep
+    // the file's group order.
+    const perGroup = metadata ? await poolMap(gs, GROUP_READ_CONCURRENCY, readGroup) : [];
+    if (!metadata) for (const g of gs) perGroup.push(await readGroup(g));
+    byFileRows.set(file, perGroup);
   });
+  for (const [file] of files) {
+    const perGroup = byFileRows.get(file) || [];
+    for (const got of perGroup) for (let i = 0; i < (got || []).length; i++) rows.push(got[i]);
+  }
   return rows;
 }
 

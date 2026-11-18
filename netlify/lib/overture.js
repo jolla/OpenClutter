@@ -286,11 +286,14 @@ function loadReader() {
   return {
     asyncBufferFromUrl: hp.asyncBufferFromUrl,
     parquetReadObjects: hp.parquetReadObjects,
+    parquetMetadataAsync: hp.parquetMetadataAsync,
     compressors: comp.compressors,
+    // Real reads go through the process-level range and footer cache.
+    processCache: true,
   };
 }
 
-async function readGroupRows(reader, source, group, filter, signal) {
+async function readGroupRows(reader, source, group, filter, signal, metadata) {
   const base = {
     file: source,
     compressors: reader.compressors,
@@ -298,6 +301,7 @@ async function readGroupRows(reader, source, group, filter, signal) {
     rowStart: group.rowStart,
     rowEnd: group.rowStart + group.rowCount,
   };
+  if (metadata) base.metadata = metadata;
   try {
     return await reader.parquetReadObjects({ ...base, filter, usePageIndex: true });
   } catch (e) {
@@ -341,13 +345,28 @@ async function fetchOvertureFootprintsWork(frame, opts) {
       }
       const url = AZURE_PREFIX + file;
       let source;
+      let metadata = null;
+      const pc = reader.processCache ? require("./parquet-cache") : null;
       try {
-        source = await reader.asyncBufferFromUrl({
-          url,
-          requestInit: { signal },
-        });
+        source = pc
+          ? await pc.cachedSource(reader, url, signal)
+          : await reader.asyncBufferFromUrl({
+              url,
+              requestInit: { signal },
+            });
       } catch (e) {
         throw releaseGoneError(e);
+      }
+      if (pc) {
+        try {
+          metadata = await pc.cachedMetadata(reader, url, source);
+        } catch (e) {
+          if (signal.aborted || isAbortError(e)) {
+            partial = true;
+            break;
+          }
+          metadata = null;
+        }
       }
       // Same-file row groups in parallel. A south-heavy Vegas box reads the
       // southern neighbor first; waiting for it to finish before the Sphere
@@ -359,7 +378,7 @@ async function fetchOvertureFootprintsWork(frame, opts) {
       const readOne = async (g) => {
         if (signal.aborted) return "abort";
         try {
-          const rows = await readGroupRows(reader, source, g, rowFilter, signal);
+          const rows = await readGroupRows(reader, source, g, rowFilter, signal, metadata);
           return featuresFromRows(rows, filterBox, large ? FOOTPRINT_KEEP : 0);
         } catch (e) {
           if (signal.aborted || isAbortError(e)) return "abort";
