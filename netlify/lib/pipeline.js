@@ -3693,6 +3693,7 @@ function buildClutter({
   foliagePack,
   outdoorPlan,
   aerialOpenShare,
+  clipOpenGround,
   aerialGreenShare,
   photoLeafyShare,
   steepLeafyShare,
@@ -4114,10 +4115,71 @@ function buildClutter({
     greens.sort((a, b) => a - b);
     const leafOn = greens.length >= STALE_MIN_CROWNS && greens[greens.length >> 1] >= STALE_LEAF_ON_GREEN;
     if (leafOn) {
+      if (typeof clipOpenGround === "function") {
+        const extras = [];
+        let clippedM2 = 0;
+        for (let i = 0; i < treePieces.length; i++) {
+          const piece = treePieces[i];
+          const ai = (piece.areas || []).findIndex((a) => a && !isTrunkArea(a));
+          if (ai < 0) continue;
+          const crown = piece.areas[ai];
+          const coords = crown.area && crown.area.coordinates;
+          if (!coords || coords.length < 3) continue;
+          const unit = (coords[0].coordinate_xyz && coords[0].coordinate_xyz.unit) || "pixels";
+          const ring = coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
+          let got;
+          try {
+            got = clipOpenGround(ring);
+          } catch {
+            got = null;
+          }
+          if (!got || !(got.clearedM2 > 0)) continue;
+          clippedM2 += got.clearedM2;
+          const kept = (got.rings || []).filter((r) => r && r.length >= 3);
+          if (!kept.length) {
+            treePieces[i] = null;
+            staleDropped++;
+            continue;
+          }
+          const toCoords = (r) => {
+            const next = r.map((p) => ({ coordinate_xyz: { x: p[0], y: p[1], unit } }));
+            const a = next[0].coordinate_xyz, b = next[next.length - 1].coordinate_xyz;
+            if (a.x !== b.x || a.y !== b.y) next.push({ coordinate_xyz: { x: a.x, y: a.y, unit } });
+            return next;
+          };
+          crown.area = Object.assign({}, crown.area, { coordinates: toCoords(kept[0]) });
+          for (let k = 1; k < kept.length; k++) {
+            const copy = {
+              discrete: piece.discrete,
+              areas: piece.areas.map((a, j) => {
+                if (j !== ai) return a;
+                return Object.assign({}, a, { area: Object.assign({}, a.area, { coordinates: toCoords(kept[k]) }) });
+              }),
+            };
+            extras.push(copy);
+          }
+        }
+        for (let i = treePieces.length - 1; i >= 0; i--) {
+          if (treePieces[i] == null) treePieces.splice(i, 1);
+        }
+        for (const extra of extras) treePieces.push(extra);
+        if (footprintMeta) footprintMeta.staleOpenClippedM2 = Math.round(clippedM2);
+        if (clippedM2 > 0 && Array.isArray(warnings)) {
+          const m2 = Math.round(clippedM2 / 10) * 10;
+          warnings.push(
+            "Trimmed " + m2.toLocaleString("en-US") + " m2 of canopy the photo shows as open ground in large clearings."
+          );
+        }
+      }
       const drop = new Set();
-      for (const r of rows) {
-        if (r.green > STALE_MAX_GREEN) continue;
-        if (aerialOpenShare(r.ring) >= STALE_OPEN_SHARE) drop.add(r.i);
+      for (let i = 0; i < treePieces.length; i++) {
+        const crown = (treePieces[i].areas || []).find((a) => a && !isTrunkArea(a));
+        const coords = crown && crown.area && crown.area.coordinates;
+        if (!coords || coords.length < 3) continue;
+        const ring = coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
+        const green = aerialGreenShare(ring);
+        if (green === null || green > STALE_MAX_GREEN) continue;
+        if (aerialOpenShare(ring) >= STALE_OPEN_SHARE) drop.add(i);
       }
       for (let i = treePieces.length - 1; i >= 0; i--) {
         if (drop.has(i)) {

@@ -234,7 +234,7 @@ const { gpsClipboard, stampGpsTiePoints, fitClipboardToMap } = require("../lib/h
 const { buildMapNotes, stampMapNotes } = require("../lib/map-notes");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
-const { surfaceMasksFromImage, osmWaterRings, openShareSampler, poleShadowContrast } = require("../lib/surface-mask");
+const { surfaceMasksFromImage, osmWaterRings, openShareSampler, clipOpenGroundRing, poleShadowContrast } = require("../lib/surface-mask");
 const { fetchLeafOnPhoto, leafOnGreenSampler } = require("../lib/leaf-on-photo");
 const { checkCanopyOnPhoto, photoCanopyNote, clearOpenGroundPatches, openGroundPatchNote, leafyShareSampler, vehicleZoneTest, zonedShareSampler } = require("../lib/photo-canopy");
 const { steepTerrainZone } = require("../lib/steep-canopy");
@@ -2994,6 +2994,10 @@ async function handleClutterNorthUp(event) {
       aerialOpenShare:
         decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH
           ? openShareSampler(decoded)
+          : null,
+      clipOpenGround:
+        decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH
+          ? (ring) => clipOpenGroundRing(decoded, ring, { mpuX: frame.mpuX, mpuY: frame.mpuY || frame.mpuX })
           : null,
       photoLeafyShare:
         footprintMeta.photoCanopy && footprintMeta.photoCanopy.gate && decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH
