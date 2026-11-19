@@ -4924,8 +4924,18 @@ function slopeSampler(terrain, guard) {
   const fn = (ring) => slopeTopUnderRing(terrain, ring);
   fn.seat = (ring) => slopeSeatUnderRing(terrain, ring);
   fn.split = (ring) => splitRingByFloor(terrain, ring);
-  fn.refine = (ring) => refineCanopyPiece(terrain, ring);
+  fn.refine = (ring) => {
+    // See splitCanopy: do not recut woods on a surface DSM.
+    if (terrain.kind === "surface") return null;
+    return refineCanopyPiece(terrain, ring);
+  };
   fn.splitCanopy = (ring) => {
+    // GLO-30 is a surface DSM. The adaptive fine grid hugs that surface,
+    // which in forest sits in the canopy, not on bare earth. Splitting a
+    // woods along those ramps shortens the traced outlines (Manuel Antonio
+    // canopy recall 85.6 to 67, predPx 42639 to 33547). Keep the crown and
+    // seat it with fn.seat / groundOf. Bare-earth 3DEP still splits.
+    if (terrain.kind === "surface") return null;
     // Bands that cannot cover the stand are discarded by splitRingByFloor,
     // which returns the whole ring. A ski hill still sits on its downhill
     // ground. A woods is not replaced by the uphill slice.

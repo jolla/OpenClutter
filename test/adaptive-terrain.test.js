@@ -154,3 +154,31 @@ test("GLO-30 fine grid runs edge to edge at the raster posting", () => {
   assert.ok(Math.abs(g.z[0] - 303.6) < 0.05, String(g.z[0]));
   assert.strictEqual(glo30FineGrid([tile], frame, 10).cols, 10);
 });
+
+test("splitCanopy leaves a surface-DSM woods uncut and still splits bare earth", () => {
+  const frame = geoFrame(BOX, { maxSpanM: 20000 });
+  exportMode.setAdaptiveTerrain(true);
+  try {
+    const fine = terrain.attachFineGrid(coarseSamples(24), fineGrid(70));
+    const surface = terrain.terrainFromSamples(fine, frame, { terrainResolution: "auto", kind: "surface" });
+    const bare = terrain.terrainFromSamples(fine, frame, { terrainResolution: "auto", kind: "bare-earth" });
+    assert.strictEqual(surface.kind, "surface");
+    assert.ok((surface.sloped || 0) + (surface.raised || 0) > 0);
+    const ring = [
+      [BOX.west + 0.002, BOX.south + 0.002],
+      [BOX.east - 0.002, BOX.south + 0.002],
+      [BOX.east - 0.002, BOX.north - 0.002],
+      [BOX.west + 0.002, BOX.north - 0.002],
+      [BOX.west + 0.002, BOX.south + 0.002],
+    ];
+    const surfaceSplit = terrain.demUnderFootprint(surface).splitCanopy(ring);
+    assert.ok(surfaceSplit == null || surfaceSplit.length < 2, "surface split " + (surfaceSplit && surfaceSplit.length));
+    const bareFn = terrain.demUnderFootprint(bare);
+    if (bareFn) {
+      const bareSplit = bareFn.splitCanopy(ring);
+      assert.ok(bareSplit && bareSplit.length >= 2, "bare-earth should still split a pit-sized woods, got " + (bareSplit && bareSplit.length));
+    }
+  } finally {
+    exportMode.setAdaptiveTerrain(false);
+  }
+});
