@@ -2057,6 +2057,18 @@ function applyReseat(area, newBottom) {
   return true;
 }
 
+function syncFoliageClips(areas, frame, affine) {
+  const clipTypes = [];
+  const clipZones = [];
+  const seenClip = new Set();
+  for (let i = 0; i < (areas || []).length; i++) {
+    const area = areas[i];
+    if (!area) continue;
+    pushFoliageClip(area.clip, area.ringPx, frame, affine, seenClip, clipTypes, clipZones);
+  }
+  return { clipTypes, clipZones };
+}
+
 function seatUnderArea(area, slopeTop, frame) {
   const ll = seatRingLl(area && area.ringPx, frame);
   if (!ll) return 0;
@@ -2088,17 +2100,22 @@ function reseatAssembledFoliage(areas, slopeTop, frame) {
       if (partBottom(stack[i]) < partBottom(base)) base = stack[i];
     }
     let down = 0;
-    let anyFloat = false;
+    let anyPartGap = false;
     for (let i = 0; i < stack.length; i++) {
       const seat = seatUnderArea(stack[i], slopeTop, frame);
       if (!(seat >= 1)) continue;
       if (down < 1 || seat < down) down = seat;
-      if (partBottom(stack[i]) - seat >= 3) anyFloat = true;
+      if (partBottom(stack[i]) - seat >= 3) anyPartGap = true;
     }
     const bottom = partBottom(base);
-    if (!(down >= 1) || !anyFloat) continue;
+    if (!(down >= 1)) continue;
     const drop = bottom - down;
-    if (!(drop > 0.05)) continue;
+    // A stacked cap is more than 3 m above the paste because of the
+    // understory, not because it floats. The drop is the base gap. When
+    // that gap is at least 3 m, or at least 2 m with a part the preview
+    // would still call floating (arizona-desert 52.8 on a 48 m plate),
+    // move the whole stack.
+    if (!(drop >= 3) && !(anyPartGap && drop >= 2)) continue;
     let moved = 0;
     for (let i = 0; i < stack.length; i++) {
       const next = roundTenths(partBottom(stack[i]) - drop);
@@ -3661,6 +3678,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       oiAreas.push({
         ringPx: part.ringPx,
         material: part.material,
+        clip: part.clip,
         kind: row.slopePiece && i === 0 ? "slope" : i === 0 ? "canopy" : "layer",
         shape: area.shape || "polygon",
         keepOutPx,
@@ -3721,6 +3739,7 @@ module.exports = {
   polygonsFromCrowns,
   assembleFoliage,
   reseatAssembledFoliage,
+  syncFoliageClips,
   facetCrownParts,
   openEdgeShare,
   planSceneFacets,
