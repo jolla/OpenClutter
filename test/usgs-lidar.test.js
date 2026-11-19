@@ -15,6 +15,7 @@ const {
   storageYards,
   lidarStatusLine,
   fetchUsgsLidar,
+  finishPartialLidar,
   mercator,
   HEIGHT_SOURCE,
   km2Of,
@@ -303,6 +304,41 @@ describe("USGS lidar", () => {
     assert.equal(lidarStatusLine({ heights: 4, added: 0 }), "Lidar heights used.");
     assert.equal(lidarStatusLine({ heights: 0, added: 2 }), "Lidar heights used.");
     assert.equal(lidarStatusLine({ skipped: "outside", heights: 4 }), "Lidar heights not used.");
+  });
+
+  it("does not rerun a lidar read that already finished", async () => {
+    let calls = 0;
+    const first = { partial: false, points: 100, skipped: null };
+    const out = await finishPartialLidar(first, frame, {
+      fetchLidar: async () => {
+        calls++;
+        return { partial: false, points: 999 };
+      },
+    });
+    assert.equal(calls, 0);
+    assert.equal(out, first);
+  });
+
+  it("retries a partial lidar read once the export is no longer busy", async () => {
+    let calls = 0;
+    const first = { partial: true, points: 285011, skipped: null };
+    const fuller = { partial: false, points: 2320204, skipped: null };
+    const out = await finishPartialLidar(first, frame, {
+      fetchLidar: async () => {
+        calls++;
+        return fuller;
+      },
+    });
+    assert.equal(calls, 1);
+    assert.equal(out, fuller);
+  });
+
+  it("keeps the first lidar read when the retry is not fuller", async () => {
+    const first = { partial: true, points: 400, skipped: null };
+    const out = await finishPartialLidar(first, frame, {
+      fetchLidar: async () => ({ partial: true, points: 100, skipped: null }),
+    });
+    assert.equal(out, first);
   });
 
   it("sends lidar from the Advanced toggle, off unless checked", () => {

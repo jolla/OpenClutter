@@ -173,7 +173,7 @@ const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 const PARK_CONTEXT_MS = 20000;
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
 const { dropStaleCampFootprints } = require("../lib/stale-footprints");
-const { fetchUsgsLidar, applyLidarSample, checkSourceHeights, lidarNote, lidarStatusLine, rankProjects, heightForRing } = require("../lib/usgs-lidar");
+const { fetchUsgsLidar, finishPartialLidar, applyLidarSample, checkSourceHeights, lidarNote, lidarStatusLine, rankProjects, heightForRing } = require("../lib/usgs-lidar");
 const { fuseLidarCanopy, keepLidarOpen, clearInside, clearThinLinesGrid, vehicleFeatures, lidarCanopyNote } = require("../lib/lidar-canopy");
 const exportJobs = require("../lib/export-jobs");
 const stageClock = require("../lib/stage-clock");
@@ -1769,6 +1769,7 @@ async function handleClutterNorthUp(event) {
   let coverJob = null;
   let coverPromise = null;
   let lidarPromise = null;
+  let lidarBox = null;
   let lidarSettled = true;
   let worldCover = null;
   const warnings = [];
@@ -1959,7 +1960,7 @@ async function handleClutterNorthUp(event) {
       lidarSettled = false;
       // The canopy grid covers the snapped map frame, a little past the
       // draw. Read the cloud for that frame so its edge is measured too.
-      const lidarBox = lidarCanopyOn && frame
+      lidarBox = lidarCanopyOn && frame
         ? { west: frame.west, south: frame.south, east: frame.east, north: frame.north }
         : {
             west: requestBbox.west,
@@ -2400,7 +2401,7 @@ async function handleClutterNorthUp(event) {
         reportProgress({ stage: "Lidar canopy" });
         await flushProgress();
       }
-      const lidar = await lidarPromise;
+      const lidar = await finishPartialLidar(await lidarPromise, lidarBox, { maxMs: lidarCapMs(background) });
       scaleLidar = lidar;
       if (lidar && !lidar.skipped && lidar.grid) padLidar = lidar.grid;
       if (exportMode.isSiteTypes() && lidar && !lidar.skipped && lidar.grid) {
@@ -2439,7 +2440,7 @@ async function handleClutterNorthUp(event) {
         reportProgress({ stage: "Lidar heights" });
         await flushProgress();
       }
-      const lidar = await lidarPromise;
+      const lidar = await finishPartialLidar(await lidarPromise, lidarBox, { maxMs: lidarCapMs(background) });
       if (!lidar) {
         warnings.push("Lidar heights not used.");
       } else {

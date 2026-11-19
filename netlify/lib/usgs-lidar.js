@@ -1330,6 +1330,26 @@ async function fetchUsgsLidarWork(frame, opts) {
   };
 }
 
+
+/**
+ * A background export starts the lidar read beside the JPEG and footprints.
+ * The 45 s cap then runs down on a busy event loop, so the cloud is often
+ * marked partial with only a slice of the points. Retry once after that
+ * other work has settled, with a fresh cap, and keep the fuller read.
+ */
+async function finishPartialLidar(lidar, frame, opts) {
+  if (!lidar || lidar.skipped || !lidar.partial || !frame) return lidar;
+  const fetchImpl = opts && opts.fetchLidar ? opts.fetchLidar : fetchUsgsLidar;
+  let again;
+  try {
+    again = await fetchImpl(frame, opts);
+  } catch {
+    return lidar;
+  }
+  if (again && !again.skipped && (again.points || 0) > (lidar.points || 0)) return again;
+  return lidar;
+}
+
 module.exports = {
   cellCenter,
   HEIGHT_SOURCE,
@@ -1355,6 +1375,7 @@ module.exports = {
   lidarStatusLine,
   lidarNote,
   fetchUsgsLidar,
+  finishPartialLidar,
   gpsDay,
   mercator,
   km2Of,
