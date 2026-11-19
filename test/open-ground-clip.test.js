@@ -35,8 +35,8 @@ function contains(ring, x, y) {
 }
 
 describe("clipOpenGroundRing", () => {
-  it("trims a large meadow off a woods ring and keeps the forest half", () => {
-    // 1 m per pixel. A 80 x 160 m lawn on the right is well above 150 m2.
+  it("does not cut a large lawn meadow off a woods ring", () => {
+    // Lawn also fires on smooth canopy, so it is not punched here.
     const w = 220;
     const h = 200;
     const im = photo(w, h, (x) => (x < 110 ? "leafy" : "lawn"));
@@ -48,11 +48,28 @@ describe("clipOpenGroundRing", () => {
       [20, 20],
     ];
     const got = clipOpenGroundRing(im, ring, { mpuX: 1, mpuY: 1 });
-    assert.ok(got.clearedM2 > 500, "cleared a large meadow, got " + got.clearedM2);
+    assert.equal(got.clearedM2, 0);
+    assert.equal(got.rings.length, 1);
+    assert.equal(got.rings[0], ring);
+  });
+
+  it("trims a large gravel bar off a woods ring and keeps the forest half", () => {
+    const w = 220;
+    const h = 200;
+    const im = photo(w, h, (x) => (x < 110 ? "leafy" : "dirt"));
+    const ring = [
+      [20, 20],
+      [200, 20],
+      [200, 180],
+      [20, 180],
+      [20, 20],
+    ];
+    const got = clipOpenGroundRing(im, ring, { mpuX: 1, mpuY: 1 });
+    assert.ok(got.clearedM2 > 500, "cleared a large gravel bar, got " + got.clearedM2);
     assert.ok(got.rings.length >= 1);
     const r = got.rings[0];
     assert.equal(contains(r, 60, 100), true, "forest half stays");
-    assert.equal(contains(r, 170, 100), false, "meadow half is gone");
+    assert.equal(contains(r, 170, 100), false, "gravel half is gone");
   });
 
   it("keeps a small lawn fleck inside a crown", () => {
@@ -93,7 +110,7 @@ describe("clipOpenGroundRing", () => {
     const h = 200;
     // ~400 m2 opening on the east edge: above the 80 m2 gravel floor, below the 1000 m2 lawn floor.
     // Interior holes are not emitted (a crown is one ring), so the patch has to touch the outline.
-    const opening = (x, y) => (x >= 150 && x < 180 && y >= 80 && y < 120);
+    const opening = (x, y) => (x >= 150 && y >= 80 && y < 120);
     const ring = [
       [20, 20],
       [180, 20],
@@ -165,7 +182,7 @@ describe("clipTreePieceOpenGround", () => {
         ]),
       ],
     };
-    const im = photo(220, 200, (x) => (x < 110 ? "leafy" : "lawn"));
+    const im = photo(220, 200, (x) => (x < 110 ? "leafy" : "dirt"));
     const clip = (ring) => clipOpenGroundRing(im, ring, { mpuX: 1, mpuY: 1 });
     const got = clipTreePieceOpenGround(piece, clip);
     assert.ok(got.clearedM2 > 500);

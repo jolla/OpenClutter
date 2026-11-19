@@ -779,7 +779,6 @@ function poleShadowContrast(image, x, y, heightM, mpp) {
  * original ring when nothing large was cleared.
  */
 const CLIP_MIN_M2 = 80;
-const CLIP_LAWN_MIN_M2 = 1000;
 const CLIP_KEEP_M2 = 40;
 
 function pointInRing(ring, x, y) {
@@ -800,22 +799,6 @@ function ringAreaM2(ring, mpuX, mpuY) {
 }
 
 
-/**
- * Pitch and road on the clip path also accept a slightly textured pixel
- * (gravel, the rim of a bare patch). The shared openGroundPixel cap is
- * tighter so a rough crown is not scored as open ground.
- */
-function clipGroundPixel(r, g, b, std) {
-  const ground = openGroundPixel(r, g, b, std);
-  if (ground) return ground;
-  // A gravel pixel on the rim of a bar has a high neighborhood spread
-  // because the next cell is forest or water. Color still reads as pitch
-  // or road when the smoothness cap is ignored.
-  const loose = openGroundPixel(r, g, b, 10);
-  if (loose === "pitch" || loose === "road") return loose;
-  return "";
-}
-
 function clipOpenGroundRing(image, ring, opts) {
   const empty = { rings: ring && ring.length >= 3 ? [ring] : [], clearedM2: 0 };
   if (!image || !image.data || !(image.width > 0) || !(image.height > 0) || !ring || ring.length < 3) return empty;
@@ -824,7 +807,6 @@ function clipOpenGroundRing(image, ring, opts) {
   const mpuX = o.mpuX > 0 ? o.mpuX : 0.3;
   const mpuY = o.mpuY > 0 ? o.mpuY : mpuX;
   const minM2 = o.minM2 > 0 ? o.minM2 : CLIP_MIN_M2;
-  const lawnMinM2 = o.lawnMinM2 > 0 ? o.lawnMinM2 : CLIP_LAWN_MIN_M2;
   const keepM2 = o.keepM2 > 0 ? o.keepM2 : CLIP_KEEP_M2;
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   for (const p of ring) {
@@ -857,26 +839,22 @@ function clipOpenGroundRing(image, ring, opts) {
       const std = localStd(data, w, h, col, row);
       const i = iy * cols + ix;
       cover[i] = 1;
-      const ground = clipGroundPixel(data[k], data[k + 1], data[k + 2], std);
-      if (ground === "lawn") open[i] = 1;
-      else if (ground === "pitch" || ground === "road") open[i] = 2;
+      const ground = openGroundPixel(data[k], data[k + 1], data[k + 2], std);
+      if (ground === "pitch" || ground === "road") open[i] = 2;
     }
   }
   const seen = new Uint8Array(cols * rows);
   let cleared = 0;
-  const lawnMinCells = Math.max(2, Math.round(lawnMinM2 / Math.max(cellM2, 1e-6)));
   for (let i = 0; i < open.length; i++) {
     if (!open[i] || seen[i]) continue;
     const cells = [];
     const stack = [i];
     seen[i] = 1;
     let hard = 0;
-    let lawn = 0;
     while (stack.length) {
       const a = stack.pop();
       cells.push(a);
       if (open[a] === 2) hard++;
-      else lawn++;
       const x = a % cols;
       const y = (a / cols) | 0;
       if (x > 0 && open[a - 1] && !seen[a - 1]) { seen[a - 1] = 1; stack.push(a - 1); }
@@ -884,9 +862,8 @@ function clipOpenGroundRing(image, ring, opts) {
       if (y > 0 && open[a - cols] && !seen[a - cols]) { seen[a - cols] = 1; stack.push(a - cols); }
       if (y + 1 < rows && open[a + cols] && !seen[a + cols]) { seen[a + cols] = 1; stack.push(a + cols); }
     }
-    // Gravel, dirt and pavement can be a modest patch under a stale crown.
-    // "Lawn" also fires on smooth canopy, so only a very large meadow is cut.
-    if (hard < minCells && hard + lawn < lawnMinCells) continue;
+    // Only gravel, dirt and pavement. "Lawn" also fires on smooth canopy.
+    if (hard < minCells) continue;
     for (const c of cells) {
       cover[c] = 0;
       cleared += cellM2;
@@ -939,7 +916,6 @@ module.exports = {
   openShareSampler,
   clipOpenGroundRing,
   CLIP_MIN_M2,
-  CLIP_LAWN_MIN_M2,
   surfaceMasksFromImage,
   MIN_WATER_M2,
   MIN_PAVEMENT_M2,
