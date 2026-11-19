@@ -304,7 +304,8 @@ function isStaleTowers() {
 // (pit walls, ski runs) instead of on a fixed 20x20 lattice. Same 1500 floor
 // and 400 KB paste caps. Off by default; on for /dev hosts unless the
 // request sends adaptiveTerrain:false (?adaptiveTerrain=0 on the page).
-// Production stays off until the weekly release turns it on.
+// Production stays off by default until the weekly release turns it on.
+// A request may send adaptiveTerrain:true to run the prod path in gates.
 let adaptiveTerrain = false;
 
 function setAdaptiveTerrain(on) {
@@ -315,11 +316,17 @@ function isAdaptiveTerrain() {
   return adaptiveTerrain;
 }
 
-/** /dev and preview hosts only; a request can still opt out. */
+/**
+ * On for /dev hosts unless the request opts out. Production stays off
+ * until the Monday weekly release, but a request may send
+ * adaptiveTerrain:true so prod-host gates can run the Monday path now
+ * without making it live (the Fly worker is not redeployed).
+ */
 function adaptiveTerrainWanted(testHost, body) {
-  if (!testHost) return false;
   const v = body && body.adaptiveTerrain;
-  return !(v === false || v === 0 || v === "0" || v === "false");
+  if (v === false || v === 0 || v === "0" || v === "false") return false;
+  if (testHost) return true;
+  return v === true || v === 1 || v === "1" || v === "true";
 }
 
 // smoothEdges: a canopy outline traced on the height grid is cut at its
