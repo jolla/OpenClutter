@@ -1,3 +1,27 @@
+# OpenClutter v1.3.42
+
+Released Nov 23, 2026 on openclutter.com. dev.openclutter.com runs the same build.
+
+## What's new
+
+- **Larger exports.** Production can keep up to 14 MB (8.37 MB of OpenIntent JSON plus the map image), so large wooded sites keep more of their canopy.
+- **Adaptive terrain.** Copy terrain follows the native elevation grid on steep or curved ground (pit walls, ski runs) instead of a fixed lattice. ?adaptiveTerrain=0 turns it off.
+- **Overture street map.** Roads, parking, water, woods, barriers, and lights come from Overture Maps, with a smaller Overpass query for campgrounds, palms, and other gaps.
+- **Faster exports.** Slope splits run in one persistent thread, JSON budget checks use cached area bytes, and Overture range reads stay in process.
+- **Wall materials.** Buildings get per-type wall materials (wood frame, shed, carport, masonry, big-box, civic, glass, metal warehouse) from OSM and Overture tags. Typing a building does not drop it or change its outline.
+- **Tropical woods.** On surface DEMs such as GLO-30, woods are no longer sliced into slope ramps, which had been shortening canopy at sites like Manuel Antonio.
+- **Detections on the map.** After an export, /dev hosts show the zip's buildings, trees, and vehicles on the map by default. Off on production. ?preview=0 turns it off on /dev.
+
+## Data
+
+Street map features can now come from Overture Maps (Azure GeoParquet, same path as buildings). Overpass remains the fallback and still supplies the forest query when the street-map read misses woods.
+
+## Git / deploy
+
+- Tag `v1.3.42` on `main` after this commit; `dev` is at the same commit.
+- forest=crowns or merge stays on dev.openclutter.com only.
+- Fly worker is redeployed from this commit (it serves every host). Rollback target if smoke fails: v128 / deployment-01M7JW2RWTAHGAN68MVRD40ZF3.
+
 # OpenClutter v1.3.38
 
 Released Nov 16, 2026 on openclutter.com. dev.openclutter.com runs the same build.
