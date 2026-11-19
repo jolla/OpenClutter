@@ -1,9 +1,10 @@
-# OpenClutter v1.3.43
+# OpenClutter v1.3.44
 
 Released Nov 23, 2026 on openclutter.com. dev.openclutter.com runs the same build.
 
 ## What's new
 
+- **Trees on the ground.** Trees that were sitting in the air are reseated on the ground under each piece, without shrinking treetops. A lidar read that stops early mid-export is tried once more, so buildings and trees are less often missed.
 - **What's new, by date.** The page shows the release date instead of a version number. What's new is a short dated summary of user-visible features. After an export, the panel drops repeated format and paste hints, and map size sits in Details.
 - **Larger exports.** Production can keep up to 14 MB (8.37 MB of OpenIntent JSON plus the map image), so large wooded sites keep more of their canopy.
 - **Adaptive terrain.** Copy terrain follows the native elevation grid on steep or curved ground (pit walls, ski runs) instead of a fixed lattice. ?adaptiveTerrain=0 turns it off.
@@ -19,7 +20,7 @@ Street map features can now come from Overture Maps (Azure GeoParquet, same path
 
 ## Git / deploy
 
-- Tag `v1.3.43` on `main` after this commit; `dev` is at the same commit.
+- Tag `v1.3.44` on `main` after this commit; `dev` is at the same commit.
 - forest=crowns or merge stays on dev.openclutter.com only.
 - Fly worker is redeployed from this commit (it serves every host). Rollback target if smoke fails: v128 / deployment-01M7JW2RWTAHGAN68MVRD40ZF3.
 
