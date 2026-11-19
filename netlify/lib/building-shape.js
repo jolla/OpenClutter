@@ -2127,6 +2127,49 @@ function carveTwinRoofs(features, imagery, ground, osmRings, notes) {
  * ring is left out. A sprawling outline with two clean roof tones still
  * becomes those two blocks.
  */
+
+function applyOsmUseTags(features, osmRings) {
+  const tagged = [];
+  for (let i = 0; i < (osmRings || []).length; i++) {
+    const src = osmRings[i];
+    const tags = src && src.osmTags;
+    if (!tags) continue;
+    const closed = closeRing(src);
+    if (!closed) continue;
+    const area = meterArea(closed);
+    if (!(area > 0)) continue;
+    tagged.push({ ring: closed, tags, area });
+  }
+  if (!tagged.length) return 0;
+  let n = 0;
+  const list = features || [];
+  for (let f = 0; f < list.length; f++) {
+    const feat = list[f];
+    if (!feat || !feat.geometry) continue;
+    const props = feat.properties || (feat.properties = {});
+    if (props.building || props.amenity || props.class || props.subtype) continue;
+    const exteriors = exteriorsOf(feat);
+    let best = null;
+    let bestFrac = 0;
+    for (let e = 0; e < exteriors.length; e++) {
+      const area = meterArea(exteriors[e]);
+      if (!(area > 0)) continue;
+      for (let t = 0; t < tagged.length; t++) {
+        const inter = intersectionArea(exteriors[e], tagged[t].ring);
+        const frac = Math.max(inter / area, inter / tagged[t].area);
+        if (frac > bestFrac) {
+          bestFrac = frac;
+          best = tagged[t];
+        }
+      }
+    }
+    if (!best || bestFrac < OSM_FILL_COVER) continue;
+    Object.assign(props, usePropsFromOsmTags(best.tags));
+    n++;
+  }
+  return n;
+}
+
 function shapeBuildings(features, detail) {
   const openings = (detail && detail.openings) || [];
   const parts = (detail && detail.parts) || [];
@@ -2194,7 +2237,7 @@ function shapeBuildings(features, detail) {
   const notches = dropDiagonalNotches(trimmed.features, osmRings);
   const garages = fillParkingStructures(notches.features, detail && detail.structures);
   const filled = fillMissingOsmFootprints(garages.features, osmRings);
-  copyOsmUseTags(filled.features, osmRings);
+  applyOsmUseTags(filled.features, osmRings);
   return {
     features: filled.features,
     stats: {

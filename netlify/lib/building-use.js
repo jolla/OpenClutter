@@ -114,9 +114,6 @@ const HOUSE_BUILDINGS = new Set([
   "duplex",
   "apartments",
   "farm",
-  "static_caravan",
-  "mobile_home",
-  "houseboat",
 ]);
 
 const SHED_BUILDINGS = new Set([

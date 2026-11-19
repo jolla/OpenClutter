@@ -9,6 +9,7 @@ const { geoFrame, lockIsotropicImagery, llToPx } = require("../netlify/lib/geo-f
 const { rejectPavementFootprints } = require("../netlify/lib/pavement");
 const { footprintsToClutter } = require("../netlify/lib/pipeline");
 const { parseBuildingDetail, shapeBuildings } = require("../netlify/lib/building-shape");
+const { typeFromUseName, dbForBuildingUse } = require("../netlify/lib/building-use");
 const { semisAtDocks, yardInsideFootprint } = require("../netlify/lib/vehicle-track");
 
 const { esriPixels, SKIP_NOTE } = require("./esri-pixels");
@@ -124,7 +125,8 @@ describe("deck and warehouse rules on other US sites", () => {
       assert.ok(out.built.stats.buildings >= 1, site.id + " buildings " + out.built.stats.buildings);
       assert.ok(out.built.stats.buildings <= 4, site.id + " split into " + out.built.stats.buildings);
       assert.ok(out.material, site.id + " centroid is not in a building");
-      assert.equal(out.material.rf_properties.attenuation_per_m, 5);
+      const use = typeFromUseName(out.material.name);
+      assert.equal(out.material.rf_properties.attenuation_per_m, dbForBuildingUse(use));
       const top = Number(out.material.top_height);
       if (site.height === 15) {
         assert.ok(top >= 14.5 && top <= 15.5, site.id + " top " + top);

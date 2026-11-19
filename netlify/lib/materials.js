@@ -1056,7 +1056,9 @@ function materialForBuilding(heightM, areaM2, opts) {
   const exactOi = opts && opts.exactMetres ? measuredOiBuildingMaterial(h) : null;
   let material = exactOi || oiMaterialFromType(oiType);
   const type = classifyBuildingUse((opts && opts.use) || {});
-  if (usesCustomBuildingMaterial(type) && material) {
+  // Parking structures already ship as 2 dB/m outdoor "Parking" objects.
+  // Leave the building catalog object unchanged.
+  if (usesCustomBuildingMaterial(type) && type.id !== "parking" && material) {
     const typed = typedBuildingMaterial(type, material.top_height, material.display_color);
     if (typed) material = typed;
   }
