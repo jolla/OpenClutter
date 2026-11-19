@@ -207,15 +207,23 @@ function chainEdges(edges) {
         closed = true;
         break;
       }
-      const opts = from.get(cur.x1 + "," + cur.y1) || [];
-      let next = null;
-      for (const cand of opts) {
-        if (!used.has(cand.id)) {
-          next = cand;
-          break;
+      const opts = (from.get(cur.x1 + "," + cur.y1) || []).filter((cand) => !used.has(cand.id));
+      if (!opts.length) break;
+      // Edges run clockwise around a cell (y down), so the interior is on
+      // the right. At a notch, pick the tightest right turn so the bite
+      // stays on the outer ring instead of becoming a discarded hole.
+      const idx = cur.x1 - cur.x0;
+      const idy = cur.y1 - cur.y0;
+      const cross = (cand) => idx * (cand.y1 - cand.y0) - idy * (cand.x1 - cand.x0);
+      let next = opts[0];
+      let best = cross(next);
+      for (let i = 1; i < opts.length; i++) {
+        const c = cross(opts[i]);
+        if (c < best) {
+          best = c;
+          next = opts[i];
         }
       }
-      if (!next) break;
       used.add(next.id);
       ring.push([next.x0, next.y0]);
       cur = next;
@@ -762,11 +770,152 @@ function poleShadowContrast(image, x, y, heightM, mpp) {
   return best;
 }
 
+
+/**
+ * Punch large photo-open patches (a gravel bar, a road, or a very large mown meadow) out
+ * of a crown outline. Isolated open-looking pixels inside a textured crown
+ * stay. Ring is OpenIntent pixels, y up from the image bottom. Returns
+ * { rings, clearedM2 }; rings is empty when the crown is gone, or the
+ * original ring when nothing large was cleared.
+ */
+const CLIP_MIN_M2 = 80;
+const CLIP_KEEP_M2 = 40;
+
+function pointInRing(ring, x, y) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function ringAreaM2(ring, mpuX, mpuY) {
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    a += (ring[j][0] + ring[i][0]) * (ring[j][1] - ring[i][1]);
+  }
+  return Math.abs(a / 2) * mpuX * mpuY;
+}
+
+
+function clipOpenGroundRing(image, ring, opts) {
+  const empty = { rings: ring && ring.length >= 3 ? [ring] : [], clearedM2: 0 };
+  if (!image || !image.data || !(image.width > 0) || !(image.height > 0) || !ring || ring.length < 3) return empty;
+  const { data, width: w, height: h } = image;
+  const o = opts || {};
+  const mpuX = o.mpuX > 0 ? o.mpuX : 0.3;
+  const mpuY = o.mpuY > 0 ? o.mpuY : mpuX;
+  const minM2 = o.minM2 > 0 ? o.minM2 : CLIP_MIN_M2;
+  const keepM2 = o.keepM2 > 0 ? o.keepM2 : CLIP_KEEP_M2;
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const p of ring) {
+    if (p[0] < x0) x0 = p[0];
+    if (p[0] > x1) x1 = p[0];
+    if (p[1] < y0) y0 = p[1];
+    if (p[1] > y1) y1 = p[1];
+  }
+  const stride = Math.max(1, Math.round(1.2 / Math.max(mpuX, mpuY)));
+  const col0 = Math.max(0, Math.floor(x0) - stride);
+  const row0 = Math.max(0, Math.floor(h - 1 - y1) - stride);
+  const col1 = Math.min(w - 1, Math.ceil(x1) + stride);
+  const row1 = Math.min(h - 1, Math.ceil(h - 1 - y0) + stride);
+  const cols = Math.floor((col1 - col0) / stride) + 1;
+  const rows = Math.floor((row1 - row0) / stride) + 1;
+  if (cols < 2 || rows < 2) return empty;
+  const cellM2 = stride * mpuX * stride * mpuY;
+  const minCells = Math.max(2, Math.round(minM2 / Math.max(cellM2, 1e-6)));
+  const keepMin = Math.max(2, Math.round(keepM2 / Math.max(cellM2, 1e-6)));
+  const cover = new Uint8Array(cols * rows);
+  const open = new Uint8Array(cols * rows);
+  for (let iy = 0; iy < rows; iy++) {
+    for (let ix = 0; ix < cols; ix++) {
+      const col = col0 + ix * stride;
+      const row = row0 + iy * stride;
+      const oiX = col + stride / 2;
+      const oiY = h - 1 - (row + stride / 2);
+      if (!pointInRing(ring, oiX, oiY)) continue;
+      const k = (row * w + col) * 4;
+      const std = localStd(data, w, h, col, row);
+      const i = iy * cols + ix;
+      cover[i] = 1;
+      const ground = openGroundPixel(data[k], data[k + 1], data[k + 2], std);
+      if (ground === "pitch" || ground === "road") open[i] = 2;
+    }
+  }
+  const seen = new Uint8Array(cols * rows);
+  let cleared = 0;
+  for (let i = 0; i < open.length; i++) {
+    if (!open[i] || seen[i]) continue;
+    const cells = [];
+    const stack = [i];
+    seen[i] = 1;
+    let hard = 0;
+    while (stack.length) {
+      const a = stack.pop();
+      cells.push(a);
+      if (open[a] === 2) hard++;
+      const x = a % cols;
+      const y = (a / cols) | 0;
+      if (x > 0 && open[a - 1] && !seen[a - 1]) { seen[a - 1] = 1; stack.push(a - 1); }
+      if (x + 1 < cols && open[a + 1] && !seen[a + 1]) { seen[a + 1] = 1; stack.push(a + 1); }
+      if (y > 0 && open[a - cols] && !seen[a - cols]) { seen[a - cols] = 1; stack.push(a - cols); }
+      if (y + 1 < rows && open[a + cols] && !seen[a + cols]) { seen[a + cols] = 1; stack.push(a + cols); }
+    }
+    // Only gravel, dirt and pavement. "Lawn" also fires on smooth canopy.
+    if (hard < minCells) continue;
+    for (const c of cells) {
+      cover[c] = 0;
+      cleared += cellM2;
+    }
+  }
+  if (!(cleared > 0)) return empty;
+  const keepSeen = new Uint8Array(cols * rows);
+  const rings = [];
+  for (let i = 0; i < cover.length; i++) {
+    if (!cover[i] || keepSeen[i]) continue;
+    const cells = [];
+    const stack = [i];
+    keepSeen[i] = 1;
+    while (stack.length) {
+      const a = stack.pop();
+      cells.push(a);
+      const x = a % cols;
+      const y = (a / cols) | 0;
+      if (x > 0 && cover[a - 1] && !keepSeen[a - 1]) { keepSeen[a - 1] = 1; stack.push(a - 1); }
+      if (x + 1 < cols && cover[a + 1] && !keepSeen[a + 1]) { keepSeen[a + 1] = 1; stack.push(a + 1); }
+      if (y > 0 && cover[a - cols] && !keepSeen[a - cols]) { keepSeen[a - cols] = 1; stack.push(a - cols); }
+      if (y + 1 < rows && cover[a + cols] && !keepSeen[a + cols]) { keepSeen[a + cols] = 1; stack.push(a + cols); }
+    }
+    if (cells.length < keepMin) continue;
+    const indexRings = chainRings(cells, cols, rows);
+    if (!indexRings.length) continue;
+    const yUp = indexRings
+      .map((r) => {
+        const pts = r.map(([ix, iy]) => [col0 + ix * stride, h - (row0 + iy * stride)]);
+        if (signedArea(pts) < 0) {
+          const openPts = pts.slice(0, -1).reverse();
+          return openPts.concat([openPts[0]]);
+        }
+        return pts;
+      })
+      .filter((r) => r.length >= 4 && Math.abs(signedArea(r)) > 4);
+    if (!yUp.length) continue;
+    yUp.sort((a, b) => Math.abs(signedArea(b)) - Math.abs(signedArea(a)));
+    const outer = simplifyClosed(yUp[0], 1.8, 48);
+    if (outer.length >= 4) rings.push(outer);
+  }
+  rings.sort((a, b) => ringAreaM2(b, mpuX, mpuY) - ringAreaM2(a, mpuX, mpuY));
+  return { rings, clearedM2: cleared };
+}
+
 module.exports = {
   osmWaterRings,
   pondWaterPixel,
   poleShadowContrast,
   openShareSampler,
+  clipOpenGroundRing,
+  CLIP_MIN_M2,
   surfaceMasksFromImage,
   MIN_WATER_M2,
   MIN_PAVEMENT_M2,

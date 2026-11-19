@@ -417,6 +417,97 @@ function zonedShareSampler(sampler, inZone, frame) {
   };
 }
 
+/**
+ * On a leaf-on photo, clear canopy in large patches the photo shows as open
+ * ground (a mown meadow, a gravel bar, a road). Isolated smooth pixels inside
+ * a textured crown stay. A lidar flight can predate a clearing, and a height
+ * model can fill a lawn; a dark or leaf-off woods is left alone (same gate as
+ * checkCanopyOnPhoto). Patches smaller than PATCH_MIN_M2 stay.
+ */
+const PATCH_MIN_M2 = 150;
+const PATCH_BARE = 0.4;
+const PATCH_LEAFY_MAX = 0.2;
+
+function leafOnFromRead(grid, read) {
+  const out = { gate: false, tallCells: 0, tallLeafy: 0 };
+  if (!grid || !read) return out;
+  const values = grid.values;
+  for (let i = 0; i < values.length; i++) {
+    if (!(values[i] >= GATE_TALL_M) || read.leafy[i] < 0) continue;
+    out.tallCells++;
+    if (read.leafy[i] >= GATE_LEAFY) out.tallLeafy++;
+  }
+  out.gate = out.tallCells >= GATE_MIN_CELLS && out.tallLeafy >= GATE_SHARE * out.tallCells;
+  return out;
+}
+
+function clearOpenGroundPatches(grid, photo, frame, opts) {
+  const out = { gate: false, cleared: 0, patches: 0, patchM2: 0 };
+  const read = readCells(grid, photo, frame, null);
+  const gate = leafOnFromRead(grid, read);
+  out.gate = gate.gate;
+  if (!gate.gate || !read) return out;
+  if (grid && typeof grid.values === "string") grid.values = Buffer.from(grid.values, "base64");
+  const values = grid.values;
+  const gw = grid.width | 0;
+  const gh = grid.height | 0;
+  const keepTall = exportMode.isTallCanopyKeep();
+  const midLat = ((+grid.north + +grid.south) / 2) * (Math.PI / 180);
+  const cellM2 =
+    ((+grid.east - +grid.west) / gw) * 111320 * Math.cos(midLat) *
+    (((+grid.north - +grid.south) / gh) * 110540);
+  const minM2 = (opts && opts.minM2) || PATCH_MIN_M2;
+  const minCells = Math.max(2, Math.round(minM2 / Math.max(cellM2, 1e-6)));
+  const mark = new Uint8Array(values.length);
+  for (let i = 0; i < values.length; i++) {
+    if (!(values[i] >= CANOPY_MIN_M) || read.bare[i] < 0) continue;
+    if (read.bare[i] < PATCH_BARE || read.leafy[i] >= PATCH_LEAFY_MAX) continue;
+    if (read.branch[i] >= BRANCH_KEEP && read.bright[i] < BRIGHT_MAX) continue;
+    if (keepTall && values[i] >= TREE_ONLY_M && read.bright[i] < BRIGHT_MAX) continue;
+    mark[i] = 1;
+  }
+  const seen = new Uint8Array(values.length);
+  for (let i = 0; i < values.length; i++) {
+    if (!mark[i] || seen[i]) continue;
+    const cells = [];
+    const stack = [i];
+    seen[i] = 1;
+    while (stack.length) {
+      const a = stack.pop();
+      cells.push(a);
+      const x = a % gw;
+      const y = (a / gw) | 0;
+      if (x > 0 && mark[a - 1] && !seen[a - 1]) { seen[a - 1] = 1; stack.push(a - 1); }
+      if (x + 1 < gw && mark[a + 1] && !seen[a + 1]) { seen[a + 1] = 1; stack.push(a + 1); }
+      if (y > 0 && mark[a - gw] && !seen[a - gw]) { seen[a - gw] = 1; stack.push(a - gw); }
+      if (y + 1 < gh && mark[a + gw] && !seen[a + gw]) { seen[a + gw] = 1; stack.push(a + gw); }
+    }
+    if (cells.length < minCells) continue;
+    out.patches++;
+    out.patchM2 += cells.length * cellM2;
+    for (const c of cells) {
+      values[c] = 0;
+      out.cleared++;
+    }
+  }
+  if (out.cleared) {
+    let nz = 0;
+    for (let i = 0; i < values.length; i++) if (values[i] >= CANOPY_MIN_M) nz++;
+    grid.nonzero = nz;
+  }
+  return out;
+}
+
+function openGroundPatchNote(res) {
+  if (!res || !res.cleared) return "";
+  const m2 = Math.round((res.patchM2 || 0) / 10) * 10;
+  return (
+    "Left out " +
+    (m2 > 0 ? m2.toLocaleString("en-US") + " m2 of " : "") +
+    "canopy the photo shows as open ground in large clearings."
+  );
+}
+
 /** A lidar crown piece with leafy texture on less of its outline is gone. */
 const PIECE_LEAFY_MIN = 0.2;
 
@@ -427,6 +518,9 @@ module.exports = {
   leafyShareSampler,
   checkCanopyOnPhoto,
   photoCanopyNote,
+  clearOpenGroundPatches,
+  openGroundPatchNote,
+  PATCH_MIN_M2,
   readCells,
   leafyPixel,
   foliagePixel,

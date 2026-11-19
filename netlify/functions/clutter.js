@@ -234,9 +234,9 @@ const { gpsClipboard, stampGpsTiePoints, fitClipboardToMap } = require("../lib/h
 const { buildMapNotes, stampMapNotes } = require("../lib/map-notes");
 const { treeHitsBuilding } = require("../lib/vegetation");
 const { supplementFootprints } = require("../lib/roof-mask");
-const { surfaceMasksFromImage, osmWaterRings, openShareSampler, poleShadowContrast } = require("../lib/surface-mask");
+const { surfaceMasksFromImage, osmWaterRings, openShareSampler, clipOpenGroundRing, poleShadowContrast } = require("../lib/surface-mask");
 const { fetchLeafOnPhoto, leafOnGreenSampler } = require("../lib/leaf-on-photo");
-const { checkCanopyOnPhoto, photoCanopyNote, leafyShareSampler, vehicleZoneTest, zonedShareSampler } = require("../lib/photo-canopy");
+const { checkCanopyOnPhoto, photoCanopyNote, clearOpenGroundPatches, openGroundPatchNote, leafyShareSampler, vehicleZoneTest, zonedShareSampler } = require("../lib/photo-canopy");
 const { steepTerrainZone } = require("../lib/steep-canopy");
 const { photoCrownRefiner, photoCrownNote, gridHeightAt } = require("../lib/photo-crowns");
 const { createWaterTest, clearWaterCanopy, dropWaterPoints } = require("../lib/water-mask");
@@ -2863,6 +2863,30 @@ async function handleClutterNorthUp(event) {
           // The lidar canopy stands when the photo cannot be read.
         }
       }
+      // A lidar flight several years old can still carry trees that were
+      // cleared for a lot, a yard, a meadow or a gravel bar. On a leaf-on
+      // photo, drop large open-ground patches (not isolated smooth pixels
+      // inside a textured crown). A flight only four years old is still
+      // current (golf bunkers are not a clearing). Orchards and woods stay;
+      // only the clearing is removed.
+      const lidarYear = /^(\d{4})/.exec(String(footprintMeta.lidarCollected || ""));
+      if (
+        lidarYear &&
+        new Date().getUTCFullYear() - +lidarYear[1] >= 8 &&
+        decoded &&
+        frame &&
+        decoded.width === frame.imgW &&
+        decoded.height === frame.imgH
+      ) {
+        try {
+          const patches = clearOpenGroundPatches(chmGrid, decoded, frame);
+          footprintMeta.openGroundPatches = patches;
+          const note = openGroundPatchNote(patches);
+          if (note && warnings.indexOf(note) < 0) warnings.push(note);
+        } catch {
+          // The measured canopy stands when the photo cannot be read.
+        }
+      }
     }
     if (background && includeFoliage && !chmTimedOut) {
       if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage trees-parallel\n");
@@ -2971,6 +2995,10 @@ async function handleClutterNorthUp(event) {
       aerialOpenShare:
         decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH
           ? openShareSampler(decoded)
+          : null,
+      clipOpenGround:
+        decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH
+          ? (ring) => clipOpenGroundRing(decoded, ring, { mpuX: frame.mpuX, mpuY: frame.mpuY || frame.mpuX })
           : null,
       photoLeafyShare:
         footprintMeta.photoCanopy && footprintMeta.photoCanopy.gate && decoded && frame && decoded.width === frame.imgW && decoded.height === frame.imgH
