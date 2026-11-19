@@ -250,14 +250,14 @@
       const stepped = /stepped down to (\d+) px from (\d+) px/.exec(text);
       const mpp = /([\d.]+) m per pixel/.exec(text);
       const px = /(\d+) px/.exec(text);
-      if (stepped) return "Map " + stepped[1] + " px, down from " + stepped[2];
-      if (px && mpp) return "Map " + px[1] + " px, " + mpp[1] + " m per pixel";
-      if (px) return "Map " + px[1] + " px";
+      if (stepped) return "Aerial map " + stepped[1] + " pixels, down from " + stepped[2];
+      if (px && mpp) return "Aerial map " + px[1] + " pixels, " + mpp[1] + " m per pixel";
+      if (px) return "Aerial map " + px[1] + " pixels";
     }
     const frame = data && data.frame;
     if (frame && (+frame.imgW > 0 || +frame.imgH > 0)) {
       const side = Math.max(+frame.imgW || 0, +frame.imgH || 0);
-      let line = "Map " + side + " px";
+      let line = "Aerial map " + side + " pixels";
       if (+frame.mpuX > 0) {
         const n = frame.mpuX >= 1 ? (+frame.mpuX).toFixed(1) : (+frame.mpuX).toFixed(2);
         line += ", " + n + " m per pixel";

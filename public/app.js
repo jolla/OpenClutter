@@ -266,7 +266,16 @@ function terrainExportEnabled() {
   const lidarBox = document.getElementById("include-lidar");
   if (lidarBox && qualityPage() && lidarQueryOn()) lidarBox.checked = true;
   const ver = document.getElementById("app-version");
-  if (ver && window.OPENCLUTTER_VERSION) ver.textContent = "v" + window.OPENCLUTTER_VERSION;
+  if (ver) {
+    const date = window.OPENCLUTTER_RELEASE_DATE;
+    const version = window.OPENCLUTTER_VERSION;
+    if (date) ver.textContent = "Updated " + date;
+    if (version) {
+      const tip = "What's new · " + version;
+      ver.title = tip;
+      ver.setAttribute("aria-label", tip);
+    }
+  }
   // What's new lines about /dev-only switches show on /dev pages only.
   if (devPage()) document.querySelectorAll("#whats-new .whats-new-dev").forEach((li) => (li.hidden = false));
 })();
@@ -1042,11 +1051,6 @@ function exportHeadline(stats, warnings, foliageOn) {
   const trees = stats && +stats.treesKept;
   if (Number.isFinite(buildings)) bits.push(buildings + (buildings === 1 ? " building" : " buildings"));
   if (foliageOn && Number.isFinite(trees)) bits.push(trees + (trees === 1 ? " tree" : " trees"));
-  const mapLine = (warnings || []).find((w) => /^Map (image|stepped) /.test(String(w)));
-  const stepped = mapLine && /stepped down to (\d+) px from (\d+) px/.exec(String(mapLine));
-  const px = mapLine && String(mapLine).match(/(\d+) px/);
-  if (stepped) bits.push(stepped[1] + " px, down from " + stepped[2]);
-  else if (px) bits.push(px[1] + " px");
   const lidarLine = (warnings || []).find((w) => /^Lidar heights (used|not used)\./.test(String(w)));
   if (lidarLine) bits.push(String(lidarLine).replace(/\.$/, ""));
   if (!bits.length) return "OpenIntent file ready.";
@@ -2239,7 +2243,7 @@ function noteDrawCancelled() {
   drawHidesCopy = false;
   syncIdleExportLabel();
   paintRedownload();
-  if (exportCopyReady) setCopyNote("Paste terrain separately in Hamina.");
+  if (exportCopyReady) clearCopyNote();
 }
 
 // The last finished export stays downloadable until the area changes or a
@@ -2254,10 +2258,22 @@ function formatZipMb(bytes) {
   return (mb >= 10 ? mb.toFixed(0) : mb.toFixed(1)) + " MB";
 }
 
+function syncExportFormat() {
+  const format = document.getElementById("export-format");
+  if (!format) return;
+  let live = false;
+  try {
+    live = exportLive;
+  } catch {}
+  const hide = !!(!live && !drawHidesCopy && (exportCopyReady || lastExport));
+  format.hidden = hide;
+}
+
 function paintRedownload() {
   const row = document.getElementById("redownload-row");
   const link = document.getElementById("redownload");
   if (!row || !link) return;
+  syncExportFormat();
   let live = false;
   try {
     live = exportLive;
@@ -2402,7 +2418,7 @@ async function copyFinishedTerrain() {
   if (!terrainPasteJson || terrainPasteGpsOnly) return;
   try {
     await navigator.clipboard.writeText(terrainPasteJson);
-    setCopyNote("Copied. Paste terrain separately in Hamina.");
+    setCopyNote("Copied. Paste it into Hamina.");
   } catch (e) {
     setCopyNote("Could not copy terrain. Allow clipboard access and try again, or use Terrain JSON.", true);
   }
@@ -2506,9 +2522,11 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
     lines.length = 0;
     for (let i = 0; i < withDone.length; i++) lines.push(withDone[i]);
   }
+  if (window.OPENCLUTTER_VERSION) lines.push("OpenClutter " + window.OPENCLUTTER_VERSION);
   setStatus(lines.join("\n"));
-  if (exportCopyReady && !drawHidesCopy) setCopyNote("Paste terrain separately in Hamina.");
-  else if (!terrainOff && !terrainPasteJson && !drawHidesCopy) setCopyNote(terrainMissingNote(data.terrainStatus), true);
+  if (!exportCopyReady && !terrainOff && !terrainPasteJson && !drawHidesCopy) {
+    setCopyNote(terrainMissingNote(data.terrainStatus), true);
+  }
 }
 
 /**
