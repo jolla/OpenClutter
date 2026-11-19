@@ -58,6 +58,13 @@
 
 const { ZONE_TYPES, TYPE_BY_ID, oiMaterialFromType, pickBuildingTypeId } = require("./hamina-clipboard");
 const { LIFT_LOCAL_M } = require("./terrain");
+const {
+  classifyBuildingUse,
+  usesCustomBuildingMaterial,
+  isUseBuildingName,
+  isLiftedUseBuildingName,
+  typeFromUseName,
+} = require("./building-use");
 
 /**
  * One cool gray for every tower and ordinary building. Height is only a
@@ -228,6 +235,70 @@ function isMeasuredBuildingOiName(name) {
 
 function isLiftedMeasuredBuildingName(name) {
   return LIFTED_MEASURED_BUILDING_NAME.test(name || "");
+}
+
+/**
+ * Custom OpenIntent object for a classified wall type whose dB/m is not the
+ * stock 5. Name is "Building - Wood frame 4.5" (label, then thickness).
+ * Masonry and unknown types keep the gold Building - * Floor objects.
+ */
+function typedBuildingMaterial(type, heightM, color) {
+  if (!usesCustomBuildingMaterial(type)) return null;
+  const h = roundBuildingHeightM(heightM);
+  if (!h) return null;
+  const name = "Building - " + type.label + " " + h.toFixed(1);
+  if (!isUseBuildingName(name) || isPoisonedOiName(name)) return null;
+  return oiMaterial(name, color || buildingColor(h), h, type.db);
+}
+
+function liftedTypedBuildingMaterial(base, bottomM) {
+  if (!base || !isUseBuildingName(base.name)) return null;
+  const type = typeFromUseName(base.name);
+  if (!type) return null;
+  const parsed = /^Building - .+ (\d+\.\d)$/.exec(base.name);
+  const thickness = parsed ? Number(parsed[1]) : 0;
+  if (!(thickness > 0)) return null;
+  const bottom = roundTenths(bottomM);
+  if (!(bottom >= LIFT_LOCAL_M)) return null;
+  const top = roundTenths(bottom + thickness);
+  return {
+    name: base.name + " @ " + bottom.toFixed(1),
+    rf_properties: { attenuation_per_m: type.db },
+    top_height: top,
+    bottom_height: bottom,
+    display_color: base.display_color,
+  };
+}
+
+function canonicalUseBuilding(material) {
+  if (!material || typeof material !== "object" || Array.isArray(material)) return null;
+  if ("itu_material_type" in material || "bottom_height" in material) return null;
+  const keys = Object.keys(material);
+  if (keys.length !== 4) return null;
+  if (!keys.every((k) => ["name", "rf_properties", "top_height", "display_color"].includes(k))) return null;
+  const type = typeFromUseName(material.name);
+  if (!type || !isUseBuildingName(material.name)) return null;
+  const canon = typedBuildingMaterial(type, material.top_height, material.display_color);
+  if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
+  return cloneMaterial(canon);
+}
+
+function canonicalLiftedUseBuilding(material) {
+  if (!material || typeof material !== "object" || Array.isArray(material)) return null;
+  if ("itu_material_type" in material || !("bottom_height" in material)) return null;
+  const keys = Object.keys(material);
+  if (keys.length !== 5) return null;
+  if (!keys.every((k) => ["name", "rf_properties", "top_height", "bottom_height", "display_color"].includes(k))) return null;
+  if (!isLiftedUseBuildingName(material.name)) return null;
+  const type = typeFromUseName(material.name);
+  if (!type) return null;
+  const parsed = /^Building - .+ (\d+\.\d) @ (\d+\.\d)$/.exec(material.name || "");
+  if (!parsed) return null;
+  const base = typedBuildingMaterial(type, Number(parsed[1]), material.display_color);
+  if (!base) return null;
+  const canon = liftedTypedBuildingMaterial(base, material.bottom_height);
+  if (!canon || JSON.stringify(material) !== JSON.stringify(canon)) return null;
+  return cloneMaterial(canon);
 }
 
 function isPodiumName(name) {
@@ -420,6 +491,44 @@ function liftPickedBuilding(picked, bottomM) {
         : null,
       typeId: idBase + "-b" + bottom.toFixed(1).replace(".", "_"),
       measured: true,
+      exactHeight: thickness,
+      buildingHeight: thickness,
+      lifted: true,
+    };
+  }
+  const useMat = liftedTypedBuildingMaterial(picked.material, bottomM);
+  if (useMat) {
+    const bottom = useMat.bottom_height;
+    const thickness = roundTenths(useMat.top_height - bottom);
+    const baseClip = picked.clipType;
+    const idBase = baseClip && baseClip.id ? baseClip.id : picked.typeId;
+    return {
+      material: useMat,
+      clipType: baseClip
+        ? {
+            id: idBase + "-b" + bottom.toFixed(1).replace(".", "_"),
+            name: useMat.name,
+            color: useMat.display_color,
+            shortcutKey: "",
+            topEdge: useMat.top_height,
+            bottomEdge: bottom,
+            attenuationDbPerMeter: useMat.rf_properties.attenuation_per_m,
+            ituRModelEnabled: true,
+            transparencyEnabled: !!(baseClip && baseClip.transparencyEnabled),
+          }
+        : {
+            id: String(idBase || "bldg-use") + "-b" + bottom.toFixed(1).replace(".", "_"),
+            name: useMat.name,
+            color: useMat.display_color,
+            shortcutKey: "",
+            topEdge: useMat.top_height,
+            bottomEdge: bottom,
+            attenuationDbPerMeter: useMat.rf_properties.attenuation_per_m,
+            ituRModelEnabled: true,
+            transparencyEnabled: false,
+          },
+      typeId: String(idBase || "bldg-use") + "-b" + bottom.toFixed(1).replace(".", "_"),
+      measured: picked.measured,
       exactHeight: thickness,
       buildingHeight: thickness,
       lifted: true,
@@ -945,8 +1054,14 @@ function materialForBuilding(heightM, areaM2, opts) {
   const oiType = OI_BUILDING_BY_ID[oiId];
   const clipTypeId = pickBuildingTypeId(areaM2, h);
   const exactOi = opts && opts.exactMetres ? measuredOiBuildingMaterial(h) : null;
+  let material = exactOi || oiMaterialFromType(oiType);
+  const type = classifyBuildingUse((opts && opts.use) || {});
+  if (usesCustomBuildingMaterial(type) && material) {
+    const typed = typedBuildingMaterial(type, material.top_height, material.display_color);
+    if (typed) material = typed;
+  }
   return {
-    material: exactOi || oiMaterialFromType(oiType),
+    material,
     clipType: exact ? exact.clipType : null,
     typeId: exact ? exact.typeId : clipTypeId,
     measured: !!exact,
@@ -1234,10 +1349,12 @@ function canonicalAreaMaterial(material) {
   if (isOutdoorOiName(material.name)) return canonicalOutdoor(material);
   if ("bottom_height" in material) {
     if (isLiftedFoliageName(material.name)) return canonicalLiftedFoliage(material);
+    if (isLiftedUseBuildingName(material.name)) return canonicalLiftedUseBuilding(material);
     if (isLiftedMeasuredBuildingName(material.name)) return canonicalLiftedMeasuredBuilding(material);
     return canonicalLiftedBuilding(material);
   }
   const name = material.name;
+  if (isUseBuildingName(name)) return canonicalUseBuilding(material);
   if (isMeasuredBuildingOiName(name)) return canonicalMeasuredBuilding(material);
   if (OI_BUILDING_NAMES.includes(name)) {
     const cat = buildingCatalog().find((m) => m.name === name);
@@ -1331,12 +1448,19 @@ function documentMaterials(areas) {
       if (!veg.has(mat.name)) veg.set(mat.name, JSON.parse(JSON.stringify(mat)));
       continue;
     }
+    if (isUseBuildingName(mat.name)) {
+      const canon = canonicalUseBuilding(mat);
+      if (canon && !measured.has(canon.name)) measured.set(canon.name, canon);
+      continue;
+    }
     if (isMeasuredBuildingOiName(mat.name)) {
       const canon = canonicalMeasuredBuilding(mat);
       if (canon && !measured.has(canon.name)) measured.set(canon.name, canon);
       continue;
     }
-    const canon = isLiftedBuildingName(mat.name)
+    const canon = isLiftedUseBuildingName(mat.name)
+      ? canonicalLiftedUseBuilding(mat)
+      : isLiftedBuildingName(mat.name)
       ? canonicalLiftedBuilding(mat)
       : isLiftedMeasuredBuildingName(mat.name)
         ? canonicalLiftedMeasuredBuilding(mat)

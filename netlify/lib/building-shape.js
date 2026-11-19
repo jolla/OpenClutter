@@ -21,6 +21,17 @@ const { fetchStreetMaps } = require("./street-map");
 const overpass = require("./overpass");
 const { isResilient, isSiteTypes } = require("./export-mode");
 const { placesFromElements } = require("./map-notes");
+const { copyOsmUseTags, TAG_KEYS } = require("./building-use");
+
+function usePropsFromOsmTags(tags) {
+  const props = {};
+  if (!tags) return props;
+  for (let i = 0; i < TAG_KEYS.length; i++) {
+    const k = TAG_KEYS[i];
+    if (tags[k] != null && tags[k] !== "") props[k] = tags[k];
+  }
+  return props;
+}
 
 const OVERPASS_URLS = [
   "https://overpass.kumi.systems/api/interpreter",
@@ -211,6 +222,7 @@ function partFeature(rings, tags) {
   if (buildingShape) properties.buildingShape = String(buildingShape).slice(0, 40);
   const name = tags && (tags.name || tags["building:part"]);
   if (name && name !== "yes") properties.partName = String(name).slice(0, 80);
+  Object.assign(properties, usePropsFromOsmTags(tags));
   return {
     type: "Feature",
     properties,
@@ -251,9 +263,10 @@ function isBuildingTag(tags) {
 }
 
 function pushOutlinedBuilding(buildings, structures, ring, tags) {
+  if (ring && tags) ring.osmTags = tags;
   buildings.push(ring);
   const heightM = parkingStructureHeight(tags);
-  if (heightM > 0) structures.push({ ring, heightM });
+  if (heightM > 0) structures.push({ ring, heightM, tags });
 }
 
 function parseBuildingDetail(payload, bbox) {
@@ -2181,6 +2194,7 @@ function shapeBuildings(features, detail) {
   const notches = dropDiagonalNotches(trimmed.features, osmRings);
   const garages = fillParkingStructures(notches.features, detail && detail.structures);
   const filled = fillMissingOsmFootprints(garages.features, osmRings);
+  copyOsmUseTags(filled.features, osmRings);
   return {
     features: filled.features,
     stats: {
@@ -2275,6 +2289,8 @@ function fillParkingStructures(features, structures) {
     if (best && area > 0 && bestInter / area >= OSM_FILL_COVER) {
       if (bestInter / area >= PARKING_HEIGHT_COVER) {
         if (!best.properties) best.properties = {};
+        Object.assign(best.properties, usePropsFromOsmTags(spec.tags || (spec.ring && spec.ring.osmTags)));
+        if (!best.properties.building) best.properties.building = "parking";
         if (!keptSourceHeight(best.properties)) {
           best.properties.height = heightM;
           best.properties.heightSource = "osm";
@@ -2286,7 +2302,7 @@ function fillParkingStructures(features, structures) {
     if (coveredByExisting(closed, area, existing)) continue;
     out.push({
       type: "Feature",
-      properties: { height: heightM, heightSource: "osm", geomSource: "osm-building" },
+      properties: Object.assign({ height: heightM, heightSource: "osm", geomSource: "osm-building", building: "parking" }, usePropsFromOsmTags(spec.tags || (spec.ring && spec.ring.osmTags))),
       geometry: { type: "Polygon", coordinates: [closed] },
     });
     existing.push(closed);
@@ -2310,7 +2326,7 @@ function fillMissingOsmFootprints(features, osmRings) {
     if (coveredByExisting(closed, area, existing)) continue;
     out.push({
       type: "Feature",
-      properties: { height: 4.5, heightSource: "osm", geomSource: "osm-building" },
+      properties: Object.assign({ height: 4.5, heightSource: "osm", geomSource: "osm-building" }, usePropsFromOsmTags(rings[i].osmTags)),
       geometry: { type: "Polygon", coordinates: [closed] },
     });
     existing.push(closed);

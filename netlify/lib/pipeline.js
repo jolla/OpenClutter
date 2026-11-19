@@ -2133,7 +2133,7 @@ function llFromOiPixels(pixelVerts, frame) {
   return ll;
 }
 
-function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase, shapePart, drawnRing, podium) {
+function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase, shapePart, drawnRing, podium, useProps) {
   const base = levelBase > 0 ? levelBase : 0;
   // A stepped plan uses the band above the lower footprint, not the full height.
   const band = base > 0 ? Math.round((heightM - base) * 10) / 10 : heightM;
@@ -2163,6 +2163,7 @@ function pickedForRing(rings, heightM, areaM2, slopeTop, heightSource, levelBase
       base > 0 ||
       shapePart === true ||
       (measuredSource && measuredExceedsStock(thickness)),
+    use: useProps,
   });
   // Each piece meets the downhill ground under its own ring and keeps the
   // measured height above that ground. A flat pad under 1 m omits the bottom.
@@ -2330,7 +2331,7 @@ function ringsUnderVertexCap(ring, maxPts, eps, mpd, depth, root) {
   return out;
 }
 
-function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone, keepThin, podium) {
+function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone, keepThin, podium, useProps) {
   const px = [];
   for (let i = 0; i < ring.length; i++) {
     const xy = llToPx(ring[i][0], ring[i][1], frame);
@@ -2383,7 +2384,8 @@ function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSou
       keepOut,
       keepSpanZone,
       keepThin,
-      podium
+      podium,
+      useProps
     );
     if (result === "keep") sawKeep = true;
     else if (result === "span") sawSpan = true;
@@ -2431,7 +2433,7 @@ function stashBuilding(buckets, frame, affine, clipRing, overlayPts, clipPx, pic
   );
 }
 
-function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone, keepThin, podium) {
+function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone, keepThin, podium, useProps) {
   const simple = simplifyRing(ring, maxPts, eps);
   if (!simple || simple.length < 4) return "skip";
   const detailVerts = ringVertexCount(simple);
@@ -2468,7 +2470,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     // clipboard zone would no longer match the area list. A static caravan
     // is the building, so it stays in the area list instead of this path.
     if (keepSpanZone === false) return "tiny";
-    const pickedThin = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart, null, podium);
+    const pickedThin = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart, null, podium, useProps);
     if (pickedThin.lifted) buckets.lifted++;
     stashBuilding(buckets, frame, affine, clipRing, clippedPts, clippedPts, pickedThin);
     return "span";
@@ -2499,7 +2501,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     return "clip";
   }
   const drawnRing = llFromOiPixels(oiPixelCoords(oiCoords), frame);
-  let picked = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart, drawnRing, podium);
+  let picked = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart, drawnRing, podium, useProps);
   const area = emitIfValid(
     makeOiArea(oiCoords, picked.material),
     frame.imgW,
@@ -2928,7 +2930,8 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
             keepOut,
             parts.length === 1,
             keepThin,
-            podium
+            podium,
+            props
           );
           emittingSplitPiece = false;
           if (result === "keep") {
