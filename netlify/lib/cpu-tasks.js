@@ -105,6 +105,16 @@ const TILE_SPLIT_SOFT_MS = Math.max(
 );
 
 function foliageAssemble(payload) {
+  // Test-only: block this worker so the pool timeout can replace it.
+  // The main-thread fallback sets splitCellsOnly and must not hang.
+  if (
+    payload &&
+    payload.hangForTest &&
+    process.env.OPENCLUTTER_TILE_HANG_TEST === "1" &&
+    !payload.splitCellsOnly
+  ) {
+    for (;;) {}
+  }
   try {
     return foliageAssembleSeated(payload);
   } finally {

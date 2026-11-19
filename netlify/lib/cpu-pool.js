@@ -210,29 +210,80 @@ function onMessage(msg) {
   } else slot.reject(new Error(msg.error || "worker failed"));
 }
 
+function jobMessage(id, task, payload) {
+  const mode = require("./export-mode");
+  return {
+    id,
+    task,
+    payload,
+    siteTypes: mode.isSiteTypes(),
+    shadowTrailers: mode.isShadowTrailers(),
+    waterEdges: mode.isWaterEdges(),
+    canopyBands: mode.isCanopyBands(),
+    mergeTiles: mode.isMergeTiles(),
+    scrubGaps: mode.isScrubGaps(),
+    crownStyle: mode.isCrownStyle(),
+    smoothEdges: mode.isSmoothEdges(),
+  };
+}
+
+// Only reject jobs still bound to this worker object. A replaced
+// worker must not fail a job already retried on its successor.
+function failWorkerJobs(index, worker, err) {
+  const message = err && err.message ? err.message : "worker failed";
+  const doomed = [];
+  for (const [id, slot] of pending) {
+    if (slot.workerIndex === index && slot.worker === worker) doomed.push(id);
+  }
+  for (const id of doomed) {
+    const slot = pending.get(id);
+    pending.delete(id);
+    if (slot) slot.reject(new Error(message));
+  }
+}
+
 function spawnPoolWorker(index) {
   const worker = new Worker(workerFile(), { workerData: { index } });
   if (typeof worker.unref === "function") worker.unref();
   worker.on("message", onMessage);
   worker.on("error", (err) => {
-    const message = err && err.message ? err.message : "worker failed";
-    const doomed = [];
-    for (const [id, slot] of pending) {
-      if (slot.workerIndex === index) doomed.push(id);
-    }
-    for (const id of doomed) {
-      const slot = pending.get(id);
-      pending.delete(id);
-      if (slot) slot.reject(new Error(message));
-    }
+    failWorkerJobs(index, worker, err);
+  });
+  // terminate() emits exit, not error. Without this, a queued sibling
+  // job on the dying worker stays pending forever (iowa-state-fair hang).
+  worker.on("exit", () => {
+    failWorkerJobs(index, worker, new Error("worker exited"));
   });
   return worker;
+}
+
+function retryWorkerJobs(index, worker) {
+  for (const [id, slot] of pending) {
+    if (slot.workerIndex !== index) continue;
+    if (!slot.task) {
+      pending.delete(id);
+      slot.reject(new Error("worker replaced"));
+      continue;
+    }
+    slot.worker = worker;
+    try {
+      worker.postMessage(jobMessage(id, slot.task, slot.payload));
+    } catch (err) {
+      pending.delete(id);
+      slot.reject(err);
+    }
+  }
 }
 
 function replacePoolWorker(index) {
   if (!workers || !workers[index]) return;
   const old = workers[index];
-  workers[index] = spawnPoolWorker(index);
+  const next = spawnPoolWorker(index);
+  workers[index] = next;
+  // Trees and outdoor queues share this pool and can have a second job
+  // already posted to the same worker. Re-post those before the old
+  // thread is torn down, or Promise.all after mergeFoliage waits forever.
+  retryWorkerJobs(index, next);
   try {
     old.terminate().catch(() => {});
   } catch (_) {}
@@ -251,10 +302,14 @@ function ensurePool() {
   return workers;
 }
 
-const FOLIAGE_TILE_BUDGET_MS = Math.max(
-  10000,
-  parseInt(process.env.OPENCLUTTER_TILE_BUDGET_MS || "180000", 10) || 180000
-);
+function foliageTileBudgetMs() {
+  const raw = process.env.OPENCLUTTER_TILE_BUDGET_MS;
+  if (raw != null && String(raw).trim() !== "") {
+    const n = parseInt(raw, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 180000;
+}
 
 function logTileTimeout(tileHint, wall) {
   try {
@@ -294,11 +349,11 @@ function runOn(workerIndex, task, payload, hooks) {
   const worker = pool[index];
   bumpBusy(index, 1);
   const tileHint = payload && payload.tileId != null ? String(payload.tileId) : task;
-  const budget = task === "foliage-assemble" ? FOLIAGE_TILE_BUDGET_MS : 0;
+  const budget = task === "foliage-assemble" ? foliageTileBudgetMs() : 0;
   const startedAt = Date.now();
   let timer = null;
   const job = new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject, onTime, workerIndex: index });
+    pending.set(id, { resolve, reject, onTime, workerIndex: index, worker, task, payload });
     if (budget > 0) {
       timer = setTimeout(() => {
         if (!pending.has(id)) return;
@@ -325,8 +380,7 @@ function runOn(workerIndex, task, payload, hooks) {
     }
     try {
       // Threads keep their own module state: carry the export's rule set.
-      const mode = require("./export-mode");
-      worker.postMessage({ id, task, payload, siteTypes: mode.isSiteTypes(), shadowTrailers: mode.isShadowTrailers(), waterEdges: mode.isWaterEdges(), canopyBands: mode.isCanopyBands(), mergeTiles: mode.isMergeTiles(), scrubGaps: mode.isScrubGaps(), crownStyle: mode.isCrownStyle(), smoothEdges: mode.isSmoothEdges() });
+      worker.postMessage(jobMessage(id, task, payload));
     } catch (err) {
       pending.delete(id);
       if (timer) clearTimeout(timer);
