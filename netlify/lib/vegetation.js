@@ -12,6 +12,10 @@ const {
   standUnderstoryM,
   understoryClipPair,
   isUnderstoryOiName,
+  isTrunkOiName,
+  isVegetationOiName,
+  trunkClipPair,
+  trunkOiMaterial,
 } = require("./materials");
 
 const { MAX_TREES, maxTreesForBbox, canopyHeightM } = require("./tree-source");
@@ -1884,6 +1888,15 @@ function reseatPart(part, newBottom) {
       clip: { typeId: pair.typeId, clipType: pair.clipType },
     };
   }
+  if (isTrunkOiName(mat.name)) {
+    const material = trunkOiMaterial(thickness, newBottom);
+    const pair = trunkClipPair(thickness, newBottom);
+    if (!material || !pair) return null;
+    return {
+      material,
+      clip: { typeId: pair.typeId, clipType: pair.clipType },
+    };
+  }
   if (!(newBottom >= 1)) {
     const bare = bareCanopy(mat, thickness);
     return { material: bare, clip: clipboardForCanopy(bare) };
@@ -1912,7 +1925,7 @@ function dropStack(parts, slopeTop, frame) {
   const down = Number(slopeTop.seat(ll)) || 0;
   const mat0 = parts[0].material;
   const bottom = mat0 && Number(mat0.bottom_height) >= 1 ? Number(mat0.bottom_height) : 0;
-  if (!(down >= 1) || !(bottom > down + 3)) return parts;
+  if (!(down >= 1) || !(bottom - down >= 3)) return parts;
   const drop = bottom - down;
   const out = [];
   for (let i = 0; i < parts.length; i++) {
@@ -1932,6 +1945,199 @@ function dropStack(parts, slopeTop, frame) {
     out.push(Object.assign({}, part, seated));
   }
   return out;
+}
+
+function foliageCentroid(ring) {
+  if (!ring || !ring.length) return null;
+  const end = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? ring.length - 1 : ring.length;
+  if (!(end > 0)) return null;
+  let x = 0;
+  let y = 0;
+  for (let i = 0; i < end; i++) {
+    x += +ring[i][0];
+    y += +ring[i][1];
+  }
+  return [x / end, y / end];
+}
+
+function partBottom(area) {
+  const mat = area && area.material;
+  return mat && Number(mat.bottom_height) >= 1 ? Number(mat.bottom_height) : 0;
+}
+
+function partTop(area) {
+  const mat = area && area.material;
+  const top = mat ? Number(mat.top_height) : NaN;
+  return Number.isFinite(top) ? top : partBottom(area);
+}
+
+function stackedTogether(a, b) {
+  if (!a || !b || a === b || !a.ringPx || !b.ringPx) return false;
+  const gap = 0.5;
+  const aSupports = Math.abs(partTop(a) - partBottom(b)) <= gap;
+  const bSupports = Math.abs(partTop(b) - partBottom(a)) <= gap;
+  if (!aSupports && !bSupports) return false;
+  const lower = aSupports ? a : b;
+  const upper = aSupports ? b : a;
+  const cLow = foliageCentroid(lower.ringPx);
+  const cUp = foliageCentroid(upper.ringPx);
+  // A trunk carries the crown when its centre sits under the crown. A small
+  // upper band whose centre sits in the lower ring is the same stand's cap,
+  // even when it sits on the shoulder (arizona-desert 52.8 inside 50.6).
+  // A disjoint neighbour that only matches height is not the same stack.
+  if (cLow && pointInRing(cLow, upper.ringPx)) return true;
+  if (cUp && pointInRing(cUp, lower.ringPx)) return true;
+  // Close shared centres only when one piece is a cap or stem of the other.
+  // Two similar-size neighbouring stands at supporting layer heights must
+  // not union into one stack (a woods would then drop to the lowest preview
+  // triangle under any part).
+  const areaA = ringPxArea(a.ringPx);
+  const areaB = ringPxArea(b.ringPx);
+  const small = Math.min(areaA, areaB);
+  const large = Math.max(areaA, areaB);
+  if (!(large > 0) || small / large > 0.5) return false;
+  const ca = foliageCentroid(a.ringPx);
+  const cb = foliageCentroid(b.ringPx);
+  if (!ca || !cb) return false;
+  const reach = Math.max(2, 0.25 * Math.sqrt(large));
+  return Math.hypot(ca[0] - cb[0], ca[1] - cb[1]) <= reach;
+}
+
+function foliageStacks(areas) {
+  const n = areas.length;
+  const parent = new Array(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+  const find = (i) => {
+    let a = i;
+    while (parent[a] !== a) a = parent[a];
+    let b = i;
+    while (parent[b] !== a) {
+      const n2 = parent[b];
+      parent[b] = a;
+      b = n2;
+    }
+    return a;
+  };
+  const boxes = areas.map((area) => (area && area.ringPx ? ringBoundsPx(area.ringPx) : null));
+  for (let i = 0; i < n; i++) {
+    if (!areas[i] || !areas[i].material || !areas[i].ringPx) continue;
+    const bi = boxes[i];
+    if (!bi) continue;
+    for (let j = i + 1; j < n; j++) {
+      if (!areas[j] || !areas[j].material || !areas[j].ringPx) continue;
+      const bj = boxes[j];
+      if (!bj || bi.maxX < bj.minX || bj.maxX < bi.minX || bi.maxY < bj.minY || bj.maxY < bi.minY) continue;
+      if (stackedTogether(areas[i], areas[j])) {
+        const pi = find(i);
+        const pj = find(j);
+        if (pi !== pj) parent[pj] = pi;
+      }
+    }
+  }
+  const groups = new Map();
+  for (let i = 0; i < n; i++) {
+    if (!areas[i] || !areas[i].material) continue;
+    const id = find(i);
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(areas[i]);
+  }
+  return Array.from(groups.values());
+}
+
+function seatRingLl(ring, frame) {
+  if (!ring || ring.length < 4 || !frame) return null;
+  const ll = [];
+  for (let k = 0; k < ring.length; k++) {
+    const q = pxToLl(ring[k][0], ring[k][1], frame);
+    if (q && Number.isFinite(q[0]) && Number.isFinite(q[1])) ll.push(q);
+  }
+  return ll.length >= 3 ? ll : null;
+}
+
+function applyReseat(area, newBottom) {
+  const seated = reseatPart({ material: area.material, clip: area.clip }, newBottom);
+  if (!seated || !seated.material) return false;
+  area.material = seated.material;
+  if (seated.clip) {
+    area.clip = seated.clip.typeId && seated.clip.clipType
+      ? { typeId: seated.clip.typeId, clipType: seated.clip.clipType }
+      : seated.clip;
+  }
+  return true;
+}
+
+function syncFoliageClips(areas, frame, affine) {
+  const clipTypes = [];
+  const clipZones = [];
+  const seenClip = new Set();
+  for (let i = 0; i < (areas || []).length; i++) {
+    const area = areas[i];
+    if (!area) continue;
+    pushFoliageClip(area.clip, area.ringPx, frame, affine, seenClip, clipTypes, clipZones);
+  }
+  return { clipTypes, clipZones };
+}
+
+function seatUnderArea(area, slopeTop, frame) {
+  const ll = seatRingLl(area && area.ringPx, frame);
+  if (!ll) return 0;
+  const official = typeof slopeTop.seat === "function" ? Number(slopeTop.seat(ll)) || 0 : 0;
+  if (typeof slopeTop.previewSeat !== "function") return official;
+  const preview = Number(slopeTop.previewSeat(ll)) || 0;
+  if (!(preview >= 1)) return official;
+  // A wide stand's preview min can be one low vertex (a ditch or a hole).
+  // Small crowns still use the preview, which is what reseats arizona-desert
+  // floats the official downhill plane misses.
+  const areaM = canopyAreaM2(area.ringPx, frame);
+  if (areaM >= STAND_LAYER_M2 && official >= 1 && official - preview >= 3) return official;
+  return preview;
+}
+
+/**
+ * Snap a floating stack onto the downhill paste under the ring that ships.
+ * Worker tiles can seat on a slightly different mesh than the clipboard
+ * that is pasted with the zip (arizona-desert). The whole stem, understory,
+ * and crown move by the same delta so treetop height (crown top minus the
+ * ground under the stack) stays the same. If a cap on a stacked stand would
+ * itself float, the whole stack drops by the base's gap even when that gap
+ * is under 3 m, so the cap is not pulled off the stand.
+ */
+function reseatAssembledFoliage(areas, slopeTop, frame) {
+  if (!slopeTop || !areas || !areas.length || !frame) return 0;
+  if (typeof slopeTop.seat !== "function" && typeof slopeTop.previewSeat !== "function") return 0;
+  const stacks = foliageStacks(areas);
+  let n = 0;
+  for (let s = 0; s < stacks.length; s++) {
+    const stack = stacks[s];
+    let base = stack[0];
+    for (let i = 1; i < stack.length; i++) {
+      if (partBottom(stack[i]) < partBottom(base)) base = stack[i];
+    }
+    let down = 0;
+    let anyPartGap = false;
+    for (let i = 0; i < stack.length; i++) {
+      const seat = seatUnderArea(stack[i], slopeTop, frame);
+      if (!(seat >= 1)) continue;
+      if (down < 1 || seat < down) down = seat;
+      if (partBottom(stack[i]) - seat >= 3) anyPartGap = true;
+    }
+    const bottom = partBottom(base);
+    if (!(down >= 1)) continue;
+    const drop = bottom - down;
+    // A stacked cap is more than 3 m above the paste because of the
+    // understory, not because it floats. The drop is the base gap. When
+    // that gap is at least 3 m, or at least 2 m with a part the preview
+    // would still call floating (arizona-desert 52.8 on a 48 m plate),
+    // move the whole stack.
+    if (!(drop >= 3) && !(anyPartGap && drop >= 2)) continue;
+    let moved = 0;
+    for (let i = 0; i < stack.length; i++) {
+      const next = roundTenths(partBottom(stack[i]) - drop);
+      if (applyReseat(stack[i], next)) moved++;
+    }
+    if (moved) n += moved;
+  }
+  return n;
 }
 
 /** Keep at most `maxPts` corners. A sawtooth edge makes the slope cut drop area and seat the whole stand on one sample. */
@@ -2877,6 +3083,54 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     }
     return px.length >= 4 ? px : null;
   };
+  // Downhill / mid / uphill seat for one lon/lat ring. Shared by the first
+  // slope cut and by later tiles so a piece sits on the ground under it,
+  // not on the parent stand's datum.
+  const seatNear = (ll) => {
+    if (!slopeTop || typeof slopeTop.seat !== "function" || !ll || !ll.length) return 0;
+    let lon = 0;
+    let lat = 0;
+    let n = 0;
+    const end = ll.length > 1 && ll[0][0] === ll[ll.length - 1][0] && ll[0][1] === ll[ll.length - 1][1] ? ll.length - 1 : ll.length;
+    for (let i = 0; i < end; i++) {
+      lon += +ll[i][0];
+      lat += +ll[i][1];
+      n++;
+    }
+    if (!n) return 0;
+    lon /= n;
+    lat /= n;
+    const d = 0.00004;
+    return (
+      Number(
+        slopeTop.seat([
+          [lon - d, lat - d],
+          [lon + d, lat - d],
+          [lon + d, lat + d],
+          [lon - d, lat + d],
+          [lon - d, lat - d],
+        ])
+      ) || 0
+    );
+  };
+  const groundOf = (ll) => {
+    if (!slopeTop) return 0;
+    const up = Number(slopeTop(ll)) || 0;
+    if (typeof slopeTop.seat !== "function") return up;
+    const down = Number(slopeTop.seat(ll)) || 0;
+    // A ring that climbs a whole hillside has a datum cell at the edge.
+    // Seating the stand on that cell buries the woods. The middle of the
+    // ring is the ground the canopy actually covers.
+    if (up - down > 12) {
+      const mid = seatNear(ll);
+      if (mid >= 1) return mid;
+    }
+    // Relief of 3 m or more uses the downhill seat. An exclusive > 3 left
+    // a crown on the uphill sample when rounding made the official relief
+    // exactly 3 m, and that crown then floated above the pasted mesh.
+    if (up - down >= 3) return down;
+    return up;
+  };
   const seatsFor = (area) => {
     const one = (ringPx, ground, slopePiece) => [{ ringPx, ground, slopePiece: !!slopePiece }];
     if (!slopeTop || !area.ringPx || area.ringPx.length < 4) return one(area.ringPx, 0, false);
@@ -2970,46 +3224,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   // as its own full-height prism, which reads as a thin green column. A
   // sliver joins the neighbour it touches; it sits on that neighbour's ground.
   const mergeSlivers = (seats) => mergeSliversGuarded(seats, frame);
-  const seatNear = (ll) => {
-    let lon = 0;
-    let lat = 0;
-    let n = 0;
-    const end = ll.length > 1 && ll[0][0] === ll[ll.length - 1][0] && ll[0][1] === ll[ll.length - 1][1] ? ll.length - 1 : ll.length;
-    for (let i = 0; i < end; i++) {
-      lon += +ll[i][0];
-      lat += +ll[i][1];
-      n++;
-    }
-    if (!n) return 0;
-    lon /= n;
-    lat /= n;
-    const d = 0.00004;
-    return (
-      Number(
-        slopeTop.seat([
-          [lon - d, lat - d],
-          [lon + d, lat - d],
-          [lon + d, lat + d],
-          [lon - d, lat + d],
-          [lon - d, lat - d],
-        ])
-      ) || 0
-    );
-  };
-  const groundOf = (ll) => {
-    const up = Number(slopeTop(ll)) || 0;
-    if (typeof slopeTop.seat !== "function") return up;
-    const down = Number(slopeTop.seat(ll)) || 0;
-    // A ring that climbs a whole hillside has a datum cell at the edge.
-    // Seating the stand on that cell buries the woods. The middle of the
-    // ring is the ground the canopy actually covers.
-    if (up - down > 12) {
-      const mid = seatNear(ll);
-      if (mid >= 1) return mid;
-    }
-    if (up - down > 3) return down;
-    return up;
-  };
+
   const palmPx = [];
   const palmLl = (opts && opts.palmPoints) || [];
   for (let i = 0; i < palmLl.length; i++) {
@@ -3111,7 +3326,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
           for (const piece of cut.pieces) {
             if (!piece.ringPx || piece.ringPx.length < 4 || canopyAreaM2(piece.ringPx, frame) < SLIVER_M2) continue;
             const ll = piece.ringPx.map((p) => pxToLl(p[0], p[1], frame));
-            out.push({ ringPx: piece.ringPx, ground: seat.ground, slopePiece: seat.slopePiece, ll, tile: true, bandH: piece.bandH || 0 });
+            out.push({ ringPx: piece.ringPx, ground: groundOf(ll), slopePiece: seat.slopePiece, ll, tile: true, bandH: piece.bandH || 0 });
             made++;
           }
           bandStats.pieces += made;
@@ -3138,7 +3353,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
             const ring = parts[q];
             if (!ring || ring.length < 4 || canopyAreaM2(ring, frame) < SLIVER_M2) continue;
             const ll = ring.map((p) => pxToLl(p[0], p[1], frame));
-            boxTiles.push({ ringPx: ring, ground: seat.ground, slopePiece: seat.slopePiece, ll, tile: true, gx, gy });
+            boxTiles.push({ ringPx: ring, ground: groundOf(ll), slopePiece: seat.slopePiece, ll, tile: true, gx, gy });
             made++;
           }
         }
@@ -3159,7 +3374,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
           for (const m of merged) {
             if (!m.ringPx || m.ringPx.length < 4 || canopyAreaM2(m.ringPx, frame) < SLIVER_M2) continue;
             const ll = m.ringPx.map((p) => pxToLl(p[0], p[1], frame));
-            out.push({ ringPx: m.ringPx, ground: seat.ground, slopePiece: seat.slopePiece, ll, tile: true, bandH: m.bandH || 0 });
+            out.push({ ringPx: m.ringPx, ground: groundOf(ll), slopePiece: seat.slopePiece, ll, tile: true, bandH: m.bandH || 0 });
           }
           tiled++;
           continue;
@@ -3418,24 +3633,25 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       }
     }
     const stack = stand || crownStack(row, frame, plans[r].n, heightSample);
-    // A crown on a stem is meant to sit above the ground; dropping it would
-    // put the crown at the foot of its own trunk.
-    const parts = (row.trunk ? (s0) => s0 : (s0) => dropStack(s0, slopeTop, frame))(
-      stack || [
-        {
-          ringPx: area.ringPx,
-          material: area.material,
-          clip: row.clip || clipboardForCanopy(area.material),
-          scale: 1,
-        },
-      ]
-    );
+    let parts = stack || [
+      {
+        ringPx: area.ringPx,
+        material: area.material,
+        clip: row.clip || clipboardForCanopy(area.material),
+        scale: 1,
+      },
+    ];
     roundCrownParts(parts, row, frame);
     if (facets && facets.plans[r] && applyFacet(parts, facets.plans[r])) {
       crownsFaceted++;
       const sh = facets.plans[r].shift;
       if (sh && row.trunk && row.trunk.ringPx) row.trunk.ringPx = row.trunk.ringPx.map((p) => [p[0] + sh[0], p[1] + sh[1]]);
     }
+    // A crown on a stem is meant to sit above the ground; dropping it would
+    // put the crown at the foot of its own trunk. Run this after the ring
+    // is rounded or faceted so a tile that shrank onto a lower plate is
+    // reseated on the mesh under the outline that actually ships.
+    if (!row.trunk) parts = dropStack(parts, slopeTop, frame);
     if (uIndex && stand && parts.length >= 2 && parts[0].material && isUnderstoryOiName(parts[0].material.name)) {
       const u = parts[0];
       const shaped = understoryStyleLib.shapeUnderstory(u.ringPx, frame, { style: uStyle, index: uIndex, heightSample });
@@ -3476,6 +3692,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       oiAreas.push({
         ringPx: part.ringPx,
         material: part.material,
+        clip: part.clip,
         kind: row.slopePiece && i === 0 ? "slope" : i === 0 ? "canopy" : "layer",
         shape: area.shape || "polygon",
         keepOutPx,
@@ -3535,6 +3752,8 @@ module.exports = {
   blockerFromRings,
   polygonsFromCrowns,
   assembleFoliage,
+  reseatAssembledFoliage,
+  syncFoliageClips,
   facetCrownParts,
   openEdgeShare,
   planSceneFacets,

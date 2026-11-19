@@ -29,7 +29,7 @@ const {
 } = require("./materials");
 const { isParkingClass, planOutdoor, fitOutdoorBudget } = require("./outdoor-clutter");
 const { decodePlate, needsPitchImage, roofWantsDocks } = require("./vehicle-track");
-const { treePairsFromPoints } = require("./vegetation");
+const { treePairsFromPoints, reseatAssembledFoliage, syncFoliageClips } = require("./vegetation");
 const { intersectionAreaPx, bounds: clipBounds, bboxHit, prepareClipRings } = require("./poly-clip");
 const profile = require("./profile-log");
 const { dedupeStackedFootprints } = require("./conflate");
@@ -3796,9 +3796,16 @@ function buildClutter({
   }
   // A poisoned or drifted vegetation material fails makeOiArea and that ring
   // is omitted, so it cannot empty the buildings.
-  const treeOi = foliagePack && foliagePack.treeOi
-    ? foliagePack.treeOi
-    : treesToOi(veg.oiAreas, frame.imgW, frame.imgH, frame.mpuX);
+  // Seating may have run in a worker on a copied terrain object. Snap
+  // unstemmed crowns to the same paste that ships, then rebuild OpenIntent
+  // from those rings so a stale worker treeOi cannot keep a floating bottom.
+  if (veg && veg.oiAreas) {
+    reseatAssembledFoliage(veg.oiAreas, slopeTop, frame);
+    const synced = syncFoliageClips(veg.oiAreas, frame, affine);
+    veg.clipTypes = synced.clipTypes;
+    veg.clipZones = synced.clipZones;
+  }
+  const treeOi = treesToOi(veg.oiAreas, frame.imgW, frame.imgH, frame.mpuX);
   const deckCap = raisedDeckCap(areaCap);
   let waterAreas = 0;
   let parkingAreas = 0;

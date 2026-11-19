@@ -103,6 +103,23 @@ function splitList(list, count) {
   return groups;
 }
 
+function terrainPayload(terrain) {
+  if (!terrain) return null;
+  let snap = null;
+  try {
+    snap = require("./terrain").snapshotTerrainForSplit(terrain);
+  } catch (_) {
+    snap = null;
+  }
+  const out = snap || plainData(terrain);
+  if (out && out.clipboard && !((out.raised || 0) + (out.sloped || 0))) {
+    const clip = out.clipboard;
+    out.raised = (clip.raisedFloorZones || []).length;
+    out.sloped = (clip.slopedFloors || []).length;
+  }
+  return out;
+}
+
 function plainData(value) {
   if (!value || typeof value !== "object") return value || null;
   const out = Array.isArray(value) ? [] : {};
@@ -340,7 +357,7 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
       buildingAabbs,
       affine,
       opts: plainOpts(opts),
-      terrain: plainData(opts && opts.terrain),
+      terrain: terrainPayload(opts && opts.terrain),
       chmGrid: grid ? copyGrid(grid) : null,
     });
   }
@@ -411,7 +428,7 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
     }));
   }
   const groups = foliageGroups(polygons, threads, frame);
-  const terrain = plainData(opts.terrain);
+  const terrain = terrainPayload(opts.terrain);
   const chmShared = shareValues(grid);
   const foliageBase = tilePayloads.length;
   const assembled = await stageClock.timeSubstage("foliage-assemble", () => runQueue(
