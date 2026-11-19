@@ -255,6 +255,55 @@ describe("cpu workers", () => {
     assert.ok(parallel.oiAreas.length < 8000);
     assert.ok(parallel.polygons <= 720);
   });
+
+  it("a foliage-assemble tile timeout still finishes a job queued on the same worker", async () => {
+    // Iowa hang: trees and outdoor share the pool. A 180 s foliage tile
+    // timeout terminated that worker, and a sibling job already posted
+    // there never resolved (terminate emits exit, not error).
+    const prevCpu = process.env.OPENCLUTTER_CPU_COUNT;
+    const prevFly = process.env.FLY_MACHINE_CPUS;
+    const prevBudget = process.env.OPENCLUTTER_TILE_BUDGET_MS;
+    const prevHang = process.env.OPENCLUTTER_TILE_HANG_TEST;
+    process.env.OPENCLUTTER_CPU_COUNT = "1";
+    delete process.env.FLY_MACHINE_CPUS;
+    process.env.OPENCLUTTER_TILE_BUDGET_MS = "200";
+    process.env.OPENCLUTTER_TILE_HANG_TEST = "1";
+    await closePool();
+    const t0 = Date.now();
+    let foliage;
+    let spin;
+    try {
+      const both = Promise.all([
+        runTiles("foliage-assemble", [{ hangForTest: true, tileId: "canopy-50" }]),
+        runTiles("spin", [{ ms: 40, tileId: "vehicle-0" }]),
+      ]);
+      const winner = await Promise.race([
+        both.then((rows) => ({ rows })),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("sibling job still pending after tile timeout")), 5000)
+        ),
+      ]);
+      foliage = winner.rows[0];
+      spin = winner.rows[1];
+    } finally {
+      if (prevCpu == null) delete process.env.OPENCLUTTER_CPU_COUNT;
+      else process.env.OPENCLUTTER_CPU_COUNT = prevCpu;
+      if (prevFly == null) delete process.env.FLY_MACHINE_CPUS;
+      else process.env.FLY_MACHINE_CPUS = prevFly;
+      if (prevBudget == null) delete process.env.OPENCLUTTER_TILE_BUDGET_MS;
+      else process.env.OPENCLUTTER_TILE_BUDGET_MS = prevBudget;
+      if (prevHang == null) delete process.env.OPENCLUTTER_TILE_HANG_TEST;
+      else process.env.OPENCLUTTER_TILE_HANG_TEST = prevHang;
+      await closePool();
+    }
+    const wall = Date.now() - t0;
+    assert.ok(wall < 5000, "hung for " + wall + "ms");
+    assert.equal(spin[0].spun, 40);
+    const again = await runOne("spin", { ms: 20 });
+    assert.equal(again.spun, 20);
+    assert.ok(Array.isArray(foliage));
+    assert.equal(foliage.length, 1);
+  });
 });
 
 describe("export status worker field", () => {
