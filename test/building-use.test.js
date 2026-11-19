@@ -13,7 +13,9 @@ const {
   canonicalAreaMaterial,
   liftPickedBuilding,
   documentMaterials,
+  asPodium,
 } = require("../netlify/lib/materials");
+const { emitIfValid } = require("../netlify/lib/pipeline");
 
 function db(mat) {
   return mat && mat.rf_properties && mat.rf_properties.attenuation_per_m;
@@ -104,6 +106,38 @@ describe("typed building materials", () => {
     assert.equal(canonicalAreaMaterial(lifted.material).name, lifted.material.name);
     assert.equal(usesCustomBuildingMaterial(classifyBuildingUse({ building: "house" })), true);
     assert.equal(usesCustomBuildingMaterial(classifyBuildingUse({ material: "brick" })), false);
+  });
+
+  it("does not drop a typed or lifted typed building when it becomes a podium", () => {
+    const ring = [
+      { coordinate_xyz: { x: 10, y: 10, unit: "pixels" } },
+      { coordinate_xyz: { x: 80, y: 10, unit: "pixels" } },
+      { coordinate_xyz: { x: 80, y: 80, unit: "pixels" } },
+      { coordinate_xyz: { x: 10, y: 80, unit: "pixels" } },
+      { coordinate_xyz: { x: 10, y: 10, unit: "pixels" } },
+    ];
+    const uses = [
+      { building: "house" },
+      { building: "warehouse" },
+      { building: "school" },
+      { building: "retail" },
+      { building: "carport" },
+    ];
+    for (const use of uses) {
+      const picked = materialForBuilding(12, 2000, { exactMetres: true, use });
+      const pod = asPodium(picked);
+      const canon = canonicalAreaMaterial(pod.material);
+      assert.ok(canon, "typed podium must catalog: " + JSON.stringify(use));
+      assert.equal(db(pod.material), 5);
+      const kept = emitIfValid({ area: { coordinates: ring }, area_material: pod.material }, 200, 200);
+      assert.ok(kept, "typing must not drop a podium outline: " + JSON.stringify(use));
+
+      const lifted = asPodium(liftPickedBuilding(picked, 3.2));
+      assert.ok(canonicalAreaMaterial(lifted.material), "lifted typed podium must catalog: " + JSON.stringify(use));
+      assert.equal(db(lifted.material), 5);
+      const keptLifted = emitIfValid({ area: { coordinates: ring }, area_material: lifted.material }, 200, 200);
+      assert.ok(keptLifted, "typing must not drop a lifted podium outline: " + JSON.stringify(use));
+    }
   });
 });
 

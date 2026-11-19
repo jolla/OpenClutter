@@ -316,10 +316,12 @@ function isLiftedPodiumName(name) {
 function asPodium(picked) {
   if (!picked || !picked.material) return picked;
   const src = picked.material;
-  const db =
-    src.rf_properties && src.rf_properties.attenuation_per_m != null
-      ? src.rf_properties.attenuation_per_m
-      : 5;
+  // Gold "Building - Podium" / "Building - Podium B.B" catalog objects are
+  // 5 dB/m. Copying a typed wall's dB (wood 3, civic/big-box 6, metal 8,
+  // carport 0.5) made emitIfValid reject a good ring as "outline was not a
+  // valid area" and dropped Vegas podiums 36 to 8 on 1.3.42. Typing a
+  // building must never change its geometry or drop it.
+  const db = 5;
   const bottom = Number(src.bottom_height);
   const lifted = bottom >= LIFT_LOCAL_M;
   const top = Number(src.top_height);
