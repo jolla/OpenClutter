@@ -5542,6 +5542,7 @@ module.exports = {
   SPLIT_MAX_PIECES,
   siteWarrantsLift,
   demUnderFootprint,
+  snapshotTerrainForSplit,
   restoreElevation,
   terrainBundleFields,
   noteMissingTerrain,

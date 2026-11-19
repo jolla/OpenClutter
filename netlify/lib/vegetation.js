@@ -12,6 +12,8 @@ const {
   standUnderstoryM,
   understoryClipPair,
   isUnderstoryOiName,
+  isTrunkOiName,
+  isVegetationOiName,
 } = require("./materials");
 
 const { MAX_TREES, maxTreesForBbox, canopyHeightM } = require("./tree-source");
@@ -1912,7 +1914,7 @@ function dropStack(parts, slopeTop, frame) {
   const down = Number(slopeTop.seat(ll)) || 0;
   const mat0 = parts[0].material;
   const bottom = mat0 && Number(mat0.bottom_height) >= 1 ? Number(mat0.bottom_height) : 0;
-  if (!(down >= 1) || !(bottom > down + 3)) return parts;
+  if (!(down >= 1) || !(bottom - down >= 3)) return parts;
   const drop = bottom - down;
   const out = [];
   for (let i = 0; i < parts.length; i++) {
@@ -1932,6 +1934,80 @@ function dropStack(parts, slopeTop, frame) {
     out.push(Object.assign({}, part, seated));
   }
   return out;
+}
+
+function foliageCentroid(ring) {
+  if (!ring || !ring.length) return null;
+  const end = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? ring.length - 1 : ring.length;
+  if (!(end > 0)) return null;
+  let x = 0;
+  let y = 0;
+  for (let i = 0; i < end; i++) {
+    x += +ring[i][0];
+    y += +ring[i][1];
+  }
+  return [x / end, y / end];
+}
+
+function carriedByTrunk(area, trunks) {
+  const ring = area && area.ringPx;
+  const mat = area && area.material;
+  if (!ring || !mat) return false;
+  const bottom = Number(mat.bottom_height) >= 1 ? Number(mat.bottom_height) : 0;
+  for (let i = 0; i < trunks.length; i++) {
+    const t = trunks[i];
+    const tm = t && t.material;
+    const tr = t && t.ringPx;
+    if (!tm || !tr) continue;
+    const top = Number(tm.top_height);
+    if (!Number.isFinite(top) || Math.abs(bottom - top) > 0.5) continue;
+    const c = foliageCentroid(tr);
+    if (c && pointInRing(c, ring)) return true;
+  }
+  return false;
+}
+
+/**
+ * Snap unstemmed foliage onto the downhill paste under the ring that ships.
+ * Worker tiles can seat on a slightly different mesh than the clipboard that
+ * is pasted with the zip, which leaves a crown floating (arizona-desert).
+ * Crowns already carried by a trunk stay raised.
+ */
+function reseatAssembledFoliage(areas, slopeTop, frame) {
+  if (!slopeTop || typeof slopeTop.seat !== "function" || !areas || !areas.length || !frame) return 0;
+  const trunks = [];
+  for (let i = 0; i < areas.length; i++) {
+    const mat = areas[i] && areas[i].material;
+    if (mat && isTrunkOiName(mat.name)) trunks.push(areas[i]);
+  }
+  let n = 0;
+  for (let i = 0; i < areas.length; i++) {
+    const area = areas[i];
+    const mat = area && area.material;
+    if (!mat || isTrunkOiName(mat.name) || isUnderstoryOiName(mat.name) || !isVegetationOiName(mat.name)) continue;
+    if (carriedByTrunk(area, trunks)) continue;
+    const ring = area.ringPx;
+    if (!ring || ring.length < 4) continue;
+    const ll = [];
+    for (let k = 0; k < ring.length; k++) {
+      const q = pxToLl(ring[k][0], ring[k][1], frame);
+      if (q && Number.isFinite(q[0]) && Number.isFinite(q[1])) ll.push(q);
+    }
+    if (ll.length < 3) continue;
+    const down = Number(slopeTop.seat(ll)) || 0;
+    const bottom = Number(mat.bottom_height) >= 1 ? Number(mat.bottom_height) : 0;
+    if (!(down >= 1) || !(bottom - down >= 3)) continue;
+    const seated = reseatPart({ material: mat, clip: area.clip }, down);
+    if (!seated || !seated.material) continue;
+    area.material = seated.material;
+    if (seated.clip) {
+      area.clip = seated.clip.typeId && seated.clip.clipType
+        ? { typeId: seated.clip.typeId, clipType: seated.clip.clipType }
+        : seated.clip;
+    }
+    n++;
+  }
+  return n;
 }
 
 /** Keep at most `maxPts` corners. A sawtooth edge makes the slope cut drop area and seat the whole stand on one sample. */
@@ -2877,6 +2953,54 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
     }
     return px.length >= 4 ? px : null;
   };
+  // Downhill / mid / uphill seat for one lon/lat ring. Shared by the first
+  // slope cut and by later tiles so a piece sits on the ground under it,
+  // not on the parent stand's datum.
+  const seatNear = (ll) => {
+    if (!slopeTop || typeof slopeTop.seat !== "function" || !ll || !ll.length) return 0;
+    let lon = 0;
+    let lat = 0;
+    let n = 0;
+    const end = ll.length > 1 && ll[0][0] === ll[ll.length - 1][0] && ll[0][1] === ll[ll.length - 1][1] ? ll.length - 1 : ll.length;
+    for (let i = 0; i < end; i++) {
+      lon += +ll[i][0];
+      lat += +ll[i][1];
+      n++;
+    }
+    if (!n) return 0;
+    lon /= n;
+    lat /= n;
+    const d = 0.00004;
+    return (
+      Number(
+        slopeTop.seat([
+          [lon - d, lat - d],
+          [lon + d, lat - d],
+          [lon + d, lat + d],
+          [lon - d, lat + d],
+          [lon - d, lat - d],
+        ])
+      ) || 0
+    );
+  };
+  const groundOf = (ll) => {
+    if (!slopeTop) return 0;
+    const up = Number(slopeTop(ll)) || 0;
+    if (typeof slopeTop.seat !== "function") return up;
+    const down = Number(slopeTop.seat(ll)) || 0;
+    // A ring that climbs a whole hillside has a datum cell at the edge.
+    // Seating the stand on that cell buries the woods. The middle of the
+    // ring is the ground the canopy actually covers.
+    if (up - down > 12) {
+      const mid = seatNear(ll);
+      if (mid >= 1) return mid;
+    }
+    // Relief of 3 m or more uses the downhill seat. An exclusive > 3 left
+    // a crown on the uphill sample when rounding made the official relief
+    // exactly 3 m, and that crown then floated above the pasted mesh.
+    if (up - down >= 3) return down;
+    return up;
+  };
   const seatsFor = (area) => {
     const one = (ringPx, ground, slopePiece) => [{ ringPx, ground, slopePiece: !!slopePiece }];
     if (!slopeTop || !area.ringPx || area.ringPx.length < 4) return one(area.ringPx, 0, false);
@@ -2970,46 +3094,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
   // as its own full-height prism, which reads as a thin green column. A
   // sliver joins the neighbour it touches; it sits on that neighbour's ground.
   const mergeSlivers = (seats) => mergeSliversGuarded(seats, frame);
-  const seatNear = (ll) => {
-    let lon = 0;
-    let lat = 0;
-    let n = 0;
-    const end = ll.length > 1 && ll[0][0] === ll[ll.length - 1][0] && ll[0][1] === ll[ll.length - 1][1] ? ll.length - 1 : ll.length;
-    for (let i = 0; i < end; i++) {
-      lon += +ll[i][0];
-      lat += +ll[i][1];
-      n++;
-    }
-    if (!n) return 0;
-    lon /= n;
-    lat /= n;
-    const d = 0.00004;
-    return (
-      Number(
-        slopeTop.seat([
-          [lon - d, lat - d],
-          [lon + d, lat - d],
-          [lon + d, lat + d],
-          [lon - d, lat + d],
-          [lon - d, lat - d],
-        ])
-      ) || 0
-    );
-  };
-  const groundOf = (ll) => {
-    const up = Number(slopeTop(ll)) || 0;
-    if (typeof slopeTop.seat !== "function") return up;
-    const down = Number(slopeTop.seat(ll)) || 0;
-    // A ring that climbs a whole hillside has a datum cell at the edge.
-    // Seating the stand on that cell buries the woods. The middle of the
-    // ring is the ground the canopy actually covers.
-    if (up - down > 12) {
-      const mid = seatNear(ll);
-      if (mid >= 1) return mid;
-    }
-    if (up - down > 3) return down;
-    return up;
-  };
+
   const palmPx = [];
   const palmLl = (opts && opts.palmPoints) || [];
   for (let i = 0; i < palmLl.length; i++) {
@@ -3111,7 +3196,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
           for (const piece of cut.pieces) {
             if (!piece.ringPx || piece.ringPx.length < 4 || canopyAreaM2(piece.ringPx, frame) < SLIVER_M2) continue;
             const ll = piece.ringPx.map((p) => pxToLl(p[0], p[1], frame));
-            out.push({ ringPx: piece.ringPx, ground: seat.ground, slopePiece: seat.slopePiece, ll, tile: true, bandH: piece.bandH || 0 });
+            out.push({ ringPx: piece.ringPx, ground: groundOf(ll), slopePiece: seat.slopePiece, ll, tile: true, bandH: piece.bandH || 0 });
             made++;
           }
           bandStats.pieces += made;
@@ -3138,7 +3223,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
             const ring = parts[q];
             if (!ring || ring.length < 4 || canopyAreaM2(ring, frame) < SLIVER_M2) continue;
             const ll = ring.map((p) => pxToLl(p[0], p[1], frame));
-            boxTiles.push({ ringPx: ring, ground: seat.ground, slopePiece: seat.slopePiece, ll, tile: true, gx, gy });
+            boxTiles.push({ ringPx: ring, ground: groundOf(ll), slopePiece: seat.slopePiece, ll, tile: true, gx, gy });
             made++;
           }
         }
@@ -3159,7 +3244,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
           for (const m of merged) {
             if (!m.ringPx || m.ringPx.length < 4 || canopyAreaM2(m.ringPx, frame) < SLIVER_M2) continue;
             const ll = m.ringPx.map((p) => pxToLl(p[0], p[1], frame));
-            out.push({ ringPx: m.ringPx, ground: seat.ground, slopePiece: seat.slopePiece, ll, tile: true, bandH: m.bandH || 0 });
+            out.push({ ringPx: m.ringPx, ground: groundOf(ll), slopePiece: seat.slopePiece, ll, tile: true, bandH: m.bandH || 0 });
           }
           tiled++;
           continue;
@@ -3418,24 +3503,25 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       }
     }
     const stack = stand || crownStack(row, frame, plans[r].n, heightSample);
-    // A crown on a stem is meant to sit above the ground; dropping it would
-    // put the crown at the foot of its own trunk.
-    const parts = (row.trunk ? (s0) => s0 : (s0) => dropStack(s0, slopeTop, frame))(
-      stack || [
-        {
-          ringPx: area.ringPx,
-          material: area.material,
-          clip: row.clip || clipboardForCanopy(area.material),
-          scale: 1,
-        },
-      ]
-    );
+    let parts = stack || [
+      {
+        ringPx: area.ringPx,
+        material: area.material,
+        clip: row.clip || clipboardForCanopy(area.material),
+        scale: 1,
+      },
+    ];
     roundCrownParts(parts, row, frame);
     if (facets && facets.plans[r] && applyFacet(parts, facets.plans[r])) {
       crownsFaceted++;
       const sh = facets.plans[r].shift;
       if (sh && row.trunk && row.trunk.ringPx) row.trunk.ringPx = row.trunk.ringPx.map((p) => [p[0] + sh[0], p[1] + sh[1]]);
     }
+    // A crown on a stem is meant to sit above the ground; dropping it would
+    // put the crown at the foot of its own trunk. Run this after the ring
+    // is rounded or faceted so a tile that shrank onto a lower plate is
+    // reseated on the mesh under the outline that actually ships.
+    if (!row.trunk) parts = dropStack(parts, slopeTop, frame);
     if (uIndex && stand && parts.length >= 2 && parts[0].material && isUnderstoryOiName(parts[0].material.name)) {
       const u = parts[0];
       const shaped = understoryStyleLib.shapeUnderstory(u.ringPx, frame, { style: uStyle, index: uIndex, heightSample });
@@ -3535,6 +3621,7 @@ module.exports = {
   blockerFromRings,
   polygonsFromCrowns,
   assembleFoliage,
+  reseatAssembledFoliage,
   facetCrownParts,
   openEdgeShare,
   planSceneFacets,
