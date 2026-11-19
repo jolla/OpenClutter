@@ -23,6 +23,7 @@ function photoOf(kind) {
       else if (k === "brown") c = odd ? [90, 75, 60] : [125, 108, 90];
       else if (k === "shade") c = odd ? [18, 22, 26] : [30, 34, 36];
       else if (k === "dirt") c = [150, 135, 115];
+      else if (k === "lawn") c = [80, 110, 70];
       else c = [236, 238, 240];
       const i = (y * w + x) * 4;
       data[i] = c[0];
@@ -241,5 +242,48 @@ describe("photo-canopy export mode", () => {
   it("notes the cleared area", () => {
     assert.match(pc.photoCanopyNote({ cleared: 10 }, 4), /^Left out 40 m² of lidar canopy/);
     assert.equal(pc.photoCanopyNote({ cleared: 0 }, 4), "");
+  });
+});
+
+describe("clearOpenGroundPatches", () => {
+  it("clears a large meadow or gravel bar and keeps textured forest", () => {
+    const photo = photoOf((gx) => (gx < 5 ? "leafy" : "lawn"));
+    const grid = gridOf((gx) => (gx < 5 ? 12 : 8));
+    const res = pc.clearOpenGroundPatches(grid, photo, frame);
+    assert.equal(res.gate, true);
+    assert.ok(res.patches >= 1);
+    assert.ok(res.cleared >= 40);
+    for (let gy = 0; gy < N; gy++) {
+      assert.equal(grid.values[gy * N + 2], 12, "textured forest stays");
+      assert.equal(grid.values[gy * N + 7], 0, "meadow patch cleared");
+    }
+  });
+
+  it("keeps an isolated open-looking cell inside a crown", () => {
+    // One lawn cell in the leafy half is smaller than PATCH_MIN_M2 (2 cells
+    // on this 1-degree test grid) and must not punch a hole in the woods.
+    const photo = photoOf((gx, gy) => (gx === 2 && gy === 2 ? "lawn" : gx < 6 ? "leafy" : "lawn"));
+    const grid = gridOf((gx, gy) => (gx === 2 && gy === 2 ? 8 : gx < 6 ? 12 : 8));
+    const res = pc.clearOpenGroundPatches(grid, photo, frame);
+    assert.equal(res.gate, true);
+    assert.equal(grid.values[2 * N + 2], 8, "isolated cell stays");
+    assert.equal(grid.values[2], 12);
+    assert.equal(grid.values[7], 0);
+  });
+
+  it("does nothing on a leaf-off photo", () => {
+    const photo = photoOf((gx) => (gx < 5 ? "brown" : "lawn"));
+    const grid = gridOf((gx) => (gx < 5 ? 12 : 8));
+    const res = pc.clearOpenGroundPatches(grid, photo, frame);
+    assert.equal(res.gate, false);
+    assert.equal(res.cleared, 0);
+    assert.equal(grid.values[2], 12);
+    assert.equal(grid.values[7], 8);
+  });
+
+  it("notes the cleared area without an em dash", () => {
+    assert.match(pc.openGroundPatchNote({ cleared: 10, patchM2: 150 }), /Left out 150 m2 of canopy/);
+    assert.equal(pc.openGroundPatchNote({ cleared: 0 }), "");
+    assert.equal(/\u2014/.test(pc.openGroundPatchNote({ cleared: 10, patchM2: 150 })), false);
   });
 });
