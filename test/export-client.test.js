@@ -271,7 +271,7 @@ describe("Copy terrain after a background result", () => {
       "Steepest slope 50% (27°)",
       "Terrain pieces 3",
       "OpenIntent 2.10 MB of 4.90 MB",
-      "Map 4096 px, 0.19 m per pixel",
+      "Aerial map 4096 pixels, 0.19 m per pixel",
     ]);
     assert.equal(lines.some((line) => /Walls and fences|Water /.test(line)), false);
     assert.equal(/\u2014/.test(lines.join("\n")), false);
@@ -286,7 +286,7 @@ describe("Copy terrain after a background result", () => {
       { foliageOn: true, terrainOn: true }
     );
     assert.equal(stands[1], "Stands 12");
-    assert.equal(stands[stands.length - 1], "Map 2048 px, 0.40 m per pixel");
+    assert.equal(stands[stands.length - 1], "Aerial map 2048 pixels, 0.40 m per pixel");
     const trimmed = exportSummaryLines(
       {
         stats: {
@@ -346,10 +346,12 @@ describe("Copy terrain after a background result", () => {
     assert.match(replaced, /label is Export|syncIdleExportLabel\(\)/);
     const copy = app.slice(app.indexOf("async function copyFinishedTerrain"), app.indexOf("function exportError"));
     assert.match(copy, /navigator\.clipboard\.writeText\(terrainPasteJson\)/);
-    assert.match(copy, /setCopyNote\("Copied\. Paste terrain separately in Hamina\."\)/);
+    assert.match(copy, /setCopyNote\("Copied\. Paste it into Hamina\."\)/);
     assert.equal(/setStatus\(/.test(copy), false);
     assert.equal(/status-more|status-line|status-body/.test(copy), false);
-    assert.match(app, /if \(exportCopyReady && !drawHidesCopy\) setCopyNote\("Paste terrain separately in Hamina\."\)/);
+    assert.equal(/setCopyNote\("Paste terrain separately in Hamina\."\)/.test(app), false);
+    assert.match(app, /Copied\. Paste it into Hamina\./);
+    assert.match(app, /function syncExportFormat/);
   });
 
   it("any settings change returns the button to Export, opening the panel does not", () => {

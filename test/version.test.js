@@ -11,8 +11,8 @@ const { UA } = require("../netlify/functions/clutter");
 const root = path.join(__dirname, "..");
 
 describe("app version", () => {
-  it("is 1.3.42 in package.json", () => {
-    assert.equal(pkg.version, "1.3.42");
+  it("is 1.3.43 in package.json", () => {
+    assert.equal(pkg.version, "1.3.43");
   });
 
   it("uses that version as the API user-agent", () => {
@@ -27,17 +27,27 @@ describe("app version", () => {
     assert.equal(clutter.includes("openclutter/0."), false);
   });
 
-  it("shows that version in the page from the package.json stamp", () => {
+  it("shows a release date on the page and keeps the version for support", () => {
     const html = fs.readFileSync(path.join(root, "public/index.html"), "utf8");
     const versionJs = fs.readFileSync(path.join(root, "public/version.js"), "utf8");
-    assert.match(html, new RegExp(`id="app-version"[^>]*>v${pkg.version}<`));
+    const date = pkg.releaseDate;
+    assert.equal(typeof date, "string");
+    assert.match(date, /^[A-Z][a-z]{2} \d{1,2}, \d{4}$/);
+    assert.match(html, new RegExp(`id="app-version"[^>]*>Updated ${date}<`));
+    assert.match(html, new RegExp(`id="app-version"[^>]*title="What's new · ${pkg.version}"`));
+    assert.match(html, new RegExp(`id="app-version"[^>]*aria-label="What's new · ${pkg.version}"`));
     assert.match(html, /<button type="button" id="app-version"/);
     assert.match(html, /id="whats-new"/);
-    assert.match(html, /What's new in 1\.1/);
-    assert.match(html, /Trees with rounded crowns and trunks, plus forest stands with undergrowth/);
-    assert.match(html, /Much faster exports, with a progress bar and timer/);
+    assert.match(html, /id="whats-new-title">What's new</);
+    assert.match(html, />Nov 23, 2026</);
+    assert.equal(/What's new in 1\./.test(html), false);
+    assert.match(html, /Trees with rounded crowns and trunks, plus forest stands/);
+    assert.match(html, /Larger, more detailed exports for big sites/);
     assert.equal(/\u2014/.test(html), false);
     assert.match(html, /src="\/version\.js"/);
-    assert.equal(versionJs.trim(), `window.OPENCLUTTER_VERSION = ${JSON.stringify(pkg.version)};`);
+    assert.equal(
+      versionJs,
+      `window.OPENCLUTTER_VERSION = ${JSON.stringify(pkg.version)};\nwindow.OPENCLUTTER_RELEASE_DATE = ${JSON.stringify(date)};\n`
+    );
   });
 });
