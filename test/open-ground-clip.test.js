@@ -88,3 +88,91 @@ describe("clipOpenGroundRing", () => {
     assert.equal(got.rings.length, 0);
   });
 });
+
+const { clipTreePieceOpenGround, isTrunkArea } = require("../netlify/lib/pipeline");
+
+function area(name, ring) {
+  return {
+    area_material: { name },
+    area: {
+      coordinates: ring.map((p) => ({ coordinate_xyz: { x: p[0], y: p[1], unit: "pixels" } })),
+    },
+  };
+}
+
+function ringOf(a) {
+  return a.area.coordinates.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
+}
+
+describe("clipTreePieceOpenGround", () => {
+  it("clips every stacked crown and does not copy a sibling onto an extra", () => {
+    const meadow = [
+      [20, 20],
+      [200, 20],
+      [200, 180],
+      [20, 180],
+      [20, 20],
+    ];
+    const forest = [
+      [20, 20],
+      [100, 20],
+      [100, 180],
+      [20, 180],
+      [20, 20],
+    ];
+    // First crown is a large mixed stand (clip splits off the meadow).
+    // Second crown is the same stand at another height: it must also be
+    // clipped, and must not be copied unclipped onto an extra piece.
+    const piece = {
+      discrete: true,
+      areas: [
+        area("Foliage - Heavy 20.0 @ 10.0", meadow),
+        area("Foliage - Light 8.0 @ 5.0", meadow),
+        area("Foliage - Trunk 2.5 @ 5.0", [
+          [55, 90],
+          [65, 90],
+          [65, 100],
+          [55, 100],
+          [55, 90],
+        ]),
+      ],
+    };
+    const im = photo(220, 200, (x) => (x < 110 ? "leafy" : "lawn"));
+    const clip = (ring) => clipOpenGroundRing(im, ring, { mpuX: 1, mpuY: 1 });
+    const got = clipTreePieceOpenGround(piece, clip);
+    assert.ok(got.clearedM2 > 500);
+    const crowns = got.areas.filter((a) => !isTrunkArea(a));
+    const trunks = got.areas.filter(isTrunkArea);
+    assert.equal(trunks.length, 1);
+    assert.ok(crowns.length >= 1);
+    for (const c of crowns) {
+      const r = ringOf(c);
+      assert.equal(contains(r, 60, 100), true, "forest half stays on the piece");
+      assert.equal(contains(r, 170, 100), false, "meadow half is gone from the piece");
+    }
+    // extras may hold the other geographic component, but never the unclipped meadow stand
+    for (const extra of got.extras) {
+      const extraCrowns = extra.areas.filter((a) => !isTrunkArea(a));
+      assert.ok(extraCrowns.length <= 1, "a split does not carry a sibling crown");
+      for (const c of extraCrowns) {
+        assert.equal(contains(ringOf(c), 170, 100), false, "extra is not the unclipped meadow");
+      }
+    }
+  });
+
+  it("drops a piece when every crown is a gravel bar", () => {
+    const ring = [
+      [20, 20],
+      [180, 20],
+      [180, 180],
+      [20, 180],
+      [20, 20],
+    ];
+    const piece = { discrete: true, areas: [area("Foliage - Heavy 12.0 @ 8.0", ring)] };
+    const im = photo(200, 200, () => "dirt");
+    const got = clipTreePieceOpenGround(piece, (r) => clipOpenGroundRing(im, r, { mpuX: 1, mpuY: 1 }));
+    assert.ok(got.clearedM2 > 500);
+    assert.equal(got.areas.length, 0);
+    assert.equal(got.extras.length, 0);
+  });
+});

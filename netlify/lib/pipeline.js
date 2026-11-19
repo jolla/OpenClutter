@@ -3294,10 +3294,71 @@ function outdoorToOi(items, imgW, imgH, mpuX) {
 const OI_FLOORPLAN_HEIGHT_M = 2.5;
 const OI_FLOORPLAN_HEIGHT_FT = 8.202;
 
+
 function isTrunkArea(a) {
   const m = a && a.area_material;
   return !!(m && /^Foliage - Trunk /.test(String(m.name || "")));
 }
+
+/**
+ * Punch large photo-open patches out of every crown on a tree piece.
+ * Each stacked crown layer is clipped on its own. A split only carries
+ * that layer (plus any trunk), so a sibling crown is not emitted twice.
+ * Returns { areas, extras, clearedM2 }; areas is empty when the piece
+ * should be dropped.
+ */
+function clipTreePieceOpenGround(piece, clipFn) {
+  const empty = { areas: (piece && piece.areas) || [], extras: [], clearedM2: 0 };
+  if (!piece || !Array.isArray(piece.areas) || typeof clipFn !== "function") return empty;
+  const trunks = piece.areas.filter((a) => a && isTrunkArea(a));
+  const crowns = piece.areas.filter((a) => a && !isTrunkArea(a));
+  if (!crowns.length) return empty;
+  const extras = [];
+  let clearedM2 = 0;
+  const keptCrowns = [];
+  const toCoords = (ring, unit) => {
+    const next = ring.map((p) => ({ coordinate_xyz: { x: p[0], y: p[1], unit } }));
+    const a = next[0].coordinate_xyz, b = next[next.length - 1].coordinate_xyz;
+    if (a.x !== b.x || a.y !== b.y) next.push({ coordinate_xyz: { x: a.x, y: a.y, unit } });
+    return next;
+  };
+  const applyRing = (crown, ring) => {
+    const coords = crown.area && crown.area.coordinates;
+    const unit = (coords && coords[0] && coords[0].coordinate_xyz && coords[0].coordinate_xyz.unit) || "pixels";
+    return Object.assign({}, crown, { area: Object.assign({}, crown.area, { coordinates: toCoords(ring, unit) }) });
+  };
+  for (const crown of crowns) {
+    const coords = crown.area && crown.area.coordinates;
+    if (!coords || coords.length < 3) {
+      keptCrowns.push(crown);
+      continue;
+    }
+    const ring = coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
+    let got;
+    try {
+      got = clipFn(ring);
+    } catch {
+      got = null;
+    }
+    if (!got || !(got.clearedM2 > 0)) {
+      keptCrowns.push(crown);
+      continue;
+    }
+    clearedM2 += got.clearedM2;
+    const kept = (got.rings || []).filter((r) => r && r.length >= 3);
+    if (!kept.length) continue;
+    keptCrowns.push(applyRing(crown, kept[0]));
+    for (let k = 1; k < kept.length; k++) {
+      extras.push({
+        discrete: piece.discrete,
+        areas: [applyRing(crown, kept[k])].concat(trunks),
+      });
+    }
+  }
+  if (!keptCrowns.length) return { areas: [], extras: [], clearedM2 };
+  return { areas: keptCrowns.concat(trunks), extras, clearedM2 };
+}
+
 
 function isFoliageMaterialName(name) {
   if (!name) return false;
@@ -4120,44 +4181,16 @@ function buildClutter({
         let clippedM2 = 0;
         for (let i = 0; i < treePieces.length; i++) {
           const piece = treePieces[i];
-          const ai = (piece.areas || []).findIndex((a) => a && !isTrunkArea(a));
-          if (ai < 0) continue;
-          const crown = piece.areas[ai];
-          const coords = crown.area && crown.area.coordinates;
-          if (!coords || coords.length < 3) continue;
-          const unit = (coords[0].coordinate_xyz && coords[0].coordinate_xyz.unit) || "pixels";
-          const ring = coords.map((c) => [c.coordinate_xyz.x, c.coordinate_xyz.y]);
-          let got;
-          try {
-            got = clipOpenGround(ring);
-          } catch {
-            got = null;
-          }
-          if (!got || !(got.clearedM2 > 0)) continue;
+          const got = clipTreePieceOpenGround(piece, clipOpenGround);
+          if (!(got.clearedM2 > 0)) continue;
           clippedM2 += got.clearedM2;
-          const kept = (got.rings || []).filter((r) => r && r.length >= 3);
-          if (!kept.length) {
+          if (!got.areas.length) {
             treePieces[i] = null;
             staleDropped++;
             continue;
           }
-          const toCoords = (r) => {
-            const next = r.map((p) => ({ coordinate_xyz: { x: p[0], y: p[1], unit } }));
-            const a = next[0].coordinate_xyz, b = next[next.length - 1].coordinate_xyz;
-            if (a.x !== b.x || a.y !== b.y) next.push({ coordinate_xyz: { x: a.x, y: a.y, unit } });
-            return next;
-          };
-          crown.area = Object.assign({}, crown.area, { coordinates: toCoords(kept[0]) });
-          for (let k = 1; k < kept.length; k++) {
-            const copy = {
-              discrete: piece.discrete,
-              areas: piece.areas.map((a, j) => {
-                if (j !== ai) return a;
-                return Object.assign({}, a, { area: Object.assign({}, a.area, { coordinates: toCoords(kept[k]) }) });
-              }),
-            };
-            extras.push(copy);
-          }
+          piece.areas = got.areas;
+          for (const extra of got.extras) extras.push(extra);
         }
         for (let i = treePieces.length - 1; i >= 0; i--) {
           if (treePieces[i] == null) treePieces.splice(i, 1);
@@ -4563,6 +4596,8 @@ function buildClutter({
 }
 
 module.exports = {
+  clipTreePieceOpenGround,
+  isTrunkArea,
   attributionTxt,
   ALIGNMENT,
   ZIP_README,
