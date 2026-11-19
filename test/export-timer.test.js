@@ -73,7 +73,7 @@ describe("export elapsed timer", () => {
     const afterCopy = {
       summaryLine: summaryLine,
       details: details,
-      note: "Copied. Paste terrain separately in Hamina.",
+      note: "Copied. Paste it into Hamina.",
     };
     assert.equal(afterCopy.summaryLine, "Done in 0:55");
     assert.equal(afterCopy.details[0], "OpenIntent file ready. 2 buildings.");
@@ -91,7 +91,7 @@ describe("export elapsed timer", () => {
     assert.equal(/getElementById\("export-elapsed"\)[^;]*textContent\s*=/.test(show), false);
     assert.match(show, /label\.textContent = "Exporting " \+ pct \+ "%"/);
     const copy = app.slice(app.indexOf("async function copyFinishedTerrain"), app.indexOf("function exportError"));
-    assert.match(copy, /setCopyNote\("Copied\. Paste terrain separately in Hamina\."\)/);
+    assert.match(copy, /setCopyNote\("Copied\. Paste it into Hamina\."\)/);
     assert.equal(/setStatus\(/.test(copy), false);
     assert.equal(/status-line|status-body|status-more|withExportDone|export-elapsed/.test(copy), false);
   });

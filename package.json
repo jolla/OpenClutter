@@ -1,6 +1,7 @@
 {
   "name": "openclutter",
-  "version": "1.3.42",
+  "version": "1.3.43",
+  "releaseDate": "Nov 23, 2026",
   "private": true,
   "scripts": {
     "test": "node --test test/*.test.js",
