@@ -197,4 +197,60 @@ describe("foliage tiles sit on the ground under each piece", () => {
     assert.equal(areas[1].material.bottom_height, 54.8);
     assert.equal(areas[1].material.top_height, 62.8);
   });
+
+
+  it("does not drop two adjacent stands to the lower neighbour's plate", () => {
+    const west = -111.17;
+    const south = 32.25;
+    const east = west + 120 / (111320 * Math.cos((south * Math.PI) / 180));
+    const north = south + 60 / 110540;
+    const frame = geoFrame({ west, south, east, north, name: "Adjacent stands" });
+    const midLon = (west + east) / 2;
+    const slopeTop = () => 48;
+    slopeTop.seat = (ring) => {
+      let lon = 0;
+      const n = ring && ring.length ? ring.length : 0;
+      for (let i = 0; i < n; i++) lon += +ring[i][0];
+      return n && lon / n < midLon ? 48 : 40;
+    };
+    const { liftFoliagePair, materialForVegetation } = require("../netlify/lib/materials");
+    const leftRing = rectPx(frame, west + 0.00005, south + 0.00008, midLon - 0.00008, north - 0.00008);
+    const rightRing = rectPx(frame, midLon + 0.00008, south + 0.00008, east - 0.00005, north - 0.00008);
+    // Layered woods: understory top meets the neighbour crown bottom, which
+    // used to union the two stands and drop both onto the 40 m plate.
+    const leftUnder = liftFoliagePair(materialForVegetation(3.0, "light"), 52.8).material;
+    const leftCrown = liftFoliagePair(materialForVegetation(3.0, "light"), 55.8).material;
+    const rightUnder = liftFoliagePair(materialForVegetation(3.0, "light"), 52.8).material;
+    const rightCrown = liftFoliagePair(materialForVegetation(3.0, "light"), 55.8).material;
+    const areas = [
+      { ringPx: leftRing, material: leftUnder, kind: "canopy", shape: "polygon" },
+      { ringPx: leftRing, material: leftCrown, kind: "canopy", shape: "polygon" },
+      { ringPx: rightRing, material: rightUnder, kind: "canopy", shape: "polygon" },
+      { ringPx: rightRing, material: rightCrown, kind: "canopy", shape: "polygon" },
+    ];
+    const n = reseatAssembledFoliage(areas, slopeTop, frame);
+    assert.ok(n >= 2, "each stand should reseat, moved " + n);
+    assert.equal(areas[0].material.bottom_height, 48);
+    assert.equal(areas[1].material.bottom_height, 51);
+    assert.equal(areas[2].material.bottom_height, 40);
+    assert.equal(areas[3].material.bottom_height, 43);
+  });
+
+  it("does not seat a wide stand on one low preview vertex", () => {
+    const west = -111.17;
+    const south = 32.25;
+    const east = west + 120 / (111320 * Math.cos((south * Math.PI) / 180));
+    const north = south + 120 / 110540;
+    const frame = geoFrame({ west, south, east, north, name: "Wide stand hole" });
+    const slopeTop = () => 48;
+    slopeTop.seat = () => 48;
+    slopeTop.previewSeat = () => 40;
+    const { liftFoliagePair, materialForVegetation } = require("../netlify/lib/materials");
+    const ringPx = rectPx(frame, west + 0.00005, south + 0.00005, east - 0.00005, north - 0.00005);
+    const areas = [{ ringPx, material: liftFoliagePair(materialForVegetation(3.0, "light"), 52.8).material, kind: "canopy", shape: "polygon" }];
+    const n = reseatAssembledFoliage(areas, slopeTop, frame);
+    assert.ok(n >= 1, "stand should still drop to the official plate, moved " + n);
+    assert.equal(areas[0].material.bottom_height, 48);
+  });
+
 });

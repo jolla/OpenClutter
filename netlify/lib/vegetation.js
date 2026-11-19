@@ -1987,10 +1987,19 @@ function stackedTogether(a, b) {
   // A disjoint neighbour that only matches height is not the same stack.
   if (cLow && pointInRing(cLow, upper.ringPx)) return true;
   if (cUp && pointInRing(cUp, lower.ringPx)) return true;
+  // Close shared centres only when one piece is a cap or stem of the other.
+  // Two similar-size neighbouring stands at supporting layer heights must
+  // not union into one stack (a woods would then drop to the lowest preview
+  // triangle under any part).
+  const areaA = ringPxArea(a.ringPx);
+  const areaB = ringPxArea(b.ringPx);
+  const small = Math.min(areaA, areaB);
+  const large = Math.max(areaA, areaB);
+  if (!(large > 0) || small / large > 0.5) return false;
   const ca = foliageCentroid(a.ringPx);
   const cb = foliageCentroid(b.ringPx);
   if (!ca || !cb) return false;
-  const reach = Math.max(2, 0.25 * Math.sqrt(Math.max(ringPxArea(a.ringPx), ringPxArea(b.ringPx))));
+  const reach = Math.max(2, 0.25 * Math.sqrt(large));
   return Math.hypot(ca[0] - cb[0], ca[1] - cb[1]) <= reach;
 }
 
@@ -2072,11 +2081,16 @@ function syncFoliageClips(areas, frame, affine) {
 function seatUnderArea(area, slopeTop, frame) {
   const ll = seatRingLl(area && area.ringPx, frame);
   if (!ll) return 0;
-  if (typeof slopeTop.previewSeat === "function") {
-    const preview = Number(slopeTop.previewSeat(ll)) || 0;
-    if (preview >= 1) return preview;
-  }
-  return typeof slopeTop.seat === "function" ? Number(slopeTop.seat(ll)) || 0 : 0;
+  const official = typeof slopeTop.seat === "function" ? Number(slopeTop.seat(ll)) || 0 : 0;
+  if (typeof slopeTop.previewSeat !== "function") return official;
+  const preview = Number(slopeTop.previewSeat(ll)) || 0;
+  if (!(preview >= 1)) return official;
+  // A wide stand's preview min can be one low vertex (a ditch or a hole).
+  // Small crowns still use the preview, which is what reseats arizona-desert
+  // floats the official downhill plane misses.
+  const areaM = canopyAreaM2(area.ringPx, frame);
+  if (areaM >= STAND_LAYER_M2 && official >= 1 && official - preview >= 3) return official;
+  return preview;
 }
 
 /**
