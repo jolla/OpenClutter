@@ -3602,12 +3602,13 @@ function crownAxesM(ring) {
 const OPEN_TREE_SHARE = 0.85;
 /** An estimated crown with less foliage than this on a leaf-on summer photo is not a tree. */
 const LEAF_ON_MIN_GREEN = 0.05;
-// A lidar flight this many years old may predate clearing. The photo must
-// be leaf-on (median measured crown at least this green) before a crown it
-// shows as open, foliage-free ground is dropped.
+// A lidar flight this many years old may predate clearing. Four years was
+// too soon: a 2022 flight still showed current trees over golf bunkers
+// and lots. The photo must be leaf-on (median measured crown at least
+// this green) before a crown it shows as open, foliage-free ground is dropped.
 const { PIECE_LEAFY_MIN } = require("./photo-canopy");
 const { steepCanopyNote } = require("./steep-canopy");
-const STALE_LIDAR_YEARS = 4;
+const STALE_LIDAR_YEARS = 8;
 const STALE_MIN_CROWNS = 8;
 const STALE_LEAF_ON_GREEN = 0.5;
 const STALE_MAX_GREEN = 0.05;

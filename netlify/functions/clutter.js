@@ -2866,12 +2866,13 @@ async function handleClutterNorthUp(event) {
       // A lidar flight several years old can still carry trees that were
       // cleared for a lot, a yard, a meadow or a gravel bar. On a leaf-on
       // photo, drop large open-ground patches (not isolated smooth pixels
-      // inside a textured crown). Orchards and woods stay; only the clearing
-      // is removed.
+      // inside a textured crown). A flight only four years old is still
+      // current (golf bunkers are not a clearing). Orchards and woods stay;
+      // only the clearing is removed.
       const lidarYear = /^(\d{4})/.exec(String(footprintMeta.lidarCollected || ""));
       if (
         lidarYear &&
-        new Date().getUTCFullYear() - +lidarYear[1] >= 4 &&
+        new Date().getUTCFullYear() - +lidarYear[1] >= 8 &&
         decoded &&
         frame &&
         decoded.width === frame.imgW &&
