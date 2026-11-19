@@ -1,7 +1,8 @@
-/* Detection preview (1.3.41, dev only, behind ?preview=1).
+/* Detection preview (1.3.42, on by default on /dev hosts).
  * After an export, draw what the zip holds (buildings, trees, vehicles,
  * walls, water) on the map, so the result can be checked before the Hamina
  * import. Read from the finished zip in the browser; no extra server work.
+ * Off on production. ?preview=0 (or false) turns it off on a /dev host.
  */
 (function (root) {
   "use strict";
@@ -10,7 +11,8 @@
     if (!dev) return false;
     try {
       const raw = new URLSearchParams(search || "").get("preview");
-      return raw === "1" || raw === "true";
+      if (raw === "0" || raw === "false") return false;
+      return true;
     } catch (err) {
       return false;
     }

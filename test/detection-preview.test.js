@@ -1,6 +1,6 @@
 "use strict";
 
-// Dev ?preview=1: the page reads the finished zip and draws its areas.
+// Dev hosts: the page reads the finished zip and draws its areas (?preview=0 turns it off).
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const zlib = require("node:zlib");
@@ -61,10 +61,14 @@ const doc = {
 };
 
 describe("detection preview", () => {
-  it("is dev only and needs ?preview=1", () => {
+  it("is on by default on dev hosts and off on production", () => {
+    assert.equal(P.previewWanted("", true), true);
     assert.equal(P.previewWanted("?preview=1", true), true);
+    assert.equal(P.previewWanted("?preview=true", true), true);
+    assert.equal(P.previewWanted("?preview=0", true), false);
+    assert.equal(P.previewWanted("?preview=false", true), false);
+    assert.equal(P.previewWanted("", false), false);
     assert.equal(P.previewWanted("?preview=1", false), false);
-    assert.equal(P.previewWanted("", true), false);
   });
 
   it("reads the OpenIntent document from the zip, not the terrain paste", async () => {

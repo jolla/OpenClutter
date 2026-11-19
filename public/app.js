@@ -539,7 +539,7 @@ function turnedCorners(bounds, deg) {
 }
 
 /**
- * Dev only, ?preview=1: after an export, draw what the zip holds on the map
+ * Dev only, on by default: after an export, draw what the zip holds on the map
  * (buildings, trees, vehicles, walls, water) with a Detections checkbox.
  */
 function showDetectionPreview(blob) {
