@@ -87,6 +87,34 @@ describe("clipOpenGroundRing", () => {
     assert.ok(got.clearedM2 > 500);
     assert.equal(got.rings.length, 0);
   });
+
+  it("keeps a mid-size lawn bite on a woods edge, but cuts a mid-size gravel bite", () => {
+    const w = 200;
+    const h = 200;
+    // ~400 m2 opening on the east edge: above the 80 m2 gravel floor, below the 1000 m2 lawn floor.
+    // Interior holes are not emitted (a crown is one ring), so the patch has to touch the outline.
+    const opening = (x, y) => (x >= 150 && x < 180 && y >= 80 && y < 120);
+    const ring = [
+      [20, 20],
+      [180, 20],
+      [180, 180],
+      [20, 180],
+      [20, 20],
+    ];
+    const lawnPhoto = photo(w, h, (x, y) => (opening(x, y) ? "lawn" : "leafy"));
+    const lawn = clipOpenGroundRing(lawnPhoto, ring, { mpuX: 1, mpuY: 1 });
+    assert.equal(lawn.clearedM2, 0, "400 m2 of lawn on a crown edge stays");
+    assert.equal(lawn.rings.length, 1);
+    assert.equal(lawn.rings[0], ring);
+
+    const dirtPhoto = photo(w, h, (x, y) => (opening(x, y) ? "dirt" : "leafy"));
+    const dirt = clipOpenGroundRing(dirtPhoto, ring, { mpuX: 1, mpuY: 1 });
+    assert.ok(dirt.clearedM2 > 80, "400 m2 of gravel is cut, got " + dirt.clearedM2);
+    assert.ok(dirt.rings.length >= 1);
+    assert.equal(contains(dirt.rings[0], 165, 100), false, "gravel bite is gone");
+    assert.equal(contains(dirt.rings[0], 60, 100), true, "woods stay");
+  });
+
 });
 
 const { clipTreePieceOpenGround, isTrunkArea } = require("../netlify/lib/pipeline");
