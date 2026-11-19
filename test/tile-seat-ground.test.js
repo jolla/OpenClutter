@@ -96,5 +96,105 @@ describe("foliage tiles sit on the ground under each piece", () => {
     assert.equal(n, 1);
     assert.equal(areas[0].material.bottom_height, 48);
     assert.match(areas[0].material.name, /@ 48\.0$/);
+    assert.equal(areas[0].material.top_height, 50.2);
+  });
+
+  it("moves a stem and crown by the same delta so treetop height is unchanged", () => {
+    const west = -111.17;
+    const south = 32.25;
+    const east = west + 80 / (111320 * Math.cos((south * Math.PI) / 180));
+    const north = south + 80 / 110540;
+    const frame = geoFrame({ west, south, east, north, name: "Stacked tree" });
+    const slopeTop = () => 48;
+    slopeTop.seat = () => 48;
+    const { liftFoliagePair, materialForVegetation, trunkOiMaterial } = require("../netlify/lib/materials");
+    const trunkMat = trunkOiMaterial(6.8, 52.8);
+    const crownMat = liftFoliagePair(materialForVegetation(8.0, "light"), 59.6);
+    assert.ok(trunkMat && crownMat && crownMat.material);
+    const ringPx = rectPx(frame, west + 0.0001, south + 0.0001, east - 0.0001, north - 0.0001);
+    // Narrow stem under the same crown.
+    const stemPx = rectPx(frame, west + 0.00025, south + 0.00025, east - 0.00025, north - 0.00025);
+    const areas = [
+      { ringPx: stemPx, material: trunkMat, kind: "trunk", shape: "polygon" },
+      { ringPx, material: crownMat.material, kind: "canopy", shape: "polygon" },
+    ];
+    const hTopBefore = areas[1].material.top_height - areas[0].material.bottom_height;
+    const n = reseatAssembledFoliage(areas, slopeTop, frame);
+    assert.ok(n >= 2, "expected the whole stack to move, moved " + n);
+    assert.equal(areas[0].material.bottom_height, 48);
+    assert.equal(areas[1].material.bottom_height, 54.8);
+    assert.equal(areas[1].material.top_height - areas[0].material.bottom_height, hTopBefore);
+  });
+
+  it("does not treat a nearby stand as the same stack when snapping a floating mass", () => {
+    const west = -111.17;
+    const south = 32.25;
+    const east = west + 80 / (111320 * Math.cos((south * Math.PI) / 180));
+    const north = south + 80 / 110540;
+    const frame = geoFrame({ west, south, east, north, name: "Neighbor" });
+    const slopeTop = () => 48;
+    slopeTop.seat = () => 48;
+    const { liftFoliagePair, materialForVegetation } = require("../netlify/lib/materials");
+    const midLon = (west + east) / 2;
+    const midLat = (south + north) / 2;
+    const dLon = (east - west) * 0.18;
+    const floatRing = rectPx(frame, west + 0.00005, south + 0.00005, midLon - dLon, midLat - 0.00005);
+    const nearRing = rectPx(frame, midLon + dLon, midLat + 0.00005, east - 0.00005, north - 0.00005);
+    const areas = [
+      { ringPx: nearRing, material: liftFoliagePair(materialForVegetation(2.2, "light"), 50.6).material, kind: "canopy", shape: "polygon" },
+      { ringPx: floatRing, material: liftFoliagePair(materialForVegetation(2.2, "light"), 52.8).material, kind: "canopy", shape: "polygon" },
+    ];
+    const n = reseatAssembledFoliage(areas, slopeTop, frame);
+    assert.ok(n >= 1, "floating mass should snap, moved " + n);
+    assert.equal(areas[1].material.bottom_height, 48);
+    // The neighbour may also snap if it is 3 m above the plate.
+    assert.ok(areas[0].material.bottom_height === 48 || areas[0].material.bottom_height === 50.6);
+  });
+
+  it("lowers a contained cap with its stand, not off the stand", () => {
+    const west = -111.17;
+    const south = 32.25;
+    const east = west + 80 / (111320 * Math.cos((south * Math.PI) / 180));
+    const north = south + 80 / 110540;
+    const frame = geoFrame({ west, south, east, north, name: "Contained cap" });
+    const slopeTop = () => 48;
+    slopeTop.seat = () => 48;
+    const { liftFoliagePair, materialForVegetation } = require("../netlify/lib/materials");
+    const standRing = rectPx(frame, west + 0.00005, south + 0.00005, east - 0.00005, north - 0.00005);
+    const capRing = rectPx(frame, west + 0.0002, south + 0.0002, west + (east - west) * 0.35, south + (north - south) * 0.35);
+    const areas = [
+      { ringPx: standRing, material: liftFoliagePair(materialForVegetation(2.2, "light"), 50.6).material, kind: "canopy", shape: "polygon" },
+      { ringPx: capRing, material: liftFoliagePair(materialForVegetation(2.2, "light"), 52.8).material, kind: "canopy", shape: "polygon" },
+    ];
+    const hTopBefore = areas[1].material.top_height - areas[0].material.bottom_height;
+    const n = reseatAssembledFoliage(areas, slopeTop, frame);
+    assert.ok(n >= 2, "expected the stand and cap to move together, moved " + n);
+    assert.equal(areas[0].material.bottom_height, 48);
+    assert.equal(areas[1].material.bottom_height, 50.2);
+    assert.equal(areas[1].material.top_height - areas[0].material.bottom_height, hTopBefore);
+  });
+
+  it("does not drop a raised crown off a trunk that already sits on the plate", () => {
+    const west = -111.17;
+    const south = 32.25;
+    const east = west + 80 / (111320 * Math.cos((south * Math.PI) / 180));
+    const north = south + 80 / 110540;
+    const frame = geoFrame({ west, south, east, north, name: "Seated tree" });
+    const slopeTop = () => 48;
+    slopeTop.seat = () => 48;
+    const { liftFoliagePair, materialForVegetation, trunkOiMaterial } = require("../netlify/lib/materials");
+    const trunkMat = trunkOiMaterial(6.8, 48);
+    const crownMat = liftFoliagePair(materialForVegetation(8.0, "light"), 54.8);
+    const ringPx = rectPx(frame, west + 0.0001, south + 0.0001, east - 0.0001, north - 0.0001);
+    const stemPx = rectPx(frame, west + 0.00025, south + 0.00025, east - 0.00025, north - 0.00025);
+    const areas = [
+      { ringPx: stemPx, material: trunkMat, kind: "trunk", shape: "polygon" },
+      { ringPx, material: crownMat.material, kind: "canopy", shape: "polygon" },
+    ];
+    const n = reseatAssembledFoliage(areas, slopeTop, frame);
+    assert.equal(n, 0);
+    assert.equal(areas[0].material.bottom_height, 48);
+    assert.equal(areas[1].material.bottom_height, 54.8);
+    assert.equal(areas[1].material.top_height, 62.8);
   });
 });

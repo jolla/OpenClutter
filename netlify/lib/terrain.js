@@ -4106,6 +4106,89 @@ function slopeSeatUnderRing(terrain, ring) {
   return roundDownTenth(floorExtentUnderRing(terrain, ring).min);
 }
 
+/** Barycentric z on one pasted quad, the way the Hamina preview interpolates. */
+function previewTriangleZ(quad, x, y) {
+  const n = ringPointCount(quad);
+  if (n < 3 || !quad[0] || quad[0].length < 3) return null;
+  const tris = n >= 4 ? [[0, 1, 2], [0, 2, 3]] : [[0, 1, 2]];
+  let best = null;
+  for (let t = 0; t < tris.length; t++) {
+    const ic = tris[t][2];
+    if (ic >= n) continue;
+    const a = quad[tris[t][0]];
+    const b = quad[tris[t][1]];
+    const c = quad[ic];
+    const area = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+    if (Math.abs(area) < 1e-8) continue;
+    const w0 = ((b[0] - x) * (c[1] - y) - (c[0] - x) * (b[1] - y)) / area;
+    const w1 = ((c[0] - x) * (a[1] - y) - (a[0] - x) * (c[1] - y)) / area;
+    const w2 = 1 - w0 - w1;
+    if (w0 < -0.02 || w1 < -0.02 || w2 < -0.02) continue;
+    const z = w0 * a[2] + w1 * b[2] + w2 * c[2];
+    if (!Number.isFinite(z)) continue;
+    if (best == null || z < best) best = z;
+  }
+  return best;
+}
+
+function previewVisibleFloorZ(terrain, zones, x, y) {
+  const idx = zoneBuckets(terrain, zones);
+  const key = Math.floor((y - idx.B) / ZONE_BUCKET_M) * 100003 + Math.floor((x - idx.L) / ZONE_BUCKET_M);
+  const cand = idx.map.get(key) || NO_ZONES;
+  let best = null;
+  const edge2 = FLOOR_EDGE_M * FLOOR_EDGE_M;
+  for (let j = 0; j < cand.length; j++) {
+    const zone = zones[cand[j]];
+    const quad = zone.area && zone.area.coordinates && zone.area.coordinates[0];
+    if (!quad || quad.length < 4) continue;
+    let z = null;
+    if (quad[0] && quad[0].length >= 3) {
+      z = previewTriangleZ(quad, x, y);
+    } else if (dist2ToRing(quad, x, y) <= edge2) {
+      z = Number(zone.height) || 0;
+    }
+    if (z == null || !Number.isFinite(z)) continue;
+    if (best == null || z > best) best = z;
+  }
+  return best;
+}
+
+/**
+ * Downhill paste under a crown as the preview diagnoses it. storedRampZ fits
+ * one plane through corners 0-1-2, so a saddle's other triangle is lower
+ * than slopeSeatUnderRing (arizona-desert leftover floats). A raised plate
+ * still wins at a covered point, so a tree on a pad is not dropped through it.
+ * Samples are the ring vertices and the centroid, the same points diagnose
+ * uses.
+ */
+function slopePreviewSeatUnderRing(terrain, ring) {
+  if (!terrain || !ring || ring.length < 3) return 0;
+  const frame = terrain.frame;
+  const xy = frame ? ringToClipboard(ring, frame) : ring;
+  if (!xy || xy.length < 3) return 0;
+  const zones = floorZones(terrain);
+  if (!zones.length) return slopeSeatUnderRing(terrain, ring);
+  const n = ringPointCount(xy);
+  let min = Infinity;
+  let hits = 0;
+  const consider = (x, y) => {
+    const z = previewVisibleFloorZ(terrain, zones, x, y);
+    if (z == null || !Number.isFinite(z)) return;
+    hits++;
+    if (z < min) min = z;
+  };
+  let sx = 0;
+  let sy = 0;
+  for (let i = 0; i < n; i++) {
+    consider(xy[i][0], xy[i][1]);
+    sx += xy[i][0];
+    sy += xy[i][1];
+  }
+  if (n > 0) consider(sx / n, sy / n);
+  if (!hits) return slopeSeatUnderRing(terrain, ring);
+  return roundDownTenth(min);
+}
+
 /** True when this export's terrain clipboard is a ski-hill-scale bare-earth DEM.
  *  Surface DEMs stay false. The 20 m gate is not applied to Copernicus.
  */
@@ -4923,6 +5006,7 @@ function slopeSampler(terrain, guard) {
   resetSplitGuard(guard);
   const fn = (ring) => slopeTopUnderRing(terrain, ring);
   fn.seat = (ring) => slopeSeatUnderRing(terrain, ring);
+  fn.previewSeat = (ring) => slopePreviewSeatUnderRing(terrain, ring);
   fn.split = (ring) => splitRingByFloor(terrain, ring);
   fn.refine = (ring) => {
     // See splitCanopy: do not recut woods on a surface DSM.
@@ -5535,6 +5619,7 @@ module.exports = {
   terrainGroundM,
   slopeTopUnderRing,
   slopeSeatUnderRing,
+  slopePreviewSeatUnderRing,
   splitRingByFloor,
   splitRingByFloor1326,
   resetSplitGuard,

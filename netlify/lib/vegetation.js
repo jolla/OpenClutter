@@ -14,6 +14,8 @@ const {
   isUnderstoryOiName,
   isTrunkOiName,
   isVegetationOiName,
+  trunkClipPair,
+  trunkOiMaterial,
 } = require("./materials");
 
 const { MAX_TREES, maxTreesForBbox, canopyHeightM } = require("./tree-source");
@@ -1886,6 +1888,15 @@ function reseatPart(part, newBottom) {
       clip: { typeId: pair.typeId, clipType: pair.clipType },
     };
   }
+  if (isTrunkOiName(mat.name)) {
+    const material = trunkOiMaterial(thickness, newBottom);
+    const pair = trunkClipPair(thickness, newBottom);
+    if (!material || !pair) return null;
+    return {
+      material,
+      clip: { typeId: pair.typeId, clipType: pair.clipType },
+    };
+  }
   if (!(newBottom >= 1)) {
     const bare = bareCanopy(mat, thickness);
     return { material: bare, clip: clipboardForCanopy(bare) };
@@ -1949,63 +1960,151 @@ function foliageCentroid(ring) {
   return [x / end, y / end];
 }
 
-function carriedByTrunk(area, trunks) {
-  const ring = area && area.ringPx;
+function partBottom(area) {
   const mat = area && area.material;
-  if (!ring || !mat) return false;
-  const bottom = Number(mat.bottom_height) >= 1 ? Number(mat.bottom_height) : 0;
-  for (let i = 0; i < trunks.length; i++) {
-    const t = trunks[i];
-    const tm = t && t.material;
-    const tr = t && t.ringPx;
-    if (!tm || !tr) continue;
-    const top = Number(tm.top_height);
-    if (!Number.isFinite(top) || Math.abs(bottom - top) > 0.5) continue;
-    const c = foliageCentroid(tr);
-    if (c && pointInRing(c, ring)) return true;
+  return mat && Number(mat.bottom_height) >= 1 ? Number(mat.bottom_height) : 0;
+}
+
+function partTop(area) {
+  const mat = area && area.material;
+  const top = mat ? Number(mat.top_height) : NaN;
+  return Number.isFinite(top) ? top : partBottom(area);
+}
+
+function stackedTogether(a, b) {
+  if (!a || !b || a === b || !a.ringPx || !b.ringPx) return false;
+  const gap = 0.5;
+  const aSupports = Math.abs(partTop(a) - partBottom(b)) <= gap;
+  const bSupports = Math.abs(partTop(b) - partBottom(a)) <= gap;
+  if (!aSupports && !bSupports) return false;
+  const lower = aSupports ? a : b;
+  const upper = aSupports ? b : a;
+  const cLow = foliageCentroid(lower.ringPx);
+  const cUp = foliageCentroid(upper.ringPx);
+  // A trunk carries the crown when its centre sits under the crown. A small
+  // upper band whose centre sits in the lower ring is the same stand's cap,
+  // even when it sits on the shoulder (arizona-desert 52.8 inside 50.6).
+  // A disjoint neighbour that only matches height is not the same stack.
+  if (cLow && pointInRing(cLow, upper.ringPx)) return true;
+  if (cUp && pointInRing(cUp, lower.ringPx)) return true;
+  const ca = foliageCentroid(a.ringPx);
+  const cb = foliageCentroid(b.ringPx);
+  if (!ca || !cb) return false;
+  const reach = Math.max(2, 0.25 * Math.sqrt(Math.max(ringPxArea(a.ringPx), ringPxArea(b.ringPx))));
+  return Math.hypot(ca[0] - cb[0], ca[1] - cb[1]) <= reach;
+}
+
+function foliageStacks(areas) {
+  const n = areas.length;
+  const parent = new Array(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+  const find = (i) => {
+    let a = i;
+    while (parent[a] !== a) a = parent[a];
+    let b = i;
+    while (parent[b] !== a) {
+      const n2 = parent[b];
+      parent[b] = a;
+      b = n2;
+    }
+    return a;
+  };
+  const boxes = areas.map((area) => (area && area.ringPx ? ringBoundsPx(area.ringPx) : null));
+  for (let i = 0; i < n; i++) {
+    if (!areas[i] || !areas[i].material || !areas[i].ringPx) continue;
+    const bi = boxes[i];
+    if (!bi) continue;
+    for (let j = i + 1; j < n; j++) {
+      if (!areas[j] || !areas[j].material || !areas[j].ringPx) continue;
+      const bj = boxes[j];
+      if (!bj || bi.maxX < bj.minX || bj.maxX < bi.minX || bi.maxY < bj.minY || bj.maxY < bi.minY) continue;
+      if (stackedTogether(areas[i], areas[j])) {
+        const pi = find(i);
+        const pj = find(j);
+        if (pi !== pj) parent[pj] = pi;
+      }
+    }
   }
-  return false;
+  const groups = new Map();
+  for (let i = 0; i < n; i++) {
+    if (!areas[i] || !areas[i].material) continue;
+    const id = find(i);
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(areas[i]);
+  }
+  return Array.from(groups.values());
+}
+
+function seatRingLl(ring, frame) {
+  if (!ring || ring.length < 4 || !frame) return null;
+  const ll = [];
+  for (let k = 0; k < ring.length; k++) {
+    const q = pxToLl(ring[k][0], ring[k][1], frame);
+    if (q && Number.isFinite(q[0]) && Number.isFinite(q[1])) ll.push(q);
+  }
+  return ll.length >= 3 ? ll : null;
+}
+
+function applyReseat(area, newBottom) {
+  const seated = reseatPart({ material: area.material, clip: area.clip }, newBottom);
+  if (!seated || !seated.material) return false;
+  area.material = seated.material;
+  if (seated.clip) {
+    area.clip = seated.clip.typeId && seated.clip.clipType
+      ? { typeId: seated.clip.typeId, clipType: seated.clip.clipType }
+      : seated.clip;
+  }
+  return true;
+}
+
+function seatUnderArea(area, slopeTop, frame) {
+  const ll = seatRingLl(area && area.ringPx, frame);
+  if (!ll) return 0;
+  if (typeof slopeTop.previewSeat === "function") {
+    const preview = Number(slopeTop.previewSeat(ll)) || 0;
+    if (preview >= 1) return preview;
+  }
+  return typeof slopeTop.seat === "function" ? Number(slopeTop.seat(ll)) || 0 : 0;
 }
 
 /**
- * Snap unstemmed foliage onto the downhill paste under the ring that ships.
- * Worker tiles can seat on a slightly different mesh than the clipboard that
- * is pasted with the zip, which leaves a crown floating (arizona-desert).
- * Crowns already carried by a trunk stay raised.
+ * Snap a floating stack onto the downhill paste under the ring that ships.
+ * Worker tiles can seat on a slightly different mesh than the clipboard
+ * that is pasted with the zip (arizona-desert). The whole stem, understory,
+ * and crown move by the same delta so treetop height (crown top minus the
+ * ground under the stack) stays the same. If a cap on a stacked stand would
+ * itself float, the whole stack drops by the base's gap even when that gap
+ * is under 3 m, so the cap is not pulled off the stand.
  */
 function reseatAssembledFoliage(areas, slopeTop, frame) {
-  if (!slopeTop || typeof slopeTop.seat !== "function" || !areas || !areas.length || !frame) return 0;
-  const trunks = [];
-  for (let i = 0; i < areas.length; i++) {
-    const mat = areas[i] && areas[i].material;
-    if (mat && isTrunkOiName(mat.name)) trunks.push(areas[i]);
-  }
+  if (!slopeTop || !areas || !areas.length || !frame) return 0;
+  if (typeof slopeTop.seat !== "function" && typeof slopeTop.previewSeat !== "function") return 0;
+  const stacks = foliageStacks(areas);
   let n = 0;
-  for (let i = 0; i < areas.length; i++) {
-    const area = areas[i];
-    const mat = area && area.material;
-    if (!mat || isTrunkOiName(mat.name) || isUnderstoryOiName(mat.name) || !isVegetationOiName(mat.name)) continue;
-    if (carriedByTrunk(area, trunks)) continue;
-    const ring = area.ringPx;
-    if (!ring || ring.length < 4) continue;
-    const ll = [];
-    for (let k = 0; k < ring.length; k++) {
-      const q = pxToLl(ring[k][0], ring[k][1], frame);
-      if (q && Number.isFinite(q[0]) && Number.isFinite(q[1])) ll.push(q);
+  for (let s = 0; s < stacks.length; s++) {
+    const stack = stacks[s];
+    let base = stack[0];
+    for (let i = 1; i < stack.length; i++) {
+      if (partBottom(stack[i]) < partBottom(base)) base = stack[i];
     }
-    if (ll.length < 3) continue;
-    const down = Number(slopeTop.seat(ll)) || 0;
-    const bottom = Number(mat.bottom_height) >= 1 ? Number(mat.bottom_height) : 0;
-    if (!(down >= 1) || !(bottom - down >= 3)) continue;
-    const seated = reseatPart({ material: mat, clip: area.clip }, down);
-    if (!seated || !seated.material) continue;
-    area.material = seated.material;
-    if (seated.clip) {
-      area.clip = seated.clip.typeId && seated.clip.clipType
-        ? { typeId: seated.clip.typeId, clipType: seated.clip.clipType }
-        : seated.clip;
+    let down = 0;
+    let anyFloat = false;
+    for (let i = 0; i < stack.length; i++) {
+      const seat = seatUnderArea(stack[i], slopeTop, frame);
+      if (!(seat >= 1)) continue;
+      if (down < 1 || seat < down) down = seat;
+      if (partBottom(stack[i]) - seat >= 3) anyFloat = true;
     }
-    n++;
+    const bottom = partBottom(base);
+    if (!(down >= 1) || !anyFloat) continue;
+    const drop = bottom - down;
+    if (!(drop > 0.05)) continue;
+    let moved = 0;
+    for (let i = 0; i < stack.length; i++) {
+      const next = roundTenths(partBottom(stack[i]) - drop);
+      if (applyReseat(stack[i], next)) moved++;
+    }
+    if (moved) n += moved;
   }
   return n;
 }

@@ -1522,6 +1522,7 @@ module.exports = {
   palmCrownBase,
   individualTreeParts,
   trunkOiMaterial,
+  trunkClipPair,
   isTrunkOiName,
   standUnderstoryM,
   UNDERSTORY_DB,
