@@ -88,6 +88,43 @@
     return KINDS[KINDS.length - 1];
   }
 
+  function finite(list) {
+    return list.every((n) => Number.isFinite(n));
+  }
+
+  /**
+   * Feedback #22: the zip's map is the aerial's real extent, not the drawn
+   * box. Esri World Imagery pads the drawn box north and south (about
+   * 1/cos(lat), 138 m each way on a 1.2 km Las Vegas box), and the export puts
+   * every object on that padded picture. Drawing the objects into the drawn
+   * box squeezed them toward its middle. Corners [SW, SE, NE, NW] as [lat, lon]
+   * come from, in order: the export's frame (turned corners or north-up
+   * bounds), the GPS paste's southwest and northeast tie points (north-up
+   * only), else the drawn box.
+   */
+  function previewCorners(data, drawn, turned) {
+    const frame = data && data.frame;
+    const c = frame && frame.corners;
+    if (c && c.sw && c.se && c.ne && c.nw) {
+      const out = [c.sw, c.se, c.ne, c.nw].map((p) => [+p[1], +p[0]]);
+      if (finite([].concat.apply([], out))) return out;
+    }
+    if (!turned && frame && !frame.corners) {
+      const w = +frame.west, s = +frame.south, e = +frame.east, n = +frame.north;
+      if (finite([w, s, e, n]) && e > w && n > s) return [[s, w], [s, e], [n, e], [n, w]];
+    }
+    const tie = !turned && data && data.gpsClipboard && data.gpsClipboard.tiePoints;
+    if (Array.isArray(tie) && tie.length >= 2) {
+      const pts = tie.map((t) => [+t.lat, +t.lon]).filter((p) => finite(p));
+      if (pts.length >= 2) {
+        const s = Math.min(...pts.map((p) => p[0])), n = Math.max(...pts.map((p) => p[0]));
+        const w = Math.min(...pts.map((p) => p[1])), e = Math.max(...pts.map((p) => p[1]));
+        if (e > w && n > s) return [[s, w], [s, e], [n, e], [n, w]];
+      }
+    }
+    return drawn;
+  }
+
   /**
    * corners: [SW, SE, NE, NW] latlngs of the exported box (turned or not).
    * OpenIntent pixels are Y-up from the southwest corner.
@@ -198,7 +235,7 @@
     return got.counts;
   }
 
-  const api = { previewWanted, zipEntries, openIntentFromZip, shapesFromOpenIntent, kindFor, showFromZip };
+  const api = { previewWanted, zipEntries, openIntentFromZip, shapesFromOpenIntent, previewCorners, kindFor, showFromZip };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.OpenClutterPreview = api;
 })(typeof window !== "undefined" ? window : globalThis);
