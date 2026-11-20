@@ -1976,9 +1976,14 @@ function trimSegmentedCrowns(crowns, max) {
       plans.push({ mass, trees: false, parts: null, cost: 0, keep: true });
     }
   }
+  // Only stands at or under the official 12,000 m² grid-cut are upgraded
+  // to individual trees. A 50,000 m² woods that takes 400 tree slots
+  // pulled treetop recall down and left the 5,000–8,000 m² hammocks
+  // short of official matches.
   for (let i = 0; i < plans.length; i++) {
     const plan = plans[i];
     if (plan.trees || plan.mass.kind !== "group") continue;
+    if (plan.mass.area > TILE_AREA_M2) continue;
     const extra = plan.mass.item.n - 1 - plan.cost;
     if (plan.mass.item.n >= 2 && extra > 0 && extra <= spare) {
       plan.trees = true;
