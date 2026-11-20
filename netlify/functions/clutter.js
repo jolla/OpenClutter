@@ -2809,6 +2809,10 @@ async function handleClutterNorthUp(event) {
           })
       );
     }
+    let preFillValues = null;
+    if (chmGrid && chmGrid.values && fillPromise) {
+      preFillValues = new Uint8Array(chmGrid.values);
+    }
     if (fillPromise) {
       try {
         const filled = await fillPromise;
@@ -2822,6 +2826,11 @@ async function handleClutterNorthUp(event) {
             if (process.env.OC_LIDAR_DEBUG) process.stderr.write("lidarfill nz " + fillNz + " reverted " + reverted + " now " + chmGrid.nonzero + "\n");
           }
           if (waterTest) footprintMeta.waterCanopyCells = (footprintMeta.waterCanopyCells || 0) + clearWaterCanopy(chmGrid, waterTest);
+          // Split the filled hammock from the treetops that were distinct
+          // before the fill flattened their saddles.
+          if (preFillValues && preFillValues.length === chmGrid.values.length) {
+            chmGrid.topValues = preFillValues;
+          }
         }
       } catch {
         // The measured grid still ships when the fill cannot be read.
@@ -2901,17 +2910,19 @@ async function handleClutterNorthUp(event) {
               maskPolygons,
               woodRings,
               palmPoints,
-              // Lidar crowns are always split per tree. A blob on an estimated
-              // canopy height map larger than one crown is split too, but only
-              // along a real height valley between two tops.
+              // A measured CHM (lidar or Meta) is always split per tree. A
+              // blob on an estimated canopy height map larger than one crown
+              // is split too, but only along a real height valley between
+              // two tops. Lancaster has a CHM even when the lidar fetch
+              // misses, so it must not fall back to the 2,000 m2 cap.
               segmentTrees: SEGMENT_TREES,
-              segmentMinM2: lidarCanopy ? 0 : ESTIMATED_SPLIT_MIN_M2,
+              segmentMinM2: chmGrid ? 0 : ESTIMATED_SPLIT_MIN_M2,
               terrain,
               omitFoliage: false,
               chmRequired: true,
-              // Per-tree lidar crowns need more outlines than whole stands.
+              // Per-tree measured crowns need more outlines than whole stands.
               // The zip budget still trims after this.
-              maxPolygons: SEGMENT_TREES && lidarCanopy ? Math.round(foliageCap * SEGMENT_CAP_SCALE) : foliageCap,
+              maxPolygons: SEGMENT_TREES && chmGrid ? Math.round(foliageCap * SEGMENT_CAP_SCALE) : foliageCap,
               photoCrowns,
             })
           )

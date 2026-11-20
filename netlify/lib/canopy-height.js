@@ -1064,19 +1064,23 @@ const SEG_PIECE_MIN_M2 = 30;
  * cells that slope down from its own top. Null when the component is one
  * tree. Nothing is added: the trees partition the measured cells.
  */
-function segmentTrees(pixels, at, w, mPerX, mPerY, minM2) {
+function segmentTrees(pixels, at, w, mPerX, mPerY, minM2, topAt) {
   const area = pixels.length * mPerX * mPerY;
   // An estimated split (minM2 set) is for a blob a few crowns across, not a
   // forest: a woods stays one stand there.
   const maxM2 = minM2 > 0 ? ESTIMATED_SEG_MAX_M2 : SEG_MAX_M2;
   if (area < Math.max(SEG_MIN_M2, minM2 || 0) || area > maxM2) return null;
   const cell = Math.sqrt(mPerX * mPerY);
+  // Aerial gap-fill can flatten a hammock into one plateau. Tops and saddles
+  // are read from the pre-fill height when the caller has it, so the trees
+  // that were distinct before the fill still split the filled stand.
+  const peak = typeof topAt === "function" ? topAt : at;
   const inSet = new Map();
   for (let i = 0; i < pixels.length; i++) inSet.set(pixels[i][1] * w + pixels[i][0], i);
   const tops = [];
   for (let i = 0; i < pixels.length; i++) {
     const [x, y] = pixels[i];
-    const v = at(x, y);
+    const v = peak(x, y);
     if (v < SEG_TOP_MIN_H) continue;
     let top = true;
     let inCanopy = 0;
@@ -1088,7 +1092,7 @@ function segmentTrees(pixels, at, w, mPerX, mPerY, minM2) {
         const ny = y + dy;
         if (!inSet.has(ny * w + nx)) continue;
         inCanopy++;
-        const u = at(nx, ny);
+        const u = peak(nx, ny);
         if (u > v || (u === v && (dy < 0 || (dy === 0 && dx < 0)))) {
           top = false;
           break;
@@ -1125,7 +1129,7 @@ function segmentTrees(pixels, at, w, mPerX, mPerY, minM2) {
       for (let s2 = 1; s2 < n; s2++) {
         const x = Math.round(t.x + ((q.x - t.x) * s2) / n);
         const y = Math.round(t.y + ((q.y - t.y) * s2) / n);
-        const u = inSet.has(y * w + x) ? at(x, y) : 0;
+        const u = inSet.has(y * w + x) ? peak(x, y) : 0;
         if (u < low) low = u;
       }
       if (t.v - low < Math.max(1.5, 0.15 * t.v)) merge = true;
@@ -1346,6 +1350,11 @@ function crownsFromChm(grid, opts) {
   const clipY0 = halo ? Math.max(0, seedY0 - halo) : 0;
   const clipY1 = halo ? Math.min(h, seedY1 + halo) : h;
   const at = (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? 0 : values[y * w + x] || 0);
+  const topSrc = grid.topValues;
+  const topAt =
+    topSrc && topSrc.length === values.length
+      ? (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? 0 : topSrc[y * w + x] || 0)
+      : at;
   const seen = new Uint8Array(w * h);
   const crowns = [];
   let segSeq = (opt.segBase | 0) * 100000;
@@ -1376,9 +1385,11 @@ function crownsFromChm(grid, opts) {
       const area = pixels.length * mPerX * mPerY;
       const groups = [];
       if (opt.segment) {
-        const trees = segmentTrees(pixels, at, w, mPerX, mPerY, opt.segMinM2);
+        const trees = segmentTrees(pixels, at, w, mPerX, mPerY, opt.segMinM2, topAt);
         if (trees) {
-          const whole = area < TILE_AREA_M2 ? crownFromPixels(pixels, values, w, grid, mPerX, mPerY, 0, area >= SUBSTAND_AREA_M2) : null;
+          // A whole outline lets a tight export cap put the stand back as
+          // one piece instead of dropping some of its trees and leaving holes.
+          const whole = crownFromPixels(pixels, values, w, grid, mPerX, mPerY, 0, area >= SUBSTAND_AREA_M2);
           const segId = segSeq++;
           let first = true;
           for (let g = 0; g < trees.length; g++) {
@@ -1526,7 +1537,7 @@ function selectCrownsForExport(crowns, max) {
 }
 
 function copyGrid(grid, values, nonzero) {
-  return {
+  const out = {
     west: +grid.west,
     south: +grid.south,
     east: +grid.east,
@@ -1536,6 +1547,14 @@ function copyGrid(grid, values, nonzero) {
     values,
     nonzero,
   };
+  const tops = grid && grid.topValues;
+  if (tops && tops.length === out.width * out.height) {
+    const topValues = new Uint8Array(tops.length);
+    const n = Math.min(topValues.length, values && values.length || 0);
+    for (let i = 0; i < n; i++) topValues[i] = values[i] ? tops[i] || 0 : 0;
+    out.topValues = topValues;
+  }
+  return out;
 }
 
 /**
@@ -1654,7 +1673,7 @@ function poolChmGrid(grid, stride) {
  * merged mass keeps its trees: collapsing the most-cut woods first was
  * putting 5,000–12,000 m² crowns back on the map.
  */
-function fitSegments(crowns, max) {
+function fitSegments(crowns, max, allowLarge) {
   if (!(max > 0) || crowns.length <= max) return crowns;
   const bySeg = new Map();
   for (let i = 0; i < crowns.length; i++) {
@@ -1675,34 +1694,79 @@ function fitSegments(crowns, max) {
   const drop = new Set();
   const add = [];
   let n = crowns.length;
-  for (let i = 0; i < groups.length && n > max; i++) {
-    // Keep treetop splits on a woods that would otherwise ship as one mass.
-    if (groups[i].area >= KEEP_SPLIT_MIN_M2) continue;
-    const g = groups[i].g;
+  const revert = (item) => {
+    const g = item.g;
     const whole = g.find((c) => c.whole).whole;
     for (const c of g) drop.add(c);
     add.push(whole);
     n -= g.length - 1;
+  };
+  for (let i = 0; i < groups.length && n > max; i++) {
+    // Keep treetop splits on a woods that would otherwise ship as one mass.
+    if (groups[i].area >= KEEP_SPLIT_MIN_M2) continue;
+    revert(groups[i]);
+  }
+  // Still over: put leftover large stands back as a whole, smallest first,
+  // so the export never drops some of a split stand and leaves holes.
+  if (allowLarge) {
+    for (let i = 0; i < groups.length && n > max; i++) {
+      if (groups[i].area < KEEP_SPLIT_MIN_M2) continue;
+      revert(groups[i]);
+    }
   }
   const out = crowns.filter((c) => !drop.has(c)).concat(add);
   out.sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
   return out;
 }
 
+/**
+ * Fit a crown list to an outline cap without punching holes in a split
+ * stand. Small segmented groups revert first, then unsegmented leftovers
+ * are trimmed, then a large split stand goes back to its whole outline.
+ */
+function trimSegmentedCrowns(crowns, max) {
+  if (!(max > 0) || crowns.length <= max) return crowns;
+  let out = fitSegments(crowns, max, false);
+  if (out.length <= max) return out;
+  const seg = [];
+  const rest = [];
+  for (let i = 0; i < out.length; i++) {
+    if (out[i].segId != null) seg.push(out[i]);
+    else rest.push(out[i]);
+  }
+  if (seg.length <= max) {
+    const kept = rest.length > max - seg.length ? selectCrownsForExport(rest, max - seg.length) : rest;
+    out = seg.concat(kept);
+    out.sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
+    return out;
+  }
+  out = fitSegments(out, max, true);
+  if (out.length <= max) return out;
+  const seg2 = [];
+  const rest2 = [];
+  for (let i = 0; i < out.length; i++) {
+    if (out[i].segId != null) seg2.push(out[i]);
+    else rest2.push(out[i]);
+  }
+  if (seg2.length <= max) {
+    const kept = rest2.length > max - seg2.length ? selectCrownsForExport(rest2, max - seg2.length) : rest2;
+    out = seg2.concat(kept);
+    out.sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
+    return out;
+  }
+  return selectCrownsForExport(out, max);
+}
+
 function crownsForExport(grid, opts) {
   const prepared = maskChmGrid(grid, opts);
   if (!prepared || !(prepared.nonzero > 0)) return { crowns: [], coarsened: false, stride: 1 };
   const max = opts && opts.maxPolygons > 0 ? opts.maxPolygons | 0 : BULK_POLYGONS;
-  let crowns = fitSegments(crownsFromChm(prepared, { segment: !!(opts && opts.segment), segMinM2: (opts && opts.segMinM2) || 0 }), max);
+  let crowns = crownsFromChm(prepared, { segment: !!(opts && opts.segment), segMinM2: (opts && opts.segMinM2) || 0 });
   const before = crowns.length;
-  let trimmed = false;
-  if (crowns.length > max) {
-    trimmed = true;
-    crowns = selectCrownsForExport(crowns, max);
-  }
+  crowns = trimSegmentedCrowns(crowns, max);
   return {
     crowns,
-    coarsened: trimmed,
+    coarsened: before > crowns.length,
     stride: 1,
     dropped: before > crowns.length ? before - crowns.length : 0,
   };
@@ -1737,4 +1801,5 @@ module.exports = {
   tracePixels,
   segmentTrees,
   fitSegments,
+  trimSegmentedCrowns,
 };

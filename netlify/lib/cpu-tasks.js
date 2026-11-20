@@ -48,16 +48,23 @@ function spin(payload) {
 function gridFromPayload(payload) {
   const buffer = payload && (payload.buffer || payload.chmBuffer);
   if (!buffer || !(payload.width > 1) || !(payload.height > 1)) return payload && payload.grid;
-  return {
+  const width = payload.width | 0;
+  const height = payload.height | 0;
+  const grid = {
     west: +payload.west,
     south: +payload.south,
     east: +payload.east,
     north: +payload.north,
-    width: payload.width | 0,
-    height: payload.height | 0,
+    width,
+    height,
     values: new Uint8Array(buffer),
     nonzero: payload.nonzero > 0 ? payload.nonzero | 0 : 1,
   };
+  const topBuffer = payload.topBuffer;
+  if (topBuffer && topBuffer.byteLength === width * height) {
+    grid.topValues = new Uint8Array(topBuffer);
+  }
+  return grid;
 }
 
 function canopyMask(payload) {
@@ -68,7 +75,7 @@ function canopyMask(payload) {
   const blocked = ringBlock ? (lon, lat) => ringBlock(lon, lat) : null;
   const prepared = maskChmGrid(payload.grid, { blocked, hits: payload.hits || [] });
   if (!prepared || !prepared.values) return null;
-  return {
+  const out = {
     west: +prepared.west,
     south: +prepared.south,
     east: +prepared.east,
@@ -78,6 +85,10 @@ function canopyMask(payload) {
     values: Buffer.from(prepared.values),
     nonzero: prepared.nonzero | 0,
   };
+  if (prepared.topValues && prepared.topValues.length === out.width * out.height) {
+    out.topValues = Buffer.from(prepared.topValues);
+  }
+  return out;
 }
 
 function canopyTile(payload) {

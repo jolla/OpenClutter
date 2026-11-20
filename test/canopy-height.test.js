@@ -14,6 +14,7 @@ const {
   selectCrownsForExport,
   segmentTrees,
   fitSegments,
+  trimSegmentedCrowns,
   mercator,
   lonLatFromMercator,
   fetchChmGrid,
@@ -1268,6 +1269,62 @@ describe("treetop splitting of merged crowns", () => {
     assert.equal(out.some((c) => c === wholeLarge), false);
     assert.equal(out.filter((c) => c.segId === 2).length, 0, "small group reverts");
     assert.equal(out.some((c) => c === wholeSmall), true);
+  });
+
+  it("splits a gap-filled hammock from the pre-fill treetops", () => {
+    const cell = 3;
+    const w = 40;
+    const h = 40;
+    const peaked = new Uint8Array(w * h);
+    for (let y = 4; y < 34; y++) {
+      for (let x = 4; x < 34; x++) peaked[y * w + x] = 17;
+    }
+    for (let row = 0; row < 4; row++) {
+      for (let col = 0; col < 4; col++) {
+        const x = 10 + col * 4;
+        const y = 10 + row * 4;
+        peaked[y * w + x] = 19;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx >= 0 && ny >= 0 && nx < w && ny < h && peaked[ny * w + nx] < 18) peaked[ny * w + nx] = 18;
+        }
+      }
+    }
+    // Aerial fill flattens the saddles to one 17 m plateau.
+    const filled = new Uint8Array(peaked.length);
+    for (let i = 0; i < peaked.length; i++) if (peaked[i]) filled[i] = 17;
+    const at = (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? 0 : filled[y * w + x] || 0);
+    const peak = (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? 0 : peaked[y * w + x] || 0);
+    const pixels = pixelsOf(w, h, filled);
+    const flat = segmentTrees(pixels, at, w, cell, cell, 0);
+    assert.ok(!flat || flat.length < 4, "a flat fill without pre-fill tops stays one mass");
+    const trees = segmentTrees(pixels, at, w, cell, cell, 0, peak);
+    assert.ok(trees && trees.length >= 12, "pre-fill tops " + (trees && trees.length));
+    const areas = trees.map((g) => g.length * cell * cell).sort((a, b) => b - a);
+    assert.ok(areas[0] < 2500, "largest piece " + areas[0]);
+    const grid = gridFromValues(cell, w, h, filled);
+    grid.topValues = peaked;
+    const crowns = crownsFromChm(grid, { segment: true });
+    assert.ok(crowns.length >= 12, "crowns " + crowns.length);
+    assert.ok(Math.max(...crowns.map((c) => c.areaM2)) < 2500, "largest crown " + Math.max(...crowns.map((c) => c.areaM2)));
+  });
+
+  it("reverts a large stand as a whole instead of dropping some of its trees", () => {
+    const ring = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]];
+    const wholeLarge = { areaM2: 8000, heightM: 18, ringLonLat: ring };
+    const large = [];
+    for (let i = 0; i < 40; i++) {
+      large.push({ areaM2: 200, heightM: 18, ringLonLat: ring, segId: 1, segTree: true });
+    }
+    large[0].whole = wholeLarge;
+    const rest = [];
+    for (let i = 0; i < 20; i++) rest.push({ areaM2: 50, heightM: 8, ringLonLat: ring });
+    const out = trimSegmentedCrowns(large.concat(rest), 25);
+    assert.equal(out.filter((c) => c.segId === 1).length, 0, "large group is not kept in part");
+    assert.equal(out.some((c) => c === wholeLarge), true, "the stand goes back to its whole outline");
+    assert.ok(out.length <= 25, "fits the cap " + out.length);
+    assert.equal(out.filter((c) => c.segId != null).length, 0);
   });
 });
 

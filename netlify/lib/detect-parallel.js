@@ -23,7 +23,7 @@ const stageClock = require("./stage-clock");
 const { threadCount, runOne, runQueue } = require("./cpu-pool");
 const { polygonsFromCrowns, treePairsFromPoints } = require("./vegetation");
 const { gridHeightAt } = require("./photo-crowns");
-const { selectCrownsForExport, fitSegments, CROWN_CAP } = require("./canopy-height");
+const { selectCrownsForExport, fitSegments, trimSegmentedCrowns, CROWN_CAP } = require("./canopy-height");
 const { coverClasses } = require("./canopy-fill");
 const { materialForVegetation } = require("./materials");
 const { llToPx, pxToLl } = require("./geo-frame");
@@ -140,7 +140,7 @@ function copyGrid(grid) {
   if (src) {
     for (let i = 0; i < values.length && i < src.length; i++) values[i] = src[i] || 0;
   }
-  return {
+  const out = {
     west: +grid.west,
     south: +grid.south,
     east: +grid.east,
@@ -150,6 +150,13 @@ function copyGrid(grid) {
     values,
     nonzero: grid.nonzero | 0,
   };
+  const tops = grid.topValues;
+  if (tops && tops.length === w * h) {
+    const topValues = new Uint8Array(tops.length);
+    for (let i = 0; i < tops.length; i++) topValues[i] = values[i] ? tops[i] || 0 : 0;
+    out.topValues = topValues;
+  }
+  return out;
 }
 
 function woodPolygons(woodRings, frame) {
@@ -375,10 +382,17 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
     const bytes = Buffer.isBuffer(masked.values) ? masked.values : Buffer.from(masked.values);
     const shared = new SharedArrayBuffer(bytes.length);
     new Uint8Array(shared).set(bytes);
+    let topShared = null;
+    if (masked.topValues && masked.topValues.length === bytes.length) {
+      const topBytes = Buffer.isBuffer(masked.topValues) ? masked.topValues : Buffer.from(masked.topValues);
+      topShared = new SharedArrayBuffer(topBytes.length);
+      new Uint8Array(topShared).set(topBytes);
+    }
     for (let i = 0; i < bands.length; i++) {
       tilePayloads.push({
         tileId: "canopy-" + i,
         buffer: shared,
+        topBuffer: topShared,
         west: +masked.west,
         south: +masked.south,
         east: +masked.east,
@@ -404,10 +418,8 @@ async function treePairsParallel(treePoints, frame, buildingAabbs, affine, opts)
   // Count every traced crown. Counting after the safety cap always reported
   // the cap minus the budget, not the outlines really left out.
   const max = opts.maxPolygons > 0 ? opts.maxPolygons | 0 : 720;
-  crowns = fitSegments(crowns, Math.min(CROWN_CAP, max));
   const before = crowns.length;
-  if (crowns.length > CROWN_CAP) crowns = selectCrownsForExport(crowns, CROWN_CAP);
-  if (crowns.length > max) crowns = selectCrownsForExport(crowns, max);
+  crowns = trimSegmentedCrowns(crowns, Math.min(CROWN_CAP, max));
   const meta = {
     coarsened: before > crowns.length,
     dropped: before > crowns.length ? before - crowns.length : 0,
