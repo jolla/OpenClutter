@@ -135,15 +135,30 @@ On Netlify, set the URL and the same secret for production and for the `dev` bra
 ```bash
 netlify env:set FLY_WORKER_URL "https://openclutter-export.fly.dev" --context production
 netlify env:set FLY_WORKER_SECRET "paste-the-secret" --context production
-netlify env:set FLY_WORKER_URL "https://openclutter-export.fly.dev" --context branch:dev
-netlify env:set FLY_WORKER_SECRET "paste-the-secret" --context branch:dev
+netlify env:set FLY_WORKER_URL "https://openclutter-export-dev.fly.dev" --context branch-deploy
+netlify env:set FLY_WORKER_SECRET "paste-the-dev-secret" --context branch-deploy
 ```
 
-The same four values can be entered in the Netlify UI under Site configuration > Environment variables. The next deploy of that context picks them up.
+The production context stays on `https://openclutter-export.fly.dev` and the production secret. The `dev` branch uses the `branch-deploy` context and the dev worker. See "Dev worker" below. The same values can be entered in the Netlify UI under Site configuration > Environment variables. The next deploy of that context picks them up.
 
 Optional, only if blob writes from the worker cannot find the store: on Fly, `fly secrets set NETLIFY_BLOBS_REGION='us-east-2'`. Leave it unset unless a job fails to store. Do not set it on Netlify. The function already has its own blob context.
 
 No map API key is required for the current sources. The Finland laser grid is already in the image. Leave `NLS_API_KEY` unset unless you later have a real key to put there. Do not put a placeholder in the repo or in Fly.
+
+## Dev worker
+
+`openclutter-export` is production only. Dev exports use a second app, `openclutter-export-dev`, from `fly-dev.toml`. It is one `performance-4x` 8 GB machine in `ord`. Autostop stays off so Fly Proxy cannot kill a live export. The process exits after 5 minutes with no export, and the next request starts the machine.
+
+Deploy the dev worker from the repo root, on a commit that should go to dev, not from `fly.toml`:
+
+```bash
+flyctl deploy --config fly-dev.toml --app openclutter-export-dev --remote-only --depot=false --ha=false
+fly scale count 1 -a openclutter-export-dev
+```
+
+Do not run those commands against `openclutter-export`. Production still uses `fly.toml` and is updated only on release day.
+
+On Netlify, `FLY_WORKER_URL` and `FLY_WORKER_SECRET` for the `branch-deploy` context point at `https://openclutter-export-dev.fly.dev` and the dev worker secret. The `production` context stays on `https://openclutter-export.fly.dev` and the production secret. A new `dev` branch deploy picks up those values. Do not set the production context to the dev app.
 
 ## Update the live worker
 
