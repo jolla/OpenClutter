@@ -1310,6 +1310,41 @@ describe("treetop splitting of merged crowns", () => {
     assert.ok(Math.max(...crowns.map((c) => c.areaM2)) < 2500, "largest crown " + Math.max(...crowns.map((c) => c.areaM2)));
   });
 
+  it("splits an oversize gap-filled woods after the 100,000 m² cap", () => {
+    // Bigger than SEG_MAX_M2, so a single segmentTrees call used to return
+    // null and the 12,000 m² grid-cut shipped huge unsplit pieces.
+    const cell = 3;
+    const w = 120;
+    const h = 120;
+    const peaked = new Uint8Array(w * h);
+    for (let y = 2; y < h - 2; y++) {
+      for (let x = 2; x < w - 2; x++) peaked[y * w + x] = 17;
+    }
+    let tops = 0;
+    for (let y = 10; y < h - 10; y += 8) {
+      for (let x = 10; x < w - 10; x += 8) {
+        peaked[y * w + x] = 19;
+        tops++;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (peaked[ny * w + nx] < 18) peaked[ny * w + nx] = 18;
+        }
+      }
+    }
+    const filled = new Uint8Array(peaked.length);
+    for (let i = 0; i < peaked.length; i++) if (peaked[i]) filled[i] = 17;
+    const area = pixelsOf(w, h, filled).length * cell * cell;
+    assert.ok(area > 100000, "stand area " + area);
+    const grid = gridFromValues(cell, w, h, filled);
+    grid.topValues = peaked;
+    const crowns = crownsFromChm(grid, { segment: true, noCap: true });
+    const largest = Math.max(...crowns.map((c) => c.areaM2));
+    assert.ok(crowns.length >= Math.min(40, tops), "crowns " + crowns.length + " tops " + tops);
+    assert.ok(largest < 4000, "largest crown " + largest);
+    assert.ok(crowns.filter((c) => c.segTree).length >= 40, "segmented " + crowns.filter((c) => c.segTree).length);
+  });
+
   it("reverts a large stand as a whole instead of dropping some of its trees", () => {
     const ring = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]];
     const wholeLarge = { areaM2: 8000, heightM: 18, ringLonLat: ring };

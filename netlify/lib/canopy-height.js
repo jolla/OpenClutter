@@ -1336,6 +1336,31 @@ function componentTouchesClip(pixels, clipY0, clipY1, gridH) {
   return false;
 }
 
+/**
+ * Individual trees in one connected canopy. A gap-filled woods can be
+ * larger than SEG_MAX_M2, so segmentTrees leaves it alone and the 12,000 m²
+ * grid-cut then shipped 5,000–20,000 m² pieces with no treetop split.
+ * Those oversize stands are cut into blocks first, then each block is split
+ * from the same pre-fill tops, so a joined hammock still becomes trees.
+ */
+function segmentStand(pixels, at, w, mPerX, mPerY, minM2, topAt) {
+  const trees = segmentTrees(pixels, at, w, mPerX, mPerY, minM2, topAt);
+  if (trees) return [{ trees, whole: pixels }];
+  const area = pixels.length * mPerX * mPerY;
+  if (area < TILE_AREA_M2) return null;
+  // Cap the tile scale at a 12,000 m² stand so a 200,000 m² fill does not
+  // produce 20,000 m² blocks that stay unsplit when a later path fails.
+  const blocks = tilePixels(pixels, mPerX, mPerY, tileMeters(Math.min(area, TILE_AREA_M2)));
+  if (!blocks) return null;
+  const out = [];
+  for (let b = 0; b < blocks.length; b++) {
+    const part = segmentTrees(blocks[b], at, w, mPerX, mPerY, minM2, topAt);
+    if (part) out.push({ trees: part, whole: blocks[b] });
+    else out.push({ trees: [blocks[b]], whole: null });
+  }
+  return out.length ? out : null;
+}
+
 function crownsFromChm(grid, opts) {
   const values = gridValues(grid);
   if (!values) return [];
@@ -1385,23 +1410,51 @@ function crownsFromChm(grid, opts) {
       const area = pixels.length * mPerX * mPerY;
       const groups = [];
       if (opt.segment) {
-        const trees = segmentTrees(pixels, at, w, mPerX, mPerY, opt.segMinM2, topAt);
-        if (trees) {
-          // A whole outline lets a tight export cap put the stand back as
-          // one piece instead of dropping some of its trees and leaving holes.
-          const whole = crownFromPixels(pixels, values, w, grid, mPerX, mPerY, 0, area >= SUBSTAND_AREA_M2);
-          const segId = segSeq++;
-          let first = true;
-          for (let g = 0; g < trees.length; g++) {
-            const crown = crownFromPixels(trees[g], values, w, grid, mPerX, mPerY, 0, false);
-            if (!crown) continue;
-            crown.segId = segId;
-            crown.segTree = true;
-            if (first && whole) crown.whole = whole;
-            first = false;
-            crowns.push(crown);
+        const stands = segmentStand(pixels, at, w, mPerX, mPerY, opt.segMinM2, topAt);
+        if (stands) {
+          const leftover = [];
+          let emitted = false;
+          for (let s = 0; s < stands.length; s++) {
+            const trees = stands[s].trees;
+            if (!trees || !trees.length) continue;
+            if (trees.length < 2 || !stands[s].whole) {
+              for (let g = 0; g < trees.length; g++) leftover.push(trees[g]);
+              continue;
+            }
+            const wholePixels = stands[s].whole;
+            const wholeArea = wholePixels.length * mPerX * mPerY;
+            const whole = crownFromPixels(wholePixels, values, w, grid, mPerX, mPerY, 0, wholeArea >= SUBSTAND_AREA_M2);
+            const segId = segSeq++;
+            let first = true;
+            for (let g = 0; g < trees.length; g++) {
+              const crown = crownFromPixels(trees[g], values, w, grid, mPerX, mPerY, 0, false);
+              if (!crown) continue;
+              crown.segId = segId;
+              crown.segTree = true;
+              if (first && whole) crown.whole = whole;
+              first = false;
+              crowns.push(crown);
+              emitted = true;
+            }
+            if (first) {
+              // Tracing the trees failed; keep the block's cells as cover.
+              leftover.push(wholePixels);
+            }
           }
-          if (!first) continue;
+          if (emitted && !leftover.length) continue;
+          if (leftover.length) {
+            for (let i = 0; i < leftover.length; i++) groups.push(leftover[i]);
+            // Already cut into blocks: do not grid-cut the whole woods again.
+            if (emitted || leftover.length > 1) {
+              const tiled = groups;
+              const split = tiled.length > 1;
+              for (let g = 0; g < tiled.length; g++) {
+                const crown = crownFromPixels(tiled[g], values, w, grid, mPerX, mPerY, 0, split || area >= SUBSTAND_AREA_M2);
+                if (crown) crowns.push(crown);
+              }
+              continue;
+            }
+          }
         }
       }
       // A large stand is cut on a grid first. Splitting it by height cell
