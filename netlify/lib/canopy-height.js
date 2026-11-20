@@ -1394,13 +1394,100 @@ function segmentStand(pixels, at, w, mPerX, mPerY, minM2, topAt) {
   return out;
 }
 
+function groupCentroid(pixels) {
+  let sx = 0;
+  let sy = 0;
+  for (let i = 0; i < pixels.length; i++) {
+    sx += pixels[i][0];
+    sy += pixels[i][1];
+  }
+  const n = pixels.length || 1;
+  return [sx / n, sy / n];
+}
+
+/** Merge nearest-neighbour tree groups until at most n remain. */
+function clusterPixelGroups(groups, n) {
+  const items = [];
+  for (let i = 0; i < groups.length; i++) {
+    const c = groupCentroid(groups[i]);
+    items.push({ pixels: groups[i].slice(), cx: c[0], cy: c[1] });
+  }
+  while (items.length > n) {
+    let bi = 0;
+    let bj = 1;
+    let best = Infinity;
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        const dx = items[i].cx - items[j].cx;
+        const dy = items[i].cy - items[j].cy;
+        const d = dx * dx + dy * dy;
+        if (d < best) {
+          best = d;
+          bi = i;
+          bj = j;
+        }
+      }
+    }
+    const pixels = items[bi].pixels.concat(items[bj].pixels);
+    const c = groupCentroid(pixels);
+    const hi = Math.max(bi, bj);
+    const lo = Math.min(bi, bj);
+    items.splice(hi, 1);
+    items.splice(lo, 1);
+    items.push({ pixels, cx: c[0], cy: c[1] });
+  }
+  return items.map((it) => it.pixels);
+}
+
+/** Assign every stand cell to the nearest clustered treetop (Voronoi clipped to canopy). */
+function assignPixelsToGroups(pixels, groups) {
+  const cents = [];
+  for (let g = 0; g < groups.length; g++) cents.push(groupCentroid(groups[g]));
+  const out = [];
+  for (let g = 0; g < groups.length; g++) out.push([]);
+  for (let i = 0; i < pixels.length; i++) {
+    const p = pixels[i];
+    let best = 0;
+    let bestD = Infinity;
+    for (let g = 0; g < cents.length; g++) {
+      const dx = p[0] - cents[g][0];
+      const dy = p[1] - cents[g][1];
+      const d = dx * dx + dy * dy;
+      if (d < bestD) {
+        bestD = d;
+        best = g;
+      }
+    }
+    out[best].push(p);
+  }
+  return out.filter((g) => g.length >= 6);
+}
+
+/**
+ * Budget-sized complete cuts that follow watershed / treetop Voronoi shapes
+ * instead of 42 m tile edges. Fall back to a grid only when the stand has
+ * no usable treetops (a flat slab).
+ */
+function treetopCuts(pixels, at, w, mPerX, mPerY, n, topAt) {
+  const trees = segmentTrees(pixels, at, w, mPerX, mPerY, 0, topAt);
+  if (!trees || trees.length < 2) return null;
+  const groups = clusterPixelGroups(trees, Math.min(n, trees.length));
+  if (!groups || groups.length < 2) return null;
+  const shaped = assignPixelsToGroups(pixels, groups);
+  return shaped && shaped.length >= 2 ? shaped : null;
+}
+
 /**
  * Budget-sized complete cuts of one stand. A full per-tree split can cost
  * more leftover slots than the export has; these cuts spend whatever is
  * left on the largest mass, without punching holes or dropping small trees.
  */
-function cutIntoAtMost(pixels, mPerX, mPerY, area, n) {
+function cutIntoAtMost(pixels, mPerX, mPerY, area, n, at, w, topAt) {
   if (!(n >= 2) || !pixels || pixels.length < 8) return null;
+  if (typeof at === "function" && w > 0) {
+    const shaped = treetopCuts(pixels, at, w, mPerX, mPerY, n, topAt);
+    if (shaped && shaped.length >= 2 && shaped.length <= n) return shaped;
+  }
   let tileM = Math.sqrt(area / n);
   for (let guard = 0; guard < 8; guard++) {
     const cut = tilePixels(pixels, mPerX, mPerY, tileM);
@@ -1413,6 +1500,13 @@ function cutIntoAtMost(pixels, mPerX, mPerY, area, n) {
 
 function cutStand(pixels, values, w, grid, mPerX, mPerY, area) {
   if (!(area >= SPLIT_MIN_M2) || !pixels || pixels.length < 8) return null;
+  const h = (grid && grid.height) | 0;
+  const at = (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? 0 : values[y * w + x] || 0);
+  const tops = grid && grid.topValues;
+  const topAt =
+    tops && tops.length === w * h
+      ? (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? 0 : tops[y * w + x] || 0)
+      : at;
   const wantMax = Math.max(2, Math.round(area / SPLIT_MIN_M2));
   const wants = [2];
   if (wantMax > 2) wants.push(wantMax);
@@ -1420,7 +1514,7 @@ function cutStand(pixels, values, w, grid, mPerX, mPerY, area) {
   const cuts = Object.create(null);
   for (let i = 0; i < wants.length; i++) {
     const n = wants[i];
-    const cut = cutIntoAtMost(pixels, mPerX, mPerY, area, n);
+    const cut = cutIntoAtMost(pixels, mPerX, mPerY, area, n, at, w, topAt);
     if (!cut || cut.length < 2) continue;
     const parts = [];
     for (let j = 0; j < cut.length; j++) {

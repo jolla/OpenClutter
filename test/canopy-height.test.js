@@ -1550,5 +1550,74 @@ describe("treetop splitting of merged crowns", () => {
     assert.equal(out.filter((c) => c.areaM2 === 40).length, 10, "leftover trees stay");
     assert.equal(out.length, 18);
   });
+
+  it("cuts a large woods into budget pieces that follow crown shapes, not 42 m tiles", () => {
+    // Texas live oak: a reserved ~2,000 m² complete cut used tilePixels, so
+    // the dense stand shipped as 42 m squares. Cluster watershed trees and
+    // assign stand cells to the nearest treetop instead.
+    const cell = 3;
+    const w = 52;
+    const h = 52;
+    const values = new Uint8Array(w * h);
+    for (let y = 2; y < 50; y++) {
+      for (let x = 2; x < 50; x++) values[y * w + x] = 17;
+    }
+    const area = 48 * 48 * cell * cell;
+    assert.ok(area >= 12000, "fixture area " + area);
+    // Irregular spacing so a Voronoi cut is not itself an axis-aligned grid.
+    const peaks = [
+      [8, 8],
+      [20, 7],
+      [36, 10],
+      [11, 22],
+      [28, 24],
+      [42, 20],
+      [7, 38],
+      [22, 41],
+      [39, 36],
+    ];
+    for (const [x, y] of peaks) {
+      values[y * w + x] = 19;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx >= 0 && ny >= 0 && nx < w && ny < h && values[ny * w + nx] < 18) values[ny * w + nx] = 18;
+      }
+    }
+    const crowns = crownsFromChm(gridFromValues(cell, w, h, values), { segment: true, noCap: true });
+    const host = crowns.find((c) => c.whole && c.whole.cuts);
+    assert.ok(host, "stand should carry budget cuts");
+    const cuts = host.whole.cuts;
+    const keys = Object.keys(cuts);
+    assert.ok(keys.length >= 1, "cuts " + keys.join(","));
+    function openRing(ring) {
+      if (!ring || ring.length < 2) return ring || [];
+      const closed = ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1];
+      return closed ? ring.slice(0, -1) : ring;
+    }
+    function isAxisRect(open) {
+      if (!open || open.length !== 4) return false;
+      for (let i = 0; i < 4; i++) {
+        const a = open[i];
+        const b = open[(i + 1) % 4];
+        const dx = Math.abs(a[0] - b[0]);
+        const dy = Math.abs(a[1] - b[1]);
+        if (dx > 1e-6 && dy > 1e-6) return false;
+      }
+      return true;
+    }
+    let checked = 0;
+    let rectangles = 0;
+    for (const key of keys) {
+      const parts = cuts[key];
+      assert.ok(parts.length >= 2, "cut " + key + " parts " + parts.length);
+      for (const part of parts) {
+        checked++;
+        if (isAxisRect(openRing(part.ringLonLat))) rectangles++;
+      }
+    }
+    assert.ok(checked >= 2, "checked parts " + checked);
+    assert.ok(rectangles === 0, "budget pieces must not be 42 m rectangles, rectangles=" + rectangles + " of " + checked);
+  });
 });
 
