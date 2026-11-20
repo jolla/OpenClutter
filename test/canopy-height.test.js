@@ -12,6 +12,8 @@ const {
   crownsFromChm,
   peakPool,
   selectCrownsForExport,
+  segmentTrees,
+  fitSegments,
   mercator,
   lonLatFromMercator,
   fetchChmGrid,
@@ -1163,3 +1165,109 @@ describe("canopy raster cache", () => {
     assert.equal(areaCache.looksLikeFinalGeometry(fresh.body), false);
   });
 });
+
+describe("treetop splitting of merged crowns", () => {
+  function gridFromValues(cell, w, h, values) {
+    const mLon = 111320 * Math.cos((43 * Math.PI) / 180);
+    return {
+      west: -88,
+      south: 43,
+      east: -88 + (w * cell) / mLon,
+      north: 43 + (h * cell) / 110540,
+      width: w,
+      height: h,
+      values,
+    };
+  }
+
+  function pixelsOf(w, h, values) {
+    const pixels = [];
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if ((values[y * w + x] || 0) >= 3) pixels.push([x, y]);
+      }
+    }
+    return pixels;
+  }
+
+  it("splits a closed 12 m-spaced stand into one crown per treetop", () => {
+    const cell = 3;
+    const w = 40;
+    const h = 40;
+    const values = new Uint8Array(w * h);
+    for (let y = 4; y < 34; y++) {
+      for (let x = 4; x < 34; x++) values[y * w + x] = 17;
+    }
+    for (let row = 0; row < 4; row++) {
+      for (let col = 0; col < 4; col++) {
+        const x = 10 + col * 4;
+        const y = 10 + row * 4;
+        values[y * w + x] = 19;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx >= 0 && ny >= 0 && nx < w && ny < h && values[ny * w + nx] < 18) values[ny * w + nx] = 18;
+        }
+      }
+    }
+    const at = (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? 0 : values[y * w + x] || 0);
+    const trees = segmentTrees(pixelsOf(w, h, values), at, w, cell, cell, 0);
+    assert.ok(trees && trees.length >= 12, "trees " + (trees && trees.length));
+    const areas = trees.map((g) => g.length * cell * cell).sort((a, b) => b - a);
+    assert.ok(areas[0] < 2500, "largest piece " + areas[0]);
+    const crowns = crownsFromChm(gridFromValues(cell, w, h, values), { segment: true });
+    assert.ok(crowns.length >= 12, "crowns " + crowns.length);
+    assert.ok(Math.max(...crowns.map((c) => c.areaM2)) < 2500, "largest crown " + Math.max(...crowns.map((c) => c.areaM2)));
+    assert.ok(crowns.every((c) => c.segTree), "each piece is a segmented tree");
+  });
+
+  it("keeps a lumpy single crown as one tree", () => {
+    const cell = 3;
+    const w = 20;
+    const h = 20;
+    const values = new Uint8Array(w * h);
+    const paint = (cx, cy, rx, top) => {
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const r = Math.hypot((x - cx) / rx, (y - cy) / rx);
+          if (r <= 1) {
+            const hgt = Math.max(3, Math.round(top * (1 - 0.15 * r)));
+            if (hgt > values[y * w + x]) values[y * w + x] = hgt;
+          }
+        }
+      }
+    };
+    // Two peaks 6 m apart with a 1 m dip: one tree, not two.
+    paint(8, 10, 3, 16);
+    paint(10, 10, 3, 15);
+    const at = (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? 0 : values[y * w + x] || 0);
+    const trees = segmentTrees(pixelsOf(w, h, values), at, w, cell, cell, 0);
+    assert.equal(trees, null);
+    const crowns = crownsFromChm(gridFromValues(cell, w, h, values), { segment: true });
+    assert.equal(crowns.length, 1);
+  });
+
+  it("does not collapse a large split stand when the export is over budget", () => {
+    const ring = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]];
+    const wholeLarge = { areaM2: 8000, heightM: 18, ringLonLat: ring };
+    const large = [];
+    for (let i = 0; i < 40; i++) {
+      large.push({ areaM2: 200, heightM: 18, ringLonLat: ring, segId: 1, segTree: true });
+    }
+    large[0].whole = wholeLarge;
+    const wholeSmall = { areaM2: 240, heightM: 10, ringLonLat: ring };
+    const small = [];
+    for (let i = 0; i < 10; i++) {
+      small.push({ areaM2: 24, heightM: 10, ringLonLat: ring, segId: 2, segTree: true });
+    }
+    small[0].whole = wholeSmall;
+    const rest = [];
+    for (let i = 0; i < 20; i++) rest.push({ areaM2: 50, heightM: 8, ringLonLat: ring });
+    const out = fitSegments(large.concat(small, rest), 55);
+    assert.equal(out.filter((c) => c.segId === 1).length, 40, "large stand stays split");
+    assert.equal(out.some((c) => c === wholeLarge), false);
+    assert.equal(out.filter((c) => c.segId === 2).length, 0, "small group reverts");
+    assert.equal(out.some((c) => c === wholeSmall), true);
+  });
+});
+

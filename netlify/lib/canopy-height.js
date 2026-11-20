@@ -1056,11 +1056,13 @@ const SEG_PIECE_MIN_M2 = 30;
 /**
  * Individual trees in one canopy component, from the height model only.
  * Treetops are local maxima at least 5 m tall. Two tops closer than about a
- * quarter of the taller one's height, or joined by a saddle that dips less
- * than 1.5 m (or 15% of the lower top), are one tree. Every cell then flows
- * to a top by a marker watershed, highest cells first, so each tree keeps
- * the cells that slope down from its own top. Null when the component is
- * one tree. Nothing is added: the trees partition the measured cells.
+ * quarter of the taller one's height are one tree. A shallow saddle also
+ * joins two tops, but only when they are still inside one crown (about 7 to
+ * 10 m, not 30 m). A 30 m search was merging whole woods whose canopy only
+ * dips a couple of metres on a coarse lidar grid. Every cell then flows to
+ * a top by a marker watershed, highest cells first, so each tree keeps the
+ * cells that slope down from its own top. Null when the component is one
+ * tree. Nothing is added: the trees partition the measured cells.
  */
 function segmentTrees(pixels, at, w, mPerX, mPerY, minM2) {
   const area = pixels.length * mPerX * mPerY;
@@ -1077,17 +1079,27 @@ function segmentTrees(pixels, at, w, mPerX, mPerY, minM2) {
     const v = at(x, y);
     if (v < SEG_TOP_MIN_H) continue;
     let top = true;
+    let inCanopy = 0;
+    let lower = 0;
     for (let dy = -1; dy <= 1 && top; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
         if (!dx && !dy) continue;
-        const u = at(x + dx, y + dy);
+        const nx = x + dx;
+        const ny = y + dy;
+        if (!inSet.has(ny * w + nx)) continue;
+        inCanopy++;
+        const u = at(nx, ny);
         if (u > v || (u === v && (dy < 0 || (dy === 0 && dx < 0)))) {
           top = false;
           break;
         }
+        if (u < v) lower++;
       }
     }
-    if (top) tops.push({ x, y, v });
+    // A flat canopy corner looks like a peak against bare ground. It is not
+    // a tree: a real top stands above some of its canopy neighbours, or is
+    // a lone measured cell.
+    if (top && (inCanopy === 0 || lower > 0)) tops.push({ x, y, v });
   }
   if (tops.length < 2) return null;
   tops.sort((a, b) => b.v - a.v);
@@ -1103,7 +1115,10 @@ function segmentTrees(pixels, at, w, mPerX, mPerY, minM2) {
         merge = true;
         break;
       }
-      if (d > 30) continue;
+      // Only nearby peaks of the same crown. 30 m reached across a stand of
+      // live oak or closed conifer and glued the woods back into one tree.
+      const maxSaddleD = Math.max(7, Math.min(10, 0.4 * q.v));
+      if (d > maxSaddleD) continue;
       // Lowest point on the straight line between the two tops.
       const n = Math.max(2, Math.ceil(d / cell));
       let low = Infinity;
@@ -1119,14 +1134,18 @@ function segmentTrees(pixels, at, w, mPerX, mPerY, minM2) {
   }
   if (kept.length < 2) return null;
   // Marker watershed: grow every tree from its top, highest cells first.
+  // Cells of one height grow first in, first out, so a flat lidar plateau is
+  // shared between the tops around it instead of flooding from one of them.
   const label = new Int32Array(pixels.length).fill(-1);
   const heap = [];
+  let seq = 0;
+  const before = (a, b) => a[0] > b[0] || (a[0] === b[0] && a[1] < b[1]);
   const push = (idx, pri) => {
-    heap.push([pri, idx]);
+    heap.push([pri, seq++, idx]);
     let c = heap.length - 1;
     while (c > 0) {
       const p2 = (c - 1) >> 1;
-      if (heap[p2][0] >= heap[c][0]) break;
+      if (!before(heap[c], heap[p2])) break;
       [heap[p2], heap[c]] = [heap[c], heap[p2]];
       c = p2;
     }
@@ -1141,8 +1160,8 @@ function segmentTrees(pixels, at, w, mPerX, mPerY, minM2) {
         const l = 2 * c + 1;
         const r = l + 1;
         let m = c;
-        if (l < heap.length && heap[l][0] > heap[m][0]) m = l;
-        if (r < heap.length && heap[r][0] > heap[m][0]) m = r;
+        if (l < heap.length && before(heap[l], heap[m])) m = l;
+        if (r < heap.length && before(heap[r], heap[m])) m = r;
         if (m === c) break;
         [heap[m], heap[c]] = [heap[c], heap[m]];
         c = m;
@@ -1156,7 +1175,7 @@ function segmentTrees(pixels, at, w, mPerX, mPerY, minM2) {
     push(i, kept[k].v);
   }
   while (heap.length) {
-    const [, i] = pop();
+    const [, , i] = pop();
     const [x, y] = pixels[i];
     const nb = [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]];
     for (let j = 0; j < 4; j++) {
@@ -1629,9 +1648,11 @@ function poolChmGrid(grid, stride) {
 
 /**
  * Per-tree crowns cost more outlines than the canopy they cut. When the
- * export would have to drop crowns, a segmented canopy goes back to its
- * whole outline, the most-cut first, so the canopy stays and only the
- * per-tree detail is lost.
+ * export would have to drop crowns, a small segmented canopy goes back to
+ * its whole outline, the smallest groups first, so cover stays and only
+ * leftover per-tree detail is lost. A stand large enough to look like a
+ * merged mass keeps its trees: collapsing the most-cut woods first was
+ * putting 5,000–12,000 m² crowns back on the map.
  */
 function fitSegments(crowns, max) {
   if (!(max > 0) || crowns.length <= max) return crowns;
@@ -1642,12 +1663,22 @@ function fitSegments(crowns, max) {
     if (!bySeg.has(c.segId)) bySeg.set(c.segId, []);
     bySeg.get(c.segId).push(c);
   }
-  const groups = [...bySeg.values()].filter((g) => g.some((c) => c.whole)).sort((a, b) => b.length - a.length);
+  const KEEP_SPLIT_MIN_M2 = 800;
+  const groups = [...bySeg.values()]
+    .filter((g) => g.some((c) => c.whole))
+    .map((g) => ({
+      g,
+      area: (g.find((c) => c.whole).whole.areaM2) || g.reduce((s, c) => s + (c.areaM2 || 0), 0),
+      n: g.length,
+    }))
+    .sort((a, b) => a.area - b.area || a.n - b.n);
   const drop = new Set();
   const add = [];
   let n = crowns.length;
   for (let i = 0; i < groups.length && n > max; i++) {
-    const g = groups[i];
+    // Keep treetop splits on a woods that would otherwise ship as one mass.
+    if (groups[i].area >= KEEP_SPLIT_MIN_M2) continue;
+    const g = groups[i].g;
     const whole = g.find((c) => c.whole).whole;
     for (const c of g) drop.add(c);
     add.push(whole);
