@@ -1219,7 +1219,7 @@ describe("treetop splitting of merged crowns", () => {
     const crowns = crownsFromChm(gridFromValues(cell, w, h, values), { segment: true });
     assert.ok(crowns.length >= 12, "crowns " + crowns.length);
     assert.ok(Math.max(...crowns.map((c) => c.areaM2)) < 2500, "largest crown " + Math.max(...crowns.map((c) => c.areaM2)));
-    assert.ok(crowns.every((c) => c.segTree), "each piece is a segmented tree");
+    assert.ok(crowns.filter((c) => c.segTree).length >= 12, "segmented " + crowns.filter((c) => c.segTree).length);
   });
 
   it("keeps a lumpy single crown as one tree", () => {

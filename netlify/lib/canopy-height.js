@@ -1338,27 +1338,31 @@ function componentTouchesClip(pixels, clipY0, clipY1, gridH) {
 
 /**
  * Individual trees in one connected canopy. A gap-filled woods can be
- * larger than SEG_MAX_M2, so segmentTrees leaves it alone and the 12,000 m²
- * grid-cut then shipped 5,000–20,000 m² pieces with no treetop split.
- * Those oversize stands are cut into blocks first, then each block is split
- * from the same pre-fill tops, so a joined hammock still becomes trees.
+ * larger than SEG_MAX_M2, or just under the 12,000 m² grid-cut, and a
+ * tight outline cap will put a 5,000–12,000 m² whole back on the map
+ * if that stand was one group. Stands of 2,000 m² or more are therefore
+ * cut into ~42 m blocks first; each block is split from the pre-fill
+ * tops, and a reverted whole is one block (~1,800 m²), not the whole
+ * woods.
  */
+const SPLIT_TILE_MIN_M2 = 2000;
+
 function segmentStand(pixels, at, w, mPerX, mPerY, minM2, topAt) {
-  const trees = segmentTrees(pixels, at, w, mPerX, mPerY, minM2, topAt);
-  if (trees) return [{ trees, whole: pixels }];
   const area = pixels.length * mPerX * mPerY;
-  if (area < TILE_AREA_M2) return null;
-  // Cap the tile scale at a 12,000 m² stand so a 200,000 m² fill does not
-  // produce 20,000 m² blocks that stay unsplit when a later path fails.
-  const blocks = tilePixels(pixels, mPerX, mPerY, tileMeters(Math.min(area, TILE_AREA_M2)));
-  if (!blocks) return null;
+  let blocks = [pixels];
+  if (area >= SPLIT_TILE_MIN_M2) {
+    const cut = tilePixels(pixels, mPerX, mPerY, TILE_M);
+    if (cut && cut.length >= 2) blocks = cut;
+  }
   const out = [];
   for (let b = 0; b < blocks.length; b++) {
     const part = segmentTrees(blocks[b], at, w, mPerX, mPerY, minM2, topAt);
     if (part) out.push({ trees: part, whole: blocks[b] });
-    else out.push({ trees: [blocks[b]], whole: null });
+    else if (blocks.length > 1) out.push({ trees: [blocks[b]], whole: null });
   }
-  return out.length ? out : null;
+  if (!out.length) return null;
+  if (out.length === 1 && out[0].trees.length < 2) return null;
+  return out;
 }
 
 function crownsFromChm(grid, opts) {
