@@ -1386,5 +1386,42 @@ describe("treetop splitting of merged crowns", () => {
     assert.equal(out.filter((c) => c.areaM2 === 40).length, 20, "all leftover cover stays");
     assert.ok(out.length <= 25, "fits the cap " + out.length);
   });
+
+  it("spends leftover slots on the largest stand first and keeps leftover trees", () => {
+    const ring = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]];
+    const wholeA = { areaM2: 8000, heightM: 18, ringLonLat: ring };
+    const wholeB = { areaM2: 3000, heightM: 14, ringLonLat: ring };
+    const a = [];
+    for (let i = 0; i < 20; i++) a.push({ areaM2: 400, heightM: 18, ringLonLat: ring, segId: 1, segTree: true });
+    a[0].whole = wholeA;
+    const b = [];
+    for (let i = 0; i < 8; i++) b.push({ areaM2: 375, heightM: 14, ringLonLat: ring, segId: 2, segTree: true });
+    b[0].whole = wholeB;
+    const rest = [];
+    for (let i = 0; i < 10; i++) rest.push({ areaM2: 40, heightM: 8, ringLonLat: ring });
+    // minCover is 12; spare 19 is enough for A (cost 19) but not also B (cost 7).
+    const out = trimSegmentedCrowns(a.concat(b, rest), 31);
+    assert.equal(out.filter((c) => c.segId === 1).length, 20, "largest stand is split");
+    assert.equal(out.some((c) => c === wholeB), true, "smaller stand stays one outline");
+    assert.equal(out.filter((c) => c.segId === 2).length, 0);
+    assert.equal(out.filter((c) => c.areaM2 === 40).length, 10, "leftover trees stay");
+    assert.equal(out.length, 31);
+  });
+
+  it("does not drop leftover trees when even the wholes exceed the cap", () => {
+    const ring = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]];
+    const whole = { areaM2: 8000, heightM: 18, ringLonLat: ring };
+    const group = [];
+    for (let i = 0; i < 10; i++) {
+      group.push({ areaM2: 800, heightM: 18, ringLonLat: ring, segId: 1, segTree: true });
+    }
+    group[0].whole = whole;
+    const rest = [];
+    for (let i = 0; i < 30; i++) rest.push({ areaM2: 40, heightM: 8, ringLonLat: ring });
+    const out = trimSegmentedCrowns(group.concat(rest), 20);
+    assert.equal(out.some((c) => c === whole), true, "stand stays one outline");
+    assert.equal(out.filter((c) => c.segId === 1).length, 0);
+    assert.equal(out.filter((c) => c.areaM2 === 40).length, 30, "every leftover tree stays");
+  });
 });
 

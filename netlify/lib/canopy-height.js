@@ -1361,25 +1361,25 @@ function componentTouchesClip(pixels, clipY0, clipY1, gridH) {
 }
 
 /**
- * Individual trees in one connected canopy. A gap-filled woods can be
- * larger than SEG_MAX_M2, or just under the 12,000 m² grid-cut, and a
- * tight outline cap will put a 5,000–12,000 m² whole back on the map
- * if that stand was one group. Stands of 2,000 m² or more are therefore
- * cut into ~42 m blocks first; each block is split from the pre-fill
- * tops, and a reverted whole is one block (~1,800 m²), not the whole
- * woods.
+ * Individual trees in one connected canopy. A 5,000–12,000 m² woods stays
+ * one group with one whole outline, and the export cap later spends leftover
+ * slots on the largest of those stands first. Cutting every 2,000 m² stand
+ * into 42 m tiles first used those slots on extra block outlines, so small
+ * trees were dropped and treetop recall fell. Only a component larger than
+ * SEG_MAX_M2 is grid-cut (at 12,000 m², the same floor as an unsplit stand)
+ * so segmentTrees can still run; each piece keeps its own whole outline.
  */
-const SPLIT_TILE_MIN_M2 = 2000;
+const SPLIT_MIN_M2 = 2000;
+const OVERSIZE_CUT_M = Math.sqrt(TILE_AREA_M2);
 
 function segmentStand(pixels, at, w, mPerX, mPerY, minM2, topAt) {
   const area = pixels.length * mPerX * mPerY;
-  // Small clumps stay one outline. Splitting every 200–1,500 m² stand
-  // used up the export cap, so leftover cover and the 5,000–12,000 m²
-  // woods could not both fit.
-  if (area < SPLIT_TILE_MIN_M2) return null;
+  if (area < SPLIT_MIN_M2) return null;
   let blocks = [pixels];
-  const cut = tilePixels(pixels, mPerX, mPerY, TILE_M);
-  if (cut && cut.length >= 2) blocks = cut;
+  if (area > SEG_MAX_M2) {
+    const cut = tilePixels(pixels, mPerX, mPerY, OVERSIZE_CUT_M);
+    if (cut && cut.length >= 2) blocks = cut;
+  }
   const out = [];
   for (let b = 0; b < blocks.length; b++) {
     const part = segmentTrees(blocks[b], at, w, mPerX, mPerY, minM2, topAt);
@@ -1851,9 +1851,10 @@ function trimSegmentedCrowns(crowns, max) {
     });
   }
   const minCover = rest.length + groups.length;
+  // Never drop small trees to free slots for a split. If even the wholes
+  // cannot fit, keep every leftover tree and every stand as one outline.
   if (minCover > max) {
-    const keptRest = selectCrownsForExport(rest, Math.max(0, max - groups.length));
-    const out = groups.map((item) => item.whole).concat(keptRest);
+    const out = groups.map((item) => item.whole).concat(rest);
     out.sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
     return out;
   }
