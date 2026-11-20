@@ -1457,5 +1457,30 @@ describe("treetop splitting of merged crowns", () => {
     assert.equal(out.filter((c) => c.areaM2 === 40).length, 10);
     assert.equal(out.length, 13);
   });
+
+  it("reserves a coarse cut of every large mass before upgrading one woods to trees", () => {
+    const ring = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]];
+    const part = (area) => ({ areaM2: area, heightM: 18, ringLonLat: ring });
+    const wholeHuge = part(60000);
+    wholeHuge.cuts = { 2: [part(30000), part(30000)], 30: Array.from({ length: 30 }, () => part(2000)) };
+    const huge = [];
+    for (let i = 0; i < 400; i++) huge.push({ areaM2: 150, heightM: 18, ringLonLat: ring, segId: 1, segTree: true });
+    huge[0].whole = wholeHuge;
+    const wholeMid = part(6000);
+    wholeMid.cuts = { 3: [part(2000), part(2000), part(2000)] };
+    const mid = [];
+    for (let i = 0; i < 32; i++) mid.push({ areaM2: 180, heightM: 16, ringLonLat: ring, segId: 2, segTree: true });
+    mid[0].whole = wholeMid;
+    const rest = [];
+    for (let i = 0; i < 20; i++) rest.push({ areaM2: 40, heightM: 8, ringLonLat: ring });
+    // minCover is 22. After a ~30-piece reserve on the 60,000 m² woods and a
+    // 3-piece reserve on the hammock, leftover slots can upgrade the woods
+    // to 400 trees but not also the hammock (extra 29).
+    const out = trimSegmentedCrowns(huge.concat(mid, rest), 440);
+    assert.equal(out.filter((c) => c.segId === 1).length, 400, "huge woods can still use leftover slots as trees");
+    assert.equal(out.filter((c) => c.areaM2 === 2000).length, 3, "mid-size hammock still gets a coarse cut");
+    assert.equal(out.filter((c) => c.segId === 2).length, 0);
+    assert.equal(out.filter((c) => c.areaM2 === 40).length, 20, "leftover trees stay");
+  });
 });
 

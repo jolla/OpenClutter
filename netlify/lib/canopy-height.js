@@ -1396,6 +1396,18 @@ function segmentStand(pixels, at, w, mPerX, mPerY, minM2, topAt) {
  * more leftover slots than the export has; these cuts spend whatever is
  * left on the largest mass, without punching holes or dropping small trees.
  */
+function cutIntoAtMost(pixels, mPerX, mPerY, area, n) {
+  if (!(n >= 2) || !pixels || pixels.length < 8) return null;
+  let tileM = Math.sqrt(area / n);
+  for (let guard = 0; guard < 8; guard++) {
+    const cut = tilePixels(pixels, mPerX, mPerY, tileM);
+    if (!cut || cut.length < 2) return null;
+    if (cut.length <= n) return cut;
+    tileM *= Math.sqrt(cut.length / n) * 1.05;
+  }
+  return null;
+}
+
 function cutStand(pixels, values, w, grid, mPerX, mPerY, area) {
   if (!(area >= SPLIT_MIN_M2) || !pixels || pixels.length < 8) return null;
   const wantMax = Math.max(2, Math.round(area / SPLIT_MIN_M2));
@@ -1405,7 +1417,7 @@ function cutStand(pixels, values, w, grid, mPerX, mPerY, area) {
   const cuts = Object.create(null);
   for (let i = 0; i < wants.length; i++) {
     const n = wants[i];
-    const cut = tilePixels(pixels, mPerX, mPerY, Math.sqrt(area / n));
+    const cut = cutIntoAtMost(pixels, mPerX, mPerY, area, n);
     if (!cut || cut.length < 2) continue;
     const parts = [];
     for (let j = 0; j < cut.length; j++) {
@@ -1415,6 +1427,10 @@ function cutStand(pixels, values, w, grid, mPerX, mPerY, area) {
     if (parts.length >= 2) cuts[parts.length] = parts;
   }
   return Object.keys(cuts).length ? cuts : null;
+}
+
+function standShare(area) {
+  return Math.max(1, Math.round((area || 0) / SPLIT_MIN_M2) - 1);
 }
 
 function bestCut(cuts, spare) {
@@ -1906,6 +1922,19 @@ function trimSegmentedCrowns(crowns, max) {
     });
   }
   const minCover = rest.length + groups.length;
+  if (process.env.OC_TRIM_DEBUG) {
+    const restCuts = rest.filter((c) => c && c.cuts).map((c) => Math.round(c.areaM2 || 0));
+    const groupCuts = groups.map((g) => [Math.round(g.area), g.n, !!(g.whole && g.whole.cuts), g.whole && g.whole.cuts ? Object.keys(g.whole.cuts).join("/") : ""]);
+    const topRest = rest.slice().sort((a, b) => (b.areaM2 || 0) - (a.areaM2 || 0)).slice(0, 8).map((c) => Math.round(c.areaM2 || 0));
+    process.stderr.write(
+      "trim-debug before=" + crowns.length + " max=" + max +
+      " minCover=" + minCover + " rest=" + rest.length + " groups=" + groups.length +
+      " spareIf=" + (max - minCover) +
+      " topRest=" + JSON.stringify(topRest) +
+      " restCuts=" + JSON.stringify(restCuts.slice(0, 12)) +
+      " groupCuts=" + JSON.stringify(groupCuts.slice(0, 12)) + "\n"
+    );
+  }
   // Never drop small trees to free slots for a split. If even the wholes
   // cannot fit, keep every leftover tree and every stand as one outline.
   if (minCover > max) {
@@ -1914,9 +1943,10 @@ function trimSegmentedCrowns(crowns, max) {
     return out;
   }
   let spare = max - minCover;
-  // Spend leftover slots on the largest woods first: a full treetop split
-  // when it fits, otherwise a complete coarser cut of that mass. Large
-  // unsplit stands are cut the same way. Small trees stay.
+  // First give every large mass a complete ~2,000 m² cut so one 50,000 m²
+  // woods cannot spend hundreds of slots on per-tree detail while a
+  // 5,000 m² hammock stays one polygon. Leftover slots then upgrade the
+  // largest stands to a full treetop split. Small trees stay.
   const masses = [];
   for (let i = 0; i < groups.length; i++) {
     masses.push({ kind: "group", area: groups[i].area, n: groups[i].n, item: groups[i] });
@@ -1926,38 +1956,60 @@ function trimSegmentedCrowns(crowns, max) {
     if (c && c.cuts) masses.push({ kind: "rest", area: c.areaM2 || 0, n: 1, crown: c });
   }
   masses.sort((a, b) => b.area - a.area || b.n - a.n);
-  const usedRest = new Set();
-  const out = [];
+  const plans = [];
   for (let i = 0; i < masses.length; i++) {
     const mass = masses[i];
-    if (mass.kind === "group") {
-      const item = mass.item;
-      const cost = item.n - 1;
-      if (item.n >= 2 && cost <= spare) {
-        for (let k = 0; k < item.g.length; k++) out.push(item.g[k]);
-        spare -= cost;
-        continue;
-      }
-      const cut = bestCut(item.whole && item.whole.cuts, spare);
-      if (cut) {
-        for (let k = 0; k < cut.length; k++) out.push(cut[k]);
-        spare -= cut.length - 1;
-      } else {
-        out.push(item.whole);
-      }
+    const share = standShare(mass.area);
+    const cuts = mass.kind === "group" ? mass.item.whole && mass.item.whole.cuts : mass.crown.cuts;
+    if (mass.kind === "group" && mass.item.n >= 2 && mass.item.n - 1 <= spare && mass.item.n - 1 <= share) {
+      plans.push({ mass, trees: true, parts: null, cost: mass.item.n - 1 });
+      spare -= mass.item.n - 1;
+      continue;
+    }
+    const cut = bestCut(cuts, Math.min(spare, share));
+    if (cut) {
+      plans.push({ mass, trees: false, parts: cut, cost: cut.length - 1 });
+      spare -= cut.length - 1;
+    } else if (mass.kind === "group") {
+      plans.push({ mass, trees: false, parts: null, cost: 0 });
     } else {
-      const cut = bestCut(mass.crown.cuts, spare);
-      if (cut) {
-        usedRest.add(mass.crown);
-        for (let k = 0; k < cut.length; k++) out.push(cut[k]);
-        spare -= cut.length - 1;
-      }
+      plans.push({ mass, trees: false, parts: null, cost: 0, keep: true });
+    }
+  }
+  for (let i = 0; i < plans.length; i++) {
+    const plan = plans[i];
+    if (plan.trees || plan.mass.kind !== "group") continue;
+    const extra = plan.mass.item.n - 1 - plan.cost;
+    if (plan.mass.item.n >= 2 && extra > 0 && extra <= spare) {
+      plan.trees = true;
+      plan.parts = null;
+      spare -= extra;
+      plan.cost += extra;
+    }
+  }
+  const usedRest = new Set();
+  const out = [];
+  for (let i = 0; i < plans.length; i++) {
+    const plan = plans[i];
+    const mass = plan.mass;
+    if (plan.trees) {
+      const g = mass.item.g;
+      for (let k = 0; k < g.length; k++) out.push(g[k]);
+    } else if (plan.parts) {
+      if (mass.kind === "rest") usedRest.add(mass.crown);
+      for (let k = 0; k < plan.parts.length; k++) out.push(plan.parts[k]);
+    } else if (mass.kind === "group") {
+      out.push(mass.item.whole);
     }
   }
   for (let i = 0; i < rest.length; i++) {
     if (!usedRest.has(rest[i])) out.push(rest[i]);
   }
   out.sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
+  if (process.env.OC_TRIM_DEBUG) {
+    const top = out.slice(0, 8).map((c) => Math.round(c.areaM2 || 0));
+    process.stderr.write("trim-debug after=" + out.length + " top=" + JSON.stringify(top) + " usedCuts=" + usedRest.size + "\n");
+  }
   return out;
 }
 
