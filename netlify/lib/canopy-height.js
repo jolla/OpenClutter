@@ -1349,11 +1349,13 @@ const SPLIT_TILE_MIN_M2 = 2000;
 
 function segmentStand(pixels, at, w, mPerX, mPerY, minM2, topAt) {
   const area = pixels.length * mPerX * mPerY;
+  // Small clumps stay one outline. Splitting every 200–1,500 m² stand
+  // used up the export cap, so leftover cover and the 5,000–12,000 m²
+  // woods could not both fit.
+  if (area < SPLIT_TILE_MIN_M2) return null;
   let blocks = [pixels];
-  if (area >= SPLIT_TILE_MIN_M2) {
-    const cut = tilePixels(pixels, mPerX, mPerY, TILE_M);
-    if (cut && cut.length >= 2) blocks = cut;
-  }
+  const cut = tilePixels(pixels, mPerX, mPerY, TILE_M);
+  if (cut && cut.length >= 2) blocks = cut;
   const out = [];
   for (let b = 0; b < blocks.length; b++) {
     const part = segmentTrees(blocks[b], at, w, mPerX, mPerY, minM2, topAt);
@@ -1428,6 +1430,12 @@ function crownsFromChm(grid, opts) {
             const wholePixels = stands[s].whole;
             const wholeArea = wholePixels.length * mPerX * mPerY;
             const whole = crownFromPixels(wholePixels, values, w, grid, mPerX, mPerY, 0, wholeArea >= SUBSTAND_AREA_M2);
+            // A split group with no whole outline cannot be put back when
+            // the cap is tight, and those leftover trees punch holes.
+            if (!whole) {
+              leftover.push(wholePixels);
+              continue;
+            }
             const segId = segSeq++;
             let first = true;
             for (let g = 0; g < trees.length; g++) {
@@ -1435,7 +1443,7 @@ function crownsFromChm(grid, opts) {
               if (!crown) continue;
               crown.segId = segId;
               crown.segTree = true;
-              if (first && whole) crown.whole = whole;
+              if (first) crown.whole = whole;
               first = false;
               crowns.push(crown);
               emitted = true;
