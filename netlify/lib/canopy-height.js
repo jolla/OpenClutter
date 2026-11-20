@@ -1044,6 +1044,30 @@ function tilePixels(pixels, mPerX, mPerY, tileM) {
   return groups;
 }
 
+/**
+ * Adjacent 42 m tiles of one woods are traced separately, so a simplified
+ * edge can leave a sliver of measured canopy uncovered. Grow each block
+ * one cell into the parent stand so neighbouring outlines overlap.
+ */
+function dilateInside(block, standSet, w) {
+  if (!block || !block.length || !standSet) return block;
+  const have = new Set();
+  for (let i = 0; i < block.length; i++) have.add(block[i][1] * w + block[i][0]);
+  const extra = [];
+  for (let i = 0; i < block.length; i++) {
+    const x = block[i][0];
+    const y = block[i][1];
+    const nb = [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]];
+    for (let j = 0; j < 4; j++) {
+      const id = nb[j][1] * w + nb[j][0];
+      if (standSet.has(id) && !have.has(id)) {
+        have.add(id);
+        extra.push(nb[j]);
+      }
+    }
+  }
+  return extra.length ? block.concat(extra) : block;
+}
 
 /** Lidar tree segmentation. Components under this area are cut into trees. */
 const SEG_MAX_M2 = 100000;
@@ -1420,14 +1444,19 @@ function crownsFromChm(grid, opts) {
         if (stands) {
           const leftover = [];
           let emitted = false;
+          const standSet = new Set();
+          const grow = stands.length > 1;
+          if (grow) {
+            for (let i = 0; i < pixels.length; i++) standSet.add(pixels[i][1] * w + pixels[i][0]);
+          }
           for (let s = 0; s < stands.length; s++) {
             const trees = stands[s].trees;
             if (!trees || !trees.length) continue;
             if (trees.length < 2 || !stands[s].whole) {
-              for (let g = 0; g < trees.length; g++) leftover.push(trees[g]);
+              for (let g = 0; g < trees.length; g++) leftover.push(grow ? dilateInside(trees[g], standSet, w) : trees[g]);
               continue;
             }
-            const wholePixels = stands[s].whole;
+            const wholePixels = grow ? dilateInside(stands[s].whole, standSet, w) : stands[s].whole;
             const wholeArea = wholePixels.length * mPerX * mPerY;
             const whole = crownFromPixels(wholePixels, values, w, grid, mPerX, mPerY, 0, wholeArea >= SUBSTAND_AREA_M2);
             // A split group with no whole outline cannot be put back when
@@ -1439,7 +1468,8 @@ function crownsFromChm(grid, opts) {
             const segId = segSeq++;
             let first = true;
             for (let g = 0; g < trees.length; g++) {
-              const crown = crownFromPixels(trees[g], values, w, grid, mPerX, mPerY, 0, false);
+              const piece = grow ? dilateInside(trees[g], standSet, w) : trees[g];
+              const crown = crownFromPixels(piece, values, w, grid, mPerX, mPerY, 0, false);
               if (!crown) continue;
               crown.segId = segId;
               crown.segTree = true;
