@@ -1423,5 +1423,39 @@ describe("treetop splitting of merged crowns", () => {
     assert.equal(out.filter((c) => c.segId === 1).length, 0);
     assert.equal(out.filter((c) => c.areaM2 === 40).length, 30, "every leftover tree stays");
   });
+
+  it("cuts a large unsplit stand into as many pieces as the leftover budget allows", () => {
+    const ring = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]];
+    const part = (area) => ({ areaM2: area, heightM: 18, ringLonLat: ring });
+    const whole = part(8000);
+    whole.cuts = { 2: [part(4000), part(4000)], 4: [part(2000), part(2000), part(2000), part(2000)] };
+    const group = [];
+    for (let i = 0; i < 40; i++) group.push({ areaM2: 200, heightM: 18, ringLonLat: ring, segId: 1, segTree: true });
+    group[0].whole = whole;
+    const rest = [];
+    for (let i = 0; i < 20; i++) rest.push({ areaM2: 40, heightM: 8, ringLonLat: ring });
+    // minCover is 21; spare 3 can take the 4-piece cut (cost 3) but not 40 trees (cost 39).
+    const out = trimSegmentedCrowns(group.concat(rest), 24);
+    assert.equal(out.filter((c) => c.areaM2 === 2000).length, 4, "largest mass is cut to budget-sized pieces");
+    assert.equal(out.filter((c) => c.segId === 1).length, 0, "full tree split did not take the slots");
+    assert.equal(out.some((c) => c === whole), false, "the 8,000 m² whole does not ship");
+    assert.equal(out.filter((c) => c.areaM2 === 40).length, 20, "leftover trees stay");
+    assert.equal(out.length, 24);
+  });
+
+  it("cuts a large unsegmented stand when leftover slots remain", () => {
+    const ring = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]];
+    const part = (area) => ({ areaM2: area, heightM: 16, ringLonLat: ring });
+    const blob = part(6000);
+    blob.cuts = { 3: [part(2000), part(2000), part(2000)] };
+    const rest = [blob];
+    for (let i = 0; i < 10; i++) rest.push({ areaM2: 40, heightM: 8, ringLonLat: ring });
+    // minCover is 11; spare 2 is enough for the 3-piece cut.
+    const out = trimSegmentedCrowns(rest, 13);
+    assert.equal(out.filter((c) => c.areaM2 === 2000).length, 3);
+    assert.equal(out.some((c) => c === blob), false);
+    assert.equal(out.filter((c) => c.areaM2 === 40).length, 10);
+    assert.equal(out.length, 13);
+  });
 });
 
