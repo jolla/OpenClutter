@@ -1269,6 +1269,12 @@ describe("treetop splitting of merged crowns", () => {
     assert.equal(out.some((c) => c === wholeLarge), false);
     assert.equal(out.filter((c) => c.segId === 2).length, 0, "small group reverts");
     assert.equal(out.some((c) => c === wholeSmall), true);
+    // minCover is 22 (20 leftover + 2 wholes). Expanding the 40-tree stand
+    // costs 39, so it still fits at 61 without dropping leftover cover.
+    const kept = trimSegmentedCrowns(large.concat(small, rest), 61);
+    assert.equal(kept.filter((c) => c.segId === 1).length, 40, "trim keeps the large stand split");
+    assert.equal(kept.filter((c) => c.segId === 2).length, 0, "trim reverts the small group");
+    assert.equal(kept.filter((c) => c.areaM2 === 50).length, 20, "trim does not drop leftover cover");
   });
 
   it("splits a gap-filled hammock from the pre-fill treetops", () => {
@@ -1360,6 +1366,25 @@ describe("treetop splitting of merged crowns", () => {
     assert.equal(out.some((c) => c === wholeLarge), true, "the stand goes back to its whole outline");
     assert.ok(out.length <= 25, "fits the cap " + out.length);
     assert.equal(out.filter((c) => c.segId != null).length, 0);
+    assert.equal(out.filter((c) => c.areaM2 === 50).length, 20, "leftover cover stays");
+  });
+
+  it("does not drop leftover cover to keep a split that does not fit", () => {
+    const ring = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]];
+    const whole = { areaM2: 500, heightM: 12, ringLonLat: ring };
+    const group = [];
+    for (let i = 0; i < 10; i++) {
+      group.push({ areaM2: 50, heightM: 12, ringLonLat: ring, segId: 1, segTree: true });
+    }
+    group[0].whole = whole;
+    const rest = [];
+    for (let i = 0; i < 20; i++) rest.push({ areaM2: 40, heightM: 8, ringLonLat: ring });
+    // minCover is 21; expanding the group costs 9 and would need 30 slots.
+    const out = trimSegmentedCrowns(group.concat(rest), 25);
+    assert.equal(out.some((c) => c === whole), true, "group reverts");
+    assert.equal(out.filter((c) => c.segId === 1).length, 0);
+    assert.equal(out.filter((c) => c.areaM2 === 40).length, 20, "all leftover cover stays");
+    assert.ok(out.length <= 25, "fits the cap " + out.length);
   });
 });
 

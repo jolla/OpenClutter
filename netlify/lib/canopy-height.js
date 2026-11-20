@@ -1773,41 +1773,64 @@ function fitSegments(crowns, max, allowLarge) {
 }
 
 /**
- * Fit a crown list to an outline cap without punching holes in a split
- * stand. Small segmented groups revert first, then unsegmented leftovers
- * are trimmed, then a large split stand goes back to its whole outline.
+ * Fit a crown list to an outline cap without punching holes. Full cover
+ * (every unsegmented crown, plus each split group as its whole outline)
+ * takes the first slots. Leftover slots go to per-tree splits, the
+ * largest stands first, so a 5,000–12,000 m² woods stays trees when it
+ * still fits. A group that does not fit goes back as one piece. Only
+ * when even the wholes cannot fit does the export drop leftover
+ * unsegmented crowns.
  */
 function trimSegmentedCrowns(crowns, max) {
   if (!(max > 0) || crowns.length <= max) return crowns;
-  let out = fitSegments(crowns, max, false);
-  if (out.length <= max) return out;
-  const seg = [];
+  const bySeg = new Map();
   const rest = [];
-  for (let i = 0; i < out.length; i++) {
-    if (out[i].segId != null) seg.push(out[i]);
-    else rest.push(out[i]);
+  for (let i = 0; i < crowns.length; i++) {
+    const c = crowns[i];
+    if (c.segId == null) {
+      rest.push(c);
+      continue;
+    }
+    if (!bySeg.has(c.segId)) bySeg.set(c.segId, []);
+    bySeg.get(c.segId).push(c);
   }
-  if (seg.length <= max) {
-    const kept = rest.length > max - seg.length ? selectCrownsForExport(rest, max - seg.length) : rest;
-    out = seg.concat(kept);
+  const groups = [];
+  for (const g of bySeg.values()) {
+    const host = g.find((c) => c.whole);
+    if (!host || !host.whole) {
+      for (let i = 0; i < g.length; i++) rest.push(g[i]);
+      continue;
+    }
+    groups.push({
+      g,
+      whole: host.whole,
+      area: host.whole.areaM2 || g.reduce((s, c) => s + (c.areaM2 || 0), 0),
+      n: g.length,
+    });
+  }
+  const minCover = rest.length + groups.length;
+  if (minCover > max) {
+    const keptRest = selectCrownsForExport(rest, Math.max(0, max - groups.length));
+    const out = groups.map((item) => item.whole).concat(keptRest);
     out.sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
     return out;
   }
-  out = fitSegments(out, max, true);
-  if (out.length <= max) return out;
-  const seg2 = [];
-  const rest2 = [];
-  for (let i = 0; i < out.length; i++) {
-    if (out[i].segId != null) seg2.push(out[i]);
-    else rest2.push(out[i]);
+  let spare = max - minCover;
+  // Spend leftover slots on the largest woods first.
+  groups.sort((a, b) => b.area - a.area || b.n - a.n);
+  const out = rest.slice();
+  for (let i = 0; i < groups.length; i++) {
+    const item = groups[i];
+    const cost = item.n - 1;
+    if (item.n >= 2 && cost <= spare) {
+      for (let k = 0; k < item.g.length; k++) out.push(item.g[k]);
+      spare -= cost;
+    } else {
+      out.push(item.whole);
+    }
   }
-  if (seg2.length <= max) {
-    const kept = rest2.length > max - seg2.length ? selectCrownsForExport(rest2, max - seg2.length) : rest2;
-    out = seg2.concat(kept);
-    out.sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
-    return out;
-  }
-  return selectCrownsForExport(out, max);
+  out.sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
+  return out;
 }
 
 function crownsForExport(grid, opts) {
