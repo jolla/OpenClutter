@@ -1424,6 +1424,15 @@ describe("treetop splitting of merged crowns", () => {
     assert.equal(out.filter((c) => c.areaM2 === 40).length, 30, "every leftover tree stays");
   });
 
+  it("honors the outline cap when there is no stand split to protect", () => {
+    const ring = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]];
+    const rest = [];
+    for (let i = 0; i < 30; i++) rest.push({ areaM2: 40 + i, heightM: 8, ringLonLat: ring });
+    const out = trimSegmentedCrowns(rest, 20);
+    assert.equal(out.length, 20, "output stays at the cap");
+    assert.equal(Math.min(...out.map((c) => c.areaM2)), 50, "smallest leftover trees are the ones dropped");
+  });
+
   it("cuts a large unsplit stand into as many pieces as the leftover budget allows", () => {
     const ring = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]];
     const part = (area) => ({ areaM2: area, heightM: 18, ringLonLat: ring });

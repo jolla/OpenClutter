@@ -1939,7 +1939,13 @@ function trimSegmentedCrowns(crowns, max) {
   }
   // Never drop small trees to free slots for a split. If even the wholes
   // cannot fit, keep every leftover tree and every stand as one outline.
+  // When there is no stand to protect, honor maxPolygons so a tiled
+  // worker cannot exceed the foliage cap (cpu-workers tile-split test).
   if (minCover > max) {
+    if (!groups.length) {
+      const out = rest.slice().sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
+      return out.slice(0, max);
+    }
     const out = groups.map((item) => item.whole).concat(rest);
     out.sort((a, b) => b.areaM2 - a.areaM2 || b.heightM - a.heightM);
     return out;
