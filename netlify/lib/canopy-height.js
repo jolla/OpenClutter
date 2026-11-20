@@ -1983,7 +1983,7 @@ function trimSegmentedCrowns(crowns, max) {
   for (let i = 0; i < plans.length; i++) {
     const plan = plans[i];
     if (plan.trees || plan.mass.kind !== "group") continue;
-    if (plan.mass.area > TILE_AREA_M2 || plan.mass.area < SPLIT_MIN_M2) continue;
+    if (plan.mass.area > TILE_AREA_M2) continue;
     const extra = plan.mass.item.n - 1 - plan.cost;
     if (plan.mass.item.n >= 2 && extra > 0 && extra <= spare) {
       plan.trees = true;

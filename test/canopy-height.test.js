@@ -1482,5 +1482,20 @@ describe("treetop splitting of merged crowns", () => {
     assert.equal(out.filter((c) => c.segId === 2).length, 32, "hammock under 12,000 m² is split into trees");
     assert.equal(out.filter((c) => c.areaM2 === 40).length, 20, "leftover trees stay");
   });
+
+  it("uses leftover slots to tree-split official tiles under 2,000 m²", () => {
+    const ring = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]];
+    const whole = { areaM2: 1800, heightM: 16, ringLonLat: ring };
+    const tile = [];
+    for (let i = 0; i < 8; i++) tile.push({ areaM2: 225, heightM: 16, ringLonLat: ring, segId: 1, segTree: true });
+    tile[0].whole = whole;
+    const rest = [];
+    for (let i = 0; i < 10; i++) rest.push({ areaM2: 40, heightM: 8, ringLonLat: ring });
+    // minCover is 11; spare 7 is exactly the tree-split cost of the tile.
+    const out = trimSegmentedCrowns(tile.concat(rest), 18);
+    assert.equal(out.filter((c) => c.segId === 1).length, 8, "tile is split into trees");
+    assert.equal(out.filter((c) => c.areaM2 === 40).length, 10, "leftover trees stay");
+    assert.equal(out.length, 18);
+  });
 });
 
