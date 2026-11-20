@@ -1363,21 +1363,21 @@ function componentTouchesClip(pixels, clipY0, clipY1, gridH) {
 /**
  * Individual trees in one connected canopy. A 5,000–12,000 m² woods stays
  * one group with one whole outline, and the export cap later spends leftover
- * slots on the largest of those stands first. Cutting every 2,000 m² stand
- * into 42 m tiles first used those slots on extra block outlines, so small
- * trees were dropped and treetop recall fell. Only a component larger than
- * SEG_MAX_M2 is grid-cut (at 12,000 m², the same floor as an unsplit stand)
- * so segmentTrees can still run; each piece keeps its own whole outline.
+ * slots on those mid-size masses first. Cutting every 2,000 m² stand into
+ * 42 m tiles used those slots on extra block outlines, so small trees were
+ * dropped and treetop recall fell. Official still grid-cuts a stand of
+ * 12,000 m² or more (tileMeters, 42 m for a typical woods), so a gap-filled
+ * 50,000 m² component never ships as one mass. Each official-sized block
+ * keeps its own whole outline.
  */
 const SPLIT_MIN_M2 = 2000;
-const OVERSIZE_CUT_M = Math.sqrt(TILE_AREA_M2);
 
 function segmentStand(pixels, at, w, mPerX, mPerY, minM2, topAt) {
   const area = pixels.length * mPerX * mPerY;
   if (area < SPLIT_MIN_M2) return null;
   let blocks = [pixels];
-  if (area > SEG_MAX_M2) {
-    const cut = tilePixels(pixels, mPerX, mPerY, OVERSIZE_CUT_M);
+  if (area >= TILE_AREA_M2) {
+    const cut = tilePixels(pixels, mPerX, mPerY, tileMeters(area));
     if (cut && cut.length >= 2) blocks = cut;
   }
   const out = [];
@@ -1976,14 +1976,13 @@ function trimSegmentedCrowns(crowns, max) {
       plans.push({ mass, trees: false, parts: null, cost: 0, keep: true });
     }
   }
-  // Only stands at or under the official 12,000 m² grid-cut are upgraded
-  // to individual trees. A 50,000 m² woods that takes 400 tree slots
-  // pulled treetop recall down and left the 5,000–8,000 m² hammocks
-  // short of official matches.
+  // Only the official mid-size band (2,000–12,000 m²) is upgraded to
+  // individual trees. A 50,000 m² woods, or a 42 m official tile of one,
+  // stays on its reserved complete cut.
   for (let i = 0; i < plans.length; i++) {
     const plan = plans[i];
     if (plan.trees || plan.mass.kind !== "group") continue;
-    if (plan.mass.area > TILE_AREA_M2) continue;
+    if (plan.mass.area > TILE_AREA_M2 || plan.mass.area < SPLIT_MIN_M2) continue;
     const extra = plan.mass.item.n - 1 - plan.cost;
     if (plan.mass.item.n >= 2 && extra > 0 && extra <= spare) {
       plan.trees = true;
