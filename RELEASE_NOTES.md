@@ -1,9 +1,10 @@
-# OpenClutter v1.3.46
+# OpenClutter v1.3.47
 
 Released Nov 23, 2026 on openclutter.com. dev.openclutter.com runs the same build.
 
 ## What's new
 
+- **A larger, resizable What's new.** The What's new box is larger by default and can be resized from the top-left corner. The size is kept for the next visit, and the box stays on screen.
 - **Exports that finish.** When a tree tile hits its time budget, other work already queued on that worker is retried on a fresh thread, so the export finishes instead of waiting forever.
 - **Old lidar trees.** When lidar is eight or more years old and the photo is leaf-on, large gravel and pavement openings the photo shows as clear are trimmed out of stale tree crowns.
 - **Trees on the ground.** Trees that were sitting in the air are reseated on the ground under each piece, without shrinking treetops. A lidar read that stops early mid-export is tried once more, so buildings and trees are less often missed.
@@ -22,7 +23,7 @@ Street map features can now come from Overture Maps (Azure GeoParquet, same path
 
 ## Git / deploy
 
-- Tag `v1.3.46` on `main` after this commit; `dev` is at the same commit.
+- Tag `v1.3.47` on `main` after this commit; `dev` is at the same commit.
 - forest=crowns or merge stays on dev.openclutter.com only.
 - Fly worker is redeployed from this commit (it serves every host). Rollback target if smoke fails: v128 / deployment-01M7JW2RWTAHGAN68MVRD40ZF3.
 
