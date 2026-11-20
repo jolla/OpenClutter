@@ -1269,13 +1269,10 @@ describe("treetop splitting of merged crowns", () => {
     assert.equal(out.some((c) => c === wholeLarge), false);
     assert.equal(out.filter((c) => c.segId === 2).length, 0, "small group reverts");
     assert.equal(out.some((c) => c === wholeSmall), true);
-    // minCover is 22 (20 leftover + 2 wholes). The 8,000 m² stand is cut
-    // into four complete pieces, not 40 trees; leftover cover stays.
-    const part = (area) => ({ areaM2: area, heightM: 18, ringLonLat: ring });
-    wholeLarge.cuts = { 4: [part(2000), part(2000), part(2000), part(2000)] };
+    // minCover is 22 (20 leftover + 2 wholes). Expanding the 40-tree stand
+    // costs 39, so it still fits at 61 without dropping leftover cover.
     const kept = trimSegmentedCrowns(large.concat(small, rest), 61);
-    assert.equal(kept.filter((c) => c.areaM2 === 2000).length, 4, "trim coarse-cuts the large stand");
-    assert.equal(kept.filter((c) => c.segId === 1).length, 0, "trim does not keep 40 trees");
+    assert.equal(kept.filter((c) => c.segId === 1).length, 40, "trim keeps the large stand split");
     assert.equal(kept.filter((c) => c.segId === 2).length, 0, "trim reverts the small group");
     assert.equal(kept.filter((c) => c.areaM2 === 50).length, 20, "trim does not drop leftover cover");
   });
@@ -1402,17 +1399,13 @@ describe("treetop splitting of merged crowns", () => {
     b[0].whole = wholeB;
     const rest = [];
     for (let i = 0; i < 10; i++) rest.push({ areaM2: 40, heightM: 8, ringLonLat: ring });
-    // minCover is 12; spare 19 can tree-split A, but a mid-size stand only
-    // gets a complete coarse cut (cost 3), and B stays one outline.
-    const partA = (area) => ({ areaM2: area, heightM: 18, ringLonLat: ring });
-    wholeA.cuts = { 4: [partA(2000), partA(2000), partA(2000), partA(2000)] };
+    // minCover is 12; spare 19 is enough for A (cost 19) but not also B (cost 7).
     const out = trimSegmentedCrowns(a.concat(b, rest), 31);
-    assert.equal(out.filter((c) => c.areaM2 === 2000).length, 4, "largest stand is coarse-cut");
-    assert.equal(out.filter((c) => c.segId === 1).length, 0);
+    assert.equal(out.filter((c) => c.segId === 1).length, 20, "largest stand is split");
     assert.equal(out.some((c) => c === wholeB), true, "smaller stand stays one outline");
     assert.equal(out.filter((c) => c.segId === 2).length, 0);
     assert.equal(out.filter((c) => c.areaM2 === 40).length, 10, "leftover trees stay");
-    assert.equal(out.length, 15);
+    assert.equal(out.length, 31);
   });
 
   it("does not drop leftover trees when even the wholes exceed the cap", () => {
@@ -1465,7 +1458,7 @@ describe("treetop splitting of merged crowns", () => {
     assert.equal(out.length, 13);
   });
 
-  it("keeps coarse cuts of large woods and mid-size hammocks, not per-tree upgrades", () => {
+  it("does not upgrade a woods over the 12,000 m² floor to trees, and still splits a hammock", () => {
     const ring = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]];
     const part = (area) => ({ areaM2: area, heightM: 18, ringLonLat: ring });
     const wholeHuge = part(60000);
@@ -1480,12 +1473,13 @@ describe("treetop splitting of merged crowns", () => {
     mid[0].whole = wholeMid;
     const rest = [];
     for (let i = 0; i < 20; i++) rest.push({ areaM2: 40, heightM: 8, ringLonLat: ring });
-    // minCover is 22. Spare can afford 400 trees, but both masses stay on
-    // complete coarse cuts, and leftover trees stay.
+    // minCover is 22. Spare can afford 400 trees from the 60,000 m² woods,
+    // but that woods stays on its 30-piece cut; the 6,000 m² hammock, under
+    // the official 12,000 m² floor, upgrades to trees.
     const out = trimSegmentedCrowns(huge.concat(mid, rest), 800);
-    assert.equal(out.filter((c) => c.areaM2 === 2000 && c.segId == null).length, 33, "both masses stay coarse cuts");
+    assert.equal(out.filter((c) => c.areaM2 === 2000 && c.segId == null).length, 30, "huge woods stays a coarse cut");
     assert.equal(out.filter((c) => c.segId === 1).length, 0, "huge woods is not upgraded to trees");
-    assert.equal(out.filter((c) => c.segId === 2).length, 0, "hammock is not upgraded to trees");
+    assert.equal(out.filter((c) => c.segId === 2).length, 32, "hammock under 12,000 m² is split into trees");
     assert.equal(out.filter((c) => c.areaM2 === 40).length, 20, "leftover trees stay");
   });
 });
