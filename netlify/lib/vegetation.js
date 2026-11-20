@@ -455,6 +455,10 @@ const TRUNK_SIDES = 12;
 const CROWN_LAYER_BUDGET = 720;
 /** A woods this large gets an understory plus a raised crown. A smaller clump stays one mass. */
 const STAND_LAYER_M2 = 800;
+// A stand this large can have one low preview vertex (a ditch). Smaller
+// split tiles still use the preview seat so they do not float above the
+// downhill corner the Hamina preview measures (Texas live oak 12→21).
+const WIDE_SEAT_M2 = 8000;
 /** Each band stays thicker than 2 m, which is the custom-height floor. */
 const MIN_CROWN_BAND_M = 2.1;
 
@@ -2086,10 +2090,11 @@ function seatUnderArea(area, slopeTop, frame) {
   const preview = Number(slopeTop.previewSeat(ll)) || 0;
   if (!(preview >= 1)) return official;
   // A wide stand's preview min can be one low vertex (a ditch or a hole).
-  // Small crowns still use the preview, which is what reseats arizona-desert
-  // floats the official downhill plane misses.
+  // Small crowns, and budget-cut tiles under WIDE_SEAT_M2, still use the
+  // preview, which is what reseats arizona-desert floats the official
+  // downhill plane misses, and what seats Texas split pieces on the ground.
   const areaM = canopyAreaM2(area.ringPx, frame);
-  if (areaM >= STAND_LAYER_M2 && official >= 1 && official - preview >= 3) return official;
+  if (areaM >= WIDE_SEAT_M2 && official >= 1 && official - preview >= 3) return official;
   return preview;
 }
 

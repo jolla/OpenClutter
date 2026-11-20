@@ -253,4 +253,25 @@ describe("foliage tiles sit on the ground under each piece", () => {
     assert.equal(areas[0].material.bottom_height, 48);
   });
 
+  it("seats a budget-cut tile on the preview ground under its own ring", () => {
+    // A ~42 m / 1,800 m² Texas tile is over STAND_LAYER_M2 (800) but under
+    // the 8,000 m² wide-stand floor. Official seat can sit 3 m+ above the
+    // preview min (the other triangle of a pasted quad), which is how the
+    // Hamina preview counted those split pieces as floating (12→21).
+    const west = -111.17;
+    const south = 32.25;
+    const east = west + 42 / (111320 * Math.cos((south * Math.PI) / 180));
+    const north = south + 42 / 110540;
+    const frame = geoFrame({ west, south, east, north, name: "Budget tile" });
+    const slopeTop = () => 48;
+    slopeTop.seat = () => 48;
+    slopeTop.previewSeat = () => 40;
+    const { liftFoliagePair, materialForVegetation } = require("../netlify/lib/materials");
+    const ringPx = rectPx(frame, west + 0.00001, south + 0.00001, east - 0.00001, north - 0.00001);
+    const areas = [{ ringPx, material: liftFoliagePair(materialForVegetation(3.0, "light"), 52.8).material, kind: "canopy", shape: "polygon" }];
+    const n = reseatAssembledFoliage(areas, slopeTop, frame);
+    assert.ok(n >= 1, "tile should drop to the preview plate, moved " + n);
+    assert.equal(areas[0].material.bottom_height, 40);
+  });
+
 });
