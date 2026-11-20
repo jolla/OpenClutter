@@ -1308,7 +1308,7 @@ async function fetchUsgsLidarWork(frame, opts) {
     }
   }
   const ms = Date.now() - started;
-  return {
+  const result = {
     skipped: null,
     project,
     collected,
@@ -1328,6 +1328,29 @@ async function fetchUsgsLidarWork(frame, opts) {
     tried,
     frame,
   };
+  // A newer survey can rank first from a wide project bbox while none of
+  // its points land in the draw (Lancaster: 2016 VT river, kept 0). Try
+  // the next survey instead of fusing an empty grid and skipping lidar
+  // canopy.
+  if (grid.kept < 500) {
+    const rest = ranked.filter((row) => tried.indexOf(row[0]) < 0);
+    const remain = caps.maxMs - (Date.now() - started);
+    if (rest.length && remain > 1000) {
+      try {
+        const again = await fetchUsgsLidarWork(
+          frame,
+          Object.assign({}, opt, { index: rest, maxMs: remain })
+        );
+        if (again && !again.skipped && again.grid && again.grid.kept > grid.kept) {
+          again.tried = tried.concat(again.tried || []);
+          return again;
+        }
+      } catch {
+        // Keep the first survey's empty grid below.
+      }
+    }
+  }
+  return result;
 }
 
 
