@@ -1943,10 +1943,9 @@ function trimSegmentedCrowns(crowns, max) {
     return out;
   }
   let spare = max - minCover;
-  // First give every large mass a complete ~2,000 m² cut so one 50,000 m²
-  // woods cannot spend hundreds of slots on per-tree detail while a
-  // 5,000 m² hammock stays one polygon. Leftover slots then upgrade the
-  // largest stands to a full treetop split. Small trees stay.
+  // First give every large mass a complete ~2,000 m² cut so a 5,000–12,000 m²
+  // hammock drops in size without spending the cap on per-tree outlines.
+  // Official packing of those masses is otherwise one polygon. Small trees stay.
   const masses = [];
   for (let i = 0; i < groups.length; i++) {
     masses.push({ kind: "group", area: groups[i].area, n: groups[i].n, item: groups[i] });
@@ -1976,21 +1975,9 @@ function trimSegmentedCrowns(crowns, max) {
       plans.push({ mass, trees: false, parts: null, cost: 0, keep: true });
     }
   }
-  // Only the official mid-size band (2,000–12,000 m²) is upgraded to
-  // individual trees. A 50,000 m² woods, or a 42 m official tile of one,
-  // stays on its reserved complete cut.
-  for (let i = 0; i < plans.length; i++) {
-    const plan = plans[i];
-    if (plan.trees || plan.mass.kind !== "group") continue;
-    if (plan.mass.area > TILE_AREA_M2 || plan.mass.area < SPLIT_MIN_M2) continue;
-    const extra = plan.mass.item.n - 1 - plan.cost;
-    if (plan.mass.item.n >= 2 && extra > 0 && extra <= spare) {
-      plan.trees = true;
-      plan.parts = null;
-      spare -= extra;
-      plan.cost += extra;
-    }
-  }
+  // Do not upgrade reserved cuts to per-tree outlines. Official leaves a
+  // 5,000–12,000 m² hammock as one polygon; exploding it into trees cut
+  // Florida treetop recall even when leftover slots remained.
   const usedRest = new Set();
   const out = [];
   for (let i = 0; i < plans.length; i++) {
