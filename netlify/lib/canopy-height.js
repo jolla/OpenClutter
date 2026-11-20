@@ -1374,7 +1374,10 @@ const SPLIT_MIN_M2 = 2000;
 
 function segmentStand(pixels, at, w, mPerX, mPerY, minM2, topAt) {
   const area = pixels.length * mPerX * mPerY;
-  if (area < SPLIT_MIN_M2) return null;
+  // A cluster under 2,000 m² still has individual trees. Skipping
+  // segmentTrees here merged Williams KOA 422→376 in 1.3.48. Budget
+  // trim can still collapse a small stand when the cap is tight.
+  // SPLIT_MIN_M2 still sizes the coarse cut of a large mass.
   let blocks = [pixels];
   if (area >= TILE_AREA_M2) {
     const cut = tilePixels(pixels, mPerX, mPerY, tileMeters(area));

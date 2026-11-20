@@ -10,6 +10,7 @@ const {
   chmUrl,
   CHM_ZOOM,
   crownsFromChm,
+  crownsForExport,
   peakPool,
   selectCrownsForExport,
   segmentTrees,
@@ -1220,6 +1221,49 @@ describe("treetop splitting of merged crowns", () => {
     assert.ok(crowns.length >= 12, "crowns " + crowns.length);
     assert.ok(Math.max(...crowns.map((c) => c.areaM2)) < 2500, "largest crown " + Math.max(...crowns.map((c) => c.areaM2)));
     assert.ok(crowns.filter((c) => c.segTree).length >= 12, "segmented " + crowns.filter((c) => c.segTree).length);
+  });
+
+  it("still splits a connected stand smaller than 2,000 m² into one crown per treetop", () => {
+    // Williams KOA-style cluster: several trees share a canopy under
+    // SPLIT_MIN_M2. 1.3.48 skipped segmentStand below 2,000 m² and shipped
+    // one outline, which dropped the KOA tree count 422→376.
+    const cell = 3;
+    const w = 20;
+    const h = 20;
+    const values = new Uint8Array(w * h);
+    for (let y = 3; y < 17; y++) {
+      for (let x = 3; x < 17; x++) values[y * w + x] = 17;
+    }
+    const area = 14 * 14 * cell * cell;
+    assert.ok(area < 2000, "fixture area " + area);
+    const peaks = [
+      [6, 6],
+      [13, 6],
+      [6, 13],
+      [13, 13],
+    ];
+    for (const [x, y] of peaks) {
+      values[y * w + x] = 19;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx >= 0 && ny >= 0 && nx < w && ny < h && values[ny * w + nx] < 18) values[ny * w + nx] = 18;
+      }
+    }
+    const at = (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? 0 : values[y * w + x] || 0);
+    const trees = segmentTrees(pixelsOf(w, h, values), at, w, cell, cell, 0);
+    assert.ok(trees && trees.length >= 4, "trees " + (trees && trees.length));
+    const grid = gridFromValues(cell, w, h, values);
+    const crowns = crownsFromChm(grid, { segment: true });
+    assert.ok(crowns.length >= 4, "crowns " + crowns.length);
+    assert.ok(crowns.filter((c) => c.segTree).length >= 4, "segmented " + crowns.filter((c) => c.segTree).length);
+    assert.ok(Math.max(...crowns.map((c) => c.areaM2)) < area, "largest crown " + Math.max(...crowns.map((c) => c.areaM2)));
+    const exported = crownsForExport(grid, { segment: true, maxPolygons: 40 });
+    assert.ok(exported.crowns.length >= 4, "exported " + exported.crowns.length);
+    assert.ok(
+      Math.max(...exported.crowns.map((c) => c.areaM2)) < area,
+      "export must not keep the merged outline " + Math.max(...exported.crowns.map((c) => c.areaM2))
+    );
   });
 
   it("keeps a lumpy single crown as one tree", () => {
