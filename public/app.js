@@ -62,15 +62,113 @@ function setWhatsNewOpen(open) {
   const panel = document.getElementById("whats-new");
   if (!panel) return;
   panel.hidden = !open;
+  if (open) clampWhatsNewSize(panel);
   whatsNewTriggers().forEach(function (el) {
     el.setAttribute("aria-expanded", open ? "true" : "false");
   });
+}
+
+const WHATS_NEW_SIZE_KEY = "openclutter.whatsNewSize";
+const WHATS_NEW_DEF_W = 460;
+const WHATS_NEW_MIN_W = 240;
+const WHATS_NEW_MIN_H = 140;
+
+function whatsNewMaxBox() {
+  const vw = window.innerWidth || 320;
+  const vh = window.innerHeight || 480;
+  const maxW = Math.max(160, vw - 24);
+  const maxH = Math.max(120, Math.min(Math.round(vh * 0.72), vh - 54));
+  return {
+    maxW: maxW,
+    maxH: maxH,
+    minW: Math.min(WHATS_NEW_MIN_W, maxW),
+    minH: Math.min(WHATS_NEW_MIN_H, maxH),
+  };
+}
+
+function loadWhatsNewSize() {
+  try {
+    const raw = localStorage.getItem(WHATS_NEW_SIZE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const w = +parsed.w;
+    const h = +parsed.h;
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w < 80 || h < 80) return null;
+    return { w: w, h: h };
+  } catch (err) {
+    return null;
+  }
+}
+
+function saveWhatsNewSize(w, h) {
+  try {
+    localStorage.setItem(WHATS_NEW_SIZE_KEY, JSON.stringify({ w: Math.round(w), h: Math.round(h) }));
+  } catch (err) {}
+}
+
+function clampWhatsNewSize(panel) {
+  if (!panel) return;
+  const box = whatsNewMaxBox();
+  panel.style.maxWidth = box.maxW + "px";
+  panel.style.maxHeight = box.maxH + "px";
+  const saved = loadWhatsNewSize();
+  if (saved) {
+    panel.style.width = Math.min(box.maxW, Math.max(box.minW, saved.w)) + "px";
+    panel.style.height = Math.min(box.maxH, Math.max(box.minH, saved.h)) + "px";
+    return;
+  }
+  panel.style.width = Math.min(box.maxW, WHATS_NEW_DEF_W) + "px";
+  panel.style.height = "";
+}
+
+function setupWhatsNewResize(panel) {
+  const handle = panel.querySelector(".whats-new-resize");
+  if (!handle) return;
+  clampWhatsNewSize(panel);
+  window.addEventListener("resize", function () {
+    if (!panel.hidden) clampWhatsNewSize(panel);
+  });
+  let drag = null;
+  handle.addEventListener("pointerdown", function (ev) {
+    if (ev.button != null && ev.button !== 0) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const rect = panel.getBoundingClientRect();
+    drag = {
+      pointerId: ev.pointerId,
+      startX: ev.clientX,
+      startY: ev.clientY,
+      startW: rect.width,
+      startH: rect.height,
+    };
+    try {
+      handle.setPointerCapture(ev.pointerId);
+    } catch (err) {}
+  });
+  handle.addEventListener("pointer" + "move", function (ev) {
+    if (!drag || ev.pointerId !== drag.pointerId) return;
+    ev.preventDefault();
+    const box = whatsNewMaxBox();
+    const w = Math.min(box.maxW, Math.max(box.minW, drag.startW + (drag.startX - ev.clientX)));
+    const h = Math.min(box.maxH, Math.max(box.minH, drag.startH + (drag.startY - ev.clientY)));
+    panel.style.width = w + "px";
+    panel.style.height = h + "px";
+  });
+  function endDrag(ev) {
+    if (!drag || (ev && ev.pointerId !== drag.pointerId)) return;
+    const rect = panel.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) saveWhatsNewSize(rect.width, rect.height);
+    drag = null;
+  }
+  handle.addEventListener("pointerup", endDrag);
+  handle.addEventListener("pointercancel", endDrag);
 }
 
 function setupWhatsNew() {
   const panel = document.getElementById("whats-new");
   const triggers = whatsNewTriggers();
   if (!panel || !triggers.length) return;
+  setupWhatsNewResize(panel);
   triggers.forEach(function (el) {
     el.addEventListener("click", function () {
       setWhatsNewOpen(panel.hidden);

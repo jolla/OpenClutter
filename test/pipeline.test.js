@@ -1375,6 +1375,15 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.equal(/\u2014/.test(html), false);
     assert.match(html, /\.map-credit button:hover/);
     assert.match(app, /function setupWhatsNew/);
+    assert.match(html, /width: min\(460px, calc\(100% - 24px\)\)/);
+    assert.match(html, /max-height: min\(72vh, calc\(100vh - 54px\)\)/);
+    assert.equal(/max-height: min\(42vh, 300px\)/.test(html), false);
+    assert.match(html, /class="whats-new-resize"/);
+    assert.match(html, /class="whats-new-body"/);
+    assert.match(app, /openclutter\.whatsNewSize/);
+    assert.match(app, /function clampWhatsNewSize/);
+    assert.match(app, /function setupWhatsNewResize/);
+    assert.match(app, /WHATS_NEW_DEF_W = 460/);
     assert.equal(/function setupUpdateToast/.test(app), false);
     assert.equal(/hideUpdateToast/.test(app), false);
     assert.equal(/openclutter\.whatsNewSeen/.test(app), false);

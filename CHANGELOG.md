@@ -32,6 +32,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.47** (Nov 20, 2026): /dev only. What's new is larger by default and can be resized from the top-left corner. The size is kept for the next visit, and the box stays on screen. Production gets this in the Nov 23 weekly release.
 - **1.3.46** (Nov 19, 2026): bug fix, /dev only. When a tree tile hits its time budget, other work already queued on that worker is retried on a fresh thread, so the export finishes instead of waiting forever. Production gets this in the Nov 23 weekly release.
 - **1.3.45** (Nov 19, 2026): bug fix, /dev only. When lidar is eight or more years old and the photo is leaf-on, large gravel and pavement openings the photo shows as clear are punched out of stale tree crowns. A four-year-old flight is still treated as current, so recent golf sites are unchanged. Production gets this in the Nov 23 weekly release.
 - **1.3.44** (Nov 19, 2026): bug fix, /dev only. Trees that were sitting in the air are reseated on the ground under each piece, without shrinking treetops or dropping neighbouring woods into a ditch. A lidar read that stops early mid-export is tried once more after the export is no longer busy, so buildings and trees are less often missed. Production gets this in the Nov 23 weekly release.
