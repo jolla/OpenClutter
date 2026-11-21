@@ -32,6 +32,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.50** (Nov 20, 2026): bug fix, /dev only. Campground tree clusters are split into individual trees again, split crowns sit on the ground under each piece, and large woods follow crown shapes instead of square tiles. Production gets this in the Nov 30 weekly release.
 - **1.3.49** (Nov 20, 2026): bug fix, /dev only. The Detections preview now places objects on the aerial map's real extent instead of squeezing them into the drawn box. Production gets this in the Nov 30 weekly release.
 - **1.3.48** (Nov 20, 2026): /dev only. Trees that grew together are now split into separate trees. Production gets this in the Nov 30 weekly release.
 - **1.3.47** (Nov 20, 2026): /dev only. What's new is larger by default and can be resized from the top-left corner. The size is kept for the next visit, and the box stays on screen. Production gets this in the Nov 23 weekly release.
