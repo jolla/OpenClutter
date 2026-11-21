@@ -32,6 +32,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.55** (Nov 21, 2026): /dev only. A brief street-map read failure is retried once so the same site no longer flips to a backup map with different roads, bridges, and boats. An aerial fetch with no image in hand waits a little longer before timing out. Production gets this in the Nov 30 weekly release.
 - **1.3.54** (Nov 21, 2026): /dev only. A short bridge marked on only part of an Overture road is no longer drawn as a raised deck over the whole road. Production gets this in the Nov 30 weekly release.
 - **1.3.53** (Nov 20, 2026): /dev only. A large export that compresses the map image so the zip can download no longer runs the tree and vehicle pass a second time. Production gets this in the Nov 30 weekly release.
 - **1.3.52** (Nov 20, 2026): /dev only. Prod-host exports now leave 400 kB of headroom under the 8.37 MB JSON cap, so a slightly heavier tree pass still fits. Production gets this in the Nov 30 weekly release.
