@@ -556,9 +556,19 @@ async function fetchImageryWithinBudget(prepared, askedSide, sharpCapped, srcCtx
   }
   const plate = prepared[got.index] ? prepared[got.index].plate : prepared[0].plate;
   try {
+    let extra = "";
+    if (got && got.unitCounts) {
+      extra =
+        " tiles " +
+        got.unitCounts.map((n, i) => (got.unitsDone && got.unitsDone[i] ? got.unitsDone[i] : 0) + "/" + n).join(",") +
+        " " +
+        Math.round(+got.elapsedMs || 0) +
+        "ms";
+    }
     console.log(
       "aerial plates " + prepared.map((e) => Math.max(e.plate.imgW, e.plate.imgH)).join(",") +
-        " kept " + Math.max(plate.imgW, plate.imgH) + " index " + got.index + (resilient ? " resilient" : " legacy")
+        " kept " + Math.max(plate.imgW, plate.imgH) + " index " + got.index + (resilient ? " resilient" : " legacy") +
+        extra
     );
   } catch {
     /* logging is optional */

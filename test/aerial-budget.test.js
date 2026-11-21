@@ -12,6 +12,7 @@ const { geoFrame, capEsriExportFrame } = require("../netlify/lib/geo-frame");
 const {
   AERIAL_STAGE_BUDGET_MS,
   AERIAL_EMPTY_GRACE_MS,
+  AERIAL_NEAR_DONE_GRACE_MS,
   AERIAL_FETCH_CONCURRENCY,
   AERIAL_FETCH_RESERVE_COARSER,
   AERIAL_TILE_ATTEMPTS,
@@ -95,6 +96,8 @@ describe("aerial budget", () => {
 
   it("keeps the stage budget between 30 and 40 seconds", () => {
     assert.ok(AERIAL_STAGE_BUDGET_MS >= 30000 && AERIAL_STAGE_BUDGET_MS <= 40000);
+    assert.ok(AERIAL_NEAR_DONE_GRACE_MS >= 2000 && AERIAL_NEAR_DONE_GRACE_MS <= 4000);
+    assert.ok(AERIAL_STAGE_BUDGET_MS + AERIAL_NEAR_DONE_GRACE_MS <= 40000);
   });
 
   it("treats a one-pixel cap rounding as the same plate", () => {
@@ -675,5 +678,135 @@ describe("aerial tile retry, concurrency, and cache", () => {
     assert.equal(n, 1);
     assert.ok(first.buf && first.buf.length > 100);
     assert.ok(second.buf && second.buf.length > 100);
+  });
+
+  it("waits a short near-done grace when a sharper tiled plate is almost finished", async () => {
+    const sharp = { west: -81.10, south: 28.20, east: -81.08, north: 28.22, imgW: 2560, imgH: 2560 };
+    const coarse = { west: -81.10, south: 28.20, east: -81.08, north: 28.22, imgW: 8, imgH: 8 };
+    assert.equal(tilePlan(sharp, 2000).tiles.length, 4);
+    const budgetMs = 280;
+    const nearDoneGraceMs = 250;
+    let sharpTiles = 0;
+    const t0 = Date.now();
+    const got = await racePlates(
+      [
+        { plate: sharp, tile: true },
+        { plate: coarse, tile: false },
+      ],
+      {
+        budgetMs,
+        emptyGraceMs: 800,
+        nearDoneGraceMs,
+        tileMinSide: 2000,
+        fetchImage: (frame, signal) => {
+          if (Math.max(frame.imgW, frame.imgH) <= 8) return Promise.resolve(solidJpeg(8, 8, [20, 20, 20]));
+          sharpTiles += 1;
+          const n = sharpTiles;
+          if (n < 4) return Promise.resolve(solidJpeg(frame.imgW, frame.imgH, [8, 8, 8]));
+          return new Promise((resolve, reject) => {
+            const wait = Math.max(0, t0 + budgetMs + 80 - Date.now());
+            const timer = setTimeout(() => resolve(solidJpeg(frame.imgW, frame.imgH, [8, 8, 8])), wait);
+            const abort = () => {
+              clearTimeout(timer);
+              reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+            };
+            if (signal) signal.addEventListener("abort", abort, { once: true });
+          });
+        },
+      }
+    );
+    const elapsed = Date.now() - t0;
+    assert.equal(got.index, 0);
+    assert.equal(got.stepped, false);
+    assert.ok(elapsed >= budgetMs - 40, "elapsed " + elapsed);
+    // Stitch after the last tile can add a few hundred ms under load.
+    assert.ok(elapsed < 2500, "elapsed " + elapsed);
+  });
+
+  it("still stops at the ordinary budget when a sharper plate is not nearly done", async () => {
+    const sharp = { west: -81.30, south: 28.20, east: -81.28, north: 28.22, imgW: 2560, imgH: 2560 };
+    const coarse = { west: -81.30, south: 28.20, east: -81.28, north: 28.22, imgW: 8, imgH: 8 };
+    assert.equal(tilePlan(sharp, 2000).tiles.length, 4);
+    const budgetMs = 200;
+    const t0 = Date.now();
+    let sharpTiles = 0;
+    const got = await racePlates(
+      [
+        { plate: sharp, tile: true },
+        { plate: coarse, tile: false },
+      ],
+      {
+        budgetMs,
+        emptyGraceMs: 800,
+        nearDoneGraceMs: 400,
+        tileMinSide: 2000,
+        fetchImage: (frame, signal) => {
+          if (Math.max(frame.imgW, frame.imgH) <= 8) return Promise.resolve(solidJpeg(8, 8, [20, 20, 20]));
+          sharpTiles += 1;
+          return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => resolve(solidJpeg(frame.imgW, frame.imgH, [8, 8, 8])), 60000);
+            const abort = () => {
+              clearTimeout(timer);
+              reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+            };
+            if (signal) signal.addEventListener("abort", abort, { once: true });
+          });
+        },
+      }
+    );
+    const elapsed = Date.now() - t0;
+    assert.equal(got.index, 1);
+    assert.equal(got.stepped, true);
+    assert.ok(elapsed >= budgetMs - 40, "elapsed " + elapsed);
+    assert.ok(elapsed < 500, "used near-done grace without progress, elapsed " + elapsed);
+    assert.ok(sharpTiles >= 1);
+  });
+
+  it("gives every fetch slot to the sharper plate once a fallback is in hand", async () => {
+    const sharp = { west: -80.75, south: 28.14, east: -80.73, north: 28.16, imgW: 3200, imgH: 3200 };
+    const mid = { west: -80.70, south: 28.14, east: -80.68, north: 28.16, imgW: 2560, imgH: 2560 };
+    const coarse = { west: -80.75, south: 28.14, east: -80.73, north: 28.16, imgW: 8, imgH: 8 };
+    assert.ok(tilePlan(sharp, 2000).tiles.length >= 9);
+    assert.ok(tilePlan(mid, 2000).tiles.length >= 4);
+    let inflight = 0;
+    let max = 0;
+    let fallbackArrived = false;
+    let maxSharpAfterFallback = 0;
+    let sharpInflight = 0;
+    await racePlates(
+      [
+        { plate: sharp, tile: true },
+        { plate: mid, tile: true },
+        { plate: coarse, tile: false },
+      ],
+      {
+        budgetMs: 8000,
+        emptyGraceMs: 0,
+        tileMinSide: 2000,
+        fetchImage: async (frame) => {
+          if (Math.max(frame.imgW, frame.imgH) <= 8) {
+            fallbackArrived = true;
+            return solidJpeg(8, 8, [20, 20, 20]);
+          }
+          const isSharp = frame.west < -80.72;
+          inflight += 1;
+          if (inflight > max) max = inflight;
+          if (isSharp) {
+            sharpInflight += 1;
+            if (fallbackArrived && sharpInflight > maxSharpAfterFallback) maxSharpAfterFallback = sharpInflight;
+          }
+          await new Promise((r) => setTimeout(r, 40));
+          if (isSharp) sharpInflight -= 1;
+          inflight -= 1;
+          return solidJpeg(frame.imgW, frame.imgH, [8, 8, 8]);
+        },
+      }
+    );
+    assert.ok(fallbackArrived);
+    assert.ok(max <= AERIAL_FETCH_CONCURRENCY, "max in flight " + max);
+    assert.ok(
+      maxSharpAfterFallback >= AERIAL_FETCH_CONCURRENCY,
+      "sharp in flight after fallback " + maxSharpAfterFallback
+    );
   });
 });

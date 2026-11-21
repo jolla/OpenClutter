@@ -10,11 +10,14 @@
  * AERIAL_STAGE_BUDGET_MS. A shared cap limits how many Esri exports
  * run at once across those plates, with slots going to the sharpest
  * tiled plate first so a mid plate cannot cut in before the sharp
- * plate has queued all of its tiles. A transient tile failure is retried
- * with a short backoff, and a successful JPEG is kept briefly so a
- * retry or a repeated frame does not hit the network again. Download,
- * tile decode, and stitch all sit inside that budget. When it expires,
- * the sharpest JPEG already in hand is the one kept.
+ * plate has queued all of its tiles. Once a coarser plate is already
+ * in hand, those slots all go to the sharper plate. A transient tile
+ * failure is retried with a short backoff, and a successful JPEG is
+ * kept briefly so a retry or a repeated frame does not hit the network
+ * again. Download, tile decode, and stitch all sit inside that budget.
+ * When it expires, the sharpest JPEG already in hand is the one kept,
+ * except a sharper tiled plate that is nearly done gets a short wait
+ * that stays at or under 40 s in all.
  */
 
 const { esriContentExtent, jpegSize, resizeRgba } = require("./geo-frame");
@@ -55,6 +58,15 @@ const AERIAL_SHARPER_GRACE_MS = 20000;
  * pnw-conifer) timed out with no plate kept.
  */
 const AERIAL_EMPTY_GRACE_MS = 12000;
+/**
+ * When a coarser plate is already in hand and a sharper tiled plate is
+ * nearly done (stitching, or at most two tiles left, or at least three
+ * quarters of its tiles), wait this long past the ordinary budget for
+ * it to finish. The stage budget stays at 36 s; together they stay at
+ * or under 40 s. A hanging sharp plate that is not nearly done still
+ * stops at the ordinary budget.
+ */
+const AERIAL_NEAR_DONE_GRACE_MS = 4000;
 
 let budgetOverride = 0;
 
@@ -266,6 +278,7 @@ const fetchInflight = new Map();
 const tileCache = new Map();
 let tileCacheBytes = 0;
 let slotEpoch = 0;
+let fallbackInHand = false;
 
 function resetForTests() {
   slotEpoch += 1;
@@ -274,6 +287,7 @@ function resetForTests() {
   fetchInflight.clear();
   tileCache.clear();
   tileCacheBytes = 0;
+  fallbackInHand = false;
 }
 
 function frameCacheKey(frame) {
@@ -330,7 +344,7 @@ function dispatchFetchSlot() {
     let pick = -1;
     for (let i = 0; i < fetchQueue.length; i++) {
       const p = fetchQueue[i].priority;
-      const cap = coarserWaiting(p)
+      const cap = coarserWaiting(p) && !fallbackInHand
         ? AERIAL_FETCH_CONCURRENCY - AERIAL_FETCH_RESERVE_COARSER
         : AERIAL_FETCH_CONCURRENCY;
       if ((fetchInflight.get(p) || 0) >= cap) continue;
@@ -482,7 +496,12 @@ async function racePlates(entries, opts) {
     opts && opts.emptyGraceMs != null && Number.isFinite(+opts.emptyGraceMs)
       ? Math.max(0, +opts.emptyGraceMs)
       : AERIAL_EMPTY_GRACE_MS;
+  const nearDoneMs =
+    opts && opts.nearDoneGraceMs != null && Number.isFinite(+opts.nearDoneGraceMs)
+      ? Math.max(0, +opts.nearDoneGraceMs)
+      : AERIAL_NEAR_DONE_GRACE_MS;
   const started = Date.now();
+  fallbackInHand = false;
   const deadlineAt = started + budgetMs + emptyGraceMs;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), budgetMs + emptyGraceMs);
@@ -501,6 +520,8 @@ async function racePlates(entries, opts) {
     return 1;
   });
   const unitTotal = unitCounts.reduce((sum, n) => sum + n, 0);
+  const unitsDone = unitCounts.map(() => 0);
+  const stitching = unitCounts.map(() => false);
   if (opts && opts.onUnits) opts.onUnits(unitTotal);
 
   const results = new Array(list.length);
@@ -536,6 +557,20 @@ async function racePlates(entries, opts) {
     }
     return true;
   }
+  function plateNearlyDone(i) {
+    if (results[i] || errors[i]) return false;
+    if (stitching[i]) return true;
+    const total = unitCounts[i] || 1;
+    const done = unitsDone[i] || 0;
+    if (!(total >= 2)) return false;
+    return done >= total - 2 || done / total >= 0.75;
+  }
+  function sharperNearlyDone(idx) {
+    for (let i = 0; i < idx; i++) {
+      if (plateNearlyDone(i)) return true;
+    }
+    return false;
+  }
   let fallbackAt = 0;
 
   const jobs = list.map((entry, i) => {
@@ -549,21 +584,28 @@ async function racePlates(entries, opts) {
             pace: opts.pace,
             now: opts.now,
             onUnit: function () {
+              unitsDone[i] += 1;
               if (opts.onUnit) opts.onUnit();
             },
             onStitch: function () {
+              stitching[i] = true;
               notify();
             },
           })
         : Promise.resolve()
             .then(() => fetchPlainImage(entry.plate, ctrl.signal))
             .then((buf) => {
+              unitsDone[i] += 1;
               if (opts.onUnit) opts.onUnit();
               return buf;
             });
     return run
       .then((buf) => {
         results[i] = buf;
+        if (i > 0) {
+          fallbackInHand = true;
+          dispatchFetchSlot();
+        }
       })
       .catch((err) => {
         errors[i] = err || new Error("aerial imagery failed");
@@ -583,23 +625,30 @@ async function racePlates(entries, opts) {
       const best = bestIndex();
       const hasPlate = best >= 0;
       // A plate in hand still stops at the ordinary budget (plus the
-      // existing sharper-plate grace). Empty-hand grace only applies
+      // existing sharper-plate grace, and a short wait when a sharper
+      // tiled plate is nearly done). Empty-hand grace only applies
       // when nothing has arrived yet.
       let left;
       if (hasPlate) {
         left = budgetMs - elapsed;
-        if (graceMs > 0) {
-          if (errors[0] && sharperSettled(best)) break;
-          if (errors[0]) {
-            if (!fallbackAt) fallbackAt = Date.now();
-            const graceLeft = graceMs - (Date.now() - fallbackAt);
-            if (!(graceLeft > 0)) break;
-            left = Math.min(Math.max(0, left), graceLeft);
-          } else if (!(left > 0)) {
+        if (errors[0]) {
+          // Sharp failed. Only the optional sharper-plate grace waits
+          // for a mid plate; without it, keep the plate already in hand.
+          if (!(graceMs > 0)) break;
+          if (sharperSettled(best)) break;
+          if (!fallbackAt) fallbackAt = Date.now();
+          const graceLeft = graceMs - (Date.now() - fallbackAt);
+          if (!(graceLeft > 0)) break;
+          left = Math.min(Math.max(0, left), graceLeft);
+        } else if (!(left > 0)) {
+          // Sharp is still in flight. A nearly-done tiled plate gets a
+          // short wait; otherwise keep the plate already in hand.
+          if (nearDoneMs > 0 && sharperNearlyDone(best)) {
+            left = started + budgetMs + nearDoneMs - Date.now();
+            if (!(left > 0)) break;
+          } else {
             break;
           }
-        } else if (errors[0] || !(left > 0)) {
-          break;
         }
       } else {
         left = budgetMs + emptyGraceMs - elapsed;
@@ -611,6 +660,7 @@ async function racePlates(entries, opts) {
   } finally {
     clearTimeout(timer);
     ctrl.abort();
+    fallbackInHand = false;
   }
 
   const idx = bestIndex();
@@ -624,7 +674,15 @@ async function racePlates(entries, opts) {
   // the kept plate is the sharpest there is, not a timeout fallback.
   let noFiner = idx > 0;
   for (let i = 0; i < idx && noFiner; i++) noFiner = refusedBySource(errors[i]);
-  return { buf: results[idx], index: idx, stepped: idx > 0, noFiner };
+  return {
+    buf: results[idx],
+    index: idx,
+    stepped: idx > 0,
+    noFiner,
+    elapsedMs: Date.now() - started,
+    unitsDone: unitsDone.slice(),
+    unitCounts: unitCounts.slice(),
+  };
 }
 
 module.exports = {
@@ -635,6 +693,7 @@ module.exports = {
   AERIAL_TILE_MIN_SIDE_RESILIENT,
   AERIAL_SHARPER_GRACE_MS,
   AERIAL_EMPTY_GRACE_MS,
+  AERIAL_NEAR_DONE_GRACE_MS,
   AERIAL_FETCH_CONCURRENCY,
   AERIAL_FETCH_RESERVE_COARSER,
   AERIAL_TILE_ATTEMPTS,
