@@ -22,9 +22,13 @@ const {
   getBuf,
   getJson,
   setLidarCacheDir,
+  setLidarCacheLimits,
+  pruneLidarCache,
   fetchTimeoutMs,
   TILE_FETCH_MS,
   TILE_FETCH_CONCURRENCY,
+  LIDAR_CACHE_MAX_BYTES,
+  LIDAR_CACHE_TTL_MS,
 } = require("../netlify/lib/usgs-lidar");
 
 const frame = { west: -115.17, south: 36.12, east: -115.16, north: 36.13 };
@@ -400,6 +404,72 @@ describe("USGS lidar", () => {
       await getBuf("https://example.test/no-cache.laz", fetchImpl);
       assert.equal(calls, 2);
     } finally {
+      setLidarCacheDir(undefined);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("drops an expired lidar cache tile and evicts the oldest when the size cap is reached", async () => {
+    assert.equal(LIDAR_CACHE_MAX_BYTES, 512 * 1024 * 1024);
+    assert.equal(LIDAR_CACHE_TTL_MS, 7 * 24 * 60 * 60 * 1000);
+    const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "oc-lidar-cache-"));
+    setLidarCacheDir(dir);
+    setLidarCacheLimits({ maxBytes: 12, ttlMs: 60 * 1000 });
+    const prev = global.fetch;
+    let calls = 0;
+    global.fetch = async (url) => {
+      calls++;
+      const body = String(url).indexOf("a.laz") >= 0 ? "AAAA" : String(url).indexOf("b.laz") >= 0 ? "BBBB" : "CCCC";
+      return { ok: true, arrayBuffer: async () => Buffer.from(body) };
+    };
+    try {
+      await getBuf("https://example.test/a.laz");
+      await getBuf("https://example.test/b.laz");
+      const stale = path.join(dir, require("crypto").createHash("sha1").update("https://example.test/a.laz").digest("hex").slice(0, 2));
+      // Expire A by backdating its cache file.
+      function findFile(root, skipTmp) {
+        const names = fs.readdirSync(root);
+        for (const name of names) {
+          const full = path.join(root, name);
+          const st = fs.statSync(full);
+          if (st.isDirectory()) {
+            const got = findFile(full, skipTmp);
+            if (got) return got;
+          } else if (!skipTmp || name.indexOf(".tmp") < 0) return full;
+        }
+        return null;
+      }
+      // Re-read A so it exists, then expire it.
+      const firstA = await getBuf("https://example.test/a.laz");
+      assert.equal(firstA.toString(), "AAAA");
+      const aFile = findFile(dir, true);
+      assert.ok(aFile);
+      const old = new Date(Date.now() - 120 * 1000);
+      fs.utimesSync(aFile, old, old);
+      const missed = await getBuf("https://example.test/a.laz");
+      assert.equal(missed.toString(), "AAAA");
+      assert.ok(calls >= 2, "expired tile must be fetched again, calls=" + calls);
+
+      setLidarCacheLimits({ maxBytes: 6, ttlMs: 60 * 60 * 1000 });
+      await getBuf("https://example.test/b.laz");
+      await getBuf("https://example.test/c.laz");
+      const pruned = await pruneLidarCache();
+      assert.ok(pruned.bytes <= 6, "bytes " + pruned.bytes);
+      // The cache must stay under the cap; at least one of the 4-byte tiles is gone.
+      let total = 0;
+      function walk(root) {
+        for (const name of fs.readdirSync(root)) {
+          const full = path.join(root, name);
+          const st = fs.statSync(full);
+          if (st.isDirectory()) walk(full);
+          else if (name.indexOf(".tmp") < 0) total += st.size;
+        }
+      }
+      walk(dir);
+      assert.ok(total <= 6, "on-disk " + total);
+    } finally {
+      global.fetch = prev;
+      setLidarCacheLimits(undefined);
       setLidarCacheDir(undefined);
       fs.rmSync(dir, { recursive: true, force: true });
     }

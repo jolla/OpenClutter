@@ -1631,8 +1631,16 @@ let profAcc = null;
 
 function roofsFor(rings) {
   if (!rings || !rings.length) return null;
-  if (activeRoofs && rings[0] === activeRoofs.first) return activeRoofs.list;
-  return null;
+  if (activeRoofs && rings[0] === activeRoofs.first && rings.length === activeRoofs.n) {
+    return activeRoofs.list;
+  }
+  // Each foliage tile builds a fresh keepOutRings array. The first-ring
+  // identity still matches other trees from that tile, so later tiles used
+  // to skip the bbox index and clip every roof. Prepare the index for any
+  // new list so non-overlapping roofs stay out of the slow path.
+  const list = prepareClipRings(rings);
+  activeRoofs = { first: rings[0], list, n: rings.length };
+  return list;
 }
 
 function keepOutHits(points, ring) {
@@ -3275,7 +3283,7 @@ function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
       break;
     }
   }
-  activeRoofs = roofSrc ? { first: roofSrc[0], list: prepareClipRings(roofSrc) } : null;
+  activeRoofs = roofSrc ? { first: roofSrc[0], list: prepareClipRings(roofSrc), n: roofSrc.length } : null;
   if (prof) profile.add("oi-index", profile.msSince(tIndex));
   if (prof) profAcc = { notch: 0, convert: 0, roof: 0, faithful: 0 };
   try {
@@ -3290,6 +3298,10 @@ function treesToOi(oiTreeAreas, imgW, imgH, mpuX) {
       profile.add("oi-faithful", profAcc.faithful);
       if (profAcc.roofHit) profile.add("roof-hit", profAcc.roofHit);
       if (profAcc.roofMiss) profile.add("roof-miss", profAcc.roofMiss);
+    }
+    if (prof) {
+      const line = profile.line();
+      if (line) process.stderr.write("profile treesToOi n=" + list.length + " " + line + "\n");
     }
     profAcc = null;
     activeCloud = null;
@@ -3854,7 +3866,7 @@ function buildClutter({
     }
     if (waterRings.length) depressWaterBasins(terrain, waterRings);
   }
-  const slopeTop = demUnderFootprint(terrain);
+  const slopeTop = require("./stage-clock").timeSubstageSync("demUnderFootprint", () => demUnderFootprint(terrain));
   const areaCap = effectiveAreaCap(maxAttenuationAreas);
   const mode = require("./export-mode");
   const bigBudget = mode.isBigBudget();
@@ -3929,7 +3941,7 @@ function buildClutter({
     veg.clipTypes = synced.clipTypes;
     veg.clipZones = synced.clipZones;
   }
-  const treeOi = treesToOi(veg.oiAreas, frame.imgW, frame.imgH, frame.mpuX);
+  const treeOi = require("./stage-clock").timeSubstageSync("treesToOi", () => treesToOi(veg.oiAreas, frame.imgW, frame.imgH, frame.mpuX));
   const deckCap = raisedDeckCap(areaCap);
   let waterAreas = 0;
   let parkingAreas = 0;
@@ -4187,6 +4199,7 @@ function buildClutter({
   }
   let openTreesDropped = 0;
   if (typeof aerialOpenShare === "function" && treePieces.length) {
+    require("./stage-clock").timeSubstageSync("openTreeShare", () => {
     for (let i = treePieces.length - 1; i >= 0; i--) {
       const piece = treePieces[i];
       if (!piece.areas || !piece.areas.length) continue;
@@ -4208,6 +4221,7 @@ function buildClutter({
         openTreesDropped++;
       }
     }
+    });
   }
   // Lidar flown years before the photo can still carry trees that were
   // cleared for a lot or a yard. When the photo is leaf-on (most measured
@@ -4225,6 +4239,7 @@ function buildClutter({
   ) {
     const rows = [];
     const greens = [];
+    require("./stage-clock").timeSubstageSync("staleGreenShare", () => {
     for (let i = 0; i < treePieces.length; i++) {
       const crown = (treePieces[i].areas || []).find((a) => a && !isTrunkArea(a));
       const coords = crown && crown.area && crown.area.coordinates;
@@ -4235,10 +4250,12 @@ function buildClutter({
       greens.push(green);
       rows.push({ i, ring, green });
     }
+    });
     greens.sort((a, b) => a - b);
     const leafOn = greens.length >= STALE_MIN_CROWNS && greens[greens.length >> 1] >= STALE_LEAF_ON_GREEN;
     if (leafOn) {
       if (typeof clipOpenGround === "function") {
+        require("./stage-clock").timeSubstageSync("clipOpenGround", () => {
         const extras = [];
         let clippedM2 = 0;
         for (let i = 0; i < treePieces.length; i++) {
@@ -4265,7 +4282,9 @@ function buildClutter({
             "Trimmed " + m2.toLocaleString("en-US") + " m2 of canopy the photo shows as open ground in large clearings."
           );
         }
+        });
       }
+      require("./stage-clock").timeSubstageSync("staleOpenDrop", () => {
       const drop = new Set();
       for (let i = 0; i < treePieces.length; i++) {
         const crown = (treePieces[i].areas || []).find((a) => a && !isTrunkArea(a));
@@ -4282,6 +4301,7 @@ function buildClutter({
           staleDropped++;
         }
       }
+      });
     }
     if (footprintMeta) footprintMeta.staleCrownsDropped = staleDropped;
     if (staleDropped && Array.isArray(warnings)) {
@@ -4295,6 +4315,7 @@ function buildClutter({
   // a tree cut since the flight (photo-canopy.js). Dropped with its stem.
   let photoBareDropped = 0;
   if (!canopyEstimated && typeof photoLeafyShare === "function" && treePieces.length) {
+    require("./stage-clock").timeSubstageSync("photoBareCrowns", () => {
     for (let i = treePieces.length - 1; i >= 0; i--) {
       const crown = (treePieces[i].areas || []).find((a) => a && !isTrunkArea(a));
       const coords = crown && crown.area && crown.area.coordinates;
@@ -4311,6 +4332,7 @@ function buildClutter({
         "Left out " + photoBareDropped + " lidar crown" + (photoBareDropped === 1 ? "" : "s") + " with no foliage on the current photo."
       );
     }
+    });
   }
   // On an estimated canopy, a crown the national summer photo shows as roof,
   // shadow or paving is dropped with its stem. Measured lidar crowns stay.
@@ -4336,6 +4358,7 @@ function buildClutter({
   // (steep-canopy.js). Dropped with its stem. Flat ground is not read.
   let steepDropped = 0;
   if (typeof steepLeafyShare === "function" && treePieces.length) {
+    require("./stage-clock").timeSubstageSync("steepCrowns", () => {
     for (let i = treePieces.length - 1; i >= 0; i--) {
       const crown = (treePieces[i].areas || []).find((a) => a && !isTrunkArea(a));
       const coords = crown && crown.area && crown.area.coordinates;
@@ -4349,6 +4372,7 @@ function buildClutter({
     if (footprintMeta) footprintMeta.steepBareCanopy = steepDropped;
     const note = steepCanopyNote(steepDropped);
     if (note && Array.isArray(warnings)) warnings.push(note);
+    });
   }
   let treeThinned = 0;
   let treeThinStep = 0;

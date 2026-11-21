@@ -3594,6 +3594,10 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
       : null;
   const uStats = { stands: 0, pieces: 0, emptied: 0 };
   const tStack = Date.now();
+  const keepOutRingsShared =
+    clipSet && clipSet.buildings && clipSet.buildings.length
+      ? clipSet.buildings.map((b) => b.ring)
+      : [];
   for (let r = 0; r < pending.length; r++) {
     if (stageLog && r > 0 && r % 200 === 0) {
       stageWrite("substage foliage-assemble-stack " + r + "/" + pending.length + " duration " + ((Date.now() - tStack) / 1000).toFixed(1) + "s");
@@ -3701,7 +3705,7 @@ function assembleFoliage(polygonsIn, frame, buildingAabbs, affine, opts, meta) {
         kind: row.slopePiece && i === 0 ? "slope" : i === 0 ? "canopy" : "layer",
         shape: area.shape || "polygon",
         keepOutPx,
-        keepOutRings: clipSet && clipSet.buildings ? clipSet.buildings.map((b) => b.ring) : [],
+        keepOutRings: keepOutRingsShared,
       });
       if (part.ringPx && !(part.scale < 0.999)) overlayRings.push(part.ringPx);
       if (part.material) materials.push(part.material);

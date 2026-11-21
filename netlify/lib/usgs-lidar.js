@@ -41,10 +41,32 @@ const TILE_FETCH_CONCURRENCY = 4;
 /** Per-server cap, then move on. Clipped to the remaining stage budget. */
 const TILE_FETCH_MS = 8000;
 
+/** Keep the Fly worker's disk from filling. Oldest unused tiles go first. */
+const LIDAR_CACHE_MAX_BYTES = 512 * 1024 * 1024;
+/** Unused tiles expire after a week. A read refreshes the timer. */
+const LIDAR_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 let cacheDirOverride = undefined;
+let cacheLimitOverride = undefined;
 
 function setLidarCacheDir(dir) {
   cacheDirOverride = dir;
+}
+
+function setLidarCacheLimits(opts) {
+  cacheLimitOverride = opts || undefined;
+}
+
+function lidarCacheMaxBytes() {
+  if (cacheLimitOverride && cacheLimitOverride.maxBytes > 0) return cacheLimitOverride.maxBytes;
+  const n = Number(process.env.OPENCLUTTER_LIDAR_CACHE_MAX_BYTES);
+  return n > 0 ? n : LIDAR_CACHE_MAX_BYTES;
+}
+
+function lidarCacheTtlMs() {
+  if (cacheLimitOverride && cacheLimitOverride.ttlMs > 0) return cacheLimitOverride.ttlMs;
+  const n = Number(process.env.OPENCLUTTER_LIDAR_CACHE_TTL_MS);
+  return n > 0 ? n : LIDAR_CACHE_TTL_MS;
 }
 
 function lidarCacheDir() {
@@ -76,10 +98,97 @@ async function readLidarCache(url) {
   const file = cachePathFor(url);
   if (!file) return null;
   try {
-    return await fs.promises.readFile(file);
+    const st = await fs.promises.stat(file);
+    if (Date.now() - st.mtimeMs > lidarCacheTtlMs()) {
+      await fs.promises.unlink(file);
+      return null;
+    }
+    const buf = await fs.promises.readFile(file);
+    try {
+      const now = new Date();
+      await fs.promises.utimes(file, now, now);
+    } catch {
+      /* a missed touch only means eviction may be slightly less LRU */
+    }
+    return buf;
   } catch {
     return null;
   }
+}
+
+async function listLidarCacheFiles(dir) {
+  const out = [];
+  async function walk(current) {
+    let ents;
+    try {
+      ents = await fs.promises.readdir(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of ents) {
+      const file = path.join(current, ent.name);
+      if (ent.isDirectory()) {
+        await walk(file);
+        continue;
+      }
+      if (!ent.isFile()) continue;
+      try {
+        const st = await fs.promises.stat(file);
+        if (ent.name.indexOf(".tmp") >= 0) {
+          if (Date.now() - st.mtimeMs > 60 * 60 * 1000) await fs.promises.unlink(file);
+          continue;
+        }
+        out.push({ path: file, size: st.size, mtime: st.mtimeMs });
+      } catch {
+        /* skipped */
+      }
+    }
+  }
+  await walk(dir);
+  return out;
+}
+
+async function pruneLidarCache(now) {
+  const dir = lidarCacheDir();
+  if (!dir) return { evicted: 0, bytes: 0 };
+  const at = now > 0 ? now : Date.now();
+  const ttl = lidarCacheTtlMs();
+  const maxBytes = lidarCacheMaxBytes();
+  const files = await listLidarCacheFiles(dir);
+  let evicted = 0;
+  let bytes = 0;
+  const keep = [];
+  for (const file of files) {
+    if (ttl > 0 && at - file.mtime > ttl) {
+      try {
+        await fs.promises.unlink(file.path);
+        evicted++;
+      } catch {
+        /* already gone */
+      }
+    } else {
+      keep.push(file);
+      bytes += file.size;
+    }
+  }
+  if (bytes <= maxBytes) return { evicted, bytes };
+  keep.sort((a, b) => a.mtime - b.mtime);
+  for (let i = 0; i < keep.length && bytes > maxBytes; i++) {
+    try {
+      await fs.promises.unlink(keep[i].path);
+      bytes -= keep[i].size;
+      evicted++;
+    } catch {
+      /* already gone */
+    }
+  }
+  return { evicted, bytes: Math.max(0, bytes) };
+}
+
+let pruneChain = Promise.resolve();
+function schedulePruneLidarCache() {
+  pruneChain = pruneChain.then(() => pruneLidarCache()).catch(() => {});
+  return pruneChain;
 }
 
 async function writeLidarCache(url, buf) {
@@ -96,7 +205,9 @@ async function writeLidarCache(url, buf) {
     } catch {
       /* leftover temp is harmless */
     }
+    return;
   }
+  await schedulePruneLidarCache();
 }
 
 function noteLidarCache(hit) {
@@ -1533,9 +1644,13 @@ module.exports = {
   MAX_MS,
   TILE_FETCH_MS,
   TILE_FETCH_CONCURRENCY,
+  LIDAR_CACHE_MAX_BYTES,
+  LIDAR_CACHE_TTL_MS,
   getBuf,
   getJson,
   setLidarCacheDir,
+  setLidarCacheLimits,
+  pruneLidarCache,
   fetchTimeoutMs,
   projectYear,
   rankProjects,

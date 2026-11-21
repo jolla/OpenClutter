@@ -110,4 +110,59 @@ describe("keep-out index", () => {
       assert.equal(pointInRing([400, 400], px), false, "roof center stays outside piece " + i);
     }
   });
+
+  it("still skips far roofs when each tree carries a fresh keep-out array", () => {
+    const frame = geoFrame({ west: -115.17, south: 36.12, east: -115.16, north: 36.13, name: "Keep" });
+    const mat = materialForVegetation(14, "heavy");
+    function crownAt(cx, cy) {
+      const ring = [];
+      for (let i = 0; i < 24; i++) {
+        const a = (i / 24) * Math.PI * 2;
+        ring.push([cx + Math.cos(a) * 30, cy + Math.sin(a) * 24]);
+      }
+      ring.push(ring[0]);
+      return ring;
+    }
+    const roof = [
+      [390, 390],
+      [410, 390],
+      [410, 410],
+      [390, 410],
+      [390, 390],
+    ];
+    const far = [];
+    for (let i = 0; i < 80; i++) {
+      const x = 20 + (i % 10) * 16;
+      const y = 20 + Math.floor(i / 10) * 16;
+      far.push([
+        [x, y],
+        [x + 10, y],
+        [x + 10, y + 10],
+        [x, y + 10],
+        [x, y],
+      ]);
+    }
+    const shared = [roof].concat(far);
+    const trees = [];
+    for (let i = 0; i < 60; i++) {
+      trees.push({
+        ringPx: crownAt(400 + (i % 8) * 8, 500 + Math.floor(i / 8) * 8),
+        material: mat,
+        kind: "canopy",
+        keepOutRings: [roof].concat(far),
+      });
+    }
+    const t0 = Date.now();
+    const packed = treesToOi(trees, frame.imgW, frame.imgH, frame.mpuX);
+    const ms = Date.now() - t0;
+    const once = treesToOi(
+      [{ ringPx: trees[0].ringPx, material: mat, kind: "canopy", keepOutRings: shared }],
+      frame.imgW,
+      frame.imgH,
+      frame.mpuX
+    );
+    assert.ok(packed.areas.length >= 1);
+    assert.equal(once.areas.length >= 1, true);
+    assert.ok(ms < 1500, "fresh keep-out arrays should still use the bbox index, took " + ms + " ms");
+  });
 });
