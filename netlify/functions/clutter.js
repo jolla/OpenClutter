@@ -2674,8 +2674,11 @@ async function handleClutterNorthUp(event) {
   // A site with few buildings has JSON room for more, so the cap rises with
   // that headroom up to 1200. The OpenIntent byte budget still drops the rest.
 
-  async function emitClutter(list, extraWarnings) {
+  let lastFoliagePack = null;
+  let lastOutdoorPlan = null;
+  async function emitClutter(list, extraWarnings, opts) {
     // The API result has no OpenIntent size limit, so it keeps more crowns.
+    const reuseDetect = !!(opts && opts.reuseDetect);
     const foliageCap =
       format === "site-v1"
         ? Math.min(SITE_V1_FOLIAGE_MAX, foliageCapFor(list ? list.length : 0) * 3)
@@ -2684,8 +2687,8 @@ async function handleClutterNorthUp(event) {
     const areaCap = areaCapOverride > 0 ? areaCapOverride | 0 : effectiveAreaCap(0);
     const buildingCeiling =
       areaCap > MAX_ATTENUATION_AREAS ? Math.max(MAX_BUILDINGS, areaCap) : MAX_BUILDINGS;
-    let foliagePack = null;
-    let outdoorPlan = null;
+    let foliagePack = reuseDetect ? lastFoliagePack : null;
+    let outdoorPlan = reuseDetect ? lastOutdoorPlan : null;
     let preview = null;
     const wantParallel =
       background &&
@@ -2693,7 +2696,7 @@ async function handleClutterNorthUp(event) {
         outdoorFeatures.length ||
         guidewayFeatures.length ||
         bridgeFeatures.length);
-    if (wantParallel) {
+    if (wantParallel && !reuseDetect) {
       preview = footprintsToClutter(list, frame, affine, slopeTop, { buildingCeiling });
     }
     // Poles the lidar found (one tall cell, far lower around it) are drawn as
@@ -2750,7 +2753,7 @@ async function handleClutterNorthUp(event) {
       }
     }
     const parallelTasks = [];
-    if (background && (outdoorFeatures.length || guidewayFeatures.length || bridgeFeatures.length)) {
+    if (!reuseDetect && background && (outdoorFeatures.length || guidewayFeatures.length || bridgeFeatures.length)) {
       if (process.env.OPENCLUTTER_STAGE_LOG) {
         process.stderr.write("stage outdoor-parallel " + outdoorFeatures.length + "\n");
       }
@@ -2897,7 +2900,7 @@ async function handleClutterNorthUp(event) {
         }
       }
     }
-    if (background && includeFoliage && !chmTimedOut) {
+    if (!reuseDetect && background && includeFoliage && !chmTimedOut) {
       if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage trees-parallel\n");
       parallelTasks.push(
         stageClock
@@ -2938,6 +2941,10 @@ async function handleClutterNorthUp(event) {
       );
     }
     if (parallelTasks.length) await Promise.all(parallelTasks);
+    if (!reuseDetect) {
+      lastFoliagePack = foliagePack;
+      lastOutdoorPlan = outdoorPlan;
+    }
     if (photoCrowns && foliagePack) {
       footprintMeta.photoCrowns = photoCrowns.stats;
       const crownNote = photoCrownNote(photoCrowns.stats);
@@ -3210,9 +3217,20 @@ async function handleClutterNorthUp(event) {
       exportJobs.ZIP_DOWNLOAD_MAX - (built.zip.length - imgBuf.length) - (exportMode.isBigBudget() ? 200000 : 0);
     const smaller = compressJpegToMax(imgBuf, Math.max(180000, room));
     if (smaller && smaller.length < imgBuf.length) {
+      const { shouldRebuildClutterForSmallerImage, replaceZipImage } = require("../lib/pipeline");
+      const rebuildClutter = shouldRebuildClutterForSmallerImage(
+        imgBuf.length,
+        smaller.length,
+        jsonBudgetOverride || 0
+      );
       imgBuf = smaller;
       warnings.push("Map image was compressed so the zip can download.");
-      built = await emitClutter(exportFeatures);
+      // Detection already ran on the original plate. Rebuild JSON only when
+      // the smaller image raises the image-aware byte budget; otherwise just
+      // swap the JPEG into the zip.
+      built = rebuildClutter
+        ? await emitClutter(exportFeatures, null, { reuseDetect: true })
+        : replaceZipImage(built, imgBuf, "Map image was compressed so the zip can download.");
     }
   }
   if (shrinkNote && warnings.indexOf(shrinkNote) < 0) warnings.push(shrinkNote);

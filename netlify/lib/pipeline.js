@@ -159,6 +159,42 @@ function packJsonLimit(budget) {
   return n - DEV_JSON_HEADROOM;
 }
 
+/**
+ * After a background export shrinks the map JPEG so the zip can download,
+ * JSON packing only needs to run again when the smaller image raises the
+ * image-aware byte budget. Detection never depends on the stored JPEG size.
+ */
+function shouldRebuildClutterForSmallerImage(oldImageBytes, newImageBytes, override) {
+  return effectiveJsonBudget(override, newImageBytes) > effectiveJsonBudget(override, oldImageBytes);
+}
+
+/**
+ * Rebuild an OpenIntent zip with a smaller map image, keeping the already
+ * packed JSON and ATTRIBUTION.txt. Used when only the JPEG changed.
+ */
+function replaceZipImage(built, imgBuf, note) {
+  if (!built || !built.zip || !imgBuf) return built;
+  const { unzipStore, zipUnderLimit } = require("./zip-store");
+  const files = unzipStore(built.zip);
+  const names = Object.keys(files);
+  const imgName =
+    names.find((n) => /^images\//.test(n)) ||
+    (built.imgName ? "images/" + built.imgName : "");
+  if (!imgName || !files[imgName]) return built;
+  files[imgName] = imgBuf;
+  const zip = zipUnderLimit(
+    names.map((name) => ({ name, data: files[name] })),
+    ZIP_DOWNLOAD_MAX
+  );
+  const stats = Object.assign({}, built.stats || {}, { imageBytes: imgBuf.length });
+  if (note) {
+    const warnings = Array.isArray(stats.warnings) ? stats.warnings.slice() : [];
+    if (warnings.indexOf(note) < 0) warnings.push(note);
+    stats.warnings = warnings;
+  }
+  return Object.assign({}, built, { zip, stats });
+}
+
 /** Area sanity cap. Production stays at 8000; /dev hosts use DEV_HOST_AREA_CAP. */
 function effectiveAreaCap(override) {
   if (override > 0) return override | 0;
@@ -4650,6 +4686,8 @@ module.exports = {
   HAMINA_WALL_SEGMENT_MAX,
   WALL_SEGMENT_SOFT_MAX,
   effectiveJsonBudget,
+  shouldRebuildClutterForSmallerImage,
+  replaceZipImage,
   effectiveAreaCap,
   OI_PIXEL_DECIMALS,
   ZIP_DOWNLOAD_MAX,
