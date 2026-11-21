@@ -32,6 +32,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.61** (Nov 21, 2026): /dev only. Official exports now log how long each source fetch took. USGS lidar tiles are fetched four at a time, each request gives up after 8 s or whenever the stage cap is reached, and successful tiles are cached on disk, so a large site usually finishes the cloud in one pass instead of sitting through a long retry. Production gets this in the Nov 30 weekly release.
 - **1.3.60** (Nov 21, 2026): /dev only. When a large aerial fetch already has a coarser map in hand, a sharp plate that is nearly done gets a few more seconds to finish, up to 40 s, instead of stepping down to a blurry fallback. Production gets this in the Nov 30 weekly release.
 - **1.3.59** (Nov 21, 2026): /dev only. Anonymous usage totals now include the country of each export, plus the state or province in the US, Canada, and Australia, and the visitor's country on page views. Production gets this in the Nov 30 weekly release.
 - **1.3.58** (Nov 21, 2026): /dev only. When several aerial map sizes are fetched at once, the sharpest tiles go first so a busy export is less likely to step down to a coarser map. Production gets this in the Nov 30 weekly release.
