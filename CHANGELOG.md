@@ -32,6 +32,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.57** (Nov 21, 2026): /dev only. Aerial tile fetches retry a brief failure, run a few at a time, and reuse a short cache of tiles already fetched. Production gets this in the Nov 30 weekly release.
 - **1.3.56** (Nov 21, 2026): /dev only. If the live street-map servers do not answer, an export reuses a recent saved street map for that site when one exists. Otherwise the backup map still keeps marina boats, piers, and moorings. Production gets this in the Nov 30 weekly release.
 - **1.3.55** (Nov 21, 2026): /dev only. A brief street-map read failure is retried once so the same site no longer flips to a backup map with different roads, bridges, and boats. An aerial fetch with no image in hand waits a little longer before timing out. Production gets this in the Nov 30 weekly release.
 - **1.3.54** (Nov 21, 2026): /dev only. A short bridge marked on only part of an Overture road is no longer drawn as a raised deck over the whole road. Production gets this in the Nov 30 weekly release.
