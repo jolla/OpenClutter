@@ -293,6 +293,266 @@ function levelFromRules(rules) {
   return best;
 }
 
+function parseBetween(raw) {
+  if (raw == null) return null;
+  const pair = Array.isArray(raw) ? raw : Array.isArray(raw.values) ? raw.values : null;
+  if (!pair || pair.length < 2) return null;
+  const a = Number(pair[0]);
+  const b = Number(pair[1]);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  const lo = Math.min(a, b);
+  const hi = Math.max(a, b);
+  if (hi - lo <= 0) return null;
+  return [lo, hi];
+}
+
+function coversFull(between) {
+  if (!between) return true;
+  return between[0] <= 0.001 && between[1] >= 0.999;
+}
+
+function rangesOverlap(a, b) {
+  if (!a || !b) return true;
+  return a[0] < b[1] && b[0] < a[1];
+}
+
+function mergeRanges(list) {
+  const raw = (list || []).filter((r) => r && r.length >= 2 && r[1] > r[0]);
+  raw.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const out = [];
+  for (let i = 0; i < raw.length; i++) {
+    const r = raw[i];
+    const last = out[out.length - 1];
+    if (last && r[0] <= last[1] + 1e-6) {
+      last[1] = Math.max(last[1], r[1]);
+    } else {
+      out.push([r[0], r[1]]);
+    }
+  }
+  return out;
+}
+
+function normalizeFlagRules(flags) {
+  const out = [];
+  const walk = (v, between) => {
+    if (!v) return;
+    if (typeof v === "string") {
+      out.push({ values: [v], between: between || null });
+      return;
+    }
+    if (Array.isArray(v)) {
+      const allStr = v.every((x) => typeof x === "string");
+      if (allStr) {
+        if (v.length) out.push({ values: v.slice(), between: between || null });
+        return;
+      }
+      for (let i = 0; i < v.length; i++) walk(v[i], between);
+      return;
+    }
+    if (typeof v === "object") {
+      const next = parseBetween(v.between) || between || null;
+      if (Array.isArray(v.values) || v.value || v.flag) {
+        const values = [];
+        const take = (src) => {
+          if (!src) return;
+          if (typeof src === "string") values.push(src);
+          else if (Array.isArray(src)) {
+            for (let i = 0; i < src.length; i++) if (typeof src[i] === "string") values.push(src[i]);
+          }
+        };
+        take(v.values);
+        take(v.value);
+        take(v.flag);
+        if (values.length) out.push({ values, between: next });
+        return;
+      }
+    }
+  };
+  walk(flags, null);
+  return out;
+}
+
+function flagCoversFull(flags, name) {
+  const rules = normalizeFlagRules(flags);
+  for (let i = 0; i < rules.length; i++) {
+    if (rules[i].values.indexOf(name) >= 0 && coversFull(rules[i].between)) return true;
+  }
+  return false;
+}
+
+function flagRanges(flags, name) {
+  const out = [];
+  const rules = normalizeFlagRules(flags);
+  for (let i = 0; i < rules.length; i++) {
+    if (rules[i].values.indexOf(name) < 0) continue;
+    const b = rules[i].between;
+    out.push(b ? [b[0], b[1]] : [0, 1]);
+  }
+  return mergeRanges(out);
+}
+
+function normalizeLevelRules(rules) {
+  if (rules == null) return [];
+  const list = Array.isArray(rules) ? rules : [rules];
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const r = list[i];
+    const v = r && typeof r === "object" ? Number(r.value != null ? r.value : r.level) : Number(r);
+    if (!Number.isFinite(v)) continue;
+    const between = r && typeof r === "object" ? parseBetween(r.between) : null;
+    out.push({ value: v, between });
+  }
+  return out;
+}
+
+function levelCoversFull(rules) {
+  const list = normalizeLevelRules(rules);
+  let best = null;
+  for (let i = 0; i < list.length; i++) {
+    if (!coversFull(list[i].between)) continue;
+    const v = list[i].value;
+    if (best == null || Math.abs(v) > Math.abs(best)) best = v;
+  }
+  return best;
+}
+
+function levelRaisedRanges(rules) {
+  const out = [];
+  const list = normalizeLevelRules(rules);
+  for (let i = 0; i < list.length; i++) {
+    if (!(list[i].value >= 1)) continue;
+    const b = list[i].between;
+    out.push(b ? [b[0], b[1]] : [0, 1]);
+  }
+  return mergeRanges(out);
+}
+
+function levelOverlapping(rules, range) {
+  const list = normalizeLevelRules(rules);
+  let best = null;
+  for (let i = 0; i < list.length; i++) {
+    const b = list[i].between || [0, 1];
+    if (!rangesOverlap(b, range)) continue;
+    const v = list[i].value;
+    if (best == null || Math.abs(v) > Math.abs(best)) best = v;
+  }
+  return best;
+}
+
+function segmentLengthM(coords) {
+  let n = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const lon0 = coords[i - 1][0];
+    const lat0 = coords[i - 1][1];
+    const lon1 = coords[i][0];
+    const lat1 = coords[i][1];
+    const dLat = (lat1 - lat0) * 111000;
+    const dLon = (lon1 - lon0) * 111000 * Math.cos(((lat0 + lat1) * Math.PI) / 360);
+    n += Math.hypot(dLat, dLon);
+  }
+  return n;
+}
+
+function interpolateLonLat(a, b, t) {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+}
+
+/** Clip a LineString to a normalized [start, end] range along its length. */
+function clipLineByRange(coords, start, end) {
+  if (!coords || coords.length < 2) return null;
+  const lo = Math.max(0, Math.min(1, Number(start)));
+  const hi = Math.max(0, Math.min(1, Number(end)));
+  if (!(hi - lo > 1e-6)) return null;
+  if (lo <= 0 && hi >= 1) return coords.slice();
+  const total = segmentLengthM(coords);
+  if (!(total > 0)) return null;
+  const a = lo * total;
+  const b = hi * total;
+  const out = [];
+  let dist = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const p0 = coords[i - 1];
+    const p1 = coords[i];
+    const dLat = (p1[1] - p0[1]) * 111000;
+    const dLon = (p1[0] - p0[0]) * 111000 * Math.cos(((p0[1] + p1[1]) * Math.PI) / 360);
+    const seg = Math.hypot(dLat, dLon);
+    const d1 = dist + seg;
+    if (d1 < a - 1e-9) {
+      dist = d1;
+      continue;
+    }
+    if (dist <= a && a <= d1) {
+      const t = seg > 0 ? (a - dist) / seg : 0;
+      out.push(interpolateLonLat(p0, p1, t));
+    } else if (dist >= a && dist <= b && (!out.length || out[out.length - 1][0] !== p0[0] || out[out.length - 1][1] !== p0[1])) {
+      out.push(p0);
+    }
+    if (dist <= b && b <= d1) {
+      const t = seg > 0 ? (b - dist) / seg : 1;
+      const pt = interpolateLonLat(p0, p1, t);
+      const last = out[out.length - 1];
+      if (!last || last[0] !== pt[0] || last[1] !== pt[1]) out.push(pt);
+      break;
+    }
+    if (d1 <= b && d1 >= a) {
+      const last = out[out.length - 1];
+      if (!last || last[0] !== p1[0] || last[1] !== p1[1]) out.push(p1);
+    }
+    dist = d1;
+  }
+  return out.length >= 2 ? out : null;
+}
+
+function clipGeometryByRange(geom, start, end) {
+  if (!geom) return null;
+  const t = geom.type;
+  const c = geom.coordinates;
+  if (t === "LineString") {
+    const line = clipLineByRange(c, start, end);
+    return line ? { type: "LineString", coordinates: line } : null;
+  }
+  if (t === "MultiLineString") {
+    const parts = [];
+    for (let i = 0; i < (c || []).length; i++) {
+      const line = clipLineByRange(c[i], start, end);
+      if (line) parts.push(line);
+    }
+    if (!parts.length) return null;
+    return parts.length === 1 ? { type: "LineString", coordinates: parts[0] } : { type: "MultiLineString", coordinates: parts };
+  }
+  return null;
+}
+
+function scopedSegmentElements(id, baseTags, geom, row, bbox) {
+  const out = [];
+  const flags = row && row.road_flags;
+  const raised = mergeRanges(flagRanges(flags, "is_bridge").concat(levelRaisedRanges(row && row.level_rules)));
+  const tunnels = mergeRanges(flagRanges(flags, "is_tunnel"));
+  let n = 0;
+  function emit(range, extra, suffix) {
+    if (coversFull(range)) return;
+    const clipped = clipGeometryByRange(geom, range[0], range[1]);
+    if (!clipped) return;
+    const tags = Object.assign({}, baseTags, extra);
+    const els = elementsFromGeometry(id + suffix, tags, clipped, bbox);
+    for (let k = 0; k < els.length; k++) out.push(els[k]);
+  }
+  for (let i = 0; i < raised.length; i++) {
+    const r = raised[i];
+    const extra = {};
+    const bridgeHits = flagRanges(flags, "is_bridge").some((b) => rangesOverlap(b, r));
+    if (bridgeHits) extra.bridge = "yes";
+    const lv = levelOverlapping(row && row.level_rules, r);
+    if (lv != null && lv !== 0) extra.layer = String(lv);
+    if (!extra.bridge && !(Number(extra.layer) >= 1)) continue;
+    emit(r, extra, "-br" + n++);
+  }
+  for (let i = 0; i < tunnels.length; i++) {
+    emit(tunnels[i], { tunnel: "yes" }, "-tun" + n++);
+  }
+  return out;
+}
+
 function tagsFromSegment(row) {
   const tags = {};
   const subtype = String(row && row.subtype || "");
@@ -300,8 +560,9 @@ function tagsFromSegment(row) {
   const flags = flagValues(row && row.road_flags);
   const railFlags = flagValues(row && row.rail_flags);
   const isLink = flags.indexOf("is_link") >= 0;
-  const isBridge = flags.indexOf("is_bridge") >= 0;
-  const isTunnel = flags.indexOf("is_tunnel") >= 0;
+  const anyBridge = flags.indexOf("is_bridge") >= 0;
+  const isBridge = flagCoversFull(row && row.road_flags, "is_bridge");
+  const isTunnel = flagCoversFull(row && row.road_flags, "is_tunnel");
   if (subtype === "rail" || RAIL_CLASS[cls]) {
     const rail = RAIL_CLASS[cls] ? cls : "";
     if (!rail) return null;
@@ -309,7 +570,7 @@ function tagsFromSegment(row) {
   } else {
     let hwy = ROAD_CLASS[cls] ? cls : "";
     if (!hwy && cls === "unknown" && subtype === "road") hwy = "unclassified";
-    if (!hwy && (isBridge || Number(levelFromRules(row && row.level_rules)) >= 1) && subtype === "road") hwy = "unclassified";
+    if (!hwy && (anyBridge || Number(levelFromRules(row && row.level_rules)) >= 1) && subtype === "road") hwy = "unclassified";
     if (!hwy) return null;
     if (isLink && (hwy === "motorway" || hwy === "trunk" || hwy === "primary" || hwy === "secondary" || hwy === "tertiary")) {
       tags.highway = hwy + "_link";
@@ -319,7 +580,7 @@ function tagsFromSegment(row) {
   }
   if (isBridge) tags.bridge = "yes";
   if (isTunnel) tags.tunnel = "yes";
-  const level = levelFromRules(row && row.level_rules);
+  const level = levelCoversFull(row && row.level_rules);
   if (level != null && level !== 0) tags.layer = String(level);
   void railFlags;
   copyNameAndHeight(tags, row);
@@ -611,6 +872,10 @@ function elementsFromRows(key, rows, bbox) {
     const id = String(row.id || "ovt-" + key + "-" + i);
     const els = elementsFromGeometry(id, tags, geom, bbox);
     for (let k = 0; k < els.length; k++) out.push(els[k]);
+    if (key === "segment") {
+      const extras = scopedSegmentElements(id, tags, geom, row, bbox);
+      for (let k = 0; k < extras.length; k++) out.push(extras[k]);
+    }
   }
   return out;
 }
@@ -771,6 +1036,8 @@ module.exports = {
   tagsFromSegment,
   flagValues,
   levelFromRules,
+  flagCoversFull,
+  clipLineByRange,
   asGeometry,
   wkbToGeom,
   bboxHitsCoords,

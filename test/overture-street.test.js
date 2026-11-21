@@ -13,6 +13,8 @@ const {
   tagsFromSegment,
   flagValues,
   levelFromRules,
+  flagCoversFull,
+  clipLineByRange,
   asGeometry,
   wkbToGeom,
   bboxHitsCoords,
@@ -114,6 +116,28 @@ describe("Overture street tag mapping", () => {
     assert.equal(levelFromRules([{ value: 0 }, { value: 2 }]), 2);
     assert.equal(levelFromRules([{ value: -1 }]), -1);
   });
+
+  it("does not tag a whole road as a bridge when is_bridge is only a between range", () => {
+    const partial = tagsFromSegment({
+      subtype: "road",
+      class: "residential",
+      road_flags: [{ values: ["is_bridge"], between: [0.2, 0.3] }],
+      level_rules: [{ value: 1, between: [0.2, 0.3] }],
+    });
+    assert.equal(partial.highway, "residential");
+    assert.equal(partial.bridge, undefined);
+    assert.equal(partial.layer, undefined);
+    assert.equal(flagCoversFull([{ values: ["is_bridge"], between: [0.2, 0.3] }], "is_bridge"), false);
+    assert.equal(flagCoversFull(["is_bridge"], "is_bridge"), true);
+    const whole = tagsFromSegment({
+      subtype: "road",
+      class: "primary",
+      road_flags: ["is_bridge"],
+      level_rules: [{ value: 1 }],
+    });
+    assert.equal(whole.bridge, "yes");
+    assert.equal(whole.layer, "1");
+  });
 });
 
 describe("Overture street geometry", () => {
@@ -208,5 +232,66 @@ describe("Overture street geometry", () => {
     const els = elementsFromGeometry("wood-sw", { natural: "wood" }, poly, KOA);
     assert.equal(els.length, 1);
     assert.equal(true, ringHitsBbox(poly.coordinates[0], KOA));
+  });
+});
+
+describe("Overture scoped bridge ranges", () => {
+  const y = 35.326;
+  const x0 = -112.16;
+  const x1 = -112.155;
+
+  it("clips a LineString to a between range along its length", () => {
+    const line = [[x0, y], [x1, y]];
+    const mid = clipLineByRange(line, 0.2, 0.3);
+    assert.ok(mid && mid.length >= 2);
+    assert.ok(Math.abs(mid[0][0] - (x0 + 0.2 * (x1 - x0))) < 1e-12);
+    assert.ok(Math.abs(mid[mid.length - 1][0] - (x0 + 0.3 * (x1 - x0))) < 1e-12);
+    assert.equal(clipLineByRange(line, 0, 1).length, 2);
+  });
+
+  it("emits a short deck for a scoped is_bridge flag and keeps the rest as a ground road", () => {
+    const row = {
+      id: "seg-1",
+      subtype: "road",
+      class: "service",
+      road_flags: [{ values: ["is_bridge"], between: [0.2, 0.3] }],
+      geometry: { type: "LineString", coordinates: [[x0, y], [x1, y]] },
+      bbox: { xmin: x0, xmax: x1, ymin: y, ymax: y },
+    };
+    const els = elementsFromRows("segment", [row], KOA);
+    const roads = els.filter((e) => e.tags.highway === "service" && e.tags.bridge !== "yes");
+    const bridges = els.filter((e) => e.tags.bridge === "yes");
+    assert.equal(roads.length, 1);
+    assert.equal(bridges.length, 1);
+    assert.equal(roads[0].tags.layer, undefined);
+    const expect = clipLineByRange([[x0, y], [x1, y]], 0.2, 0.3);
+    const got = bridges[0].geometry.map((p) => [p.lon, p.lat]);
+    assert.equal(got.length, expect.length);
+    for (let i = 0; i < expect.length; i++) {
+      assert.ok(Math.abs(got[i][0] - expect[i][0]) < 1e-12, "lon " + i);
+      assert.ok(Math.abs(got[i][1] - expect[i][1]) < 1e-12, "lat " + i);
+    }
+  });
+
+  it("clips a level_rules overpass without marking the whole road as layer 1", () => {
+    const row = {
+      id: "seg-2",
+      subtype: "road",
+      class: "residential",
+      level_rules: [{ value: 1, between: [0.4, 0.55] }],
+      geometry: { type: "LineString", coordinates: [[x0, y], [x1, y]] },
+      bbox: { xmin: x0, xmax: x1, ymin: y, ymax: y },
+    };
+    const els = elementsFromRows("segment", [row], KOA);
+    const ground = els.filter((e) => e.tags.highway === "residential" && e.tags.layer == null);
+    const raised = els.filter((e) => e.tags.layer === "1");
+    assert.equal(ground.length, 1);
+    assert.equal(raised.length, 1);
+    assert.equal(raised[0].tags.bridge, undefined);
+    const expect = clipLineByRange([[x0, y], [x1, y]], 0.4, 0.55);
+    const got = raised[0].geometry.map((p) => [p.lon, p.lat]);
+    assert.equal(got.length, expect.length);
+    assert.ok(Math.abs(got[0][0] - expect[0][0]) < 1e-12);
+    assert.ok(Math.abs(got[got.length - 1][0] - expect[expect.length - 1][0]) < 1e-12);
   });
 });
