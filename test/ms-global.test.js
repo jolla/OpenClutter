@@ -11,6 +11,7 @@ const {
   fetchMsGlobalFootprints,
   setMsCacheDir,
   setMsCacheLimits,
+  parsedCacheKey,
   MS_CACHE_MAX_BYTES,
   MS_CACHE_TTL_MS,
   globalSkipWarning,
@@ -243,6 +244,41 @@ describe("Microsoft global building footprints", () => {
       assert.equal(calls, 1);
       assert.equal(first.features.length, 1);
       assert.equal(second.features.length, 1);
+    } finally {
+      setMsCacheDir(undefined);
+      setMsCacheLimits(undefined);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses a parsed bbox-filtered Microsoft cache without reading the gzip again", async () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "oc-ms-parsed-"));
+    setMsCacheDir(dir);
+    setMsCacheLimits({ maxBytes: 1024 * 1024, ttlMs: 60 * 1000 });
+    const inside = poly([
+      [-87.918, 42.899],
+      [-87.917, 42.899],
+      [-87.917, 42.900],
+      [-87.918, 42.900],
+      [-87.918, 42.899],
+    ]);
+    const gz = zlib.gzipSync(Buffer.from(JSON.stringify(inside) + "\n"));
+    let calls = 0;
+    const fetchFn = async () => {
+      calls++;
+      if (calls > 1) throw new Error("should not download again");
+      return { ok: true, headers: { get: () => String(gz.length) }, arrayBuffer: async () => gz };
+    };
+    try {
+      const first = await fetchMsGlobalFootprints(OAK, fetchFn, { diskCache: true });
+      assert.equal(first.features.length, 1);
+      const second = await fetchMsGlobalFootprints(OAK, async () => {
+        throw new Error("parsed cache should skip the gzip and the network");
+      }, { diskCache: true });
+      assert.equal(second.features.length, 1);
+      assert.equal(calls, 1);
     } finally {
       setMsCacheDir(undefined);
       setMsCacheLimits(undefined);

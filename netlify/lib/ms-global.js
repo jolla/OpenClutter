@@ -432,6 +432,40 @@ async function releaseBody(res) {
   }
 }
 
+function parsedCacheKey(url, bbox, keep) {
+  return [
+    "ms-parsed-v1",
+    url,
+    +bbox.west,
+    +bbox.south,
+    +bbox.east,
+    +bbox.north,
+    keep > 0 ? keep : FOOTPRINT_KEEP,
+  ].join("|");
+}
+
+async function readParsedFeatures(url, bbox, keep) {
+  const buf = await msCache.read(parsedCacheKey(url, bbox, keep));
+  if (!buf || !buf.length) return null;
+  try {
+    const features = JSON.parse(buf.toString("utf8"));
+    return Array.isArray(features) ? features : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeParsedFeatures(url, bbox, keep, features) {
+  try {
+    await msCache.write(
+      parsedCacheKey(url, bbox, keep),
+      Buffer.from(JSON.stringify(features || []), "utf8")
+    );
+  } catch {
+    /* a missed parsed write only means the next run parses the gzip again */
+  }
+}
+
 async function fetchMsGlobalFootprints(frame, fetchFn, opts) {
   const { timeSpan } = require("./stage-clock");
   return timeSpan("microsoft", () => fetchMsGlobalFootprintsWork(frame, fetchFn, opts));
@@ -450,7 +484,16 @@ async function fetchMsGlobalFootprintsWork(frame, fetchFn, opts) {
   let skippedBytes = 0;
   const useCache = msCacheEnabled(fetchFn, opts);
   const fetchImpl = fetchFn || fetch;
+  const keep = FOOTPRINT_KEEP;
   for (const item of urls) {
+    if (useCache) {
+      const parsed = await readParsedFeatures(item.url, bbox, keep);
+      if (parsed) {
+        msCache.note("microsoft", true);
+        for (const f of parsed) features.push(f);
+        continue;
+      }
+    }
     let buf = null;
     if (useCache) {
       buf = await msCache.read(item.url);
@@ -489,6 +532,7 @@ async function fetchMsGlobalFootprintsWork(frame, fetchFn, opts) {
       continue;
     }
     const chunk = featuresFromGzip(buf, bbox);
+    if (useCache) await writeParsedFeatures(item.url, bbox, keep, chunk);
     for (const f of chunk) features.push(f);
   }
   return { features, quadkeys: keys, files: urls.length, skipped, skippedBytes };
@@ -540,6 +584,7 @@ module.exports = {
   fetchMsGlobalFootprints,
   setMsCacheDir,
   setMsCacheLimits,
+  parsedCacheKey,
   MS_CACHE_MAX_BYTES,
   MS_CACHE_TTL_MS,
   globalSkipWarning,

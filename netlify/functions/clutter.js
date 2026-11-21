@@ -182,7 +182,7 @@ const aerialFetch = require("../lib/aerial-fetch");
 const areaCache = require("../lib/area-cache");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
 const { fetchMsGlobalFootprints, globalSkipWarning } = require("../lib/ms-global");
-const { fetchUsaStructures } = require("../lib/usa-structures");
+const { fetchUsaStructures, usaEmptyWarning } = require("../lib/usa-structures");
 const { assembleFootprints } = require("../lib/conflate");
 const { fetchOvertureFootprints } = require("../lib/overture");
 let fetchOvertureImpl = fetchOvertureFootprints;
@@ -1773,6 +1773,7 @@ async function handleClutterNorthUp(event) {
   let imgMeta = null;
   let globalFeatures = [];
   let usaFeatures = [];
+  let usaPack = { features: [] };
   let serverCanopyHits = null;
   let overturePack = { features: [] };
   let demSamples = null;
@@ -1973,10 +1974,16 @@ async function handleClutterNorthUp(event) {
     const usaCtrl = new AbortController();
     const usaTimer = setTimeout(() => usaCtrl.abort(), coreBudget);
     const usaJob = stageClock.timeSource("usaStructures", () =>
-      fetchUsaStructures(frame, (url) =>
-        fetch(url, { headers: { "user-agent": UA }, signal: usaCtrl.signal })
+      fetchUsaStructures(
+        frame,
+        (url, signal) => fetch(url, { headers: { "user-agent": UA }, signal: signal || usaCtrl.signal }),
+        { diskCache: true, signal: usaCtrl.signal }
       )
-        .catch(() => ({ features: [] }))
+        .catch((err) => ({
+          features: [],
+          failed: true,
+          emptyReason: err && err.name === "AbortError" ? "timeout" : "error",
+        }))
         .finally(() => clearTimeout(usaTimer))
     );
     if (includeFoliage && !coverJob) {
@@ -2088,7 +2095,8 @@ async function handleClutterNorthUp(event) {
       );
     }
     usaFeatures = (fetched[2] && fetched[2].features) || [];
-    if (fetched[2] && fetched[2].partial) {
+    usaPack = fetched[2] || { features: usaFeatures };
+    if (usaPack.partial && usaFeatures.length) {
       warnings.push(
         "USA Structures partial: kept " + usaFeatures.length + " footprints before the export budget."
       );
@@ -2319,6 +2327,11 @@ async function handleClutterNorthUp(event) {
   reportProgress({ stage: "Buildings " + features.length });
   reportProgress({ step: { id: "buildings", detail: String(features.length) } });
   const sources = assembled.heightSources || {};
+  const usaNote = usaEmptyWarning(usaPack, {
+    frame,
+    otherFootprints: globalFeatures.length + overtureFeatures.length + arcgisFeatures.length,
+  });
+  if (usaNote) warnings.push(usaNote);
   const footprintMeta = {
     globalFootprints: globalFeatures.length,
     arcgisFootprints: arcgisFeatures.length,
@@ -2392,6 +2405,7 @@ async function handleClutterNorthUp(event) {
           imagery: roofRaw
             ? { data: roofRaw.data, width: roofRaw.width, height: roofRaw.height, frame }
             : null,
+          usaEmpty: !usaFeatures.length,
         }));
         features = shaped.features;
         footprintMeta.osmParts = shaped.stats.parts;

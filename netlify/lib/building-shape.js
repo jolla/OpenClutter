@@ -2236,7 +2236,7 @@ function shapeBuildings(features, detail) {
   const trimmed = trimTaperedFootprints(dropped.features);
   const notches = dropDiagonalNotches(trimmed.features, osmRings);
   const garages = fillParkingStructures(notches.features, detail && detail.structures);
-  const filled = fillMissingOsmFootprints(garages.features, osmRings);
+  const filled = fillMissingOsmFootprints(garages.features, osmRings, { usaEmpty: !!(detail && detail.usaEmpty) });
   applyOsmUseTags(filled.features, osmRings);
   return {
     features: filled.features,
@@ -2260,12 +2260,16 @@ function shapeBuildings(features, detail) {
  * Street-map buildings the footprint sources missed. A cabin or a bathhouse
  * with no overlapping roof is added at one floor. A ring that already sits
  * on an emitted roof stays out, so a motel wing is not drawn twice. A shed
- * under 25 m² and a complex over 2500 m² stay out. A multi-storey garage is
- * the exception: one deck can pass 20,000 m², up to about 120,000 m², at
- * 3 m per mapped level or 9 m when the level count is missing.
+ * under 25 m² and a complex over 2500 m² stay out. When USA Structures is
+ * empty, that upper cap rises to 40,000 m² so a lodge the other sources
+ * missed can still fill the gap. A multi-storey garage is the exception:
+ * one deck can pass 20,000 m², up to about 120,000 m², at 3 m per mapped
+ * level or 9 m when the level count is missing.
  */
 const OSM_FILL_MIN_M2 = 25;
 const OSM_FILL_MAX_M2 = 2500;
+/** When USA Structures is empty, also add larger uncovered OSM roofs. */
+const OSM_FILL_EMPTY_MAX_M2 = 40000;
 const PARKING_STRUCTURE_MAX_M2 = 120000;
 const OSM_FILL_COVER = 0.12;
 /** Most of the garage has to be this footprint before its height is replaced. */
@@ -2354,10 +2358,11 @@ function fillParkingStructures(features, structures) {
   return { features: out, added };
 }
 
-function fillMissingOsmFootprints(features, osmRings) {
+function fillMissingOsmFootprints(features, osmRings, opts) {
   const list = features || [];
   const rings = osmRings || [];
   if (!rings.length) return { features: list, added: 0 };
+  const maxM2 = opts && opts.usaEmpty ? OSM_FILL_EMPTY_MAX_M2 : OSM_FILL_MAX_M2;
   const existing = existingRings(list);
   const out = list.slice();
   let added = 0;
@@ -2365,7 +2370,7 @@ function fillMissingOsmFootprints(features, osmRings) {
     const closed = closeRing(rings[i]);
     if (!closed || closed.length < 4) continue;
     const area = meterArea(closed);
-    if (!(area >= OSM_FILL_MIN_M2 && area <= OSM_FILL_MAX_M2)) continue;
+    if (!(area >= OSM_FILL_MIN_M2 && area <= maxM2)) continue;
     if (coveredByExisting(closed, area, existing)) continue;
     out.push({
       type: "Feature",

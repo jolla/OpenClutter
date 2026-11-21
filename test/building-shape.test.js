@@ -900,6 +900,15 @@ describe("OSM buildings the footprint sources missed", () => {
     assert.equal(built.stats.buildings, 2);
   });
 
+  it("fills a larger uncovered OSM lodge when USA Structures is empty", () => {
+    const lodge = metersBox(-71.546, 44.465, 80, 70, {});
+    const skipped = shapeBuildings([], { buildings: [ringOf(lodge)] });
+    assert.equal(skipped.stats.osmFilled, 0);
+    const filled = shapeBuildings([], { buildings: [ringOf(lodge)], usaEmpty: true });
+    assert.equal(filled.stats.osmFilled, 1);
+    assert.equal(filled.features[0].properties.geomSource, "osm-building");
+  });
+
   it("adds a multi-storey garage past the cabin size cap and leaves a plain complex out", () => {
     function wayGeom(feature) {
       return ringOf(feature).map(([lon, lat]) => ({ lon, lat }));
