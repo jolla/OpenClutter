@@ -649,11 +649,12 @@ function turnedCorners(bounds, deg) {
  * Dev only, on by default: after an export, draw what the zip holds on the map
  * (buildings, trees, vehicles, walls, water) with a Detections checkbox.
  */
-function showDetectionPreview(blob) {
+function showDetectionPreview(blob, data) {
   const P = window.OpenClutterPreview;
   if (!P || !P.previewWanted(location.search, devPage()) || !blob || !bbox) return;
   const bounds = L.latLngBounds([bbox.south, bbox.west], [bbox.north, bbox.east]);
-  const corners = turnedCorners(bounds, boxRotate || 0);
+  // Feedback #22: place the objects on the aerial's real extent, not the drawn box.
+  const corners = P.previewCorners(data, turnedCorners(bounds, boxRotate || 0), !!boxRotate);
   P.showFromZip(L, map, blob, corners).catch((err) => {
     if (window.console) console.warn("detection preview", err);
   });
@@ -3259,7 +3260,7 @@ document.getElementById("export").onclick = async () => {
       rememberExport(rec);
       const got = await downloadJobZip(queued.jobId, data.zipFilename);
       rememberExport(Object.assign(rec, { filename: got.name, bytes: got.blob.size, blob: got.blob }));
-      showDetectionPreview(got.blob);
+      showDetectionPreview(got.blob, data);
       return;
     }
     const fallbackNote =
@@ -3282,7 +3283,7 @@ document.getElementById("export").onclick = async () => {
     const shortBlob = b64ToBlob(data.zipBase64, "application/zip");
     downloadBlob(shortBlob, data.zipFilename || "openintent.zip");
     rememberExport({ filename: data.zipFilename || "openintent.zip", bytes: shortBlob.size, blob: shortBlob, at: Date.now() });
-    showDetectionPreview(shortBlob);
+    showDetectionPreview(shortBlob, data);
     if (paste && paste.terrainClipboard) {
       const keptNotes = data.terrainClipboard && data.terrainClipboard.mapNotes;
       data.terrainClipboard = paste.terrainClipboard;
