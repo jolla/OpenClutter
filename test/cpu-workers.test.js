@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const os = require("node:os");
 const jobs = require("../netlify/lib/export-jobs");
 const { handler: statusHandler } = require("../netlify/functions/export-status");
-const { startHeartbeatTimer } = require("../fly/worker");
+const { startHeartbeatTimer, stopHeartbeatTimer, heartbeatBeatCount } = require("../fly/worker");
 const {
   runOne,
   runTiles,
@@ -173,8 +173,28 @@ describe("cpu workers", () => {
       const job = await jobs.readJob(id);
       assert.equal(job.heartbeatStage, "Trees");
     } finally {
-      clearInterval(timer);
+      stopHeartbeatTimer(timer);
       jobs.writeHeartbeat = orig;
+    }
+  });
+
+  it("keeps beating from a side thread while the main thread is blocked", async () => {
+    jobs.setExportStoreForTests(memoryStore());
+    const id = "44444444-4444-4444-8444-444444444445";
+    await jobs.createJob(id);
+    const timer = startHeartbeatTimer(id, () => "Trees", 25);
+    try {
+      const block = new Int32Array(new SharedArrayBuffer(4));
+      const started = Date.now();
+      while (Date.now() - started < 200) {
+        Atomics.wait(block, 0, 0, 20);
+      }
+      assert.ok(
+        heartbeatBeatCount(timer) >= 2,
+        "side-thread beats during block " + heartbeatBeatCount(timer)
+      );
+    } finally {
+      stopHeartbeatTimer(timer);
     }
   });
 

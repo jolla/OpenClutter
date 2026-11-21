@@ -13,6 +13,7 @@ const { handler: backgroundHandler } = require("../netlify/functions/clutter-exp
 const {
   handleWorkerRequest,
   startHeartbeatTimer,
+  stopHeartbeatTimer,
   setExportRunnerForTests,
   jobInFlight,
   workerStopping,
@@ -297,7 +298,7 @@ describe("export cancel: Fly worker", { concurrency: 1 }, () => {
     try {
       for (let i = 0; i < 50 && !why; i++) await new Promise((r) => setTimeout(r, 5));
     } finally {
-      clearInterval(timer);
+      stopHeartbeatTimer(timer);
     }
     assert.equal(why, "job cancelled");
   });

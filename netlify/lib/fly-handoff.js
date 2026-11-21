@@ -14,10 +14,14 @@
  * the long clock. The page still gets a job id from the short request.
  *
  * A heartbeat is not required before that POST. The worker that is live
- * before this deploy never writes one. After the POST, a beat older than
- * HEARTBEAT_STALE_MS, or no beat for that long, means the machine stopped.
- * The caller then runs the job here, or marks it failed when the page or
- * this function has under RERUN_MIN_MS left.
+ * before this deploy never writes one. After the POST drops, a beat older
+ * than HEARTBEAT_STALE_MS, or no beat for that long, means the machine
+ * stopped. A stale beat while the POST is still open is not enough: a
+ * long Trees or Buildings CPU stage can block the worker's timer without
+ * the machine having stopped, and aborting the POST to re-run the job
+ * here pays a full second export. The caller re-runs only after the
+ * connection drops, or marks the job failed when the page or this
+ * function has under RERUN_MIN_MS left.
  */
 
 const jobs = require("./export-jobs");
@@ -268,7 +272,11 @@ async function handOffOnce(jobId, inner, fetchImpl, cfg) {
       }
       const decision = await inspectJob(jobId, startedAt, nowFn, staleMs);
       if (settled) break;
-      if (decision.action !== "wait") {
+      // The open POST is proof the machine is still there. A stale blob
+      // beat during a long CPU stage must not abort it and re-run here.
+      // Once the connection drops, watchAfterDrop still treats a stale
+      // beat as a stopped worker.
+      if (decision.action === "finished" || decision.action === "stay") {
         controller.abort();
         return toResult(decision);
       }

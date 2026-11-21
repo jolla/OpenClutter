@@ -27,6 +27,8 @@ const {
   createStageLogger,
   createWorkerSession,
   startHeartbeatTimer,
+  stopHeartbeatTimer,
+  heartbeatBeatCount,
   createIdleExit,
   setExportRunnerForTests,
   jobInFlight,
@@ -316,26 +318,100 @@ describe("fly worker handoff", { concurrency: 1 }, () => {
     }
   });
 
-  it("re-runs on Netlify when the heartbeat is older than the stale window", async () => {
+  it("does not re-run on Netlify while the Fly POST is still open, even if the heartbeat is stale", async () => {
     saveEnv();
     process.env.FLY_WORKER_URL = "https://openclutter-export.fly.dev";
     process.env.FLY_WORKER_SECRET = "local-secret";
     const store = memoryStore();
     jobs.setExportStoreForTests(store);
     await jobs.createJob(JOB);
+    let now = Date.now();
     await jobs.updateJob(JOB, {
       state: "running",
       worker: "fly",
       stage: "Trees",
-      heartbeatAt: Date.now() - (HEARTBEAT_STALE_MS + 1000),
+      heartbeatAt: now - (HEARTBEAT_STALE_MS + 1000),
       heartbeatStage: "Trees",
     });
     let fetched = false;
+    let polls = 0;
+    let resolveBody = function () {};
+    const body = new Promise((resolve) => {
+      resolveBody = () => resolve("\n" + JSON.stringify({ ok: true }) + "\n");
+    });
     const prevFetch = global.fetch;
     global.fetch = async () => {
       fetched = true;
-      return { status: 202, text: () => new Promise(() => {}) };
+      return { status: 202, text: () => body };
     };
+    setHandoffDepsForTests({
+      now: () => now,
+      pollMs: 1,
+      sleep: async () => {
+        polls += 1;
+        now += 10 * 1000;
+        if (polls === 3) {
+          await jobs.updateJob(JOB, {
+            state: "done",
+            stage: "Zip ready",
+            worker: "fly",
+            heartbeatAt: now,
+            heartbeatStage: "Trees",
+            error: null,
+          });
+          resolveBody();
+        }
+      },
+    });
+    try {
+      const res = await postJob();
+      assert.equal(res.statusCode, 202);
+      assert.equal(fetched, true);
+      assert.ok(polls >= 3);
+      const job = await jobs.readJob(JOB);
+      assert.equal(job.state, "done");
+      assert.equal(job.stage, "Zip ready");
+      assert.equal(job.worker, "fly");
+      assert.equal((job.warnings || []).indexOf(RERUN_NOTE), -1);
+      assert.equal((job.warnings || []).indexOf(FALLBACK_NOTE), -1);
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it("re-runs on Netlify when the Fly POST drops and the heartbeat is older than the stale window", async () => {
+    saveEnv();
+    process.env.FLY_WORKER_URL = "https://openclutter-export.fly.dev";
+    process.env.FLY_WORKER_SECRET = "local-secret";
+    const store = memoryStore();
+    jobs.setExportStoreForTests(store);
+    await jobs.createJob(JOB);
+    let now = Date.now();
+    await jobs.updateJob(JOB, {
+      state: "running",
+      worker: "fly",
+      stage: "Trees",
+      heartbeatAt: now - (HEARTBEAT_STALE_MS + 1000),
+      heartbeatStage: "Trees",
+    });
+    let fetched = false;
+    let dropBody = function () {};
+    const body = new Promise((_, reject) => {
+      dropBody = () => reject(new Error("socket hang up"));
+    });
+    const prevFetch = global.fetch;
+    global.fetch = async () => {
+      fetched = true;
+      return { status: 202, text: () => body };
+    };
+    setHandoffDepsForTests({
+      now: () => now,
+      pollMs: 1,
+      sleep: async () => {
+        now += 10 * 1000;
+        dropBody();
+      },
+    });
     try {
       const res = await postJob();
       assert.equal(res.statusCode, 202);
@@ -367,8 +443,19 @@ describe("fly worker handoff", { concurrency: 1 }, () => {
       heartbeatAt: now - (HEARTBEAT_STALE_MS + 5 * 1000),
       createdAt: now - (PAGE_MS - 30 * 1000),
     });
+    let dropBody = function () {};
+    const body = new Promise((_, reject) => {
+      dropBody = () => reject(new Error("socket hang up"));
+    });
     const prevFetch = global.fetch;
-    global.fetch = async () => ({ status: 202, text: () => new Promise(() => {}) });
+    global.fetch = async () => ({ status: 202, text: () => body });
+    setHandoffDepsForTests({
+      now: () => now,
+      pollMs: 1,
+      sleep: async () => {
+        dropBody();
+      },
+    });
     try {
       const res = await postJob();
       assert.equal(res.statusCode, 202);
@@ -390,13 +477,19 @@ describe("fly worker handoff", { concurrency: 1 }, () => {
     const store = memoryStore();
     jobs.setExportStoreForTests(store);
     await jobs.createJob(JOB);
+    await jobs.updateJob(JOB, { state: "running", worker: "fly", stage: "Trees" });
     let now = Date.now();
     let fetchedAt = 0;
+    let dropBody = function () {};
+    const body = new Promise((_, reject) => {
+      dropBody = () => reject(new Error("socket hang up"));
+    });
     setHandoffDepsForTests({
       now: () => now,
       pollMs: 1,
       sleep: async () => {
         now += HEARTBEAT_STALE_MS;
+        dropBody();
       },
     });
     const prevFetch = global.fetch;
@@ -404,7 +497,7 @@ describe("fly worker handoff", { concurrency: 1 }, () => {
       const job = await jobs.readJob(JOB);
       assert.equal(job.heartbeatAt, undefined);
       fetchedAt = now;
-      return { status: 202, text: () => new Promise(() => {}) };
+      return { status: 202, text: () => body };
     };
     try {
       const res = await postJob();
@@ -547,7 +640,7 @@ describe("fly worker handoff", { concurrency: 1 }, () => {
       await new Promise((resolve) => setImmediate(resolve));
       beating = await jobs.readJob(JOB);
     } finally {
-      clearInterval(timer);
+      stopHeartbeatTimer(timer);
     }
     assert.equal(beating.state, "queued");
     assert.equal(beating.heartbeatStage, "Packing zip");

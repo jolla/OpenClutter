@@ -24,10 +24,12 @@ const TTL_MS = 24 * 60 * 60 * 1000;
 const SWEEP_EVERY_MS = 30 * 60 * 1000;
 const SWEEP_MAX_READS = 200;
 let lastSweepAt = 0;
-// The worker writes this often. A long CPU stage (buildings on a large
-// draw) can block the event loop for well over a minute, so the stale
-// window is five minutes. A machine that has actually stopped still
-// falls back; a live export that is mid-stage does not.
+// The worker writes this often, including from a side thread so a long
+// CPU stage (buildings on a large draw, or Trees slope-splits that
+// block the main thread) still leaves a fresh beat. The stale window
+// is five minutes. A machine that has actually stopped still falls
+// back once the handoff POST drops; a live export that is mid-stage
+// does not.
 const HEARTBEAT_MS = 10 * 1000;
 const HEARTBEAT_STALE_MS = 5 * 60 * 1000;
 // Netlify rejects a function response above 6,291,556 bytes. The zip is

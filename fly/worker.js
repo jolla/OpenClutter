@@ -6,6 +6,8 @@
  */
 
 const crypto = require("node:crypto");
+const path = require("node:path");
+const { Worker } = require("worker_threads");
 const jobs = require("../netlify/lib/export-jobs");
 const { HEARTBEAT_MS } = jobs;
 const areaCache = require("../netlify/lib/area-cache");
@@ -15,6 +17,7 @@ const BODY_MAX = 2 * 1000 * 1000;
 // Fly autostop is off. Exit 0 after this long with no export so the
 // machine stops. on-failure does not restart a clean exit.
 const IDLE_EXIT_MS = 5 * 60 * 1000;
+const HEARTBEAT_WORKER = path.join(__dirname, "heartbeat-worker.js");
 let inFlight = null;
 let inFlightId = "";
 let cancelInFlight = null;
@@ -224,13 +227,49 @@ function heartbeatTiles() {
   }
 }
 
+function currentStageName(getStage) {
+  return typeof getStage === "function" ? getStage() : getStage;
+}
+
+function startHeartbeatWorker(jobId, getStage, intervalMs, onCancelled) {
+  try {
+    const sab = new SharedArrayBuffer(8);
+    const header = new Int32Array(sab);
+    Atomics.store(header, 0, 1);
+    Atomics.store(header, 1, 0);
+    const worker = new Worker(HEARTBEAT_WORKER, {
+      workerData: {
+        jobId,
+        intervalMs,
+        stage: currentStageName(getStage) || "Trees",
+        sab,
+      },
+    });
+    worker.unref();
+    worker.on("error", () => {});
+    worker.on("message", (msg) => {
+      if (msg && msg.cancelled && typeof onCancelled === "function") onCancelled("job cancelled");
+    });
+    return { worker, header };
+  } catch {
+    return null;
+  }
+}
+
 function startHeartbeatTimer(jobId, getStage, intervalMs, onCancelled) {
   const ms = intervalMs == null ? HEARTBEAT_MS : intervalMs;
+  const side = startHeartbeatWorker(jobId, getStage, ms, onCancelled);
   const beat = () => {
+    const stage = currentStageName(getStage);
+    if (side && side.worker) {
+      try {
+        side.worker.postMessage({ stage });
+      } catch {
+        /* The side thread already has the last stage name. */
+      }
+    }
     Promise.resolve()
-      .then(() =>
-        jobs.writeHeartbeat(jobId, typeof getStage === "function" ? getStage() : getStage, heartbeatTiles())
-      )
+      .then(() => jobs.writeHeartbeat(jobId, stage, heartbeatTiles()))
       .then((cur) => {
         // The page's Cancel marks the job; the beat is where this machine sees it.
         if (jobs.isCancelled(cur) && typeof onCancelled === "function") onCancelled("job cancelled");
@@ -240,7 +279,31 @@ function startHeartbeatTimer(jobId, getStage, intervalMs, onCancelled) {
   beat();
   const timer = setInterval(beat, ms);
   if (typeof timer.unref === "function") timer.unref();
+  timer._heartbeatWorker = side && side.worker;
+  timer._heartbeatHeader = side && side.header;
   return timer;
+}
+
+function stopHeartbeatTimer(timer) {
+  if (!timer) return;
+  clearInterval(timer);
+  if (timer._heartbeatHeader) {
+    try {
+      Atomics.store(timer._heartbeatHeader, 0, 0);
+    } catch {
+      /* The counter is only for tests. */
+    }
+  }
+  const worker = timer._heartbeatWorker;
+  timer._heartbeatWorker = null;
+  if (worker && typeof worker.terminate === "function") {
+    worker.terminate().catch(() => {});
+  }
+}
+
+function heartbeatBeatCount(timer) {
+  if (!timer || !timer._heartbeatHeader) return 0;
+  return Atomics.load(timer._heartbeatHeader, 1);
 }
 
 function setExportRunnerForTests(fn) {
@@ -305,7 +368,7 @@ async function runAcceptedJob(jobId, inner) {
   } catch {
     return { ok: false, reason: "export-failed" };
   } finally {
-    clearInterval(timer);
+    stopHeartbeatTimer(timer);
     session.finish();
   }
 }
@@ -371,6 +434,8 @@ module.exports = {
   createStageLogger,
   createWorkerSession,
   startHeartbeatTimer,
+  stopHeartbeatTimer,
+  heartbeatBeatCount,
   stageStartLine,
   stageDoneLine,
   createIdleExit,
