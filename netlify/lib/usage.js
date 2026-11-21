@@ -33,6 +33,15 @@
  * created. The id is stored on the job record until that job expires so the
  * finish can be counted without the IP. The status response does not include it.
  *
+ * Aggregate documents also keep per-country counts: page views and unique
+ * users by the visitor's Netlify geo country, and exports started, done,
+ * error, and cancelled by the country of the drawn area (plus the state or
+ * province for the US, Canada, and Australia). Those maps live only on the
+ * day, week, and month totals. Visitor records, salts, and job records do
+ * not store coordinates, bboxes, addresses, or place names. A failed lookup
+ * is stored as "unknown". Reconciliation of the main totals leaves those
+ * maps in place, because the per-visitor records have no location.
+ *
  * The page ping and an export are skipped for an empty or bot-like user
  * agent, a prefetch, Do Not Track, or Global Privacy Control. In-process
  * benches call the export function directly and do not create a job or load
@@ -49,6 +58,7 @@
  */
 
 const crypto = require("node:crypto");
+const place = require("./usage-place");
 
 const STORE_NAME = "openclutter-usage";
 const TZ = "America/Chicago";
@@ -246,6 +256,107 @@ function periodBounds(period, key) {
   return { start: key, end: key };
 }
 
+function emptyPlaceRow() {
+  return {
+    pageviews: 0,
+    uniqueUsers: 0,
+    exportsStarted: 0,
+    exportsDone: 0,
+    exportsError: 0,
+    exportsCancelled: 0,
+  };
+}
+
+function isCountryKey(key) {
+  return place.isCountryKey(key);
+}
+
+function isRegionKey(key) {
+  return place.isRegionKey(key);
+}
+
+function copyPlaceMap(src, kind) {
+  const out = {};
+  if (!src || typeof src !== "object") return out;
+  const ok = kind === "region" ? isRegionKey : isCountryKey;
+  for (const key of Object.keys(src)) {
+    if (!ok(key)) continue;
+    const row = src[key];
+    if (!row || typeof row !== "object") continue;
+    out[key] = {
+      pageviews: row.pageviews | 0,
+      uniqueUsers: row.uniqueUsers | 0,
+      exportsStarted: row.exportsStarted | 0,
+      exportsDone: row.exportsDone | 0,
+      exportsError: row.exportsError | 0,
+      exportsCancelled: row.exportsCancelled | 0,
+    };
+  }
+  return out;
+}
+
+function placeRowEmpty(row) {
+  if (!row) return true;
+  return (
+    !(row.pageviews | 0) &&
+    !(row.uniqueUsers | 0) &&
+    !(row.exportsStarted | 0) &&
+    !(row.exportsDone | 0) &&
+    !(row.exportsError | 0) &&
+    !(row.exportsCancelled | 0)
+  );
+}
+
+function bumpPlace(map, key, field, delta) {
+  if (!field) return map;
+  const region = isRegionKey(key);
+  const code = region ? key : place.normalizeCountry(key);
+  if (!code) return map;
+  if (region && !isRegionKey(code)) return map;
+  if (!region && !isCountryKey(code)) return map;
+  const next = Object.assign({}, map || {});
+  const row = Object.assign(emptyPlaceRow(), next[code] || {});
+  row[field] = Math.max(0, (row[field] | 0) + (delta | 0));
+  if (placeRowEmpty(row)) delete next[code];
+  else next[code] = row;
+  return next;
+}
+
+function mergePlaceMaps(into, src) {
+  for (const key of Object.keys(src || {})) {
+    const row = src[key];
+    const cur = Object.assign(emptyPlaceRow(), into[key] || {});
+    cur.pageviews += row.pageviews | 0;
+    cur.uniqueUsers += row.uniqueUsers | 0;
+    cur.exportsStarted += row.exportsStarted | 0;
+    cur.exportsDone += row.exportsDone | 0;
+    cur.exportsError += row.exportsError | 0;
+    cur.exportsCancelled += row.exportsCancelled | 0;
+    if (!placeRowEmpty(cur)) into[key] = cur;
+  }
+  return into;
+}
+
+function presentPlaceMap(src, kind) {
+  const copy = copyPlaceMap(src, kind);
+  const keys = Object.keys(copy).sort((a, b) => {
+    if (a === place.UNKNOWN) return 1;
+    if (b === place.UNKNOWN) return -1;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+  const out = {};
+  const fields =
+    kind === "visitor"
+      ? ["pageviews", "uniqueUsers"]
+      : ["exportsStarted", "exportsDone", "exportsError", "exportsCancelled"];
+  for (const key of keys) {
+    const row = {};
+    for (const f of fields) row[f] = copy[key][f] | 0;
+    out[key] = row;
+  }
+  return out;
+}
+
 function emptyAgg(approx) {
   return {
     pageviews: 0,
@@ -256,6 +367,9 @@ function emptyAgg(approx) {
     exportsError: 0,
     exportsCancelled: 0,
     byCount: {},
+    byVisitorCountry: {},
+    byExportCountry: {},
+    byExportRegion: {},
     approx: !!approx,
   };
 }
@@ -271,6 +385,9 @@ function copyAgg(row, approx) {
   base.exportsError = row.exportsError | 0;
   base.exportsCancelled = row.exportsCancelled | 0;
   base.byCount = Object.assign({}, row.byCount || {});
+  base.byVisitorCountry = copyPlaceMap(row.byVisitorCountry, "country");
+  base.byExportCountry = copyPlaceMap(row.byExportCountry, "country");
+  base.byExportRegion = copyPlaceMap(row.byExportRegion, "region");
   base.approx = !!(row.approx || approx);
   return base;
 }
@@ -341,6 +458,9 @@ function present(row) {
       exportsPerPageview: src.pageviews > 0 ? round6(src.exportsStarted / src.pageviews) : null,
       exportingUsersPerUnique: src.uniqueUsers > 0 ? round6(exporting / src.uniqueUsers) : null,
     },
+    byVisitorCountry: presentPlaceMap(src.byVisitorCountry, "visitor"),
+    byExportCountry: presentPlaceMap(src.byExportCountry, "export"),
+    byExportRegion: presentPlaceMap(src.byExportRegion, "region"),
   };
 }
 
@@ -358,6 +478,9 @@ function mergeAggs(rows) {
     for (const k of Object.keys(src.byCount)) {
       out.byCount[k] = (out.byCount[k] | 0) + (src.byCount[k] | 0);
     }
+    mergePlaceMaps(out.byVisitorCountry, src.byVisitorCountry);
+    mergePlaceMaps(out.byExportCountry, src.byExportCountry);
+    mergePlaceMaps(out.byExportRegion, src.byExportRegion);
     if (src.approx) out.approx = true;
   }
   return out;
@@ -563,6 +686,17 @@ function applyEffect(row, effect) {
     const k = String(effect.toCount);
     next.byCount[k] = (next.byCount[k] | 0) + 1;
   }
+  const visitor = place.normalizeCountry(effect.visitorCountry);
+  if (effect.pageviews | 0) next.byVisitorCountry = bumpPlace(next.byVisitorCountry, visitor, "pageviews", effect.pageviews);
+  if (effect.uniqueDelta | 0) next.byVisitorCountry = bumpPlace(next.byVisitorCountry, visitor, "uniqueUsers", effect.uniqueDelta);
+  const exportCountry = place.normalizeCountry(effect.exportCountry);
+  const exportRegion = isRegionKey(effect.exportRegion) ? effect.exportRegion : "";
+  for (const field of ["exportsStarted", "exportsDone", "exportsError", "exportsCancelled"]) {
+    const delta = effect[field] | 0;
+    if (!delta) continue;
+    next.byExportCountry = bumpPlace(next.byExportCountry, exportCountry, field, delta);
+    if (exportRegion) next.byExportRegion = bumpPlace(next.byExportRegion, exportRegion, field, delta);
+  }
   return next;
 }
 
@@ -594,6 +728,11 @@ async function record(ctx, kind, delta) {
     const after = copyVisitor(before);
     after[kind] = bumpMap(before[kind], day, applied);
     effects = effectsFor(before, after, day, kind, applied);
+    for (const effect of effects) {
+      effect.visitorCountry = place.normalizeCountry(ctx.visitorCountry);
+      effect.exportCountry = place.normalizeCountry(ctx.exportCountry);
+      effect.exportRegion = isRegionKey(ctx.exportRegion) ? ctx.exportRegion : "";
+    }
     return after;
   });
   if (!effects) return null;
@@ -603,22 +742,23 @@ async function record(ctx, kind, delta) {
   return written ? { day, month, host } : { day, month, host, undone: true };
 }
 
-async function attribute(headers, nowMs) {
+async function attribute(headers, nowMs, geo) {
   const at = nowMs != null ? nowMs : now();
   const host = hostBucket(requestHost(headers));
-  if (skipPing(headers)) return { host, visitor: "", month: "", now: at, skip: true };
+  const visitorCountry = place.visitorCountryFrom(geo);
+  if (skipPing(headers)) return { host, visitor: "", month: "", now: at, skip: true, visitorCountry };
   const store = await openStore();
   if (!store) return null;
   const day = chicagoDate(at);
   const month = day.slice(0, 7);
   const salt = await ensureSalt(store, month);
   const visitor = visitorHash(salt, clientIp(headers), header(headers, "user-agent"));
-  return { host, visitor, month, now: at, skip: false };
+  return { host, visitor, month, now: at, skip: false, visitorCountry };
 }
 
-async function recordPage(headers) {
+async function recordPage(headers, geo) {
   try {
-    const attr = await attribute(headers, now());
+    const attr = await attribute(headers, now(), geo);
     if (!attr || !attr.visitor) return null;
     return await record(attr, "pv", 1);
   } catch {
@@ -644,6 +784,9 @@ async function undoStart(job) {
         visitor: job.usageVisitor,
         month: job.usageMonth,
         now: job.usageAt || job.createdAt || now(),
+        visitorCountry: job.usageVisitorCountry,
+        exportCountry: job.usageExportCountry,
+        exportRegion: job.usageExportRegion,
       },
       "st",
       -1
@@ -665,6 +808,9 @@ async function recordFinish(job) {
         visitor: job.usageVisitor,
         month: job.usageMonth,
         now: job.usageAt || now(),
+        visitorCountry: job.usageVisitorCountry,
+        exportCountry: job.usageExportCountry,
+        exportRegion: job.usageExportRegion,
       },
       kind,
       1
@@ -725,18 +871,26 @@ function monthDue(month, today) {
   return today >= deleteOn;
 }
 
+async function writeAgg(store, key, exact) {
+  const prev = await store.get(key, { type: "json" }).catch(() => null);
+  exact.byVisitorCountry = copyPlaceMap(prev && prev.byVisitorCountry, "country");
+  exact.byExportCountry = copyPlaceMap(prev && prev.byExportCountry, "country");
+  exact.byExportRegion = copyPlaceMap(prev && prev.byExportRegion, "region");
+  await store.setJSON(key, exact);
+}
+
 async function reconcileMonth(store, month, today) {
   const visitors = await loadVisitors(store, month);
   const days = eachDayOfMonth(month);
   for (const day of days) {
     for (const host of HOSTS) {
       const exact = computeAgg(visitors[host], (d) => d === day, false);
-      await store.setJSON(aggKey("day", day, host), exact);
+      await writeAgg(store, aggKey("day", day, host), exact);
     }
   }
   for (const host of HOSTS) {
     const exact = computeAgg(visitors[host], (d) => d.slice(0, 7) === month, false);
-    await store.setJSON(aggKey("month", month, host), exact);
+    await writeAgg(store, aggKey("month", month, host), exact);
   }
   const seenWeeks = [];
   for (const day of days) {
@@ -760,7 +914,7 @@ async function reconcileMonth(store, month, today) {
     for (const host of HOSTS) {
       const exact = computeAgg(byHost[host], (d) => isoWeekKey(d) === week, spans);
       exact.approx = spans;
-      await store.setJSON(aggKey("week", week, host), exact);
+      await writeAgg(store, aggKey("week", week, host), exact);
     }
   }
 }
@@ -978,6 +1132,7 @@ module.exports = {
   recordStart,
   undoStart,
   recordFinish,
+  visitorCountryFrom: place.visitorCountryFrom,
   finalizeDue,
   parseRange,
   readPeriods,

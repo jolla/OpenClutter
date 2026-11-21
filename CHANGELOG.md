@@ -32,6 +32,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.59** (Nov 21, 2026): /dev only. Anonymous usage totals now include the country of each export, plus the state or province in the US, Canada, and Australia, and the visitor's country on page views. Production gets this in the Nov 30 weekly release.
 - **1.3.58** (Nov 21, 2026): /dev only. When several aerial map sizes are fetched at once, the sharpest tiles go first so a busy export is less likely to step down to a coarser map. Production gets this in the Nov 30 weekly release.
 - **1.3.57** (Nov 21, 2026): /dev only. Aerial tile fetches retry a brief failure, run a few at a time, and reuse a short cache of tiles already fetched. Production gets this in the Nov 30 weekly release.
 - **1.3.56** (Nov 21, 2026): /dev only. If the live street-map servers do not answer, an export reuses a recent saved street map for that site when one exists. Otherwise the backup map still keeps marina boats, piers, and moorings. Production gets this in the Nov 30 weekly release.

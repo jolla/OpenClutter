@@ -2,8 +2,10 @@
 
 /**
  * POST /api/usage  one page-load ping. Always 204. Bots, prefetch, Do Not
- * Track, and Global Privacy Control are not stored.
- * GET  /api/usage  aggregates for charts.
+ * Track, and Global Privacy Control are not stored. The visitor country
+ * comes from Netlify context.geo.country.code when present.
+ * GET  /api/usage  aggregates for charts, including counts by visitor
+ * country and by export country and region.
  *   period=day|week|month   (day when omitted)
  *   date=YYYY-MM-DD | YYYY-Www | YYYY-MM
  *   from= and to=  in that same shape
@@ -50,13 +52,13 @@ function json(status, body) {
   };
 }
 
-exports.handler = async (event) => {
+exports.handler = async (event, context) => {
   bindBlobs(event);
   const method = String((event && event.httpMethod) || "GET").toUpperCase();
   if (method === "OPTIONS") return noContent();
   if (method === "POST") {
     const headers = (event && event.headers) || {};
-    if (!usage.skipPing(headers)) await usage.recordPage(headers).catch(() => {});
+    if (!usage.skipPing(headers)) await usage.recordPage(headers, context && context.geo).catch(() => {});
     return noContent();
   }
   if (method !== "GET") return json(405, { error: "GET or POST only" });

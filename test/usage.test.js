@@ -6,6 +6,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const usage = require("../netlify/lib/usage");
+const usagePlace = require("../netlify/lib/usage-place");
 const jobs = require("../netlify/lib/export-jobs");
 const { handler } = require("../netlify/functions/usage");
 const { handler: statusHandler } = require("../netlify/functions/export-status");
@@ -98,6 +99,7 @@ afterEach(() => {
   usage.setNowForTests(null);
   usage.resetSweepForTests();
   jobs.setExportStoreForTests(null);
+  usagePlace.setLookupForTests(undefined);
   delete process.env.OPENCLUTTER_API_KEY_HASHES;
 });
 
@@ -378,11 +380,14 @@ describe("usage page copy", () => {
     assert.equal(fn.includes("localStorage"), false);
     assert.equal(fn.includes("sessionStorage"), false);
     assert.equal(fn.includes("document.cookie"), false);
-    assert.match(html, /anonymous totals of page views and exports by day, week, and month/);
-    assert.match(html, /No cookies, and no raw IP addresses\./);
+    assert.match(html, /anonymous totals of page views and exports by day, week, and month, including counts by country and by state or province/);
+    assert.match(html, /No cookies, no raw IP addresses, and no coordinates or street addresses\./);
+    assert.match(html, /Exports are counted by country, and by state or province in the US, Canada, and Australia/);
     assert.match(readme, /GET \/api\/usage/);
     assert.match(readme, /OPENCLUTTER_API_KEY_HASHES/);
     assert.match(readme, /period=week/);
+    assert.match(readme, /counts by country and by state or province/);
+    assert.match(readme, /stored as `unknown`/);
     const section = readme.slice(readme.indexOf("## Usage counts"), readme.indexOf("## Data credits"));
     assert.equal(section.includes("\u2014"), false);
     assert.equal(fn.includes("\u2014"), false);
@@ -390,3 +395,138 @@ describe("usage page copy", () => {
     assert.equal(fs.readFileSync(path.join(__dirname, "../netlify/functions/usage.js"), "utf8").includes("\u2014"), false);
   });
 });
+
+describe("usage location aggregates", () => {
+  const VEGAS = { west: -115.15257, south: 36.12986, east: -115.13647, north: 36.14069 };
+  const FI = { west: 24.93, south: 60.16, east: 24.96, north: 60.18 };
+  const GEO_US = { country: { code: "DE", name: "Germany" } };
+
+  function setup() {
+    const store = memoryStore();
+    const exportsStore = jobStore();
+    usage.setStoreForTests(store);
+    usage.setNowForTests(() => NOON);
+    jobs.setExportStoreForTests(exportsStore);
+    usagePlace.setLookupForTests((box) => {
+      const c = usagePlace.boxCenter(box);
+      if (c && Math.abs(c.lat - 36.135275) < 0.01) return { country: "US", region: "US-NV" };
+      if (c && Math.abs(c.lat - 60.17) < 0.05) return { country: "FI", region: "" };
+      return { country: "unknown", region: "" };
+    });
+    return { store, exportsStore };
+  }
+
+  it("counts page views and users by visitor country, and exports by country and region", async () => {
+    const { store } = setup();
+    const headers = browser();
+    assert.equal((await handler(req("POST", headers), { geo: GEO_US })).statusCode, 204);
+    await jobs.createJob(JOB, { headers, geo: GEO_US, bbox: VEGAS });
+    await jobs.updateJob(JOB, { state: "running" });
+    await jobs.updateJob(JOB, { state: "done", stage: "Zip ready" });
+    await jobs.readJob(JOB);
+
+    const body = JSON.parse((await handler(req("GET", {}, { date: DAY }))).body);
+    const row = hostOf(body);
+    assert.equal(row.pageviews, 1);
+    assert.equal(row.uniqueUsers, 1);
+    assert.equal(row.exportsStarted, 1);
+    assert.equal(row.exportsDone, 1);
+    assert.deepEqual(row.byVisitorCountry, { DE: { pageviews: 1, uniqueUsers: 1 } });
+    assert.deepEqual(row.byExportCountry.US, {
+      exportsStarted: 1,
+      exportsDone: 1,
+      exportsError: 0,
+      exportsCancelled: 0,
+    });
+    assert.deepEqual(row.byExportRegion["US-NV"], {
+      exportsStarted: 1,
+      exportsDone: 1,
+      exportsError: 0,
+      exportsCancelled: 0,
+    });
+    const week = JSON.parse((await handler(req("GET", {}, { period: "week", date: DAY }))).body);
+    assert.equal(hostOf(week).byExportRegion["US-NV"].exportsStarted, 1);
+    const month = JSON.parse((await handler(req("GET", {}, { period: "month", date: DAY }))).body);
+    assert.equal(hostOf(month).byExportCountry.US.exportsDone, 1);
+
+    const dumped = JSON.stringify([...store.map.entries()]);
+    assert.equal(dumped.includes("115.15"), false);
+    assert.equal(dumped.includes("36.12"), false);
+    assert.equal(dumped.includes("Las Vegas"), false);
+    assert.equal(dumped.includes("Paradise"), false);
+    assert.equal(dumped.includes(IP), false);
+  });
+
+  it("records unknown when the place lookup fails, and omits a region outside US, Canada, and Australia", async () => {
+    const { store, exportsStore } = setup();
+    usagePlace.setLookupForTests(async () => {
+      throw new Error("offline");
+    });
+    const headers = browser();
+    await handler(req("POST", headers));
+    const missing = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    await jobs.createJob(missing, { headers, bbox: VEGAS });
+    const body = JSON.parse((await handler(req("GET", {}, { date: DAY }))).body);
+    const row = hostOf(body);
+    assert.equal(row.byVisitorCountry.unknown.pageviews, 1);
+    assert.equal(row.byExportCountry.unknown.exportsStarted, 1);
+    assert.deepEqual(row.byExportRegion, {});
+
+    usagePlace.setLookupForTests(() => ({ country: "FI", region: "" }));
+    const fine = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    await jobs.createJob(fine, { headers, geo: { country: { code: "FI" } }, bbox: FI });
+    const later = JSON.parse((await handler(req("GET", {}, { date: DAY }))).body);
+    const row2 = hostOf(later);
+    assert.equal(row2.byExportCountry.FI.exportsStarted, 1);
+    assert.equal(row2.byExportRegion.FI, undefined);
+    const rawJob = exportsStore.map.get("job/" + fine);
+    assert.equal(rawJob.usageExportCountry, "FI");
+    assert.equal(rawJob.usageExportRegion, undefined);
+    assert.equal(JSON.stringify(rawJob).includes("60.16"), false);
+    assert.equal(JSON.stringify(rawJob).includes("Helsinki"), false);
+    const status = await statusHandler({ httpMethod: "GET", queryStringParameters: { job: fine } });
+    assert.equal(status.body.includes("usageExportCountry"), false);
+    assert.equal(status.body.includes("usageVisitor"), false);
+    void store;
+  });
+
+  it("keeps country and region totals when the month is reconciled", async () => {
+    const store = memoryStore();
+    usage.setStoreForTests(store);
+    const hash = "a".repeat(64);
+    await store.setJSON("salt/2026-11", { salt: "abcabcabcabcabcabcabcabcabcabcab" });
+    await store.setJSON("vis/2026-11/prod/" + hash, {
+      pv: { "2026-11-09": 4 },
+      st: { "2026-11-09": 2 },
+      dn: { "2026-11-09": 1 },
+      er: {},
+      ca: {},
+    });
+    await store.setJSON("agg/day/2026-11-09/prod", {
+      pageviews: 99,
+      uniqueUsers: 9,
+      exportingUsers: 9,
+      exportsStarted: 9,
+      exportsDone: 9,
+      exportsError: 0,
+      exportsCancelled: 0,
+      byCount: { "9": 9 },
+      byVisitorCountry: { DE: { pageviews: 4, uniqueUsers: 1 } },
+      byExportCountry: { US: { exportsStarted: 2, exportsDone: 1, exportsError: 0, exportsCancelled: 0 } },
+      byExportRegion: { "US-NV": { exportsStarted: 2, exportsDone: 1, exportsError: 0, exportsCancelled: 0 } },
+    });
+    await usage.finalizeDue("2026-12-04");
+    usage.setNowForTests(() => Date.parse("2026-12-04T18:00:00Z"));
+    const body = JSON.parse((await handler(req("GET", {}, { period: "day", date: DAY }))).body);
+    const row = hostOf(body);
+    assert.equal(row.pageviews, 4);
+    assert.equal(row.uniqueUsers, 1);
+    assert.equal(row.exportsStarted, 2);
+    assert.deepEqual(row.byVisitorCountry.DE, { pageviews: 4, uniqueUsers: 1 });
+    assert.equal(row.byExportCountry.US.exportsStarted, 2);
+    assert.equal(row.byExportRegion["US-NV"].exportsDone, 1);
+    const dumped = JSON.stringify([...store.map.entries()]);
+    assert.equal(dumped.includes("Las Vegas"), false);
+  });
+});
+
