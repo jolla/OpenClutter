@@ -1470,7 +1470,7 @@ async function enqueueBackgroundExport(event, body, cors) {
   };
   let job;
   try {
-    job = await exportJobs.createJob(id, { headers: (event && event.headers) || {} });
+    job = await exportJobs.createJob(id, { headers: (event && event.headers) || {}, geo: event && event.ocVisitorGeo, bbox: body });
   } catch (err) {
     const name = err && err.name ? err.name : "blobs-write";
     return fallbackExport(cors, bound ? name : "event-has-no-blobs");
@@ -3498,6 +3498,7 @@ exports.handler = async (event, context) => {
   // The gateway turns that silence into an empty 504, and the page has no
   // JSON error to show.
   if (context) context.callbackWaitsForEmptyEventLoop = false;
+  if (event && context && context.geo) event.ocVisitorGeo = context.geo;
   // {"ping":true} from the page after a draw: proves a POST reaches the export
   // function through the user's network. No export work, no outside calls.
   if (isPingRequest(event)) {

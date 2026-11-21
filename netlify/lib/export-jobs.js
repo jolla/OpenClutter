@@ -17,6 +17,7 @@
 
 const { markStage, stageKey } = require("./export-progress");
 const usage = require("./usage");
+const usagePlace = require("./usage-place");
 const exportLimit = require("./export-limit");
 
 const STORE_NAME = "openclutter-exports";
@@ -160,13 +161,30 @@ async function createJob(id, meta) {
   let attr = null;
   if (meta && meta.headers) {
     try {
-      attr = await usage.attribute(meta.headers, meta.now);
+      attr = await usage.attribute(meta.headers, meta.now, meta.geo);
     } catch {
       attr = null;
     }
   }
+  let exportCountry = usagePlace.UNKNOWN;
+  let exportRegion = "";
+  if (meta && meta.bbox) {
+    try {
+      const loc = await usagePlace.lookupExportPlace(meta.bbox);
+      exportCountry = (loc && loc.country) || usagePlace.UNKNOWN;
+      exportRegion = (loc && loc.region) || "";
+    } catch {
+      exportCountry = usagePlace.UNKNOWN;
+      exportRegion = "";
+    }
+  }
   if (attr) {
     job.usageHost = attr.host;
+    attr.exportCountry = exportCountry;
+    attr.exportRegion = exportRegion;
+    job.usageVisitorCountry = attr.visitorCountry || usagePlace.UNKNOWN;
+    job.usageExportCountry = exportCountry;
+    if (exportRegion) job.usageExportRegion = exportRegion;
     if (attr.visitor) {
       job.usageVisitor = attr.visitor;
       job.usageMonth = attr.month;

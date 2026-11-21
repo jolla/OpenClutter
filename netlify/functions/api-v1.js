@@ -235,7 +235,7 @@ function statusView(id, job) {
   return view;
 }
 
-async function createSite(event, body, rlHeaders) {
+async function createSite(event, body, rlHeaders, context) {
   let bbox;
   try {
     bbox = frameFromRequest(body);
@@ -253,7 +253,7 @@ async function createSite(event, body, rlHeaders) {
   };
   let job;
   try {
-    job = await jobs.createJob(id, { headers: event.headers || {} });
+    job = await jobs.createJob(id, { headers: event.headers || {}, geo: context && context.geo, bbox: bbox });
     job = await jobs.updateJob(id, { api: "v1", name: typeof body.name === "string" ? body.name.slice(0, 200) : null });
   } catch {
     return apiError(503, "upstream_unavailable", "Job store is unavailable.", rlHeaders);
@@ -325,7 +325,7 @@ function routeOf(event) {
   return (m && m[1]) || "/";
 }
 
-exports.handler = async (event) => {
+exports.handler = async (event, context) => {
   jobs.bindBlobs(event);
   const method = String(event.httpMethod || "GET").toUpperCase();
   const route = routeOf(event).replace(/\/+$/, "") || "/";
@@ -346,7 +346,7 @@ exports.handler = async (event) => {
     } catch {
       return apiError(400, "invalid_json", "Body must be JSON.", rl.headers);
     }
-    return createSite(event, body || {}, rl.headers);
+    return createSite(event, body || {}, rl.headers, context);
   }
   if (one && method === "GET") {
     const id = one[1];
