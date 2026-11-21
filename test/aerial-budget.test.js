@@ -13,6 +13,7 @@ const {
   AERIAL_STAGE_BUDGET_MS,
   AERIAL_EMPTY_GRACE_MS,
   AERIAL_FETCH_CONCURRENCY,
+  AERIAL_FETCH_RESERVE_COARSER,
   AERIAL_TILE_ATTEMPTS,
   sameExportPlate,
   tilePlan,
@@ -603,6 +604,58 @@ describe("aerial tile retry, concurrency, and cache", () => {
     );
     assert.ok(max <= AERIAL_FETCH_CONCURRENCY, "max in flight " + max);
     assert.ok(max >= 2, "expected some concurrency, got " + max);
+  });
+
+  it("gives leftover slots to the sharpest tiled plate before a mid plate cuts in", async () => {
+    assert.equal(AERIAL_FETCH_RESERVE_COARSER, 1);
+    // 9 tiles on the sharp plate, 4 on the mid plate. The tile pool
+    // submits only 6 of the sharp tiles at first; under FIFO the mid
+    // plate's 4 requests would sit in the queue ahead of sharp tiles 7-9.
+    const sharp = { west: -82.75, south: 28.14, east: -82.73, north: 28.16, imgW: 3200, imgH: 3200 };
+    const mid = { west: -82.70, south: 28.14, east: -82.68, north: 28.16, imgW: 2560, imgH: 2560 };
+    assert.ok(tilePlan(sharp, 2000).tiles.length >= 9);
+    assert.ok(tilePlan(mid, 2000).tiles.length >= 4);
+    let inflight = 0;
+    let max = 0;
+    let sharpStarted = 0;
+    let midStarted = 0;
+    let midWhenSharpNinth = null;
+    let midStartedBeforeSharpDone = false;
+    await racePlates(
+      [
+        { plate: sharp, tile: true },
+        { plate: mid, tile: true },
+      ],
+      {
+        budgetMs: 8000,
+        emptyGraceMs: 0,
+        tileMinSide: 2000,
+        fetchImage: async (frame) => {
+          const isSharp = frame.west < -82.72;
+          inflight += 1;
+          if (inflight > max) max = inflight;
+          if (isSharp) {
+            sharpStarted += 1;
+            if (sharpStarted === 9) midWhenSharpNinth = midStarted;
+          } else {
+            midStarted += 1;
+            if (sharpStarted < 9) midStartedBeforeSharpDone = true;
+          }
+          await new Promise((r) => setTimeout(r, 30));
+          inflight -= 1;
+          return solidJpeg(frame.imgW, frame.imgH, [8, 8, 8]);
+        },
+      }
+    );
+    assert.equal(sharpStarted, 9);
+    assert.ok(midStarted >= 1, "mid plate should still get a reserved slot, got " + midStarted);
+    assert.ok(midWhenSharpNinth != null, "sharp ninth tile never started");
+    // FIFO would let all 4 mid tiles start before sharp tiles 7-9.
+    assert.ok(
+      midWhenSharpNinth <= 3,
+      "mid started " + midWhenSharpNinth + " tiles before the ninth sharp tile"
+    );
+    assert.ok(max <= AERIAL_FETCH_CONCURRENCY, "max in flight " + max);
   });
 
   it("reuses a cached tile JPEG instead of fetching it again", async () => {

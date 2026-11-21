@@ -8,7 +8,9 @@
  * used to spend that wait again. This module races the distinct sizes
  * together, splits a large plate into parallel tiles, and stops at
  * AERIAL_STAGE_BUDGET_MS. A shared cap limits how many Esri exports
- * run at once across those plates. A transient tile failure is retried
+ * run at once across those plates, with slots going to the sharpest
+ * tiled plate first so a mid plate cannot cut in before the sharp
+ * plate has queued all of its tiles. A transient tile failure is retried
  * with a short backoff, and a successful JPEG is kept briefly so a
  * retry or a repeated frame does not hit the network again. Download,
  * tile decode, and stitch all sit inside that budget. When it expires,
@@ -24,6 +26,9 @@ const AERIAL_TILE_POOL = 6;
 /** Shared cap across every plate in a race, so a resilient 4-plate
  * site cannot open a dozen Esri exports at once. */
 const AERIAL_FETCH_CONCURRENCY = 4;
+/** When a coarser tiled plate is waiting, leave this many of the
+ * cap's slots for it so a hanging sharp plate cannot starve the fallback. */
+const AERIAL_FETCH_RESERVE_COARSER = 1;
 /** First try plus this many retries on a transient tile error. */
 const AERIAL_TILE_ATTEMPTS = 3;
 const AERIAL_TILE_RETRY_MS = 250;
@@ -209,13 +214,17 @@ async function fetchTiled(plate, opts) {
     if (opts.onUnit) opts.onUnit();
     return buf;
   }
-  const tiled = mapPool(plan.tiles, AERIAL_TILE_POOL, async (tile) => {
+  // Queue every tile for a slot up front. The old per-plate pool of 6
+  // only submitted that many jobs, so a 9-tile sharp plate lost tiles
+  // 7-9 to a mid plate already sitting in the FIFO queue. The shared
+  // cap, not the pool, now limits how many Esri exports run.
+  const tiled = Promise.all(plan.tiles.map(async (tile) => {
     if (opts.signal && opts.signal.aborted) throw abortError();
     if (opts.deadlineAt && Date.now() > opts.deadlineAt) throw abortError();
     const buf = await opts.fetchImage(frameFromTile(tile), opts.signal);
     if (opts.onUnit) opts.onUnit();
     return buf;
-  });
+  }));
   tiled.catch(() => {});
   let buffers;
   if (opts.deadlineAt) {
@@ -253,12 +262,16 @@ function sleep(ms) {
 
 let fetchActive = 0;
 const fetchQueue = [];
+const fetchInflight = new Map();
 const tileCache = new Map();
 let tileCacheBytes = 0;
+let slotEpoch = 0;
 
 function resetForTests() {
+  slotEpoch += 1;
   fetchActive = 0;
   fetchQueue.length = 0;
+  fetchInflight.clear();
   tileCache.clear();
   tileCacheBytes = 0;
 }
@@ -305,21 +318,70 @@ function cacheSet(key, buf) {
   tileCacheBytes += bytes;
 }
 
-function withFetchSlot(fn) {
+function coarserWaiting(priority) {
+  for (let i = 0; i < fetchQueue.length; i++) {
+    if (fetchQueue[i].priority > priority) return true;
+  }
+  return false;
+}
+
+function dispatchFetchSlot() {
+  while (fetchActive < AERIAL_FETCH_CONCURRENCY && fetchQueue.length) {
+    let pick = -1;
+    for (let i = 0; i < fetchQueue.length; i++) {
+      const p = fetchQueue[i].priority;
+      const cap = coarserWaiting(p)
+        ? AERIAL_FETCH_CONCURRENCY - AERIAL_FETCH_RESERVE_COARSER
+        : AERIAL_FETCH_CONCURRENCY;
+      if ((fetchInflight.get(p) || 0) >= cap) continue;
+      if (pick < 0 || p < fetchQueue[pick].priority) pick = i;
+    }
+    if (pick < 0) {
+      // Every queued job is at its per-plate cap. Use the leftover slot
+      // on the sharpest waiter rather than leaving it idle.
+      pick = 0;
+      for (let i = 1; i < fetchQueue.length; i++) {
+        if (fetchQueue[i].priority < fetchQueue[pick].priority) pick = i;
+      }
+    }
+    const job = fetchQueue.splice(pick, 1)[0];
+    job.run();
+  }
+}
+
+/**
+ * Shared cap. Lower priority numbers are sharper and go first, but one
+ * slot stays available for a coarser tiled plate that is already waiting.
+ */
+function withFetchSlot(fn, priority) {
+  const pri = Number.isFinite(+priority) ? +priority : 0;
+  const epoch = slotEpoch;
   return new Promise((resolve, reject) => {
-    const run = () => {
-      fetchActive += 1;
-      Promise.resolve()
-        .then(fn)
-        .then(resolve, reject)
-        .finally(() => {
-          fetchActive -= 1;
-          const next = fetchQueue.shift();
-          if (next) next();
-        });
+    const job = {
+      priority: pri,
+      run: function () {
+        if (epoch !== slotEpoch) {
+          resolve();
+          return;
+        }
+        fetchActive += 1;
+        fetchInflight.set(pri, (fetchInflight.get(pri) || 0) + 1);
+        Promise.resolve()
+          .then(fn)
+          .then(resolve, reject)
+          .finally(() => {
+            if (epoch !== slotEpoch) return;
+            fetchActive -= 1;
+            if (fetchActive < 0) fetchActive = 0;
+            const n = (fetchInflight.get(pri) || 1) - 1;
+            if (n <= 0) fetchInflight.delete(pri);
+            else fetchInflight.set(pri, n);
+            dispatchFetchSlot();
+          });
+      },
     };
-    if (fetchActive >= AERIAL_FETCH_CONCURRENCY) fetchQueue.push(run);
-    else run();
+    fetchQueue.push(job);
+    dispatchFetchSlot();
   });
 }
 
@@ -371,6 +433,7 @@ function wrapFetchImage(fetchImage, opts) {
   // Tiled plates share the cap. A coarser unstitched plate must be able
   // to start even when every tile slot is busy, or the fallback starves.
   const useSlot = !opts || opts.slot !== false;
+  const priority = opts && Number.isFinite(+opts.priority) ? +opts.priority : 0;
   return async function (frame, signal) {
     const key = frameCacheKey(frame);
     const hit = cacheGet(key);
@@ -383,7 +446,7 @@ function wrapFetchImage(fetchImage, opts) {
           if (signalAborted(signal) || pastDeadline(deadlineAt)) throw abortError();
           return await fetchImage(frame, signal);
         };
-        const buf = useSlot ? await withFetchSlot(run) : await run();
+        const buf = useSlot ? await withFetchSlot(run, priority) : await run();
         if (buf && buf.length > 100) cacheSet(key, buf);
         return buf;
       } catch (err) {
@@ -425,8 +488,9 @@ async function racePlates(entries, opts) {
   const timer = setTimeout(() => ctrl.abort(), budgetMs + emptyGraceMs);
   if (typeof timer.unref === "function") timer.unref();
 
-  const fetchTileImage = wrapFetchImage(opts && opts.fetchImage, { deadlineAt, slot: true });
   const fetchPlainImage = wrapFetchImage(opts && opts.fetchImage, { deadlineAt, slot: false });
+  const fetchTileImageAt = (priority) =>
+    wrapFetchImage(opts && opts.fetchImage, { deadlineAt, slot: true, priority: priority });
   const tileMinSide = opts && opts.tileMinSide > 0 ? opts.tileMinSide : 0;
   const graceMs = opts && opts.sharperGraceMs > 0 ? opts.sharperGraceMs : 0;
   const unitCounts = list.map((entry) => {
@@ -479,7 +543,7 @@ async function racePlates(entries, opts) {
       entry && entry.tile
         ? fetchTiled(entry.plate, {
             tileMinSide,
-            fetchImage: fetchTileImage,
+            fetchImage: fetchTileImageAt(i),
             signal: ctrl.signal,
             deadlineAt: deadlineAt,
             pace: opts.pace,
@@ -572,6 +636,7 @@ module.exports = {
   AERIAL_SHARPER_GRACE_MS,
   AERIAL_EMPTY_GRACE_MS,
   AERIAL_FETCH_CONCURRENCY,
+  AERIAL_FETCH_RESERVE_COARSER,
   AERIAL_TILE_ATTEMPTS,
   AERIAL_TILE_RETRY_MS,
   AERIAL_TILE_CACHE_TTL_MS,
