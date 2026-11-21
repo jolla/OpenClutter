@@ -4,13 +4,16 @@
  * Street-map read for an export: Overture transportation and base first,
  * with a smaller Overpass query in parallel for features Overture does not
  * cover well (building parts, camp areas and pitches, palms, moorings,
- * area:highway, and a few others). If Overture fails, the existing full
- * Overpass map or tile path is used instead.
+ * area:highway, and a few others). If Overture fails, a recently saved
+ * Overture read for the same box is reused when one exists; otherwise the
+ * full Overpass path is used, still merged with the gap answer so marina
+ * boats and the other gap features are not dropped.
  */
 
 const { fetchOsmMaps, bboxSpanM, TILE_SPAN_M } = require("./osm-tiles");
 const overpass = require("./overpass");
 const { fetchOvertureStreet } = require("./overture-street");
+const streetPersist = require("./overture-street-cache");
 const stageClock = require("./stage-clock");
 
 const streetCache = new Map();
@@ -179,6 +182,11 @@ async function fetchStreetMapsWork(bbox, opts) {
     } catch {
       gap = { elements: [] };
     }
+    try {
+      await streetPersist.writeStreetCache(bbox, ovt);
+    } catch {
+      /* a later export can still fall back to Overpass */
+    }
     return {
       xmls: [],
       elements: dedupeElements([ovt.elements || [], (gap && gap.elements) || []]),
@@ -189,9 +197,36 @@ async function fetchStreetMapsWork(bbox, opts) {
       overtureThemes: ovt.themes || {},
     };
   }
+  let gap = { elements: [] };
+  try {
+    gap = await gapWork;
+  } catch {
+    gap = { elements: [] };
+  }
+  let cached = null;
+  try {
+    cached = await streetPersist.readStreetCache(bbox, { release: ovt && ovt.release });
+  } catch {
+    cached = null;
+  }
+  if (cached && cached.elements && cached.elements.length) {
+    return {
+      xmls: [],
+      elements: dedupeElements([cached.elements, (gap && gap.elements) || []]),
+      tiled: bboxSpanM(bbox).sideM > TILE_SPAN_M,
+      notes: [].concat(cached.notes || [], (gap && gap.notes) || [], [streetPersist.cacheNote(cached)]),
+      incomplete: false,
+      source: "overture",
+      overtureThemes: cached.themes || {},
+    };
+  }
   const full = await fullFetch(bbox, o);
-  const notes = [].concat(full.notes || [], [overtureFallbackNote(ovt && ovt.error)]);
-  return Object.assign({}, full, { notes, source: full.source || "overpass" });
+  const notes = [].concat(full.notes || [], (gap && gap.notes) || [], [overtureFallbackNote(ovt && ovt.error)]);
+  return Object.assign({}, full, {
+    elements: dedupeElements([full.elements || [], (gap && gap.elements) || []]),
+    notes,
+    source: full.source || "overpass",
+  });
 }
 
 async function fetchStreetMaps(bbox, opts) {
