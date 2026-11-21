@@ -7,9 +7,12 @@
  * still return nothing. A second step that rounds to the same pixel size
  * used to spend that wait again. This module races the distinct sizes
  * together, splits a large plate into parallel tiles, and stops at
- * AERIAL_STAGE_BUDGET_MS. Download, tile decode, and stitch all sit
- * inside that budget. When it expires, the sharpest JPEG already in
- * hand is the one kept.
+ * AERIAL_STAGE_BUDGET_MS. A shared cap limits how many Esri exports
+ * run at once across those plates. A transient tile failure is retried
+ * with a short backoff, and a successful JPEG is kept briefly so a
+ * retry or a repeated frame does not hit the network again. Download,
+ * tile decode, and stitch all sit inside that budget. When it expires,
+ * the sharpest JPEG already in hand is the one kept.
  */
 
 const { esriContentExtent, jpegSize, resizeRgba } = require("./geo-frame");
@@ -18,6 +21,14 @@ const AERIAL_STAGE_BUDGET_MS = 36000;
 const AERIAL_TILE_MIN_SIDE = 2800;
 const AERIAL_TILE_LONG_SIDE = 1280;
 const AERIAL_TILE_POOL = 6;
+/** Shared cap across every plate in a race, so a resilient 4-plate
+ * site cannot open a dozen Esri exports at once. */
+const AERIAL_FETCH_CONCURRENCY = 4;
+/** First try plus this many retries on a transient tile error. */
+const AERIAL_TILE_ATTEMPTS = 3;
+const AERIAL_TILE_RETRY_MS = 250;
+const AERIAL_TILE_CACHE_TTL_MS = 10 * 60 * 1000;
+const AERIAL_TILE_CACHE_MAX_BYTES = 48 * 1024 * 1024;
 /**
  * Resilient mode tiles every plate from this long side. A single 2211 px
  * request on a 330 m Las Vegas draw sat past 40 s; the same plate as four
@@ -240,6 +251,156 @@ function sleep(ms) {
   });
 }
 
+let fetchActive = 0;
+const fetchQueue = [];
+const tileCache = new Map();
+let tileCacheBytes = 0;
+
+function resetForTests() {
+  fetchActive = 0;
+  fetchQueue.length = 0;
+  tileCache.clear();
+  tileCacheBytes = 0;
+}
+
+function frameCacheKey(frame) {
+  if (!frame) return "";
+  const nums = [frame.west, frame.south, frame.east, frame.north, frame.imgW, frame.imgH].map(Number);
+  if (!nums.every(Number.isFinite)) return "";
+  const f = (n) => (Math.round(+n * 1e6) / 1e6).toFixed(6);
+  return [f(frame.west), f(frame.south), f(frame.east), f(frame.north), +frame.imgW, +frame.imgH].join(",");
+}
+
+function cacheGet(key) {
+  if (!key) return null;
+  const e = tileCache.get(key);
+  if (!e) return null;
+  if (Date.now() >= e.exp) {
+    tileCache.delete(key);
+    tileCacheBytes -= e.bytes;
+    if (tileCacheBytes < 0) tileCacheBytes = 0;
+    return null;
+  }
+  tileCache.delete(key);
+  tileCache.set(key, e);
+  return e.buf;
+}
+
+function cacheSet(key, buf) {
+  if (!key || !buf || !buf.length) return;
+  const bytes = buf.length;
+  const existing = tileCache.get(key);
+  if (existing) {
+    tileCacheBytes -= existing.bytes;
+    tileCache.delete(key);
+  }
+  while (tileCache.size && tileCacheBytes + bytes > AERIAL_TILE_CACHE_MAX_BYTES) {
+    const first = tileCache.keys().next().value;
+    const ev = tileCache.get(first);
+    tileCache.delete(first);
+    if (ev) tileCacheBytes -= ev.bytes;
+    if (tileCacheBytes < 0) tileCacheBytes = 0;
+  }
+  tileCache.set(key, { buf, bytes, exp: Date.now() + AERIAL_TILE_CACHE_TTL_MS });
+  tileCacheBytes += bytes;
+}
+
+function withFetchSlot(fn) {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      fetchActive += 1;
+      Promise.resolve()
+        .then(fn)
+        .then(resolve, reject)
+        .finally(() => {
+          fetchActive -= 1;
+          const next = fetchQueue.shift();
+          if (next) next();
+        });
+    };
+    if (fetchActive >= AERIAL_FETCH_CONCURRENCY) fetchQueue.push(run);
+    else run();
+  });
+}
+
+function isAbortError(err) {
+  if (!err) return false;
+  if (err.name === "AbortError") return true;
+  return /abort/i.test(String((err && (err.message || err.reason)) || err || ""));
+}
+
+function isTransientAerialError(err) {
+  if (isAbortError(err)) return false;
+  const msg = String((err && (err.message || err.reason)) || err || "");
+  if (!msg) return true;
+  return /timeout|timed out|econnreset|etimedout|enotfound|eai_again|econnrefused|socket|network|fetch failed|429|503|504/i.test(msg);
+}
+
+function signalAborted(signal) {
+  return !!(signal && signal.aborted);
+}
+
+function pastDeadline(deadlineAt) {
+  return !!(deadlineAt && Date.now() > deadlineAt);
+}
+
+function sleepAbortable(ms, signal, deadlineAt) {
+  let left = Math.max(0, ms);
+  if (deadlineAt) left = Math.min(left, Math.max(0, deadlineAt - Date.now()));
+  if (!(left > 0) || signalAborted(signal) || pastDeadline(deadlineAt)) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const t = setTimeout(onDone, left);
+    if (typeof t.unref === "function") t.unref();
+    function onDone() {
+      if (signal && typeof signal.removeEventListener === "function") signal.removeEventListener("abort", onDone);
+      clearTimeout(t);
+      resolve();
+    }
+    if (signal && typeof signal.addEventListener === "function") signal.addEventListener("abort", onDone, { once: true });
+  });
+}
+
+/**
+ * Shared Esri fetch: concurrency cap, transient retry, and a short JPEG cache.
+ */
+function wrapFetchImage(fetchImage, opts) {
+  const deadlineAt = opts && opts.deadlineAt;
+  const attempts = opts && opts.attempts > 0 ? opts.attempts : AERIAL_TILE_ATTEMPTS;
+  // Tiled plates share the cap. A coarser unstitched plate must be able
+  // to start even when every tile slot is busy, or the fallback starves.
+  const useSlot = !opts || opts.slot !== false;
+  return async function (frame, signal) {
+    const key = frameCacheKey(frame);
+    const hit = cacheGet(key);
+    if (hit) return hit;
+    let lastErr;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      if (signalAborted(signal) || pastDeadline(deadlineAt)) throw abortError();
+      try {
+        const run = async () => {
+          if (signalAborted(signal) || pastDeadline(deadlineAt)) throw abortError();
+          return await fetchImage(frame, signal);
+        };
+        const buf = useSlot ? await withFetchSlot(run) : await run();
+        if (buf && buf.length > 100) cacheSet(key, buf);
+        return buf;
+      } catch (err) {
+        lastErr = err;
+        const more =
+          attempt < attempts &&
+          isTransientAerialError(err) &&
+          !signalAborted(signal) &&
+          !pastDeadline(deadlineAt);
+        if (!more) throw err;
+        await sleepAbortable(AERIAL_TILE_RETRY_MS * Math.pow(2, attempt - 1), signal, deadlineAt);
+      }
+    }
+    throw lastErr || abortError();
+  };
+}
+
 /** An imagery error that is the server's answer (HTTP 5xx), not a timeout or abort. */
 function refusedBySource(err) {
   const msg = String((err && (err.message || err.reason)) || err || "");
@@ -264,6 +425,8 @@ async function racePlates(entries, opts) {
   const timer = setTimeout(() => ctrl.abort(), budgetMs + emptyGraceMs);
   if (typeof timer.unref === "function") timer.unref();
 
+  const fetchTileImage = wrapFetchImage(opts && opts.fetchImage, { deadlineAt, slot: true });
+  const fetchPlainImage = wrapFetchImage(opts && opts.fetchImage, { deadlineAt, slot: false });
   const tileMinSide = opts && opts.tileMinSide > 0 ? opts.tileMinSide : 0;
   const graceMs = opts && opts.sharperGraceMs > 0 ? opts.sharperGraceMs : 0;
   const unitCounts = list.map((entry) => {
@@ -316,7 +479,7 @@ async function racePlates(entries, opts) {
       entry && entry.tile
         ? fetchTiled(entry.plate, {
             tileMinSide,
-            fetchImage: opts.fetchImage,
+            fetchImage: fetchTileImage,
             signal: ctrl.signal,
             deadlineAt: deadlineAt,
             pace: opts.pace,
@@ -329,7 +492,7 @@ async function racePlates(entries, opts) {
             },
           })
         : Promise.resolve()
-            .then(() => opts.fetchImage(entry.plate, ctrl.signal))
+            .then(() => fetchPlainImage(entry.plate, ctrl.signal))
             .then((buf) => {
               if (opts.onUnit) opts.onUnit();
               return buf;
@@ -404,9 +567,14 @@ module.exports = {
   AERIAL_STAGE_BUDGET_MS,
   AERIAL_TILE_MIN_SIDE,
   AERIAL_TILE_LONG_SIDE,
+  AERIAL_TILE_POOL,
   AERIAL_TILE_MIN_SIDE_RESILIENT,
   AERIAL_SHARPER_GRACE_MS,
   AERIAL_EMPTY_GRACE_MS,
+  AERIAL_FETCH_CONCURRENCY,
+  AERIAL_TILE_ATTEMPTS,
+  AERIAL_TILE_RETRY_MS,
+  AERIAL_TILE_CACHE_TTL_MS,
   setAerialBudgetForTests,
   aerialBudgetMs,
   shouldTilePlate,
@@ -415,4 +583,6 @@ module.exports = {
   stitchTiles,
   racePlates,
   refusedBySource,
+  isTransientAerialError,
+  resetForTests,
 };

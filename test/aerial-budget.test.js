@@ -12,10 +12,14 @@ const { geoFrame, capEsriExportFrame } = require("../netlify/lib/geo-frame");
 const {
   AERIAL_STAGE_BUDGET_MS,
   AERIAL_EMPTY_GRACE_MS,
+  AERIAL_FETCH_CONCURRENCY,
+  AERIAL_TILE_ATTEMPTS,
   sameExportPlate,
   tilePlan,
   stitchTiles,
   racePlates,
+  resetForTests,
+  isTransientAerialError,
 } = require("../netlify/lib/aerial-fetch");
 const {
   runBackgroundExport,
@@ -79,6 +83,7 @@ describe("aerial budget", () => {
 
   afterEach(() => {
     global.fetch = prev;
+    resetForTests();
     setAerialBudgetForTests(0);
     setFetchOvertureForTests(null);
     setFetchTerrainDemForTests(null);
@@ -444,6 +449,7 @@ describe("aerial budget", () => {
 });
 
 describe("aerial race, resilient wait for a sharper plate", () => {
+  afterEach(() => resetForTests());
   const jpeg = require("jpeg-js");
   function jpg(w, h) {
     const data = Buffer.alloc(w * h * 4, 120);
@@ -515,5 +521,106 @@ describe("aerial race, resilient wait for a sharper plate", () => {
     assert.equal(tilePlan(plate), null);
     const plan = tilePlan(plate, AERIAL_TILE_MIN_SIDE_RESILIENT);
     assert.ok(plan && plan.tiles.length === 4, JSON.stringify(plan && plan.tiles.length));
+  });
+});
+
+describe("aerial tile retry, concurrency, and cache", () => {
+  afterEach(() => resetForTests());
+
+  it("retries a transient tile failure and keeps the plate", async () => {
+    assert.equal(AERIAL_TILE_ATTEMPTS, 3);
+    let n = 0;
+    const jpeg = solidJpeg(16, 16, [10, 20, 30]);
+    const got = await racePlates(
+      [{ plate: { imgW: 16, imgH: 16, west: -90, south: 40, east: -89.99, north: 40.01 }, tile: false }],
+      {
+        budgetMs: 2000,
+        emptyGraceMs: 0,
+        fetchImage: async () => {
+          n += 1;
+          if (n === 1) throw new Error("fetch failed");
+          return jpeg;
+        },
+      }
+    );
+    assert.equal(n, 2);
+    assert.ok(got.buf && got.buf.length > 100);
+    assert.equal(got.index, 0);
+  });
+
+  it("does not retry an abort, and does not retry a non-transient error", async () => {
+    assert.equal(isTransientAerialError(Object.assign(new Error("aborted"), { name: "AbortError" })), false);
+    assert.equal(isTransientAerialError(new Error("HTTP 404")), false);
+    assert.equal(isTransientAerialError(new Error("HTTP 500")), false);
+    assert.equal(isTransientAerialError(new Error("HTTP 503")), true);
+    assert.equal(isTransientAerialError(new Error("fetch failed")), true);
+    let n = 0;
+    let err;
+    try {
+      await racePlates(
+        [{ plate: { imgW: 16, imgH: 16, west: -91, south: 40, east: -90.99, north: 40.01 }, tile: false }],
+        {
+          budgetMs: 2000,
+          emptyGraceMs: 0,
+          fetchImage: async () => {
+            n += 1;
+            throw new Error("HTTP 404");
+          },
+        }
+      );
+    } catch (e) {
+      err = e;
+    }
+    assert.equal(n, 1);
+    assert.match(String(err && err.message), /HTTP 404/);
+  });
+
+  it("caps in-flight Esri fetches across tiled plates", async () => {
+    assert.equal(AERIAL_FETCH_CONCURRENCY, 4);
+    const plateA = { west: -115.17, south: 36.12, east: -115.16, north: 36.13, imgW: 2560, imgH: 2560 };
+    const plateB = { west: -86.49, south: 40.02, east: -86.48, north: 40.03, imgW: 2560, imgH: 2560 };
+    assert.ok(tilePlan(plateA, 2000).tiles.length >= 4);
+    assert.ok(tilePlan(plateB, 2000).tiles.length >= 4);
+    let inflight = 0;
+    let max = 0;
+    await racePlates(
+      [
+        { plate: plateA, tile: true },
+        { plate: plateB, tile: true },
+      ],
+      {
+        budgetMs: 8000,
+        emptyGraceMs: 0,
+        tileMinSide: 2000,
+        fetchImage: async (frame) => {
+          inflight += 1;
+          if (inflight > max) max = inflight;
+          await new Promise((r) => setTimeout(r, 30));
+          inflight -= 1;
+          return solidJpeg(frame.imgW, frame.imgH, [8, 8, 8]);
+        },
+      }
+    );
+    assert.ok(max <= AERIAL_FETCH_CONCURRENCY, "max in flight " + max);
+    assert.ok(max >= 2, "expected some concurrency, got " + max);
+  });
+
+  it("reuses a cached tile JPEG instead of fetching it again", async () => {
+    let n = 0;
+    const jpeg = solidJpeg(16, 16, [40, 50, 60]);
+    const plate = { imgW: 16, imgH: 16, west: -92, south: 41, east: -91.99, north: 41.01 };
+    const opts = {
+      budgetMs: 2000,
+      emptyGraceMs: 0,
+      fetchImage: async () => {
+        n += 1;
+        return jpeg;
+      },
+    };
+    const first = await racePlates([{ plate, tile: false }], opts);
+    const second = await racePlates([{ plate, tile: false }], opts);
+    assert.equal(n, 1);
+    assert.ok(first.buf && first.buf.length > 100);
+    assert.ok(second.buf && second.buf.length > 100);
   });
 });
