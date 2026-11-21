@@ -32,6 +32,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.60** (Nov 21, 2026): /dev only. When a large aerial fetch already has a coarser map in hand, a sharp plate that is nearly done gets a few more seconds to finish, up to 40 s, instead of stepping down to a blurry fallback. Production gets this in the Nov 30 weekly release.
 - **1.3.59** (Nov 21, 2026): /dev only. Anonymous usage totals now include the country of each export, plus the state or province in the US, Canada, and Australia, and the visitor's country on page views. Production gets this in the Nov 30 weekly release.
 - **1.3.58** (Nov 21, 2026): /dev only. When several aerial map sizes are fetched at once, the sharpest tiles go first so a busy export is less likely to step down to a coarser map. Production gets this in the Nov 30 weekly release.
 - **1.3.57** (Nov 21, 2026): /dev only. Aerial tile fetches retry a brief failure, run a few at a time, and reuse a short cache of tiles already fetched. Production gets this in the Nov 30 weekly release.
