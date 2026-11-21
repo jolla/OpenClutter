@@ -882,18 +882,20 @@ async function rescueTerrain(terrainJob, started, frame, terrainResolution, terr
   }
   const elapsed = Date.now() - started;
   const job = beginOptional((signal) =>
-    fetchTerrainDemImpl(
-      frame,
-      null,
-      Object.assign(
-        {
-          signal,
-          terrainResolution,
-          terrainStyle,
-          allowSurfaceFallback: true,
-          budgetMs,
-        },
-        fetchOpts || {}
+    stageClock.timeSource("demRescue", () =>
+      fetchTerrainDemImpl(
+        frame,
+        null,
+        Object.assign(
+          {
+            signal,
+            terrainResolution,
+            terrainStyle,
+            allowSurfaceFallback: true,
+            budgetMs,
+          },
+          fetchOpts || {}
+        )
       )
     )
   );
@@ -1830,15 +1832,17 @@ async function handleClutterNorthUp(event) {
     }
     if (outdoorOn) {
       outdoorJob = beginOptional((signal) =>
-        fetchOutdoorClutter(requestBbox, {
-          water: includeWater,
-          parking: includeParking,
-          walls: includeWalls,
-          poles: includePoles,
-          rvs: includeRvs,
-          cars: includeCars,
-          trees: includeFoliage,
-        }, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background, deckCap })
+        stageClock.timeSource("outdoor", () =>
+          fetchOutdoorClutter(requestBbox, {
+            water: includeWater,
+            parking: includeParking,
+            walls: includeWalls,
+            poles: includePoles,
+            rvs: includeRvs,
+            cars: includeCars,
+            trees: includeFoliage,
+          }, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background, deckCap })
+        )
       );
     }
     if (outdoorJob && includeRvs === true && exportMode.isParkContext()) {
@@ -1858,11 +1862,15 @@ async function handleClutterNorthUp(event) {
     }
     if (includeFoliage) {
       forestJob = beginOptional((signal) =>
-        fetchSlopeForest(requestBbox, { signal, ua: UA, timeoutMs: background ? 45000 : 8000, tile: background })
+        stageClock.timeSource("forest", () =>
+          fetchSlopeForest(requestBbox, { signal, ua: UA, timeoutMs: background ? 45000 : 8000, tile: background })
+        )
       );
     }
     detailJob = beginOptional((signal) =>
-      fetchBuildingDetail(requestBbox, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background, deckCap })
+      stageClock.timeSource("buildingDetail", () =>
+        fetchBuildingDetail(requestBbox, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background, deckCap })
+      )
     );
     if (needImage) {
       frame = applyImageryMeta(frame, null, { width: frame.imgW, height: frame.imgH }, { requestBbox });
@@ -1876,16 +1884,18 @@ async function handleClutterNorthUp(event) {
     // 0 buildings and 0 trees.
     if (devHost && readTerrain && needImage && !terrainJob) {
       terrainJob = beginOptional((signal) =>
-        fetchTerrainDemImpl(frame, null, {
-          signal,
-          terrainResolution,
-          terrainStyle,
-          allowSurfaceFallback: true,
-          deadlineMs: started + answerMs - 250,
-          fitAnswerClock: true,
-          backgroundDem: background,
-          skip3depProbe: !frameHas3dep(frame),
-        })
+        stageClock.timeSource("dem", () =>
+          fetchTerrainDemImpl(frame, null, {
+            signal,
+            terrainResolution,
+            terrainStyle,
+            allowSurfaceFallback: true,
+            deadlineMs: started + answerMs - 250,
+            fitAnswerClock: true,
+            backgroundDem: background,
+            skip3depProbe: !frameHas3dep(frame),
+          })
+        )
       );
     }
     let imagerySettled = !needImage;
@@ -1918,20 +1928,24 @@ async function handleClutterNorthUp(event) {
     let metaReady = null;
     if (!devHost) {
       overtureJob = beginOptional((signal) =>
-        fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
+        stageClock.timeSource("overtureBuildings", () =>
+          fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
+        )
       );
       if (needImage) {
-        imgMeta = await fetchImageryMeta(imgMetaUrl);
+        imgMeta = await stageClock.timeSource("imageryMeta", () => fetchImageryMeta(imgMetaUrl));
         if (imgMeta) frame = applyImageryMeta(frame, imgMeta, null, { requestBbox });
         if (readTerrain && !terrainJob) {
           terrainJob = beginOptional((signal) =>
-            fetchTerrainDemImpl(frame, null, {
-              signal,
-              terrainResolution,
-              terrainStyle,
-              allowSurfaceFallback: devHost,
-              deadlineMs: started + TERRAIN_HARD_MS,
-            })
+            stageClock.timeSource("dem", () =>
+              fetchTerrainDemImpl(frame, null, {
+                signal,
+                terrainResolution,
+                terrainStyle,
+                allowSurfaceFallback: devHost,
+                deadlineMs: started + TERRAIN_HARD_MS,
+              })
+            )
           );
         }
       }
@@ -1943,20 +1957,26 @@ async function handleClutterNorthUp(event) {
       });
       if (!overtureJob) {
         overtureJob = beginOptional((signal) =>
-          fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
+          stageClock.timeSource("overtureBuildings", () =>
+            fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
+          )
         );
       }
     }
-    const globalJob = fetchMsGlobalFootprints(frame, (url) =>
-      fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(coreBudget) })
-    ).catch(() => ({ features: [] }));
+    const globalJob = stageClock.timeSource("microsoft", () =>
+      fetchMsGlobalFootprints(frame, (url) =>
+        fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(coreBudget) })
+      ).catch(() => ({ features: [] }))
+    );
     const usaCtrl = new AbortController();
     const usaTimer = setTimeout(() => usaCtrl.abort(), coreBudget);
-    const usaJob = fetchUsaStructures(frame, (url) =>
-      fetch(url, { headers: { "user-agent": UA }, signal: usaCtrl.signal })
-    )
-      .catch(() => ({ features: [] }))
-      .finally(() => clearTimeout(usaTimer));
+    const usaJob = stageClock.timeSource("usaStructures", () =>
+      fetchUsaStructures(frame, (url) =>
+        fetch(url, { headers: { "user-agent": UA }, signal: usaCtrl.signal })
+      )
+        .catch(() => ({ features: [] }))
+        .finally(() => clearTimeout(usaTimer))
+    );
     if (includeFoliage && !coverJob) {
       const coverFrame = {
         west: requestBbox.west,
@@ -1964,7 +1984,9 @@ async function handleClutterNorthUp(event) {
         east: requestBbox.east,
         north: requestBbox.north,
       };
-      coverJob = beginOptional((signal) => fetchWorldCoverImpl(coverFrame, { signal }));
+      coverJob = beginOptional((signal) =>
+        stageClock.timeSource("worldcover", () => fetchWorldCoverImpl(coverFrame, { signal }))
+      );
     }
     if ((lidarOn || lidarCanopyOn) && !lidarPromise) {
       lidarSettled = false;
@@ -1978,15 +2000,17 @@ async function handleClutterNorthUp(event) {
             east: requestBbox.east,
             north: requestBbox.north,
           };
-      lidarPromise = fetchUsgsLidar(lidarBox, { maxMs: lidarCapMs(background) })
-        .then((value) => {
-          lidarSettled = true;
-          return value;
-        })
-        .catch(() => {
-          lidarSettled = true;
-          return null;
-        });
+      lidarPromise = stageClock.timeSource("lidar", () =>
+        fetchUsgsLidar(lidarBox, { maxMs: lidarCapMs(background) })
+          .then((value) => {
+            lidarSettled = true;
+            return value;
+          })
+          .catch(() => {
+            lidarSettled = true;
+            return null;
+          })
+      );
     }
     if (includeFoliage && needImage && !chmJob) {
       const chmFrame = {
@@ -1995,12 +2019,16 @@ async function handleClutterNorthUp(event) {
         east: frame.east,
         north: frame.north,
       };
-      chmJob = beginOptional((signal) => fetchChmGridImpl(chmFrame, { signal }));
+      chmJob = beginOptional((signal) =>
+        stageClock.timeSource("canopy", () => fetchChmGridImpl(chmFrame, { signal }))
+      );
     }
     const clientHitsEarly = includeFoliage ? normalizeCanopyHits(body.canopyHits) : [];
     const canopyJob =
       includeFoliage && !clientHitsEarly.length && !devHost
-        ? fetchCanopyTrees(frame, (url) => fetchOk(url, "canopy"), { maxTrees: maxTreesForBbox(frame) }).catch(() => null)
+        ? stageClock.timeSource("nlcdCanopy", () =>
+            fetchCanopyTrees(frame, (url) => fetchOk(url, "canopy"), { maxTrees: maxTreesForBbox(frame) }).catch(() => null)
+          )
         : null;
     const coreWatch = watchSlowStages([
       { label: "Fetching aerial", open: () => needImage && !imagerySettled },
@@ -2031,14 +2059,14 @@ async function handleClutterNorthUp(event) {
         );
       });
       try {
-        fetched = await Promise.race([core, wall]);
+        fetched = await stageClock.timeSource("core", () => Promise.race([core, wall]));
       } finally {
         clearTimeout(wallTimer);
         coreWatch.stop();
       }
     } else {
       try {
-        fetched = await core;
+        fetched = await stageClock.timeSource("core", () => core);
       } finally {
         coreWatch.stop();
       }
@@ -2116,46 +2144,54 @@ async function handleClutterNorthUp(event) {
   if (devHost && (sharpRoom ? devLeft >= 800 : devSlice >= 200) && overtureFrame && needImage) {
     if (!overtureJob) {
       overtureJob = beginOptional((signal) =>
-        fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
+        stageClock.timeSource("overtureBuildings", () =>
+          fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
+        )
       );
     }
     if (readTerrain && !terrainJob) {
       terrainJob = beginOptional((signal) =>
-        fetchTerrainDemImpl(frame, null, {
-          signal,
-          terrainResolution,
-          terrainStyle,
-          allowSurfaceFallback: true,
-          deadlineMs: started + answerMs,
-          fitAnswerClock: true,
-          backgroundDem: background,
-          skip3depProbe: !frameHas3dep(frame),
-        })
+        stageClock.timeSource("dem", () =>
+          fetchTerrainDemImpl(frame, null, {
+            signal,
+            terrainResolution,
+            terrainStyle,
+            allowSurfaceFallback: true,
+            deadlineMs: started + answerMs,
+            fitAnswerClock: true,
+            backgroundDem: background,
+            skip3depProbe: !frameHas3dep(frame),
+          })
+        )
       );
     }
     if (includeFoliage && !coverJob) {
       coverJob = beginOptional((signal) =>
-        fetchWorldCoverImpl(
-          {
-            west: frame.west,
-            south: frame.south,
-            east: frame.east,
-            north: frame.north,
-          },
-          { signal }
+        stageClock.timeSource("worldcover", () =>
+          fetchWorldCoverImpl(
+            {
+              west: frame.west,
+              south: frame.south,
+              east: frame.east,
+              north: frame.north,
+            },
+            { signal }
+          )
         )
       );
     }
     if (includeFoliage && !chmJob) {
       chmJob = beginOptional((signal) =>
-        fetchChmGridImpl(
-          {
-            west: frame.west,
-            south: frame.south,
-            east: frame.east,
-            north: frame.north,
-          },
-          { signal }
+        stageClock.timeSource("canopy", () =>
+          fetchChmGridImpl(
+            {
+              west: frame.west,
+              south: frame.south,
+              east: frame.east,
+              north: frame.north,
+            },
+            { signal }
+          )
         )
       );
     }
@@ -2198,7 +2234,7 @@ async function handleClutterNorthUp(event) {
   const terrainFollow =
     !includeTerrain || devHost
       ? { preset: null, job: devHost ? terrainJob : null, join: null }
-      : await followUpTerrain(terrainJob, started, frame, devHost, terrainResolution, terrainStyle);
+      : await stageClock.timeSource("demFollowUp", () => followUpTerrain(terrainJob, started, frame, devHost, terrainResolution, terrainStyle));
   const demPromise = terrainFollow.preset
     ? Promise.resolve(terrainFollow.preset)
     : terrainFollow.job
@@ -2220,7 +2256,10 @@ async function handleClutterNorthUp(event) {
   slowWatch.tick();
   let optional;
   try {
-    optional = await Promise.all([overturePromise, demPromise, chmPromise]);
+    optional = await stageClock.timeSource("optionalJoin", () =>
+      Promise.all([overturePromise, demPromise, chmPromise])
+    );
+    stageClock.logPrefixSummary("after-optional");
   } finally {
     slowWatch.stop();
   }
@@ -2411,7 +2450,10 @@ async function handleClutterNorthUp(event) {
         reportProgress({ stage: "Lidar canopy" });
         await flushProgress();
       }
-      const lidar = await finishPartialLidar(await lidarPromise, lidarBox, { maxMs: lidarCapMs(background) });
+      const firstLidar = await lidarPromise;
+      const lidar = await stageClock.timeSource("lidarRetry", () =>
+        finishPartialLidar(firstLidar, lidarBox, { maxMs: lidarCapMs(background) })
+      );
       scaleLidar = lidar;
       if (lidar && !lidar.skipped && lidar.grid) padLidar = lidar.grid;
       if (exportMode.isSiteTypes() && lidar && !lidar.skipped && lidar.grid) {
@@ -2450,7 +2492,10 @@ async function handleClutterNorthUp(event) {
         reportProgress({ stage: "Lidar heights" });
         await flushProgress();
       }
-      const lidar = await finishPartialLidar(await lidarPromise, lidarBox, { maxMs: lidarCapMs(background) });
+      const firstLidar = await lidarPromise;
+      const lidar = await stageClock.timeSource("lidarRetry", () =>
+        finishPartialLidar(firstLidar, lidarBox, { maxMs: lidarCapMs(background) })
+      );
       if (!lidar) {
         warnings.push("Lidar heights not used.");
       } else {

@@ -19,6 +19,12 @@ const {
   mercator,
   HEIGHT_SOURCE,
   km2Of,
+  getBuf,
+  getJson,
+  setLidarCacheDir,
+  fetchTimeoutMs,
+  TILE_FETCH_MS,
+  TILE_FETCH_CONCURRENCY,
 } = require("../netlify/lib/usgs-lidar");
 
 const frame = { west: -115.17, south: 36.12, east: -115.16, north: 36.13 };
@@ -339,6 +345,64 @@ describe("USGS lidar", () => {
       fetchLidar: async () => ({ partial: true, points: 100, skipped: null }),
     });
     assert.equal(out, first);
+  });
+
+  it("clips a hung lidar server to 8 s, or to the time left on the stage cap", () => {
+    assert.equal(TILE_FETCH_MS, 8000);
+    assert.equal(TILE_FETCH_CONCURRENCY, 4);
+    assert.equal(fetchTimeoutMs(0), 8000);
+    assert.equal(fetchTimeoutMs(Date.now() - 10), 0);
+    const left = fetchTimeoutMs(Date.now() + 1500);
+    assert.ok(left >= 250 && left <= 1500, left);
+  });
+
+  it("reuses a cached lidar tile so a second read does not hit the network", async () => {
+    const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "oc-lidar-cache-"));
+    setLidarCacheDir(dir);
+    let calls = 0;
+    const prev = global.fetch;
+    global.fetch = async () => {
+      calls++;
+      return {
+        ok: true,
+        arrayBuffer: async () => Buffer.from("LAZDATA"),
+        text: async () => "{\"ok\":true}",
+      };
+    };
+    try {
+      const first = await getBuf("https://example.test/tile.laz");
+      const second = await getBuf("https://example.test/tile.laz");
+      assert.equal(calls, 1);
+      assert.equal(first.toString(), "LAZDATA");
+      assert.equal(second.toString(), "LAZDATA");
+      const jsonA = await getJson("https://example.test/ept.json");
+      const jsonB = await getJson("https://example.test/ept.json");
+      assert.equal(calls, 2);
+      assert.deepEqual(jsonA, { ok: true });
+      assert.deepEqual(jsonB, { ok: true });
+    } finally {
+      global.fetch = prev;
+      setLidarCacheDir(undefined);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not use the disk cache when a test supplies its own fetch", async () => {
+    const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "oc-lidar-cache-"));
+    setLidarCacheDir(dir);
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls++;
+      return { ok: true, arrayBuffer: async () => Buffer.from("X") };
+    };
+    try {
+      await getBuf("https://example.test/no-cache.laz", fetchImpl);
+      await getBuf("https://example.test/no-cache.laz", fetchImpl);
+      assert.equal(calls, 2);
+    } finally {
+      setLidarCacheDir(undefined);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("sends lidar from the Advanced toggle, off unless checked", () => {

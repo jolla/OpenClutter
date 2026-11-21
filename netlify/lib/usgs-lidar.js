@@ -19,6 +19,10 @@
  * Quebec open lidar is not wired in. The page turns this on from Advanced.
  */
 
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const crypto = require("crypto");
 const { userAgent } = require("./version");
 const exportMode = require("./export-mode");
 
@@ -32,6 +36,84 @@ const MAX_BYTES = 32 * 1024 * 1024;
 const BYTES_PER_POINT = 8;
 const MAX_TILES = 80;
 const MAX_MS = 32000;
+/** Independent LAZ tiles (and hierarchy JSON) fetch in parallel. */
+const TILE_FETCH_CONCURRENCY = 4;
+/** Per-server cap, then move on. Clipped to the remaining stage budget. */
+const TILE_FETCH_MS = 8000;
+
+let cacheDirOverride = undefined;
+
+function setLidarCacheDir(dir) {
+  cacheDirOverride = dir;
+}
+
+function lidarCacheDir() {
+  if (cacheDirOverride !== undefined) return cacheDirOverride || "";
+  if (process.env.OPENCLUTTER_LIDAR_CACHE === "0") return "";
+  if (process.env.OPENCLUTTER_LIDAR_CACHE_DIR === "0") return "";
+  if (process.env.OPENCLUTTER_LIDAR_CACHE_DIR) return process.env.OPENCLUTTER_LIDAR_CACHE_DIR;
+  try {
+    const home = os.homedir();
+    if (home) return path.join(home, ".cache/openclutter/lidar");
+  } catch {
+    /* no home directory in this runtime */
+  }
+  return "";
+}
+
+function cacheEnabled(fetchImpl) {
+  return fetchImpl === fetch && !!lidarCacheDir();
+}
+
+function cachePathFor(url) {
+  const dir = lidarCacheDir();
+  if (!dir || !url) return "";
+  const hash = crypto.createHash("sha1").update(String(url)).digest("hex");
+  return path.join(dir, hash.slice(0, 2), hash);
+}
+
+async function readLidarCache(url) {
+  const file = cachePathFor(url);
+  if (!file) return null;
+  try {
+    return await fs.promises.readFile(file);
+  } catch {
+    return null;
+  }
+}
+
+async function writeLidarCache(url, buf) {
+  const file = cachePathFor(url);
+  if (!file || !buf || !buf.length) return;
+  try {
+    await fs.promises.mkdir(path.dirname(file), { recursive: true });
+    const tmp = file + ".tmp" + process.pid;
+    await fs.promises.writeFile(tmp, buf);
+    await fs.promises.rename(tmp, file);
+  } catch {
+    try {
+      await fs.promises.unlink(file + ".tmp" + process.pid);
+    } catch {
+      /* leftover temp is harmless */
+    }
+  }
+}
+
+function noteLidarCache(hit) {
+  try {
+    require("./stage-clock").noteCache("lidar", hit);
+  } catch {
+    /* clock is optional for library calls */
+  }
+}
+
+function fetchTimeoutMs(deadline, capMs) {
+  const cap = capMs > 0 ? capMs : TILE_FETCH_MS;
+  if (!(deadline > 0)) return cap;
+  const remain = deadline - Date.now();
+  if (remain <= 0) return 0;
+  return Math.max(250, Math.min(cap, remain));
+}
 const MIN_SAMPLES = 6;
 const MIN_ADDED_M2 = 200;
 const NDSM_BUILDING_M = 3;
@@ -981,23 +1063,50 @@ function overlapsXY(box, query) {
   return box[0] < query[2] && box[3] > query[0] && box[1] < query[3] && box[4] > query[1];
 }
 
-async function getJson(url, fetchImpl) {
+async function getJson(url, fetchImpl, deadline) {
+  fetchImpl = fetchImpl || fetch;
+  const cache = cacheEnabled(fetchImpl);
+  if (cache) {
+    const hit = await readLidarCache(url);
+    if (hit) {
+      noteLidarCache(true);
+      return JSON.parse(hit.toString("utf8"));
+    }
+    noteLidarCache(false);
+  }
+  const ms = fetchTimeoutMs(deadline);
+  if (ms <= 0) throw new Error("timeout");
   const res = await fetchImpl(url, {
     headers: { "user-agent": userAgent, accept: "application/json" },
-    signal: AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(ms),
   });
   if (!res.ok) throw new Error("http " + res.status);
-  return res.json();
+  const text = await res.text();
+  if (cache) await writeLidarCache(url, Buffer.from(text));
+  return JSON.parse(text);
 }
 
-async function getBuf(url, fetchImpl) {
+async function getBuf(url, fetchImpl, deadline) {
+  fetchImpl = fetchImpl || fetch;
+  const cache = cacheEnabled(fetchImpl);
+  if (cache) {
+    const hit = await readLidarCache(url);
+    if (hit) {
+      noteLidarCache(true);
+      return hit;
+    }
+    noteLidarCache(false);
+  }
+  const ms = fetchTimeoutMs(deadline);
+  if (ms <= 0) throw new Error("timeout");
   const res = await fetchImpl(url, {
     headers: { "user-agent": userAgent, accept: "application/octet-stream" },
-    signal: AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(ms),
   });
   if (!res.ok) throw new Error("http " + res.status);
-  const ab = await res.arrayBuffer();
-  return Buffer.from(ab);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (cache) await writeLidarCache(url, buf);
+  return buf;
 }
 
 function readF64(mod, ptr, off) {
@@ -1093,8 +1202,8 @@ function spreadTiles(tiles) {
   return ordered;
 }
 
-async function readProject(name, frame, caps, fetchImpl) {
-  const ept = await getJson(EPT_BUCKET + "/" + name + "/ept.json", fetchImpl);
+async function readProject(name, frame, caps, fetchImpl, deadline) {
+  const ept = await getJson(EPT_BUCKET + "/" + name + "/ept.json", fetchImpl, deadline);
   const bounds = ept.bounds;
   const span = ept.span || 128;
   if (!bounds || bounds.length < 6) throw new Error("ept bounds");
@@ -1110,24 +1219,40 @@ async function readProject(name, frame, caps, fetchImpl) {
   const loaded = new Map();
   async function load(key) {
     if (loaded.has(key)) return;
-    loaded.set(key, await getJson(base + key + ".json", fetchImpl));
+    loaded.set(key, await getJson(base + key + ".json", fetchImpl, deadline));
   }
   await load("0-0-0-0");
   let grew = true;
   let guard = 0;
   while (grew && guard++ < 40) {
     grew = false;
+    const pending = [];
+    const seen = new Set(loaded.keys());
     for (const data of loaded.values()) {
       const keys = Object.keys(data);
       for (let i = 0; i < keys.length; i++) {
         const key = keys[i];
-        if (data[key] !== -1 || loaded.has(key)) continue;
+        if (data[key] !== -1 || seen.has(key)) continue;
         const d = +key.split("-")[0];
         if (d > fullDepth) continue;
         if (!overlapsXY(nodeBox(bounds, key), query)) continue;
-        await load(key);
-        grew = true;
+        seen.add(key);
+        pending.push(key);
       }
+    }
+    if (pending.length) {
+      grew = true;
+      const n = Math.max(1, Math.min(TILE_FETCH_CONCURRENCY, pending.length));
+      let cursor = 0;
+      async function worker() {
+        while (cursor < pending.length) {
+          const key = pending[cursor++];
+          await load(key);
+        }
+      }
+      const workers = [];
+      for (let i = 0; i < n; i++) workers.push(worker());
+      await Promise.all(workers);
     }
   }
   const nodes = [];
@@ -1222,7 +1347,7 @@ async function fetchUsgsLidarWork(frame, opts) {
     let candidate = null;
     for (let attempt = 0; attempt < 2 && !candidate; attempt++) {
       try {
-        candidate = await readProject(name, frame, caps, fetchImpl);
+        candidate = await readProject(name, frame, caps, fetchImpl, started + caps.maxMs);
         if (!candidate) break;
       } catch {
         candidate = null;
@@ -1267,24 +1392,49 @@ async function fetchUsgsLidarWork(frame, opts) {
   }
   const deadline = started + caps.maxMs;
   let partial = false;
-  for (let i = 0; i < plan.nodes.length; i++) {
-    if (Date.now() > deadline || bytes >= caps.maxBytes || points >= caps.maxPoints) {
-      partial = i < plan.nodes.length;
+  let cursor = 0;
+  let fetchMisses = 0;
+  const inflight = [];
+  function pumpTiles() {
+    while (
+      inflight.length < TILE_FETCH_CONCURRENCY &&
+      cursor < plan.nodes.length &&
+      Date.now() < deadline &&
+      bytes < caps.maxBytes &&
+      points < caps.maxPoints &&
+      tiles < caps.maxTiles
+    ) {
+      const node = plan.nodes[cursor++];
+      const url = EPT_BUCKET + "/" + project + "/ept-data/" + node.key + ".laz";
+      inflight.push(
+        getBuf(url, fetchImpl, deadline)
+          .then((buf) => ({ buf }))
+          .catch(() => ({ buf: null }))
+      );
+    }
+  }
+  while (true) {
+    pumpTiles();
+    if (!inflight.length) {
+      if (cursor < plan.nodes.length || fetchMisses) partial = true;
       break;
     }
-    const node = plan.nodes[i];
-    let buf;
-    try {
-      buf = await getBuf(EPT_BUCKET + "/" + project + "/ept-data/" + node.key + ".laz", fetchImpl);
-    } catch {
+    const got = await inflight.shift();
+    if (!got || !got.buf) {
+      fetchMisses++;
+      if (Date.now() > deadline && cursor < plan.nodes.length) partial = true;
       continue;
     }
-    bytes += buf.length;
+    if (Date.now() > deadline || bytes >= caps.maxBytes || points >= caps.maxPoints || tiles >= caps.maxTiles) {
+      partial = true;
+      break;
+    }
+    bytes += got.buf.length;
     tiles++;
     try {
       points += decodeTile(
         mod,
-        buf,
+        got.buf,
         (x, y, z, cls, ret, nret) => {
           ingestPoint(
             grid,
@@ -1381,6 +1531,12 @@ module.exports = {
   MAX_BYTES,
   MAX_TILES,
   MAX_MS,
+  TILE_FETCH_MS,
+  TILE_FETCH_CONCURRENCY,
+  getBuf,
+  getJson,
+  setLidarCacheDir,
+  fetchTimeoutMs,
   projectYear,
   rankProjects,
   inQuebec,

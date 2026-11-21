@@ -102,6 +102,13 @@ function snapshot(extra) {
     canopyMs: spans.canopy | 0,
     worldcoverMs: spans.worldcover | 0,
     lidarMs: spans.lidar | 0,
+    usaStructuresMs: spans.usaStructures | 0,
+    outdoorMs: spans.outdoor | 0,
+    buildingDetailMs: spans.buildingDetail | 0,
+    coreMs: spans.core | 0,
+    optionalJoinMs: spans.optionalJoin | 0,
+    imageryMetaMs: spans.imageryMeta | 0,
+    nlcdCanopyMs: spans.nlcdCanopy | 0,
     aerialFetchMs: spans.aerialFetch | 0,
     aerialStitchMs: spans.aerialStitch | 0,
     treeDetectMs: spans.tree | 0,
@@ -115,9 +122,59 @@ function snapshot(extra) {
   };
 }
 
+function elapsedSec(clock, t) {
+  const t0 = clock && clock.t0 > 0 ? clock.t0 : t;
+  return ((t - t0) / 1000).toFixed(1);
+}
+
 function logSubstage(event, name, extra) {
   let line = "substage " + event + " " + name;
   if (extra) line += " " + extra;
+  process.stderr.write(line + "\n");
+}
+
+function logSource(event, name, extra) {
+  let line = "source " + event + " " + name;
+  if (extra) line += " " + extra;
+  process.stderr.write(line + "\n");
+}
+
+/**
+ * Prefix source fetch: logs start and done with duration and elapsed
+ * time from export start, and records the span on the clock.
+ */
+async function timeSource(name, fn, extra) {
+  const clock = als.getStore();
+  const t0 = Date.now();
+  const startExtra = "elapsed " + elapsedSec(clock, t0) + "s" + (extra ? " " + extra : "");
+  logSource("start", name, startExtra);
+  const endSpan = beginSpan(name);
+  try {
+    return await fn();
+  } finally {
+    endSpan();
+    const now = Date.now();
+    logSource(
+      "done",
+      name,
+      "duration " + ((now - t0) / 1000).toFixed(1) + "s elapsed " + elapsedSec(clock, now) + "s"
+    );
+  }
+}
+
+function logPrefixSummary(label) {
+  const clock = als.getStore();
+  if (!clock) return;
+  const names = Object.keys(clock.spans).filter((n) => n.slice(0, 4) !== "sub:");
+  names.sort();
+  const parts = names.map((n) => n + " " + ((clock.spans[n] || 0) / 1000).toFixed(1) + "s");
+  const line =
+    "source summary " +
+    (label || "prefix") +
+    " elapsed " +
+    elapsedSec(clock, Date.now()) +
+    "s" +
+    (parts.length ? " " + parts.join(" ") : "");
   process.stderr.write(line + "\n");
 }
 
@@ -153,6 +210,9 @@ module.exports = {
   timeSpanSync,
   timeSubstage,
   timeSubstageSync,
+  timeSource,
+  logSource,
+  logPrefixSummary,
   logSubstage,
   noteCache,
   snapshot,

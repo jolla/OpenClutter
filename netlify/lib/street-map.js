@@ -153,11 +153,11 @@ async function fetchStreetMapsWork(bbox, opts) {
   const gapFetch = o.fetchGapOverpass || fetchGapOverpass;
   const fullFetch = o.fetchOsmMaps || fetchOsmMaps;
 
-  const ovtWork = stageClock.timeSpan("overture", () =>
+  const ovtWork = stageClock.timeSource("overture", () =>
     ovtFetch(bbox, { signal: null, deadlineMs: o.overtureDeadlineMs })
   );
   const gapDeadline = capGapDeadline(o.deadlineMs);
-  const gapWork = stageClock.timeSpan("overpass", () =>
+  const gapWork = stageClock.timeSource("overpass", () =>
     gapFetch(bbox, { ua: o.ua, signal: null, deadlineMs: gapDeadline })
   );
 
