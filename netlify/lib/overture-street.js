@@ -1015,7 +1015,8 @@ async function fetchOvertureStreet(bbox, opts) {
     }
     return { ok: true, elements, notes: [], themes, release: packed.release || RELEASE };
   } catch (e) {
-    return { ok: false, elements: [], notes: [], error: String(e && e.message ? e.message : e) };
+    const error = isAbortError(e) ? "timed out after " + deadlineMs + "ms" : String(e && e.message ? e.message : e);
+    return { ok: false, elements: [], notes: [], error };
   } finally {
     clearTimeout(timer);
     if (parent) parent.removeEventListener("abort", onParent);

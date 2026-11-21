@@ -16,6 +16,7 @@ const stageClock = require("./stage-clock");
 const streetCache = new Map();
 const STREET_CACHE_MS = 120000;
 const GAP_DEADLINE_MS = 25000;
+const STREET_OVERTURE_ATTEMPTS = 2;
 
 function gapQuery(bbox) {
   const box = [+bbox.south, +bbox.west, +bbox.north, +bbox.east].join(",");
@@ -125,6 +126,18 @@ function waitUnlessAborted(promise, signal) {
   });
 }
 
+function isTransientOvertureError(err) {
+  const msg = String(err || "");
+  if (!msg) return true;
+  return /abort|timeout|timed out|econnreset|etimedout|enotfound|eai_again|econnrefused|socket|network|fetch failed|http 5\d\d|429|503|504/i.test(msg);
+}
+
+function overtureFallbackNote(error) {
+  const msg = error ? String(error).replace(/\s+/g, " ").trim() : "";
+  if (msg) return "Overture street-map read failed (" + msg + "); used the full Overpass path.";
+  return "Overture street-map read failed; used the full Overpass path.";
+}
+
 /**
  * Shared street-map read. One caller's abort does not cancel work another
  * caller is still waiting on.
@@ -148,8 +161,16 @@ async function fetchStreetMapsWork(bbox, opts) {
   let ovt = null;
   try {
     ovt = await ovtWork;
-  } catch {
-    ovt = null;
+  } catch (e) {
+    ovt = { ok: false, elements: [], error: String(e && e.message ? e.message : e) };
+  }
+  for (let attempt = 1; attempt < STREET_OVERTURE_ATTEMPTS && !(ovt && ovt.ok); attempt++) {
+    if (!isTransientOvertureError(ovt && ovt.error)) break;
+    try {
+      ovt = await ovtFetch(bbox, { signal: null, deadlineMs: o.overtureDeadlineMs });
+    } catch (e) {
+      ovt = { ok: false, elements: [], error: String(e && e.message ? e.message : e) };
+    }
   }
   if (ovt && ovt.ok) {
     let gap = { elements: [] };
@@ -169,7 +190,7 @@ async function fetchStreetMapsWork(bbox, opts) {
     };
   }
   const full = await fullFetch(bbox, o);
-  const notes = [].concat(full.notes || [], ["Overture street-map read failed; used the full Overpass path."]);
+  const notes = [].concat(full.notes || [], [overtureFallbackNote(ovt && ovt.error)]);
   return Object.assign({}, full, { notes, source: full.source || "overpass" });
 }
 
@@ -201,7 +222,9 @@ function resetForTests() {
 module.exports = {
   gapQuery,
   GAP_DEADLINE_MS,
+  STREET_OVERTURE_ATTEMPTS,
   capGapDeadline,
+  isTransientOvertureError,
   fetchGapOverpass,
   fetchStreetMaps,
   dedupeElements,

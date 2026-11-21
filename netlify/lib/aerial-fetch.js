@@ -32,6 +32,13 @@ const AERIAL_TILE_MIN_SIDE_RESILIENT = 2000;
  * 2211 px plates by a few hundred milliseconds.
  */
 const AERIAL_SHARPER_GRACE_MS = 20000;
+/**
+ * When the budget expires with no JPEG in hand, wait this long for a
+ * late first plate before aborting. A plate already in hand still
+ * stops at the budget. Official canopy flakes (florida-resort,
+ * pnw-conifer) timed out with no plate kept.
+ */
+const AERIAL_EMPTY_GRACE_MS = 12000;
 
 let budgetOverride = 0;
 
@@ -247,10 +254,14 @@ function refusedBySource(err) {
 async function racePlates(entries, opts) {
   const list = entries || [];
   const budgetMs = opts && opts.budgetMs > 0 ? opts.budgetMs : aerialBudgetMs();
+  const emptyGraceMs =
+    opts && opts.emptyGraceMs != null && Number.isFinite(+opts.emptyGraceMs)
+      ? Math.max(0, +opts.emptyGraceMs)
+      : AERIAL_EMPTY_GRACE_MS;
   const started = Date.now();
-  const deadlineAt = started + budgetMs;
+  const deadlineAt = started + budgetMs + emptyGraceMs;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), budgetMs);
+  const timer = setTimeout(() => ctrl.abort(), budgetMs + emptyGraceMs);
   if (typeof timer.unref === "function") timer.unref();
 
   const tileMinSide = opts && opts.tileMinSide > 0 ? opts.tileMinSide : 0;
@@ -338,21 +349,34 @@ async function racePlates(entries, opts) {
   for (let i = 0; i < jobs.length; i++) jobs[i].catch(() => {});
 
   try {
-    while (Date.now() - started < budgetMs) {
+    while (true) {
+      const elapsed = Date.now() - started;
       if (results[0]) break;
       if (settled >= list.length) break;
-      let left = budgetMs - (Date.now() - started);
-      if (graceMs > 0) {
-        const best = bestIndex();
-        if (errors[0] && best >= 0) {
-          if (sharperSettled(best)) break;
-          if (!fallbackAt) fallbackAt = Date.now();
-          const graceLeft = graceMs - (Date.now() - fallbackAt);
-          if (!(graceLeft > 0)) break;
-          left = Math.min(left, graceLeft);
+      const best = bestIndex();
+      const hasPlate = best >= 0;
+      // A plate in hand still stops at the ordinary budget (plus the
+      // existing sharper-plate grace). Empty-hand grace only applies
+      // when nothing has arrived yet.
+      let left;
+      if (hasPlate) {
+        left = budgetMs - elapsed;
+        if (graceMs > 0) {
+          if (errors[0] && sharperSettled(best)) break;
+          if (errors[0]) {
+            if (!fallbackAt) fallbackAt = Date.now();
+            const graceLeft = graceMs - (Date.now() - fallbackAt);
+            if (!(graceLeft > 0)) break;
+            left = Math.min(Math.max(0, left), graceLeft);
+          } else if (!(left > 0)) {
+            break;
+          }
+        } else if (errors[0] || !(left > 0)) {
+          break;
         }
-      } else if (errors[0] && bestIndex() >= 0) {
-        break;
+      } else {
+        left = budgetMs + emptyGraceMs - elapsed;
+        if (!(left > 0)) break;
       }
       if (!(left > 0)) break;
       await waitChange(left);
@@ -382,6 +406,7 @@ module.exports = {
   AERIAL_TILE_LONG_SIDE,
   AERIAL_TILE_MIN_SIDE_RESILIENT,
   AERIAL_SHARPER_GRACE_MS,
+  AERIAL_EMPTY_GRACE_MS,
   setAerialBudgetForTests,
   aerialBudgetMs,
   shouldTilePlate,

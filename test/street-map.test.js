@@ -2,7 +2,7 @@
 
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
-const { gapQuery, GAP_DEADLINE_MS, capGapDeadline, fetchStreetMaps, resetForTests } = require("../netlify/lib/street-map");
+const { gapQuery, GAP_DEADLINE_MS, STREET_OVERTURE_ATTEMPTS, capGapDeadline, fetchStreetMaps, resetForTests } = require("../netlify/lib/street-map");
 
 const BOX = { west: -90.5276, south: 41.5786, east: -90.523, north: 41.5823 };
 
@@ -77,6 +77,49 @@ describe("street-map coordinator", () => {
     assert.equal(got.xmls[0], "<osm></osm>");
     assert.notEqual(got.source, "overture");
     assert.match((got.notes || []).join(" "), /Overture street-map read failed/);
+  });
+
+  it("retries a transient Overture failure once and keeps the Overture path", async () => {
+    assert.equal(STREET_OVERTURE_ATTEMPTS, 2);
+    let n = 0;
+    let full = 0;
+    const got = await fetchStreetMaps(BOX, {
+      fetchOvertureStreet: async () => {
+        n += 1;
+        if (n === 1) return { ok: false, elements: [], error: "timed out after 30000ms" };
+        return {
+          ok: true,
+          elements: [{ type: "way", id: "ov-retry", tags: { leisure: "marina" }, geometry: [{ lon: -90.525, lat: 41.58 }] }],
+          notes: [],
+          themes: { land_use: 1 },
+        };
+      },
+      fetchGapOverpass: async () => ({ ok: true, elements: [] }),
+      fetchOsmMaps: async () => {
+        full += 1;
+        return { xmls: ["<osm/>"], elements: [], notes: [], tiled: false, incomplete: false };
+      },
+    });
+    assert.equal(n, 2);
+    assert.equal(full, 0);
+    assert.equal(got.source, "overture");
+    assert.equal(got.elements[0].id, "ov-retry");
+    assert.equal(got.elements[0].tags.leisure, "marina");
+  });
+
+  it("does not retry a non-transient Overture failure, and puts the error in the fallback note", async () => {
+    let n = 0;
+    const got = await fetchStreetMaps(BOX, {
+      fetchOvertureStreet: async () => {
+        n += 1;
+        return { ok: false, elements: [], error: "bad overture street index" };
+      },
+      fetchGapOverpass: async () => ({ ok: true, elements: [] }),
+      fetchOsmMaps: async () => ({ xmls: ["<osm></osm>"], elements: [], notes: [], source: "overpass" }),
+    });
+    assert.equal(n, 1);
+    assert.equal(got.source, "overpass");
+    assert.match((got.notes || []).join(" "), /Overture street-map read failed \(bad overture street index\)/);
   });
 
   it("does not let a long outdoor deadline stretch the gap Overpass wait past 25 seconds", async () => {

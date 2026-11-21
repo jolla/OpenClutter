@@ -11,6 +11,7 @@ const { handler: statusHandler } = require("../netlify/functions/export-status")
 const { geoFrame, capEsriExportFrame } = require("../netlify/lib/geo-frame");
 const {
   AERIAL_STAGE_BUDGET_MS,
+  AERIAL_EMPTY_GRACE_MS,
   sameExportPlate,
   tilePlan,
   stitchTiles,
@@ -190,6 +191,57 @@ describe("aerial budget", () => {
     assert.ok(elapsed < 2000, "elapsed " + elapsed);
     assert.ok(marks[0] >= 2);
     assert.ok(marks.indexOf("unit") > 0);
+  });
+
+  it("waits a short empty-hand grace and keeps a first plate that arrives just after the budget", async () => {
+    assert.ok(AERIAL_EMPTY_GRACE_MS >= 8000 && AERIAL_EMPTY_GRACE_MS <= 20000);
+    const late = solidJpeg(16, 16, [40, 80, 40]);
+    const budgetMs = 80;
+    const t0 = Date.now();
+    const got = await racePlates([{ plate: { imgW: 16, imgH: 16 }, tile: false }], {
+      budgetMs,
+      emptyGraceMs: 250,
+      fetchImage: () => new Promise((resolve) => setTimeout(() => resolve(late), 140)),
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(got.index, 0);
+    assert.equal(got.stepped, false);
+    assert.ok(got.buf.length > 100);
+    assert.ok(elapsed >= 120, "elapsed " + elapsed);
+    assert.ok(elapsed < 800, "elapsed " + elapsed);
+  });
+
+  it("still stops at the ordinary budget when a coarser plate is already in hand", async () => {
+    const coarse = solidJpeg(8, 8, [20, 20, 20]);
+    const budgetMs = 120;
+    const t0 = Date.now();
+    const got = await racePlates(
+      [
+        { plate: { imgW: 64, imgH: 64 }, tile: false },
+        { plate: { imgW: 8, imgH: 8 }, tile: false },
+      ],
+      {
+        budgetMs,
+        emptyGraceMs: 800,
+        fetchImage: (frame, signal) => {
+          if (frame.imgW === 64) {
+            return new Promise((resolve, reject) => {
+              const timer = setTimeout(() => resolve(coarse), 60000);
+              const abort = () => {
+                clearTimeout(timer);
+                reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+              };
+              if (signal) signal.addEventListener("abort", abort, { once: true });
+            });
+          }
+          return Promise.resolve(coarse);
+        },
+      }
+    );
+    const elapsed = Date.now() - t0;
+    assert.equal(got.index, 1);
+    assert.ok(elapsed >= budgetMs - 40, "elapsed " + elapsed);
+    assert.ok(elapsed < 500, "did not use empty-hand grace when a plate was in hand, elapsed " + elapsed);
   });
 
   it("moves the percent during aerial and still saves 100 for the zip", () => {
