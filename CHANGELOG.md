@@ -32,6 +32,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.52** (Nov 20, 2026): /dev only. Prod-host exports now leave 400 kB of headroom under the 8.37 MB JSON cap, so a slightly heavier tree pass still fits. Production gets this in the Nov 30 weekly release.
 - **1.3.51** (Nov 20, 2026): bug fix, /dev only. A long tree or building pass on a large site no longer makes the export start over on the backup path. Production gets this in the Nov 30 weekly release.
 - **1.3.50** (Nov 20, 2026): bug fix, /dev only. Campground tree clusters are split into individual trees again, split crowns sit on the ground under each piece, and large woods follow crown shapes instead of square tiles. Production gets this in the Nov 30 weekly release.
 - **1.3.49** (Nov 20, 2026): bug fix, /dev only. The Detections preview now places objects on the aerial map's real extent instead of squeezing them into the drawn box. Production gets this in the Nov 30 weekly release.
