@@ -4,7 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
-const { forestFromElements, ringAreaM2, fetchSlopeForest } = require("../netlify/lib/slope-forest");
+const { forestFromElements, ringAreaM2, fetchSlopeForest, forestEmptyWarning, setForestCacheDir, setForestCacheLimits, FOREST_CACHE_MAX_BYTES, FOREST_CACHE_TTL_MS } = require("../netlify/lib/slope-forest");
 
 const bbox = { west: -89.692, south: 44.921, east: -89.668, north: 44.939 };
 
@@ -96,5 +96,67 @@ describe("slope forest fetch", () => {
     });
     assert.equal(overpass, 1);
     assert.equal(got.wood.length, 1);
+  });
+
+  it("retries a failed Overpass forest read once", async () => {
+    let n = 0;
+    const got = await fetchSlopeForest(bbox, {
+      overture: false,
+      fetchOverpassForest: async () => {
+        n += 1;
+        if (n === 1) return { ok: false, wood: [], pistes: [], notes: [] };
+        return { ok: true, wood: [{ areaM2: 100 }], pistes: [], notes: [] };
+      },
+    });
+    assert.equal(n, 2);
+    assert.equal(got.ok, true);
+    assert.equal(got.wood.length, 1);
+  });
+
+  it("does not start a second Overpass forest read when the first already used the budget", async () => {
+    let n = 0;
+    const got = await fetchSlopeForest(bbox, {
+      overture: false,
+      timeoutMs: 40,
+      fetchOverpassForest: async (_b, _q, _o, ms) => {
+        n += 1;
+        await new Promise((resolve) => setTimeout(resolve, ms + 5));
+        return { ok: false, wood: [], pistes: [], notes: [] };
+      },
+    });
+    assert.equal(n, 1);
+    assert.equal(got.ok, false);
+  });
+
+  it("reuses a cached forest pack so a later failure does not go empty", async () => {
+    const os = require("node:os");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oc-forest-cache-"));
+    setForestCacheDir(dir);
+    setForestCacheLimits({ maxBytes: 1024 * 1024, ttlMs: 60 * 1000 });
+    assert.equal(FOREST_CACHE_MAX_BYTES, 64 * 1024 * 1024);
+    assert.equal(FOREST_CACHE_TTL_MS, 14 * 24 * 60 * 60 * 1000);
+    let n = 0;
+    const fetchOverpassForest = async () => {
+      n += 1;
+      if (n > 1) throw new Error("cache should hit");
+      return { ok: true, wood: [{ areaM2: 100 }], pistes: [[0, 1]], notes: [] };
+    };
+    try {
+      const first = await fetchSlopeForest(bbox, { overture: false, diskCache: true, fetchOverpassForest });
+      const second = await fetchSlopeForest(bbox, { overture: false, diskCache: true, fetchOverpassForest });
+      assert.equal(first.wood.length, 1);
+      assert.equal(second.wood.length, 1);
+      assert.equal(second.cached, true);
+      assert.equal(n, 1);
+    } finally {
+      setForestCacheDir(undefined);
+      setForestCacheLimits(undefined);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("warns when the forest read fails and stays quiet when woods were returned", () => {
+    assert.match(forestEmptyWarning({ ok: false }), /Forest outlines omitted/);
+    assert.equal(forestEmptyWarning({ ok: true, wood: [{ areaM2: 100 }], pistes: [] }), "");
   });
 });

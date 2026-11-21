@@ -13,6 +13,45 @@ const overpass = require("./overpass");
 const { fetchStreetMaps } = require("./street-map");
 const { isResilient } = require("./export-mode");
 
+const FOREST_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+const FOREST_CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const forestCache = require("./disk-cache").createDiskCache({
+  envPrefix: "OPENCLUTTER_FOREST_CACHE",
+  maxBytes: FOREST_CACHE_MAX_BYTES,
+  ttlMs: FOREST_CACHE_TTL_MS,
+  subdir: "forest",
+});
+
+function setForestCacheDir(dir) {
+  forestCache.setDir(dir);
+}
+
+function setForestCacheLimits(opts) {
+  forestCache.setLimits(opts);
+}
+
+function forestCacheEnabled(opts) {
+  if (!forestCache.dir()) return false;
+  if (opts && opts.diskCache === false) return false;
+  if (opts && opts.diskCache === true) return true;
+  // Injected fetches in tests must not be answered by a prior export cache
+  // unless the test set a temp dir or diskCache: true.
+  if (opts && (opts.fetchOverpassForest || opts.fetchStreetMaps || opts.fetchImpl)) return false;
+  return true;
+}
+
+function forestCacheKey(bbox) {
+  return ["forest-v1", +bbox.west, +bbox.south, +bbox.east, +bbox.north].join("|");
+}
+
+const FOREST_MISS =
+  "Forest outlines omitted: the woods and ski-run read did not return. Open ski runs may still have trees.";
+
+function forestEmptyWarning(pack) {
+  if (pack && pack.ok) return "";
+  return FOREST_MISS;
+}
+
 const OVERPASS_URLS = [
   "https://overpass-api.de/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
@@ -385,7 +424,7 @@ async function overpassForest(bbox, q, opts, timeoutMs) {
   }
 }
 
-async function fetchSlopeForest(bbox, opts) {
+async function fetchSlopeForestWork(bbox, opts) {
   const timeoutMs = (opts && opts.timeoutMs) > 0 ? opts.timeoutMs : 8000;
   const ua = (opts && opts.ua) || "openclutter";
   const q = queryFor(bbox);
@@ -417,16 +456,57 @@ async function fetchSlopeForest(bbox, opts) {
     }
   }
   const forestOverpass = (opts && opts.fetchOverpassForest) || overpassForest;
-  return forestOverpass(bbox, q, opts, timeoutMs);
+  const started = Date.now();
+  let pack = await forestOverpass(bbox, q, opts, timeoutMs);
+  if (pack && pack.ok === false) {
+    const left = timeoutMs - (Date.now() - started);
+    if (left >= 1000) pack = await forestOverpass(bbox, q, opts, left);
+  }
+  return pack;
 }
 
+async function fetchSlopeForest(bbox, opts) {
+  const useCache = forestCacheEnabled(opts);
+  const key = forestCacheKey(bbox);
+  if (useCache) {
+    const buf = await forestCache.read(key);
+    if (buf && buf.length) {
+      try {
+        const pack = JSON.parse(buf.toString("utf8"));
+        if (pack && pack.ok && ((pack.wood && pack.wood.length) || (pack.pistes && pack.pistes.length))) {
+          forestCache.note("forest", true);
+          return Object.assign({ cached: true }, pack);
+        }
+      } catch {
+        /* a corrupt entry is a miss */
+      }
+    }
+    forestCache.note("forest", false);
+  }
+  const pack = await fetchSlopeForestWork(bbox, opts);
+  if (
+    useCache &&
+    pack &&
+    pack.ok &&
+    ((pack.wood && pack.wood.length) || (pack.pistes && pack.pistes.length))
+  ) {
+    await forestCache.write(key, Buffer.from(JSON.stringify({ ok: true, wood: pack.wood, pistes: pack.pistes, notes: pack.notes || [] }), "utf8"));
+  }
+  return pack;
+}
 
 module.exports = {
   PISTE_HALF_M,
   WOOD_MIN_M2,
   RESORT_FRACTION,
+  FOREST_CACHE_MAX_BYTES,
+  FOREST_CACHE_TTL_MS,
+  FOREST_MISS,
   forestFromElements,
   fetchSlopeForest,
+  forestEmptyWarning,
+  setForestCacheDir,
+  setForestCacheLimits,
   bufferCenterline,
   ringAreaM2,
 };

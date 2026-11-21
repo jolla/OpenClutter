@@ -20,6 +20,48 @@ const streetCache = new Map();
 const STREET_CACHE_MS = 120000;
 const GAP_DEADLINE_MS = 25000;
 const STREET_OVERTURE_ATTEMPTS = 2;
+const GAP_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+const GAP_CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const GAP_MISS =
+  "OpenStreetMap gap features did not return. Marina boats, moorings, and camp pitches may be missing. The Overture street map is still included.";
+
+const gapCache = require("./disk-cache").createDiskCache({
+  envPrefix: "OPENCLUTTER_GAP_CACHE",
+  maxBytes: GAP_CACHE_MAX_BYTES,
+  ttlMs: GAP_CACHE_TTL_MS,
+  subdir: "overpass-gap",
+});
+
+function setGapCacheDir(dir) {
+  gapCache.setDir(dir);
+}
+
+function setGapCacheLimits(opts) {
+  gapCache.setLimits(opts);
+}
+
+function gapCacheEnabled(opts) {
+  if (!gapCache.dir()) return false;
+  if (opts && opts.diskCache === false) return false;
+  if (opts && opts.diskCache === true) return true;
+  if (opts && opts.fetchGapOverpass) return false;
+  return true;
+}
+
+function gapDiskKey(bbox) {
+  return ["gap-v1", +bbox.west, +bbox.south, +bbox.east, +bbox.north].join("|");
+}
+
+function gapEmptyWarning(pack) {
+  if (pack && pack.ok && Array.isArray(pack.elements)) return "";
+  return GAP_MISS;
+}
+
+function missedGap(pack) {
+  const notes = pack && Array.isArray(pack.notes) ? pack.notes.slice() : [];
+  if (notes.indexOf(GAP_MISS) < 0) notes.push(GAP_MISS);
+  return { ok: false, elements: [], notes };
+}
 
 function gapQuery(bbox) {
   const box = [+bbox.south, +bbox.west, +bbox.north, +bbox.east].join(",");
@@ -91,17 +133,61 @@ function capGapDeadline(deadlineMs) {
   return GAP_DEADLINE_MS;
 }
 
-async function fetchGapOverpass(bbox, opts) {
+async function readGapCache(bbox) {
+  const buf = await gapCache.read(gapDiskKey(bbox));
+  if (!buf || !buf.length) return null;
+  try {
+    const pack = JSON.parse(buf.toString("utf8"));
+    if (pack && pack.ok && Array.isArray(pack.elements) && pack.elements.length) return pack;
+  } catch {
+    /* a corrupt entry is a miss */
+  }
+  return null;
+}
+
+async function fetchGapOverpassWork(bbox, opts) {
   const o = opts || {};
   const q = gapQuery(bbox);
-  const json = await overpass.requestJson(q, {
-    signal: o.signal,
-    ua: o.ua,
-    deadlineMs: capGapDeadline(o.deadlineMs),
-    tag: "gap",
-  });
-  if (!json || !Array.isArray(json.elements)) return { ok: false, elements: [] };
-  return { ok: true, elements: json.elements };
+  const deadlineMs = capGapDeadline(o.deadlineMs);
+  const started = Date.now();
+  const req = (left) =>
+    overpass.requestJson(q, {
+      signal: o.signal,
+      ua: o.ua,
+      deadlineMs: left,
+      tag: "gap",
+    });
+  try {
+    let json = await req(deadlineMs);
+    if (!json || !Array.isArray(json.elements)) {
+      const left = deadlineMs - (Date.now() - started);
+      // requestJson already retries until deadlineMs. Only try again if
+      // that first pass ended early, and stay inside the same budget so a
+      // small draw cannot wait two full 25 s gap reads.
+      if (left >= 1000) json = await req(left);
+    }
+    if (!json || !Array.isArray(json.elements)) return missedGap();
+    return { ok: true, elements: json.elements };
+  } catch {
+    return missedGap();
+  }
+}
+
+async function fetchGapOverpass(bbox, opts) {
+  const useCache = gapCacheEnabled(opts);
+  if (useCache) {
+    const hit = await readGapCache(bbox);
+    if (hit) {
+      gapCache.note("overpassGap", true);
+      return Object.assign({ cached: true }, hit);
+    }
+    gapCache.note("overpassGap", false);
+  }
+  const pack = await fetchGapOverpassWork(bbox, opts);
+  if (useCache && pack && pack.ok && pack.elements && pack.elements.length) {
+    await gapCache.write(gapDiskKey(bbox), Buffer.from(JSON.stringify({ ok: true, elements: pack.elements }), "utf8"));
+  }
+  return pack;
 }
 
 function abortError() {
@@ -180,8 +266,9 @@ async function fetchStreetMapsWork(bbox, opts) {
     try {
       gap = await gapWork;
     } catch {
-      gap = { elements: [] };
+      gap = missedGap();
     }
+    if (gap && gap.ok === false) gap = missedGap(gap);
     try {
       await streetPersist.writeStreetCache(bbox, ovt);
     } catch {
@@ -201,8 +288,9 @@ async function fetchStreetMapsWork(bbox, opts) {
   try {
     gap = await gapWork;
   } catch {
-    gap = { elements: [] };
+    gap = missedGap();
   }
+  if (gap && gap.ok === false) gap = missedGap(gap);
   let cached = null;
   try {
     cached = await streetPersist.readStreetCache(bbox, { release: ovt && ovt.release });
@@ -257,11 +345,17 @@ function resetForTests() {
 module.exports = {
   gapQuery,
   GAP_DEADLINE_MS,
+  GAP_CACHE_MAX_BYTES,
+  GAP_CACHE_TTL_MS,
+  GAP_MISS,
   STREET_OVERTURE_ATTEMPTS,
   capGapDeadline,
   isTransientOvertureError,
   fetchGapOverpass,
   fetchStreetMaps,
+  gapEmptyWarning,
+  setGapCacheDir,
+  setGapCacheLimits,
   dedupeElements,
   resetForTests,
 };

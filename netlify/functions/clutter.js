@@ -167,7 +167,7 @@ const { geoFrame, capEsriExportFrame, llToPx, esriImageryUrl, esriImageryMetaUrl
 const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings, parseAreaCapOverride, parseJsonBudgetOverride, raisedDeckCap, effectiveAreaCap, MAX_BUILDINGS, MAX_ATTENUATION_AREAS } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { buildSiteV1 } = require("../lib/site-v1");
-const { fetchSlopeForest } = require("../lib/slope-forest");
+const { fetchSlopeForest, forestEmptyWarning } = require("../lib/slope-forest");
 const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 /** Wait for the park-context photo (park-context.js); a miss keeps the draw-only pads. */
 const PARK_CONTEXT_MS = 20000;
@@ -2678,6 +2678,9 @@ async function handleClutterNorthUp(event) {
       for (let i = 0; i < forestNotes.length; i++) {
         if (warnings.indexOf(forestNotes[i]) < 0) warnings.push(forestNotes[i]);
       }
+    } else {
+      const note = forestEmptyWarning(forest && forest !== TIMED_OUT ? forest : { ok: false });
+      if (note && warnings.indexOf(note) < 0) warnings.push(note);
     }
   }
 

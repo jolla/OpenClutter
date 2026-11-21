@@ -2,7 +2,7 @@
 
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
-const { gapQuery, GAP_DEADLINE_MS, STREET_OVERTURE_ATTEMPTS, capGapDeadline, fetchStreetMaps, resetForTests } = require("../netlify/lib/street-map");
+const { gapQuery, GAP_DEADLINE_MS, STREET_OVERTURE_ATTEMPTS, capGapDeadline, fetchStreetMaps, fetchGapOverpass, gapEmptyWarning, setGapCacheDir, setGapCacheLimits, GAP_MISS, GAP_CACHE_MAX_BYTES, GAP_CACHE_TTL_MS, resetForTests } = require("../netlify/lib/street-map");
 const streetPersist = require("../netlify/lib/overture-street-cache");
 
 const BOX = { west: -90.5276, south: 41.5786, east: -90.523, north: 41.5823 };
@@ -239,5 +239,118 @@ describe("street-map coordinator", () => {
     assert.equal(full, 1);
     assert.equal(got.source, "overpass");
     assert.equal((got.elements || []).some((e) => e.id === "old"), false);
+  });
+});
+
+describe("street-map gap miss and cache", () => {
+  beforeEach(() => {
+    resetForTests();
+    streetPersist.resetForTests();
+    streetPersist.setStoreForTests(null);
+  });
+  afterEach(() => {
+    resetForTests();
+    streetPersist.resetForTests();
+  });
+
+  it("warns when Overture succeeds but the gap Overpass read fails", async () => {
+    const got = await fetchStreetMaps(BOX, {
+      fetchOvertureStreet: async () => ({
+        ok: true,
+        elements: [{ type: "way", id: "ov-1", tags: { highway: "service" }, geometry: [{ lon: -90.525, lat: 41.58 }] }],
+        notes: [],
+      }),
+      fetchGapOverpass: async () => ({ ok: false, elements: [] }),
+      fetchOsmMaps: async () => ({ xmls: [], elements: [], notes: [], tiled: false, incomplete: false }),
+    });
+    assert.equal(got.source, "overture");
+    assert.ok(got.notes.some((n) => /gap features did not return/i.test(n)));
+    assert.match(gapEmptyWarning({ ok: false, elements: [] }), /Marina boats/);
+    assert.equal(gapEmptyWarning({ ok: true, elements: [{ id: 1 }] }), "");
+  });
+
+  it("reuses a cached gap pack so a later failure does not drop marina features", async () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const overpass = require("../netlify/lib/overpass");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oc-gap-cache-"));
+    setGapCacheDir(dir);
+    setGapCacheLimits({ maxBytes: 1024 * 1024, ttlMs: 60 * 1000 });
+    assert.equal(GAP_CACHE_MAX_BYTES, 64 * 1024 * 1024);
+    assert.equal(GAP_CACHE_TTL_MS, 14 * 24 * 60 * 60 * 1000);
+    const marina = {
+      type: "way",
+      id: 77,
+      tags: { leisure: "marina" },
+      geometry: [
+        { lon: -90.525, lat: 41.581 },
+        { lon: -90.524, lat: 41.581 },
+      ],
+    };
+    let n = 0;
+    const orig = overpass.requestJson;
+    overpass.requestJson = async () => {
+      n += 1;
+      if (n > 1) throw new Error("cache should hit");
+      return { elements: [marina] };
+    };
+    try {
+      const first = await fetchGapOverpass(BOX, { diskCache: true });
+      const second = await fetchGapOverpass(BOX, { diskCache: true });
+      assert.equal(first.elements.length, 1);
+      assert.equal(second.elements.length, 1);
+      assert.equal(second.cached, true);
+      assert.equal(n, 1);
+      assert.equal(GAP_MISS.indexOf("Marina boats") >= 0, true);
+    } finally {
+      overpass.requestJson = orig;
+      setGapCacheDir(undefined);
+      setGapCacheLimits(undefined);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retries a missing gap body only with time left in the same deadline", async () => {
+    const overpass = require("../netlify/lib/overpass");
+    let n = 0;
+    const deadlines = [];
+    const orig = overpass.requestJson;
+    overpass.requestJson = async (_q, o) => {
+      n += 1;
+      deadlines.push(o && o.deadlineMs);
+      if (n === 1) return null;
+      return {
+        elements: [{ type: "way", id: 1, tags: { leisure: "marina" }, geometry: [{ lon: -90.525, lat: 41.581 }] }],
+      };
+    };
+    try {
+      const got = await fetchGapOverpass(BOX, { deadlineMs: 5000, diskCache: false });
+      assert.equal(n, 2);
+      assert.ok(deadlines[1] <= deadlines[0], "retry leftover " + deadlines.join(","));
+      assert.equal(got.ok, true);
+      assert.equal(got.elements.length, 1);
+    } finally {
+      overpass.requestJson = orig;
+    }
+  });
+
+  it("does not start a second gap Overpass read after the deadline is spent", async () => {
+    const overpass = require("../netlify/lib/overpass");
+    let n = 0;
+    const orig = overpass.requestJson;
+    overpass.requestJson = async (_q, o) => {
+      n += 1;
+      const wait = Math.max(0, ((o && o.deadlineMs) || 0) + 5);
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      return null;
+    };
+    try {
+      const got = await fetchGapOverpass(BOX, { deadlineMs: 40, diskCache: false });
+      assert.equal(n, 1);
+      assert.equal(got.ok, false);
+    } finally {
+      overpass.requestJson = orig;
+    }
   });
 });
