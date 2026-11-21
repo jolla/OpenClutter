@@ -9,6 +9,10 @@ const {
   featuresFromGzip,
   mergeFootprintFeatures,
   fetchMsGlobalFootprints,
+  setMsCacheDir,
+  setMsCacheLimits,
+  MS_CACHE_MAX_BYTES,
+  MS_CACHE_TTL_MS,
   globalSkipWarning,
   MAX_GZIP_BYTES,
   QUADKEY_ZOOM,
@@ -191,5 +195,58 @@ describe("Microsoft global building footprints", () => {
     assert.equal(pack.skipped, 0);
     assert.equal(pack.features.length, 1);
     assert.equal(globalSkipWarning(pack), "");
+  });
+
+  it("retries a brief Microsoft tile failure once", async () => {
+    const inside = poly([
+      [-87.918, 42.899],
+      [-87.917, 42.899],
+      [-87.917, 42.900],
+      [-87.918, 42.900],
+      [-87.918, 42.899],
+    ]);
+    const gz = zlib.gzipSync(Buffer.from(JSON.stringify(inside) + "\n"));
+    let calls = 0;
+    const pack = await fetchMsGlobalFootprints(OAK, async () => {
+      calls++;
+      if (calls === 1) return { ok: false, status: 503, json: async () => ({}) };
+      return { ok: true, headers: { get: () => String(gz.length) }, arrayBuffer: async () => gz };
+    });
+    assert.equal(calls, 2);
+    assert.equal(pack.features.length, 1);
+  });
+
+  it("reuses a cached Microsoft gzip so a second read does not hit the network", async () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "oc-ms-cache-"));
+    setMsCacheDir(dir);
+    setMsCacheLimits({ maxBytes: 1024 * 1024, ttlMs: 60 * 1000 });
+    assert.equal(MS_CACHE_MAX_BYTES, 512 * 1024 * 1024);
+    assert.equal(MS_CACHE_TTL_MS, 30 * 24 * 60 * 60 * 1000);
+    const inside = poly([
+      [-87.918, 42.899],
+      [-87.917, 42.899],
+      [-87.917, 42.900],
+      [-87.918, 42.900],
+      [-87.918, 42.899],
+    ]);
+    const gz = zlib.gzipSync(Buffer.from(JSON.stringify(inside) + "\n"));
+    let calls = 0;
+    const fetchFn = async () => {
+      calls++;
+      return { ok: true, headers: { get: () => String(gz.length) }, arrayBuffer: async () => gz };
+    };
+    try {
+      const first = await fetchMsGlobalFootprints(OAK, fetchFn, { diskCache: true });
+      const second = await fetchMsGlobalFootprints(OAK, fetchFn, { diskCache: true });
+      assert.equal(calls, 1);
+      assert.equal(first.features.length, 1);
+      assert.equal(second.features.length, 1);
+    } finally {
+      setMsCacheDir(undefined);
+      setMsCacheLimits(undefined);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

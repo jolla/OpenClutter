@@ -24,6 +24,10 @@ const {
   encodeCanopyRaster,
   decodeCanopyRaster,
   saveCanopyRaster,
+  setChmCacheDir,
+  setChmCacheLimits,
+  CHM_CACHE_MAX_BYTES,
+  CHM_CACHE_TTL_MS,
   loadCanopyRaster,
 } = require("../netlify/lib/canopy-height");
 const areaCache = require("../netlify/lib/area-cache");
@@ -1165,6 +1169,41 @@ describe("canopy raster cache", () => {
     const stale = await areaCache.readRaw(null, key, fresh.meta.savedAt + areaCache.ttlFor("canopy") + 1);
     assert.equal(stale, null);
     assert.equal(areaCache.looksLikeFinalGeometry(fresh.body), false);
+  });
+
+  it("reuses a disk cache when Netlify blobs are off", async () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    areaCache.disable();
+    const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "oc-chm-cache-"));
+    setChmCacheDir(dir);
+    setChmCacheLimits({ maxBytes: 1024 * 1024, ttlMs: 60 * 1000 });
+    assert.equal(CHM_CACHE_MAX_BYTES, 256 * 1024 * 1024);
+    assert.equal(CHM_CACHE_TTL_MS, 14 * 24 * 60 * 60 * 1000);
+    const frame = { west: -115.17, south: 36.12, east: -115.16, north: 36.13 };
+    const values = new Uint8Array([0, 5, 0, 8, 9, 0, 4, 0, 0, 0, 7, 0]);
+    const grid = {
+      west: frame.west,
+      south: frame.south,
+      east: frame.east,
+      north: frame.north,
+      width: 4,
+      height: 3,
+      values,
+      nonzero: 5,
+    };
+    try {
+      assert.equal(await loadCanopyRaster(frame), null);
+      assert.equal(await saveCanopyRaster(frame, grid), true);
+      const loaded = await loadCanopyRaster(frame);
+      assert.ok(loaded);
+      assert.deepEqual(Array.from(loaded.values), Array.from(values));
+      assert.equal(loaded.width, 4);
+    } finally {
+      setChmCacheDir(undefined);
+      setChmCacheLimits(undefined);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

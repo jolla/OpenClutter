@@ -21,6 +21,28 @@ const exportMode = require("./export-mode");
 const standSplit = require("./stand-split");
 
 const CHM_ZOOM = 10;
+const CHM_CACHE_MAX_BYTES = 256 * 1024 * 1024;
+const CHM_CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const chmDisk = require("./disk-cache").createDiskCache({
+  envPrefix: "OPENCLUTTER_CHM_CACHE",
+  maxBytes: CHM_CACHE_MAX_BYTES,
+  ttlMs: CHM_CACHE_TTL_MS,
+  subdir: "chm",
+});
+
+function setChmCacheDir(dir) {
+  chmDisk.setDir(dir);
+}
+
+function setChmCacheLimits(opts) {
+  chmDisk.setLimits(opts);
+}
+
+function chmDiskKey(frame) {
+  const spec = canopyRasterSpec(frame);
+  return spec.source + "_" + spec.resolution + "_" + spec.tile;
+}
+
 const MAX_TILES = 4;
 /** Long side of the resampled window. Cells stay near 2 m so a crown has an edge. */
 const MAX_DIM = 720;
@@ -242,29 +264,51 @@ function decodeCanopyRaster(body) {
 }
 
 async function loadCanopyRaster(frame) {
+  if (!frame) return null;
   const areaCache = require("./area-cache");
-  if (!areaCache.enabled() || !frame) return null;
-  const spec = canopyRasterSpec(frame);
-  const key = areaCache.cacheKey(spec.source, spec.resolution, spec.tile);
-  const hit = await areaCache.readRaw(null, key);
-  if (!hit || !hit.body) return null;
-  return decodeCanopyRaster(hit.body);
+  if (areaCache.enabled()) {
+    const spec = canopyRasterSpec(frame);
+    const key = areaCache.cacheKey(spec.source, spec.resolution, spec.tile);
+    const hit = await areaCache.readRaw(null, key);
+    if (hit && hit.body) {
+      const grid = decodeCanopyRaster(hit.body);
+      if (grid) return grid;
+    }
+  }
+  if (chmDisk.dir()) {
+    const buf = await chmDisk.read(chmDiskKey(frame));
+    const grid = decodeCanopyRaster(buf);
+    if (grid) {
+      chmDisk.note("canopy", true);
+      return grid;
+    }
+    chmDisk.note("canopy", false);
+  }
+  return null;
 }
 
 async function saveCanopyRaster(frame, grid) {
-  const areaCache = require("./area-cache");
-  if (!areaCache.enabled() || !frame || !grid || !grid.values) return false;
+  if (!frame || !grid || !grid.values) return false;
   const body = encodeCanopyRaster(grid);
-  areaCache.assertRaw(body);
-  const spec = canopyRasterSpec(frame);
-  const key = areaCache.cacheKey(spec.source, spec.resolution, spec.tile);
-  await areaCache.writeRaw(null, key, body, {
-    source: "canopy",
-    resolution: spec.resolution,
-    tile: spec.tile,
-    contentType: "application/octet-stream",
-  });
-  return true;
+  let wrote = false;
+  const areaCache = require("./area-cache");
+  if (areaCache.enabled()) {
+    areaCache.assertRaw(body);
+    const spec = canopyRasterSpec(frame);
+    const key = areaCache.cacheKey(spec.source, spec.resolution, spec.tile);
+    await areaCache.writeRaw(null, key, body, {
+      source: "canopy",
+      resolution: spec.resolution,
+      tile: spec.tile,
+      contentType: "application/octet-stream",
+    });
+    wrote = true;
+  }
+  if (chmDisk.dir()) {
+    await chmDisk.write(chmDiskKey(frame), body);
+    wrote = true;
+  }
+  return wrote;
 }
 
 /**
@@ -2154,6 +2198,10 @@ module.exports = {
   loadCanopyRaster,
   saveCanopyRaster,
   canopyRasterSpec,
+  setChmCacheDir,
+  setChmCacheLimits,
+  CHM_CACHE_MAX_BYTES,
+  CHM_CACHE_TTL_MS,
   gridSize,
   CROWN_CAP,
   crownsFromChm,

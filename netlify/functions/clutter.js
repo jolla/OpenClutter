@@ -1964,8 +1964,10 @@ async function handleClutterNorthUp(event) {
       }
     }
     const globalJob = stageClock.timeSource("microsoft", () =>
-      fetchMsGlobalFootprints(frame, (url) =>
-        fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(coreBudget) })
+      fetchMsGlobalFootprints(
+        frame,
+        (url) => fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(coreBudget) }),
+        { diskCache: true }
       ).catch(() => ({ features: [] }))
     );
     const usaCtrl = new AbortController();

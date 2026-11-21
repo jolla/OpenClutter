@@ -657,6 +657,36 @@ const DEP3_RETRIES = 4;
 const DEP3_RETRY_WAIT_MS = 2000;
 /** Retry only when the wait plus this much of the DEM clock is left. */
 const DEP3_RETRY_MIN_MS = 10000;
+/** exportImage failover cap when getSamples returns 5xx. */
+const DEM_EXPORT_FAILOVER_MS = 8000;
+/** Keep the Fly worker's disk from filling. Oldest unused grids go first. */
+const DEM_CACHE_MAX_BYTES = 128 * 1024 * 1024;
+/** A successful bare-earth grid stays reusable for 30 days. */
+const DEM_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const demCache = require("./disk-cache").createDiskCache({
+  envPrefix: "OPENCLUTTER_DEM_CACHE",
+  maxBytes: DEM_CACHE_MAX_BYTES,
+  ttlMs: DEM_CACHE_TTL_MS,
+  subdir: "dem",
+});
+
+function setDemCacheDir(dir) {
+  demCache.setDir(dir);
+}
+
+function setDemCacheLimits(opts) {
+  demCache.setLimits(opts);
+}
+
+function demCacheEnabled(fetchFn) {
+  return (!fetchFn || fetchFn === fetch) && !!demCache.dir();
+}
+
+function demCacheKey(frame, opts) {
+  const n = demSampleCount(opts, frame);
+  const f = (x) => (Math.round(+x * 1e6) / 1e6).toFixed(6);
+  return "3dep_" + f(frame.west) + "_" + f(frame.south) + "_" + f(frame.east) + "_" + f(frame.north) + "_" + n;
+}
 
 const RAISED_KEYS = ["area", "height", "attenuationDbPerMeter", "slabOnly"];
 const SLOPED_KEYS = [
@@ -5297,6 +5327,48 @@ async function fetchDemSamples(frame, fetchFn, opts) {
   return parseDemSamples(body);
 }
 
+function samplesFromFineGrid(fine, frame, n) {
+  if (!fine || !fine.z || !(fine.cols > 1) || !(fine.rows > 1)) return [];
+  const count = Math.max(4, n | 0);
+  const side = Math.max(2, Math.round(Math.sqrt(count)));
+  const at = fineElevation(fine);
+  const out = [];
+  for (let r = 0; r < side; r++) {
+    for (let c = 0; c < side; c++) {
+      const lon = +frame.west + ((c + 0.5) / side) * (+frame.east - +frame.west);
+      const lat = +frame.south + ((r + 0.5) / side) * (+frame.north - +frame.south);
+      const z = at(lon, lat);
+      if (!Number.isFinite(z) || z < -500 || z > 9000) continue;
+      out.push({ lon, lat, z });
+    }
+  }
+  return out;
+}
+
+/**
+ * getSamples and exportImage are different ImageServer operations on the
+ * same bare-earth DEM. When getSamples answers 502, this still returns a
+ * usable lattice instead of falling through to GLO-30 surface.
+ */
+async function fetchDemSamplesFromExport(frame, fetchFn, opts) {
+  const parent = opts && opts.signal;
+  const cap =
+    opts && Number.isFinite(+opts.dep3ExportMs) ? Math.max(250, +opts.dep3ExportMs) : DEM_EXPORT_FAILOVER_MS;
+  const ctl = linkAbort(parent, cap);
+  try {
+    const fine = await fetch3depFineGrid(frame, fetchFn, ctl.signal);
+    if (!fine) return [];
+    const samples = samplesFromFineGrid(fine, frame, demSampleCount(opts, frame));
+    if (samples.length >= 4) attachFineGrid(samples, fine);
+    return samples;
+  } catch (e) {
+    if (parent && parent.aborted) throw e;
+    return [];
+  } finally {
+    ctl.done();
+  }
+}
+
 function usableDemSamples(samples) {
   return (samples || []).filter(
     (s) => s && Number.isFinite(+s.lon) && Number.isFinite(+s.lat) && Number.isFinite(+s.z)
@@ -5468,6 +5540,28 @@ async function fetchTerrainDemWork(frame, fetchFn, opts) {
   // export only gets the surface DSM when 3DEP is really unavailable.
   const retries = !probe && !skipProbe && frameHas3dep(frame) ? DEP3_RETRIES : 0;
   const readStart = Date.now();
+  if (!probe && !skipProbe && frameHas3dep(frame) && demCacheEnabled(fetchFn)) {
+    try {
+      const buf = await demCache.read(demCacheKey(frame, opts));
+      if (buf && buf.length) {
+        const parsed = JSON.parse(buf.toString("utf8"));
+        const cached = usableDemSamples(parsed && parsed.samples);
+        if (cached.length >= 4) {
+          demCache.note("dem", true);
+          if (surfaceEarly) surfaceEarly.cancel();
+          return {
+            samples: cached,
+            kind: "bare-earth",
+            attribution: USGS_3DEP_ATTRIBUTION,
+            notes: [],
+          };
+        }
+      }
+    } catch {
+      /* a bad cache entry falls through to a live read */
+    }
+    demCache.note("dem", false);
+  }
   if (!skipProbe) {
     for (let attempt = 0; attempt <= retries; attempt++) {
       let failure = null;
@@ -5489,6 +5583,21 @@ async function fetchTerrainDemWork(frame, fetchFn, opts) {
       if (!failure) break;
       if (parent && parent.aborted) break;
       const why = String((failure && failure.message) || failure).slice(0, 160);
+      if (!probe && frameHas3dep(frame)) {
+        try {
+          const exported = await fetchDemSamplesFromExport(frame, fetchFn, demOpts || opts);
+          if (usableDemSamples(exported).length >= 4) {
+            samples = exported;
+            if (retries) {
+              console.warn("terrain dem: USGS 3DEP getSamples failed (" + why + "), used exportImage");
+            }
+            failure = null;
+            break;
+          }
+        } catch (e) {
+          if (parent && parent.aborted && !surfaceEarly) throw e;
+        }
+      }
       // budgetMs is a fixed slice, so take off what the reads already used.
       const slice = demRemainingMs(opts);
       const left = slice == null ? null : opts.budgetMs != null && opts.budgetMs !== "" ? slice - (Date.now() - readStart) : slice;
@@ -5525,6 +5634,16 @@ async function fetchTerrainDemWork(frame, fetchFn, opts) {
       }
     }
     if (fineJob) attachFineGrid(usable, await fineJob);
+    if (demCacheEnabled(fetchFn) && !probe) {
+      try {
+        const body = Buffer.from(
+          JSON.stringify({ samples: usable.map((s) => ({ lon: +s.lon, lat: +s.lat, z: +s.z })) })
+        );
+        await demCache.write(demCacheKey(frame, opts), body);
+      } catch {
+        /* cache is a speed path, not a requirement */
+      }
+    }
     return {
       samples: usable,
       kind: "bare-earth",
@@ -5656,6 +5775,13 @@ module.exports = {
   adaptiveContourMesh,
   fineElevation,
   fetch3depFineGrid,
+  fetchDemSamplesFromExport,
+  samplesFromFineGrid,
   attachFineGrid,
   FINE_GRID_MAX,
+  setDemCacheDir,
+  setDemCacheLimits,
+  DEM_CACHE_MAX_BYTES,
+  DEM_CACHE_TTL_MS,
+  DEM_EXPORT_FAILOVER_MS,
 };

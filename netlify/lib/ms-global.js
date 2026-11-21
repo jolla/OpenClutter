@@ -24,6 +24,30 @@ const QUADKEY_ZOOM = 9;
  * past the gateway clock. Skip that file and keep the other sources.
  */
 const MAX_GZIP_BYTES = 80 * 1024 * 1024;
+const MS_CACHE_MAX_BYTES = 512 * 1024 * 1024;
+const MS_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const msCache = require("./disk-cache").createDiskCache({
+  envPrefix: "OPENCLUTTER_MS_CACHE",
+  maxBytes: MS_CACHE_MAX_BYTES,
+  ttlMs: MS_CACHE_TTL_MS,
+  subdir: "microsoft",
+});
+
+function setMsCacheDir(dir) {
+  msCache.setDir(dir);
+}
+
+function setMsCacheLimits(opts) {
+  msCache.setLimits(opts);
+}
+
+function msCacheEnabled(fetchFn, opts) {
+  if (!msCache.dir()) return false;
+  if (opts && opts.diskCache === false) return false;
+  if (opts && opts.diskCache === true) return true;
+  return !fetchFn || fetchFn === fetch;
+}
+
 // A 10 km Las Vegas tile matches tens of thousands of roofs. Holding every
 // ring, plus the decompressed tile, runs the background function out of
 // memory before the export can finish. The zip only keeps the largest.
@@ -408,12 +432,12 @@ async function releaseBody(res) {
   }
 }
 
-async function fetchMsGlobalFootprints(frame, fetchFn) {
+async function fetchMsGlobalFootprints(frame, fetchFn, opts) {
   const { timeSpan } = require("./stage-clock");
-  return timeSpan("microsoft", () => fetchMsGlobalFootprintsWork(frame, fetchFn));
+  return timeSpan("microsoft", () => fetchMsGlobalFootprintsWork(frame, fetchFn, opts));
 }
 
-async function fetchMsGlobalFootprintsWork(frame, fetchFn) {
+async function fetchMsGlobalFootprintsWork(frame, fetchFn, opts) {
   const { keys, urls } = urlsForBbox(frame.west, frame.south, frame.east, frame.north);
   const bbox = {
     west: +frame.west,
@@ -424,20 +448,42 @@ async function fetchMsGlobalFootprintsWork(frame, fetchFn) {
   const features = [];
   let skipped = 0;
   let skippedBytes = 0;
+  const useCache = msCacheEnabled(fetchFn, opts);
+  const fetchImpl = fetchFn || fetch;
   for (const item of urls) {
-    const res = await fetchFn(item.url);
-    if (!res || res.ok === false) {
-      throw new Error("global footprints HTTP " + (res && res.status));
+    let buf = null;
+    if (useCache) {
+      buf = await msCache.read(item.url);
+      if (buf && buf.length) msCache.note("microsoft", true);
+      else {
+        msCache.note("microsoft", false);
+        buf = null;
+      }
     }
-    const len = contentLength(res);
-    if (len > MAX_GZIP_BYTES) {
-      skipped++;
-      skippedBytes += len;
-      await releaseBody(res);
-      continue;
-    }
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length > MAX_GZIP_BYTES) {
+    if (!buf) {
+      let res = await fetchImpl(item.url);
+      if (!res || res.ok === false) {
+        // One short retry: these tiles are large and a brief 5xx is common.
+        res = await fetchImpl(item.url);
+      }
+      if (!res || res.ok === false) {
+        throw new Error("global footprints HTTP " + (res && res.status));
+      }
+      const len = contentLength(res);
+      if (len > MAX_GZIP_BYTES) {
+        skipped++;
+        skippedBytes += len;
+        await releaseBody(res);
+        continue;
+      }
+      buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > MAX_GZIP_BYTES) {
+        skipped++;
+        skippedBytes += buf.length;
+        continue;
+      }
+      if (useCache) await msCache.write(item.url, buf);
+    } else if (buf.length > MAX_GZIP_BYTES) {
       skipped++;
       skippedBytes += buf.length;
       continue;
@@ -492,6 +538,10 @@ module.exports = {
   MAX_GZIP_BYTES,
   FOOTPRINT_KEEP,
   fetchMsGlobalFootprints,
+  setMsCacheDir,
+  setMsCacheLimits,
+  MS_CACHE_MAX_BYTES,
+  MS_CACHE_TTL_MS,
   globalSkipWarning,
   exteriorRings,
   pointInRing,

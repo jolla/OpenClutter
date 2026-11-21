@@ -27,6 +27,11 @@ const {
   formatCellM,
   fetchDemSamples,
   fetchTerrainDem,
+  samplesFromFineGrid,
+  setDemCacheDir,
+  setDemCacheLimits,
+  DEM_CACHE_MAX_BYTES,
+  DEM_CACHE_TTL_MS,
   isDevDemHost,
   frameHas3dep,
   DEP3_PROBE_SAMPLES,
@@ -2970,7 +2975,8 @@ describe("Finland terrain does not wait on 3DEP", () => {
   it("retries a US 3DEP answer with no usable samples", async () => {
     const glo = gloGeotiff(() => 900);
     let calls = 0;
-    const fetchFn = async () => {
+    const fetchFn = async (url) => {
+      if (/exportImage/.test(String(url))) return { ok: false, status: 404, json: async () => ({}) };
       calls++;
       return { ok: true, json: async () => ({ samples: calls === 1 ? [] : usSamples(16, 600) }) };
     };
@@ -2987,9 +2993,11 @@ describe("Finland terrain does not wait on 3DEP", () => {
 
   it("falls back to GLO-30 in the US only after the 3DEP retries also fail", async () => {
     const glo = gloGeotiff(() => 900);
-    let calls = 0;
-    const fetchFn = async () => {
-      calls++;
+    let getSamples = 0;
+    let exportImage = 0;
+    const fetchFn = async (url) => {
+      if (/exportImage/.test(String(url))) exportImage++;
+      else getSamples++;
       return { ok: false, status: 503, json: async () => ({}) };
     };
     const pack = await fetchTerrainDem(vegas, fetchFn, {
@@ -2998,7 +3006,8 @@ describe("Finland terrain does not wait on 3DEP", () => {
       terrainResolution: "auto",
       dep3RetryWaitMs: 5,
     });
-    assert.equal(calls, 5);
+    assert.equal(getSamples, 5);
+    assert.ok(exportImage >= 1, "exportImage failover should run after a getSamples 5xx");
     assert.equal(pack.kind, "surface");
     assert.equal(pack.attribution, GLO30_CREDIT);
     assert.equal(glo.urls.length, 1);
@@ -3006,9 +3015,9 @@ describe("Finland terrain does not wait on 3DEP", () => {
 
   it("does not retry 3DEP when the DEM slice is too short", async () => {
     const glo = gloGeotiff(() => 900);
-    let calls = 0;
-    const fetchFn = async () => {
-      calls++;
+    let getSamples = 0;
+    const fetchFn = async (url) => {
+      if (!/exportImage/.test(String(url))) getSamples++;
       return { ok: false, status: 503, json: async () => ({}) };
     };
     const pack = await fetchTerrainDem(vegas, fetchFn, {
@@ -3018,8 +3027,73 @@ describe("Finland terrain does not wait on 3DEP", () => {
       budgetMs: 4500,
       dep3RetryWaitMs: 5,
     });
-    assert.equal(calls, 1);
+    assert.equal(getSamples, 1);
     assert.equal(pack.kind, "surface");
+  });
+
+  it("builds a bare-earth lattice from an exportImage grid", () => {
+    const fine = {
+      west: vegas.west,
+      south: vegas.south,
+      east: vegas.east,
+      north: vegas.north,
+      cols: 3,
+      rows: 3,
+      z: Float32Array.from([600, 601, 602, 610, 611, 612, 620, 621, 622]),
+    };
+    const samples = samplesFromFineGrid(fine, vegas, 16);
+    assert.ok(samples.length >= 4);
+    assert.ok(samples.every((s) => s.z >= 600 && s.z <= 622));
+    assert.ok(samples.every((s) => s.lon >= vegas.west && s.lon <= vegas.east));
+  });
+
+  it("reuses a cached 3DEP grid when a later getSamples is 502", async () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "oc-dem-cache-"));
+    setDemCacheDir(dir);
+    setDemCacheLimits({ maxBytes: 1024 * 1024, ttlMs: 60 * 1000 });
+    assert.equal(DEM_CACHE_MAX_BYTES, 128 * 1024 * 1024);
+    assert.equal(DEM_CACHE_TTL_MS, 30 * 24 * 60 * 60 * 1000);
+    const glo = gloGeotiff(() => 900);
+    const prev = global.fetch;
+    let live = 0;
+    global.fetch = async (url) => {
+      live++;
+      if (/exportImage/.test(String(url))) return { ok: false, status: 404, json: async () => ({}) };
+      return { ok: true, json: async () => ({ samples: usSamples(16, 600) }) };
+    };
+    try {
+      const first = await fetchTerrainDem(vegas, null, {
+        allowSurfaceFallback: true,
+        geotiff: glo.geotiff,
+        terrainResolution: "auto",
+        dep3RetryWaitMs: 5,
+      });
+      assert.equal(first.kind, "bare-earth");
+      const afterFirst = live;
+      assert.ok(afterFirst >= 1);
+      global.fetch = async () => {
+        live++;
+        return { ok: false, status: 502, json: async () => ({}) };
+      };
+      const second = await fetchTerrainDem(vegas, null, {
+        allowSurfaceFallback: true,
+        geotiff: glo.geotiff,
+        terrainResolution: "auto",
+        dep3RetryWaitMs: 5,
+      });
+      assert.equal(second.kind, "bare-earth");
+      assert.equal(second.attribution, "USGS 3DEP");
+      assert.equal(second.samples.length, first.samples.length);
+      assert.equal(live, afterFirst);
+      assert.equal(glo.urls.length, 0);
+    } finally {
+      global.fetch = prev;
+      setDemCacheDir(undefined);
+      setDemCacheLimits(undefined);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("does not retry 3DEP outside coverage", async () => {
