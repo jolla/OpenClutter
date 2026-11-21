@@ -13,6 +13,13 @@ const {
   fitChunksToJsonBudget,
   overJsonBudget,
   thinTreeOutlines,
+  packJsonLimit,
+  DEV_JSON_BUDGET,
+  DEV_JSON_HEADROOM,
+  DEV_JSON_FLOOR,
+  DEV_HOST_JSON_BUDGET,
+  OPENINTENT_JSON_BUDGET,
+  TREE_THIN_STEPS_M,
 } = require("../netlify/lib/pipeline");
 
 function ring(pts) {
@@ -130,4 +137,35 @@ describe("OpenIntent byte sizer", () => {
       }
     });
   }
+});
+
+describe("prod-host JSON pack headroom", () => {
+  afterEach(() => {
+    exportMode.setBigBudget(false);
+    exportMode.setDevImportCaps(false);
+  });
+
+  it("packs a prod-host export 400 kB under the 8.37 MB cap, and leaves /dev and 4.9 MB paths alone", () => {
+    assert.equal(DEV_JSON_HEADROOM, 400000);
+    assert.equal(DEV_JSON_BUDGET, 8370000);
+    exportMode.setBigBudget(true);
+    exportMode.setDevImportCaps(false);
+    assert.equal(packJsonLimit(DEV_JSON_BUDGET), DEV_JSON_BUDGET - DEV_JSON_HEADROOM);
+    assert.equal(packJsonLimit(DEV_JSON_BUDGET), 7970000);
+    // A tight override must not be raised to the 1 MB floor or trimmed again.
+    assert.equal(packJsonLimit(50000), 50000);
+    assert.equal(packJsonLimit(5200000), 5200000);
+
+    exportMode.setDevImportCaps(true);
+    assert.equal(packJsonLimit(DEV_HOST_JSON_BUDGET), DEV_HOST_JSON_BUDGET);
+
+    exportMode.setBigBudget(false);
+    exportMode.setDevImportCaps(false);
+    assert.equal(packJsonLimit(OPENINTENT_JSON_BUDGET), OPENINTENT_JSON_BUDGET);
+    assert.equal(packJsonLimit(0), OPENINTENT_JSON_BUDGET);
+  });
+
+  it("tries a 1.2 m crown outline step before dropping trees for bytes", () => {
+    assert.deepEqual(TREE_THIN_STEPS_M, [0.25, 0.5, 0.8, 1.2]);
+  });
 });

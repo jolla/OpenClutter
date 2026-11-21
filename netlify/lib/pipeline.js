@@ -93,6 +93,15 @@ const JSON_BUDGET_MAX = 5242880;
  */
 const DEV_TOTAL_BUDGET = 14000000;
 const DEV_JSON_BUDGET = 8370000;
+/**
+ * Slack under DEV_JSON_BUDGET when packing a prod-host export. Official
+ * Fort Wilderness sits at 8.29 MB of the 8.37 MB cap after 0.8 m outline
+ * thinning and the 8000 area sanity cap, which is not enough room for a
+ * later tree fix. Packing uses this much less than the cap so a coarser
+ * thin step can fire and the file stays clear of the gate. The cap itself
+ * is unchanged. /dev 14 MB exports do not use this slack.
+ */
+const DEV_JSON_HEADROOM = 400000;
 /** Lowest JSON budget the image rule can leave; a bigger image is the user's map choice. */
 const DEV_JSON_FLOOR = 1000000;
 /**
@@ -132,6 +141,22 @@ function effectiveJsonBudget(override, imageBytes) {
   const json = base || DEV_JSON_BUDGET;
   const img = imageBytes > 0 ? imageBytes : 0;
   return Math.min(json, Math.max(DEV_JSON_FLOOR, DEV_TOTAL_BUDGET - img));
+}
+
+/**
+ * Byte limit used when thinning crowns and cutting the area list. Prod-host
+ * packing stays this far under effectiveJsonBudget; the published cap and
+ * the official FW gate are still DEV_JSON_BUDGET. /dev import caps and the
+ * 4.9 MB path pack all the way to their budget.
+ */
+function packJsonLimit(budget) {
+  const n = budget > 0 ? budget : OPENINTENT_JSON_BUDGET;
+  const mode = require("./export-mode");
+  if (!mode.isBigBudget() || mode.isDevImportCaps()) return n;
+  // A tight override, or an already-shrunk image-aware budget, packs to the
+  // requested cap. Only the full prod-host 8.37 MB cap holds back slack.
+  if (n < DEV_JSON_BUDGET - DEV_JSON_HEADROOM) return n;
+  return n - DEV_JSON_HEADROOM;
 }
 
 /** Area sanity cap. Production stays at 8000; /dev hosts use DEV_HOST_AREA_CAP. */
@@ -3539,7 +3564,7 @@ function rankPiecesByCover(pieces) {
 }
 
 /** Crown outline tolerances tried, in metres, before trees are dropped for bytes. */
-const TREE_THIN_STEPS_M = [0.25, 0.5, 0.8];
+const TREE_THIN_STEPS_M = [0.25, 0.5, 0.8, 1.2];
 
 /** Douglas-Peucker each crown and foliage ring in place; returns vertices removed. */
 function thinTreeOutlines(pieces, epsPx) {
@@ -4314,7 +4339,8 @@ function buildClutter({
   // crowd of small stemmed trees cannot push large stands out of the scene.
   const jsonSizer = makeOpenIntentSizer();
   const stageClock = require("./stage-clock");
-  if (treePieces.length > 1 && stageClock.timeSpanSync("sub:jsonBudgetCheck", () => overJsonBudget(frame, name, imgName, chunks.concat(treePieces, latePieces), jsonByteBudget, jsonSizer))) {
+  const packBudget = packJsonLimit(jsonByteBudget);
+  if (treePieces.length > 1 && stageClock.timeSpanSync("sub:jsonBudgetCheck", () => overJsonBudget(frame, name, imgName, chunks.concat(treePieces, latePieces), packBudget, jsonSizer))) {
     // First thin the crown outlines a little at a time, so the trim drops
     // fewer trees. Stems keep their shape.
     if (require("./export-mode").isSiteTypes()) {
@@ -4322,7 +4348,7 @@ function buildClutter({
       for (let s = 0; s < TREE_THIN_STEPS_M.length; s++) {
         treeThinned = stageClock.timeSpanSync("sub:treeThin", () => thinTreeOutlines(treePieces, TREE_THIN_STEPS_M[s] / mpu));
         treeThinStep = TREE_THIN_STEPS_M[s];
-        if (!stageClock.timeSpanSync("sub:jsonBudgetCheck", () => overJsonBudget(frame, name, imgName, chunks.concat(treePieces, latePieces), jsonByteBudget, jsonSizer))) break;
+        if (!stageClock.timeSpanSync("sub:jsonBudgetCheck", () => overJsonBudget(frame, name, imgName, chunks.concat(treePieces, latePieces), packBudget, jsonSizer))) break;
       }
       if (treeThinned && Array.isArray(warnings)) {
         warnings.push("Simplified tree outlines to within " + treeThinStep + " m to fit more of the canopy in the OpenIntent byte budget.");
@@ -4333,7 +4359,7 @@ function buildClutter({
   for (let i = 0; i < treePieces.length; i++) chunks.push(treePieces[i]);
   for (let i = 0; i < latePieces.length; i++) chunks.push(latePieces[i]);
   const fitted = require("./stage-clock").timeSpanSync("jsonBuild", () =>
-    fitChunksToJsonBudget(frame, name, imgName, chunks, jsonByteBudget, jsonSizer)
+    fitChunksToJsonBudget(frame, name, imgName, chunks, packBudget, jsonSizer)
   );
   areas = fitted.areas;
   let buildingEmitted = 0;
@@ -4613,8 +4639,11 @@ module.exports = {
   OPENINTENT_JSON_BUDGET,
   JSON_BUDGET_MAX,
   DEV_JSON_BUDGET,
+  DEV_JSON_HEADROOM,
   DEV_TOTAL_BUDGET,
   DEV_JSON_FLOOR,
+  packJsonLimit,
+  TREE_THIN_STEPS_M,
   DEV_HOST_JSON_BUDGET,
   DEV_HOST_JSON_MAX,
   INLINE_METADATA_MAX,
