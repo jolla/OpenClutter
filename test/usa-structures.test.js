@@ -234,4 +234,46 @@ describe("USA Structures footprints", () => {
       ""
     );
   });
+
+  it("skips southern Canada and other non-US draws without an omitted warning", async () => {
+    const toronto = { west: -79.388, south: 43.643, east: -79.373, north: 43.652 };
+    const montreal = { west: -73.58, south: 45.49, east: -73.55, north: 45.51 };
+    const vancouver = { west: -123.14, south: 49.27, east: -123.10, north: 49.29 };
+    const windsor = { west: -83.05, south: 42.30, east: -83.02, north: 42.32 };
+    const tijuana = { west: -117.05, south: 32.50, east: -117.02, north: 32.53 };
+    const london = { west: -0.100, south: 51.508, east: -0.085, north: 51.517 };
+    for (const frame of [toronto, montreal, vancouver, windsor, tijuana, london]) {
+      assert.equal(intersectsUsaStructures(frame), false);
+      assert.equal(usaEmptyWarning({ features: [], failed: true, emptyReason: "none" }, { frame, otherFootprints: 100 }), "");
+    }
+    let calls = 0;
+    const pack = await fetchUsaStructures(toronto, async () => {
+      calls++;
+      return { ok: false, status: 500, json: async () => ({}) };
+    });
+    assert.equal(calls, 0);
+    assert.equal(pack.emptyReason, "out-of-coverage");
+    assert.equal(pack.features.length, 0);
+    assert.equal(usaEmptyWarning(pack, { frame: toronto, otherFootprints: 100 }), "");
+  });
+
+  it("still treats a US city as in coverage and prefers a geocoded country", () => {
+    const detroit = { west: -83.06, south: 42.32, east: -83.03, north: 42.34 };
+    const florida = { west: -81.6, south: 28.3, east: -81.5, north: 28.4 };
+    const toronto = { west: -79.388, south: 43.643, east: -79.373, north: 43.652 };
+    assert.equal(intersectsUsaStructures(detroit), true);
+    assert.equal(intersectsUsaStructures(florida), true);
+    assert.equal(intersectsUsaStructures(toronto, { country: "US" }), true);
+    assert.equal(intersectsUsaStructures(detroit, { country: "CA" }), false);
+    assert.equal(intersectsUsaStructures(toronto, { country: "GB" }), false);
+    const note = usaEmptyWarning(
+      { features: [], failed: true, emptyReason: "timeout" },
+      { frame: florida, otherFootprints: 10 }
+    );
+    assert.match(note, /USA Structures omitted/);
+    assert.equal(
+      usaEmptyWarning({ features: [], failed: true, emptyReason: "timeout" }, { frame: toronto, country: "CA", otherFootprints: 10 }),
+      ""
+    );
+  });
 });

@@ -12,6 +12,10 @@
  * fills uncovered OSM footprints after this layer is merged.
  */
 
+const fs = require("node:fs");
+const path = require("node:path");
+const zlib = require("node:zlib");
+
 const LAYER =
   "https://services2.arcgis.com/FiaPA4ga0iQKduv3/ArcGIS/rest/services/USA_Structures_View/FeatureServer/0/query";
 
@@ -240,6 +244,9 @@ async function fetchUsaStructuresWork(frame, fetchFn, opts) {
 }
 
 async function fetchUsaStructures(frame, fetchFn, opts) {
+  if (!intersectsUsaStructures(frame, opts)) {
+    return { features: [], partial: false, failed: false, emptyReason: "out-of-coverage" };
+  }
   const attemptMs =
     opts && Number.isFinite(+opts.attemptMs) && +opts.attemptMs > 0
       ? Math.max(50, +opts.attemptMs)
@@ -287,25 +294,151 @@ function boxesOverlap(frame, west, south, east, north) {
   return !(+frame.east < west || +frame.west > east || +frame.north < south || +frame.south > north);
 }
 
-/** CONUS, Alaska, Hawaii, Puerto Rico / USVI, Guam, American Samoa. */
-function intersectsUsaStructures(frame) {
+/**
+ * Axis-aligned coverage of the USA Structures service: CONUS (a coarse
+ * rectangle that also covers southern Canada and northern Mexico), Alaska,
+ * Hawaii, Puerto Rico / USVI, Guam, and American Samoa.
+ */
+const USA_COVERAGE_BOXES = [
+  [-125, 24, -66, 50],
+  [-180, 51, -129, 72],
+  [-170, 51, -129, 72],
+  [-161, 18, -154, 23],
+  [-68, 17, -64, 19],
+  [144, 13, 146, 16],
+  [-171, -15, -169, -14],
+];
+
+const US_COVERAGE_COUNTRIES = new Set(["US", "PR", "VI", "GU", "AS", "MP"]);
+const COVERAGE_FILENAME = "usa-coverage.json.gz";
+
+function normalizeCoverageCountry(code) {
+  let c = String(code || "").trim().toUpperCase();
+  if (c === "UK") c = "GB";
+  if (!/^[A-Z]{2}$/.test(c)) return "";
+  return c;
+}
+
+function coverageCountryOf(opts) {
+  if (!opts) return "";
+  return normalizeCoverageCountry(opts.country || opts.exportCountry);
+}
+
+function coverageFilePaths() {
+  const roots = [
+    __dirname,
+    path.join(__dirname, "..", "lib"),
+    path.join(process.env.LAMBDA_TASK_ROOT || "", "netlify", "lib"),
+    path.join(process.cwd(), "netlify", "lib"),
+  ];
+  const out = [];
+  for (let i = 0; i < roots.length; i++) {
+    const p = path.join(roots[i], COVERAGE_FILENAME);
+    if (out.indexOf(p) === -1) out.push(p);
+  }
+  return out;
+}
+
+let coveragePolys;
+
+function loadCoverage() {
+  if (coveragePolys !== undefined) return coveragePolys;
+  const paths = coverageFilePaths();
+  for (let i = 0; i < paths.length; i++) {
+    try {
+      const data = JSON.parse(zlib.gunzipSync(fs.readFileSync(paths[i])).toString("utf8"));
+      coveragePolys = { ca: data.ca || [], mx: data.mx || [] };
+      return coveragePolys;
+    } catch (err) {
+      if (!err || err.code !== "ENOENT") throw err;
+    }
+  }
+  coveragePolys = null;
+  return coveragePolys;
+}
+
+function pointInCoverageRing(pt, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = +ring[i][0];
+    const yi = +ring[i][1];
+    const xj = +ring[j][0];
+    const yj = +ring[j][1];
+    const intersect = yi > pt[1] !== yj > pt[1] && pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi || 1e-20) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function pointInCoveragePolys(lon, lat, polys) {
+  if (!polys || !polys.length) return false;
+  for (let i = 0; i < polys.length; i++) {
+    const poly = polys[i];
+    if (!poly || !poly[0]) continue;
+    if (!pointInCoverageRing([lon, lat], poly[0])) continue;
+    let hole = false;
+    for (let h = 1; h < poly.length; h++) {
+      if (pointInCoverageRing([lon, lat], poly[h])) {
+        hole = true;
+        break;
+      }
+    }
+    if (!hole) return true;
+  }
+  return false;
+}
+
+function pointInCanadaOrMexico(lon, lat) {
+  const cov = loadCoverage();
+  if (!cov) return false;
+  return pointInCoveragePolys(lon, lat, cov.ca) || pointInCoveragePolys(lon, lat, cov.mx);
+}
+
+function overlapsUsaBoxes(frame) {
   if (!frame) return false;
-  return (
-    boxesOverlap(frame, -125, 24, -66, 50) ||
-    boxesOverlap(frame, -180, 51, -129, 72) ||
-    boxesOverlap(frame, -170, 51, -129, 72) ||
-    boxesOverlap(frame, -161, 18, -154, 23) ||
-    boxesOverlap(frame, -68, 17, -64, 19) ||
-    boxesOverlap(frame, 144, 13, 146, 16) ||
-    boxesOverlap(frame, -171, -15, -169, -14)
-  );
+  for (let i = 0; i < USA_COVERAGE_BOXES.length; i++) {
+    const b = USA_COVERAGE_BOXES[i];
+    if (boxesOverlap(frame, b[0], b[1], b[2], b[3])) return true;
+  }
+  return false;
+}
+
+/**
+ * True when the draw is outside the USA Structures service. A coarse CONUS
+ * rectangle also covers southern Canada and northern Mexico; those draws are
+ * out of coverage when the box center sits in a Canada or Mexico polygon
+ * (the same center the export-country geocode uses). A corner that falls in
+ * a river or harbor is ignored so a coastal Canadian city is not treated as
+ * a failed US fetch. Used only when the export country is not already known.
+ */
+function frameClearlyOutsideUnitedStates(frame) {
+  if (!frame) return true;
+  if (!overlapsUsaBoxes(frame)) return true;
+  const west = +frame.west;
+  const south = +frame.south;
+  const east = +frame.east;
+  const north = +frame.north;
+  return pointInCanadaOrMexico((west + east) / 2, (south + north) / 2);
+}
+
+/**
+ * Whether this draw should query USA Structures. Prefer the export country
+ * when the caller already geocoded it (US and territories only). Otherwise
+ * use the service boxes minus a Canada/Mexico polygon test so southern
+ * Canada is not treated as a failed US fetch.
+ */
+function intersectsUsaStructures(frame, opts) {
+  const cc = coverageCountryOf(opts);
+  if (cc) return US_COVERAGE_COUNTRIES.has(cc);
+  if (!frame) return false;
+  return !frameClearlyOutsideUnitedStates(frame);
 }
 
 function usaEmptyWarning(pack, opts) {
   const n = pack && Array.isArray(pack.features) ? pack.features.length : 0;
   if (n) return "";
-  const frame = opts && opts.frame;
-  if (frame && !intersectsUsaStructures(frame)) return "";
+  if (pack && pack.emptyReason === "out-of-coverage") return "";
+  if (!intersectsUsaStructures(opts && opts.frame, opts)) return "";
   const failed = !pack || pack.failed || (pack.emptyReason && pack.emptyReason !== "none");
   const others = opts && opts.otherFootprints > 0;
   if (!failed && !others) return "";
@@ -325,4 +458,5 @@ module.exports = {
   setUsaCacheLimits,
   usaEmptyWarning,
   intersectsUsaStructures,
+  US_COVERAGE_COUNTRIES,
 };
