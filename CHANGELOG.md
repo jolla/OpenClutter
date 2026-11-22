@@ -32,6 +32,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.84** (Nov 22, 2026): /dev only. A live street-map read no longer waits many minutes when one Azure range hangs: the 30 second deadline now stops the wait so the export can move on to the OpenStreetMap backup. Production gets this in the Nov 30 weekly release.
 - **1.3.83** (Nov 22, 2026): /dev only. An OpenStreetMap server that answers with an empty map is no longer treated as a complete result or saved in the local cache, so another server can still supply camp pitches and other outdoor features. Production gets this in the Nov 30 weekly release.
 - **1.3.82** (Nov 22, 2026): /dev only. A waterfront city export finishes sooner: a jagged shoreline is clipped to the site once and its segments are indexed, so each roof is not tested against the whole harbour, and a nested-roof overlap test skips buildings whose boxes do not meet. The OpenIntent zip is unchanged except floor ids. Production gets this in the Nov 30 weekly release.
 - **1.3.81** (Nov 22, 2026): /dev only. A dense city export finishes sooner: the building pack used for outdoor planning is reused when the official clutter pass runs, instead of being built twice, and a jagged shoreline is clipped to each roof before the expensive water cut. The OpenIntent zip is unchanged except floor ids. Production gets this in the Nov 30 weekly release.
