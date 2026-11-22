@@ -3,6 +3,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const zlib = require("zlib");
+const { Readable } = require("stream");
 const {
   quadkeysForBbox,
   urlsForBbox,
@@ -35,7 +36,7 @@ function poly(ring) {
   };
 }
 
-describe("Microsoft global building footprints", () => {
+describe("Microsoft global building footprints", { concurrency: 1 }, () => {
   it("maps Oak Creek to the United States quadkey that holds the white roofs", () => {
     const keys = quadkeysForBbox(OAK.west, OAK.south, OAK.east, OAK.north);
     assert.equal(QUADKEY_ZOOM, 9);
@@ -157,14 +158,18 @@ describe("Microsoft global building footprints", () => {
     assert.equal(merged.features[0].properties.height, 7.4);
   });
 
-  it("does not download a quadkey gzip over the export size limit", async () => {
-    // Minneapolis is ~84 MB and must fit. Los Angeles is ~179 MB and must not.
-    assert.ok(MAX_GZIP_BYTES >= 90 * 1024 * 1024);
-    assert.ok(MAX_GZIP_BYTES < 160 * 1024 * 1024);
+  it("keeps a runaway size guard above the Los Angeles tile and below 1 GB", async () => {
+    // Los Angeles is ~179 MB. New York, Chicago, Houston, and Phoenix
+    // are all just over the old 120 MB cap and must also fit.
+    assert.ok(MAX_GZIP_BYTES >= 200 * 1024 * 1024);
+    assert.ok(MAX_GZIP_BYTES <= 1024 * 1024 * 1024);
+  });
+
+  it("does not download a quadkey gzip over the runaway size guard", async () => {
     let bodyReads = 0;
     const pack = await fetchMsGlobalFootprints(OAK, async () => ({
       ok: true,
-      headers: { get: (name) => (String(name).toLowerCase() === "content-length" ? String(179 * 1024 * 1024) : null) },
+      headers: { get: (name) => (String(name).toLowerCase() === "content-length" ? String(600 * 1024 * 1024) : null) },
       arrayBuffer: async () => {
         bodyReads++;
         return new ArrayBuffer(8);
@@ -176,9 +181,34 @@ describe("Microsoft global building footprints", () => {
     assert.equal(pack.skipped, 1);
     const warning = globalSkipWarning(pack);
     assert.match(warning, /omitted/);
-    assert.match(warning, /179 MB/);
+    assert.match(warning, /600 MB/);
     assert.equal(/esri/i.test(warning), false);
     assert.equal(/smaller box/i.test(warning), false);
+  });
+
+  it("stream-downloads a 179 MB Los Angeles-sized tile without buffering the body", async () => {
+    const inside = poly([
+      [-87.918, 42.899],
+      [-87.917, 42.899],
+      [-87.917, 42.900],
+      [-87.918, 42.900],
+      [-87.918, 42.899],
+    ]);
+    const gz = zlib.gzipSync(Buffer.from(JSON.stringify(inside) + "\n"));
+    let bodyReads = 0;
+    const pack = await fetchMsGlobalFootprints(OAK, async () => ({
+      ok: true,
+      headers: { get: (name) => (String(name).toLowerCase() === "content-length" ? String(179 * 1024 * 1024) : null) },
+      arrayBuffer: async () => {
+        bodyReads++;
+        return gz;
+      },
+      body: Readable.from(gz),
+    }));
+    assert.equal(bodyReads, 0);
+    assert.equal(pack.skipped, 0);
+    assert.equal(pack.features.length, 1);
+    assert.equal(globalSkipWarning(pack), "");
   });
 
   it("downloads an 84 MB Minneapolis-sized tile that the old 80 MB cap skipped", async () => {
@@ -198,8 +228,9 @@ describe("Microsoft global building footprints", () => {
         bodyReads++;
         return gz;
       },
+      body: Readable.from(gz),
     }));
-    assert.equal(bodyReads, 1);
+    assert.equal(bodyReads, 0);
     assert.equal(pack.skipped, 0);
     assert.equal(pack.features.length, 1);
     assert.equal(globalSkipWarning(pack), "");
@@ -328,6 +359,65 @@ describe("Microsoft global building footprints", () => {
       }, { diskCache: true });
       assert.equal(second.features.length, 1);
       assert.equal(calls, 1);
+    } finally {
+      setMsCacheDir(undefined);
+      setMsCacheLimits(undefined);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses a streamed gzip cache for a second bbox in the same tile", async () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "oc-ms-stream-"));
+    setMsCacheDir(dir);
+    setMsCacheLimits({ maxBytes: 1024 * 1024, ttlMs: 60 * 1000 });
+    const a = poly([
+      [-87.918, 42.899],
+      [-87.917, 42.899],
+      [-87.917, 42.900],
+      [-87.918, 42.900],
+      [-87.918, 42.899],
+    ]);
+    const b = poly([
+      [-87.920, 42.897],
+      [-87.919, 42.897],
+      [-87.919, 42.898],
+      [-87.920, 42.898],
+      [-87.920, 42.897],
+    ]);
+    const gz = zlib.gzipSync(Buffer.from([a, b].map((f) => JSON.stringify(f)).join("\n") + "\n"));
+    let calls = 0;
+    const fetchFn = async () => {
+      calls++;
+      return {
+        ok: true,
+        headers: { get: () => String(gz.length) },
+        arrayBuffer: async () => {
+          throw new Error("must stream the body, not buffer it");
+        },
+        body: Readable.from(gz),
+      };
+    };
+    const firstBox = {
+      west: -87.9185,
+      south: 42.8985,
+      east: -87.9165,
+      north: 42.9005,
+    };
+    const nearby = {
+      west: -87.9217,
+      south: 42.896,
+      east: -87.9185,
+      north: 42.8985,
+    };
+    try {
+      const first = await fetchMsGlobalFootprints(firstBox, fetchFn, { diskCache: true });
+      const second = await fetchMsGlobalFootprints(nearby, fetchFn, { diskCache: true });
+      assert.equal(calls, 1);
+      assert.equal(first.features.length, 1);
+      assert.equal(second.features.length, 1);
+      assert.notEqual(first.features[0].geometry.coordinates[0][0][0], second.features[0].geometry.coordinates[0][0][0]);
     } finally {
       setMsCacheDir(undefined);
       setMsCacheLimits(undefined);

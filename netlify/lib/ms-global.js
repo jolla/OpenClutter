@@ -11,26 +11,29 @@
  * MSBFP2 is still merged in underneath so a missing quadkey cannot erase
  * footprints the ArcGIS layer does have. OSM building ways are not read.
  *
- * The size cap is for the compressed tile. Oak Creek is ~39 MB, Las Vegas
- * ~60 MB, and the Minneapolis tile (Minnesota State Fair) ~84 MB. Those
- * must parse. The Los Angeles tile (Universal Hollywood) is ~179 MB and
- * is still skipped: even a streamed read can run past the gateway clock.
+ * Tiles are stream-downloaded and stream-parsed so the compressed gzip
+ * and the decompressed GeoJSONL are never held in memory. Only features
+ * that hit the draw bbox are kept, and that filtered set is cached.
+ * Oak Creek is ~37 MB, Las Vegas ~57 MB, Minneapolis ~84 MB, Chicago
+ * ~122 MB, New York ~127 MB, Phoenix ~127 MB, Houston ~139 MB, and
+ * Los Angeles (Universal Hollywood) ~179 MB (171 MiB). All of those
+ * must parse. The byte cap is a runaway guard, not a memory cap.
  */
 
 const zlib = require("zlib");
-const { Readable, Writable } = require("stream");
+const { Readable, Writable, PassThrough, Transform } = require("stream");
 const { pipeline } = require("stream/promises");
 
 const INDEX = require("./ms-buildings-index.json");
 const QUADKEY_ZOOM = 9;
 /**
  * Zoom-9 quadkeys are one gzip for a whole tile, not the drawn box.
- * Oak Creek is ~39 MB and Las Vegas ~60 MB; both still download.
- * Minneapolis (Minnesota State Fair) is ~84 MB and must be read.
- * The Los Angeles tile (Universal Hollywood) is ~179 MB and is still
- * skipped so a streamed read cannot run past the gateway clock.
+ * Streamed reads keep memory flat, so this cap is only a runaway
+ * guard (time and disk), not a RAM limit. It must clear Los Angeles
+ * at ~179 MB, plus New York, Chicago, Houston, and Phoenix, which
+ * all sit just above the old 120 MB cap.
  */
-const MAX_GZIP_BYTES = 120 * 1024 * 1024;
+const MAX_GZIP_BYTES = 512 * 1024 * 1024;
 const MS_CACHE_MAX_BYTES = 512 * 1024 * 1024;
 const MS_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const msCache = require("./disk-cache").createDiskCache({
@@ -370,8 +373,9 @@ function featuresFromGzip(gz, bbox, opts) {
 
 /**
  * Stream-inflate a gzip tile and keep only bbox lines. The full
- * decompressed GeoJSONL is never held in memory, so an 84 MB
- * Minneapolis tile can parse without the 80 MB all-at-once cap.
+ * compressed tile and decompressed GeoJSONL are never held, so a
+ * 179 MB Los Angeles tile can parse on an 8 GB worker and on the
+ * Netlify fallback.
  *
  * @param {import("stream").Readable} source
  * @param {{west:number,south:number,east:number,north:number}} bbox
@@ -488,6 +492,65 @@ async function releaseBody(res) {
   }
 }
 
+function nodeReadableFromResponse(res) {
+  const body = res && res.body;
+  if (body && typeof body.pipe === "function") return body;
+  if (body && typeof Readable.fromWeb === "function" && typeof body.getReader === "function") {
+    try {
+      return Readable.fromWeb(body);
+    } catch {
+      /* test doubles and odd runtimes fall through */
+    }
+  }
+  return null;
+}
+
+/**
+ * Prefer a real body stream so a 179 MB tile is never buffered. Test
+ * doubles that only expose arrayBuffer still work when the payload is
+ * under the runaway cap.
+ */
+async function readableFromResponse(res, len) {
+  const stream = nodeReadableFromResponse(res);
+  if (stream) return stream;
+  if (res && typeof res.arrayBuffer === "function") {
+    if (len > MAX_GZIP_BYTES) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > MAX_GZIP_BYTES) return null;
+    return Readable.from(buf);
+  }
+  return null;
+}
+
+function createByteLimit(maxBytes) {
+  let seen = 0;
+  return new Transform({
+    transform(chunk, _enc, cb) {
+      seen += chunk.length;
+      if (maxBytes > 0 && seen > maxBytes) {
+        const err = new Error("microsoft tile over size limit");
+        err.code = "MS_TILE_TOO_LARGE";
+        err.bytes = seen;
+        cb(err);
+        return;
+      }
+      cb(null, chunk);
+    },
+  });
+}
+
+function teeReadable(source) {
+  const a = new PassThrough();
+  const b = new PassThrough();
+  source.on("error", (err) => {
+    a.destroy(err);
+    b.destroy(err);
+  });
+  source.pipe(a);
+  source.pipe(b);
+  return [a, b];
+}
+
 function parsedCacheKey(url, bbox, keep) {
   return [
     "ms-parsed-v1",
@@ -551,16 +614,19 @@ async function fetchMsGlobalFootprintsWork(frame, fetchFn, opts) {
         continue;
       }
     }
-    let buf = null;
+    let source = null;
+    let fromDisk = false;
+    let expectedBytes = 0;
     if (useCache) {
-      buf = await msCache.read(item.url);
-      if (buf && buf.length) msCache.note("microsoft", true);
-      else {
+      source = await msCache.createReadStream(item.url);
+      if (source) {
+        fromDisk = true;
+        msCache.note("microsoft", true);
+      } else {
         msCache.note("microsoft", false);
-        buf = null;
       }
     }
-    if (!buf) {
+    if (!source) {
       let res = await fetchImpl(item.url);
       if (!res || res.ok === false) {
         // One short retry: these tiles are large and a brief 5xx is common.
@@ -570,31 +636,45 @@ async function fetchMsGlobalFootprintsWork(frame, fetchFn, opts) {
         throw new Error("global footprints HTTP " + (res && res.status));
       }
       const len = contentLength(res);
+      expectedBytes = len;
       if (len > MAX_GZIP_BYTES) {
         skipped++;
         skippedBytes += len;
         await releaseBody(res);
         continue;
       }
-      buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length > MAX_GZIP_BYTES) {
+      source = await readableFromResponse(res, len);
+      if (!source) {
         skipped++;
-        skippedBytes += buf.length;
+        skippedBytes += len;
+        skippedErrors += len > MAX_GZIP_BYTES ? 0 : 1;
+        await releaseBody(res);
         continue;
       }
-      if (useCache) await msCache.write(item.url, buf);
-    } else if (buf.length > MAX_GZIP_BYTES) {
-      skipped++;
-      skippedBytes += buf.length;
-      continue;
     }
+    const limiter = createByteLimit(MAX_GZIP_BYTES);
+    let parseSource = limiter;
+    let writeP = Promise.resolve();
+    if (useCache && !fromDisk) {
+      const [toFile, toParse] = teeReadable(limiter);
+      writeP = msCache.writeFromStream(item.url, toFile).catch(() => 0);
+      parseSource = toParse;
+    }
+    source.pipe(limiter);
     let chunk;
     try {
-      chunk = await featuresFromGzipBuffer(buf, bbox, { keep });
+      chunk = await featuresFromGzipStream(parseSource, bbox, { keep });
+      await writeP;
     } catch (err) {
+      try {
+        source.destroy();
+      } catch {
+        /* already closed */
+      }
+      await writeP;
       skipped++;
-      skippedBytes += buf.length;
-      skippedErrors++;
+      skippedBytes += (err && err.bytes) || expectedBytes;
+      if (!err || err.code !== "MS_TILE_TOO_LARGE") skippedErrors++;
       continue;
     }
     if (useCache) await writeParsedFeatures(item.url, bbox, keep, chunk);

@@ -11,6 +11,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { pipeline } = require("node:stream/promises");
 
 function createDiskCache(opts) {
   const env = opts.envPrefix;
@@ -181,6 +182,54 @@ function createDiskCache(opts) {
     await schedulePrune();
   }
 
+  /** Stream a cached file without loading it into RAM. */
+  async function createReadStream(key) {
+    const file = cachePathFor(key);
+    if (!file) return null;
+    try {
+      const st = await fs.promises.stat(file);
+      if (Date.now() - st.mtimeMs > ttlMs()) {
+        await fs.promises.unlink(file);
+        return null;
+      }
+      try {
+        const now = new Date();
+        await fs.promises.utimes(file, now, now);
+      } catch {
+        /* a missed touch only means eviction may be slightly less LRU */
+      }
+      return fs.createReadStream(file);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Write a stream to the cache without buffering the whole payload. */
+  async function writeFromStream(key, readable) {
+    const file = cachePathFor(key);
+    if (!file || !readable) return 0;
+    const tmp = file + ".tmp" + process.pid;
+    try {
+      await fs.promises.mkdir(path.dirname(file), { recursive: true });
+      await pipeline(readable, fs.createWriteStream(tmp));
+      await fs.promises.rename(tmp, file);
+    } catch (err) {
+      try {
+        await fs.promises.unlink(tmp);
+      } catch {
+        /* leftover temp is harmless */
+      }
+      throw err;
+    }
+    await schedulePrune();
+    try {
+      const st = await fs.promises.stat(file);
+      return st.size;
+    } catch {
+      return 0;
+    }
+  }
+
   function note(source, hit) {
     try {
       require("./stage-clock").noteCache(source, hit);
@@ -198,6 +247,8 @@ function createDiskCache(opts) {
     cachePathFor,
     read,
     write,
+    createReadStream,
+    writeFromStream,
     prune,
     schedulePrune,
     note,

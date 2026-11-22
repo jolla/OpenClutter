@@ -6,6 +6,8 @@ const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_
 const { geoFrame, imageryExportPlan } = require("../netlify/lib/geo-frame");
 const { ZONE_TYPES } = require("../netlify/lib/hamina-clipboard");
 const { unzipStore } = require("../netlify/lib/zip-store");
+const zlib = require("zlib");
+const { Readable } = require("stream");
 const { version: APP_VERSION } = require("../netlify/lib/version");
 
 const WYNN = {
@@ -1060,23 +1062,19 @@ describe("oversized Microsoft footprint tile", () => {
     global.fetch = orig;
   });
 
-  it("exports the other building sources and records the skip", async () => {
-    let bodyReads = 0;
-    global.fetch = async (url) => {
+  const msRoof = zlib.gzipSync(Buffer.from(JSON.stringify({
+    type: "Feature",
+    properties: { height: 12 },
+    geometry: {
+      type: "Polygon",
+      coordinates: [[[-115.165, 36.126], [-115.164, 36.126], [-115.164, 36.127], [-115.165, 36.127], [-115.165, 36.126]]],
+    },
+  }) + "\n"));
+
+  function mockExportFetch(msResponse) {
+    return async (url) => {
       const u = String(url);
-      if (u.includes("bfppub") || u.includes("global-buildings")) {
-        return {
-          ok: true,
-          headers: {
-            get: (name) => (String(name).toLowerCase() === "content-length" ? String(179 * 1024 * 1024) : null),
-          },
-          arrayBuffer: async () => {
-            bodyReads++;
-            return new ArrayBuffer(8);
-          },
-          body: { cancel: async () => {} },
-        };
-      }
+      if (u.includes("bfppub") || u.includes("global-buildings")) return msResponse();
       if (u.includes("World_Imagery") && u.includes("f=json")) {
         return {
           ok: true,
@@ -1090,19 +1088,34 @@ describe("oversized Microsoft footprint tile", () => {
       if (u.includes("World_Imagery")) return { ok: true, arrayBuffer: async () => jpeg };
       if (u.includes("USA_Structures")) {
         return usaStructuresMock(String(u), [{
-              type: "Feature",
-              properties: {},
-              geometry: {
-                type: "Polygon",
-                coordinates: [[[-115.165, 36.126], [-115.164, 36.126], [-115.164, 36.127], [-115.165, 36.127], [-115.165, 36.126]]],
-              },
-            }]);
+          type: "Feature",
+          properties: {},
+          geometry: {
+            type: "Polygon",
+            coordinates: [[[-115.165, 36.126], [-115.164, 36.126], [-115.164, 36.127], [-115.165, 36.127], [-115.165, 36.126]]],
+          },
+        }]);
       }
       if (u.includes("USA_Structures") || u.includes("services2.arcgis.com")) {
         return { ok: true, json: async () => ({ objectIds: [], features: [] }) };
       }
       throw new Error("skip " + u);
     };
+  }
+
+  it("stream-downloads a large Microsoft tile and still exports other building sources", async () => {
+    let bodyReads = 0;
+    global.fetch = mockExportFetch(() => ({
+      ok: true,
+      headers: {
+        get: (name) => (String(name).toLowerCase() === "content-length" ? String(179 * 1024 * 1024) : null),
+      },
+      arrayBuffer: async () => {
+        bodyReads++;
+        return msRoof;
+      },
+      body: Readable.from(msRoof),
+    }));
     const t0 = Date.now();
     const res = await handler({
       httpMethod: "POST",
@@ -1114,16 +1127,48 @@ describe("oversized Microsoft footprint tile", () => {
     assert.ok(elapsed < 8000, "elapsed " + elapsed);
     const body = JSON.parse(res.body);
     const notes = (body.warnings || []).join("\n");
+    assert.equal(/Microsoft building footprints omitted/i.test(notes), false);
+    assert.equal(/179 MB/i.test(notes), false);
+    assert.ok(body.zipBase64);
+    const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+    assert.equal(files["export-stats.json"], undefined);
+    const stats = body.stats;
+    assert.ok(stats.attenuationAreasEmitted >= 1);
+  });
+
+  it("skips a Microsoft tile over the runaway size guard and still exports other building sources", async () => {
+    let bodyReads = 0;
+    global.fetch = mockExportFetch(() => ({
+      ok: true,
+      headers: {
+        get: (name) => (String(name).toLowerCase() === "content-length" ? String(600 * 1024 * 1024) : null),
+      },
+      arrayBuffer: async () => {
+        bodyReads++;
+        return new ArrayBuffer(8);
+      },
+      body: { cancel: async () => {} },
+    }));
+    const t0 = Date.now();
+    const res = await handler({
+      httpMethod: "POST",
+      body: JSON.stringify({ ...WYNN, format: "bundle" }),
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(bodyReads, 0);
+    assert.ok(elapsed < 8000, "elapsed " + elapsed);
+    const body = JSON.parse(res.body);
     const tileNote = (body.warnings || []).find((w) => /Microsoft building footprints/.test(w)) || "";
     assert.match(tileNote, /omitted/);
-    assert.match(tileNote, /179 MB/);
+    assert.match(tileNote, /600 MB/);
     assert.equal(/smaller box/i.test(tileNote), false);
     assert.equal(/esri/i.test(tileNote), false);
     assert.ok(body.zipBase64);
     const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
     assert.equal(files["export-stats.json"], undefined);
     const stats = body.stats;
-    assert.match(stats.warnings.join("\n"), /179 MB/);
+    assert.match(stats.warnings.join("\n"), /600 MB/);
     assert.match((body.warnings || []).join("\n"), /omitted/);
     assert.ok(stats.attenuationAreasEmitted >= 1);
   });
