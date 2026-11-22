@@ -16,7 +16,7 @@ const TILE_SPAN_M = 2200;
 /** Resilient tile read: retries and fallback inside this window. */
 const TILE_RESILIENT_MS = 45000;
 /** Resilient map read when the caller names no window. */
-const MAP_RESILIENT_MS = 100000;
+const MAP_RESILIENT_MS = 30000;
 const MAX_TILES = 16;
 /** tiledOsm (1.2.31): one window shared by every tile of a large draw. */
 const TILED_BUDGET_MS = 105000;
@@ -152,6 +152,7 @@ async function fetchOneResilient(bbox, opts) {
     signal: o.signal,
     ua: o.ua,
     deadlineMs: o.deadlineMs > 0 ? o.deadlineMs : MAP_RESILIENT_MS,
+    maxBytes: MAP_XML_CAP,
     tag: o.tag,
   });
   if (res.ok) {
@@ -159,7 +160,7 @@ async function fetchOneResilient(bbox, opts) {
     return { ok: true, status: res.status, xml: res.text, tooBig: false };
   }
   const status = typeof res.status === "number" ? res.status : 0;
-  return { ok: false, status, xml: "", tooBig: status === 400 && responseTooBig(400, res.text) };
+  return { ok: false, status, xml: "", tooBig: !!(res.tooBig || (status === 400 && responseTooBig(400, res.text))) };
 }
 
 async function fetchMapFrom(base, bbox, opts) {
@@ -515,19 +516,25 @@ async function fetchOsmMaps(bbox, opts) {
 
   const tile = { west: +bbox.west, south: +bbox.south, east: +bbox.east, north: +bbox.north };
   const xmls = [];
+  const notes = [];
   let incomplete = false;
+  let tooBig = false;
   if (!(o.signal && o.signal.aborted)) {
     try {
       const res = await fetchOne(tile, o);
       if (res.ok) xmls.push(res.xml);
-      else incomplete = true;
+      else {
+        incomplete = true;
+        tooBig = !!res.tooBig;
+        if (tooBig) notes.push("OpenStreetMap map extract omitted: the area is too large to download in one request.");
+      }
     } catch (e) {
       incomplete = true;
     }
   } else {
     incomplete = true;
   }
-  return { xmls, elements: [], tiled: false, notes: [], incomplete };
+  return { xmls, elements: [], tiled: false, notes, incomplete, tooBig };
 }
 
 module.exports = {
@@ -539,6 +546,7 @@ module.exports = {
   fetchTiledOverpassShared,
   splitTile,
   MAP_XML_CAP,
+  MAP_RESILIENT_MS,
   bboxSpanM,
   planTiles,
   mapUrl,

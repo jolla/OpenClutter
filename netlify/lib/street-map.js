@@ -221,10 +221,18 @@ function isTransientOvertureError(err) {
   return /abort|timeout|timed out|econnreset|etimedout|enotfound|eai_again|econnrefused|socket|network|fetch failed|http 5\d\d|429|503|504/i.test(msg);
 }
 
-function overtureFallbackNote(error) {
+function overtureNoteMsg(error) {
   const msg = error ? String(error).replace(/\s+/g, " ").trim() : "";
-  if (msg) return "Overture street-map read failed (" + msg + "); used the full Overpass path.";
-  return "Overture street-map read failed; used the full Overpass path.";
+  return msg ? "Overture street-map read failed (" + msg + ")" : "Overture street-map read failed";
+}
+
+function overtureFallbackNote(error) {
+  return overtureNoteMsg(error) + "; used the full Overpass path.";
+}
+
+function overtureFallbackFailedNote(error, tooBig) {
+  if (tooBig) return overtureNoteMsg(error) + "; the full Overpass map was too large for this draw.";
+  return overtureNoteMsg(error) + "; the full Overpass path also failed.";
 }
 
 /**
@@ -248,7 +256,9 @@ async function fetchStreetMapsWork(bbox, opts) {
   );
 
   let ovt = null;
-  try {
+  if (process.env.OPENCLUTTER_FORCE_OVERTURE_FAIL) {
+    ovt = { ok: false, elements: [], error: "forced failure" };
+  } else try {
     ovt = await ovtWork;
   } catch (e) {
     ovt = { ok: false, elements: [], error: String(e && e.message ? e.message : e) };
@@ -292,7 +302,7 @@ async function fetchStreetMapsWork(bbox, opts) {
   }
   if (gap && gap.ok === false) gap = missedGap(gap);
   let cached = null;
-  try {
+  if (!process.env.OPENCLUTTER_FORCE_OVERTURE_FAIL) try {
     cached = await streetPersist.readStreetCache(bbox, { release: ovt && ovt.release });
   } catch {
     cached = null;
@@ -309,7 +319,11 @@ async function fetchStreetMapsWork(bbox, opts) {
     };
   }
   const full = await fullFetch(bbox, o);
-  const notes = [].concat(full.notes || [], (gap && gap.notes) || [], [overtureFallbackNote(ovt && ovt.error)]);
+  const used = !!(full && !full.incomplete && ((full.xmls && full.xmls.length) || (full.elements && full.elements.length)));
+  const fallbackNote = used
+    ? overtureFallbackNote(ovt && ovt.error)
+    : overtureFallbackFailedNote(ovt && ovt.error, !!(full && full.tooBig));
+  const notes = [].concat(full.notes || [], (gap && gap.notes) || [], [fallbackNote]);
   return Object.assign({}, full, {
     elements: dedupeElements([full.elements || [], (gap && gap.elements) || []]),
     notes,
@@ -320,6 +334,9 @@ async function fetchStreetMapsWork(bbox, opts) {
 async function fetchStreetMaps(bbox, opts) {
   const o = opts || {};
   if (o.fetchImpl || o.overture === false) return fetchOsmMaps(bbox, o);
+  // Local benches only. A live host never sets this. It also skips a
+  // recently saved Overture copy so the Overpass map fallback is timed.
+  if (process.env.OPENCLUTTER_FORCE_OVERTURE_FAIL) return fetchStreetMapsWork(bbox, o);
   const key = cacheKey(bbox, o);
   const hit = streetCache.get(key);
   const work = hit || fetchStreetMapsWork(bbox, o);

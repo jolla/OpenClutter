@@ -240,6 +240,29 @@ describe("street-map coordinator", () => {
     assert.equal(got.source, "overpass");
     assert.equal((got.elements || []).some((e) => e.id === "old"), false);
   });
+
+  it("warns clearly when the Overpass map fallback fails or the extract is too large", async () => {
+    const failed = await fetchStreetMaps(BOX, {
+      fetchOvertureStreet: async () => ({ ok: false, elements: [], error: "forced failure" }),
+      fetchGapOverpass: async () => ({ ok: true, elements: [] }),
+      fetchOsmMaps: async () => ({ xmls: [], elements: [], notes: [], incomplete: true, tooBig: false }),
+    });
+    assert.match((failed.notes || []).join(" "), /full Overpass path also failed/);
+    const other = Object.assign({}, BOX, { west: BOX.west - 0.01 });
+    const huge = await fetchStreetMaps(other, {
+      fetchOvertureStreet: async () => ({ ok: false, elements: [], error: "forced failure" }),
+      fetchGapOverpass: async () => ({ ok: true, elements: [] }),
+      fetchOsmMaps: async () => ({
+        xmls: [],
+        elements: [],
+        notes: ["OpenStreetMap map extract omitted: the area is too large to download in one request."],
+        incomplete: true,
+        tooBig: true,
+      }),
+    });
+    assert.match((huge.notes || []).join(" "), /full Overpass map was too large for this draw/);
+    assert.ok(!(huge.notes || []).join(" ").includes("used the full Overpass path"));
+  });
 });
 
 describe("street-map gap miss and cache", () => {

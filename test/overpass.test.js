@@ -86,8 +86,10 @@ describe("overpass client", () => {
     assert.equal(got.ok, true);
     assert.match(got.text, /<osm/);
     const hosts = calls.map((c) => hostOf(c.url));
-    assert.deepEqual(hosts, ["overpass-api.de", "overpass-api.de", "overpass.private.coffee"]);
-    assert.ok(lines.some((l) => /overpass-api\.de map status=429 .*pause=4\d\d\d\d slotIn=40000/.test(l)), lines.join("\n"));
+    assert.ok(hosts.includes("overpass-api.de"));
+    assert.ok(hosts.includes("overpass.private.coffee") || hosts.includes("maps.mail.ru"));
+    assert.ok(!hosts.includes("overpass.openstreetmap.fr"));
+    assert.ok(lines.some((l) => /overpass-api\.de map status=429 .*pause=4\d\d\d\d/.test(l)), lines.join("\n"));
   });
 
   it("honours Retry-After without asking /api/status", async () => {
@@ -245,7 +247,9 @@ describe("overpass client", () => {
     const got = await overpass.request({ kind: "map", bbox: box, deadlineMs: 5000 });
     assert.equal(got.ok, false);
     assert.equal(got.status, 400);
-    assert.equal(calls.length, 1);
+    const hosts = calls.map((c) => hostOf(c.url));
+    assert.ok(calls.length >= 1 && calls.length <= 3, String(calls.length));
+    assert.ok(!hosts.includes("overpass.openstreetmap.fr"));
   });
 
   it("coalesces identical reads and keeps a short-lived copy", async () => {
@@ -260,7 +264,8 @@ describe("overpass client", () => {
     const c = await overpass.request({ kind: "map", bbox: box, deadlineMs: 5000 });
     assert.equal(a.ok && b.ok && c.ok, true);
     assert.equal(c.cached, true);
-    assert.equal(calls.length, 1);
+    // The first read races the regular mirrors once; the copy serves later calls.
+    assert.ok(calls.length >= 1 && calls.length <= 3, String(calls.length));
   });
 
   it("caps requests in flight per server", async () => {
@@ -436,7 +441,8 @@ describe("overpass client", () => {
       setup((url) => (hostOf(url) === "overpass-api.de" ? res(200, MAP_XML) : res(504, "busy")));
       const a = await overpass.request({ kind: "map", bbox: box, deadlineMs: 5000 });
       assert.equal(a.ok, true);
-      assert.equal(calls.length, 1);
+      const afterFirst = calls.length;
+      assert.ok(afterFirst >= 1 && afterFirst <= 3, String(afterFirst));
       // A new process: no in-memory copy, the disk copy answers.
       setup(() => {
         throw new Error("no network expected");
@@ -445,7 +451,7 @@ describe("overpass client", () => {
       assert.equal(b.ok, true);
       assert.equal(b.disk, true);
       assert.equal(b.text, MAP_XML);
-      assert.equal(calls.length, 1);
+      assert.equal(calls.length, afterFirst);
       // A different box is a different key; a failed read leaves nothing.
       setup(() => res(400, "bad"));
       const c = await overpass.request({ kind: "map", bbox: Object.assign({}, box, { west: box.west - 0.001 }), deadlineMs: 5000 });
@@ -521,6 +527,129 @@ describe("overpass client", () => {
     const got = await tiles.fetchOsmMaps(box, { fetchImpl });
     assert.equal(got.xmls.length, 1);
     assert.equal(hit, 1);
+  });
+
+  it("races regular map mirrors and uses the last-resort server without a 60 s serial wait", async () => {
+    let peak = 0;
+    let active = 0;
+    const frBody = MAP_XML.replace("<osm", '<osm osm_base="2026-11-01T00:00:00Z"');
+    const t0 = Date.now();
+    overpass.resetForTests({
+      fetch: async (url, init) => {
+        calls.push({ url });
+        const h = hostOf(url);
+        active += 1;
+        peak = Math.max(peak, active);
+        try {
+          if (h === "overpass.openstreetmap.fr") {
+            await new Promise((r) => setTimeout(r, 12));
+            return res(200, frBody);
+          }
+          await new Promise((resolve, reject) => {
+            init.signal.addEventListener(
+              "abort",
+              () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+              { once: true }
+            );
+          });
+        } finally {
+          active -= 1;
+        }
+      },
+      log: (l) => lines.push(l),
+      sleep: fastSleep,
+      timerScale: 1000,
+    });
+    const got = await overpass.request({
+      kind: "map",
+      bbox: box,
+      deadlineMs: 30000,
+    });
+    const ms = Date.now() - t0;
+    assert.equal(got.ok, true);
+    assert.equal(got.text, frBody);
+    assert.ok(peak >= 2, String(peak));
+    // Last-resort wait is 8 s, scaled to 8 ms by fastSleep, plus the 12 ms answer.
+    assert.ok(ms < 80, String(ms));
+    const hosts = calls.map((c) => hostOf(c.url));
+    assert.ok(hosts.includes("overpass-api.de"));
+    assert.ok(hosts.includes("overpass.openstreetmap.fr"));
+  });
+
+  it("keeps the first good map body and cancels the other mirrors", async () => {
+    const coffeeBody = MAP_XML.replace("id=\"1\"", 'id="22"');
+    overpass.resetForTests({
+      fetch: async (url, init) => {
+        calls.push({ url });
+        const h = hostOf(url);
+        if (h === "overpass.private.coffee") {
+          await new Promise((r) => setTimeout(r, 5));
+          return res(200, coffeeBody);
+        }
+        await new Promise((resolve, reject) => {
+          init.signal.addEventListener(
+            "abort",
+            () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+            { once: true }
+          );
+        });
+      },
+      log: (l) => lines.push(l),
+      sleep: fastSleep,
+      timerScale: 1000,
+    });
+    const got = await overpass.request({ kind: "map", bbox: box, deadlineMs: 30000 });
+    assert.equal(got.ok, true);
+    assert.equal(got.text, coffeeBody);
+    assert.ok(!calls.some((c) => hostOf(c.url) === "overpass.openstreetmap.fr"));
+  });
+
+  it("stops when a map extract is over the size cap instead of waiting on other mirrors", async () => {
+    const big = MAP_XML + "x".repeat(50);
+    overpass.resetForTests({
+      fetch: async (url, init) => {
+        calls.push({ url });
+        const h = hostOf(url);
+        if (h === "overpass-api.de") return res(200, big);
+        await new Promise((resolve, reject) => {
+          init.signal.addEventListener(
+            "abort",
+            () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+            { once: true }
+          );
+        });
+      },
+      log: (l) => lines.push(l),
+      sleep: fastSleep,
+      timerScale: 1000,
+    });
+    const t0 = Date.now();
+    const got = await overpass.request({ kind: "map", bbox: box, deadlineMs: 30000, maxBytes: 20 });
+    const ms = Date.now() - t0;
+    assert.equal(got.ok, false);
+    assert.equal(got.tooBig, true);
+    assert.ok(ms < 50, String(ms));
+  });
+
+  it("gives up after one attempt per map mirror without retrying until the deadline", async () => {
+    const t0 = Date.now();
+    overpass.resetForTests({
+      fetch: async (url) => {
+        calls.push({ url });
+        return res(504, "busy");
+      },
+      log: (l) => lines.push(l),
+      sleep: fastSleep,
+      timerScale: 1000,
+    });
+    const got = await overpass.request({ kind: "map", bbox: box, deadlineMs: 30000 });
+    const ms = Date.now() - t0;
+    assert.equal(got.ok, false);
+    assert.ok(ms < 80, String(ms));
+    const hosts = calls.map((c) => hostOf(c.url));
+    assert.equal(hosts.filter((h) => h === "overpass-api.de").length, 1);
+    assert.equal(hosts.filter((h) => h === "overpass.private.coffee").length, 1);
+    assert.ok(hosts.includes("overpass.openstreetmap.fr"));
   });
 });
 

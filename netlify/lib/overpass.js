@@ -441,6 +441,11 @@ async function attempt(ep, kind, payload, opts, n, outer, limitMs) {
     }
     if (r.ok && bodyOk(kind, text)) {
       s.fails = 0;
+      const maxBytes = opts.maxBytes > 0 ? opts.maxBytes : 0;
+      if (maxBytes && text.length > maxBytes) {
+        log(opts.tag, ep, kind, r.status, ms, n, "bytes=" + text.length + " tooBig");
+        return { ok: false, status: r.status, text: "", tooBig: true, final: true };
+      }
       log(opts.tag, ep, kind, r.status, ms, n, "bytes=" + text.length);
       return { ok: true, status: r.status, text };
     }
@@ -641,6 +646,99 @@ function linkAbort(parent, child) {
  * run at the same time (first good answer wins). The last remaining
  * server gets the rest of the window.
  */
+/**
+ * A full /api/map extract is the Overture fallback. Asking one regular
+ * server for 20 s, then the next, then the next, and retrying until a
+ * long budget is gone costs about a minute when the regular mirrors hang
+ * and only the last-resort server answers, or when none do. Race the
+ * free regular mirrors at once, bring in the last-resort server after
+ * LAST_RESORT_WAIT_MS if no one has answered, keep the first good body,
+ * and do not retry a server in this read.
+ */
+async function fetchAcrossMap(kind, payload, opts, outer, parent, onParent, deadlineTimer) {
+  let n = 0;
+  let lastStatus = 0;
+  let lastTooBig = false;
+  const started = new Set();
+  const running = [];
+  let pending = 0;
+  let winner = null;
+  let pulse = () => {};
+
+  function leftover() {
+    return Math.max(0, opts.deadlineAt - nowFn());
+  }
+
+  function start(ep) {
+    if (outer.signal.aborted || leftover() <= 0) return;
+    if (started.has(ep.id)) return;
+    if (endpointState(ep).pausedUntil > nowFn()) return;
+    started.add(ep.id);
+    n += 1;
+    pending += 1;
+    const ctrl = new AbortController();
+    const unlink = linkAbort(outer.signal, ctrl);
+    const more = endpoints().some((e) => !started.has(e.id) && endpointState(e).pausedUntil < opts.deadlineAt - 1000);
+    const limit = more ? Math.min(ATTEMPT_MS, leftover()) : leftover();
+    const p = attempt(ep, kind, payload, opts, n, ctrl.signal, limit).then((r) => {
+      pending -= 1;
+      unlink();
+      if (winner) return;
+      if (r && r.ok) {
+        winner = r;
+        outer.abort();
+      } else if (r && (r.tooBig || (r.final && r.status === 400))) {
+        lastStatus = r.status || lastStatus;
+        lastTooBig = !!r.tooBig;
+        winner = r;
+        outer.abort();
+      } else if (r && r.status && r.status !== "aborted") {
+        lastStatus = r.status;
+      }
+      pulse();
+    });
+    running.push(p);
+  }
+
+  try {
+    const regulars = endpoints().filter((e) => !e.lastResort);
+    const resorts = endpoints().filter((e) => e.lastResort);
+    for (let i = 0; i < regulars.length; i++) start(regulars[i]);
+    if (!regulars.some((e) => started.has(e.id))) {
+      for (let i = 0; i < resorts.length; i++) start(resorts[i]);
+    } else if (resorts.length) {
+      const giveUp = nowFn() + Math.min(LAST_RESORT_WAIT_MS, leftover());
+      while (!winner && pending > 0 && nowFn() < giveUp && leftover() > 0 && !outer.signal.aborted) {
+        await Promise.race([
+          new Promise((resolve) => {
+            pulse = resolve;
+          }),
+          sleep(Math.max(0, giveUp - nowFn()), outer.signal),
+        ]);
+      }
+      if (!winner && leftover() > 0 && !outer.signal.aborted) {
+        for (let i = 0; i < resorts.length; i++) start(resorts[i]);
+      }
+    }
+    while (!winner && pending > 0 && leftover() > 0 && !outer.signal.aborted) {
+      await Promise.race([
+        new Promise((resolve) => {
+          pulse = resolve;
+        }),
+        sleep(Math.max(0, leftover()), outer.signal),
+      ]);
+    }
+    if (winner) return winner;
+    await Promise.all(running);
+    if (winner) return winner;
+    return { ok: false, status: lastStatus || "deadline", text: "", tooBig: lastTooBig };
+  } finally {
+    clearTimeout(deadlineTimer);
+    outer.abort();
+    if (parent) parent.removeEventListener("abort", onParent);
+  }
+}
+
 async function fetchAcross(kind, payload, opts) {
   const outer = new AbortController();
   const parent = opts.signal;
@@ -652,6 +750,7 @@ async function fetchAcross(kind, payload, opts) {
   const deadlineTimer = setTimeout(() => outer.abort(), Math.max(0, opts.deadlineAt - nowFn()));
   unrefTimer(deadlineTimer);
   const tileRead = opts.slowFailMs > 0;
+  if (kind === "map" && !tileRead) return fetchAcrossMap(kind, payload, opts, outer, parent, onParent, deadlineTimer);
   let n = 0;
   let lastStatus = 0;
   const failed = new Set();
@@ -851,10 +950,15 @@ async function requestRead(opts) {
     deadlineAt,
     signal: null,
     slowFailMs: o.slowFailMs > 0 ? o.slowFailMs : 0,
+    maxBytes: o.maxBytes > 0 ? o.maxBytes : 0,
   }).then((res) => {
     if (res && res.ok) {
       memoSet(key, { ok: true, status: res.status, text: res.text });
       diskSet(kind, payload, res.text);
+    } else if (res && res.tooBig) {
+      // Remember a too-large box so a later call in this process does not
+      // re-download it. Failed or timed-out reads stay uncached.
+      memoSet(key, { ok: false, status: res.status, text: "", tooBig: true, final: true });
     }
     return res;
   });
