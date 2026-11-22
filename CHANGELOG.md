@@ -32,6 +32,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.78** (Nov 22, 2026): /dev only. Building exports outside the US now include Microsoft's free Global ML footprints and heights where that dataset has tiles, from a compact committed index (release 2026-07-24). A Microsoft campus or block hull that already contains two or more Overture buildings is dropped so those buildings are kept instead of hidden. Production gets this in the Nov 30 weekly release.
 - **1.3.77** (Nov 22, 2026): /dev only. USA Structures is skipped silently outside the United States (using the export country when we have it, otherwise a coverage check), so a Toronto or London draw is no longer warned that those outlines were omitted when the map simply does not cover the site. Production gets this in the Nov 30 weekly release.
 - **1.3.76** (Nov 22, 2026): /dev only. The hung-stand cutoff test now spends its 400 ms budget on an injected clock, so a loaded official npm run cannot report a 171 s wall time for that check. A stuck slope-split is still cut off at the same budget. Production gets this in the Nov 30 weekly release.
 - **1.3.75** (Nov 22, 2026): /dev only. A dense street-map read no longer opens hundreds of live range requests at once. If one request is dropped, it is retried, so a site like the Universal Hollywood draw keeps its streets instead of falling back to the slower full map. The fallback and a clear warning are still used if the read still fails. Production gets this in the Nov 30 weekly release.
