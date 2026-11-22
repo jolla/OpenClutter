@@ -1,11 +1,12 @@
 "use strict";
 
 // 1.3.41: Overture range reads, file lengths and footers are kept per process.
+// 1.3.75: cap in-flight Azure ranges and retry a dropped one.
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const pc = require("../netlify/lib/parquet-cache");
 
-function fakeReader(len) {
+function fakeReader(len, hooks) {
   const calls = { open: 0, slices: 0, meta: 0, withLength: 0 };
   const reader = {
     calls,
@@ -16,6 +17,7 @@ function fakeReader(len) {
         byteLength: len,
         slice: async (s, e) => {
           calls.slices++;
+          if (hooks && hooks.slice) await hooks.slice(s, e, calls);
           if (s === 13) throw new Error("network");
           const b = new Uint8Array(e - s);
           for (let i = 0; i < b.length; i++) b[i] = (s + i) & 255;
@@ -60,7 +62,7 @@ describe("parquet process cache", () => {
     const a = await pc.cachedSource(r, "u2", null);
     await assert.rejects(a.slice(13, 20));
     await assert.rejects(a.slice(13, 20));
-    assert.equal(r.calls.slices, 2);
+    assert.equal(r.calls.slices, pc.RANGE_ATTEMPTS * 2);
   });
 
   it("evicts the oldest ranges past the byte cap", async () => {
@@ -74,5 +76,72 @@ describe("parquet process cache", () => {
     assert.equal(r.calls.slices, 2);
     await a.slice(0, 1000);
     assert.equal(r.calls.slices, 3);
+  });
+
+  it("treats a dropped range as transient and an abort as final", () => {
+    assert.equal(pc.isTransientRangeError(new TypeError("fetch failed")), true);
+    assert.equal(pc.isTransientRangeError(new Error("ECONNRESET")), true);
+    assert.equal(pc.isTransientRangeError(new Error("HTTP 503")), true);
+    const abort = new Error("The operation was aborted");
+    abort.name = "AbortError";
+    assert.equal(pc.isTransientRangeError(abort), false);
+    assert.equal(pc.isTransientRangeError(new Error("The operation was aborted due to timeout")), false);
+    assert.equal(pc.isTransientRangeError(new Error("OVERTURE_RELEASE_GONE")), false);
+  });
+
+  it("retries a first-attempt fetch failed and keeps the bytes", async () => {
+    pc.setRangeLimits({ attempts: 2, retryMs: 5 });
+    const fails = new Map();
+    const r = fakeReader(1000, {
+      slice: async (s) => {
+        if (s === 40) {
+          const n = (fails.get(s) || 0) + 1;
+          fails.set(s, n);
+          if (n === 1) throw new TypeError("fetch failed");
+        }
+      },
+    });
+    const a = await pc.cachedSource(r, "u5", null);
+    const got = new Uint8Array(await a.slice(40, 50));
+    assert.equal(got[0], 40);
+    assert.equal(r.calls.slices, 2);
+    assert.equal(pc.cacheStats().retries, 1);
+    const again = new Uint8Array(await a.slice(40, 50));
+    assert.deepEqual([...again], [...got]);
+    assert.equal(r.calls.slices, 2);
+  });
+
+  it("does not retry an aborted range read", async () => {
+    pc.setRangeLimits({ attempts: 3, retryMs: 5 });
+    const r = fakeReader(1000, {
+      slice: async () => {
+        const err = new Error("The operation was aborted");
+        err.name = "AbortError";
+        throw err;
+      },
+    });
+    const a = await pc.cachedSource(r, "u6", null);
+    await assert.rejects(a.slice(0, 10), (err) => err && err.name === "AbortError");
+    assert.equal(r.calls.slices, 1);
+    assert.equal(pc.cacheStats().retries, 0);
+  });
+
+  it("caps in-flight range reads", async () => {
+    pc.setRangeLimits({ concurrency: 4, attempts: 1, retryMs: 0 });
+    let inflight = 0;
+    let max = 0;
+    const r = fakeReader(100000, {
+      slice: async () => {
+        inflight++;
+        if (inflight > max) max = inflight;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        inflight--;
+      },
+    });
+    const a = await pc.cachedSource(r, "u7", null);
+    await Promise.all(Array.from({ length: 20 }, (_, i) => a.slice(i * 10, i * 10 + 10)));
+    assert.ok(max <= 4, "max in flight " + max);
+    assert.ok(pc.cacheStats().maxActive <= 4, "stats maxActive " + pc.cacheStats().maxActive);
+    assert.equal(r.calls.slices, 20);
   });
 });

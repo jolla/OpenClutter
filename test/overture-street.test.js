@@ -21,6 +21,7 @@ const {
   ringHitsBbox,
   elementsFromRows,
   elementsFromGeometry,
+  fetchOvertureStreet,
 } = require("../netlify/lib/overture-street");
 
 const KOA = { west: -112.15926, south: 35.32465, east: -112.15474, north: 35.32957 };
@@ -293,5 +294,50 @@ describe("Overture scoped bridge ranges", () => {
     assert.equal(got.length, expect.length);
     assert.ok(Math.abs(got[0][0] - expect[0][0]) < 1e-12);
     assert.ok(Math.abs(got[got.length - 1][0] - expect[expect.length - 1][0]) < 1e-12);
+  });
+});
+
+describe("Overture street group reads", () => {
+  it("retries a transient filtered group read and does not fall back to an unfiltered group", async () => {
+    const calls = [];
+    const reader = {
+      processCache: false,
+      compressors: {},
+      async asyncBufferFromUrl() {
+        return { byteLength: 100, slice: async () => new ArrayBuffer(8) };
+      },
+      async parquetReadObjects(opts) {
+        calls.push({ filter: !!opts.filter, usePageIndex: !!opts.usePageIndex });
+        if (opts.filter && calls.filter((c) => c.filter).length === 1) {
+          throw new TypeError("fetch failed");
+        }
+        return [];
+      },
+    };
+    const pack = await fetchOvertureStreet(KOA, { reader, deadlineMs: 5000 });
+    assert.equal(pack.ok, true, pack.error);
+    assert.ok(calls.some((c) => c.filter), "expected a filtered page-index read");
+    assert.ok(calls.filter((c) => c.filter).length >= 2, "expected a filtered retry, got " + calls.length);
+    assert.equal(calls.some((c) => !c.filter), false, "unfiltered fallback should not run after fetch failed");
+  });
+
+  it("still reads the whole group when the page index itself is unsupported", async () => {
+    const calls = [];
+    const reader = {
+      processCache: false,
+      compressors: {},
+      async asyncBufferFromUrl() {
+        return { byteLength: 100, slice: async () => new ArrayBuffer(8) };
+      },
+      async parquetReadObjects(opts) {
+        calls.push({ filter: !!opts.filter, usePageIndex: !!opts.usePageIndex });
+        if (opts.filter || opts.usePageIndex) throw new Error("page index is not available");
+        return [];
+      },
+    };
+    const pack = await fetchOvertureStreet(KOA, { reader, deadlineMs: 5000 });
+    assert.equal(pack.ok, true, pack.error);
+    assert.ok(calls.some((c) => c.filter));
+    assert.ok(calls.some((c) => !c.filter), "expected the unfiltered fallback for a page-index error");
   });
 });

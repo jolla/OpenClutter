@@ -10,9 +10,18 @@
  *   - the raw range bytes, up to OPENCLUTTER_PARQUET_CACHE_MB (default 256).
  * A repeat export of the same area on a warm worker reads its row groups
  * from memory. These are raw source bytes, never final geometry.
+ *
+ * hyparquet's page-index path can open hundreds of Azure range requests at
+ * once. A shared cap plus a short retry on a dropped range (1.3.75) keeps
+ * a dense street or building read from failing the whole theme when one
+ * request is reset.
  */
 
 const MAX_RANGE_BYTES = 16 * 1024 * 1024;
+const RANGE_CONCURRENCY = 24;
+const RANGE_ATTEMPTS = 3;
+const RANGE_RETRY_MS = 50;
+const SMALL_RANGE_BYTES = 64 * 1024;
 
 function capBytes() {
   const mb = Number(process.env.OPENCLUTTER_PARQUET_CACHE_MB);
@@ -23,7 +32,13 @@ const lengths = new Map();
 const metas = new Map();
 const ranges = new Map();
 let rangeBytes = 0;
-const stats = { hits: 0, misses: 0, metaHits: 0, metaMisses: 0 };
+const stats = { hits: 0, misses: 0, metaHits: 0, metaMisses: 0, retries: 0, maxActive: 0 };
+
+let concurrency = RANGE_CONCURRENCY;
+let attempts = RANGE_ATTEMPTS;
+let retryMs = RANGE_RETRY_MS;
+let active = 0;
+const waiters = [];
 
 function touch(map, key, value) {
   map.delete(key);
@@ -40,7 +55,92 @@ function evict() {
   }
 }
 
-function cachedSlice(url, buf, start, end) {
+function abortError() {
+  const err = new Error("The operation was aborted");
+  err.name = "AbortError";
+  return err;
+}
+
+function isTransientRangeError(err) {
+  if (!err) return false;
+  if (err.name === "AbortError") return false;
+  const msg = String(err && err.message ? err.message : err);
+  if (/aborted/i.test(msg)) return false;
+  return /timeout|timed out|econnreset|etimedout|enotfound|eai_again|econnrefused|socket|network|fetch failed|http 5\d\d|429|503|504/i.test(msg);
+}
+
+function acquirePreferSmall(bytes) {
+  if (active < concurrency) {
+    active++;
+    if (active > stats.maxActive) stats.maxActive = active;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const item = { resolve, small: bytes < SMALL_RANGE_BYTES };
+    if (item.small) {
+      const i = waiters.findIndex((w) => w && w.small === false);
+      if (i >= 0) waiters.splice(i, 0, item);
+      else waiters.push(item);
+    } else {
+      waiters.push(item);
+    }
+  });
+}
+
+function release() {
+  if (waiters.length) {
+    const next = waiters.shift();
+    (typeof next === "function" ? next : next.resolve)();
+  } else {
+    active--;
+    if (active < 0) active = 0;
+  }
+}
+
+function sleep(ms, signal) {
+  if (!(ms > 0)) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortError());
+    };
+    if (signal) {
+      if (signal.aborted) {
+        clearTimeout(timer);
+        reject(abortError());
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+}
+
+async function limitedSlice(buf, start, end, signal) {
+  const want = (end == null ? buf.byteLength : end) - start;
+  let lastErr;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (signal && signal.aborted) throw abortError();
+    await acquirePreferSmall(want);
+    try {
+      if (signal && signal.aborted) throw abortError();
+      return await Promise.resolve(buf.slice(start, end));
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientRangeError(err) || attempt >= attempts) throw err;
+      stats.retries++;
+    } finally {
+      release();
+    }
+    await sleep(retryMs * attempt, signal);
+  }
+  throw lastErr;
+}
+
+function cachedSlice(url, buf, start, end, signal) {
   const key = url + "|" + start + "|" + end;
   const hit = ranges.get(key);
   if (hit) {
@@ -50,7 +150,7 @@ function cachedSlice(url, buf, start, end) {
   }
   stats.misses++;
   const entry = { bytes: 0, promise: null };
-  entry.promise = Promise.resolve(buf.slice(start, end)).then(
+  entry.promise = limitedSlice(buf, start, end, signal).then(
     (ab) => {
       const n = ab && ab.byteLength ? ab.byteLength : 0;
       if (n > 0 && n <= MAX_RANGE_BYTES && capBytes() > 0 && ranges.get(key) === entry) {
@@ -84,7 +184,7 @@ async function cachedSource(reader, url, signal) {
   if (!buf || typeof buf.slice !== "function") return buf;
   return {
     byteLength: buf.byteLength,
-    slice: (start, end) => cachedSlice(url, buf, start, end === undefined ? buf.byteLength : end),
+    slice: (start, end) => cachedSlice(url, buf, start, end === undefined ? buf.byteLength : end, signal),
   };
 }
 
@@ -107,16 +207,50 @@ async function cachedMetadata(reader, url, source) {
   return p;
 }
 
+function setRangeLimits(opts) {
+  const o = opts || {};
+  if (o.concurrency > 0) concurrency = o.concurrency | 0;
+  if (o.attempts > 0) attempts = o.attempts | 0;
+  if (o.retryMs >= 0) retryMs = o.retryMs | 0;
+}
+
 function resetForTests() {
   lengths.clear();
   metas.clear();
   ranges.clear();
   rangeBytes = 0;
-  stats.hits = stats.misses = stats.metaHits = stats.metaMisses = 0;
+  stats.hits = stats.misses = stats.metaHits = stats.metaMisses = stats.retries = stats.maxActive = 0;
+  concurrency = RANGE_CONCURRENCY;
+  attempts = RANGE_ATTEMPTS;
+  retryMs = RANGE_RETRY_MS;
+  while (waiters.length) {
+    const next = waiters.shift();
+    try {
+      (typeof next === "function" ? next : next.resolve)();
+    } catch {
+      /* a leftover waiter should not break the next test */
+    }
+  }
+  active = 0;
 }
 
 function cacheStats() {
-  return Object.assign({ rangeBytes, ranges: ranges.size, files: metas.size }, stats);
+  return Object.assign(
+    { rangeBytes, ranges: ranges.size, files: metas.size, rangeActive: active, rangeWaiters: waiters.length, rangeConcurrency: concurrency },
+    stats
+  );
 }
 
-module.exports = { cachedSource, cachedMetadata, resetForTests, cacheStats, MAX_RANGE_BYTES };
+module.exports = {
+  cachedSource,
+  cachedMetadata,
+  resetForTests,
+  setRangeLimits,
+  cacheStats,
+  isTransientRangeError,
+  MAX_RANGE_BYTES,
+  RANGE_CONCURRENCY,
+  RANGE_ATTEMPTS,
+  RANGE_RETRY_MS,
+  SMALL_RANGE_BYTES,
+};

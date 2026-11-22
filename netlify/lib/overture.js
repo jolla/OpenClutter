@@ -306,6 +306,12 @@ async function readGroupRows(reader, source, group, filter, signal, metadata) {
     return await reader.parquetReadObjects({ ...base, filter, usePageIndex: true });
   } catch (e) {
     if (signal.aborted || isAbortError(e)) throw e;
+    // A dropped Azure range is transient. Retry the same filtered
+    // page-index read; do not fall through to an unfiltered group
+    // just because one range was reset.
+    if (isTransientOvertureError(e)) {
+      return await reader.parquetReadObjects({ ...base, filter, usePageIndex: true });
+    }
     return reader.parquetReadObjects(base);
   }
 }

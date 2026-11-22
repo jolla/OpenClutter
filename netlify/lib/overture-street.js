@@ -12,6 +12,7 @@
 const zlib = require("node:zlib");
 const packed = require("./overture-street-rg-data");
 const { RELEASE } = require("./overture");
+const { isTransientRangeError } = require("./parquet-cache");
 
 const AZURE_ROOT = "https://overturemapswestus2.blob.core.windows.net/release/" + RELEASE + "/";
 const GROUP_STRIDE = 26;
@@ -969,6 +970,12 @@ async function readTheme(theme, bbox, reader, signal) {
         return await reader.parquetReadObjects({ ...base, filter, usePageIndex: true });
       } catch (e) {
         if (signal && signal.aborted || isAbortError(e)) throw e;
+        // A dropped Azure range is transient. Retry the same filtered
+        // page-index read; do not fall through to an unfiltered group
+        // (a much larger request) just because one range was reset.
+        if (isTransientRangeError(e)) {
+          return await reader.parquetReadObjects({ ...base, filter, usePageIndex: true });
+        }
         return reader.parquetReadObjects(base);
       }
     };
