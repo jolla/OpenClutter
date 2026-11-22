@@ -280,7 +280,7 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.match(credit, /Credit: Esri, Vantor, Earthstar Geographics, and the GIS User Community/);
     assert.equal(built.clipboard.header.type, "HaminaClipboard");
     assert.ok(built.clipboard.attenuatingZones.length >= 1);
-    assert.match(built.alignment, /Import this zip in Hamina \(Projects → Import → OpenIntent\)/);
+    assert.match(built.alignment, /Drag and drop this zip into your Hamina project/);
     assert.match(built.stats.summary, /Foliage off/);
     assert.equal(built.stats.buildingsKept, 1);
     assert.equal(built.stats.includeFoliage, false);
@@ -848,7 +848,7 @@ describe("pipeline: footprints + trees share the frame", () => {
     assert.equal(built.frame.widthM, frame.widthM);
     assert.equal(built.frame.clipboardCorners.ne[0], 0);
     assert.equal(built.frame.clipboardCorners.ne[1], 0);
-    assert.match(built.alignment, /Import this zip in Hamina/);
+    assert.match(built.alignment, /Drag and drop this zip into your Hamina project/);
     assert.match(built.alignment, /Google Earth/);
     assert.match(built.alignment, /aerial JPEG/);
     assert.equal(/Paste hamina-clipboard\.json for trees/i.test(built.alignment), false);
@@ -1270,7 +1270,7 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.match(html, /id="include-terrain"[^>]*checked/);
     assert.match(html, />\s*Terrain\s*</);
     assert.equal(/paste hamina-clipboard\.json for trees/i.test(html), false);
-    assert.match(app, /Import this OpenIntent file in Hamina \(Projects → Import → OpenIntent\)/);
+    assert.match(app, /Drag and drop the OpenIntent zip into your Hamina project/);
     assert.match(app, /includeFoliage/);
     assert.equal(/Paste hamina-clipboard\.json from the zip for trees/i.test(app), false);
     assert.match(app, /stats\.summary/);
@@ -1316,6 +1316,14 @@ describe("main UI: import buildings, optional foliage", () => {
     assert.equal(/id="copy-terrain"/.test(html), false);
     assert.equal(/id="copy-terrain"/.test(app), false);
     assert.match(app, /Copy terrain/);
+    assert.match(html, /id="terrain-callout"[^>]*hidden/);
+    assert.match(html, /Last step: after the import finishes in Hamina, paste this terrain or the site will be flat\./);
+    assert.match(html, /Requires a Hamina Planner Plus license\. The standard Planner license doesn't include slopes and raised floors\./);
+    assert.match(html, /<strong>Don't skip:<\/strong> when the import finishes, click Copy terrain and paste it into Hamina\./);
+    assert.match(app, /function syncTerrainCallout/);
+    assert.match(app, /syncTerrainCallout\(\)/);
+    assert.match(app, /classList\.toggle\("copy-ready"/);
+    assert.match(app, /function showExportProgress\(job\) \{\n  exportLive = true;\n  syncTerrainCallout\(\);/);
     // Map quality, plus the dev-only aerial Source picker (hidden off dev).
     assert.equal((html.match(/<select/gi) || []).length, 2);
     assert.match(html, /id="map-source-row"[^>]*hidden/);

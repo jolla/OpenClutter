@@ -2320,13 +2320,23 @@ function copyTerrainLabelReady() {
   return !!(exportCopyReady && !drawHidesCopy && terrainPasteJson && !terrainPasteGpsOnly);
 }
 
+function syncTerrainCallout() {
+  const ready = !!(copyTerrainLabelReady() && !exportLive);
+  const el = document.getElementById("terrain-callout");
+  if (el) el.hidden = !ready;
+  if (exportBtn) exportBtn.classList.toggle("copy-ready", ready);
+}
+
 function syncIdleExportLabel() {
-  if (exportLive) return;
-  const label = document.getElementById("export-label");
-  if (!label) return;
-  label.textContent = OpenClutterExport.finishedExportButton(
-    copyTerrainLabelReady() ? { json: terrainPasteJson, gpsOnly: false } : { json: "", gpsOnly: false }
-  ).label;
+  if (!exportLive) {
+    const label = document.getElementById("export-label");
+    if (label) {
+      label.textContent = OpenClutterExport.finishedExportButton(
+        copyTerrainLabelReady() ? { json: terrainPasteJson, gpsOnly: false } : { json: "", gpsOnly: false }
+      ).label;
+    }
+  }
+  syncTerrainCallout();
 }
 
 function noteDrawInProgress() {
@@ -2373,6 +2383,7 @@ function paintRedownload() {
   const link = document.getElementById("redownload");
   if (!row || !link) return;
   syncExportFormat();
+  syncTerrainCallout();
   let live = false;
   try {
     live = exportLive;
@@ -2599,7 +2610,7 @@ function showExportResult(data, includeFoliage, includeTerrain, fallbackNote) {
     terrainOn: !terrainOff,
   });
   for (let i = 0; i < detail.length; i++) lines.push(detail[i]);
-  lines.push("Import this OpenIntent file in Hamina (Projects → Import → OpenIntent).");
+  lines.push("Drag and drop the OpenIntent zip into your Hamina project. Or open the breadcrumb dropdown, choose Import / Export (third icon), and import it there.");
   if (fallbackNote) lines.push(fallbackNote);
   if (canopyBlockedNote) lines.push(canopyBlockedNote);
   const coveredTerrain = detail.some((line) => line.indexOf("Terrain") === 0 || line.indexOf("Minimum ") === 0);
@@ -2786,6 +2797,7 @@ function endExportProgress() {
 
 function showExportProgress(job) {
   exportLive = true;
+  syncTerrainCallout();
   const view = job ? Object.assign({}, job) : {};
   const stageName = String(view.stage || view.heartbeatStage || "");
   if (stageName) exportShownStage = stageName;

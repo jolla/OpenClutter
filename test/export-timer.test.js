@@ -63,7 +63,7 @@ describe("export elapsed timer", () => {
 
   it("starts the finished summary with Done in 0:55 and keeps that line after Copy terrain", () => {
     const summary = withExportDone(
-      ["OpenIntent file ready. 2 buildings.", "Buildings 2", "Import this OpenIntent file in Hamina (Projects → Import → OpenIntent)."],
+      ["OpenIntent file ready. 2 buildings.", "Buildings 2", "Drag and drop the OpenIntent zip into your Hamina project. Or open the breadcrumb dropdown, choose Import / Export (third icon), and import it there."],
       55000
     );
     assert.equal(summary[0], "Done in 0:55");

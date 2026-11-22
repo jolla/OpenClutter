@@ -220,7 +220,7 @@ const HAMINA_FOLIAGE_AREA_MIN = 1;
 const STOCK_MATERIAL_NAMES = OI_BUILDING_NAMES.slice();
 
 const ZIP_README =
-  "Import this zip in Hamina (Projects → Import → OpenIntent).\n" +
+  "Drag and drop this zip into your Hamina project. Or open the breadcrumb dropdown, choose Import / Export (third icon), and import it there.\n" +
   "OpenIntent carries the map image and building attenuation_areas.\n" +
   "Include foliage is off by default: the zip is buildings only, with no tree attenuation_areas.\n" +
   "When Include foliage was checked, canopy extent and height come from the\n" +
@@ -708,7 +708,7 @@ const TERRAIN_README =
   "hang above the ramp. A taller plan inside a shorter one is two objects:\n" +
   "the lower footprint up to its height, then the upper footprint from that height\n" +
   "to the taller top. A single simple box stays one object.\n" +
-  "Retest Granite Peak: Import this zip (Projects → Import → OpenIntent), Copy terrain,\n" +
+  "Retest Granite Peak: Drag and drop this zip into your Hamina project, or import it from the breadcrumb Import / Export menu, then Copy terrain,\n" +
   "paste it in Planner Plus, then check 3D. Buildings should sit on the pasted terrain\n" +
   "(sloped ramps, or stacked raised layers when that style was selected).\n" +
   "With Include foliage on, import again and Copy terrain: canopy should sit on that surface.\n";
@@ -769,7 +769,7 @@ const TERRAIN_README_SURFACE =
   "hang above the ramp. A taller plan inside a shorter one is two objects:\n" +
   "the lower footprint up to its height, then the upper footprint from that height\n" +
   "to the taller top. A single simple box stays one object.\n" +
-  "Retest: Import this zip (Projects → Import → OpenIntent), Copy terrain,\n" +
+  "Retest: Drag and drop this zip into your Hamina project, or import it from the breadcrumb Import / Export menu, then Copy terrain,\n" +
   "paste it in Planner Plus, then check 3D. Buildings should sit on the pasted terrain\n" +
   "(sloped ramps, or stacked raised layers when that style was selected), not under it.\n";
 
@@ -931,7 +931,7 @@ function verifyOmitWarning(c) {
 
 const ALIGNMENT = [
   "Exact alignment (repeatable, any site):",
-  "1. Import this zip in Hamina (Projects → Import → OpenIntent).",
+  "1. Drag and drop this zip into your Hamina project. Or open the breadcrumb dropdown, choose Import / Export (third icon), and import it there.",
   "   Floorplan meters match the JPEG pixel aspect (unified mpu; Esri content grid).",
   "   dimensions.height is Hamina outdoor 2.5 m. OpenIntent areas are buildings.",
   "   Include foliage is off by default. Checked, it adds traced canopy polygons (CHM contours when the height model resolves them, otherwise NLCD polygons).",

@@ -8,8 +8,8 @@ OpenClutter turns a box drawn on a map into outdoor clutter for Wi-Fi planning i
 2. Drag a box on the map, or click corners and click the first one to close a polygon (up to 15 km on a side).
 3. Optional: open Advanced to turn foliage, water, parking, cars, walls, poles, RVs, terrain, lidar heights, map notes and map quality on or off.
 4. Click Export. The zip holds the OpenIntent JSON, the aerial image and `ATTRIBUTION.txt`.
-5. In Hamina: Projects, Import, OpenIntent, then pick the zip.
-6. If the export included terrain, the button becomes Copy terrain. Paste that into Planner Plus to add the terrain mesh, GPS points and map notes.
+5. Drag and drop the OpenIntent zip into your Hamina project. Or open the breadcrumb dropdown, choose Import / Export (third icon), and import it there.
+6. If the export included terrain, the button becomes Copy terrain. After you import the zip in Hamina, click it and paste into Planner Plus to add the terrain mesh, GPS points and map notes. This requires a Hamina Planner Plus license. The standard Planner license doesn't include slopes and raised floors.
 
 Finished exports stay available for 24 hours through Download again.
 

@@ -150,7 +150,7 @@ describe("clutter handler (mocked Esri)", () => {
     assert.equal(oiText.includes("slopedFloors"), false);
     assert.equal(oiText.includes("tiePoints"), false);
     assert.deepEqual(body.frame.clipboardCorners.ne, [0, 0]);
-    assert.match(body.alignment, /Import this zip in Hamina/);
+    assert.match(body.alignment, /Drag and drop this zip into your Hamina project/);
     const oi = JSON.parse(files["openIntent_Wynn-Golf.json"].toString());
     assert.ok(oi.floorplans[0].attenuation_areas.length >= 1);
     assert.equal(exportStats.attenuationAreasEmitted, oi.floorplans[0].attenuation_areas.length);
