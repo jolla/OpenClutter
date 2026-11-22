@@ -1019,12 +1019,59 @@ function groundUncoveredFloats(kept) {
  * Imagery roofs are applied by the caller after this.
  * Stacked outlines of the same roof are removed before return.
  */
+
+/**
+ * A primary ring that already contains two or more secondary centroids is a
+ * container (a block or campus hull), not one building. Drop it so the
+ * secondary footprints are kept, instead of hiding them under the hull.
+ * A one-to-one overlap still merges in conflateFootprints.
+ */
+function dropPrimaryContainers(primary, secondary, minInside) {
+  const need = minInside > 1 ? minInside : 2;
+  const seconds = [];
+  const extra = Array.isArray(secondary) ? secondary : [];
+  for (let i = 0; i < extra.length; i++) {
+    const ex = exteriorRings(extra[i] && extra[i].geometry);
+    const cents = [];
+    for (const r of ex) {
+      const c = centroid(r);
+      if (c) cents.push(c);
+    }
+    if (cents.length) seconds.push(cents);
+  }
+  const kept = [];
+  let dropped = 0;
+  const base = Array.isArray(primary) ? primary : [];
+  for (let i = 0; i < base.length; i++) {
+    const f = base[i];
+    const ex = exteriorRings(f && f.geometry).filter((r) => !ringIsCoarseMega(r));
+    if (!ex.length) {
+      kept.push(f);
+      continue;
+    }
+    let inside = 0;
+    for (let s = 0; s < seconds.length; s++) {
+      const hit = seconds[s].some((c) => ex.some((r) => pointInRing(c, r)));
+      if (!hit) continue;
+      inside++;
+      if (inside >= need) break;
+    }
+    if (inside >= need) {
+      dropped++;
+      continue;
+    }
+    kept.push(f);
+  }
+  return { features: kept, dropped };
+}
+
 function assembleFootprints({ global, overture, arcgis, usa }) {
   const g = tagLayer(global, "ms-global", "ms-global");
   const o = tagLayer(overture, "overture", null);
   const a = tagLayer(arcgis, "arcgis", null);
   const u = tagLayer(usa, "usa", "fema");
-  const withOverture = conflateFootprints(g, o, { replaceGeometry: true, rankHeight: true });
+  const withoutContainers = dropPrimaryContainers(g, o, 2);
+  const withOverture = conflateFootprints(withoutContainers.features, o, { replaceGeometry: true, rankHeight: true });
   const withArc = conflateFootprints(withOverture.features, a, { replaceGeometry: true, rankHeight: true });
   const withUsa = conflateFootprints(withArc.features, u, { replaceGeometry: true, rankHeight: true });
   const separated = dedupeStackedFootprints(withUsa.features);
@@ -1051,6 +1098,7 @@ module.exports = {
   shouldReplaceGeometry,
   conflateFootprints,
   assembleFootprints,
+  dropPrimaryContainers,
   dedupeStackedFootprints,
   countHeightSources,
   tagLayer,

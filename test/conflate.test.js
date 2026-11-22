@@ -95,6 +95,17 @@ describe("footprint conflation", () => {
     assert.equal(assembled.heightSources["ms-global"], 1);
   });
 
+  it("drops a Microsoft hull that encloses two Overture buildings instead of hiding them", () => {
+    const hull = box(-87.922, 42.895, -87.918, 42.899, { height: 12, heightSource: "ms-global" });
+    const a = box(-87.9215, 42.8955, -87.9205, 42.8965, { height: 8, heightSource: "overture" });
+    const b = box(-87.9198, 42.897, -87.9188, 42.898, { height: 9, heightSource: "overture" });
+    const assembled = assembleFootprints({ global: [hull], overture: [a, b], arcgis: [], usa: [] });
+    assert.equal(assembled.features.length, 2);
+    assert.equal(assembled.overtureAdded, 2);
+    assert.equal(assembled.features.filter((f) => (f.properties || {}).geomSource === "ms-global").length, 0);
+    assert.equal(assembled.heightSources.overture, 2);
+  });
+
   it("drops a shifted duplicate outline of the same roof", () => {
     const cos = Math.cos((42.9 * Math.PI) / 180);
     const dLon = 14 / (111320 * cos);

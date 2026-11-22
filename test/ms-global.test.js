@@ -45,6 +45,27 @@ describe("Microsoft global building footprints", { concurrency: 1 }, () => {
     assert.equal(urls.length, 1);
     assert.match(urls[0].url, /quadkey=030222210/);
     assert.match(urls[0].url, /^https:\/\//);
+    assert.match(urls[0].url, /2026-07-24/);
+    assert.match(urls[0].url, /RegionName=UnitedStates/);
+  });
+
+  it("resolves international Global ML tiles, including a border quadkey with more than one region file", () => {
+    const { MS_INDEX_RELEASE } = require("../netlify/lib/ms-global");
+    assert.equal(MS_INDEX_RELEASE, "2026-07-24");
+    const london = urlsForBbox(-0.100, 51.508, -0.085, 51.517);
+    assert.equal(london.keys[0], "031313131");
+    assert.ok(london.urls.length >= 1);
+    assert.ok(london.urls.some((u) => /RegionName=UnitedKingdom/.test(u.url) && /quadkey=031313131/.test(u.url)));
+    const mumbai = urlsForBbox(72.825, 18.927, 72.840, 18.936);
+    assert.equal(mumbai.keys[0], "123300311");
+    const locs = mumbai.urls.map((u) => (/RegionName=([^/]+)/.exec(u.url) || [])[1]);
+    assert.ok(locs.includes("India"));
+    assert.ok(locs.includes("Asia"));
+    assert.ok(mumbai.urls.length >= 2);
+    const tokyo = urlsForBbox(139.693, 35.685, 139.708, 35.694);
+    assert.ok(tokyo.urls.some((u) => /RegionName=Japan/.test(u.url)));
+    const toronto = urlsForBbox(-79.388, 43.643, -79.373, 43.652);
+    assert.ok(toronto.urls.some((u) => /RegionName=Canada/.test(u.url)));
   });
 
   it("keeps gzip features that intersect the bbox and drops the rest", () => {

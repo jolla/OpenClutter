@@ -20,12 +20,83 @@
  * must parse. The byte cap is a runaway guard, not a memory cap.
  */
 
+const fs = require("fs");
+const path = require("path");
 const zlib = require("zlib");
 const { Readable, Writable, PassThrough, Transform } = require("stream");
 const { pipeline } = require("stream/promises");
 
-const INDEX = require("./ms-buildings-index.json");
 const QUADKEY_ZOOM = 9;
+const MS_INDEX_RELEASE = "2026-07-24";
+const MS_INDEX_FILENAME = "ms-buildings-index.txt.gz";
+const MS_INDEX_BASE =
+  "https://bfppub.z5.web.core.windows.net/" +
+  MS_INDEX_RELEASE +
+  "/global-buildings.geojsonl/";
+
+/**
+ * Compact Global ML index (all regions, zoom 9). Rebuilt from Microsoft's
+ * free dataset-links.csv by scripts/build-ms-buildings-index.js. A border
+ * quadkey can have more than one URL (one file per region).
+ */
+let msIndex = null;
+
+function msIndexPaths() {
+  const roots = [
+    __dirname,
+    path.join(__dirname, "..", "lib"),
+    path.join(process.env.LAMBDA_TASK_ROOT || "", "netlify", "lib"),
+    path.join(process.cwd(), "netlify", "lib"),
+  ];
+  const out = [];
+  for (let i = 0; i < roots.length; i++) {
+    const p = path.join(roots[i], MS_INDEX_FILENAME);
+    if (out.indexOf(p) === -1) out.push(p);
+  }
+  return out;
+}
+
+function loadMsIndex() {
+  if (msIndex) return msIndex;
+  const paths = msIndexPaths();
+  let buf = null;
+  let last = null;
+  for (let i = 0; i < paths.length; i++) {
+    try {
+      buf = fs.readFileSync(paths[i]);
+      last = null;
+      break;
+    } catch (err) {
+      last = err;
+      if (!err || err.code !== "ENOENT") throw err;
+    }
+  }
+  if (!buf) {
+    const err = new Error("Microsoft footprint index missing");
+    err.code = "ENOENT";
+    if (last) err.cause = last;
+    throw err;
+  }
+  const map = new Map();
+  const text = zlib.gunzipSync(buf).toString("utf8");
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line || line.charAt(0) === "#") continue;
+    const parts = line.split("\t");
+    if (parts.length < 3) continue;
+    const key = parts[0];
+    const loc = parts[1];
+    const part = parts[2];
+    const url = MS_INDEX_BASE + "RegionName=" + loc + "/quadkey=" + key + "/" + part;
+    const list = map.get(key);
+    if (list) list.push(url);
+    else map.set(key, [url]);
+  }
+  msIndex = map;
+  return msIndex;
+}
+
 /**
  * Zoom-9 quadkeys are one gzip for a whole tile, not the drawn box.
  * Streamed reads keep memory flat, so this cap is only a runaway
@@ -100,10 +171,14 @@ function quadkeysForBbox(west, south, east, north, zoom) {
 
 function urlsForBbox(west, south, east, north) {
   const keys = quadkeysForBbox(west, south, east, north);
+  const index = loadMsIndex();
   const urls = [];
   for (const key of keys) {
-    const url = INDEX[key];
-    if (url) urls.push({ quadkey: key, url });
+    const list = index.get(key);
+    if (!list) continue;
+    for (let i = 0; i < list.length; i++) {
+      urls.push({ quadkey: key, url: list[i] });
+    }
   }
   return { keys, urls };
 }
@@ -736,6 +811,8 @@ module.exports = {
   tileToQuadkey,
   quadkeysForBbox,
   urlsForBbox,
+  loadMsIndex,
+  MS_INDEX_RELEASE,
   spanNeedles,
   featuresFromGzip,
   featuresFromGzipStream,
