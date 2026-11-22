@@ -156,12 +156,18 @@ function diskPath(dir, kind, payload) {
   return path.join(dir, kind, k.slice(0, 2), k + ".gz");
 }
 
+function diskTooBigPath(dir, kind, payload) {
+  const k = diskKey(kind, payload);
+  return path.join(dir, kind, k.slice(0, 2), k + ".toobig");
+}
+
 function diskGet(kind, payload) {
   const dir = cacheDir();
   if (!dir) return null;
   try {
+    if (fs.existsSync(diskTooBigPath(dir, kind, payload))) return { tooBig: true };
     const text = zlib.gunzipSync(fs.readFileSync(diskPath(dir, kind, payload))).toString("utf8");
-    return bodyOk(kind, text) ? text : null;
+    return bodyOk(kind, text) ? { ok: true, text } : null;
   } catch {
     return null;
   }
@@ -178,6 +184,18 @@ function diskSet(kind, payload, text) {
     fs.renameSync(tmp, file);
   } catch {
     /* the disk copy is optional */
+  }
+}
+
+function diskSetTooBig(kind, payload) {
+  const dir = cacheDir();
+  if (!dir) return;
+  try {
+    const file = diskTooBigPath(dir, kind, payload);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "1");
+  } catch {
+    /* the disk marker is optional */
   }
 }
 
@@ -931,11 +949,21 @@ async function requestRead(opts) {
   const hit = memoGet(key);
   if (hit) return Object.assign({ cached: true }, hit);
   const disk = diskGet(kind, payload);
-  if (disk) {
-    const value = { ok: true, status: 200, text: disk };
+  if (disk && disk.tooBig) {
+    const value = { ok: false, status: 200, text: "", tooBig: true, final: true };
     memoSet(key, value);
     try {
-      logFn("overpass" + (o.tag ? " " + o.tag : "") + " disk " + kind + " bytes=" + disk.length);
+      logFn("overpass" + (o.tag ? " " + o.tag : "") + " disk " + kind + " tooBig");
+    } catch {
+      /* logging is optional */
+    }
+    return Object.assign({ cached: true, disk: true }, value);
+  }
+  if (disk && disk.ok) {
+    const value = { ok: true, status: 200, text: disk.text };
+    memoSet(key, value);
+    try {
+      logFn("overpass" + (o.tag ? " " + o.tag : "") + " disk " + kind + " bytes=" + disk.text.length);
     } catch {
       /* logging is optional */
     }
@@ -956,9 +984,12 @@ async function requestRead(opts) {
       memoSet(key, { ok: true, status: res.status, text: res.text });
       diskSet(kind, payload, res.text);
     } else if (res && res.tooBig) {
-      // Remember a too-large box so a later call in this process does not
-      // re-download it. Failed or timed-out reads stay uncached.
+      // Remember a too-large box so a later call (including a later process
+      // with the same cache dir) does not re-download the huge body. The
+      // marker is tiny; the body itself is not kept. Failed or timed-out
+      // reads stay uncached.
       memoSet(key, { ok: false, status: res.status, text: "", tooBig: true, final: true });
+      diskSetTooBig(kind, payload);
     }
     return res;
   });

@@ -319,7 +319,9 @@ async function fetchStreetMapsWork(bbox, opts) {
     };
   }
   const full = await fullFetch(bbox, o);
-  const used = !!(full && !full.incomplete && ((full.xmls && full.xmls.length) || (full.elements && full.elements.length)));
+  // Keep the "used" note when some tiles arrived even if others failed.
+  // The split notes already say which parts are missing.
+  const used = !!(full && ((full.xmls && full.xmls.length) || (full.elements && full.elements.length)));
   const fallbackNote = used
     ? overtureFallbackNote(ovt && ovt.error)
     : overtureFallbackFailedNote(ovt && ovt.error, !!(full && full.tooBig));

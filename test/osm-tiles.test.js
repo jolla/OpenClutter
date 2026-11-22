@@ -2,7 +2,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { planTiles, bboxSpanM, TILE_SPAN_M, MAX_TILES, MAP_XML_CAP, fetchOsmMaps } = require("../netlify/lib/osm-tiles");
+const { planTiles, bboxSpanM, TILE_SPAN_M, MAX_TILES, MAP_XML_CAP, fetchOsmMaps, splitTile } = require("../netlify/lib/osm-tiles");
 const { fetchBuildingDetail } = require("../netlify/lib/building-shape");
 const { fetchOutdoorClutter } = require("../netlify/lib/outdoor-clutter");
 const { geoFrame } = require("../netlify/lib/geo-frame");
@@ -185,8 +185,158 @@ describe("OSM tiles for a large draw", () => {
     const detail = await fetchBuildingDetail(big, { tile: false, fetchImpl, ua: "test", timeoutMs: 20000 });
     assert.equal(detail.ok, true);
     assert.equal(detail.parts.length, 0);
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].includes("overpass-api.de/api/map?bbox="), true);
+    // A 400 too-many-nodes answer now splits into map tiles; it still
+    // never falls back to the OSM editing API.
+    assert.ok(calls.length >= 1);
+    assert.ok(calls.every((u) => u.includes("/api/map?bbox=")));
     assert.equal(calls.some((u) => u.includes("openstreetmap.org/api/0.6")), false);
+  });
+});
+
+function mapBox(url) {
+  const m = String(url).match(/[?&]bbox=([^&]+)/);
+  if (!m) return null;
+  const p = m[1].split(",").map(Number);
+  return { west: p[0], south: p[1], east: p[2], north: p[3] };
+}
+
+function sameBox(a, b) {
+  if (!a || !b) return false;
+  return (
+    Math.abs(a.west - b.west) < 1e-9 &&
+    Math.abs(a.south - b.south) < 1e-9 &&
+    Math.abs(a.east - b.east) < 1e-9 &&
+    Math.abs(a.north - b.north) < 1e-9
+  );
+}
+
+function tinyMapXml(id, tags) {
+  const lon = -115.17;
+  const lat = 36.14;
+  const tagMap = tags || { highway: "residential" };
+  const tagXml = Object.keys(tagMap)
+    .map((k) => '<tag k="' + k + '" v="' + tagMap[k] + '"/>')
+    .join("");
+  return (
+    '<osm version="0.6">' +
+    '<node id="' + id + '1" lat="' + lat + '" lon="' + lon + '"/>' +
+    '<node id="' + id + '2" lat="' + lat + '" lon="' + (lon + 0.0002) + '"/>' +
+    '<node id="' + id + '3" lat="' + (lat + 0.0002) + '" lon="' + (lon + 0.0002) + '"/>' +
+    '<node id="' + id + '4" lat="' + (lat + 0.0002) + '" lon="' + lon + '"/>' +
+    '<way id="' + id + '"><nd ref="' + id + '1"/><nd ref="' + id + '2"/><nd ref="' + id + '3"/><nd ref="' + id + '4"/><nd ref="' + id + '1"/>' +
+    tagXml +
+    "</way></osm>"
+  );
+}
+
+function hugeMap() {
+  return "<osm>" + "x".repeat(MAP_XML_CAP + 1) + "</osm>";
+}
+
+describe("OSM map split when the extract is too large", () => {
+  it("keeps a fitting extract as one request", async () => {
+    const small = vegasBox(1);
+    const calls = [];
+    const fetchImpl = async (url) => {
+      calls.push(String(url));
+      return { ok: true, status: 200, text: async () => tinyMapXml(10) };
+    };
+    const maps = await fetchOsmMaps(small, { tile: false, fetchImpl, ua: "test" });
+    assert.equal(calls.length, 1);
+    assert.equal(maps.xmls.length, 1);
+    assert.equal(maps.tiled, false);
+    assert.equal(maps.incomplete, false);
+    assert.equal(maps.tooBig, false);
+    assert.equal(maps.notes.length, 0);
+  });
+
+  it("splits a too-large extract into quadrants and keeps the small tiles", async () => {
+    const small = vegasBox(1);
+    const calls = [];
+    const fetchImpl = async (url) => {
+      const box = mapBox(url);
+      calls.push(box);
+      if (sameBox(box, small)) {
+        return { ok: true, status: 200, text: async () => hugeMap() };
+      }
+      const id = 1000 + calls.length;
+      return { ok: true, status: 200, text: async () => tinyMapXml(id) };
+    };
+    const maps = await fetchOsmMaps(small, { tile: false, fetchImpl, ua: "test" });
+    assert.equal(calls.length, 5);
+    assert.equal(maps.xmls.length, 4);
+    assert.equal(maps.elements.length, 0);
+    assert.equal(maps.tiled, true);
+    assert.equal(maps.incomplete, false);
+    assert.equal(maps.tooBig, false);
+    assert.equal(maps.notes.length, 0);
+    assert.ok(maps.xmls.every((xml) => xml.length < MAP_XML_CAP));
+    const ways = maps.xmls.map((xml) => (xml.match(/<way id="(\d+)"/) || [])[1]);
+    assert.equal(new Set(ways).size, 4);
+  });
+
+  it("recurses one level when a quadrant is still too large", async () => {
+    const small = vegasBox(1);
+    const doomed = splitTile(small)[0];
+    const calls = [];
+    const fetchImpl = async (url) => {
+      const box = mapBox(url);
+      calls.push(box);
+      if (sameBox(box, small) || sameBox(box, doomed)) {
+        return { ok: true, status: 200, text: async () => hugeMap() };
+      }
+      const id = 2000 + calls.length;
+      return { ok: true, status: 200, text: async () => tinyMapXml(id) };
+    };
+    const maps = await fetchOsmMaps(small, { tile: false, fetchImpl, ua: "test" });
+    assert.equal(calls.length, 9);
+    assert.equal(maps.xmls.length, 7);
+    assert.equal(maps.tiled, true);
+    assert.equal(maps.incomplete, false);
+    assert.equal(maps.tooBig, false);
+    assert.equal(maps.notes.length, 0);
+  });
+
+  it("warns only when some split tiles still fail", async () => {
+    const small = vegasBox(1);
+    const missed = splitTile(small)[1];
+    const fetchImpl = async (url) => {
+      const box = mapBox(url);
+      if (sameBox(box, small)) return { ok: true, status: 200, text: async () => hugeMap() };
+      if (sameBox(box, missed)) return { ok: false, status: 504, text: async () => "busy" };
+      return { ok: true, status: 200, text: async () => tinyMapXml(3000 + Math.round(Math.abs(box.west) * 1e5)) };
+    };
+    const maps = await fetchOsmMaps(small, { tile: false, fetchImpl, ua: "test" });
+    assert.equal(maps.xmls.length, 3);
+    assert.equal(maps.incomplete, true);
+    assert.equal(maps.tooBig, false);
+    assert.match(maps.notes.join(" "), /incomplete: 1 of 4 map tiles did not load/);
+  });
+
+  it("still omits the extract when every tile stays over the cap", async () => {
+    const small = vegasBox(1);
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => hugeMap(),
+    });
+    const maps = await fetchOsmMaps(small, { tile: false, fetchImpl, ua: "test" });
+    assert.equal(maps.xmls.length, 0);
+    assert.equal(maps.elements.length, 0);
+    assert.equal(maps.tooBig, true);
+    assert.match(maps.notes.join(" "), /too large to download in one request/);
+  });
+
+  it("merges overlapping tiles without duplicate building rings", async () => {
+    const small = vegasBox(1);
+    const shared = tinyMapXml(44, { building: "yes", height: "12" });
+    const fetchImpl = async (url) => {
+      const box = mapBox(url);
+      if (sameBox(box, small)) return { ok: true, status: 200, text: async () => hugeMap() };
+      return { ok: true, status: 200, text: async () => shared };
+    };
+    const detail = await fetchBuildingDetail(small, { tile: false, fetchImpl, ua: "test", timeoutMs: 20000 });
+    assert.equal(detail.ok, true);
+    assert.equal((detail.buildings || []).length, 1);
   });
 });

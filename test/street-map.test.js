@@ -262,6 +262,23 @@ describe("street-map coordinator", () => {
     });
     assert.match((huge.notes || []).join(" "), /full Overpass map was too large for this draw/);
     assert.ok(!(huge.notes || []).join(" ").includes("used the full Overpass path"));
+    const part = Object.assign({}, BOX, { west: BOX.west - 0.02 });
+    const split = await fetchStreetMaps(part, {
+      fetchOvertureStreet: async () => ({ ok: false, elements: [], error: "forced failure" }),
+      fetchGapOverpass: async () => ({ ok: true, elements: [] }),
+      fetchOsmMaps: async () => ({
+        xmls: ["<osm></osm>"],
+        elements: [],
+        notes: ["OpenStreetMap map extract is incomplete: 1 of 4 map tiles did not load, so some roads, parking, or building outlines may be missing in those parts of the draw."],
+        incomplete: true,
+        tooBig: false,
+      }),
+    });
+    const splitNotes = (split.notes || []).join(" ");
+    assert.match(splitNotes, /used the full Overpass path/);
+    assert.match(splitNotes, /incomplete: 1 of 4 map tiles did not load/);
+    assert.ok(!splitNotes.includes("too large for this draw"));
+    assert.ok(!splitNotes.includes("also failed"));
   });
 });
 

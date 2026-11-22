@@ -5,8 +5,11 @@
  * extract from Overpass's map call (the same OSM XML the editing API
  * returns; OSMF policy keeps the editing API for editors, not data reads). A larger background draw is cut into tiles and each tile is a
  * selective Overpass query (parts, water, parking, barriers, lamps, rail),
- * not a full map extract. The short export does not tile: one map request,
- * then stop. A map body too large to scan is left unread.
+ * not a full map extract. The short export tries one map request first.
+ * A body over MAP_XML_CAP, or a 400 too-many-nodes answer, is split into
+ * quadrants (and one more level if a quadrant is still too large). Each
+ * tile uses the same free-mirror race, is kept only when it is under the
+ * cap, and shares one time budget. A warning is left only if some tiles fail.
  */
 
 const overpass = require("./overpass");
@@ -31,6 +34,12 @@ const TILED_MISSING_NOTE_KINDS = "RVs, parking, walls, light poles, water and br
 const OVERPASS_CONCURRENCY = 3;
 const TILE_FETCH_MS = 10000;
 const MAP_XML_CAP = 6000000;
+/** Default window for a too-large map split when the caller names none. */
+const MAP_SPLIT_BUDGET_MS = 75000;
+/** Quadrant map reads in flight. Each read already races the free mirrors. */
+const MAP_SPLIT_CONCURRENCY = 2;
+/** Recurse one level when a quadrant is still too large (16 tiles max). */
+const MAP_SPLIT_MAX_DEPTH = 1;
 const TILE_CACHE_MS = 120000;
 const OSM_MAP_URLS = [
   "https://overpass-api.de/api/map",
@@ -502,11 +511,76 @@ async function pool(items, limit, fn) {
   await Promise.all(jobs);
 }
 
+function mapSplitDeadlineAt(opts, started) {
+  const window = opts && opts.deadlineMs > 0 ? opts.deadlineMs : MAP_SPLIT_BUDGET_MS;
+  return started + window;
+}
+
+function leftoverMs(deadlineAt) {
+  return Math.max(0, deadlineAt - Date.now());
+}
+
+/**
+ * Fetch one map box through the same free-mirror race (or fetchImpl).
+ * Cap this one attempt so a hang cannot spend the whole split window.
+ */
+async function fetchOneMapBox(tile, opts, deadlineAt) {
+  const left = leftoverMs(deadlineAt);
+  if (left < 1000) return { ok: false, status: "deadline", xml: "", tooBig: false };
+  const o = Object.assign({}, opts, { deadlineMs: Math.min(MAP_RESILIENT_MS, left) });
+  return fetchOne(tile, o);
+}
+
+/**
+ * When the full extract is too large, cut the box into quadrants and try
+ * each one. Recurse one level if a quadrant is still over the cap.
+ */
+async function fetchMapSplits(tile, opts, deadlineAt, depth) {
+  const parts = splitTile(tile);
+  const xmls = [];
+  let failed = 0;
+  let tooBigFails = 0;
+  const attempted = [];
+  await pool(parts, MAP_SPLIT_CONCURRENCY, async (part) => {
+    if ((opts && opts.signal && opts.signal.aborted) || leftoverMs(deadlineAt) < 1000) {
+      failed += 1;
+      attempted.push(part);
+      return;
+    }
+    let res;
+    try {
+      res = await fetchOneMapBox(part, opts, deadlineAt);
+    } catch {
+      failed += 1;
+      attempted.push(part);
+      return;
+    }
+    if (res && res.ok && res.xml) {
+      xmls.push(res.xml);
+      attempted.push(part);
+      return;
+    }
+    if (res && res.tooBig && depth < MAP_SPLIT_MAX_DEPTH) {
+      const sub = await fetchMapSplits(part, opts, deadlineAt, depth + 1);
+      xmls.push.apply(xmls, sub.xmls);
+      failed += sub.failed;
+      tooBigFails += sub.tooBigFails;
+      attempted.push.apply(attempted, sub.attempted);
+      return;
+    }
+    failed += 1;
+    if (res && res.tooBig) tooBigFails += 1;
+    attempted.push(part);
+  });
+  return { xmls, failed, tooBigFails, attempted };
+}
+
 /**
  * opts.tile true uses Overpass tiles above TILE_SPAN_M. Otherwise one map
- * request. A caller's abort does not cancel a tiled read another caller
- * is still waiting on.
- * @returns {Promise<{xmls:string[], elements:object[], tiled:boolean, notes:string[], incomplete:boolean}>}
+ * request. If that extract is too large, split into quadrants (and one
+ * more level if needed). A caller's abort does not cancel a tiled read
+ * another caller is still waiting on.
+ * @returns {Promise<{xmls:string[], elements:object[], tiled:boolean, notes:string[], incomplete:boolean, tooBig?:boolean}>}
  */
 async function fetchOsmMaps(bbox, opts) {
   const o = opts || {};
@@ -515,23 +589,48 @@ async function fetchOsmMaps(bbox, opts) {
   if (allowTile) return waitUnlessAborted(sharedTiles(bbox, o), o.signal);
 
   const tile = { west: +bbox.west, south: +bbox.south, east: +bbox.east, north: +bbox.north };
+  const deadlineAt = mapSplitDeadlineAt(o, Date.now());
   const xmls = [];
   const notes = [];
   let incomplete = false;
   let tooBig = false;
-  if (!(o.signal && o.signal.aborted)) {
-    try {
-      const res = await fetchOne(tile, o);
-      if (res.ok) xmls.push(res.xml);
-      else {
-        incomplete = true;
-        tooBig = !!res.tooBig;
-        if (tooBig) notes.push("OpenStreetMap map extract omitted: the area is too large to download in one request.");
-      }
-    } catch (e) {
-      incomplete = true;
+  if (o.signal && o.signal.aborted) {
+    return { xmls, elements: [], tiled: false, notes, incomplete: true, tooBig: false };
+  }
+  try {
+    const res = await fetchOneMapBox(tile, o, deadlineAt);
+    if (res && res.ok && res.xml) {
+      xmls.push(res.xml);
+      return { xmls, elements: [], tiled: false, notes, incomplete: false, tooBig: false };
     }
-  } else {
+    if (res && res.tooBig) {
+      const split = await fetchMapSplits(tile, o, deadlineAt, 0);
+      if (split.xmls.length) {
+        if (split.failed > 0) {
+          notes.push(
+            "OpenStreetMap map extract is incomplete: " +
+              split.failed +
+              " of " +
+              split.attempted.length +
+              " map tiles did not load, so some roads, parking, or building outlines may be missing in those parts of the draw."
+          );
+        }
+        return {
+          xmls: split.xmls,
+          elements: [],
+          tiled: true,
+          notes,
+          incomplete: split.failed > 0,
+          tooBig: false,
+        };
+      }
+      incomplete = true;
+      tooBig = true;
+      notes.push("OpenStreetMap map extract omitted: the area is too large to download in one request.");
+      return { xmls, elements: [], tiled: true, notes, incomplete, tooBig };
+    }
+    incomplete = true;
+  } catch (e) {
     incomplete = true;
   }
   return { xmls, elements: [], tiled: false, notes, incomplete, tooBig };
@@ -547,6 +646,9 @@ module.exports = {
   splitTile,
   MAP_XML_CAP,
   MAP_RESILIENT_MS,
+  MAP_SPLIT_BUDGET_MS,
+  MAP_SPLIT_CONCURRENCY,
+  MAP_SPLIT_MAX_DEPTH,
   bboxSpanM,
   planTiles,
   mapUrl,

@@ -664,6 +664,38 @@ async function fetchBuildingDetail(bbox, opts) {
           fetchImpl: opts && opts.fetchImpl,
           deadlineMs: Math.round(timeoutMs * 0.7),
         });
+        if (maps.xmls && maps.xmls.length) {
+          const packs = [];
+          for (let i = 0; i < maps.xmls.length; i++) packs.push(detailFromMapXml(maps.xmls[i], bbox, deckCap));
+          if (maps.elements && maps.elements.length) {
+            const parsed = parseBuildingDetail({ elements: maps.elements }, bbox);
+            packs.push({
+              parts: parsed.parts,
+              openings: parsed.openings,
+              water: parsed.water || [],
+              buildings: parsed.buildings || [],
+              structures: parsed.structures || [],
+              roads: [],
+              guideways: guidewaysFromElements(maps.elements, bbox, deckCap),
+              bridges: bridgesFromElements(maps.elements, bbox, deckCap),
+              places: parsed.places || [],
+            });
+          }
+          const merged = mergeBuildingDetail(packs);
+          return {
+            ok: true,
+            parts: merged.parts,
+            openings: merged.openings,
+            water: merged.water || [],
+            buildings: merged.buildings || [],
+            structures: merged.structures || [],
+            roads: merged.roads || [],
+            guideways: merged.guideways,
+            bridges: merged.bridges,
+            notes: maps.notes,
+            places: merged.places || [],
+          };
+        }
         if (maps.elements && maps.elements.length) {
           const parsed = parseBuildingDetail({ elements: maps.elements }, bbox);
           return {
@@ -678,24 +710,6 @@ async function fetchBuildingDetail(bbox, opts) {
             bridges: bridgesFromElements(maps.elements, bbox, deckCap),
             notes: maps.notes,
             places: parsed.places || [],
-          };
-        }
-        if (maps.xmls.length) {
-          const packs = [];
-          for (let i = 0; i < maps.xmls.length; i++) packs.push(detailFromMapXml(maps.xmls[i], bbox, deckCap));
-          const merged = mergeBuildingDetail(packs);
-          return {
-            ok: true,
-            parts: merged.parts,
-            openings: merged.openings,
-            water: merged.water || [],
-            buildings: merged.buildings || [],
-            structures: merged.structures || [],
-            roads: merged.roads || [],
-            guideways: merged.guideways,
-            bridges: merged.bridges,
-            notes: maps.notes,
-            places: merged.places || [],
           };
         }
         if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {

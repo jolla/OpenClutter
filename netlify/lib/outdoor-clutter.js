@@ -2540,14 +2540,10 @@ async function fetchOutdoorClutter(bbox, want, opts) {
       fetchImpl: opts && opts.fetchImpl,
       deadlineMs: Math.round(timeoutMs * 0.7),
     });
-    if (maps.elements && maps.elements.length) {
-      const parsed = parseOverpass({ elements: maps.elements }, want, bbox, deckCap);
-      const limited = limitFeatures(dedupeOutdoor(parsed.features || []), bbox, deckCap);
-      if (parsed.openWater) limited.notes.push("Open water lines were left out.");
-      for (let i = 0; i < maps.notes.length; i++) limited.notes.push(maps.notes[i]);
-      return { ok: true, features: limited.features, notes: limited.notes, places: parsed.places || [], palms: palmPointsOf(parsed.features), corridors: parsed.corridors || [], ...(maps.osmTiles ? { osmTiles: maps.osmTiles } : {}) };
-    }
-    if (maps.xmls.length) {
+    // Prefer map XML when the full extract (or its split tiles) arrived.
+    // Gap Overpass elements used to be checked first, which skipped the XML
+    // and dropped those roads, parking lots, and building outlines.
+    if (maps.xmls && maps.xmls.length) {
       let features = [];
       let openWater = false;
       const places = [];
@@ -2559,11 +2555,25 @@ async function fetchOutdoorClutter(bbox, want, opts) {
         if (parsed.openWater) openWater = true;
         if (parsed.corridors) corridors.push.apply(corridors, parsed.corridors);
       }
+      if (maps.elements && maps.elements.length) {
+        const parsed = parseOverpass({ elements: maps.elements }, want, bbox, deckCap);
+        features = features.concat(parsed.features || []);
+        if (parsed.places) places.push.apply(places, parsed.places);
+        if (parsed.openWater) openWater = true;
+        if (parsed.corridors) corridors.push.apply(corridors, parsed.corridors);
+      }
       const palms = palmPointsOf(features);
       const limited = limitFeatures(dedupeOutdoor(features), bbox, deckCap);
       if (openWater) limited.notes.push("Open water lines were left out.");
       for (let i = 0; i < maps.notes.length; i++) limited.notes.push(maps.notes[i]);
-      return { ok: true, features: limited.features, notes: limited.notes, places, palms, corridors };
+      return { ok: true, features: limited.features, notes: limited.notes, places, palms, corridors, ...(maps.osmTiles ? { osmTiles: maps.osmTiles } : {}) };
+    }
+    if (maps.elements && maps.elements.length) {
+      const parsed = parseOverpass({ elements: maps.elements }, want, bbox, deckCap);
+      const limited = limitFeatures(dedupeOutdoor(parsed.features || []), bbox, deckCap);
+      if (parsed.openWater) limited.notes.push("Open water lines were left out.");
+      for (let i = 0; i < maps.notes.length; i++) limited.notes.push(maps.notes[i]);
+      return { ok: true, features: limited.features, notes: limited.notes, places: parsed.places || [], palms: palmPointsOf(parsed.features), corridors: parsed.corridors || [], ...(maps.osmTiles ? { osmTiles: maps.osmTiles } : {}) };
     }
     if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
       // tiledOsm: no tile loaded at all is a miss, so the export says so.
