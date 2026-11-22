@@ -69,14 +69,36 @@ function isTransientRangeError(err) {
   return /timeout|timed out|econnreset|etimedout|enotfound|eai_again|econnrefused|socket|network|fetch failed|http 5\d\d|429|503|504/i.test(msg);
 }
 
-function acquirePreferSmall(bytes) {
+function whenAborted(signal) {
+  return new Promise((_, reject) => {
+    const fail = () => reject(abortError());
+    if (!signal) return;
+    if (signal.aborted) {
+      fail();
+      return;
+    }
+    signal.addEventListener("abort", fail, { once: true });
+  });
+}
+
+function acquirePreferSmall(bytes, signal) {
+  if (signal && signal.aborted) return Promise.reject(abortError());
   if (active < concurrency) {
     active++;
     if (active > stats.maxActive) stats.maxActive = active;
     return Promise.resolve();
   }
-  return new Promise((resolve) => {
-    const item = { resolve, small: bytes < SMALL_RANGE_BYTES };
+  return new Promise((resolve, reject) => {
+    const item = { resolve, reject, small: bytes < SMALL_RANGE_BYTES };
+    const onAbort = () => {
+      const i = waiters.indexOf(item);
+      if (i >= 0) waiters.splice(i, 1);
+      reject(abortError());
+    };
+    if (signal) {
+      item.clearAbort = () => signal.removeEventListener("abort", onAbort);
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
     if (item.small) {
       const i = waiters.findIndex((w) => w && w.small === false);
       if (i >= 0) waiters.splice(i, 0, item);
@@ -90,6 +112,7 @@ function acquirePreferSmall(bytes) {
 function release() {
   if (waiters.length) {
     const next = waiters.shift();
+    if (next && typeof next.clearAbort === "function") next.clearAbort();
     (typeof next === "function" ? next : next.resolve)();
   } else {
     active--;
@@ -124,10 +147,11 @@ async function limitedSlice(buf, start, end, signal) {
   let lastErr;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     if (signal && signal.aborted) throw abortError();
-    await acquirePreferSmall(want);
+    await acquirePreferSmall(want, signal);
     try {
       if (signal && signal.aborted) throw abortError();
-      return await Promise.resolve(buf.slice(start, end));
+      const work = Promise.resolve(buf.slice(start, end));
+      return signal ? await Promise.race([work, whenAborted(signal)]) : await work;
     } catch (err) {
       lastErr = err;
       if (!isTransientRangeError(err) || attempt >= attempts) throw err;
@@ -146,7 +170,8 @@ function cachedSlice(url, buf, start, end, signal) {
   if (hit) {
     stats.hits++;
     touch(ranges, key, hit);
-    return hit.promise;
+    // A later caller must not wait out a hung shared read past its own deadline.
+    return signal ? Promise.race([hit.promise, whenAborted(signal)]) : hit.promise;
   }
   stats.misses++;
   const entry = { bytes: 0, promise: null };
@@ -226,6 +251,7 @@ function resetForTests() {
   while (waiters.length) {
     const next = waiters.shift();
     try {
+      if (next && typeof next.clearAbort === "function") next.clearAbort();
       (typeof next === "function" ? next : next.resolve)();
     } catch {
       /* a leftover waiter should not break the next test */
@@ -248,6 +274,7 @@ module.exports = {
   setRangeLimits,
   cacheStats,
   isTransientRangeError,
+  whenAborted,
   MAX_RANGE_BYTES,
   RANGE_CONCURRENCY,
   RANGE_ATTEMPTS,

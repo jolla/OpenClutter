@@ -340,4 +340,23 @@ describe("Overture street group reads", () => {
     assert.ok(calls.some((c) => c.filter));
     assert.ok(calls.some((c) => !c.filter), "expected the unfiltered fallback for a page-index error");
   });
+
+  it("returns at the deadline when a parquet read never settles", async () => {
+    const reader = {
+      processCache: false,
+      compressors: {},
+      async asyncBufferFromUrl() {
+        return { byteLength: 100, slice: () => new Promise(() => {}) };
+      },
+      parquetReadObjects() {
+        return new Promise(() => {});
+      },
+    };
+    const started = Date.now();
+    const pack = await fetchOvertureStreet(KOA, { reader, deadlineMs: 40 });
+    const ms = Date.now() - started;
+    assert.equal(pack.ok, false);
+    assert.match(String(pack.error), /timed out after 40ms/);
+    assert.ok(ms < 500, "street read hung " + ms + " ms past a 40 ms deadline");
+  });
 });

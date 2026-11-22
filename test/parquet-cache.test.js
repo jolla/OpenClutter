@@ -144,4 +144,53 @@ describe("parquet process cache", () => {
     assert.ok(pc.cacheStats().maxActive <= 4, "stats maxActive " + pc.cacheStats().maxActive);
     assert.equal(r.calls.slices, 20);
   });
+
+  it("unblocks a queued range when the caller aborts, and frees the slot after a hung slice aborts", async () => {
+    pc.setRangeLimits({ concurrency: 1, attempts: 1, retryMs: 0 });
+    let releaseHang;
+    const hang = new Promise((resolve) => {
+      releaseHang = resolve;
+    });
+    const r = fakeReader(100000, {
+      slice: async (s) => {
+        if (s === 0) await hang;
+      },
+    });
+    const a = await pc.cachedSource(r, "u8", null);
+    const first = a.slice(0, 10);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const ctrl = new AbortController();
+    const queued = pc.cachedSource(r, "u8", ctrl.signal).then((b) => b.slice(20, 30));
+    const started = Date.now();
+    setTimeout(() => ctrl.abort(), 20);
+    await assert.rejects(queued, (err) => err && err.name === "AbortError");
+    assert.ok(Date.now() - started < 200, "queued abort waited " + (Date.now() - started) + " ms");
+    const hungCtrl = new AbortController();
+    const hungSrc = await pc.cachedSource(r, "u9", hungCtrl.signal);
+    const hung = hungSrc.slice(0, 10); // different url, but concurrency still held by first
+    // The u9 slice is also queued behind the hung u8 slice. Abort it too,
+    // then abort/finish the holder and confirm a new slice can acquire a slot.
+    setTimeout(() => hungCtrl.abort(), 10);
+    await assert.rejects(hung, (err) => err && err.name === "AbortError");
+    releaseHang();
+    await first;
+    const after = await a.slice(40, 50);
+    assert.equal(new Uint8Array(after)[0], 40);
+  });
+
+  it("stops waiting on a hung slice when the signal aborts", async () => {
+    pc.setRangeLimits({ concurrency: 1, attempts: 1, retryMs: 0 });
+    const r = fakeReader(1000, {
+      slice: () => new Promise(() => {}),
+    });
+    const ctrl = new AbortController();
+    const a = await pc.cachedSource(r, "u10", ctrl.signal);
+    const p = a.slice(0, 10);
+    const started = Date.now();
+    setTimeout(() => ctrl.abort(), 20);
+    await assert.rejects(p, (err) => err && err.name === "AbortError");
+    assert.ok(Date.now() - started < 200, "hung slice abort waited " + (Date.now() - started) + " ms");
+    assert.equal(pc.cacheStats().rangeActive, 0);
+    assert.equal(pc.cacheStats().rangeWaiters, 0);
+  });
 });

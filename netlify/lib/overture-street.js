@@ -887,6 +887,23 @@ function isAbortError(err) {
   return /abort|timeout/i.test(String(err.message || err));
 }
 
+/** Unblock a hung parquet or Azure read as soon as the street deadline fires. */
+function rejectWhenAborted(signal) {
+  return new Promise((_, reject) => {
+    const fail = () => {
+      const err = new Error("The operation was aborted due to timeout");
+      err.name = "AbortError";
+      reject(err);
+    };
+    if (!signal) return;
+    if (signal.aborted) {
+      fail();
+      return;
+    }
+    signal.addEventListener("abort", fail, { once: true });
+  });
+}
+
 function loadReader() {
   const hp = require("hyparquet");
   const comp = require("hyparquet-compressors");
@@ -974,6 +991,7 @@ async function readTheme(theme, bbox, reader, signal) {
         // page-index read; do not fall through to an unfiltered group
         // (a much larger request) just because one range was reset.
         if (isTransientRangeError(e)) {
+          if (signal && signal.aborted) throw e;
           return await reader.parquetReadObjects({ ...base, filter, usePageIndex: true });
         }
         return reader.parquetReadObjects(base);
@@ -1009,10 +1027,16 @@ async function fetchOvertureStreet(bbox, opts) {
   }
   const reader = o.reader || loadReader();
   try {
-    const results = await poolMap(THEMES, THEME_CONCURRENCY, async (theme) => {
-      const rows = await readTheme(theme, box, reader, ctrl.signal);
-      return { key: theme.key, rows, elements: elementsFromRows(theme.key, rows, box) };
-    });
+    // Abort the controller at deadlineMs, but also stop waiting if a range
+    // or parquet read ignores that abort (a stuck Azure socket or a queue
+    // slot that never wakes). Otherwise this source can sit for many minutes.
+    const results = await Promise.race([
+      poolMap(THEMES, THEME_CONCURRENCY, async (theme) => {
+        const rows = await readTheme(theme, box, reader, ctrl.signal);
+        return { key: theme.key, rows, elements: elementsFromRows(theme.key, rows, box) };
+      }),
+      rejectWhenAborted(ctrl.signal),
+    ]);
     const elements = [];
     const themes = {};
     for (let i = 0; i < results.length; i++) {
