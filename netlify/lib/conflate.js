@@ -47,6 +47,7 @@
  */
 
 const polygonClipping = require("polygon-clipping");
+const stageClock = require("./stage-clock");
 const { exteriorRings, centroid, pointInRing, featureHeight, setFeatureHeight } = require("./ms-global");
 const { simpleExteriorRings } = require("./poly-clip");
 
@@ -875,7 +876,7 @@ function dedupeStackedFootprints(features) {
     }
   }
   items.sort((a, b) => keepScore(b) - keepScore(a));
-  const skipParent = coveredParentIndexes(items);
+  const skipParent = stageClock.timeSubstageSync("dedupeCoveredParents", () => coveredParentIndexes(items));
   const kept = [];
   const megas = [];
   let dropped = 0;
@@ -965,10 +966,12 @@ function dedupeStackedFootprints(features) {
     const copy = cloneKept(item, null, proj);
     if (copy) kept.push(copy);
   }
-  for (let i = 0; i < kept.length; i++) {
-    const base = bestLevelBase(kept[i].feature, kept[i].area, kept);
-    if (base > 0) stampLevelBase(kept[i].feature, base);
-  }
+  stageClock.timeSubstageSync("dedupeLevelBase", () => {
+    for (let i = 0; i < kept.length; i++) {
+      const base = bestLevelBase(kept[i].feature, kept[i].area, kept);
+      if (base > 0) stampLevelBase(kept[i].feature, base);
+    }
+  });
   // A stamped base is the lower plan's roof. It may lift this footprint only
   // while that plan is still here and covers it. A dropped duplicate leaves
   // a gap, so the mass extends to the ground. A source bridge keeps its base.

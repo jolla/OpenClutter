@@ -1249,6 +1249,81 @@ function ringTouchesBounds(ring, b) {
   return false;
 }
 
+/**
+ * Clip a ring to an axis-aligned box. A harbour outline can have thousands
+ * of vertices; intersecting the whole ring with a small footprint is slow,
+ * and the clip area is the same as intersecting the box-clipped polygon.
+ */
+function clipEdge(prev, cur, keep, intersect) {
+  const out = [];
+  const prevIn = keep(prev);
+  const curIn = keep(cur);
+  if (curIn) {
+    if (!prevIn) out.push(intersect(prev, cur));
+    out.push(cur);
+  } else if (prevIn) {
+    out.push(intersect(prev, cur));
+  }
+  return out;
+}
+
+function clipRingToBounds(ring, b) {
+  if (!ring || ring.length < 4) return null;
+  let pts = ring.slice();
+  if (
+    pts.length >= 2 &&
+    pts[0][0] === pts[pts.length - 1][0] &&
+    pts[0][1] === pts[pts.length - 1][1]
+  ) {
+    pts = pts.slice(0, -1);
+  }
+  const sides = [
+    {
+      keep: (p) => p[0] >= b.minX,
+      hit: (a, c) => {
+        const t = (b.minX - a[0]) / (c[0] - a[0] || 1e-20);
+        return [b.minX, a[1] + t * (c[1] - a[1])];
+      },
+    },
+    {
+      keep: (p) => p[0] <= b.maxX,
+      hit: (a, c) => {
+        const t = (b.maxX - a[0]) / (c[0] - a[0] || 1e-20);
+        return [b.maxX, a[1] + t * (c[1] - a[1])];
+      },
+    },
+    {
+      keep: (p) => p[1] >= b.minY,
+      hit: (a, c) => {
+        const t = (b.minY - a[1]) / (c[1] - a[1] || 1e-20);
+        return [a[0] + t * (c[0] - a[0]), b.minY];
+      },
+    },
+    {
+      keep: (p) => p[1] <= b.maxY,
+      hit: (a, c) => {
+        const t = (b.maxY - a[1]) / (c[1] - a[1] || 1e-20);
+        return [a[0] + t * (c[0] - a[0]), b.maxY];
+      },
+    },
+  ];
+  for (let s = 0; s < sides.length; s++) {
+    const side = sides[s];
+    if (!pts.length) return null;
+    const next = [];
+    let prev = pts[pts.length - 1];
+    for (let i = 0; i < pts.length; i++) {
+      const piece = clipEdge(prev, pts[i], side.keep, side.hit);
+      for (let k = 0; k < piece.length; k++) next.push(piece[k]);
+      prev = pts[i];
+    }
+    pts = next;
+  }
+  if (pts.length < 3) return null;
+  pts.push([pts[0][0], pts[0][1]]);
+  return pts;
+}
+
 /** Closed ring, bounds, and area, skipping openings too small to notch a roof. */
 function prepareOpening(op) {
   if (op && op.ring && op.bounds && op.area != null) return op.area >= 20 ? op : null;
@@ -1286,7 +1361,12 @@ function openingsHitting(ring, openings) {
       const mid = [(bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2];
       if (!pointInRingLL(mid, op)) continue;
     }
-    const inter = intersectionArea(op, ring);
+    let clip = op;
+    if (op.length > 32) {
+      clip = clipRingToBounds(op, bounds);
+      if (!clip) continue;
+    }
+    const inter = intersectionArea(clip, ring);
     if (!(inter >= 30)) continue;
     if (inter / oa < 0.4 && inter / roof < 0.25) continue;
     hits.push(op);

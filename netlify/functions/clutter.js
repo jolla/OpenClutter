@@ -3088,6 +3088,7 @@ async function handleClutterNorthUp(event) {
       palmPoints,
       frame,
       footprintsGeojson: { type: "FeatureCollection", features: list },
+      footprints: preview,
       treePoints,
       affine,
       name: body.name,

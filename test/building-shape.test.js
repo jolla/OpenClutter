@@ -136,9 +136,29 @@ describe("building outlines", () => {
     const roofAt = centroidLL(before);
     assert.equal(pointInRingLL(roofAt, after), true);
     assert.equal(shaped.stats.notched, 0);
-
   });
 
+  it("still notches a roof that a dense shoreline actually crosses", () => {
+    const parent = metersBox(lon, lat, 40, 40, {
+      height: 20,
+      heightSource: "overture",
+      geomSource: "overture",
+    });
+    const mx = 111320 * Math.cos((lat * Math.PI) / 180);
+    const m = (dx, dy) => [lon + dx / mx, lat + dy / 110540];
+    // Water covers the eastern half of the roof and extends far east. The
+    // ring has well over 32 vertices so openingsHitting clips it to the
+    // building box before the Martinez intersection.
+    const water = [];
+    for (let i = 0; i <= 40; i++) water.push(m(i * 20, -20));
+    for (let i = 40; i >= 0; i--) water.push(m(i * 20, 20));
+    water.push(m(0, -20));
+    const shaped = shapeBuildings([parent], { openings: [water] });
+    assert.ok(shaped.stats.notched >= 1);
+    const after = ringOf(shaped.features[0]);
+    assert.equal(pointInRingLL(m(10, 0), after), false);
+    assert.equal(pointInRingLL(m(-10, 0), after), true);
+  });
 
   it("reads building=no (a numbered RV site) as no roof on site types only", () => {
     const geometry = [

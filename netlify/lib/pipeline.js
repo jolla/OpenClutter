@@ -3009,10 +3009,11 @@ function markPodiumBases(features, frame) {
 
 function footprintsToClutter(features, frame, affine, slopeTop, opts) {
   const buildingCeiling = opts && opts.buildingCeiling > 0 ? opts.buildingCeiling | 0 : MAX_BUILDINGS;
-  const separated = dedupeStackedFootprints(features || []);
-  const list = prioritizeRoofs(separated.features, frame);
-  borrowNearbyHeights(list, frame);
-  markPodiumBases(list, frame);
+  const stageClock = require("./stage-clock");
+  const separated = stageClock.timeSubstageSync("dedupeStacked", () => dedupeStackedFootprints(features || []));
+  const list = stageClock.timeSubstageSync("prioritizeRoofs", () => prioritizeRoofs(separated.features, frame));
+  stageClock.timeSubstageSync("borrowNearbyHeights", () => borrowNearbyHeights(list, frame));
+  stageClock.timeSubstageSync("markPodiumBases", () => markPodiumBases(list, frame));
   const oiAreas = [];
   const clipZones = [];
   const aabbs = [];
@@ -3048,10 +3049,16 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
     measured: 0,
     lifted: 0,
   };
+  let pieceMs = 0;
+  let splitMs = 0;
+  let emitMs = 0;
+  const loopT0 = Date.now();
   for (const f of list) {
     // Dome rings and slope strips are built after dedupe. Concentric copies
     // fed through dedupe would be merged back into one slab.
+    let tPart = Date.now();
     const shaped = piecesForFeature(f);
+    pieceMs += Date.now() - tPart;
     for (let s = 0; s < shaped.length; s++) {
       const piece = shaped[s];
       const g = piece.geometry;
@@ -3073,13 +3080,16 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
       const keepThin = props.staticCaravan === true;
       const podium = props.podium === true;
       for (const ring of rings) {
+        let tPart = Date.now();
         const parts = slopeTop && typeof slopeTop.split === "function" ? slopeTop.split(ring) : [ring];
+        splitMs += Date.now() - tPart;
         for (let p = 0; p < parts.length; p++) {
           if (oiAreas.length >= buildingCeiling) {
             stats.droppedCap++;
             continue;
           }
           emittingSplitPiece = parts.length > 1;
+          tPart = Date.now();
           const result = emitBuilding(
             parts[p],
             heightM,
@@ -3096,6 +3106,7 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
             podium,
             props
           );
+          emitMs += Date.now() - tPart;
           emittingSplitPiece = false;
           if (result === "keep") {
             stats.buildings++;
@@ -3139,6 +3150,19 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
   stats.droppedNested = dropNestedDuplicateRoofs(oiAreas, clipZones, aabbs, overlayRings, buckets.overlayHeights);
   stats.buildings = oiAreas.length;
   stats.podiumAreas = 0;
+  if (process.env.OPENCLUTTER_STAGE_LOG) {
+    process.stderr.write(
+      "stage footprints-loop piece=" +
+        pieceMs +
+        " split=" +
+        splitMs +
+        " emit=" +
+        emitMs +
+        " wall=" +
+        (Date.now() - loopT0) +
+        "\n"
+    );
+  }
   for (let i = 0; i < oiAreas.length; i++) {
     const name = oiAreas[i] && oiAreas[i].area_material && oiAreas[i].area_material.name;
     if (isPodiumName(name) || isLiftedPodiumName(name)) stats.podiumAreas++;
@@ -3881,6 +3905,7 @@ function buildClutter({
   palmPoints,
   frame,
   footprintsGeojson,
+  footprints: precomputedFootprints,
   treePoints,
   affine,
   name: rawName,
@@ -3942,8 +3967,10 @@ function buildClutter({
       }
     }
   }
+  let nlsChanged = false;
   if (nlsHeights) {
     const nls = applyNlsBuildingHeights(featureList);
+    nlsChanged = !!(nls && nls.applied > 0);
     if (nls && nls.omitted && Array.isArray(warnings)) {
       warnings.push(
         "Finland building heights omitted: the laser grid could not be read. OpenIntent zip is unchanged."
@@ -3952,13 +3979,17 @@ function buildClutter({
   }
   const { name, slug } = siteName(rawName);
   const imgName = `${slug}.jpg`;
+  let waterDepressed = false;
   if (includeWater === true && terrain && outdoorFeatures && outdoorFeatures.length) {
     const waterRings = [];
     for (let i = 0; i < outdoorFeatures.length; i++) {
       const feat = outdoorFeatures[i];
       if (feat && feat.kind === "water" && feat.coords && feat.coords.length >= 4) waterRings.push(feat.coords);
     }
-    if (waterRings.length) depressWaterBasins(terrain, waterRings);
+    if (waterRings.length) {
+      depressWaterBasins(terrain, waterRings);
+      waterDepressed = true;
+    }
   }
   const slopeTop = require("./stage-clock").timeSubstageSync("demUnderFootprint", () => demUnderFootprint(terrain));
   const areaCap = effectiveAreaCap(maxAttenuationAreas);
@@ -3971,11 +4002,24 @@ function buildClutter({
   const buildingCeiling =
     areaCap > MAX_ATTENUATION_AREAS ? Math.max(MAX_BUILDINGS, areaCap) : MAX_BUILDINGS;
   if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage footprints\n");
-  const fp = require("./stage-clock").timeSubstageSync(
-    "footprintsToClutter",
-    () => footprintsToClutter(featureList, frame, affine, slopeTop, { buildingCeiling }),
-    "features=" + featureList.length
-  );
+  // The parallel outdoor/tree path already ran a full footprintsToClutter
+  // pass so vehicle docks can sit on the emitted rings. Reuse that pack
+  // unless NLS heights or water-basin depression changed the inputs.
+  const reuseFootprints =
+    precomputedFootprints &&
+    precomputedFootprints.oiAreas &&
+    !nlsChanged &&
+    !waterDepressed;
+  const fp = reuseFootprints
+    ? precomputedFootprints
+    : require("./stage-clock").timeSubstageSync(
+        "footprintsToClutter",
+        () => footprintsToClutter(featureList, frame, affine, slopeTop, { buildingCeiling }),
+        "features=" + featureList.length
+      );
+  if (reuseFootprints && process.env.OPENCLUTTER_STAGE_LOG) {
+    process.stderr.write("stage footprints-reused\n");
+  }
   if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage footprints-done\n");
   const foliageOn = includeFoliage === true;
   const veg = foliagePack
