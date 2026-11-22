@@ -2079,6 +2079,9 @@ function clipMultiArea(geom) {
  */
 function dropNestedDuplicateRoofs(areas, zones) {
   const aligned = [zones].concat(Array.prototype.slice.call(arguments, 2));
+  const profNest = profile.profileOn();
+  let nestBbox = 0;
+  let nestClip = 0;
   const items = [];
   for (let i = 0; i < (areas || []).length; i++) {
     const area = areas[i];
@@ -2088,10 +2091,19 @@ function dropNestedDuplicateRoofs(areas, zones) {
     const px = ringAreaPx(ring);
     if (!(px > 1)) continue;
     const mat = area.area_material || {};
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let v = 0; v < ring.length; v++) {
+      const x = ring[v][0], y = ring[v][1];
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
     items.push({
       index: i,
       ring,
       area: px,
+      minX, minY, maxX, maxY,
       bottom: Number(mat.bottom_height) > 0 ? Number(mat.bottom_height) : 0,
       top: Number(mat.top_height) > 0 ? Number(mat.top_height) : 0,
     });
@@ -2107,8 +2119,13 @@ function dropNestedDuplicateRoofs(areas, zones) {
       const outer = kept[k];
       if (item.bottom >= outer.top - 1.5) continue;
       if (Math.abs(item.bottom - outer.bottom) > 4) continue;
+      if (item.minX > outer.maxX || item.maxX < outer.minX || item.minY > outer.maxY || item.maxY < outer.minY) {
+        if (profNest) nestBbox++;
+        continue;
+      }
       let inter = 0;
       try {
+        if (profNest) nestClip++;
         inter = clipMultiArea(polygonClipping.intersection([[item.ring]], [[outer.ring]]));
       } catch {
         continue;
@@ -2139,6 +2156,9 @@ function dropNestedDuplicateRoofs(areas, zones) {
       continue;
     }
     drop.add(item.index);
+  }
+  if (profNest) {
+    process.stderr.write("profile dropNested bboxSkip=" + nestBbox + " clipCalls=" + nestClip + " items=" + items.length + "\n");
   }
   if (!drop.size) return 0;
   const lists = [areas];
@@ -2487,6 +2507,7 @@ function ringsUnderVertexCap(ring, maxPts, eps, mpd, depth, root) {
 }
 
 function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone, keepThin, podium, useProps) {
+  const profEmit = profile.profileOn();
   const px = [];
   for (let i = 0; i < ring.length; i++) {
     const xy = llToPx(ring[i][0], ring[i][1], frame);
@@ -2514,11 +2535,15 @@ function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSou
   // podium keeps its corners and is not classified as that blob. An outline
   // that misses the map is a clip, same as before.
   const tight = am > 80000 ? 1e-7 : am > 20000 ? 1e-6 : 2.5e-6;
+  let tEmit = profEmit ? profile.now() : 0;
   const detailed = dpDegRing(ring, tight) || ring;
+  if (profEmit) profile.add("emit-dp", profile.msSince(tEmit));
   const totalM2 = ringAreaM2(ring, frame.mpd);
   if (dropAsMega(am, totalM2, frame, ringVertexCount(detailed))) return "mega";
   const tol = 2 / Math.min(frame.mpd.lon, frame.mpd.lat);
+  tEmit = profEmit ? profile.now() : 0;
   const pieces = ringsUnderVertexCap(ring, MAX_OI_RING_VERTS, tol, frame.mpd, 0);
+  if (profEmit) profile.add("emit-cap", profile.msSince(tEmit));
   if (!pieces.length) return ringVertexCount(ring) > MAX_OI_RING_VERTS ? "verts" : "skip";
   let sawKeep = false;
   let sawSpan = false;
@@ -2589,7 +2614,10 @@ function stashBuilding(buckets, frame, affine, clipRing, overlayPts, clipPx, pic
 }
 
 function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, eps, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone, keepThin, podium, useProps) {
+  const profEmit = profile.profileOn();
+  let tSim = profEmit ? profile.now() : 0;
   const simple = simplifyRing(ring, maxPts, eps);
+  if (profEmit) profile.add("emit-simplify", profile.msSince(tSim));
   if (!simple || simple.length < 4) return "skip";
   const detailVerts = ringVertexCount(simple);
   const pts = [];
@@ -2650,13 +2678,17 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     oiOpts.minSpanPx = Math.max(drawn * 0.98, 0.05);
     oiOpts.spanFloorPx = Math.min(MIN_OI_SPAN_PX, Math.max(drawn * 0.5, 0.02));
   }
+  tSim = profEmit ? profile.now() : 0;
   const oiCoords = ringToOi(clippedPts, frame.imgW, frame.imgH, frame.mpuX, oiOpts);
+  if (profEmit) profile.add("emit-ringToOi", profile.msSince(tSim));
   if (!oiCoords) {
     if (ringVertexCount(clippedPts) > MAX_OI_RING_VERTS) return "verts";
     return "clip";
   }
   const drawnRing = llFromOiPixels(oiPixelCoords(oiCoords), frame);
+  tSim = profEmit ? profile.now() : 0;
   let picked = pickedForRing(slopeRings, heightM, am, slopeTop, heightSource, levelBase, shapePart, drawnRing, podium, useProps);
+  if (profEmit) profile.add("emit-picked", profile.msSince(tSim));
   const area = emitIfValid(
     makeOiArea(oiCoords, picked.material),
     frame.imgW,
@@ -3052,13 +3084,14 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
   let pieceMs = 0;
   let splitMs = 0;
   let emitMs = 0;
-  const loopT0 = Date.now();
+  const prof = profile.profileOn();
+  const loopT0 = profile.now();
   for (const f of list) {
     // Dome rings and slope strips are built after dedupe. Concentric copies
     // fed through dedupe would be merged back into one slab.
-    let tPart = Date.now();
+    let tPart = profile.now();
     const shaped = piecesForFeature(f);
-    pieceMs += Date.now() - tPart;
+    pieceMs += profile.msSince(tPart);
     for (let s = 0; s < shaped.length; s++) {
       const piece = shaped[s];
       const g = piece.geometry;
@@ -3080,16 +3113,16 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
       const keepThin = props.staticCaravan === true;
       const podium = props.podium === true;
       for (const ring of rings) {
-        let tPart = Date.now();
+        tPart = profile.now();
         const parts = slopeTop && typeof slopeTop.split === "function" ? slopeTop.split(ring) : [ring];
-        splitMs += Date.now() - tPart;
+        splitMs += profile.msSince(tPart);
         for (let p = 0; p < parts.length; p++) {
           if (oiAreas.length >= buildingCeiling) {
             stats.droppedCap++;
             continue;
           }
           emittingSplitPiece = parts.length > 1;
-          tPart = Date.now();
+          tPart = profile.now();
           const result = emitBuilding(
             parts[p],
             heightM,
@@ -3106,7 +3139,7 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
             podium,
             props
           );
-          emitMs += Date.now() - tPart;
+          emitMs += profile.msSince(tPart);
           emittingSplitPiece = false;
           if (result === "keep") {
             stats.buildings++;
@@ -3147,22 +3180,32 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
       }
     }
   }
+  const loopMs = profile.msSince(loopT0);
+  let tNested = prof ? profile.now() : 0;
   stats.droppedNested = dropNestedDuplicateRoofs(oiAreas, clipZones, aabbs, overlayRings, buckets.overlayHeights);
+  if (prof) profile.add("ftc-dropNested", profile.msSince(tNested));
   stats.buildings = oiAreas.length;
   stats.podiumAreas = 0;
+  if (prof) {
+    profile.add("ftc-piece", pieceMs);
+    profile.add("ftc-split", splitMs);
+    profile.add("ftc-emit", emitMs);
+    profile.add("ftc-loop", loopMs);
+  }
   if (process.env.OPENCLUTTER_STAGE_LOG) {
     process.stderr.write(
       "stage footprints-loop piece=" +
-        pieceMs +
+        Math.round(pieceMs) +
         " split=" +
-        splitMs +
+        Math.round(splitMs) +
         " emit=" +
-        emitMs +
+        Math.round(emitMs) +
         " wall=" +
-        (Date.now() - loopT0) +
+        Math.round(loopMs) +
         "\n"
     );
   }
+  if (prof) process.stderr.write("profile footprints " + profile.line() + "\n");
   for (let i = 0; i < oiAreas.length; i++) {
     const name = oiAreas[i] && oiAreas[i].area_material && oiAreas[i].area_material.name;
     if (isPodiumName(name) || isLiftedPodiumName(name)) stats.podiumAreas++;

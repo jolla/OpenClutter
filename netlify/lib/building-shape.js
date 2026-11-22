@@ -23,6 +23,7 @@ const overpass = require("./overpass");
 const { isResilient, isSiteTypes } = require("./export-mode");
 const { placesFromElements } = require("./map-notes");
 const { copyOsmUseTags, TAG_KEYS, isParkingTags } = require("./building-use");
+const profile = require("./profile-log");
 
 function usePropsFromOsmTags(tags) {
   const props = {};
@@ -1236,7 +1237,8 @@ function segmentHitsBounds(ax, ay, bx, by, b) {
   return false;
 }
 
-function ringTouchesBounds(ring, b) {
+function ringTouchesBounds(ring, b, index) {
+  if (index && index.ring === ring) return ringTouchesIndexed(index, b);
   if (!ring || ring.length < 2) return false;
   for (let i = 0; i < ring.length; i++) {
     const x = ring[i][0];
@@ -1247,6 +1249,146 @@ function ringTouchesBounds(ring, b) {
     if (segmentHitsBounds(ring[i - 1][0], ring[i - 1][1], ring[i][0], ring[i][1], b)) return true;
   }
   return false;
+}
+
+/**
+ * Uniform grid of consecutive ring segments. A harbour outline can have
+ * tens of thousands of vertices; testing every segment against every roof
+ * is the remaining waterfront cost after the bbox skip and the per-roof clip.
+ */
+function indexOpeningRing(ring) {
+  if (!ring || ring.length < 16) return null;
+  const b = ringBounds(ring);
+  const spanX = Math.max(b.maxX - b.minX, 1e-12);
+  const spanY = Math.max(b.maxY - b.minY, 1e-12);
+  const cells = 32;
+  const stepX = spanX / cells;
+  const stepY = spanY / cells;
+  const grid = new Map();
+  const add = (ix, iy, i) => {
+    const cx = ix < 0 ? 0 : ix >= cells ? cells - 1 : ix;
+    const cy = iy < 0 ? 0 : iy >= cells ? cells - 1 : iy;
+    const k = cy * cells + cx;
+    let arr = grid.get(k);
+    if (!arr) {
+      arr = [];
+      grid.set(k, arr);
+    }
+    arr.push(i);
+  };
+  // Same segments as the linear walk: consecutive vertices only, no extra wrap.
+  const count = ring.length - 1;
+  for (let i = 0; i < count; i++) {
+    const ax = ring[i][0];
+    const ay = ring[i][1];
+    const cx = ring[i + 1][0];
+    const cy = ring[i + 1][1];
+    let ix0 = Math.floor((Math.min(ax, cx) - b.minX) / stepX);
+    let ix1 = Math.floor((Math.max(ax, cx) - b.minX) / stepX);
+    let iy0 = Math.floor((Math.min(ay, cy) - b.minY) / stepY);
+    let iy1 = Math.floor((Math.max(ay, cy) - b.minY) / stepY);
+    if (ix0 > ix1) {
+      const t = ix0;
+      ix0 = ix1;
+      ix1 = t;
+    }
+    if (iy0 > iy1) {
+      const t = iy0;
+      iy0 = iy1;
+      iy1 = t;
+    }
+    for (let iy = iy0; iy <= iy1; iy++) {
+      for (let ix = ix0; ix <= ix1; ix++) add(ix, iy, i);
+    }
+  }
+  return { b, stepX, stepY, cells, grid, ring, count, seen: new Uint32Array(count), qid: 0 };
+}
+
+function ringTouchesIndexed(index, b) {
+  if (!boundsHit(index.b, b)) return false;
+  const cells = index.cells;
+  let ix0 = Math.floor((b.minX - index.b.minX) / index.stepX);
+  let ix1 = Math.floor((b.maxX - index.b.minX) / index.stepX);
+  let iy0 = Math.floor((b.minY - index.b.minY) / index.stepY);
+  let iy1 = Math.floor((b.maxY - index.b.minY) / index.stepY);
+  if (ix1 < 0 || iy1 < 0 || ix0 >= cells || iy0 >= cells) return false;
+  if (ix0 < 0) ix0 = 0;
+  if (iy0 < 0) iy0 = 0;
+  if (ix1 >= cells) ix1 = cells - 1;
+  if (iy1 >= cells) iy1 = cells - 1;
+  const q = ++index.qid;
+  if (q > 0xfffffffe) {
+    index.seen.fill(0);
+    index.qid = 1;
+  }
+  const stamp = index.seen;
+  const ring = index.ring;
+  const grid = index.grid;
+  for (let iy = iy0; iy <= iy1; iy++) {
+    for (let ix = ix0; ix <= ix1; ix++) {
+      const arr = grid.get(iy * cells + ix);
+      if (!arr) continue;
+      for (let k = 0; k < arr.length; k++) {
+        const i = arr[k];
+        if (stamp[i] === q) continue;
+        stamp[i] = q;
+        if (segmentHitsBounds(ring[i][0], ring[i][1], ring[i + 1][0], ring[i + 1][1], b)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function boundsOfFeatures(features) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < (features || []).length; i++) {
+    const rings = exteriorsOf(features[i]);
+    for (let r = 0; r < rings.length; r++) {
+      const ring = rings[r];
+      if (!ring) continue;
+      for (let v = 0; v < ring.length; v++) {
+        const x = ring[v][0];
+        const y = ring[v][1];
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (!(minX < Infinity)) return null;
+  const padX = Math.max((maxX - minX) * 0.02, 1e-4);
+  const padY = Math.max((maxY - minY) * 0.02, 1e-4);
+  return { minX: minX - padX, minY: minY - padY, maxX: maxX + padX, maxY: maxY + padY };
+}
+
+/** Clip a large opening to the site once, then index its segments. Keep the original area for coverage tests. */
+function clipAndIndexOpenings(prepared, siteBounds) {
+  const out = [];
+  for (let i = 0; i < (prepared || []).length; i++) {
+    let prep = prepared[i];
+    if (siteBounds && prep.ring && prep.ring.length > 32) {
+      const b = prep.bounds;
+      const inside =
+        b.minX >= siteBounds.minX &&
+        b.maxX <= siteBounds.maxX &&
+        b.minY >= siteBounds.minY &&
+        b.maxY <= siteBounds.maxY;
+      if (!inside) {
+        if (!boundsHit(b, siteBounds)) continue;
+        const clip = clipRingToBounds(prep.ring, siteBounds);
+        if (!clip) continue;
+        prep = { ring: clip, bounds: ringBounds(clip), area: prep.area };
+      }
+    }
+    const idx = indexOpeningRing(prep.ring);
+    if (idx) prep.segIndex = idx;
+    out.push(prep);
+  }
+  return out;
 }
 
 /**
@@ -1348,6 +1490,7 @@ function openingsHitting(ring, openings) {
   const bounds = ringBounds(ring);
   const roof = meterArea(ring);
   if (!(roof >= 1)) return hits;
+  const prof = profile.profileOn();
   for (let i = 0; i < (openings || []).length; i++) {
     const prep = prepareOpening(openings[i]);
     if (!prep) continue;
@@ -1357,16 +1500,26 @@ function openingsHitting(ring, openings) {
     // A harbour or lake bbox often covers the whole tile. If its ring never
     // enters this footprint and the footprint is not inside the water, the
     // clip area is zero and Martinez can be skipped.
-    if (!ringTouchesBounds(op, bounds)) {
+    let tN = prof ? profile.now() : 0;
+    const touches = ringTouchesBounds(op, bounds, prep.segIndex);
+    if (prof) profile.add("notch-touch", profile.msSince(tN));
+    if (!touches) {
+      tN = prof ? profile.now() : 0;
       const mid = [(bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2];
-      if (!pointInRingLL(mid, op)) continue;
+      const inside = pointInRingLL(mid, op);
+      if (prof) profile.add("notch-inside", profile.msSince(tN));
+      if (!inside) continue;
     }
     let clip = op;
     if (op.length > 32) {
+      tN = prof ? profile.now() : 0;
       clip = clipRingToBounds(op, bounds);
+      if (prof) profile.add("notch-clip", profile.msSince(tN));
       if (!clip) continue;
     }
+    tN = prof ? profile.now() : 0;
     const inter = intersectionArea(clip, ring);
+    if (prof) profile.add("notch-inter", profile.msSince(tN));
     if (!(inter >= 30)) continue;
     if (inter / oa < 0.4 && inter / roof < 0.25) continue;
     hits.push(op);
@@ -2391,7 +2544,18 @@ function shapeBuildings(features, detail) {
     process.stderr.write("stage shape-" + label + " " + (Date.now() - t0) + "\n");
   };
   const openings = (detail && detail.openings) || [];
-  const preparedOpenings = prepareOpenings(openings);
+  const siteBounds = boundsOfFeatures((features || []).concat((detail && detail.parts) || []));
+  const preparedOpenings = clipAndIndexOpenings(prepareOpenings(openings), siteBounds);
+  if (profile.profileOn()) {
+    let verts = 0;
+    let big = 0;
+    for (let i = 0; i < preparedOpenings.length; i++) {
+      const n = (preparedOpenings[i].ring && preparedOpenings[i].ring.length) || 0;
+      verts += n;
+      if (n > 32) big++;
+    }
+    process.stderr.write("profile openings n=" + preparedOpenings.length + " verts=" + verts + " big=" + big + "\n");
+  }
   const parts = (detail && detail.parts) || [];
   const partFeatures = [];
   for (let i = 0; i < parts.length; i++) {
@@ -2455,6 +2619,7 @@ function shapeBuildings(features, detail) {
     for (let p = 0; p < pieces.length; p++) opened.push(pieces[p]);
   }
   mark("notch");
+  if (profile.profileOn()) process.stderr.write("profile notch " + profile.line() + "\n");
   const cut = subtractSameHeightParts(opened, largeDrops);
   mark("subtractParts");
   const dropped = dropParentsOverOpenings(cut, preparedOpenings, largeDrops);
