@@ -16,6 +16,7 @@
 
 const polygonClipping = require("polygon-clipping");
 const { guidewaysFromElements, guidewaysFromParsedWays, bridgesFromElements, bridgesFromParsedWays } = require("./outdoor-clutter");
+const { landContextQuery, parkingSurfaceQuery, extractLandContext, mergeLandContext, classifyLandTags } = require("./ms-context");
 const { ringKey, bboxSpanM, TILE_SPAN_M } = require("./osm-tiles");
 const { fetchStreetMaps } = require("./street-map");
 const overpass = require("./overpass");
@@ -64,6 +65,8 @@ function buildingDetailQuery(bbox) {
     'way["bridge"="viaduct"](' + box + ");" +
     'way["building"~"^(static_caravan|mobile_home|caravan)$"](' + box + ");" +
     'relation["building"~"^(static_caravan|mobile_home|caravan)$"](' + box + ");" +
+    parkingSurfaceQuery(box) +
+    landContextQuery(box) +
     ");out geom;"
   );
 }
@@ -339,7 +342,7 @@ function parseBuildingDetail(payload, bbox) {
       }
     }
   }
-  return { parts, openings, buildings, structures, water, places: placesFromElements(elements) };
+  return { parts, openings, buildings, structures, water, places: placesFromElements(elements), landContext: extractLandContext(elements) };
 }
 
 function ringHitsBox(ring, bbox) {
@@ -497,6 +500,15 @@ function detailFromMapXml(xml, bbox, deckCap) {
   for (const [id, way] of ways) {
     if (inRelation.has(id)) continue;
     const pts = refsToPts(way.refs, nodes);
+    const landKind = classifyLandTags(way.tags);
+    if (landKind === "railway_line" && pts.length >= 2) {
+      elements.push({
+        type: "way",
+        tags: way.tags,
+        geometry: pts.map((p) => ({ lon: p[0], lat: p[1] })),
+      });
+      continue;
+    }
     const ring = closedFromPts(pts);
     if (!ring) continue;
     const geometry = ring.map((p) => ({ lon: p[0], lat: p[1] }));
@@ -508,7 +520,8 @@ function detailFromMapXml(xml, bbox, deckCap) {
     const want =
       tags["building:part"] ||
       isBuildingTag(tags) ||
-      isOpeningTags(tags);
+      isOpeningTags(tags) ||
+      !!classifyLandTags(tags);
     if (!want) continue;
     const grouped = { outer: [], inner: [] };
     for (let m = 0; m < rel.members.length; m++) {
@@ -634,11 +647,12 @@ function mergeBuildingDetail(packs) {
       water.push(lakes[i]);
     }
   }
-  return { parts, openings, buildings, structures, guideways, bridges, roads, places, water };
+  const landContext = mergeLandContext(packs);
+  return { parts, openings, buildings, structures, guideways, bridges, roads, places, water, landContext };
 }
 
 async function fetchBuildingDetail(bbox, opts) {
-  const empty = { ok: false, parts: [], openings: [], buildings: [], structures: [], roads: [], guideways: [], bridges: [] };
+  const empty = { ok: false, parts: [], openings: [], buildings: [], structures: [], roads: [], guideways: [], bridges: [], landContext: extractLandContext([]) };
   if (!bbox) return empty;
   const timeoutMs = (opts && opts.timeoutMs) || 4500;
   const startedAt = Date.now();
@@ -679,6 +693,7 @@ async function fetchBuildingDetail(bbox, opts) {
               guideways: guidewaysFromElements(maps.elements, bbox, deckCap),
               bridges: bridgesFromElements(maps.elements, bbox, deckCap),
               places: parsed.places || [],
+              landContext: parsed.landContext,
             });
           }
           const merged = mergeBuildingDetail(packs);
@@ -694,6 +709,7 @@ async function fetchBuildingDetail(bbox, opts) {
             bridges: merged.bridges,
             notes: maps.notes,
             places: merged.places || [],
+            landContext: merged.landContext,
           };
         }
         if (maps.elements && maps.elements.length) {
@@ -710,17 +726,18 @@ async function fetchBuildingDetail(bbox, opts) {
             bridges: bridgesFromElements(maps.elements, bbox, deckCap),
             notes: maps.notes,
             places: parsed.places || [],
+            landContext: parsed.landContext,
           };
         }
         if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
-          return { ok: true, parts: [], openings: [], buildings: [], structures: [], roads: [], guideways: [], bridges: [], notes: maps.notes };
+          return { ok: true, parts: [], openings: [], buildings: [], structures: [], roads: [], guideways: [], bridges: [], notes: maps.notes, landContext: extractLandContext([]) };
         }
       } catch (e) {
         if (ctrl.signal.aborted) return empty;
       }
     }
     if (bboxSpanM(bbox).sideM > TILE_SPAN_M) {
-      return { ok: true, parts: [], openings: [], buildings: [], structures: [], roads: [], guideways: [], bridges: [], notes: [] };
+      return { ok: true, parts: [], openings: [], buildings: [], structures: [], roads: [], guideways: [], bridges: [], notes: [], landContext: extractLandContext([]) };
     }
     const resilient = isResilient() && !(opts && opts.fetchImpl);
     for (let u = 0; u < (resilient ? 1 : OVERPASS_URLS.length); u++) {
@@ -758,6 +775,7 @@ async function fetchBuildingDetail(bbox, opts) {
           guideways: guidewaysFromElements(json.elements, bbox, deckCap),
           bridges: bridgesFromElements(json.elements, bbox, deckCap),
           places: parsed.places || [],
+          landContext: parsed.landContext,
         };
       } catch (e) {
         if (ctrl.signal.aborted) return empty;

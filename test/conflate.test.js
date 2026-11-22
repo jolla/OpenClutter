@@ -4,7 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
-const { conflateFootprints, assembleFootprints, dedupeStackedFootprints, heightRank, ringAreaM2 } = require("../netlify/lib/conflate");
+const { conflateFootprints, assembleFootprints, dedupeStackedFootprints, dropLowParcelContainers, heightRank, ringAreaM2 } = require("../netlify/lib/conflate");
 const { mergeFootprintFeatures } = require("../netlify/lib/ms-global");
 const { buildClutter } = require("../netlify/lib/pipeline");
 const { geoFrame } = require("../netlify/lib/geo-frame");
@@ -480,5 +480,72 @@ describe("footprint conflation", () => {
     assert.equal(out.features.length, 1);
     assert.equal(out.features[0].properties.levelBaseM, 3);
     assert.equal(out.features[0].properties.height, 6);
+  });
+});
+
+describe("low parcel containers", () => {
+  // Downtown Toronto, about 90 m x 110 m (~9,000 m²).
+  const W = -79.385;
+  const S = 43.646;
+  const E = -79.384;
+  const N = 43.647;
+
+  it("drops a low Overture parcel that contains two Microsoft footprints covering a meaningful share", () => {
+    const parcel = box(W, S, E, N, { height: 7.6, heightSource: "overture", geomSource: "overture" });
+    const a = box(W + 0.00015, S + 0.00015, W + 0.00055, S + 0.00055, { height: 6.9, heightSource: "ms-global", geomSource: "ms-global" });
+    const b = box(W + 0.00045, S + 0.0004, W + 0.00085, S + 0.0008, { height: 6.9, heightSource: "ms-global", geomSource: "ms-global" });
+    const out = dropLowParcelContainers([parcel], [a, b]);
+    assert.equal(out.dropped, 1);
+    assert.equal(out.features.length, 0);
+    const assembled = assembleFootprints({ global: [a, b], overture: [parcel], arcgis: [], usa: [] });
+    assert.equal(assembled.parcelDropped, 1);
+    assert.equal(assembled.features.length, 2);
+    assert.equal(assembled.features.filter((f) => (f.properties || {}).geomSource === "ms-global").length, 2);
+    assert.equal(assembled.features.filter((f) => (f.properties || {}).geomSource === "overture").length, 0);
+  });
+
+  it("keeps a tall large building even when two Microsoft footprints sit inside it", () => {
+    const parcel = box(W, S, E, N, { height: 30, heightSource: "overture", geomSource: "overture" });
+    const a = box(W + 0.00015, S + 0.00015, W + 0.00055, S + 0.00055, { height: 28, heightSource: "ms-global", geomSource: "ms-global" });
+    const b = box(W + 0.00045, S + 0.0004, W + 0.00085, S + 0.0008, { height: 12, heightSource: "ms-global", geomSource: "ms-global" });
+    const out = dropLowParcelContainers([parcel], [a, b]);
+    assert.equal(out.dropped, 0);
+    assert.equal(out.features.length, 1);
+  });
+
+  it("keeps a low parcel when Microsoft scraps cover only a thin edge", () => {
+    const parcel = box(W, S, E, N, { height: 8, heightSource: "overture", geomSource: "overture" });
+    const a = box(W + 0.00002, S + 0.00002, W + 0.00012, S + 0.00012, { height: 5, heightSource: "ms-global", geomSource: "ms-global" });
+    const b = box(E - 0.00012, N - 0.00012, E - 0.00002, N - 0.00002, { height: 5, heightSource: "ms-global", geomSource: "ms-global" });
+    const out = dropLowParcelContainers([parcel], [a, b]);
+    assert.equal(out.dropped, 0);
+    assert.equal(out.features.length, 1);
+  });
+
+  it("drops a low parcel that contains two other footprints of any source covering a meaningful share", () => {
+    const parcel = box(W, S, E, N, { height: 7.6, heightSource: "overture", geomSource: "overture" });
+    const a = box(W + 0.00015, S + 0.00015, W + 0.00055, S + 0.00055, { height: 6.9, heightSource: "overture", geomSource: "overture" });
+    const b = box(W + 0.00045, S + 0.0004, W + 0.00085, S + 0.0008, { height: 6.9, heightSource: "osm", geomSource: "osm-part" });
+    const out = dropLowParcelContainers([parcel], [parcel, a, b]);
+    assert.equal(out.dropped, 1);
+    assert.equal(out.features.length, 0);
+  });
+
+  it("keeps a low podium under two much taller towers", () => {
+    const parcel = box(W, S, E, N, { height: 8, heightSource: "overture", geomSource: "overture" });
+    const a = box(W + 0.00015, S + 0.00015, W + 0.00055, S + 0.00055, { height: 40, heightSource: "overture", geomSource: "overture" });
+    const b = box(W + 0.00045, S + 0.0004, W + 0.00085, S + 0.0008, { height: 50, heightSource: "ms-global", geomSource: "ms-global" });
+    const out = dropLowParcelContainers([parcel], [parcel, a, b]);
+    assert.equal(out.dropped, 0);
+    assert.equal(out.features.length, 1);
+  });
+
+  it("keeps a low parcel that has lidar roof evidence", () => {
+    const parcel = box(W, S, E, N, { height: 9, heightSource: "lidar", geomSource: "overture" });
+    const a = box(W + 0.00015, S + 0.00015, W + 0.00055, S + 0.00055, { height: 6.9, heightSource: "ms-global", geomSource: "ms-global" });
+    const b = box(W + 0.00045, S + 0.0004, W + 0.00085, S + 0.0008, { height: 6.9, heightSource: "ms-global", geomSource: "ms-global" });
+    const out = dropLowParcelContainers([parcel], [a, b]);
+    assert.equal(out.dropped, 0);
+    assert.equal(out.features.length, 1);
   });
 });

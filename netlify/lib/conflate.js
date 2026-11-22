@@ -1065,13 +1065,115 @@ function dropPrimaryContainers(primary, secondary, minInside) {
   return { features: kept, dropped };
 }
 
+
+const PARCEL_MAX_HEIGHT_M = 12;
+const PARCEL_MIN_COVERAGE = 0.25;
+
+function intersectionAreaM2(ringA, ringB) {
+  if (!ringA || !ringB || ringA.length < 4 || ringB.length < 4) return 0;
+  try {
+    const inter = polygonClipping.intersection([[ringA]], [[ringB]]);
+    let area = 0;
+    for (const poly of inter || []) {
+      if (!poly[0]) continue;
+      area += ringAreaM2(poly[0]);
+    }
+    return area > 0 ? area : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function hasStrongRoofEvidence(feature, maxH) {
+  const src = heightSource(feature);
+  const h = featureHeight(feature);
+  if (src === "lidar" || src === "nls-laser") return h >= 4;
+  if (h > maxH) return true;
+  const floors = Number(feature && feature.properties && feature.properties.numFloors);
+  return floors >= 4;
+}
+
+/**
+ * A low Overture or OSM parcel ring that already contains two or more
+ * Microsoft footprints covering a meaningful share of it is a yard, plaza,
+ * or campus lot, not one building. Drop the parcel so the Microsoft
+ * footprints stay. A tall or well-evidenced roof is kept even when it is
+ * large, and a couple of small Microsoft scraps on the edge are not enough.
+ */
+function dropLowParcelContainers(parcels, interiors, opts) {
+  const maxH = opts && opts.maxHeightM > 0 ? opts.maxHeightM : PARCEL_MAX_HEIGHT_M;
+  const minCover = opts && opts.minCoverage > 0 ? opts.minCoverage : PARCEL_MIN_COVERAGE;
+  const need = opts && opts.minInside > 1 ? opts.minInside : 2;
+  const roofEvidence = opts && typeof opts.roofEvidence === "function" ? opts.roofEvidence : null;
+  const insides = [];
+  const extra = Array.isArray(interiors) ? interiors : [];
+  for (let i = 0; i < extra.length; i++) {
+    const f = extra[i];
+    const ex = exteriorRings(f && f.geometry);
+    const cents = [];
+    for (const r of ex) {
+      const c = centroid(r);
+      if (c) cents.push(c);
+    }
+    if (cents.length) insides.push({ feature: f, cents, rings: ex });
+  }
+  const kept = [];
+  let dropped = 0;
+  const base = Array.isArray(parcels) ? parcels : [];
+  for (let i = 0; i < base.length; i++) {
+    const f = base[i];
+    if (roofEvidence ? roofEvidence(f) : hasStrongRoofEvidence(f, maxH)) {
+      kept.push(f);
+      continue;
+    }
+    const h = featureHeight(f);
+    if (h > maxH) {
+      kept.push(f);
+      continue;
+    }
+    const ex = exteriorRings(f && f.geometry).filter((r) => !ringIsCoarseMega(r));
+    if (!ex.length) {
+      kept.push(f);
+      continue;
+    }
+    const parcelM2 = featureAreaM2(f);
+    if (!(parcelM2 > 0)) {
+      kept.push(f);
+      continue;
+    }
+    let inside = 0;
+    let cover = 0;
+    for (let s = 0; s < insides.length; s++) {
+      if (insides[s].feature === f) continue;
+      const kidH = featureHeight(insides[s].feature);
+      // A much taller inset is a tower on a podium, not a reason to drop the podium.
+      if (kidH >= (h || 0) + 6 && kidH > maxH) continue;
+      const hit = insides[s].cents.some((c) => ex.some((r) => pointInRing(c, r)));
+      if (!hit) continue;
+      inside++;
+      for (let a = 0; a < ex.length; a++) {
+        for (let b = 0; b < insides[s].rings.length; b++) {
+          cover += intersectionAreaM2(ex[a], insides[s].rings[b]);
+        }
+      }
+    }
+    if (inside >= need && cover / parcelM2 >= minCover) {
+      dropped++;
+      continue;
+    }
+    kept.push(f);
+  }
+  return { features: kept, dropped };
+}
+
 function assembleFootprints({ global, overture, arcgis, usa }) {
   const g = tagLayer(global, "ms-global", "ms-global");
   const o = tagLayer(overture, "overture", null);
   const a = tagLayer(arcgis, "arcgis", null);
   const u = tagLayer(usa, "usa", "fema");
   const withoutContainers = dropPrimaryContainers(g, o, 2);
-  const withOverture = conflateFootprints(withoutContainers.features, o, { replaceGeometry: true, rankHeight: true });
+  const withoutParcels = dropLowParcelContainers(o, withoutContainers.features.concat(o));
+  const withOverture = conflateFootprints(withoutContainers.features, withoutParcels.features, { replaceGeometry: true, rankHeight: true });
   const withArc = conflateFootprints(withOverture.features, a, { replaceGeometry: true, rankHeight: true });
   const withUsa = conflateFootprints(withArc.features, u, { replaceGeometry: true, rankHeight: true });
   const separated = dedupeStackedFootprints(withUsa.features);
@@ -1086,6 +1188,7 @@ function assembleFootprints({ global, overture, arcgis, usa }) {
     heightSources: countHeightSources(separated.features),
     stackedDropped: separated.dropped,
     stackedCut: separated.cut,
+    parcelDropped: withoutParcels.dropped,
   };
 }
 
@@ -1099,6 +1202,7 @@ module.exports = {
   conflateFootprints,
   assembleFootprints,
   dropPrimaryContainers,
+  dropLowParcelContainers,
   dedupeStackedFootprints,
   countHeightSources,
   tagLayer,

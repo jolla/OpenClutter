@@ -14,6 +14,7 @@
 
 const overpass = require("./overpass");
 const { isResilient, isTiledOsm } = require("./export-mode");
+const { landContextQuery } = require("./ms-context");
 
 const TILE_SPAN_M = 2200;
 /** Resilient tile read: retries and fallback inside this window. */
@@ -234,6 +235,7 @@ function tileQuery(bbox) {
     'way["highway"~"^(service|track|living_street|residential|unclassified)$"](' + box + ");" +
     'way["building"~"^(static_caravan|mobile_home|caravan)$"](' + box + ");" +
     'relation["building"~"^(static_caravan|mobile_home|caravan)$"](' + box + ");" +
+    landContextQuery(box) +
     ");out geom;"
   );
 }

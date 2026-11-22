@@ -183,7 +183,8 @@ const areaCache = require("../lib/area-cache");
 const { fetchCanopyTrees, normalizeTreesSource, maxTreesForBbox, pickCanopyTrees } = require("../lib/tree-source");
 const { fetchMsGlobalFootprints, globalSkipWarning } = require("../lib/ms-global");
 const { fetchUsaStructures, usaEmptyWarning } = require("../lib/usa-structures");
-const { assembleFootprints } = require("../lib/conflate");
+const { assembleFootprints, dropLowParcelContainers } = require("../lib/conflate");
+const { rejectMicrosoftFalsePositives, addGuidewaysToContext, mergeLandContext, extractLandContext } = require("../lib/ms-context");
 const { fetchOvertureFootprints } = require("../lib/overture");
 let fetchOvertureImpl = fetchOvertureFootprints;
 function setFetchOvertureForTests(fn) {
@@ -2344,6 +2345,7 @@ async function handleClutterNorthUp(event) {
     femaHeights: sources.fema || 0,
     floorHeights: sources["overture-floors"] || 0,
     imageryRoofs: 0,
+    parcelDropped: assembled.parcelDropped || 0,
     medianTrees: 0,
     chmTrees: 0,
   };
@@ -2382,6 +2384,26 @@ async function handleClutterNorthUp(event) {
   let osmWater = [];
   let bridgeFeatures = [];
   let planningPlaces = [];
+  let landContext = extractLandContext([]);
+
+  function dropLowParcelsFromFeatures(list) {
+    const parcels = [];
+    const interiors = [];
+    const other = [];
+    const sources = {};
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
+      const src = (f && f.properties && f.properties.geomSource) || "none";
+      sources[src] = (sources[src] || 0) + 1;
+      if (src === "ms-global") interiors.push(f);
+      else if (src === "overture" || src === "osm-building" || src === "osm" || src === "osm-part") parcels.push(f);
+      else other.push(f);
+    }
+    if (!parcels.length) return { features: list, dropped: 0 };
+    const out = dropLowParcelContainers(parcels, list);
+    return { features: out.features.concat(interiors, other), dropped: out.dropped };
+  }
+
   function takePlaces(pack) {
     const spots = pack && pack.places;
     if (!Array.isArray(spots)) return;
@@ -2401,6 +2423,7 @@ async function handleClutterNorthUp(event) {
       guidewayFeatures = pack.guideways || [];
       bridgeFeatures = pack.bridges || [];
       osmWater = pack.water || [];
+      landContext = addGuidewaysToContext(mergeLandContext([pack.landContext || extractLandContext([])]), guidewayFeatures);
       try {
         const roofRaw = decoded || (levelPhoto ? normalizeAerial(decodeRoofImagery(imgBuf)) : decodeRoofImagery(imgBuf));
         if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage shape-start " + (Date.now() - started) + "\n");
@@ -2412,6 +2435,11 @@ async function handleClutterNorthUp(event) {
         }));
         if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage shape-done " + (Date.now() - started) + "\n");
         features = shaped.features;
+        const afterShapeParcels = dropLowParcelsFromFeatures(features);
+        if (afterShapeParcels.dropped) {
+          features = afterShapeParcels.features;
+          footprintMeta.parcelDropped = (footprintMeta.parcelDropped || 0) + afterShapeParcels.dropped;
+        }
         footprintMeta.osmParts = shaped.stats.parts;
         footprintMeta.poolOpenings = shaped.stats.openings;
         footprintMeta.parentsDropped = shaped.stats.parentsDropped;
@@ -2586,6 +2614,25 @@ async function handleClutterNorthUp(event) {
       shadowPlate = null;
     }
   }
+
+  if (features.length && (landContext.parking.length || landContext.railwayLand.length || landContext.platforms.length || landContext.parks.length || landContext.plazas.length || landContext.railwayLines.length || features.some((f) => f && f.properties && f.properties.geomSource === "ms-global"))) {
+    const lidarGrid = padLidar || (scaleLidar && !scaleLidar.skipped && scaleLidar.grid) || null;
+    const filtered = rejectMicrosoftFalsePositives(features, landContext, {
+      lidarHeight: lidarGrid
+        ? (f) => {
+            const rings = featureExteriorRings(f && f.geometry);
+            for (let r = 0; r < rings.length; r++) {
+              const h = heightForRing(lidarGrid, rings[r]);
+              if (h != null && h > 0) return h;
+            }
+            return 0;
+          }
+        : null,
+    });
+    footprintMeta.msContextDropped = filtered.dropped || 0;
+    if (filtered.dropped) features = filtered.features;
+  }
+
 
   let terrain = null;
   if (clientLift.length >= 4 && frame) {
