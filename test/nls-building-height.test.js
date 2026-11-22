@@ -185,7 +185,9 @@ describe("NLS Hamina building heights", { concurrency: false }, () => {
     assert.ok(paths.some((p) => fs.existsSync(p)));
     const toml = fs.readFileSync(path.join(__dirname, "../netlify.toml"), "utf8");
     assert.match(toml, /\[functions\."clutter"\]/);
-    assert.match(toml, /included_files = \["netlify\/lib\/nls-hamina-ndsm\.gz"\]/);
+    assert.match(toml, /included_files = \["netlify\/lib\/nls-hamina-ndsm\.gz"/);
+    assert.match(toml, /ms-buildings-index\.txt\.gz/);
+    assert.match(toml, /usa-coverage\.json\.gz/);
   });
 
   it("omits laser heights instead of throwing when the grid file is missing", () => {

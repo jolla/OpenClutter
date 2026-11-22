@@ -2300,9 +2300,28 @@ describe("dev-host Copernicus fallback", () => {
       north: 60.572,
       name: "Hamina",
     };
+    const msRoof = zlib.gzipSync(
+      Buffer.from(
+        JSON.stringify({
+          type: "Feature",
+          properties: {},
+          geometry: { type: "Polygon", coordinates: [fixture.ring] },
+        }) + "\n"
+      )
+    );
     function install() {
       global.fetch = async (url) => {
         const u = String(url && url.url ? url.url : url);
+        if (u.includes("bfppub") || u.includes("global-buildings")) {
+          return {
+            ok: true,
+            headers: {
+              get: (name) => (String(name).toLowerCase() === "content-length" ? String(msRoof.length) : null),
+            },
+            arrayBuffer: async () => msRoof,
+            body: Readable.from(msRoof),
+          };
+        }
         if (u.includes("getSamples") && u.includes("elevation.nationalmap.gov")) {
           return { ok: true, json: async () => ({ error: { message: "no 3dep" } }) };
         }
