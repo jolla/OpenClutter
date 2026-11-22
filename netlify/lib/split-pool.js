@@ -22,6 +22,18 @@ const terrainKeys = new WeakMap();
 
 let threadFileOk = null;
 
+// Tests can inject a clock and a wait so the hung-stand cutoff is checked
+// against the budget without depending on Atomics.wait wall time under a
+// loaded official npm run. Production keeps Date.now and Atomics.wait.
+let nowFn = () => Date.now();
+let waitFn = (flag, got, left) => Atomics.wait(flag, 0, got, left);
+
+function setWaitForTests(opts) {
+  const o = opts || {};
+  nowFn = typeof o.now === "function" ? o.now : () => Date.now();
+  waitFn = typeof o.wait === "function" ? o.wait : (flag, got, left) => Atomics.wait(flag, 0, got, left);
+}
+
 /**
  * The child path also runs when the thread file is not on disk (a bundle
  * that did not copy it). A missing file must fail fast there, not wait
@@ -89,16 +101,16 @@ function call(build, timeoutMs) {
     stop(st);
     return { error: "post " + (err && err.message ? err.message : err) };
   }
-  const deadline = Date.now() + Math.max(1, timeoutMs);
+  const deadline = nowFn() + Math.max(1, timeoutMs);
   for (;;) {
     const got = Atomics.load(st.flag, 0);
     if (got === seq) break;
-    const left = deadline - Date.now();
+    const left = deadline - nowFn();
     if (left <= 0) {
       stop(st);
       return { timedOut: true };
     }
-    Atomics.wait(st.flag, 0, got, left);
+    waitFn(st.flag, got, left);
   }
   let reply = null;
   for (;;) {
@@ -190,4 +202,4 @@ function hangForTest(timeoutMs) {
   return call(() => ({ op: "hang" }), timeoutMs);
 }
 
-module.exports = { splitInThread, mergeInThread, shutdown, useChild, threadIdForTest, hangForTest };
+module.exports = { splitInThread, mergeInThread, shutdown, useChild, threadIdForTest, hangForTest, setWaitForTests };

@@ -46,7 +46,10 @@ function withEnv(key, value, fn) {
 }
 
 describe("persistent split thread", () => {
-  after(() => splitPool.shutdown());
+  after(() => {
+    splitPool.setWaitForTests();
+    splitPool.shutdown();
+  });
   const frame = geoFrame({ west: -89.7, south: 44.91, east: -89.684, north: 44.926, name: "Granite Peak" });
   const span = frame.north - frame.south;
   const terrain = terrainFromSamples(
@@ -84,11 +87,26 @@ describe("persistent split thread", () => {
   it("cuts off a hung stand at the budget and starts a fresh thread", () => {
     splitRingByFloor(terrain, rings[0]);
     const before = splitPool.threadIdForTest();
-    const t0 = Date.now();
+    // Injected clock: the worker still enters a tight hang, but the budget
+    // is spent in the test's clock, not by Atomics.wait wall time, so a
+    // loaded official npm run cannot stretch this past the bound.
+    let now = 1_000_000;
+    const waits = [];
+    splitPool.setWaitForTests({
+      now: () => now,
+      wait: (flag, got, left) => {
+        waits.push(left);
+        now += left;
+      },
+    });
+    const t0 = now;
     const res = splitPool.hangForTest(400);
-    const wall = Date.now() - t0;
+    const elapsed = now - t0;
+    splitPool.setWaitForTests();
     assert.equal(res.timedOut, true);
-    assert.ok(wall >= 350 && wall < 5000, "wall " + wall);
+    assert.equal(elapsed, 400, "elapsed " + elapsed);
+    assert.ok(waits.length >= 1, "waited for the hang");
+    assert.ok(waits[0] > 0 && waits[0] <= 400, "budget left " + waits[0]);
     assert.equal(splitPool.threadIdForTest(), 0);
     const inproc = withEnv("OPENCLUTTER_SPLIT_INPROCESS", "1", () => splitRingByFloor(terrain, rings[1]));
     assert.deepEqual(splitRingByFloor(terrain, rings[1]), inproc);
