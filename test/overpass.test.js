@@ -431,6 +431,84 @@ describe("overpass client", () => {
     assert.match(userAgent, /^openclutter\/\d+\.\d+\.\d+ \(https:\/\/github\.com\/jolla\/OpenClutter\)$/);
   });
 
+  const JSON_EMPTY = `{
+  "version": 0.6,
+  "generator": "Overpass API 0.7.62.7 375dc00a",
+  "osm3s": {
+    "timestamp_osm_base": "2026-11-21T01:35:19Z",
+    "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL."
+  },
+  "elements": [
+
+
+
+  ]
+}
+`;
+
+  it("treats a well-formed empty elements body as complete but empty", () => {
+    assert.equal(overpass.bodyOk("interpreter", JSON_EMPTY), true);
+    assert.equal(overpass.bodyEmpty("interpreter", JSON_EMPTY), true);
+    assert.equal(overpass.bodyEmpty("interpreter", JSON_OK), false);
+    assert.equal(overpass.bodyEmpty("map", '<?xml version="1.0"?><osm version="0.6"></osm>'), true);
+    assert.equal(overpass.bodyEmpty("map", MAP_XML), false);
+  });
+
+  it("does not treat an empty 200 as a complete answer, and tries the next server", async () => {
+    setup((url) => {
+      const h = hostOf(url);
+      if (h === "overpass-api.de") return res(200, JSON_EMPTY);
+      if (h === "overpass.private.coffee") return res(200, JSON_OK);
+      return res(504, "busy");
+    });
+    const got = await overpass.request({ kind: "interpreter", query: "q-empty-next", deadlineMs: 5000, tag: "gap" });
+    assert.equal(got.ok, true);
+    assert.equal(got.text, JSON_OK);
+    assert.ok(lines.some((l) => /gap overpass-api\.de interpreter status=200-empty/.test(l)), lines.join("\n"));
+  });
+
+
+  it("does not keep an empty interpreter body on disk, and ignores one already stored", async () => {
+    const os = require("node:os");
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const zlib = require("node:zlib");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oc-overpass-"));
+    process.env.OPENCLUTTER_OVERPASS_CACHE_DIR = dir;
+    try {
+      setup(() => res(200, JSON_EMPTY));
+      const a = await overpass.request({ kind: "interpreter", query: "q-empty-disk", deadlineMs: 5000 });
+      assert.equal(a.ok, true);
+      assert.equal(overpass.bodyEmpty("interpreter", a.text), true);
+      const files = [];
+      (function walk(d) {
+        for (const f of fs.readdirSync(d, { withFileTypes: true })) f.isDirectory() ? walk(path.join(d, f.name)) : files.push(path.join(d, f.name));
+      })(dir);
+      assert.equal(files.filter((f) => f.endsWith(".gz")).length, 0, files.join("\n"));
+
+      const key = overpass.diskKey("interpreter", "q-empty-planted");
+      const planted = path.join(dir, "interpreter", key.slice(0, 2), key + ".gz");
+      fs.mkdirSync(path.dirname(planted), { recursive: true });
+      fs.writeFileSync(planted, zlib.gzipSync(Buffer.from(JSON_EMPTY, "utf8")));
+      overpass.resetForTests({
+        fetch: async (url, init) => {
+          calls.push({ url, init });
+          return res(200, JSON_OK);
+        },
+        log: (l) => lines.push(l),
+        sleep: fastSleep,
+      });
+      const b = await overpass.request({ kind: "interpreter", query: "q-empty-planted", deadlineMs: 5000 });
+      assert.equal(b.ok, true);
+      assert.equal(b.text, JSON_OK);
+      assert.equal(b.disk, undefined);
+      assert.ok(calls.length >= 1);
+    } finally {
+      delete process.env.OPENCLUTTER_OVERPASS_CACHE_DIR;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps answers on disk by query when a cache dir is set, and never a failed read", async () => {
     const os = require("node:os");
     const fs = require("node:fs");

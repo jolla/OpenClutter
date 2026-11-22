@@ -167,7 +167,7 @@ function diskGet(kind, payload) {
   try {
     if (fs.existsSync(diskTooBigPath(dir, kind, payload))) return { tooBig: true };
     const text = zlib.gunzipSync(fs.readFileSync(diskPath(dir, kind, payload))).toString("utf8");
-    return bodyOk(kind, text) ? { ok: true, text } : null;
+    return bodyOk(kind, text) && !bodyEmpty(kind, text) ? { ok: true, text } : null;
   } catch {
     return null;
   }
@@ -175,7 +175,7 @@ function diskGet(kind, payload) {
 
 function diskSet(kind, payload, text) {
   const dir = cacheDir();
-  if (!dir || !bodyOk(kind, text)) return;
+  if (!dir || !bodyOk(kind, text) || bodyEmpty(kind, text)) return;
   try {
     const file = diskPath(dir, kind, payload);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -360,6 +360,24 @@ function bodyOk(kind, text) {
   return !/"remark"\s*:\s*"[^"]*runtime error/i.test(tail);
 }
 
+/**
+ * A well-formed answer with no features. Some mirrors return this as a
+ * fast 200 when they did not actually run the query. bodyOk is still
+ * true (it is complete JSON or XML), but the client must not treat it
+ * as a winning read or keep it on disk: another server may have the data.
+ */
+function bodyEmpty(kind, text) {
+  const t = String(text || "");
+  if (!t) return true;
+  if (kind === "map") return !/<(node|way|relation)\b/i.test(t);
+  try {
+    const json = JSON.parse(t);
+    return Array.isArray(json.elements) && json.elements.length === 0;
+  } catch {
+    return /"elements"\s*:\s*\[\s*\]/.test(t);
+  }
+}
+
 /** A busy-server answer: a runtime error remark instead of data. */
 function isRemark(text) {
   return /runtime error|timed out|out of memory|rate_limited/i.test(String(text || "").slice(-2000));
@@ -463,6 +481,11 @@ async function attempt(ep, kind, payload, opts, n, outer, limitMs) {
       if (maxBytes && text.length > maxBytes) {
         log(opts.tag, ep, kind, r.status, ms, n, "bytes=" + text.length + " tooBig");
         return { ok: false, status: r.status, text: "", tooBig: true, final: true };
+      }
+      if (bodyEmpty(kind, text)) {
+        // Do not win a hedge or get cached. A later server may have data.
+        log(opts.tag, ep, kind, r.status + "-empty", ms, n, "bytes=" + text.length);
+        return { ok: false, status: r.status, text, empty: true };
       }
       log(opts.tag, ep, kind, r.status, ms, n, "bytes=" + text.length);
       return { ok: true, status: r.status, text };
@@ -677,6 +700,7 @@ async function fetchAcrossMap(kind, payload, opts, outer, parent, onParent, dead
   let n = 0;
   let lastStatus = 0;
   let lastTooBig = false;
+  let lastEmpty = null;
   const started = new Set();
   const running = [];
   let pending = 0;
@@ -705,6 +729,8 @@ async function fetchAcrossMap(kind, payload, opts, outer, parent, onParent, dead
       if (r && r.ok) {
         winner = r;
         outer.abort();
+      } else if (r && r.empty && r.text) {
+        lastEmpty = r;
       } else if (r && (r.tooBig || (r.final && r.status === 400))) {
         lastStatus = r.status || lastStatus;
         lastTooBig = !!r.tooBig;
@@ -749,6 +775,7 @@ async function fetchAcrossMap(kind, payload, opts, outer, parent, onParent, dead
     if (winner) return winner;
     await Promise.all(running);
     if (winner) return winner;
+    if (lastEmpty) return { ok: true, status: 200, text: lastEmpty.text, empty: true };
     return { ok: false, status: lastStatus || "deadline", text: "", tooBig: lastTooBig };
   } finally {
     clearTimeout(deadlineTimer);
@@ -771,6 +798,7 @@ async function fetchAcross(kind, payload, opts) {
   if (kind === "map" && !tileRead) return fetchAcrossMap(kind, payload, opts, outer, parent, onParent, deadlineTimer);
   let n = 0;
   let lastStatus = 0;
+  let lastEmpty = null;
   const failed = new Set();
   // Tile reads: a server that sent an empty or cut-off body is not asked again in this read.
   const spent = new Set();
@@ -823,6 +851,7 @@ async function fetchAcross(kind, payload, opts) {
               primaryP.then((res) => ({ from: "primary", res })),
               partnerP.then((res) => ({ from: "partner", res })),
             ]);
+            if (first.res && first.res.empty && first.res.text) lastEmpty = first.res;
             if (first.res && first.res.ok) {
               if (first.from === "primary") partnerCtrl.abort();
               else {
@@ -856,18 +885,23 @@ async function fetchAcross(kind, payload, opts) {
         unlinkPartner();
       }
       if (r && r.ok) return r;
+      if (r && r.empty && r.text) lastEmpty = r;
       if (!r || r.status === "aborted") break;
-      // A 400 is the query itself. Outside tile reads an empty or cut-off
-      // 200 ends the read as before; a tile read moves to the next server.
-      if (r.final && (r.status === 400 || !tileRead)) return r;
+      // A 400 is the query itself. Outside tile reads a cut-off 200 ends
+      // the read as before; a well-formed empty 200 is not final, so
+      // another server can still be asked. A tile read also moves on.
+      if (r.final && !r.empty && (r.status === 400 || !tileRead)) return r;
       failed.add(pick.ep.id);
       lastStatus = r.status || lastStatus;
-      if (r.final) spent.add(pick.ep.id);
+      // Do not ask the same server again in this read for an empty body
+      // (it already answered, and a tight retry would run until the deadline).
+      if (r.final || r.empty) spent.add(pick.ep.id);
       if (partnerUsed) {
         failed.add(partner.id);
-        if (r.final) spent.add(partner.id);
+        if (r.final || r.empty) spent.add(partner.id);
       }
     }
+    if (lastEmpty) return { ok: true, status: 200, text: lastEmpty.text, empty: true };
     return { ok: false, status: lastStatus || "deadline", text: "" };
   } finally {
     clearTimeout(deadlineTimer);
@@ -1047,7 +1081,11 @@ async function loadThroughCache(kind, payload, bbox, opts) {
       };
     });
     const text = Buffer.isBuffer(got.body) ? got.body.toString("utf8") : String(got.body || "");
-    if (!bodyOk(kind, text)) return res && res.ok ? res : { ok: false, status: "bad-cache", text: "" };
+    if (bodyEmpty(kind, text) && !(res && res.ok && !bodyEmpty(kind, res.text))) {
+      // A stored empty body is a miss; go live so another server can answer.
+      if (!(res && res.ok)) return fetchAcross(kind, payload, opts);
+    }
+    if (!bodyOk(kind, text) || bodyEmpty(kind, text)) return res && res.ok && !bodyEmpty(kind, res.text) ? res : { ok: false, status: "bad-cache", text: "" };
     return { ok: true, status: got.status || 200, text, cached: !res };
   } catch {
     return res || { ok: false, status: "error", text: "" };
@@ -1108,6 +1146,7 @@ module.exports = {
   retryAfterMs,
   statusWaitMs,
   bodyOk,
+  bodyEmpty,
   backoffMs,
   resetForTests,
 };
