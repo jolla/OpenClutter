@@ -310,9 +310,88 @@ async function readGroupRows(reader, source, group, filter, signal, metadata) {
   }
 }
 
+const BUILDING_ATTEMPTS = 2;
+/** Cold Azure range reads of a small box finish in about 7 s on this box. */
+const BUILDING_ATTEMPT_MS = 10000;
+const BUILDING_ATTEMPT_LARGE_MS = 15000;
+
+function isTransientOvertureError(err) {
+  if (err && err.code === "OVERTURE_RELEASE_GONE") return false;
+  const msg = String((err && err.message) || err || "");
+  if (!msg) return true;
+  return /abort|timeout|timed out|econnreset|etimedout|enotfound|eai_again|econnrefused|socket|network|fetch failed|http 5\d\d|429|503|504/i.test(msg);
+}
+
+function attemptTimeoutMs(frame, opts) {
+  if (opts && opts.attemptMs > 0) return opts.attemptMs;
+  return spanSideM(frame) > LARGE_GROUP_SIDE_M ? BUILDING_ATTEMPT_LARGE_MS : BUILDING_ATTEMPT_MS;
+}
+
+function attemptCount(opts) {
+  if (opts && opts.attempts > 0) return opts.attempts;
+  return BUILDING_ATTEMPTS;
+}
+
+function forceFailAttempts() {
+  const n = Number(process.env.OPENCLUTTER_OVERTURE_BUILDINGS_FAIL_ATTEMPTS);
+  return n > 0 ? n : 0;
+}
+
 async function fetchOvertureFootprints(frame, opts) {
   const { timeSpan } = require("./stage-clock");
-  return timeSpan("overture", () => fetchOvertureFootprintsWork(frame, opts));
+  return timeSpan("overture", () => fetchOvertureFootprintsWithRetry(frame, opts));
+}
+
+async function fetchOvertureFootprintsWithRetry(frame, opts) {
+  const o = opts || {};
+  const parent = o.signal;
+  const tries = attemptCount(o);
+  const attemptMs = attemptTimeoutMs(frame, o);
+  const persist = require("./overture-buildings-cache");
+  let lastErr = null;
+  const force = forceFailAttempts();
+  for (let i = 0; i < tries; i++) {
+    if (parent && parent.aborted) break;
+    if (force > i) {
+      lastErr = new TypeError("fetch failed");
+      continue;
+    }
+    const attemptSignal = AbortSignal.timeout(attemptMs);
+    const signal = parent ? AbortSignal.any([parent, attemptSignal]) : attemptSignal;
+    try {
+      const pack = await fetchOvertureFootprintsWork(frame, Object.assign({}, o, { signal }));
+      if (pack && pack.features && pack.features.length && !pack.partial) {
+        try {
+          await persist.writeBuildingCache(frame, pack, o);
+        } catch {
+          /* a later export can still retry the live read */
+        }
+      }
+      return pack;
+    } catch (e) {
+      lastErr = e;
+      if (parent && parent.aborted) throw e;
+      if (!isTransientOvertureError(e)) throw e;
+    }
+  }
+  let cached = null;
+  try {
+    cached = await persist.readBuildingCache(frame, o);
+  } catch {
+    cached = null;
+  }
+  if (cached && cached.features && cached.features.length) {
+    return {
+      features: cached.features,
+      rowGroups: cached.rowGroups || 0,
+      groupsRead: cached.groupsRead || 0,
+      release: cached.release || RELEASE,
+      cached: true,
+      cacheNote: persist.cacheNote(cached),
+    };
+  }
+  if (lastErr) throw lastErr;
+  throw failAborted();
 }
 
 async function fetchOvertureFootprintsWork(frame, opts) {
@@ -433,10 +512,14 @@ async function fetchOvertureFootprintsWork(frame, opts) {
 module.exports = {
   RELEASE,
   releaseGoneError,
+  isTransientOvertureError,
   AZURE_PREFIX,
   GROUP_STRIDE,
   MAX_GROUPS,
   MAX_GROUPS_LARGE,
+  BUILDING_ATTEMPTS,
+  BUILDING_ATTEMPT_MS,
+  BUILDING_ATTEMPT_LARGE_MS,
   groupsForBbox,
   orderGroups,
   bboxRowFilter,

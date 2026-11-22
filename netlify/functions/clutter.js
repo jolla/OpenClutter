@@ -2274,6 +2274,7 @@ async function handleClutterNorthUp(event) {
     slowWatch.stop();
   }
   overturePack = optional[0] || { features: [] };
+  if (overturePack && overturePack.cacheNote) warnings.push(overturePack.cacheNote);
   const demPack = optional[1];
   let demKind = null;
   let demAttribution = null;
