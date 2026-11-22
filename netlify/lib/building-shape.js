@@ -2138,7 +2138,7 @@ function applyOsmUseTags(features, osmRings) {
     if (!closed) continue;
     const area = meterArea(closed);
     if (!(area > 0)) continue;
-    tagged.push({ ring: closed, tags, area });
+    tagged.push({ ring: closed, tags, area, box: ringBounds(closed) });
   }
   if (!tagged.length) return 0;
   let n = 0;
@@ -2154,7 +2154,9 @@ function applyOsmUseTags(features, osmRings) {
     for (let e = 0; e < exteriors.length; e++) {
       const area = meterArea(exteriors[e]);
       if (!(area > 0)) continue;
+      const box = ringBounds(exteriors[e]);
       for (let t = 0; t < tagged.length; t++) {
+        if (!boundsHit(box, tagged[t].box)) continue;
         const inter = intersectionArea(exteriors[e], tagged[t].ring);
         const frac = Math.max(inter / area, inter / tagged[t].area);
         if (frac > bestFrac) {
@@ -2171,6 +2173,11 @@ function applyOsmUseTags(features, osmRings) {
 }
 
 function shapeBuildings(features, detail) {
+  const t0 = process.env.OPENCLUTTER_STAGE_LOG ? Date.now() : 0;
+  const mark = (label) => {
+    if (!t0) return;
+    process.stderr.write("stage shape-" + label + " " + (Date.now() - t0) + "\n");
+  };
   const openings = (detail && detail.openings) || [];
   const parts = (detail && detail.parts) || [];
   const partFeatures = [];
@@ -2195,7 +2202,9 @@ function shapeBuildings(features, detail) {
   const largeDrops = [];
   const osmRings = (detail && detail.buildings) || [];
   const carved = carveTwinRoofs(list, detail && detail.imagery, ground, osmRings, largeDrops);
+  mark("carveTwinRoofs");
   const repaired = repairCoarseWedges(carved.features, osmRings, ground, largeDrops);
+  mark("repairCoarseWedges");
   const coreRings = [];
   for (let i = 0; i < repaired.features.length; i++) {
     if (!(repaired.features[i].properties && repaired.features[i].properties.roofCore)) continue;
@@ -2218,6 +2227,7 @@ function shapeBuildings(features, detail) {
     }
     if (!covered) keptParts.push(part);
   }
+  mark("filterParts");
   const withParts = repaired.features.concat(keptParts);
   let notched = 0;
   const opened = [];
@@ -2231,13 +2241,21 @@ function shapeBuildings(features, detail) {
     }
     for (let p = 0; p < pieces.length; p++) opened.push(pieces[p]);
   }
+  mark("notch");
   const cut = subtractSameHeightParts(opened, largeDrops);
+  mark("subtractParts");
   const dropped = dropParentsOverOpenings(cut, openings, largeDrops);
+  mark("dropParents");
   const trimmed = trimTaperedFootprints(dropped.features);
+  mark("trimTapers");
   const notches = dropDiagonalNotches(trimmed.features, osmRings);
+  mark("dropNotches");
   const garages = fillParkingStructures(notches.features, detail && detail.structures);
+  mark("fillParking");
   const filled = fillMissingOsmFootprints(garages.features, osmRings, { usaEmpty: !!(detail && detail.usaEmpty) });
+  mark("fillOsm");
   applyOsmUseTags(filled.features, osmRings);
+  mark("useTags");
   return {
     features: filled.features,
     stats: {
@@ -2275,8 +2293,11 @@ const OSM_FILL_COVER = 0.12;
 /** Most of the garage has to be this footprint before its height is replaced. */
 const PARKING_HEIGHT_COVER = 0.45;
 
-function coveredByExisting(closed, area, existing) {
+function coveredByExisting(closed, area, existing, existingBoxes) {
+  const box = ringBounds(closed);
   for (let e = 0; e < existing.length; e++) {
+    const otherBox = existingBoxes ? existingBoxes[e] : ringBounds(existing[e]);
+    if (!boundsHit(box, otherBox)) continue;
     const inter = intersectionArea(closed, existing[e]);
     if (area > 0 && inter / area >= OSM_FILL_COVER) return true;
   }
@@ -2364,6 +2385,8 @@ function fillMissingOsmFootprints(features, osmRings, opts) {
   if (!rings.length) return { features: list, added: 0 };
   const maxM2 = opts && opts.usaEmpty ? OSM_FILL_EMPTY_MAX_M2 : OSM_FILL_MAX_M2;
   const existing = existingRings(list);
+  const existingBoxes = [];
+  for (let e = 0; e < existing.length; e++) existingBoxes.push(ringBounds(existing[e]));
   const out = list.slice();
   let added = 0;
   for (let i = 0; i < rings.length; i++) {
@@ -2371,13 +2394,14 @@ function fillMissingOsmFootprints(features, osmRings, opts) {
     if (!closed || closed.length < 4) continue;
     const area = meterArea(closed);
     if (!(area >= OSM_FILL_MIN_M2 && area <= maxM2)) continue;
-    if (coveredByExisting(closed, area, existing)) continue;
+    if (coveredByExisting(closed, area, existing, existingBoxes)) continue;
     out.push({
       type: "Feature",
       properties: Object.assign({ height: 4.5, heightSource: "osm", geomSource: "osm-building" }, usePropsFromOsmTags(rings[i].osmTags)),
       geometry: { type: "Polygon", coordinates: [closed] },
     });
     existing.push(closed);
+    existingBoxes.push(ringBounds(closed));
     added++;
   }
   return { features: out, added };

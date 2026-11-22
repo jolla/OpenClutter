@@ -42,6 +42,15 @@ function createDiskCache(opts) {
     return n > 0 ? n : defaultTtl;
   }
 
+  // Parsed Microsoft bbox results are a few hundred KB and should not be
+  // evicted just because a 179 MB raw gzip filled the cap.
+  function protectUnderBytes() {
+    if (limitOverride && limitOverride.protectUnderBytes > 0) return limitOverride.protectUnderBytes;
+    const n = Number(process.env[env + "_PROTECT_UNDER_BYTES"]);
+    if (n > 0) return n;
+    return opts.protectUnderBytes > 0 ? opts.protectUnderBytes : 0;
+  }
+
   function dir() {
     if (dirOverride !== undefined) return dirOverride || "";
     if (process.env[env] === "0") return "";
@@ -145,7 +154,15 @@ function createDiskCache(opts) {
       }
     }
     if (bytes <= cap) return { evicted, bytes };
-    keep.sort((a, b) => a.mtime - b.mtime);
+    const protect = protectUnderBytes();
+    keep.sort((a, b) => {
+      if (protect > 0) {
+        const aBig = a.size >= protect ? 1 : 0;
+        const bBig = b.size >= protect ? 1 : 0;
+        if (aBig !== bBig) return bBig - aBig;
+      }
+      return a.mtime - b.mtime;
+    });
     for (let i = 0; i < keep.length && bytes > cap; i++) {
       try {
         await fs.promises.unlink(keep[i].path);
@@ -244,6 +261,7 @@ function createDiskCache(opts) {
     dir,
     maxBytes,
     ttlMs,
+    protectUnderBytes,
     cachePathFor,
     read,
     write,

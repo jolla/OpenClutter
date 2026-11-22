@@ -991,4 +991,26 @@ describe("OSM buildings the footprint sources missed", () => {
     assert.equal(built.oiAreas[0].area_material.name, "Building - 15.0");
     assert.equal(built.oiAreas[0].area_material.top_height, 15);
   });
+
+  it("still fills one nearby cabin and copies its use tag when many OSM rings sit far away", () => {
+    const covered = metersBox(-71.545, 44.467, 20, 12, { height: 5, heightSource: "overture" });
+    const cabin = metersBox(-71.548, 44.4662, 16, 12, {});
+    const cabinRing = ringOf(cabin);
+    cabinRing.osmTags = { building: "cabin", name: "North camp" };
+    const far = [];
+    for (let i = 0; i < 400; i++) {
+      // Under the 25 m2 fill floor, so they only exercise use-tag matching.
+      const box = metersBox(-71.4 + (i % 20) * 0.002, 44.6 + Math.floor(i / 20) * 0.002, 3, 3, {});
+      const ring = ringOf(box);
+      ring.osmTags = { building: "house", name: "Far " + i };
+      far.push(ring);
+    }
+    const shaped = shapeBuildings([covered], { buildings: [ringOf(covered), cabinRing].concat(far) });
+    assert.equal(shaped.stats.osmFilled, 1);
+    const added = shaped.features.filter((f) => f.properties && f.properties.geomSource === "osm-building");
+    assert.equal(added.length, 1);
+    assert.equal(added[0].properties.building, "cabin");
+    assert.equal(added[0].properties.name, "North camp");
+    assert.equal(covered.properties.building, undefined);
+  });
 });

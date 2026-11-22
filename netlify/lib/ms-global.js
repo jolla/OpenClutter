@@ -41,6 +41,8 @@ const msCache = require("./disk-cache").createDiskCache({
   maxBytes: MS_CACHE_MAX_BYTES,
   ttlMs: MS_CACHE_TTL_MS,
   subdir: "microsoft",
+  // Keep parsed bbox results (tiny) when a raw 179 MB gzip would fill the cap.
+  protectUnderBytes: 1024 * 1024,
 });
 
 function setMsCacheDir(dir) {
@@ -384,6 +386,7 @@ function featuresFromGzip(gz, bbox, opts) {
 async function featuresFromGzipStream(source, bbox, opts) {
   const state = createGzipParseState(bbox, opts);
   let leftover = Buffer.alloc(0);
+  let lastYield = Date.now();
   const sink = new Writable({
     write(chunk, _enc, cb) {
       leftover = leftover.length ? Buffer.concat([leftover, chunk]) : Buffer.from(chunk);
@@ -394,6 +397,12 @@ async function featuresFromGzipStream(source, bbox, opts) {
         start = i + 1;
       }
       leftover = start ? leftover.subarray(start) : leftover;
+      // Yield so a 179 MB parse does not stall lidar decode on the same event loop.
+      if (Date.now() - lastYield >= 15) {
+        lastYield = Date.now();
+        setImmediate(cb);
+        return;
+      }
       cb();
     },
     final(cb) {

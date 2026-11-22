@@ -2356,6 +2356,7 @@ async function handleClutterNorthUp(event) {
   // A plate near 10 MP is past the 6 MP roof decode. Canopy color still
   // needs those pixels, and the roof path already accepts that size.
   if (!decoded && needImage && imgBuf && includeFoliage) decoded = decodeRoofImagery(imgBuf);
+  if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage decode-done " + (Date.now() - started) + "\n");
   // The photo checks were tuned on Esri. A NAIP or national plate is levelled
   // to Esri's colour range first so its haze does not read as water or paving.
   const levelPhoto = levelForAnalysis(imageryCtx);
@@ -2401,12 +2402,14 @@ async function handleClutterNorthUp(event) {
       osmWater = pack.water || [];
       try {
         const roofRaw = decoded || (levelPhoto ? normalizeAerial(decodeRoofImagery(imgBuf)) : decodeRoofImagery(imgBuf));
+        if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage shape-start " + (Date.now() - started) + "\n");
         const shaped = shapeBuildings(features, Object.assign({}, pack, {
           imagery: roofRaw
             ? { data: roofRaw.data, width: roofRaw.width, height: roofRaw.height, frame }
             : null,
           usaEmpty: !usaFeatures.length,
         }));
+        if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage shape-done " + (Date.now() - started) + "\n");
         features = shaped.features;
         footprintMeta.osmParts = shaped.stats.parts;
         footprintMeta.poolOpenings = shaped.stats.openings;
