@@ -1154,6 +1154,7 @@ function intersectionArea(a, b) {
 }
 
 function mostlyInside(innerRing, outerRing) {
+  if (!boundsHit(ringBounds(innerRing), ringBounds(outerRing))) return false;
   const ia = meterArea(innerRing);
   const oa = meterArea(outerRing);
   if (!(ia >= 80) || !(oa > ia) || !(ia < oa * 0.92)) return false;
@@ -1199,16 +1200,92 @@ function interiorPoint(ring) {
   return centroidLL(closed);
 }
 
+/**
+ * True when a segment overlaps an axis-aligned box, including a colinear
+ * run along an edge. Used to skip the Martinez clip when a large opening
+ * (a harbour, a lake) shares a bounding box with a building but its ring
+ * never enters the footprint.
+ */
+function segmentHitsBounds(ax, ay, bx, by, b) {
+  const minX = Math.min(ax, bx);
+  const maxX = Math.max(ax, bx);
+  const minY = Math.min(ay, by);
+  const maxY = Math.max(ay, by);
+  if (maxX < b.minX || minX > b.maxX || maxY < b.minY || minY > b.maxY) return false;
+  if (ax >= b.minX && ax <= b.maxX && ay >= b.minY && ay <= b.maxY) return true;
+  if (bx >= b.minX && bx <= b.maxX && by >= b.minY && by <= b.maxY) return true;
+  const crosses = (cx, cy, dx, dy) => {
+    const d = (bx - ax) * (dy - cy) - (by - ay) * (dx - cx);
+    if (d === 0) return false;
+    const t = ((cx - ax) * (dy - cy) - (cy - ay) * (dx - cx)) / d;
+    const u = ((cx - ax) * (by - ay) - (cy - ay) * (bx - ax)) / d;
+    return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+  };
+  if (
+    crosses(b.minX, b.minY, b.minX, b.maxY) ||
+    crosses(b.maxX, b.minY, b.maxX, b.maxY) ||
+    crosses(b.minX, b.minY, b.maxX, b.minY) ||
+    crosses(b.minX, b.maxY, b.maxX, b.maxY)
+  ) {
+    return true;
+  }
+  // Colinear overlap along a box edge. crosses() treats a zero determinant
+  // as a miss, but the clip must still run when the ring rides the edge.
+  if (ay === by && (ay === b.minY || ay === b.maxY) && maxX >= b.minX && minX <= b.maxX) return true;
+  if (ax === bx && (ax === b.minX || ax === b.maxX) && maxY >= b.minY && minY <= b.maxY) return true;
+  return false;
+}
+
+function ringTouchesBounds(ring, b) {
+  if (!ring || ring.length < 2) return false;
+  for (let i = 0; i < ring.length; i++) {
+    const x = ring[i][0];
+    const y = ring[i][1];
+    if (x >= b.minX && x <= b.maxX && y >= b.minY && y <= b.maxY) return true;
+  }
+  for (let i = 1; i < ring.length; i++) {
+    if (segmentHitsBounds(ring[i - 1][0], ring[i - 1][1], ring[i][0], ring[i][1], b)) return true;
+  }
+  return false;
+}
+
+/** Closed ring, bounds, and area, skipping openings too small to notch a roof. */
+function prepareOpening(op) {
+  if (op && op.ring && op.bounds && op.area != null) return op.area >= 20 ? op : null;
+  const ring = closeRing(op);
+  if (!ring) return null;
+  const area = meterArea(ring);
+  if (!(area >= 20)) return null;
+  return { ring, bounds: ringBounds(ring), area };
+}
+
+function prepareOpenings(openings) {
+  const out = [];
+  for (let i = 0; i < (openings || []).length; i++) {
+    const prep = prepareOpening(openings[i]);
+    if (prep) out.push(prep);
+  }
+  return out;
+}
+
 function openingsHitting(ring, openings) {
   const hits = [];
   const bounds = ringBounds(ring);
   const roof = meterArea(ring);
   if (!(roof >= 1)) return hits;
-  for (let i = 0; i < openings.length; i++) {
-    const op = closeRing(openings[i]);
-    if (!op || !boundsHit(bounds, ringBounds(op))) continue;
-    const oa = meterArea(op);
-    if (!(oa >= 20)) continue;
+  for (let i = 0; i < (openings || []).length; i++) {
+    const prep = prepareOpening(openings[i]);
+    if (!prep) continue;
+    const op = prep.ring;
+    const oa = prep.area;
+    if (!boundsHit(bounds, prep.bounds)) continue;
+    // A harbour or lake bbox often covers the whole tile. If its ring never
+    // enters this footprint and the footprint is not inside the water, the
+    // clip area is zero and Martinez can be skipped.
+    if (!ringTouchesBounds(op, bounds)) {
+      const mid = [(bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2];
+      if (!pointInRingLL(mid, op)) continue;
+    }
     const inter = intersectionArea(op, ring);
     if (!(inter >= 30)) continue;
     if (inter / oa < 0.4 && inter / roof < 0.25) continue;
@@ -1326,46 +1403,42 @@ function subtractSameHeightParts(features, notes) {
 
 function dropParentsOverOpenings(features, openings, notes) {
   if (!openings || !openings.length) return { features, dropped: 0 };
+  const prepared = openings[0] && openings[0].ring ? openings : prepareOpenings(openings);
+  if (!prepared.length) return { features, dropped: 0 };
+  const meta = [];
+  for (let i = 0; i < features.length; i++) {
+    const f = features[i];
+    const rings = exteriorsOf(f);
+    const part = !!(f.properties && f.properties.buildingPart);
+    const raised = part && (Number(f.properties.levelBaseM) > 0 || f.properties.floatSpan);
+    meta.push({ rings, part, raised, areas: rings.map(meterArea) });
+  }
   const drop = new Set();
   for (let i = 0; i < features.length; i++) {
-    const parent = features[i];
-    if (parent.properties && parent.properties.buildingPart) continue;
-    const rings = exteriorsOf(parent);
+    if (meta[i].part) continue;
+    const rings = meta[i].rings;
     let spans = false;
     for (let r = 0; r < rings.length && !spans; r++) {
-      if (openingsHitting(rings[r], openings).length) spans = true;
+      if (openingsHitting(rings[r], prepared).length) spans = true;
     }
     if (!spans) continue;
     let parts = 0;
+    let covered = 0;
+    let parentArea = 0;
+    for (let r = 0; r < rings.length; r++) parentArea += meta[i].areas[r];
     for (let j = 0; j < features.length; j++) {
       if (i === j) continue;
-      const other = features[j];
-      if (!(other.properties && other.properties.buildingPart)) continue;
-      if (Number(other.properties.levelBaseM) > 0 || other.properties.floatSpan) continue;
-      const partRings = exteriorsOf(other);
-      for (let a = 0; a < partRings.length && parts < 1; a++) {
+      const other = meta[j];
+      if (!other.part || other.raised) continue;
+      for (let a = 0; a < other.rings.length; a++) {
         for (let b = 0; b < rings.length; b++) {
-          if (mostlyInside(partRings[a], rings[b])) parts++;
+          if (!mostlyInside(other.rings[a], rings[b])) continue;
+          parts++;
+          covered += other.areas[a];
         }
       }
     }
     if (parts < 1) continue;
-    let parentArea = 0;
-    for (let r = 0; r < rings.length; r++) parentArea += meterArea(rings[r]);
-    let covered = 0;
-    for (let j = 0; j < features.length; j++) {
-      if (i === j) continue;
-      const other = features[j];
-      if (!(other.properties && other.properties.buildingPart)) continue;
-      if (Number(other.properties.levelBaseM) > 0 || other.properties.floatSpan) continue;
-      const partRings = exteriorsOf(other);
-      for (let a = 0; a < partRings.length; a++) {
-        for (let b = 0; b < rings.length; b++) {
-          if (!mostlyInside(partRings[a], rings[b])) continue;
-          covered += meterArea(partRings[a]);
-        }
-      }
-    }
     if (parentArea - covered >= 1000) continue;
     drop.add(i);
     noteLargeDrop(notes, parentArea, "a pool cut removed the parent because parts replaced it");
@@ -2238,6 +2311,7 @@ function shapeBuildings(features, detail) {
     process.stderr.write("stage shape-" + label + " " + (Date.now() - t0) + "\n");
   };
   const openings = (detail && detail.openings) || [];
+  const preparedOpenings = prepareOpenings(openings);
   const parts = (detail && detail.parts) || [];
   const partFeatures = [];
   for (let i = 0; i < parts.length; i++) {
@@ -2294,7 +2368,7 @@ function shapeBuildings(features, detail) {
     const before = exteriorsOf(withParts[i]).length;
     const pieces = withParts[i].properties && withParts[i].properties.roofCore
       ? [withParts[i]]
-      : notchFeature(withParts[i], openings);
+      : notchFeature(withParts[i], preparedOpenings);
     if (pieces.length !== before || (pieces[0] && pieces[0] !== withParts[i] && pieces[0].properties && pieces[0].properties.keepOut)) {
       notched++;
     }
@@ -2303,7 +2377,7 @@ function shapeBuildings(features, detail) {
   mark("notch");
   const cut = subtractSameHeightParts(opened, largeDrops);
   mark("subtractParts");
-  const dropped = dropParentsOverOpenings(cut, openings, largeDrops);
+  const dropped = dropParentsOverOpenings(cut, preparedOpenings, largeDrops);
   mark("dropParents");
   const trimmed = trimTaperedFootprints(dropped.features);
   mark("trimTapers");

@@ -2318,12 +2318,12 @@ async function handleClutterNorthUp(event) {
   // cannot carry more than that anyway.
   const SOURCE_CAP = 2000;
   const capSource = (list) => (list.length > SOURCE_CAP ? largestFeatures(list, SOURCE_CAP, frame.mpd) : list);
-  const assembled = assembleFootprints({
+  const assembled = stageClock.timeSubstageSync("assemble", () => assembleFootprints({
     global: capSource(globalFeatures),
     overture: capSource(overtureFeatures),
     arcgis: capSource(arcgisFeatures),
     usa: capSource(usaFeatures),
-  });
+  }));
   let features = assembled.features;
   if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage buildings " + (Date.now() - started) + "\n");
   reportProgress({ stage: "Buildings " + features.length });
@@ -2427,12 +2427,12 @@ async function handleClutterNorthUp(event) {
       try {
         const roofRaw = decoded || (levelPhoto ? normalizeAerial(decodeRoofImagery(imgBuf)) : decodeRoofImagery(imgBuf));
         if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage shape-start " + (Date.now() - started) + "\n");
-        const shaped = shapeBuildings(features, Object.assign({}, pack, {
+        const shaped = stageClock.timeSubstageSync("shapeBuildings", () => shapeBuildings(features, Object.assign({}, pack, {
           imagery: roofRaw
             ? { data: roofRaw.data, width: roofRaw.width, height: roofRaw.height, frame }
             : null,
           usaEmpty: !usaFeatures.length,
-        }));
+        })));
         if (process.env.OPENCLUTTER_STAGE_LOG) process.stderr.write("stage shape-done " + (Date.now() - started) + "\n");
         features = shaped.features;
         const afterShapeParcels = dropLowParcelsFromFeatures(features);
@@ -2637,24 +2637,24 @@ async function handleClutterNorthUp(event) {
   let terrain = null;
   if (clientLift.length >= 4 && frame) {
     try {
-      terrain = terrainFromSamples(clientLift, frame, {
+      terrain = stageClock.timeSubstageSync("terrainMesh", () => terrainFromSamples(clientLift, frame, {
         terrainResolution,
         terrainStyle,
         kind: clientLiftKind,
         terrainFloors,
-      });
+      }));
     } catch {
       terrain = null;
     }
   } else if (demSamples && demSamples.length && frame) {
     try {
-      terrain = terrainFromSamples(demSamples, frame, {
+      terrain = stageClock.timeSubstageSync("terrainMesh", () => terrainFromSamples(demSamples, frame, {
         terrainResolution,
         terrainStyle,
         kind: demKind,
         attribution: demAttribution,
         terrainFloors,
-      });
+      }));
       if (terrain) {
         const notes = terrainResolutionNotes(terrain, frame);
         for (let i = 0; i < notes.length; i++) warnings.push(notes[i]);

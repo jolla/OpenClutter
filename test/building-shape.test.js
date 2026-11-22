@@ -107,6 +107,39 @@ describe("building outlines", () => {
     assert.equal(covered, 0);
   });
 
+  it("skips a harbour-sized opening whose bbox covers a dry inland roof", () => {
+    const parent = metersBox(lon, lat, 40, 40, {
+      height: 20,
+      heightSource: "overture",
+      geomSource: "overture",
+    });
+    const mx = 111320 * Math.cos((lat * Math.PI) / 180);
+    const m = (dx, dy) => [lon + dx / mx, lat + dy / 110540];
+    // Three-sided harbour: the outer bbox covers the building in the western
+    // bite, but the water ring stays 200 m from the footprint.
+    const harbour = [
+      m(-800, -800),
+      m(800, -800),
+      m(800, 800),
+      m(-800, 800),
+      m(-800, 200),
+      m(200, 200),
+      m(200, -200),
+      m(-800, -200),
+      m(-800, -800),
+    ];
+    const before = ringOf(parent).map((pt) => pt.slice());
+    const shaped = shapeBuildings([parent], { openings: [harbour] });
+    assert.equal(shaped.features.length, 1);
+    const after = ringOf(shaped.features[0]);
+    assert.equal(after.length, before.length);
+    const roofAt = centroidLL(before);
+    assert.equal(pointInRingLL(roofAt, after), true);
+    assert.equal(shaped.stats.notched, 0);
+
+  });
+
+
   it("reads building=no (a numbered RV site) as no roof on site types only", () => {
     const geometry = [
       { lon: -120.6375, lat: 35.1325 },
