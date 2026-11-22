@@ -2,7 +2,7 @@
 
 require("./hermetic-env");
 
-const { describe, it, before, after } = require("node:test");
+const { describe, it, before, after, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures, imageryAttemptMs, imageryStepBudget, IMAGERY_ATTEMPT_MS, IMAGERY_ATTEMPT_MS_DEV, IMAGERY_RETURN_MS, DEV_ANSWER_MS, lambdaPayloadBytes, EXPORT_PAYLOAD_BUDGET, LAMBDA_SYNC_PAYLOAD_MAX, terrainSettleMs, terrainRescueBudget, TERRAIN_RESERVE_MS, TERRAIN_HARD_MS, TERRAIN_FULL_MS, TERRAIN_COARSE_SAMPLES, setFetchTerrainDemForTests, setFetchChmGridForTests, setFetchOvertureForTests, runBackgroundExport, setFetchWorldCoverForTests, setSourceCapsForTests, BACKGROUND_ANSWER_MS, BACKGROUND_PLATFORM_MS, BACKGROUND_CHM_MS, sourceWait, chmJoinWait } = require("../netlify/functions/clutter");
 const { geoFrame, imageryExportPlan } = require("../netlify/lib/geo-frame");
@@ -552,6 +552,9 @@ describe("optional sources cannot fail the export", () => {
   function hang(signal) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => resolve({ ok: false, status: 504, json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0) }), 30000);
+      // Do not keep the test process alive after the export has already
+      // answered. The abort listener still ends the hang when a deadline fires.
+      if (typeof timer.unref === "function") timer.unref();
       const abort = () => {
         clearTimeout(timer);
         const err = new Error("The operation was aborted due to timeout");
@@ -594,11 +597,35 @@ describe("optional sources cannot fail the export", () => {
     return Promise.resolve({ ok: true, json: async () => ({ features: [] }), arrayBuffer: async () => new ArrayBuffer(0) });
   }
 
+  afterEach(() => {
+    setSourceCapsForTests(null);
+  });
+
   after(() => {
+    setSourceCapsForTests(null);
     global.fetch = orig;
   });
 
+  function shortOptionalJoins() {
+    // Production large-draw grace is 15 s. Inject a short clock so these
+    // tests stay meaningful (hung sources still omit and the zip still
+    // ships) without waiting out the live budget.
+    setSourceCapsForTests({
+      overtureGraceMs: 400,
+      overtureHardMs: 800,
+      chmGraceMs: 400,
+      chmHardMs: 800,
+      terrainGraceMs: 400,
+      terrainHardMs: 800,
+      forestMs: 400,
+      buildingDetailMs: 400,
+      streetDeadlineMs: 800,
+      flushMs: 80,
+    });
+  }
+
   it("returns the OpenIntent zip when Overture, canopy height, and terrain hang", async () => {
+    shortOptionalJoins();
     global.fetch = coreFetch;
     const t0 = Date.now();
     const res = await handler({
@@ -621,9 +648,9 @@ describe("optional sources cannot fail the export", () => {
     });
     const elapsed = Date.now() - t0;
     assert.equal(res.statusCode, 200);
-    // Wynn is a large draw, so a hung Overture read may use the long grace.
-    // It still has to return a zip well inside the gateway clock.
-    assert.ok(elapsed < 20000, "elapsed " + elapsed);
+    // The join clocks are injected at 400 ms (see shortOptionalJoins).
+    // The zip must still come back well inside a tight budget.
+    assert.ok(elapsed < 3000, "elapsed " + elapsed);
     const body = JSON.parse(res.body);
     assert.ok(body.zipBase64);
     assert.equal(body.stats.fetched >= 1, true);
@@ -730,6 +757,7 @@ describe("optional sources cannot fail the export", () => {
   });
 
   it("retries the aerial JPEG on a timeout and still exports", async () => {
+    shortOptionalJoins();
     let jpegCalls = 0;
     global.fetch = async (url, init) => {
       const u = urlOf(url);
@@ -751,7 +779,8 @@ describe("optional sources cannot fail the export", () => {
     assert.equal(res.statusCode, 200);
     assert.equal(jpegCalls, 2);
     assert.ok(elapsed >= 400, "backoff " + elapsed);
-    assert.ok(elapsed < 20000, "elapsed " + elapsed);
+    // 400 ms production backoff, plus a short injected optional-join clock.
+    assert.ok(elapsed < 3000, "elapsed " + elapsed);
     const body = JSON.parse(res.body);
     assert.ok(body.zipBase64);
     assert.equal(/smaller box/i.test(body.error || ""), false);

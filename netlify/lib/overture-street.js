@@ -17,6 +17,10 @@ const { isTransientRangeError } = require("./parquet-cache");
 const AZURE_ROOT = "https://overturemapswestus2.blob.core.windows.net/release/" + RELEASE + "/";
 const GROUP_STRIDE = 26;
 const STREET_DEADLINE_MS = 30000;
+let streetDeadlineForTests = null;
+function setStreetDeadlineForTests(ms) {
+  streetDeadlineForTests = ms > 0 ? ms : null;
+}
 const THEME_CONCURRENCY = 5;
 const GROUP_READ_CONCURRENCY = 4;
 
@@ -1016,7 +1020,7 @@ async function readTheme(theme, bbox, reader, signal) {
 async function fetchOvertureStreet(bbox, opts) {
   const o = opts || {};
   const box = { west: +bbox.west, south: +bbox.south, east: +bbox.east, north: +bbox.north };
-  const deadlineMs = o.deadlineMs > 0 ? o.deadlineMs : STREET_DEADLINE_MS;
+  const deadlineMs = streetDeadlineForTests > 0 ? streetDeadlineForTests : o.deadlineMs > 0 ? o.deadlineMs : STREET_DEADLINE_MS;
   const parent = o.signal;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), deadlineMs);
@@ -1057,6 +1061,7 @@ async function fetchOvertureStreet(bbox, opts) {
 module.exports = {
   RELEASE,
   STREET_DEADLINE_MS,
+  setStreetDeadlineForTests,
   THEMES,
   groupsForThemeBbox,
   parsedThemeIndex,

@@ -230,6 +230,8 @@ function setFetchWorldCoverForTests(fn) {
 let sourceCapsOverride = null;
 function setSourceCapsForTests(caps) {
   sourceCapsOverride = caps || null;
+  const streetMs = caps && caps.streetDeadlineMs;
+  require("../lib/overture-street").setStreetDeadlineForTests(streetMs);
 }
 const { gpsClipboard, stampGpsTiePoints, fitClipboardToMap } = require("../lib/hamina-clipboard");
 const { buildMapNotes, stampMapNotes } = require("../lib/map-notes");
@@ -920,12 +922,18 @@ async function rescueTerrain(terrainJob, started, frame, terrainResolution, terr
  * Returns { job, join, preset }. preset is a finished DEM pack to use as-is.
  */
 async function followUpTerrain(terrainJob, started, frame, devHost, terrainResolution, terrainStyle) {
-  const join = {
-    graceMs: devHost ? TERRAIN_HARD_MS_DEV : TERRAIN_GRACE_MS,
-    hardMs: devHost ? TERRAIN_HARD_MS_DEV : TERRAIN_HARD_MS,
-  };
+  const join = joinWaitForTests(
+    "terrainGraceMs",
+    "terrainHardMs",
+    devHost ? TERRAIN_HARD_MS_DEV : TERRAIN_GRACE_MS,
+    devHost ? TERRAIN_HARD_MS_DEV : TERRAIN_HARD_MS
+  );
   if (!terrainJob || !devHost || !frame) {
-    return { job: terrainJob, join: { graceMs: TERRAIN_GRACE_MS, hardMs: TERRAIN_HARD_MS }, preset: null };
+    return {
+      job: terrainJob,
+      join: joinWaitForTests("terrainGraceMs", "terrainHardMs", TERRAIN_GRACE_MS, TERRAIN_HARD_MS),
+      preset: null,
+    };
   }
   const outside = !frameHas3dep(frame);
   if (!terrainJob.isSettled()) {
@@ -1109,13 +1117,31 @@ function largestFeatures(features, n, mpd) {
   return out;
 }
 
+function sourceCap(key, fallback) {
+  const over = sourceCapsOverride && sourceCapsOverride[key];
+  if (over > 0) return over;
+  return fallback;
+}
+
+/** Tests may inject short join clocks. Production keeps the defaults. */
+function joinWaitForTests(graceKey, hardKey, defaultGrace, defaultHard) {
+  const graceMs = sourceCap(graceKey, defaultGrace);
+  const hardMs = sourceCap(hardKey, defaultHard);
+  const wait = { graceMs, hardMs };
+  if (sourceCapsOverride && sourceCapsOverride[graceKey] > 0) wait.budgetMs = graceMs;
+  if (sourceCapsOverride && sourceCapsOverride.flushMs > 0) wait.flushMs = sourceCapsOverride.flushMs;
+  return wait;
+}
+
 function overtureWait(frame) {
   const side = Math.max(+frame.widthM || 0, +frame.lengthM || 0);
   const large = side >= LARGE_DRAW_SIDE_M;
-  return {
-    graceMs: large ? OVERTURE_LARGE_GRACE_MS : OVERTURE_GRACE_MS,
-    hardMs: OVERTURE_HARD_MS,
-  };
+  return joinWaitForTests(
+    "overtureGraceMs",
+    "overtureHardMs",
+    large ? OVERTURE_LARGE_GRACE_MS : OVERTURE_GRACE_MS,
+    OVERTURE_HARD_MS
+  );
 }
 
 /**
@@ -1865,13 +1891,13 @@ async function handleClutterNorthUp(event) {
     if (includeFoliage) {
       forestJob = beginOptional((signal) =>
         stageClock.timeSource("forest", () =>
-          fetchSlopeForest(requestBbox, { signal, ua: UA, timeoutMs: background ? 45000 : 8000, tile: background })
+          fetchSlopeForest(requestBbox, { signal, ua: UA, timeoutMs: cappedMs(background, "forestMs", 45000, 8000), tile: background })
         )
       );
     }
     detailJob = beginOptional((signal) =>
       stageClock.timeSource("buildingDetail", () =>
-        fetchBuildingDetail(requestBbox, { signal, ua: UA, timeoutMs: background ? 150000 : 4500, tile: background, deckCap })
+        fetchBuildingDetail(requestBbox, { signal, ua: UA, timeoutMs: cappedMs(background, "buildingDetailMs", 150000, 4500), tile: background, deckCap })
       )
     );
     if (needImage) {
@@ -2229,10 +2255,7 @@ async function handleClutterNorthUp(event) {
           ? chmJoinWait(started, true, answerMs)
           : devHost
             ? devChmWait(started, sharpRoom ? answerMs : undefined)
-            : {
-                graceMs: 8000,
-                hardMs: EXPORT_ANSWER_MS,
-              }
+            : joinWaitForTests("chmGraceMs", "chmHardMs", 8000, EXPORT_ANSWER_MS)
       )
     : Promise.resolve(null);
   // World cover starts with the map. The join clock is already running, so
