@@ -21,7 +21,7 @@ const { fetchStreetMaps } = require("./street-map");
 const overpass = require("./overpass");
 const { isResilient, isSiteTypes } = require("./export-mode");
 const { placesFromElements } = require("./map-notes");
-const { copyOsmUseTags, TAG_KEYS } = require("./building-use");
+const { copyOsmUseTags, TAG_KEYS, isParkingTags } = require("./building-use");
 
 function usePropsFromOsmTags(tags) {
   const props = {};
@@ -2142,6 +2142,31 @@ function carveTwinRoofs(features, imagery, ground, osmRings, notes) {
  * becomes those two blocks.
  */
 
+
+function ringTieKey(ring) {
+  if (!ring || !ring.length) return "";
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const x = +ring[i][0];
+    const y = +ring[i][1];
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return minX.toFixed(7) + "," + minY.toFixed(7) + "," + maxX.toFixed(7) + "," + maxY.toFixed(7) + "," + ring.length;
+}
+
+/** Higher overlap wins; equal overlaps pick a stable ring, never list order. */
+function betterOverlap(interA, coverA, ringA, interB, coverB, ringB) {
+  if (interA !== interB) return interA > interB;
+  if (coverA !== coverB) return coverA > coverB;
+  return ringTieKey(ringA) < ringTieKey(ringB);
+}
+
 function applyOsmUseTags(features, osmRings) {
   const tagged = [];
   for (let i = 0; i < (osmRings || []).length; i++) {
@@ -2165,6 +2190,7 @@ function applyOsmUseTags(features, osmRings) {
     const exteriors = exteriorsOf(feat);
     let best = null;
     let bestFrac = 0;
+    let bestInter = 0;
     for (let e = 0; e < exteriors.length; e++) {
       const area = meterArea(exteriors[e]);
       if (!(area > 0)) continue;
@@ -2173,8 +2199,9 @@ function applyOsmUseTags(features, osmRings) {
         if (!boundsHit(box, tagged[t].box)) continue;
         const inter = intersectionArea(exteriors[e], tagged[t].ring);
         const frac = Math.max(inter / area, inter / tagged[t].area);
-        if (frac > bestFrac) {
+        if (betterOverlap(inter, frac, tagged[t].ring, bestInter, bestFrac, best && best.ring)) {
           bestFrac = frac;
+          bestInter = inter;
           best = tagged[t];
         }
       }
@@ -2359,12 +2386,26 @@ function fillParkingStructures(features, structures) {
     const heightM = spec.heightM >= 6 ? spec.heightM : 9;
     let best = null;
     let bestInter = 0;
+    let bestCover = 0;
+    let bestRing = null;
     for (let f = 0; f < out.length; f++) {
       const ext = exteriorsOf(out[f]);
       let inter = 0;
-      for (let k = 0; k < ext.length; k++) inter += intersectionArea(closed, ext[k]);
-      if (inter > bestInter) {
+      let hostArea = 0;
+      let hostRing = ext[0] || null;
+      for (let k = 0; k < ext.length; k++) {
+        inter += intersectionArea(closed, ext[k]);
+        const a = meterArea(ext[k]);
+        if (a > hostArea) {
+          hostArea = a;
+          hostRing = ext[k];
+        }
+      }
+      const cover = hostArea > 0 ? inter / hostArea : 0;
+      if (betterOverlap(inter, cover, hostRing, bestInter, bestCover, bestRing)) {
         bestInter = inter;
+        bestCover = cover;
+        bestRing = hostRing;
         best = out[f];
       }
     }

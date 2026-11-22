@@ -1884,6 +1884,92 @@ function capAttenuationAreas(areas, buildingCount, max, opts) {
  * `reserve` holds slots for water and parking so a crowd of crowns cannot
  * spend them. Poles and walls are not reserved.
  */
+
+function ringPxKey(ring) {
+  if (!ring || !ring.length) return "";
+  const parts = [];
+  for (let i = 0; i < ring.length; i++) parts.push((+ring[i][0]).toFixed(3) + "," + (+ring[i][1]).toFixed(3));
+  return parts.join(";");
+}
+
+function ringCentroidPx(ring) {
+  if (!ring || !ring.length) return null;
+  const end =
+    ring.length > 1 && +ring[0][0] === +ring[ring.length - 1][0] && +ring[0][1] === +ring[ring.length - 1][1]
+      ? ring.length - 1
+      : ring.length;
+  if (end < 1) return null;
+  let sx = 0;
+  let sy = 0;
+  for (let i = 0; i < end; i++) {
+    sx += +ring[i][0];
+    sy += +ring[i][1];
+  }
+  return [sx / end, sy / end];
+}
+
+function areaPts(area) {
+  const coords = area && area.area && area.area.coordinates;
+  if (!coords || !coords.length) return [];
+  const pts = [];
+  for (let k = 0; k < coords.length; k++) {
+    const c = coords[k] && coords[k].coordinate_xyz;
+    if (!c) continue;
+    pts.push([c.x, c.y]);
+  }
+  return pts;
+}
+
+function areaIndexForRingPx(areas, ringPx, limit) {
+  if (!ringPx || !ringPx.length) return -1;
+  const want = ringPxKey(ringPx);
+  const wantC = ringCentroidPx(ringPx);
+  const n = limit == null ? (areas || []).length : Math.min(limit, (areas || []).length);
+  let close = -1;
+  let closeD = Infinity;
+  let closeCount = 0;
+  for (let i = 0; i < n; i++) {
+    const pts = areaPts(areas[i]);
+    if (!pts.length) continue;
+    if (ringPxKey(pts) === want) return i;
+    const c = ringCentroidPx(pts);
+    if (!wantC || !c) continue;
+    const d = Math.hypot(c[0] - wantC[0], c[1] - wantC[1]);
+    if (d <= 2) {
+      closeCount++;
+      if (d < closeD) {
+        closeD = d;
+        close = i;
+      }
+    }
+  }
+  return closeCount >= 1 ? close : -1;
+}
+
+/**
+ * Pair each emitted roof with its own OpenIntent ring. overlayRings can
+ * drift off oiAreas when a nested roof is dropped or a sliver is stashed
+ * only on the clipboard, and index pairing then hands a garage the seat
+ * of a different building.
+ */
+function buildingsForOutdoorPlan(fp) {
+  const areas = (fp && fp.oiAreas) || [];
+  const rings = (fp && fp.overlayRings) || [];
+  const buildings = [];
+  for (let i = 0; i < areas.length; i++) {
+    const fromArea = areaPts(areas[i]);
+    const overlay = rings[i];
+    const ringPx = fromArea.length >= 3 ? fromArea : overlay;
+    buildings.push({
+      index: i,
+      ringPx,
+      material: areas[i] && areas[i].area_material,
+      terrainSplit: !!(overlay && overlay.terrainSplit) || !!(ringPx && ringPx.terrainSplit),
+    });
+  }
+  return buildings;
+}
+
 function capBuildingsAndTrees(buildings, trees, kinds, max, reserve) {
   const hard = max == null ? MAX_ATTENUATION_AREAS : max;
   const hold = reserve > 0 ? Math.min(reserve | 0, hard) : 0;
@@ -1992,6 +2078,7 @@ function clipMultiArea(geom) {
  * outer top (a dome step, a tower seated on its podium) stays.
  */
 function dropNestedDuplicateRoofs(areas, zones) {
+  const aligned = [zones].concat(Array.prototype.slice.call(arguments, 2));
   const items = [];
   for (let i = 0; i < (areas || []).length; i++) {
     const area = areas[i];
@@ -2009,7 +2096,7 @@ function dropNestedDuplicateRoofs(areas, zones) {
       top: Number(mat.top_height) > 0 ? Number(mat.top_height) : 0,
     });
   }
-  items.sort((a, b) => b.area - a.area);
+  items.sort((a, b) => b.area - a.area || a.index - b.index);
   const drop = new Set();
   const kept = [];
   for (let n = 0; n < items.length; n++) {
@@ -2054,19 +2141,18 @@ function dropNestedDuplicateRoofs(areas, zones) {
     drop.add(item.index);
   }
   if (!drop.size) return 0;
-  const next = [];
-  const nextZones = [];
-  const paired = zones && zones.length === areas.length;
-  for (let i = 0; i < areas.length; i++) {
-    if (drop.has(i)) continue;
-    next.push(areas[i]);
-    if (paired) nextZones.push(zones[i]);
+  const lists = [areas];
+  for (let a = 0; a < aligned.length; a++) {
+    if (aligned[a] && aligned[a].length === areas.length) lists.push(aligned[a]);
   }
-  areas.length = 0;
-  for (let i = 0; i < next.length; i++) areas.push(next[i]);
-  if (paired) {
-    zones.length = 0;
-    for (let i = 0; i < nextZones.length; i++) zones.push(nextZones[i]);
+  const keepIdx = [];
+  for (let i = 0; i < areas.length; i++) if (!drop.has(i)) keepIdx.push(i);
+  for (let L = 0; L < lists.length; L++) {
+    const src = lists[L];
+    const next = [];
+    for (let k = 0; k < keepIdx.length; k++) next.push(src[keepIdx[k]]);
+    src.length = 0;
+    for (let i = 0; i < next.length; i++) src.push(next[i]);
   }
   return drop.size;
 }
@@ -2722,7 +2808,15 @@ function prioritizeRoofs(features, frame) {
       score: area * Math.max(1, height / 10),
     });
   }
-  scored.sort((a, b) => b.score - a.score || b.height - a.height || b.area - a.area || a.i - b.i);
+  scored.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (b.height !== a.height) return b.height - a.height;
+    if (b.area !== a.area) return b.area - a.area;
+    const ka = a.ringsKey || (a.ringsKey = ringPxKey((featureExteriorRings(a.feature && a.feature.geometry)[0]) || []));
+    const kb = b.ringsKey || (b.ringsKey = ringPxKey((featureExteriorRings(b.feature && b.feature.geometry)[0]) || []));
+    if (ka !== kb) return ka < kb ? -1 : 1;
+    return a.i - b.i;
+  });
   const out = [];
   for (let i = 0; i < scored.length; i++) out.push(scored[i].feature);
   return out;
@@ -3042,7 +3136,7 @@ function footprintsToClutter(features, frame, affine, slopeTop, opts) {
       }
     }
   }
-  stats.droppedNested = dropNestedDuplicateRoofs(oiAreas, clipZones);
+  stats.droppedNested = dropNestedDuplicateRoofs(oiAreas, clipZones, aabbs, overlayRings, buckets.overlayHeights);
   stats.buildings = oiAreas.length;
   stats.podiumAreas = 0;
   for (let i = 0; i < oiAreas.length; i++) {
@@ -3992,13 +4086,8 @@ function buildClutter({
   } else if ((outdoorOn && outdoorMiss !== true) || planGuides || storageFeats.length) {
     const buildings = [];
     if ((includeWater === true || includeParking === true || includeRvs === true || includeCars === true) && outdoorOn && outdoorMiss !== true) {
-      for (let i = 0; i < fp.oiAreas.length; i++) {
-        buildings.push({
-          index: i,
-          ringPx: fp.overlayRings[i],
-          material: fp.oiAreas[i] && fp.oiAreas[i].area_material,
-        });
-      }
+      const plannedBuildings = buildingsForOutdoorPlan(fp);
+      for (let i = 0; i < plannedBuildings.length; i++) buildings.push(plannedBuildings[i]);
     }
     const liveOutdoor = outdoorOn && outdoorMiss !== true ? outdoorRest : storageFeats;
     const carGated = includeCars === true ? liveOutdoor : dropPassengerCars(liveOutdoor);
@@ -4097,7 +4186,9 @@ function buildClutter({
   if (planned && converted) {
     for (let i = 0; i < planned.updates.length; i++) {
       const u = planned.updates[i];
-      if (u.index < buildingsBeforeBytes && areas[u.index]) areas[u.index].area_material = u.material;
+      let idx = areaIndexForRingPx(areas, u.ringPx, buildingsBeforeBytes);
+      if (idx < 0 && u.index < buildingsBeforeBytes && areas[u.index]) idx = u.index;
+      if (idx >= 0 && areas[idx]) areas[idx].area_material = u.material;
     }
     const room = Math.max(0, areaCap - areas.length);
     const vehicleList = [];
@@ -4774,6 +4865,7 @@ module.exports = {
   capAttenuationAreas,
   capBuildingsAndTrees,
   dropNestedDuplicateRoofs,
+  buildingsForOutdoorPlan,
   ensureMinSpan,
   minOiSpanPx,
   capOiRingPx,

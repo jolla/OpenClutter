@@ -21,6 +21,8 @@ const {
   limitFeatures,
   fitOutdoorBudget,
   planOutdoor,
+  isParkingClass,
+  PARKING_CAP,
   rvBoxes,
   RV_LENGTH_M,
   RV_WIDTH_M,
@@ -1456,5 +1458,131 @@ describe("RV pitches and service-road rows", () => {
     assert.equal(tents.length, 1);
     const dropped = planOutdoor({ features: tents, frame: frame(), buildings: [] });
     assert.equal(dropped.items.length, 0);
+  });
+});
+
+describe("parking classification is deterministic", () => {
+  function box(west, south, east, north) {
+    return [
+      [west, south],
+      [east, south],
+      [east, north],
+      [west, north],
+      [west, south],
+    ];
+  }
+
+  it("treats Overture class=parking as a parking class", () => {
+    assert.equal(isParkingClass({ class: "parking" }), true);
+    assert.equal(isParkingClass({ building: "parking" }), false);
+    assert.equal(isParkingClass({ class: "office" }), false);
+  });
+
+  it("keeps the same parking set when equal-area lots arrive in reverse order", () => {
+    const f = frame();
+    const lots = [];
+    for (let i = 0; i < PARKING_CAP + 3; i++) {
+      const lon0 = f.west + 0.0004 + i * 0.00015;
+      const lat0 = f.south + 0.0004;
+      lots.push({
+        kind: "parking",
+        coords: box(lon0, lat0, lon0 + 0.0001, lat0 + 0.0001),
+        closed: true,
+        heightM: 9,
+        explicitHeight: false,
+        structure: true,
+        rank: 0,
+      });
+    }
+    const forward = limitFeatures(lots, { west: f.west, south: f.south, east: f.east, north: f.north });
+    const reverse = limitFeatures(lots.slice().reverse(), { west: f.west, south: f.south, east: f.east, north: f.north });
+    const keys = (list) =>
+      list
+        .filter((x) => x.kind === "parking")
+        .map((x) => x.coords[0][0].toFixed(6) + "," + x.coords[0][1].toFixed(6))
+        .sort();
+    assert.equal(forward.features.filter((x) => x.kind === "parking").length, PARKING_CAP);
+    assert.deepEqual(keys(forward.features), keys(reverse.features));
+    assert.ok(forward.notes.some((n) => n.startsWith("Parking capped at")));
+  });
+
+  it("reclasses only the better-overlapping roof, regardless of building order", () => {
+    const f = frame();
+    const garage = box(f.west + 0.001, f.south + 0.001, f.west + 0.0022, f.south + 0.0022);
+    const tight = box(f.west + 0.00105, f.south + 0.00105, f.west + 0.00215, f.south + 0.00215);
+    const loose = box(f.west + 0.0016, f.south + 0.0016, f.west + 0.0034, f.south + 0.0034);
+    const mat = (name, top) => ({
+      name,
+      top_height: top,
+      bottom_height: 0,
+      rf_properties: { attenuation_per_m: 5 },
+      display_color: "#C5CBD1",
+    });
+    const buildingsA = [
+      { index: 0, ring: tight, material: mat("Building - One Floor", 4.5) },
+      { index: 1, ring: loose, material: mat("Building - Five Floor", 16) },
+    ];
+    const feat = { kind: "parking", coords: garage, heightM: 9, explicitHeight: true, structure: true };
+    const planned = planOutdoor({ features: [feat], frame: f, buildings: buildingsA });
+    const reversed = planOutdoor({ features: [feat], frame: f, buildings: buildingsA.slice().reverse() });
+    assert.equal(planned.reclass, 1);
+    assert.equal(reversed.reclass, 1);
+    assert.equal(planned.updates[0].index, 0);
+    assert.equal(reversed.updates[0].index, 0);
+  });
+
+  it("does not paint a much taller measured roof as a shorter garage at a loose overlap", () => {
+    const f = frame();
+    const garage = box(f.west + 0.001, f.south + 0.001, f.west + 0.002, f.south + 0.002);
+    // Overlap the southwest corner only, well under 0.7 of the tower.
+    const tower = box(f.west + 0.0015, f.south + 0.0015, f.west + 0.004, f.south + 0.004);
+    const planned = planOutdoor({
+      features: [{ kind: "parking", coords: garage, heightM: 30, explicitHeight: true, structure: true }],
+      frame: f,
+      buildings: [
+        {
+          index: 0,
+          ring: tower,
+          material: {
+            name: "Building - Wood frame 110.0",
+            top_height: 110,
+            bottom_height: 0,
+            rf_properties: { attenuation_per_m: 3 },
+            display_color: "#C5CBD1",
+          },
+        },
+      ],
+    });
+    assert.equal(planned.reclass, 0);
+    assert.equal(planned.updates.length, 0);
+  });
+
+  it("seats a garage on the terrain, not on a stacked lower roof", () => {
+    const f = frame();
+    const garage = box(f.west + 0.001, f.south + 0.001, f.west + 0.0022, f.south + 0.0022);
+    const slopeTop = () => 0;
+    slopeTop.seat = () => 12;
+    const planned = planOutdoor({
+      features: [{ kind: "parking", coords: garage, heightM: 30, explicitHeight: true, structure: true }],
+      frame: f,
+      slopeTop,
+      buildings: [
+        {
+          index: 0,
+          ring: garage,
+          material: {
+            name: "Building - 30.0 @ 42.0",
+            top_height: 72,
+            bottom_height: 42,
+            rf_properties: { attenuation_per_m: 5 },
+            display_color: "#C5CBD1",
+          },
+        },
+      ],
+    });
+    assert.equal(planned.reclass, 1);
+    assert.equal(planned.updates[0].material.name, "Parking 30.0 @ 12.0");
+    assert.equal(planned.updates[0].material.bottom_height, 12);
+    assert.equal(planned.updates[0].material.top_height, 42);
   });
 });

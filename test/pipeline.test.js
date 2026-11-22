@@ -11,7 +11,7 @@ const {
   CLIPBOARD_COLLECTION_KEYS,
   pickBuildingTypeId,
 } = require("../netlify/lib/hamina-clipboard");
-const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, isDrawSubject, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS, capBuildingsAndTrees, dropNestedDuplicateRoofs, parseAreaCapOverride, parseJsonBudgetOverride, raisedAreaHolds, vehicleCutNote, raisedDeckCap, coverageSummary, MAX_ATTENUATION_AREAS, OPENINTENT_JSON_BUDGET, JSON_BUDGET_MAX, DEV_HOST_AREA_CAP, DEV_HOST_JSON_MAX } = require("../netlify/lib/pipeline");
+const { buildClutter, ringAreaM2, MAX_AREA_M2, MIN_AREA_M2, megaCampusLimitM2, featureExteriorRings, MEGA_CAMPUS_M2, HOTEL_MEGA_M2, isMegaCampus, isDrawSubject, footprintsToClutter, ringVertexCount, MAX_OI_RING_VERTS, capBuildingsAndTrees, dropNestedDuplicateRoofs, buildingsForOutdoorPlan, parseAreaCapOverride, parseJsonBudgetOverride, raisedAreaHolds, vehicleCutNote, raisedDeckCap, coverageSummary, MAX_ATTENUATION_AREAS, OPENINTENT_JSON_BUDGET, JSON_BUDGET_MAX, DEV_HOST_AREA_CAP, DEV_HOST_JSON_MAX } = require("../netlify/lib/pipeline");
 const { OI_BUILDING_NAMES, isVegetationOiName, isUnderstoryOiName, isPoisonedOiName } = require("../netlify/lib/materials");
 const { zipStore, unzipStore, zipUnderLimit } = require("../netlify/lib/zip-store");
 const { version: APP_VERSION } = require("../netlify/lib/version");
@@ -1913,6 +1913,112 @@ describe("same-seat roofs", () => {
     assert.equal(seated.area_material.name, "Building - 68.0 @ 22.0");
     assert.ok(areas.some((a) => a.area_material.top_height === 40));
     assert.ok(areas.some((a) => a.area_material.top_height === 22));
+  });
+
+  it("compacts overlay rings that were paired with the dropped roofs", () => {
+    const outer = pixelRoof(
+      [
+        [0, 0],
+        [100, 0],
+        [100, 80],
+        [0, 80],
+        [0, 0],
+      ],
+      10,
+      22
+    );
+    const duplicate = pixelRoof(
+      [
+        [10, 10],
+        [40, 10],
+        [40, 40],
+        [10, 40],
+        [10, 10],
+      ],
+      11,
+      20
+    );
+    const tower = pixelRoof(
+      [
+        [60, 10],
+        [80, 10],
+        [80, 40],
+        [60, 40],
+        [60, 10],
+      ],
+      10.5,
+      90
+    );
+    const areas = [duplicate, tower, outer];
+    const overlay = [["dup"], ["tower"], ["outer"]];
+    const heights = [20, 90, 22];
+    assert.equal(dropNestedDuplicateRoofs(areas, null, overlay, heights), 1);
+    assert.equal(areas.length, 2);
+    assert.deepEqual(
+      overlay,
+      areas.map((a) => {
+        if (a.area_material.top_height === 90) return ["tower"];
+        if (a.area_material.top_height === 22) return ["outer"];
+        return ["?"];
+      })
+    );
+    assert.deepEqual(
+      heights,
+      areas.map((a) => a.area_material.top_height)
+    );
+  });
+});
+
+describe("outdoor plan buildings follow the area ring", () => {
+  it("does not borrow a neighboring roof's material from a shifted overlay list", () => {
+    const garage = pixelRoof(
+      [
+        [0, 0],
+        [20, 0],
+        [20, 30],
+        [0, 30],
+        [0, 0],
+      ],
+      15,
+      47
+    );
+    garage.area_material.name = "Building - Ten Floor 15.0";
+    const tower = pixelRoof(
+      [
+        [200, 0],
+        [240, 0],
+        [240, 40],
+        [200, 40],
+        [200, 0],
+      ],
+      12,
+      122
+    );
+    tower.area_material.name = "Building - Wood frame 110.0 @ 12.0";
+    const fp = {
+      oiAreas: [garage, tower],
+      overlayRings: [
+        [
+          [200, 0],
+          [240, 0],
+          [240, 40],
+          [200, 40],
+        ],
+        [
+          [0, 0],
+          [20, 0],
+          [20, 30],
+          [0, 30],
+        ],
+      ],
+    };
+    const buildings = buildingsForOutdoorPlan(fp);
+    assert.equal(buildings.length, 2);
+    assert.equal(buildings[0].material.name, "Building - Ten Floor 15.0");
+    assert.equal(buildings[0].ringPx[0][0], 0);
+    assert.equal(buildings[0].ringPx[0][1], 0);
+    assert.equal(buildings[1].material.name, "Building - Wood frame 110.0 @ 12.0");
+    assert.equal(buildings[1].ringPx[0][0], 200);
   });
 });
 

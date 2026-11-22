@@ -1014,3 +1014,27 @@ describe("OSM buildings the footprint sources missed", () => {
     assert.equal(covered.properties.building, undefined);
   });
 });
+
+describe("parking use tags are deterministic", () => {
+  it("assigns a tied garage to the same footprint when the feature list is reversed", () => {
+    const west = metersBox(-87.92, 42.9, 40, 80, { height: 32, heightSource: "overture" });
+    const east = metersBox(-87.91955, 42.9, 40, 80, { height: 110, heightSource: "ms-global" });
+    const garage = metersBox(-87.9199, 42.9, 30, 80, {});
+    const structures = [
+      {
+        ring: ringOf(garage),
+        tags: { building: "parking", parking: "multi-storey", "building:levels": "10" },
+        heightM: 30,
+      },
+    ];
+    const forward = shapeBuildings([west, east], { structures });
+    const reverse = shapeBuildings([east, west], { structures });
+    const tagged = (list) =>
+      list.features
+        .filter((f) => f.properties && f.properties.building === "parking")
+        .map((f) => centroidLL(f.geometry.coordinates[0]).map((n) => n.toFixed(6)).join(","));
+    assert.equal(tagged(forward).length, 1);
+    assert.deepEqual(tagged(forward), tagged(reverse));
+  });
+
+});

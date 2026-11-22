@@ -254,6 +254,24 @@ function typeFromUseName(name) {
   return m ? TYPE_BY_LABEL[m[1]] || null : null;
 }
 
+
+function ringKeyOf(ring) {
+  if (!ring || !ring.length) return "";
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const x = +ring[i][0];
+    const y = +ring[i][1];
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return minX.toFixed(7) + "," + minY.toFixed(7) + "," + maxX.toFixed(7) + "," + maxY.toFixed(7) + "," + ring.length;
+}
+
 function copyOsmUseTags(features, osmRings) {
   const tagged = [];
   for (let i = 0; i < (osmRings || []).length; i++) {
@@ -273,14 +291,22 @@ function copyOsmUseTags(features, osmRings) {
     const exteriors = exteriorsOf(feat);
     let best = null;
     let bestFrac = 0;
+    let bestInter = 0;
     for (let e = 0; e < exteriors.length; e++) {
       const area = ringAreaAbs(exteriors[e]);
       if (!(area > 0)) continue;
       for (let t = 0; t < tagged.length; t++) {
         const inter = intersectionAreaApprox(exteriors[e], tagged[t].ring);
         const frac = inter / area;
-        if (frac > bestFrac) {
+        const better =
+          inter > bestInter ||
+          (inter === bestInter &&
+            (frac > bestFrac ||
+              (frac === bestFrac &&
+                ringKeyOf(tagged[t].ring) < ringKeyOf(best && best.ring))));
+        if (better) {
           bestFrac = frac;
+          bestInter = inter;
           best = tagged[t];
         }
       }
@@ -383,6 +409,7 @@ module.exports = {
   TYPES,
   TAG_KEYS,
   classifyBuildingUse,
+  isParkingTags,
   dbForBuildingUse,
   usesCustomBuildingMaterial,
   tagsFrom,

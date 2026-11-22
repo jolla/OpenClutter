@@ -164,7 +164,7 @@ async function runBackgroundExport(event, onProgress) {
 const imagerySource = require("../lib/imagery-source");
 const { normalizeAerial } = require("../lib/aerial-normalize");
 const { geoFrame, capEsriExportFrame, llToPx, esriImageryUrl, esriImageryMetaUrl, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV, publicFrame } = require("../lib/geo-frame");
-const { buildClutter, ALIGNMENT, footprintsToClutter, ringAreaM2, featureExteriorRings, parseAreaCapOverride, parseJsonBudgetOverride, raisedDeckCap, effectiveAreaCap, MAX_BUILDINGS, MAX_ATTENUATION_AREAS } = require("../lib/pipeline");
+const { buildClutter, ALIGNMENT, footprintsToClutter, buildingsForOutdoorPlan, ringAreaM2, featureExteriorRings, parseAreaCapOverride, parseJsonBudgetOverride, raisedDeckCap, effectiveAreaCap, MAX_BUILDINGS, MAX_ATTENUATION_AREAS } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { buildSiteV1 } = require("../lib/site-v1");
 const { fetchSlopeForest, forestEmptyWarning } = require("../lib/slope-forest");
@@ -2836,14 +2836,8 @@ async function handleClutterNorthUp(event) {
       }
       const buildings = [];
       if ((includeWater === true || includeParking === true || includeRvs === true || includeCars === true) && outdoorOn && outdoorMiss !== true) {
-        for (let i = 0; i < preview.oiAreas.length; i++) {
-          buildings.push({
-            index: i,
-            ringPx: preview.overlayRings[i],
-            material: preview.oiAreas[i] && preview.oiAreas[i].area_material,
-            terrainSplit: !!(preview.overlayRings[i] && preview.overlayRings[i].terrainSplit),
-          });
-        }
+        const plannedBuildings = buildingsForOutdoorPlan(preview);
+        for (let i = 0; i < plannedBuildings.length; i++) buildings.push(plannedBuildings[i]);
       }
       const liveOutdoor =
         outdoorOn && outdoorMiss !== true

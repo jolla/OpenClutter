@@ -1890,8 +1890,32 @@ function dedupeKey(coords) {
   return [minLon, minLat, maxLon, maxLat].map((n) => n.toFixed(5)).join(",");
 }
 
+
+function coordsTieKey(coords) {
+  if (!coords || !coords.length) return "";
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < coords.length; i++) {
+    const x = +coords[i][0];
+    const y = +coords[i][1];
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return minX.toFixed(7) + "," + minY.toFixed(7) + "," + maxX.toFixed(7) + "," + maxY.toFixed(7) + "," + coords.length;
+}
+
 function keepLargest(list, cap) {
-  const sorted = list.slice().sort((a, b) => ringAreaAbs(b.coords) - ringAreaAbs(a.coords));
+  const sorted = list.slice().sort((a, b) => {
+    const da = ringAreaAbs(b.coords) - ringAreaAbs(a.coords);
+    if (da) return da;
+    const ka = coordsTieKey(a.coords);
+    const kb = coordsTieKey(b.coords);
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
   const seen = new Set();
   const out = [];
   for (let i = 0; i < sorted.length && out.length < cap; i++) {
@@ -2972,14 +2996,26 @@ function circlePx(lon, lat, frame) {
   return ring;
 }
 
+function parkingLonLatRing(building, frame) {
+  if (building && building.ring && building.ring.length >= 3) return building.ring;
+  const px = building && building.ringPx;
+  if (px && px.length >= 3 && frame) return imagePxRingToLonLat(px, frame);
+  return null;
+}
+
 function parkingMaterialFor(feat, buildingMat, slopeTop, lonlatRing) {
   const explicit = feat && feat.explicitHeight && feat.heightM > 2 ? feat.heightM : 0;
   const fromBuilding = thicknessOf(buildingMat);
   const h = explicit || fromBuilding || (feat && feat.heightM) || 9;
-  const bottom =
+  const terr = seatBottom(slopeTop, lonlatRing);
+  const bBot =
     buildingMat && Number(buildingMat.bottom_height) >= LIFT_LOCAL_M
       ? Number(buildingMat.bottom_height)
-      : seatBottom(slopeTop, lonlatRing);
+      : 0;
+  // A garage is a full building on the ground. A stacked seat (the roof of
+  // a lower plan, often about as high as this mass) is not that ground.
+  const stacked = bBot > 0 && h > 2 && bBot >= h * 0.8;
+  const bottom = terr >= LIFT_LOCAL_M ? terr : stacked ? 0 : bBot;
   return materialForKind("parking", h, lonlatRing, null, bottom);
 }
 
@@ -3368,36 +3404,75 @@ function planOutdoor({ features, frame, slopeTop, buildings, parkingRings, segme
   const consumed = new Set();
   const updates = [];
   let reclass = 0;
+  const pairs = [];
   for (let b = 0; b < (buildings || []).length; b++) {
     const building = buildings[b];
     if (!building || (!(building.ringPx && building.ringPx.length >= 3) && !(building.ring && building.ring.length >= 3))) continue;
     const bPx = building.ringPx && building.ringPx.length >= 3 ? closePx(building.ringPx) : lonLatRingToPx(building.ring, frame);
-    let match = null;
+    const bKey = coordsTieKey(building.ring || (building.ringPx ? bPx : null));
     for (let i = 0; i < parkingFeats.length; i++) {
       if (parkingFeats[i].structure === false) continue;
       const pPx = lonLatRingToPx(parkingFeats[i].coords, frame);
-      if (overlapFraction(bPx, pPx) >= 0.4) {
-        match = parkingFeats[i];
-        break;
+      const overlap = overlapFraction(bPx, pPx);
+      if (overlap >= 0.4) {
+        pairs.push({
+          b,
+          building,
+          match: parkingFeats[i],
+          overlap,
+          bKey,
+          parkKey: "feat|" + coordsTieKey(parkingFeats[i].coords),
+          fromFeat: true,
+          ringPx: bPx,
+        });
       }
     }
-    if (!match) {
-      for (let i = 0; i < classRings.length; i++) {
-        const raw = classRings[i];
-        const ring = raw && raw.ring ? raw.ring : raw;
-        const pPx = lonLatRingToPx(ring, frame);
-        if (overlapFraction(bPx, pPx) >= 0.4) {
-          const tagged = raw && Number(raw.heightM) > 2 ? Number(raw.heightM) : 0;
-          match = { kind: "parking", heightM: tagged, explicitHeight: tagged > 2, coords: ring };
-          break;
-        }
+    for (let i = 0; i < classRings.length; i++) {
+      const raw = classRings[i];
+      const ring = raw && raw.ring ? raw.ring : raw;
+      const pPx = lonLatRingToPx(ring, frame);
+      const overlap = overlapFraction(bPx, pPx);
+      if (overlap >= 0.4) {
+        const tagged = raw && Number(raw.heightM) > 2 ? Number(raw.heightM) : 0;
+        pairs.push({
+          b,
+          building,
+          match: { kind: "parking", heightM: tagged, explicitHeight: tagged > 2, coords: ring },
+          overlap,
+          bKey,
+          parkKey: "class|" + coordsTieKey(ring),
+          fromFeat: false,
+          ringPx: bPx,
+        });
       }
     }
-    if (!match) continue;
-    const mat = parkingMaterialFor(match, building.material, slopeTop, building.ring);
+  }
+  pairs.sort((a, b) => {
+    if (a.overlap !== b.overlap) return b.overlap - a.overlap;
+    if (a.bKey !== b.bKey) return a.bKey < b.bKey ? -1 : 1;
+    if (a.parkKey !== b.parkKey) return a.parkKey < b.parkKey ? -1 : 1;
+    return 0;
+  });
+  const usedBuilding = new Set();
+  const usedParking = new Set();
+  for (let i = 0; i < pairs.length; i++) {
+    const pair = pairs[i];
+    if (usedBuilding.has(pair.b)) continue;
+    if (usedParking.has(pair.parkKey)) continue;
+    const buildingH = thicknessOf(pair.building.material);
+    const parkH = pair.match && pair.match.explicitHeight && pair.match.heightM > 2 ? pair.match.heightM : 0;
+    // A much taller measured roof is not this garage unless the outlines almost agree.
+    if (buildingH >= 45 && parkH > 2 && buildingH > parkH * 1.5 && pair.overlap < 0.7) continue;
+    const mat = parkingMaterialFor(pair.match, pair.building.material, slopeTop, parkingLonLatRing(pair.building, frame));
     if (!mat) continue;
-    if (match.coords && parkingFeats.indexOf(match) >= 0) consumed.add(match);
-    updates.push({ index: building.index, material: mat });
+    usedBuilding.add(pair.b);
+    usedParking.add(pair.parkKey);
+    if (pair.fromFeat) consumed.add(pair.match);
+    updates.push({
+      index: pair.building.index,
+      ringPx: pair.ringPx || pair.building.ringPx,
+      material: mat,
+    });
     reclass++;
   }
   if (isSiteTypes() && frame && buildings && buildings.length) {
