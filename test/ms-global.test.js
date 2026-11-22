@@ -7,6 +7,7 @@ const {
   quadkeysForBbox,
   urlsForBbox,
   featuresFromGzip,
+  featuresFromGzipBuffer,
   mergeFootprintFeatures,
   fetchMsGlobalFootprints,
   setMsCacheDir,
@@ -157,8 +158,9 @@ describe("Microsoft global building footprints", () => {
   });
 
   it("does not download a quadkey gzip over the export size limit", async () => {
-    assert.ok(MAX_GZIP_BYTES >= 70 * 1024 * 1024);
-    assert.ok(MAX_GZIP_BYTES < 100 * 1024 * 1024);
+    // Minneapolis is ~84 MB and must fit. Los Angeles is ~179 MB and must not.
+    assert.ok(MAX_GZIP_BYTES >= 90 * 1024 * 1024);
+    assert.ok(MAX_GZIP_BYTES < 160 * 1024 * 1024);
     let bodyReads = 0;
     const pack = await fetchMsGlobalFootprints(OAK, async () => ({
       ok: true,
@@ -177,6 +179,53 @@ describe("Microsoft global building footprints", () => {
     assert.match(warning, /179 MB/);
     assert.equal(/esri/i.test(warning), false);
     assert.equal(/smaller box/i.test(warning), false);
+  });
+
+  it("downloads an 84 MB Minneapolis-sized tile that the old 80 MB cap skipped", async () => {
+    const inside = poly([
+      [-87.918, 42.899],
+      [-87.917, 42.899],
+      [-87.917, 42.900],
+      [-87.918, 42.900],
+      [-87.918, 42.899],
+    ]);
+    const gz = zlib.gzipSync(Buffer.from(JSON.stringify(inside) + "\n"));
+    let bodyReads = 0;
+    const pack = await fetchMsGlobalFootprints(OAK, async () => ({
+      ok: true,
+      headers: { get: (name) => (String(name).toLowerCase() === "content-length" ? String(84 * 1024 * 1024) : null) },
+      arrayBuffer: async () => {
+        bodyReads++;
+        return gz;
+      },
+    }));
+    assert.equal(bodyReads, 1);
+    assert.equal(pack.skipped, 0);
+    assert.equal(pack.features.length, 1);
+    assert.equal(globalSkipWarning(pack), "");
+  });
+
+  it("stream-parses a gzip to the same footprints as the all-at-once reader", async () => {
+    const inside = poly([
+      [-87.918, 42.899],
+      [-87.917, 42.899],
+      [-87.917, 42.900],
+      [-87.918, 42.900],
+      [-87.918, 42.899],
+    ]);
+    const outside = poly([
+      [-87.85, 42.7],
+      [-87.84, 42.7],
+      [-87.84, 42.71],
+      [-87.85, 42.71],
+      [-87.85, 42.7],
+    ]);
+    const gz = zlib.gzipSync(Buffer.from([inside, outside].map((f) => JSON.stringify(f)).join("\n")));
+    const direct = featuresFromGzip(gz, OAK);
+    const streamed = await featuresFromGzipBuffer(gz, OAK);
+    assert.equal(direct.length, 1);
+    assert.equal(streamed.length, 1);
+    assert.deepEqual(streamed[0].geometry, direct[0].geometry);
   });
 
   it("still parses a gzip under the size limit", async () => {

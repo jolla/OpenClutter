@@ -10,20 +10,27 @@
  * lines to the site bbox and keep polygons that actually intersect it.
  * MSBFP2 is still merged in underneath so a missing quadkey cannot erase
  * footprints the ArcGIS layer does have. OSM building ways are not read.
+ *
+ * The size cap is for the compressed tile. Oak Creek is ~39 MB, Las Vegas
+ * ~60 MB, and the Minneapolis tile (Minnesota State Fair) ~84 MB. Those
+ * must parse. The Los Angeles tile (Universal Hollywood) is ~179 MB and
+ * is still skipped: even a streamed read can run past the gateway clock.
  */
 
 const zlib = require("zlib");
+const { Readable, Writable } = require("stream");
+const { pipeline } = require("stream/promises");
 
 const INDEX = require("./ms-buildings-index.json");
 const QUADKEY_ZOOM = 9;
 /**
  * Zoom-9 quadkeys are one gzip for a whole tile, not the drawn box.
  * Oak Creek is ~39 MB and Las Vegas ~60 MB; both still download.
- * The Los Angeles tile (Universal Hollywood) is ~179 MB. Reading it
- * holds a decompressed copy near the function memory limit and runs
- * past the gateway clock. Skip that file and keep the other sources.
+ * Minneapolis (Minnesota State Fair) is ~84 MB and must be read.
+ * The Los Angeles tile (Universal Hollywood) is ~179 MB and is still
+ * skipped so a streamed read cannot run past the gateway clock.
  */
-const MAX_GZIP_BYTES = 80 * 1024 * 1024;
+const MAX_GZIP_BYTES = 120 * 1024 * 1024;
 const MS_CACHE_MAX_BYTES = 512 * 1024 * 1024;
 const MS_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const msCache = require("./disk-cache").createDiskCache({
@@ -316,37 +323,86 @@ function trimFootprints(features, keep) {
   return features;
 }
 
+function createGzipParseState(bbox, opts) {
+  const keep = opts && opts.keep > 0 ? opts.keep | 0 : FOOTPRINT_KEEP;
+  return {
+    keep,
+    lonNeedles: spanNeedles(+bbox.west, +bbox.east, 0.03),
+    latNeedles: spanNeedles(+bbox.south, +bbox.north, 0.03),
+    features: [],
+    accept(line) {
+      if (!line || line.length < 40) return;
+      if (!hasAny(line, this.lonNeedles) || !hasAny(line, this.latNeedles)) return;
+      let obj;
+      try {
+        obj = JSON.parse(line.toString("utf8"));
+      } catch {
+        return;
+      }
+      if (!geometryHitsBbox(obj.geometry, bbox)) return;
+      const feature = normalizeFeature(obj);
+      if (!feature) return;
+      this.features.push(feature);
+      if (this.features.length >= this.keep * 2) trimFootprints(this.features, this.keep);
+    },
+    finish() {
+      return trimFootprints(this.features, this.keep);
+    },
+  };
+}
+
 /**
  * @param {Buffer} gz gzip of newline-delimited GeoJSON
  * @param {{west:number,south:number,east:number,north:number}} bbox
  * @param {{keep?:number}} [opts]
  */
 function featuresFromGzip(gz, bbox, opts) {
-  const keep = opts && opts.keep > 0 ? opts.keep | 0 : FOOTPRINT_KEEP;
+  const state = createGzipParseState(bbox, opts);
   const text = zlib.gunzipSync(gz);
-  const lonNeedles = spanNeedles(+bbox.west, +bbox.east, 0.03);
-  const latNeedles = spanNeedles(+bbox.south, +bbox.north, 0.03);
-  const features = [];
   let start = 0;
   for (let i = 0; i <= text.length; i++) {
     if (i !== text.length && text[i] !== 10) continue;
-    const line = text.subarray(start, i);
+    state.accept(text.subarray(start, i));
     start = i + 1;
-    if (line.length < 40) continue;
-    if (!hasAny(line, lonNeedles) || !hasAny(line, latNeedles)) continue;
-    let obj;
-    try {
-      obj = JSON.parse(line.toString("utf8"));
-    } catch {
-      continue;
-    }
-    if (!geometryHitsBbox(obj.geometry, bbox)) continue;
-    const feature = normalizeFeature(obj);
-    if (!feature) continue;
-    features.push(feature);
-    if (features.length >= keep * 2) trimFootprints(features, keep);
   }
-  return trimFootprints(features, keep);
+  return state.finish();
+}
+
+/**
+ * Stream-inflate a gzip tile and keep only bbox lines. The full
+ * decompressed GeoJSONL is never held in memory, so an 84 MB
+ * Minneapolis tile can parse without the 80 MB all-at-once cap.
+ *
+ * @param {import("stream").Readable} source
+ * @param {{west:number,south:number,east:number,north:number}} bbox
+ * @param {{keep?:number}} [opts]
+ */
+async function featuresFromGzipStream(source, bbox, opts) {
+  const state = createGzipParseState(bbox, opts);
+  let leftover = Buffer.alloc(0);
+  const sink = new Writable({
+    write(chunk, _enc, cb) {
+      leftover = leftover.length ? Buffer.concat([leftover, chunk]) : Buffer.from(chunk);
+      let start = 0;
+      for (let i = 0; i < leftover.length; i++) {
+        if (leftover[i] !== 10) continue;
+        state.accept(leftover.subarray(start, i));
+        start = i + 1;
+      }
+      leftover = start ? leftover.subarray(start) : leftover;
+      cb();
+    },
+    final(cb) {
+      if (leftover.length) state.accept(leftover);
+      cb();
+    },
+  });
+  await pipeline(source, zlib.createGunzip(), sink);
+  return state.finish();
+}
+
+async function featuresFromGzipBuffer(gz, bbox, opts) {
+  return featuresFromGzipStream(Readable.from(gz), bbox, opts);
 }
 
 function centroid(ring) {
@@ -482,6 +538,7 @@ async function fetchMsGlobalFootprintsWork(frame, fetchFn, opts) {
   const features = [];
   let skipped = 0;
   let skippedBytes = 0;
+  let skippedErrors = 0;
   const useCache = msCacheEnabled(fetchFn, opts);
   const fetchImpl = fetchFn || fetch;
   const keep = FOOTPRINT_KEEP;
@@ -531,11 +588,19 @@ async function fetchMsGlobalFootprintsWork(frame, fetchFn, opts) {
       skippedBytes += buf.length;
       continue;
     }
-    const chunk = featuresFromGzip(buf, bbox);
+    let chunk;
+    try {
+      chunk = await featuresFromGzipBuffer(buf, bbox, { keep });
+    } catch (err) {
+      skipped++;
+      skippedBytes += buf.length;
+      skippedErrors++;
+      continue;
+    }
     if (useCache) await writeParsedFeatures(item.url, bbox, keep, chunk);
     for (const f of chunk) features.push(f);
   }
-  return { features, quadkeys: keys, files: urls.length, skipped, skippedBytes };
+  return { features, quadkeys: keys, files: urls.length, skipped, skippedBytes, skippedErrors };
 }
 
 function megabytes(bytes) {
@@ -546,6 +611,12 @@ function globalSkipWarning(pack) {
   if (!pack || !pack.skipped) return "";
   const mb = megabytes(pack.skippedBytes);
   const limit = megabytes(MAX_GZIP_BYTES);
+  const parseFail = pack.skippedErrors > 0 && !(pack.skippedBytes > MAX_GZIP_BYTES);
+  if (parseFail) {
+    return (
+      "Microsoft building footprints omitted: the footprint tile could not be parsed. Other building sources are included."
+    );
+  }
   if (pack.features && pack.features.length) {
     return (
       "Microsoft building footprints partial: kept " +
@@ -578,6 +649,8 @@ module.exports = {
   urlsForBbox,
   spanNeedles,
   featuresFromGzip,
+  featuresFromGzipStream,
+  featuresFromGzipBuffer,
   mergeFootprintFeatures,
   MAX_GZIP_BYTES,
   FOOTPRINT_KEEP,
