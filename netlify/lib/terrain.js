@@ -3806,11 +3806,22 @@ function ringToClipboard(ring, frame) {
 function floorZones(terrain) {
   const clip = terrain && terrain.clipboard;
   if (!clip) return [];
-  const zones = [];
   const sloped = clip.slopedFloors || [];
   const raised = clip.raisedFloorZones || [];
+  const n = sloped.length + raised.length;
+  const cached = terrain && terrain._floorZones;
+  if (cached && cached.clipboard === clip && cached.n === n) return cached.zones;
+  const zones = [];
   for (let i = 0; i < sloped.length; i++) zones.push(sloped[i]);
   for (let i = 0; i < raised.length; i++) zones.push(raised[i]);
+  if (terrain && typeof terrain === "object") {
+    Object.defineProperty(terrain, "_floorZones", {
+      value: { clipboard: clip, n, zones },
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+  }
   return zones;
 }
 
@@ -3991,10 +4002,22 @@ function pastedFloorExtent(terrain, xy) {
   const nv = ringPointCount(xy);
   for (let k = 0; k < nv; k++) pts.push(xy[k]);
   const near = zonesNearRing(terrain, zones, xy);
+  const ringBox = pointBox(xy);
   for (let j = 0; j < near.length; j++) {
     const i = near[j];
     const quad = zones[i].area && zones[i].area.coordinates && zones[i].area.coordinates[0];
-    if (!quad || quad.length < 4 || !boundsOverlap(xy, quad)) continue;
+    if (!quad || quad.length < 4) continue;
+    const qBox = pointBox(quad);
+    if (
+      !(
+        ringBox.l <= qBox.r + FLOOR_TOUCH_M &&
+        ringBox.r + FLOOR_TOUCH_M >= qBox.l &&
+        ringBox.b <= qBox.t + FLOOR_TOUCH_M &&
+        ringBox.t + FLOOR_TOUCH_M >= qBox.b
+      )
+    ) {
+      continue;
+    }
     const over = overlapVertices(xy, quad);
     for (let k = 0; k < over.length; k++) pts.push(over[k]);
     const nq = Math.min(ringPointCount(quad), 4);
@@ -4053,6 +4076,33 @@ function pastedFloorExtent(terrain, xy) {
   return { min, max };
 }
 
+function floorExtentCacheKey(ring) {
+  if (!ring || !ring.length) return "";
+  let s = "";
+  for (let i = 0; i < ring.length; i++) {
+    const p = ring[i];
+    if (!p) continue;
+    s += +p[0] + "," + +p[1] + ";";
+  }
+  return s;
+}
+
+function extentCacheFor(terrain) {
+  const clip = terrain && terrain.clipboard;
+  const cached = terrain && terrain._extentCache;
+  if (cached && cached.clipboard === clip) return cached.map;
+  const map = new Map();
+  if (terrain && typeof terrain === "object") {
+    Object.defineProperty(terrain, "_extentCache", {
+      value: { clipboard: clip, map },
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return map;
+}
+
 /**
  * Raw min/max of the floor under a lon/lat ring, before tenth rounding.
  * When a mesh was pasted, this is the ramp or plate Hamina draws, not a DEM
@@ -4075,10 +4125,17 @@ function floorExtentUnderRing(terrain, ring) {
     ring = [[lon + dLon, lat], [lon - dLon / 2, lat + dLat], [lon - dLon / 2, lat - dLat], [lon + dLon, lat]];
   }
   if (!terrain || !ring || ring.length < 3) return { min: 0, max: 0 };
+  const extentKey = floorExtentCacheKey(ring);
+  const extentMap = extentCacheFor(terrain);
+  if (extentKey && extentMap.has(extentKey)) return extentMap.get(extentKey);
   const frame = terrain.frame;
   const xy = frame ? ringToClipboard(ring, frame) : [];
   const pasted = pastedFloorExtent(terrain, xy);
-  if (pasted) return { min: pasted.min, max: pasted.max };
+  if (pasted) {
+    const hit = { min: pasted.min, max: pasted.max };
+    if (extentKey) extentMap.set(extentKey, hit);
+    return hit;
+  }
   const closed =
     ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1];
   const end = closed ? ring.length - 1 : ring.length;
@@ -4099,7 +4156,9 @@ function floorExtentUnderRing(terrain, ring) {
     if (zc < min) min = zc;
   }
   if (!(min < Infinity)) min = 0;
-  return { min, max };
+  const miss = { min, max };
+  if (extentKey) extentMap.set(extentKey, miss);
+  return miss;
 }
 
 /** Round a slope top up to the next 0.1 m so the object is not left under the sample. */
@@ -4560,9 +4619,10 @@ function splitRingByFloor1326(terrain, ring, opts) {
   let groups = null;
   let pieces = null;
   while (band < 80) {
-    const cells = (useRamps ? rampStrips(terrain, band).concat(raisedStrips(terrain)) : terrainFloorCells(terrain)).filter(
-      (cell) => boundsOverlap(xy, cell.clip)
-    );
+    // Strips and their boxes are built once per terrain and band. The
+    // fallback path already did this; the main 1.3.26 path was still
+    // rebuilding every strip for each footprint.
+    const cells = cellsOverlappingRing(terrain, useRamps, band, xy);
     if (cells.length < 2) {
       if (!groups) return [ring];
       break;
@@ -4738,6 +4798,19 @@ function cachedCellBoxes(terrain, useRamps, band) {
   return out;
 }
 
+function cellsOverlappingRing(terrain, useRamps, band, xy) {
+  const all = cachedCellBoxes(terrain, useRamps, band);
+  const box = pointBox(xy);
+  const cells = [];
+  for (let i = 0; i < all.length; i++) {
+    const c = all[i];
+    if (box.l <= c.r + FLOOR_TOUCH_M && box.r + FLOOR_TOUCH_M >= c.l && box.b <= c.t + FLOOR_TOUCH_M && box.t + FLOOR_TOUCH_M >= c.b) {
+      cells.push(c.cell);
+    }
+  }
+  return cells;
+}
+
 function splitRingByFloorFallback(terrain, ring, opts) {
   const maxPieces = opts && opts.maxPieces > 1 ? opts.maxPieces | 0 : SPLIT_MAX_PIECES;
   const keepPartial = !!(opts && opts.keepPartial);
@@ -4754,15 +4827,7 @@ function splitRingByFloorFallback(terrain, ring, opts) {
   const band = opts && opts.cellBand > 0 ? +opts.cellBand : SPLIT_FLOOR_M;
   // Strips and their boxes are built once per terrain and band. A rerun
   // tile cuts thousands of stands and rebuilt every strip for each one.
-  const all = cachedCellBoxes(terrain, useRamps, band);
-  const box = pointBox(xy);
-  const cells = [];
-  for (let i = 0; i < all.length; i++) {
-    const c = all[i];
-    if (box.l <= c.r + FLOOR_TOUCH_M && box.r + FLOOR_TOUCH_M >= c.l && box.b <= c.t + FLOOR_TOUCH_M && box.t + FLOOR_TOUCH_M >= c.b) {
-      cells.push(c.cell);
-    }
-  }
+  const cells = cellsOverlappingRing(terrain, useRamps, band, xy);
   if (cells.length < 2) return [ring];
   const standBb = ringBounds(bldg);
   const pieces = [];
