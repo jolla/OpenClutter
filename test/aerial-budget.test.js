@@ -1,6 +1,6 @@
 "use strict";
 
-const { describe, it, afterEach } = require("node:test");
+const { describe, it, afterEach, mock } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -78,6 +78,12 @@ function sideOf(url) {
   const match = /size=(\d+),(\d+)/.exec(String(url));
   if (!match) return 0;
   return Math.max(+match[1], +match[2]);
+}
+
+function flushImmediate() {
+  return new Promise((resolve) => {
+    setImmediate(() => setImmediate(resolve));
+  });
 }
 
 describe("aerial budget", () => {
@@ -529,7 +535,10 @@ describe("aerial race, resilient wait for a sharper plate", () => {
 });
 
 describe("aerial tile retry, concurrency, and cache", () => {
-  afterEach(() => resetForTests());
+  afterEach(() => {
+    mock.timers.reset();
+    resetForTests();
+  });
 
   it("retries a transient tile failure and keeps the plate", async () => {
     assert.equal(AERIAL_TILE_ATTEMPTS, 3);
@@ -687,8 +696,9 @@ describe("aerial tile retry, concurrency, and cache", () => {
     const budgetMs = 280;
     const nearDoneGraceMs = 250;
     let sharpTiles = 0;
+    mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
     const t0 = Date.now();
-    const got = await racePlates(
+    const pending = racePlates(
       [
         { plate: sharp, tile: true },
         { plate: coarse, tile: false },
@@ -715,12 +725,25 @@ describe("aerial tile retry, concurrency, and cache", () => {
         },
       }
     );
+    let settled = false;
+    const tracked = pending.then((got) => {
+      settled = true;
+      return got;
+    });
+    await flushImmediate();
+    assert.equal(sharpTiles, 4);
+    assert.equal(settled, false);
+    // Ordinary budget is spent, but the last sharp tile is still 80 ms out.
+    mock.timers.tick(budgetMs);
+    await flushImmediate();
+    assert.equal(settled, false, "should still be in the near-done grace");
+    mock.timers.tick(80);
+    const got = await tracked;
     const elapsed = Date.now() - t0;
     assert.equal(got.index, 0);
     assert.equal(got.stepped, false);
-    assert.ok(elapsed >= budgetMs - 40, "elapsed " + elapsed);
-    // Stitch after the last tile can add a few hundred ms under load.
-    assert.ok(elapsed < 2500, "elapsed " + elapsed);
+    assert.ok(elapsed >= budgetMs + 80, "elapsed " + elapsed);
+    assert.ok(elapsed <= budgetMs + nearDoneGraceMs, "elapsed " + elapsed);
   });
 
   it("still stops at the ordinary budget when a sharper plate is not nearly done", async () => {
@@ -728,9 +751,11 @@ describe("aerial tile retry, concurrency, and cache", () => {
     const coarse = { west: -81.30, south: 28.20, east: -81.28, north: 28.22, imgW: 8, imgH: 8 };
     assert.equal(tilePlan(sharp, 2000).tiles.length, 4);
     const budgetMs = 200;
-    const t0 = Date.now();
+    const nearDoneGraceMs = 400;
     let sharpTiles = 0;
-    const got = await racePlates(
+    mock.timers.enable({ apis: ["setTimeout", "Date"], now: 2_000_000 });
+    const t0 = Date.now();
+    const pending = racePlates(
       [
         { plate: sharp, tile: true },
         { plate: coarse, tile: false },
@@ -738,7 +763,7 @@ describe("aerial tile retry, concurrency, and cache", () => {
       {
         budgetMs,
         emptyGraceMs: 800,
-        nearDoneGraceMs: 400,
+        nearDoneGraceMs,
         tileMinSide: 2000,
         fetchImage: (frame, signal) => {
           if (Math.max(frame.imgW, frame.imgH) <= 8) return Promise.resolve(solidJpeg(8, 8, [20, 20, 20]));
@@ -754,11 +779,21 @@ describe("aerial tile retry, concurrency, and cache", () => {
         },
       }
     );
+    let settled = false;
+    const tracked = pending.then((got) => {
+      settled = true;
+      return got;
+    });
+    await flushImmediate();
+    assert.ok(sharpTiles >= 1);
+    assert.equal(settled, false);
+    mock.timers.tick(budgetMs);
+    const got = await tracked;
     const elapsed = Date.now() - t0;
     assert.equal(got.index, 1);
     assert.equal(got.stepped, true);
-    assert.ok(elapsed >= budgetMs - 40, "elapsed " + elapsed);
-    assert.ok(elapsed < 500, "used near-done grace without progress, elapsed " + elapsed);
+    assert.ok(elapsed >= budgetMs, "elapsed " + elapsed);
+    assert.ok(elapsed < budgetMs + nearDoneGraceMs, "used near-done grace without progress, elapsed " + elapsed);
     assert.ok(sharpTiles >= 1);
   });
 
