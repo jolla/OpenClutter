@@ -55,11 +55,12 @@ function createDiskCache(opts) {
     if (dirOverride !== undefined) return dirOverride || "";
     if (process.env[env] === "0") return "";
     if (process.env[env + "_DIR"] === "0") return "";
-    if (process.env[env + "_DIR"]) return process.env[env + "_DIR"];
-    // node --test must not reuse ~/.cache from a prior export: a cached
-    // 3DEP grid would answer a mocked hang, and a cached Microsoft gzip
-    // would skip an oversized-tile test.
+    // node --test must not reuse a hostexp cache: leftover
+    // OPENCLUTTER_*_CACHE_DIR and ~/.cache would answer a mocked hang,
+    // skip an oversized-tile test, or turn a footprints timeout into a 200.
+    // Tests that need a cache call setDir() on a temp directory.
     if (process.env.NODE_TEST_CONTEXT) return "";
+    if (process.env[env + "_DIR"]) return process.env[env + "_DIR"];
     try {
       const home = os.homedir();
       if (home) return path.join(home, ".cache/openclutter", subdir);

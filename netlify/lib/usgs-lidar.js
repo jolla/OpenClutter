@@ -73,6 +73,9 @@ function lidarCacheDir() {
   if (cacheDirOverride !== undefined) return cacheDirOverride || "";
   if (process.env.OPENCLUTTER_LIDAR_CACHE === "0") return "";
   if (process.env.OPENCLUTTER_LIDAR_CACHE_DIR === "0") return "";
+  // Same contract as createDiskCache: leftover CACHE_DIR or ~/.cache
+  // must not leak into node --test. Tests that need a cache call setLidarCacheDir().
+  if (process.env.NODE_TEST_CONTEXT) return "";
   if (process.env.OPENCLUTTER_LIDAR_CACHE_DIR) return process.env.OPENCLUTTER_LIDAR_CACHE_DIR;
   try {
     const home = os.homedir();

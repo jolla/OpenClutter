@@ -1,5 +1,7 @@
 "use strict";
 
+require("./hermetic-env");
+
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const { handler, beginOptional, joinOptional, OVERTURE_GRACE_MS, OVERTURE_LARGE_GRACE_MS, OVERTURE_HARD_MS, overtureWait, largestFeatures, imageryAttemptMs, imageryStepBudget, IMAGERY_ATTEMPT_MS, IMAGERY_ATTEMPT_MS_DEV, IMAGERY_RETURN_MS, DEV_ANSWER_MS, lambdaPayloadBytes, EXPORT_PAYLOAD_BUDGET, LAMBDA_SYNC_PAYLOAD_MAX, terrainSettleMs, terrainRescueBudget, TERRAIN_RESERVE_MS, TERRAIN_HARD_MS, TERRAIN_FULL_MS, TERRAIN_COARSE_SAMPLES, setFetchTerrainDemForTests, setFetchChmGridForTests, setFetchOvertureForTests, runBackgroundExport, setFetchWorldCoverForTests, setSourceCapsForTests, BACKGROUND_ANSWER_MS, BACKGROUND_PLATFORM_MS, BACKGROUND_CHM_MS, sourceWait, chmJoinWait } = require("../netlify/functions/clutter");

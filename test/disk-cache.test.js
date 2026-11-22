@@ -76,4 +76,31 @@ describe("disk cache prune", { concurrency: 1 }, () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("ignores a leftover CACHE_DIR env under NODE_TEST_CONTEXT unless setDir is used", async () => {
+    assert.ok(process.env.NODE_TEST_CONTEXT);
+    const leaked = fs.mkdtempSync(path.join(os.tmpdir(), "oc-disk-leak-"));
+    const prev = process.env.OPENCLUTTER_TEST_CACHE_DIR;
+    process.env.OPENCLUTTER_TEST_CACHE_DIR = leaked;
+    const cache = createDiskCache({
+      envPrefix: "OPENCLUTTER_TEST_CACHE",
+      maxBytes: 1024 * 1024,
+      ttlMs: 60 * 1000,
+      subdir: "test-leak",
+    });
+    try {
+      await cache.write("secret", Buffer.from("from-env"));
+      assert.equal(await cache.read("secret"), null);
+      cache.setDir(leaked);
+      await cache.write("secret", Buffer.from("from-setdir"));
+      const got = await cache.read("secret");
+      assert.ok(got);
+      assert.equal(got.toString("utf8"), "from-setdir");
+    } finally {
+      cache.setDir(undefined);
+      if (prev == null) delete process.env.OPENCLUTTER_TEST_CACHE_DIR;
+      else process.env.OPENCLUTTER_TEST_CACHE_DIR = prev;
+      fs.rmSync(leaked, { recursive: true, force: true });
+    }
+  });
 });
