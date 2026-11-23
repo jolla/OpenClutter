@@ -75,7 +75,7 @@ describe("slope forest masks", () => {
 describe("slope forest fetch", () => {
   it("gives a background export 45 seconds so it can wait for the Overture street-map read", () => {
     const src = fs.readFileSync(path.join(__dirname, "../netlify/functions/clutter.js"), "utf8");
-    assert.match(src, /fetchSlopeForest\([^)]*timeoutMs: background \? 45000/);
+    assert.match(src, /fetchSlopeForest\([^)]*timeoutMs: cappedMs\(background, "forestMs", 45000, 8000\)/);
   });
 
   it("uses the Overpass forest query when the street-map read does not finish in time", async () => {

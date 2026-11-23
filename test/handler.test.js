@@ -620,6 +620,7 @@ describe("optional sources cannot fail the export", () => {
       forestMs: 400,
       buildingDetailMs: 400,
       streetDeadlineMs: 800,
+      metaMs: 400,
       flushMs: 80,
     });
   }
@@ -787,6 +788,7 @@ describe("optional sources cannot fail the export", () => {
   });
 
   it("starts the aerial JPEG without waiting out a slow imagery metadata response", async () => {
+    shortOptionalJoins();
     const calls = [];
     const t0 = Date.now();
     global.fetch = async (url, init) => {
@@ -806,7 +808,9 @@ describe("optional sources cannot fail the export", () => {
     assert.ok(jpeg && meta);
     assert.ok(jpeg.t < 200, "jpeg start " + jpeg.t);
     assert.ok(Math.abs(jpeg.t - meta.t) < 200, "jpeg " + jpeg.t + " meta " + meta.t);
-    assert.ok(elapsed < 22000, "elapsed " + elapsed);
+    // The join clocks are injected at 400 ms (see shortOptionalJoins).
+    // The zip must still come back well inside a tight budget.
+    assert.ok(elapsed < 3000, "elapsed " + elapsed);
     const body = JSON.parse(res.body);
     assert.ok(body.zipBase64);
     // Metadata never arrived. The JPEG is still Esri's padded content grid.

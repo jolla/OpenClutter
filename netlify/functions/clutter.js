@@ -317,7 +317,7 @@ async function fetchOk(url, source, timeoutMs) {
 /** Extent JSON is optional. A slow response must not hold the JPEG. */
 async function fetchImageryMeta(url) {
   try {
-    const r = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(META_MS) });
+    const r = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(sourceCap("metaMs", META_MS)) });
     if (!r.ok) return null;
     return await r.json();
   } catch {
