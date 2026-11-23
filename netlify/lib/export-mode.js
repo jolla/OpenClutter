@@ -225,6 +225,28 @@ function waterEdgesWanted(testHost, body) {
   return !(v === false || v === 0 || v === "0" || v === "false");
 }
 
+// Feedback #23 (1.3.88): roof pieces that left holes in a building are
+// kept. A square-sided piece of a split roof is no longer dropped as a
+// diagonal wedge, a three-corner terrain piece keeps its clipboard zone,
+// and a piece whose simplified outline crosses itself is cleaned of
+// zero-width spikes or cut in half instead of failing the OpenIntent
+// check. On for /dev hosts only; roofRepair:false turns it off.
+let roofRepair = false;
+
+function setRoofRepair(on) {
+  roofRepair = !!on;
+}
+
+function isRoofRepair() {
+  return roofRepair;
+}
+
+function roofRepairWanted(testHost, body) {
+  if (!testHost) return false;
+  const v = body && body.roofRepair;
+  return !(v === false || v === 0 || v === "0" || v === "false");
+}
+
 // Feedback #14: a map note at each light pole the export shipped (merged on
 // a lamp-lined street, at most 40 pole notes). Paste only; the OpenIntent is
 // unchanged. /dev hosts only (poleNotes:false or ?poleNotes=0 turns it off
@@ -508,6 +530,9 @@ module.exports = {
   setWaterEdges,
   isWaterEdges,
   waterEdgesWanted,
+  setRoofRepair,
+  isRoofRepair,
+  roofRepairWanted,
   setTallCanopyKeep,
   isTallCanopyKeep,
   tallCanopyKeepWanted,

@@ -1842,6 +1842,7 @@ function ringToOi(pts, imgW, imgH, mpuX, opts) {
   if (!pixels) return null;
   const floor = opts && Number(opts.spanFloorPx) > 0 ? Number(opts.spanFloorPx) : undefined;
   const check = validateOiCoords(pixels, imgW, imgH, floor);
+  if (!check.ok && opts && opts.why) opts.why.reason = check.reason;
   return check.ok ? pixels : null;
 }
 
@@ -2474,6 +2475,48 @@ function wedgePieceOf(root, piece, mpd) {
   return rootTri < 0.92 && pieceTri >= 0.9;
 }
 
+/**
+ * Feedback #23 (roofRepair): share of a ring's perimeter that runs within
+ * 12 degrees of one pair of square axes. A diagonal slab cut off a sloppy
+ * outline has a long slanted side (about half its perimeter); a garage
+ * and its wing in an L have square sides.
+ */
+function squareSideShare(ring, mpd) {
+  const open = openDegRing(ring);
+  if (open.length < 3 || !mpd) return 0;
+  const segs = [];
+  let total = 0;
+  for (let i = 0; i < open.length; i++) {
+    const a = open[i];
+    const b = open[(i + 1) % open.length];
+    const dx = (b[0] - a[0]) * mpd.lon;
+    const dy = (b[1] - a[1]) * mpd.lat;
+    const len = Math.hypot(dx, dy);
+    if (!(len > 0)) continue;
+    const deg = (((Math.atan2(dy, dx) * 180) / Math.PI) % 90 + 90) % 90;
+    segs.push([deg, len]);
+    total += len;
+  }
+  if (!(total > 0)) return 0;
+  let best = 0;
+  for (let axis = 0; axis < 90; axis++) {
+    let sum = 0;
+    for (let i = 0; i < segs.length; i++) {
+      const d = Math.abs(segs[i][0] - axis);
+      if (Math.min(d, 90 - d) <= 12) sum += segs[i][1];
+    }
+    if (sum > best) best = sum;
+  }
+  return best / total;
+}
+
+/** A wedge-looking piece of a split roof that is still square-sided stays (roofRepair). */
+function dropAsWedgePiece(root, piece, mpd) {
+  if (!wedgePieceOf(root, piece, mpd)) return false;
+  if (require("./export-mode").isRoofRepair() && squareSideShare(piece, mpd) >= 0.75) return false;
+  return true;
+}
+
 function ringsUnderVertexCap(ring, maxPts, eps, mpd, depth, root) {
   const rootRing = root || ring;
   const open = openDegRing(ring);
@@ -2482,7 +2525,7 @@ function ringsUnderVertexCap(ring, maxPts, eps, mpd, depth, root) {
   if (!closed) return [];
   if (ringAreaM2(closed, mpd) < MIN_AREA_M2) return [];
   if (open.length <= maxPts) {
-    if (depth > 0 && wedgePieceOf(rootRing, closed, mpd)) return [];
+    if (depth > 0 && dropAsWedgePiece(rootRing, closed, mpd)) return [];
     return [closed];
   }
   const simplified = dpDegRing(closed, eps);
@@ -2491,7 +2534,7 @@ function ringsUnderVertexCap(ring, maxPts, eps, mpd, depth, root) {
     ringVertexCount(simplified) >= 3 &&
     ringVertexCount(simplified) <= maxPts &&
     !collapsedWedge(closed, simplified, mpd) &&
-    !wedgePieceOf(rootRing, simplified, mpd)
+    !dropAsWedgePiece(rootRing, simplified, mpd)
   ) {
     return [simplified];
   }
@@ -2549,7 +2592,7 @@ function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSou
   let sawSpan = false;
   let lastFail = "skip";
   for (let i = 0; i < pieces.length; i++) {
-    const result = emitBuildingSimplified(
+    const result = emitPieceOrHalves(
       pieces[i],
       heightM,
       frame,
@@ -2565,7 +2608,8 @@ function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSou
       keepSpanZone,
       keepThin,
       podium,
-      useProps
+      useProps,
+      0
     );
     if (result === "keep") sawKeep = true;
     else if (result === "span") sawSpan = true;
@@ -2575,6 +2619,104 @@ function emitBuilding(ring, heightM, frame, affine, buckets, slopeTop, heightSou
   if (sawKeep) return "keep";
   if (sawSpan) return "span";
   return lastFail;
+}
+
+/**
+ * Feedback #23 (roofRepair, export-mode): a roof piece whose simplified
+ * outline crosses itself failed the OpenIntent check and the whole piece
+ * was dropped (a 6,800 m2 Encore garage piece on the Las Vegas Strip). Take
+ * the zero-width spikes off first; if it still crosses, cut it in half
+ * along its long axis and emit each half, at most three times.
+ * A half that still crosses itself is dropped as before.
+ */
+function emitPieceOrHalves(piece, heightM, frame, affine, buckets, maxPts, tol, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone, keepThin, podium, useProps, depth) {
+  const result = emitBuildingSimplified(
+    piece,
+    heightM,
+    frame,
+    affine,
+    buckets,
+    maxPts,
+    tol,
+    slopeTop,
+    heightSource,
+    levelBase,
+    shapePart,
+    keepOut,
+    keepSpanZone,
+    keepThin,
+    podium,
+    useProps
+  );
+  if (result !== "selfx") return result;
+  if (depth >= 3) return "clip";
+  const clean = despikeDegRing(piece, frame.mpd);
+  if (clean !== piece && openDegRing(clean).length < openDegRing(piece).length) {
+    const again = emitBuildingSimplified(clean, heightM, frame, affine, buckets, maxPts, tol, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone, keepThin, podium, useProps);
+    if (again !== "selfx") return again;
+    piece = clean;
+  }
+  const halves = splitRingHalf(piece);
+  if (halves.length < 2) return "clip";
+  let sawKeep = false;
+  let sawSpan = false;
+  let lastFail = "clip";
+  for (let h = 0; h < halves.length; h++) {
+    const half = despikeDegRing(halves[h], frame.mpd);
+    if (!half || ringAreaM2(half, frame.mpd) < MIN_AREA_M2) continue;
+    const sub = emitPieceOrHalves(half, heightM, frame, affine, buckets, maxPts, tol, slopeTop, heightSource, levelBase, shapePart, keepOut, keepSpanZone, keepThin, podium, useProps, depth + 1);
+    if (sub === "keep") sawKeep = true;
+    else if (sub === "span") sawSpan = true;
+    else if (sub !== "tiny") lastFail = sub;
+  }
+  if (sawKeep) return "keep";
+  if (sawSpan) return "span";
+  return lastFail;
+}
+
+/**
+ * Feedback #23: drop zero-width spikes (an edge that runs out and straight
+ * back, under 5 cm off its own line) and repeated vertices from a lon/lat
+ * ring. Terrain splits leave them on a roof; after rounding the spike
+ * crosses its own edge. The roof's area does not change.
+ */
+function despikeDegRing(ring, mpd) {
+  const open = openDegRing(ring);
+  if (open.length < 4 || !mpd) return ring;
+  const kx = mpd.lon;
+  const ky = mpd.lat;
+  const pts = open.slice();
+  let changed = true;
+  let guard = 0;
+  while (changed && pts.length > 3 && guard++ < 1000) {
+    changed = false;
+    for (let i = 0; i < pts.length && pts.length > 3; i++) {
+      const a = pts[(i - 1 + pts.length) % pts.length];
+      const b = pts[i];
+      const c = pts[(i + 1) % pts.length];
+      const abx = (b[0] - a[0]) * kx;
+      const aby = (b[1] - a[1]) * ky;
+      const bcx = (c[0] - b[0]) * kx;
+      const bcy = (c[1] - b[1]) * ky;
+      const lab = Math.hypot(abx, aby);
+      const lbc = Math.hypot(bcx, bcy);
+      if (lab < 0.001) {
+        pts.splice(i, 1);
+        changed = true;
+        i--;
+        continue;
+      }
+      const cross = abx * bcy - aby * bcx;
+      const dot = abx * bcx + aby * bcy;
+      if (lbc > 0.001 && dot < 0 && Math.abs(cross) / Math.max(lab, lbc) < 0.05) {
+        pts.splice(i, 1);
+        changed = true;
+        i--;
+      }
+    }
+  }
+  if (pts.length < 3) return ring;
+  return closeDegRing(pts) || ring;
 }
 
 /** Overlay uses the detailed clip. Clipboard uses clipPx (exact sliver, or the OI ring on the keep path). */
@@ -2593,7 +2735,7 @@ function stashBuilding(buckets, frame, affine, clipRing, overlayPts, clipPx, pic
       ]);
     }
   }
-  const z = clipZone(picked.typeId, affine ? clipRing : clipFromImage);
+  const z = clipZone(picked.typeId, affine ? clipRing : clipFromImage, require("./export-mode").isRoofRepair() ? { openTriangle: true } : undefined);
   if (z) buckets.clipZones.push(z);
   const src = overlayPts && overlayPts.length ? overlayPts : clipPx;
   const cxs = src.map((p) => p[0]);
@@ -2679,10 +2821,14 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
     oiOpts.spanFloorPx = Math.min(MIN_OI_SPAN_PX, Math.max(drawn * 0.5, 0.02));
   }
   tSim = profEmit ? profile.now() : 0;
+  const repair = require("./export-mode").isRoofRepair();
+  if (repair) oiOpts.why = {};
   const oiCoords = ringToOi(clippedPts, frame.imgW, frame.imgH, frame.mpuX, oiOpts);
   if (profEmit) profile.add("emit-ringToOi", profile.msSince(tSim));
   if (!oiCoords) {
     if (ringVertexCount(clippedPts) > MAX_OI_RING_VERTS) return "verts";
+    // Feedback #23: a simplified roof whose outline crosses itself.
+    if (repair && oiOpts.why.reason === "self-intersect") return "selfx";
     return "clip";
   }
   const drawnRing = llFromOiPixels(oiPixelCoords(oiCoords), frame);
@@ -2725,7 +2871,7 @@ function emitBuildingSimplified(ring, heightM, frame, affine, buckets, maxPts, e
       ]);
     }
   }
-  const z = clipZone(picked.typeId, affine ? clipRing : clipFromImage);
+  const z = clipZone(picked.typeId, affine ? clipRing : clipFromImage, require("./export-mode").isRoofRepair() ? { openTriangle: true } : undefined);
   if (!z) {
     buckets.oiAreas.pop();
     if (picked.clipType) buckets.clipTypes.pop();
@@ -4863,6 +5009,9 @@ function buildClutter({
 }
 
 module.exports = {
+  squareSideShare,
+  despikeDegRing,
+  dropAsWedgePiece,
   clipTreePieceOpenGround,
   isTrunkArea,
   attributionTxt,

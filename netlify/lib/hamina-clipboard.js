@@ -252,9 +252,13 @@ function roundRingM(ring) {
   return ring.map(([x, y]) => [+x.toFixed(4), +y.toFixed(4)]);
 }
 
-function clipZone(typeId, ringM) {
+function clipZone(typeId, ringM, opts) {
   const coords = roundRingM(ringM);
-  if (coords.length < 4) return null;
+  // Feedback #23 (roofRepair, buildings only): an open triangle (three
+  // corners, a common terrain-split roof piece) is closed and kept instead
+  // of dropped.
+  const minOpen = opts && opts.openTriangle ? 3 : 4;
+  if (coords.length < minOpen) return null;
   const a = coords[0];
   const b = coords[coords.length - 1];
   if (a[0] !== b[0] || a[1] !== b[1]) coords.push([...a]);

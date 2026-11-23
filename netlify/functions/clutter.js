@@ -1673,6 +1673,11 @@ async function handleClutterNorthUp(event) {
   // them off. Pass testHost again to put one back on /dev hosts only.
   exportMode.setTallCanopyKeep(exportMode.tallCanopyKeepWanted(true, body));
   exportMode.setWaterEdges(exportMode.waterEdgesWanted(true, body));
+  // Feedback #23 (1.3.88): roof pieces that were dropped (square-sided
+  // split pieces taken for wedges, three-corner terrain pieces, outlines
+  // that cross themselves after simplifying) are kept. /dev hosts only;
+  // roofRepair:false turns it off.
+  exportMode.setRoofRepair(exportMode.roofRepairWanted(testHost, body));
   // Production release 1.3.20: feedback #14 pole map notes (a map note at
   // each shipped light pole, Copy terrain only), feedback #15 campground
   // points (a point-mapped campground gets a read-only park circle for the
