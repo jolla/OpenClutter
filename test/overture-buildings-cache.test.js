@@ -103,11 +103,11 @@ describe("overture buildings cache and retry", () => {
     };
     const pack = await fetchOvertureFootprints(BOX, { reader, diskCache: true, signal: new AbortController().signal });
     assert.equal(calls, 2);
-    assert.equal(pack.features.length, 1);
+    assert.equal(pack.features.length, groups.length);
     assert.equal(pack.cached, undefined);
     const cached = await persist.readBuildingCache(BOX, { release: RELEASE, diskCache: true });
     assert.ok(cached);
-    assert.equal(cached.features.length, 1);
+    assert.equal(cached.features.length, groups.length);
   });
 
   it("does not retry a 404 on the pinned release", async () => {

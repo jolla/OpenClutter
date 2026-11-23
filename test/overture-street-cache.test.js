@@ -36,21 +36,21 @@ describe("overture street cache", () => {
     const wrote = await streetPersist.writeStreetCache(BOX, {
       elements: [WAY],
       themes: { land_use: 1 },
-      release: "2026-10-21.0",
+      release: "2026-11-18.0",
     });
     assert.equal(wrote, true);
-    const got = await streetPersist.readStreetCache(BOX, { release: "2026-10-21.0" });
+    const got = await streetPersist.readStreetCache(BOX, { release: "2026-11-18.0" });
     assert.ok(got);
     assert.equal(got.elements[0].id, "ov-1");
     assert.equal(got.elements[0].tags.leisure, "marina");
-    assert.equal(got.release, "2026-10-21.0");
+    assert.equal(got.release, "2026-11-18.0");
     assert.match(streetPersist.cacheNote(got), /saved Overture copy dated/);
   });
 
   it("does not store an empty street read", async () => {
-    const wrote = await streetPersist.writeStreetCache(BOX, { elements: [], themes: {}, release: "2026-10-21.0" });
+    const wrote = await streetPersist.writeStreetCache(BOX, { elements: [], themes: {}, release: "2026-11-18.0" });
     assert.equal(wrote, false);
-    const got = await streetPersist.readStreetCache(BOX, { release: "2026-10-21.0" });
+    const got = await streetPersist.readStreetCache(BOX, { release: "2026-11-18.0" });
     assert.equal(got, null);
   });
 });

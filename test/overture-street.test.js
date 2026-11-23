@@ -33,7 +33,7 @@ describe("Overture street index", () => {
   });
 
   it("pins the same release as buildings and finds KOA and Walmart row groups", () => {
-    assert.equal(RELEASE, "2026-10-21.0");
+    assert.equal(RELEASE, "2026-11-18.0");
     const roadKoa = groupsForThemeBbox("segment", KOA);
     const parkWal = groupsForThemeBbox("infrastructure", WAL);
     const landKoa = groupsForThemeBbox("land", KOA);

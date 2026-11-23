@@ -183,7 +183,7 @@ describe("street-map coordinator", () => {
     const first = await fetchStreetMaps(BOX, {
       fetchOvertureStreet: async () => {
         live += 1;
-        return { ok: true, elements: [marina], notes: [], themes: { land_use: 1 }, release: "2026-10-21.0" };
+        return { ok: true, elements: [marina], notes: [], themes: { land_use: 1 }, release: "2026-11-18.0" };
       },
       fetchGapOverpass: async () => gap,
       fetchOsmMaps: async () => {
@@ -221,7 +221,7 @@ describe("street-map coordinator", () => {
     await streetPersist.writeStreetCache(BOX, {
       elements: [{ type: "way", id: "old", tags: { leisure: "marina" }, geometry: [{ lon: -90.525, lat: 41.58 }] }],
       themes: {},
-      release: "2026-10-21.0",
+      release: "2026-11-18.0",
     });
     const key = [...store.keys()][0];
     const entry = store.get(key);

@@ -11,7 +11,7 @@
  * from a DuckDB CSV.
  *
  *   node scripts/fetch-overture-index.js            newest release on Azure
- *   node scripts/fetch-overture-index.js 2026-10-21.0
+ *   node scripts/fetch-overture-index.js 2026-11-18.0
  *
  * Then set RELEASE in netlify/lib/overture.js to the printed release.
  */

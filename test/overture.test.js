@@ -24,11 +24,11 @@ const OAK = {
 describe("Overture buildings", () => {
   it("selects the single Oak Creek row group from the committed index", () => {
     const groups = groupsForBbox(OAK.west, OAK.south, OAK.east, OAK.north);
-    assert.equal(RELEASE, "2026-10-21.0");
+    assert.equal(RELEASE, "2026-11-18.0");
     assert.equal(groups.length, 1);
     assert.match(groups[0].file, /^part-00060-/);
-    assert.equal(groups[0].rowStart, 1267917);
-    assert.equal(groups[0].rowCount, 21073);
+    assert.equal(groups[0].rowStart, 1322686);
+    assert.equal(groups[0].rowCount, 17843);
     assert.ok(groups[0].xmin < OAK.west && groups[0].xmax > OAK.east);
   });
 
