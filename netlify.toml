@@ -15,16 +15,19 @@
 [functions."geocode"]
   timeout = 26
 
-# esbuild emits clutter.js and does not copy fs reads. The Hamina laser grid
+# esbuild emits clutter.js and does not copy fs reads. The aerial lock thread
+# (image-lock-worker.js with geo-frame.js and jpeg-js) is a separate file too;
+# without it a large plate would have no thread and no deadline (1.3.92).
+# The Hamina laser grid
 # has to be listed or a Finland export throws ENOENT and the gateway returns 502.
 [functions."clutter"]
-  included_files = ["netlify/lib/nls-hamina-ndsm.gz", "netlify/lib/ms-buildings-index.txt.gz", "netlify/lib/usa-coverage.json.gz"]
+  included_files = ["netlify/lib/nls-hamina-ndsm.gz", "netlify/lib/ms-buildings-index.txt.gz", "netlify/lib/usa-coverage.json.gz", "netlify/lib/image-lock-worker.js", "netlify/lib/geo-frame.js", "netlify/lib/stage-clock.js", "node_modules/jpeg-js/**"]
   external_node_modules = ["laz-perf"]
 
 # Same laser grid. esbuild does not copy the gzip into the background bundle.
 # laz-perf stays external so its wasm file loads from node_modules.
 [functions."clutter-export-background"]
-  included_files = ["netlify/lib/nls-hamina-ndsm.gz", "netlify/lib/ms-buildings-index.txt.gz", "netlify/lib/usa-coverage.json.gz"]
+  included_files = ["netlify/lib/nls-hamina-ndsm.gz", "netlify/lib/ms-buildings-index.txt.gz", "netlify/lib/usa-coverage.json.gz", "netlify/lib/image-lock-worker.js", "netlify/lib/geo-frame.js", "netlify/lib/stage-clock.js", "node_modules/jpeg-js/**"]
   external_node_modules = ["laz-perf"]
 
 # Direct API v1 prototype (dev branch). Ahead of /api/* and /dev rules.

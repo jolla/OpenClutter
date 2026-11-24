@@ -63,15 +63,71 @@ test("a lock stuck once succeeds on the fresh thread", async () => {
   assert.ok(Buffer.compare(got.jpegBuf, inline.jpegBuf) === 0);
 });
 
-test("a thread that cannot start falls back to the inline lock", async () => {
-  const inline = gf.lockIsotropicImagery(frameN, buf, { maxSide: 1040 });
+test("a thread that cannot start keeps the plate instead of locking on the main thread", async () => {
   const spawn = () => {
     throw new Error("no threads");
   };
   const got = await lockIsotropicImageryBounded(frameN, buf, { maxSide: 1040 }, { inline: false, spawn });
-  assert.equal(got.resampled, true);
-  assert.deepEqual(got.frame, inline.frame);
-  assert.ok(Buffer.compare(got.jpegBuf, inline.jpegBuf) === 0);
+  assert.equal(got.mode, "kept");
+  assert.equal(got.resampled, false);
+  assert.equal(got.jpegBuf, buf);
+  assert.deepEqual(got.frame, gf.unifyFrameMpu(frameN));
+  assert.deepEqual(got.failed, ["no threads", "no threads"]);
+});
+
+test("the Netlify included_files set is enough to run the lock thread on its own", async () => {
+  // Same layout netlify.toml ships: netlify/lib/{image-lock-worker,geo-frame,
+  // stage-clock}.js and node_modules/jpeg-js under the task root.
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { Worker } = require("node:worker_threads");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "oc-lock-"));
+  try {
+    const toml = fs.readFileSync(path.join(__dirname, "..", "netlify.toml"), "utf8");
+    const lists = toml.match(/included_files = \[[^\]]*\]/g) || [];
+    const lockLists = lists.filter((l) => l.includes("image-lock-worker.js"));
+    assert.equal(lockLists.length, 2, "clutter and clutter-export-background both ship the thread");
+    const files = JSON.parse(lockLists[0].replace(/^included_files = /, ""));
+    for (const f of files) {
+      if (f.endsWith("/**")) {
+        const dir = f.slice(0, -3);
+        fs.mkdirSync(path.dirname(path.join(root, dir)), { recursive: true });
+        fs.cpSync(path.join(__dirname, "..", dir), path.join(root, dir), { recursive: true, dereference: true });
+      } else if (f.endsWith(".js")) {
+        fs.mkdirSync(path.dirname(path.join(root, f)), { recursive: true });
+        fs.copyFileSync(path.join(__dirname, "..", f), path.join(root, f));
+      }
+    }
+    const file = path.join(root, "netlify", "lib", "image-lock-worker.js");
+    const spawn = (data) => new Worker(file, { workerData: data });
+    const inline = gf.lockIsotropicImagery(frameN, buf, { maxSide: 1040 });
+    const got = await lockIsotropicImageryBounded(frameN, buf, { maxSide: 1040 }, { inline: false, spawn });
+    assert.equal(got.mode, "thread");
+    assert.ok(Buffer.compare(got.jpegBuf, inline.jpegBuf) === 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the thread file is looked for under the Lambda task root", () => {
+  const path = require("node:path");
+  const { workerCandidates } = require("../netlify/lib/image-lock");
+  const prev = process.env.LAMBDA_TASK_ROOT;
+  process.env.LAMBDA_TASK_ROOT = "/var/task";
+  try {
+    assert.ok(workerCandidates().includes(path.join("/var/task", "netlify", "lib", "image-lock-worker.js")));
+  } finally {
+    if (prev === undefined) delete process.env.LAMBDA_TASK_ROOT;
+    else process.env.LAMBDA_TASK_ROOT = prev;
+  }
+});
+
+test("a small plate locks inline", async () => {
+  const small = plate(64, 64);
+  const fr = gf.geoFrame(bboxN, { imgW: 64, imgH: 64, maxSpanM: 50000, minSpanM: 1 });
+  const got = await lockIsotropicImageryBounded(fr, small, { maxSide: 1040 });
+  assert.equal(got.mode, "inline");
 });
 
 test("a plate that needs no resample is sized from its header without a decode", () => {
@@ -86,4 +142,12 @@ test("a plate that needs no resample is sized from its header without a decode",
   assert.equal(timing.decodeMs, undefined);
   const expect = gf.unifyFrameMpu(gf.geoFrame(bboxS, { imgW: W, imgH: H, maxSpanM: Math.max(fr.widthM, fr.lengthM, 2500) * 2.5, minSpanM: 1 }));
   assert.deepEqual(out.frame, expect);
+});
+
+test("worker:netlify keeps a /dev export on Netlify, never on production", () => {
+  const { devStaysOnNetlify } = require("../netlify/lib/fly-handoff");
+  const body = JSON.stringify({ west: 0, worker: "netlify" });
+  assert.equal(devStaysOnNetlify({ headers: { host: "dev.openclutter.com" }, body }), true);
+  assert.equal(devStaysOnNetlify({ headers: { host: "openclutter.com" }, body }), false);
+  assert.equal(devStaysOnNetlify({ headers: { host: "dev.openclutter.com" }, body: JSON.stringify({ west: 0 }) }), false);
 });

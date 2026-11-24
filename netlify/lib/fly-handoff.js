@@ -56,6 +56,22 @@ function flyWorkerConfig() {
   return { url: exportUrl(url), secret };
 }
 
+/**
+ * /dev hosts only: a request with worker:"netlify" runs on Netlify instead
+ * of Fly, so the Netlify bundle can be checked end to end (1.3.92).
+ */
+function devStaysOnNetlify(inner) {
+  if (!inner || typeof inner.body !== "string" || inner.body.indexOf('"worker"') < 0) return false;
+  let body;
+  try {
+    body = JSON.parse(inner.body);
+  } catch {
+    return false;
+  }
+  if (!body || body.worker !== "netlify") return false;
+  return require("./terrain").isDevTestHost(inner) === true;
+}
+
 function exportUrl(base) {
   const trimmed = String(base || "").replace(/\/$/, "");
   if (/\/export$/i.test(trimmed)) return trimmed;
@@ -192,6 +208,7 @@ async function watchAfterDrop(jobId, startedAt, nowFn, sleepFn, pollMs, staleMs)
 async function handOffExport(jobId, inner, fetchImpl) {
   const cfg = flyWorkerConfig();
   if (!cfg) return { skipped: true, handed: false, fallback: false, stay: false };
+  if (devStaysOnNetlify(inner)) return { skipped: true, handed: false, fallback: false, stay: false, reason: "dev-netlify" };
   const { sleepFn } = clockFns();
   let result = null;
   for (let attempt = 0; attempt <= BUSY_RETRY_MS.length; attempt++) {
@@ -376,6 +393,7 @@ module.exports = {
   parseWorkerBody,
   workerStoppedMessage,
   heartbeatIsStale,
+  devStaysOnNetlify,
   rerunHasRoom,
   handOffExport,
   isBusyResult,

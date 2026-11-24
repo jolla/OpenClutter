@@ -2153,14 +2153,23 @@ async function handleClutterNorthUp(event) {
       if (process.env.OPENCLUTTER_STAGE_LOG) {
         const t = locked.timing || {};
         process.stderr.write(
-          "stage aerialLock wall=" + locked.wallMs + " attempts=" + locked.attempts +
+          "stage aerialLock wall=" + locked.wallMs + " mode=" + locked.mode + " attempts=" + locked.attempts +
             " decode=" + (t.decodeMs | 0) + " resize=" + (t.resizeMs | 0) + " encode=" + (t.encodeMs | 0) + "\n"
         );
       }
       if (locked.failed) {
         warnings.push(
           "Aerial image kept on its own pixel grid: the ground-meter resample " +
-            (locked.timedOut ? "timed out" : "failed") + " twice."
+            (locked.timedOut ? "timed out twice." : locked.attempts ? "failed twice." : "could not start.")
+        );
+      }
+      if (testHost) {
+        const t = locked.timing || {};
+        warnings.push(
+          "Map image lock: " + (locked.mode || "?") + " " + locked.wallMs + " ms" +
+            (locked.attempts ? ", attempts " + locked.attempts : "") +
+            (t.decodeMs != null ? ", decode " + t.decodeMs + " resize " + (t.resizeMs | 0) + " encode " + (t.encodeMs | 0) + " ms" : "") +
+            (locked.failed ? ", " + locked.failed.join("/") : "")
         );
       }
       frame = locked.frame;
