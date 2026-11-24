@@ -1697,8 +1697,8 @@ async function handleClutterNorthUp(event) {
     exportMode.trueMetresWanted(true, body, event && event.queryStringParameters),
   );
   // 1.3.2 adaptive terrain: native-resolution DEM and a mesh that spends the
-  // paste's floors on steep ground. /dev hosts only (adaptiveTerrain:false
-  // or ?adaptiveTerrain=0 turns it off there). Production stays off.
+  // paste's floors on steep ground. On for every host since 1.3.88
+  // (adaptiveTerrain:false or ?adaptiveTerrain=0 turns it off).
   exportMode.setAdaptiveTerrain(exportMode.adaptiveTerrainWanted(testHost, body));
   // Feedback #9 forest cut: production release 1.3.13 runs bands (forest
   // fix A, canopyBands) on every host; forest:"off" keeps the 1.3.1 blocks.

@@ -5358,6 +5358,85 @@ async function fetch3depFineGrid(frame, fetchFn, signal) {
   }
 }
 
+/** Adaptive fine-grid cache key: same box, same raster plan. */
+function fineCacheKey(frame) {
+  const f = (x) => (Math.round(+x * 1e6) / 1e6).toFixed(6);
+  return (
+    "3depfine_" + f(frame.west) + "_" + f(frame.south) + "_" + f(frame.east) + "_" + f(frame.north) +
+    "_" + FINE_GRID_MAX + "_" + DEP3_FINE_MIN_M
+  );
+}
+
+function encodeFineGrid(fine) {
+  const z = fine.z instanceof Float32Array ? fine.z : Float32Array.from(fine.z);
+  return Buffer.from(
+    JSON.stringify({
+      west: fine.west, south: fine.south, east: fine.east, north: fine.north,
+      cols: fine.cols, rows: fine.rows,
+      z: Buffer.from(z.buffer, z.byteOffset, z.byteLength).toString("base64"),
+    })
+  );
+}
+
+function decodeFineGrid(buf) {
+  const j = JSON.parse(buf.toString("utf8"));
+  if (!j || !(j.cols > 1) || !(j.rows > 1) || typeof j.z !== "string") return null;
+  const raw = Buffer.from(j.z, "base64");
+  if (raw.length !== j.cols * j.rows * 4) return null;
+  const z = new Float32Array(j.cols * j.rows);
+  for (let i = 0; i < z.length; i++) z[i] = raw.readFloatLE(i * 4);
+  if (!z.every(Number.isFinite)) return null;
+  return { west: +j.west, south: +j.south, east: +j.east, north: +j.north, cols: j.cols, rows: j.rows, z };
+}
+
+/** Time left for a second fine-grid read after a quick miss. */
+const DEP3_FINE_RETRY_WAIT_MS = 750;
+
+/**
+ * Adaptive fine grid for a 3DEP frame: the disk copy when there is one,
+ * else a live exportImage read, tried once more after a quick miss (a
+ * transient 502). Only a real grid is written to the cache.
+ */
+async function loadFineGrid(frame, fetchFn, parent, opts) {
+  const useCache = demCacheEnabled(fetchFn);
+  if (useCache) {
+    try {
+      const buf = await demCache.read(fineCacheKey(frame));
+      const hit = buf && buf.length ? decodeFineGrid(buf) : null;
+      demCache.note("demFine", !!hit);
+      if (hit) return hit;
+    } catch {
+      /* a bad entry falls through to a live read */
+    }
+  }
+  const t0 = Date.now();
+  const waitMs =
+    opts && Number.isFinite(+opts.fineRetryWaitMs) ? Math.max(0, +opts.fineRetryWaitMs) : DEP3_FINE_RETRY_WAIT_MS;
+  let fine = null;
+  for (let attempt = 0; attempt < 2 && !fine; attempt++) {
+    if (parent && parent.aborted) break;
+    const left = DEP3_FINE_MS - (Date.now() - t0);
+    if (attempt > 0) {
+      if (left < waitMs + 2000) break;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+    const ctl = linkAbort(parent, attempt === 0 ? DEP3_FINE_MS : Math.max(1, DEP3_FINE_MS - (Date.now() - t0)));
+    try {
+      fine = await fetch3depFineGrid(frame, fetchFn, ctl.signal);
+    } finally {
+      ctl.done();
+    }
+  }
+  if (fine && useCache) {
+    try {
+      await demCache.write(fineCacheKey(frame), encodeFineGrid(fine));
+    } catch {
+      /* cache is a speed path */
+    }
+  }
+  return fine;
+}
+
 /** The fine grid rides on the samples array (not serialized) so every caller of terrainFromSamples keeps it. */
 function attachFineGrid(samples, fine) {
   if (samples && fine) Object.defineProperty(samples, "fineGrid", { value: fine, enumerable: false, writable: true });
@@ -5589,12 +5668,12 @@ async function fetchTerrainDemWork(frame, fetchFn, opts) {
   let samples = [];
   // Adaptive terrain: the native 3DEP raster runs beside getSamples. It only
   // refines the mesh; a miss or a slow read leaves the default samples.
+  // The fine grid has its own cache entry, and a samples cache hit still
+  // waits for it, so a warm export gets the same mesh as a cold one. A miss
+  // (null) is never cached; the next export reads 3DEP again.
   const fineJob =
     adaptiveTerrainOn() && opts && opts.backgroundDem && !outside && frameHas3dep(frame)
-      ? (() => {
-          const ctl = linkAbort(parent, DEP3_FINE_MS);
-          return fetch3depFineGrid(frame, fetchFn, ctl.signal).finally(() => ctl.done());
-        })()
+      ? loadFineGrid(frame, fetchFn, parent, opts)
       : null;
   // terrainStyle is intentionally unused here. Sloped and Raised layers share
   // this read; the mesh is built later from the same samples.
@@ -5614,6 +5693,7 @@ async function fetchTerrainDemWork(frame, fetchFn, opts) {
         if (cached.length >= 4) {
           demCache.note("dem", true);
           if (surfaceEarly) surfaceEarly.cancel();
+          if (fineJob) attachFineGrid(cached, await fineJob);
           return {
             samples: cached,
             kind: "bare-earth",
@@ -5840,6 +5920,10 @@ module.exports = {
   adaptiveContourMesh,
   fineElevation,
   fetch3depFineGrid,
+  loadFineGrid,
+  encodeFineGrid,
+  decodeFineGrid,
+  fineCacheKey,
   fetchDemSamplesFromExport,
   samplesFromFineGrid,
   attachFineGrid,
