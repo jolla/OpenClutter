@@ -194,3 +194,48 @@ describe("Netlify attempt tagging in completeExportJob (1.3.95)", () => {
     }
   });
 });
+
+describe("status labels (1.3.96)", () => {
+  function setup() {
+    jobs.setExportStoreForTests(memoryStore());
+    usage.setStoreForTests(memoryStore());
+  }
+
+  it("worker is fly, netlify, or null; never a stage name", async () => {
+    setup();
+    await jobs.updateJob(ID, { state: "running", stage: "Trees", heartbeatStage: "Packing zip" });
+    assert.equal((await status(ID)).worker, null);
+    await jobs.updateJob(ID, { worker: "fly" });
+    assert.equal((await status(ID)).worker, "fly");
+    await jobs.updateJob(OTHER, { state: "running", worker: "netlify" });
+    assert.equal((await status(OTHER)).worker, "netlify");
+  });
+
+  it("a failed job keeps its failed-stage label while the quiet run moves on", async () => {
+    setup();
+    await quietRun(ID, "attempt-A");
+    const failed = await status(ID);
+    assert.equal(failed.stage, "Export failed");
+    await jobs.updateJob(ID, { stage: "Packing zip", tilesDone: 3, tilesTotal: 4 });
+    await jobs.updateJob(ID, { stage: "Packing zip", step: { key: "zip", label: "Packing zip" } });
+    const s = await status(ID);
+    assert.equal(s.state, "error");
+    assert.equal(s.stage, "Export failed");
+    assert.ok(!s.stages.includes("Packing zip"));
+    assert.match(s.error, /stopped during Trees/);
+    // The 1.3.95 late done of that same attempt still lands, with its stage.
+    await jobs.updateJob(ID, done("attempt-A"));
+    const fin = await status(ID);
+    assert.equal(fin.state, "done");
+    assert.equal(fin.stage, "Zip ready");
+  });
+
+  it("an ordinary error from the pipeline also keeps its label", async () => {
+    setup();
+    await jobs.updateJob(ID, { state: "error", stage: "Export failed", error: "Export failed (500)." });
+    await jobs.updateJob(ID, { stage: "Trees" });
+    const s = await status(ID);
+    assert.equal(s.stage, "Export failed");
+    assert.equal(s.stageLabel !== "Trees", true);
+  });
+});

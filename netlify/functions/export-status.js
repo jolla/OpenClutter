@@ -89,7 +89,9 @@ exports.handler = async (event) => {
     terrainClipboard: job.terrainClipboard || null,
     terrainStatus: job.terrainStatus || "",
     gpsClipboard: job.gpsClipboard || null,
-    worker: job.worker || job.heartbeatStage || null,
+    // Only the worker that took the job (fly or netlify), or none. A stage
+    // name is not a worker (1.3.96).
+    worker: job.worker === "fly" || job.worker === "netlify" ? job.worker : null,
     netlifyBeatAt: job.netlifyBeatAt || null,
     netlifyBeat: job.netlifyBeat || null,
   });

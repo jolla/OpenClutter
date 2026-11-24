@@ -420,7 +420,10 @@ function mergeJobPatch(cur, patch) {
     delete incoming.heartbeatStage;
     // A cancelled job keeps its "Export cancelled" line while a Netlify
     // run that cannot be stopped mid-stage finishes in the background.
-    if (cur.state === "cancelled") {
+    // A failed job keeps its failed-stage label the same way: a run the
+    // watchdog failed could otherwise move it on to "Packing zip" (1.3.96).
+    // Its own late done (1.3.95) takes the branch above instead.
+    if (cur.state === "cancelled" || cur.state === "error" || cur.state === "failed") {
       delete incoming.stage;
       delete incoming.tilesDone;
       delete incoming.tilesTotal;
