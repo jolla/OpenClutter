@@ -485,7 +485,7 @@ async function fetchOvertureFootprintsWork(frame, opts) {
       };
       if (large) {
         let cursor = 0;
-        const workers = Math.min(3, gs.length);
+        const workers = Math.min(require("./host-memory").readConcurrency(3), gs.length);
         const jobs = [];
         for (let w = 0; w < workers; w++) {
           jobs.push((async () => {
@@ -497,6 +497,12 @@ async function fetchOvertureFootprintsWork(frame, opts) {
           })());
         }
         await Promise.all(jobs);
+      } else if (require("./host-memory").lowMemoryHost()) {
+        // Small function memory: one row group at a time (1.3.93).
+        for (const g of gs) {
+          if (partial) break;
+          accept(await readOne(g));
+        }
       } else {
         const results = await Promise.all(gs.map(readOne));
         for (let i = 0; i < results.length; i++) accept(results[i]);

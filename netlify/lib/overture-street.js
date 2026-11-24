@@ -960,7 +960,7 @@ async function readTheme(theme, bbox, reader, signal) {
   const filter = bboxRowFilter(bbox);
   const files = [...byFile.entries()];
   const byFileRows = new Map();
-  await poolMap(files, GROUP_READ_CONCURRENCY, async ([file, gs]) => {
+  await poolMap(files, require("./host-memory").readConcurrency(GROUP_READ_CONCURRENCY), async ([file, gs]) => {
     if (signal && signal.aborted) throw new Error("The operation was aborted due to timeout");
     const url = AZURE_ROOT + "theme=" + theme.theme + "/type=" + theme.type + "/" + file;
     const pc = reader.processCache ? require("./parquet-cache") : null;
@@ -1003,7 +1003,7 @@ async function readTheme(theme, bbox, reader, signal) {
     };
     // Groups of one file in parallel once the footer is known; rows keep
     // the file's group order.
-    const perGroup = metadata ? await poolMap(gs, GROUP_READ_CONCURRENCY, readGroup) : [];
+    const perGroup = metadata ? await poolMap(gs, require("./host-memory").readConcurrency(GROUP_READ_CONCURRENCY), readGroup) : [];
     if (!metadata) for (const g of gs) perGroup.push(await readGroup(g));
     byFileRows.set(file, perGroup);
   });
@@ -1035,7 +1035,7 @@ async function fetchOvertureStreet(bbox, opts) {
     // or parquet read ignores that abort (a stuck Azure socket or a queue
     // slot that never wakes). Otherwise this source can sit for many minutes.
     const results = await Promise.race([
-      poolMap(THEMES, THEME_CONCURRENCY, async (theme) => {
+      poolMap(THEMES, require("./host-memory").readConcurrency(THEME_CONCURRENCY), async (theme) => {
         const rows = await readTheme(theme, box, reader, ctrl.signal);
         return { key: theme.key, rows, elements: elementsFromRows(theme.key, rows, box) };
       }),

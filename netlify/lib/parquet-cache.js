@@ -25,7 +25,8 @@ const SMALL_RANGE_BYTES = 64 * 1024;
 
 function capBytes() {
   const mb = Number(process.env.OPENCLUTTER_PARQUET_CACHE_MB);
-  return (Number.isFinite(mb) && mb >= 0 ? mb : 256) * 1024 * 1024;
+  const fallback = require("./host-memory").lowMemoryHost() ? 32 : 256;
+  return (Number.isFinite(mb) && mb >= 0 ? mb : fallback) * 1024 * 1024;
 }
 
 const lengths = new Map();

@@ -51,3 +51,60 @@ test("openSpans names the stages still open on the last export clock", async () 
   await p;
   assert.ok(!stageClock.openSpans().some(([name]) => name === "overture"));
 });
+
+test("a 1 GB function counts as a low-memory host; Fly and the benches do not", () => {
+  const hm = require("../netlify/lib/host-memory");
+  const keep = { m: process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE, f: process.env.OPENCLUTTER_LOW_MEMORY };
+  try {
+    delete process.env.OPENCLUTTER_LOW_MEMORY;
+    delete process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE;
+    assert.equal(hm.lowMemoryHost(), false);
+    assert.equal(hm.readConcurrency(5), 5);
+    process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE = "1024";
+    assert.equal(hm.lowMemoryHost(), true);
+    assert.equal(hm.readConcurrency(5), 1);
+    process.env.OPENCLUTTER_LOW_MEMORY = "0";
+    assert.equal(hm.lowMemoryHost(), false);
+  } finally {
+    if (keep.m === undefined) delete process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE;
+    else process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE = keep.m;
+    if (keep.f === undefined) delete process.env.OPENCLUTTER_LOW_MEMORY;
+    else process.env.OPENCLUTTER_LOW_MEMORY = keep.f;
+  }
+});
+
+test("on a low-memory host the Overture street read decodes one row group at a time", async () => {
+  const street = require("../netlify/lib/overture-street");
+  const box = { west: -93.63, south: 44.9, east: -93.626, north: 44.903 };
+  let active = 0;
+  let maxActive = 0;
+  let reads = 0;
+  const reader = {
+    processCache: false,
+    compressors: {},
+    asyncBufferFromUrl: async () => ({ byteLength: 1, slice: async () => new ArrayBuffer(0) }),
+    parquetReadObjects: async () => {
+      active++;
+      reads++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, 5));
+      active--;
+      return [];
+    },
+  };
+  const keep = process.env.OPENCLUTTER_LOW_MEMORY;
+  try {
+    process.env.OPENCLUTTER_LOW_MEMORY = "1";
+    const low = await street.fetchOvertureStreet(box, { reader, deadlineMs: 10000 });
+    assert.equal(low.ok, true);
+    assert.ok(reads > 1, "several groups read");
+    assert.equal(maxActive, 1);
+    process.env.OPENCLUTTER_LOW_MEMORY = "0";
+    maxActive = 0;
+    await street.fetchOvertureStreet(box, { reader, deadlineMs: 10000 });
+    assert.ok(maxActive > 1, "roomy hosts keep parallel reads");
+  } finally {
+    if (keep === undefined) delete process.env.OPENCLUTTER_LOW_MEMORY;
+    else process.env.OPENCLUTTER_LOW_MEMORY = keep;
+  }
+});

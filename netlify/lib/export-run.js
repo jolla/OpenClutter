@@ -90,7 +90,15 @@ async function otherWorkerFinished(jobId, worker) {
  * still open, so export-status can fail a run whose function died (1.3.93).
  */
 function startNetlifyBeat(jobId) {
+  let peakRss = 0;
+  const sample = () => {
+    const r = process.memoryUsage.rss();
+    if (r > peakRss) peakRss = r;
+  };
+  const sampler = setInterval(sample, 500);
+  if (typeof sampler.unref === "function") sampler.unref();
   const beat = () => {
+    sample();
     let open = [];
     try {
       open = require("./stage-clock").openSpans().slice(0, 6);
@@ -104,7 +112,13 @@ function startNetlifyBeat(jobId) {
         if (!cur || jobs.isTerminalState(cur.state)) return null;
         return jobs.updateJob(jobId, {
           netlifyBeatAt: Date.now(),
-          netlifyBeat: { rssMb: Math.round(mem.rss / 1e6), heapMb: Math.round(mem.heapUsed / 1e6), open },
+          netlifyBeat: {
+            rssMb: Math.round(mem.rss / 1e6),
+            peakRssMb: Math.round(peakRss / 1e6),
+            heapMb: Math.round(mem.heapUsed / 1e6),
+            limitMb: require("./host-memory").functionMemoryMb() || null,
+            open,
+          },
         });
       })
       .catch(() => {});
@@ -112,7 +126,10 @@ function startNetlifyBeat(jobId) {
   beat();
   const timer = setInterval(beat, jobs.HEARTBEAT_MS);
   if (typeof timer.unref === "function") timer.unref();
-  return () => clearInterval(timer);
+  return () => {
+    clearInterval(timer);
+    clearInterval(sampler);
+  };
 }
 
 const CANCELLED = { ok: true, finished: false, cancelled: true, reason: "cancelled" };
