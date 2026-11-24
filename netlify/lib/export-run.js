@@ -128,7 +128,7 @@ function startNetlifyBeat(jobId, attempt) {
             peakRssMb: Math.round(peakRss / 1e6),
             // The kernel's high-water mark. peakRssMb is sampled on the main
             // thread, so a long synchronous stage hides its own peak and it
-            // shows up at the next stage instead (1.3.100).
+            // shows up at the next stage instead (1.3.101).
             maxRssMb: maxRssMb(),
             heapMb: Math.round(mem.heapUsed / 1e6),
             limitMb: require("./host-memory").functionMemoryMb() || null,
@@ -196,6 +196,8 @@ async function completeExportJob(jobId, inner, opts) {
     } catch {
       data = {};
     }
+    // The body string is a third copy of the zip (as base64) once parsed (1.3.101).
+    if (result) result.body = null;
     if (status === 200 && data.site) {
       if (await otherWorkerFinished(jobId, worker)) {
         return { ok: true, finished: false, reason: "other-worker-finished" };
@@ -235,6 +237,7 @@ async function completeExportJob(jobId, inner, opts) {
     }
     if (await jobs.jobCancelled(jobId)) return CANCELLED;
     const zip = Buffer.from(data.zipBase64, "base64");
+    data.zipBase64 = null;
     await jobs.saveZip(jobId, zip);
     // Cancel can land while the zip is written: drop the stored zip so a
     // cancelled job leaves no file behind.

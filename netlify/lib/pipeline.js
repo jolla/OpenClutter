@@ -4851,10 +4851,14 @@ function buildClutter({
   }
   const packed = require("./stage-clock").timeSpanSync("jsonBuild", () => {
     const oi = buildOpenIntent(frame, name, imgName, areas, materials);
-    return { oi, oiJson: JSON.stringify(oi) };
+    // Keep the bytes, not the string too: the zip needs a Buffer, and the
+    // string was a second copy of the JSON through the end of the export
+    // (1.3.101).
+    return { oi, oiBytes: Buffer.from(JSON.stringify(oi)) };
   });
   const oi = packed.oi;
-  const oiJson = packed.oiJson;
+  const oiBytes = packed.oiBytes;
+  packed.oiBytes = null;
   const stats = {
     ...fp.stats,
     imagery: imagery || undefined,
@@ -4916,7 +4920,7 @@ function buildClutter({
     mobileHomeAreas,
     areaCap,
     areaCapOverride: capIsOverride,
-    openIntentJsonBytes: Buffer.byteLength(oiJson),
+    openIntentJsonBytes: oiBytes.length,
     jsonBudget: jsonByteBudget,
     stoppedBy,
     ...(devImportCaps
@@ -4986,7 +4990,7 @@ function buildClutter({
     zip = require("./stage-clock").timeSpanSync("zip", () =>
       zipUnderLimit(
         [
-          { name: `openIntent_${slug}.json`, data: Buffer.from(oiJson) },
+          { name: `openIntent_${slug}.json`, data: oiBytes },
           { name: "images/" + imgName, data: imgBuf },
           { name: "ATTRIBUTION.txt", data: Buffer.from(attributionTxt(stats)) },
         ],
