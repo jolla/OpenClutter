@@ -163,7 +163,7 @@ async function runBackgroundExport(event, onProgress) {
 }
 const imagerySource = require("../lib/imagery-source");
 const { normalizeAerial } = require("../lib/aerial-normalize");
-const { geoFrame, capEsriExportFrame, llToPx, esriImageryUrl, esriImageryMetaUrl, fitAffine, jpegSize, applyImageryMeta, lockIsotropicImagery, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV, publicFrame } = require("../lib/geo-frame");
+const { geoFrame, capEsriExportFrame, llToPx, esriImageryUrl, esriImageryMetaUrl, fitAffine, jpegSize, applyImageryMeta, compressJpegToMax, padFootprintBbox, imageryExportPlan, bboxLongSideM, IMAGERY_MAX_SIDE, IMAGERY_MAX_SIDE_DEV, publicFrame } = require("../lib/geo-frame");
 const { buildClutter, ALIGNMENT, footprintsToClutter, buildingsForOutdoorPlan, ringAreaM2, featureExteriorRings, parseAreaCapOverride, parseJsonBudgetOverride, raisedDeckCap, effectiveAreaCap, MAX_BUILDINGS, MAX_ATTENUATION_AREAS } = require("../lib/pipeline");
 const { fetchOsmTreeNodes } = require("../lib/osm-trees");
 const { buildSiteV1 } = require("../lib/site-v1");
@@ -3310,12 +3310,15 @@ async function handleClutterNorthUp(event) {
             imagerySource.fetchPlateWith(imageryCtx, f, PARK_CONTEXT_MS, null, (pf, ms, sig) =>
               fetchImageryJpegBody(esriImageryUrl(pf), ms, sig)
             ),
-          placePlate: (f, buf) => {
+          placePlate: async (f, buf) => {
             const placed = applyImageryMeta(f, null, jpegSize(buf), {
               requestBbox: { west: f.west, south: f.south, east: f.east, north: f.north },
             });
             // Context RVs are detector reads only: the pre-trueMetres plate.
-            const locked = lockIsotropicImagery(placed, buf, { maxSide: Math.max(f.imgW, f.imgH), legacy: true });
+            const locked = await require("../lib/image-lock").lockIsotropicImageryBounded(placed, buf, {
+              maxSide: Math.max(f.imgW, f.imgH),
+              legacy: true,
+            });
             return { frame: locked.frame, buf: locked.jpegBuf };
           },
         })

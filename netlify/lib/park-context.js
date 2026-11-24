@@ -169,7 +169,7 @@ function contextRoads(features, ctxFeatures) {
  * @param {object} o.frame the draw's frame
  * @param {Array} [o.ctxFeatures] outdoor features read over the context box
  * @param {function} o.fetchPlate async (frame) => JPEG buffer
- * @param {function} [o.placePlate] (frame, buf) => {frame, buf} with the photo's real extent
+ * @param {function} [o.placePlate] (frame, buf) => {frame, buf} (or a promise of it) with the photo's real extent
  * @returns {Promise<{features: Array, roads: number, frame: object|null, candidates: number}>}
  */
 async function readParkContext(o) {
@@ -193,7 +193,7 @@ async function readParkContext(o) {
     // The photo's real extent and scale, the same way the draw's map is
     // placed (an Esri export pads a degree-square image past the asked box).
     if (o.placePlate) {
-      const placed = o.placePlate(ctxFrame, buf);
+      const placed = await o.placePlate(ctxFrame, buf);
       ctxFrame = placed.frame;
       plate = vt.decodePlate(placed.buf);
     } else {
