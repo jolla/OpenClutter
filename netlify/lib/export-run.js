@@ -97,7 +97,14 @@ function maxRssMb() {
   }
 }
 
+// Netlify runs this process has started, and its RSS when this one began:
+// a warm function reused after a heavy export shows here (1.3.103).
+let processRuns = 0;
+
 function startNetlifyBeat(jobId, attempt) {
+  processRuns++;
+  const runInProcess = processRuns;
+  const startRssMb = Math.round(process.memoryUsage.rss() / 1e6);
   let peakRss = 0;
   const sample = () => {
     const r = process.memoryUsage.rss();
@@ -130,6 +137,8 @@ function startNetlifyBeat(jobId, attempt) {
             // thread, so a long synchronous stage hides its own peak and it
             // shows up at the next stage instead (1.3.101).
             maxRssMb: maxRssMb(),
+            runInProcess,
+            startRssMb,
             heapMb: Math.round(mem.heapUsed / 1e6),
             limitMb: require("./host-memory").functionMemoryMb() || null,
             open,

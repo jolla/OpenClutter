@@ -82,6 +82,9 @@ exports.handler = async (event) => {
     // until its platform clock runs out (1.3.95).
     lateDoneWaitMs: require("../lib/job-watchdog").lateDoneWindowMs(job),
     lateDone: !!job.lateDone,
+    // Warm-reuse guard on the backup server (1.3.103).
+    coldRetries: +job.coldRetries || 0,
+    recycledRssMb: +job.recycledRssMb || null,
     stats: job.stats || null,
     warnings: job.warnings || [],
     zipFilename: job.zipFilename || null,
