@@ -176,3 +176,25 @@ test("map plate: a 1 GB background run caps at 2048 px with a note; roomy hosts 
   assert.match(src, /if \(background && require\("\.\.\/lib\/host-memory"\)\.lowMemoryHost\(\) && steps\[0\]\.maxSide > LOW_MEMORY_PLATE_SIDE\)/);
   assert.match(src, /"Map image capped at " \+ steps\[0\]\.maxSide \+ " px \(asked " \+ lowMemoryPlateFrom \+ " px\): this export ran on the backup server/);
 });
+
+test("cpu pool: one thread on a 1 GB host; Fly's configured count and roomy hosts unchanged", () =>
+  withHost({ mem: "1024" }, async () => {
+    const pool = require("../netlify/lib/cpu-pool");
+    const keep = process.env.OPENCLUTTER_CPU_COUNT;
+    const keepFly = process.env.FLY_MACHINE_CPUS;
+    try {
+      delete process.env.OPENCLUTTER_CPU_COUNT;
+      delete process.env.FLY_MACHINE_CPUS;
+      assert.equal(pool.threadCount(), 1);
+      process.env.FLY_MACHINE_CPUS = "4";
+      assert.equal(pool.threadCount(), 4);
+      delete process.env.FLY_MACHINE_CPUS;
+      delete process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE;
+      assert.equal(pool.threadCount(), require("node:os").availableParallelism());
+    } finally {
+      if (keep === undefined) delete process.env.OPENCLUTTER_CPU_COUNT;
+      else process.env.OPENCLUTTER_CPU_COUNT = keep;
+      if (keepFly === undefined) delete process.env.FLY_MACHINE_CPUS;
+      else process.env.FLY_MACHINE_CPUS = keepFly;
+    }
+  }));

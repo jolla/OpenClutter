@@ -33,6 +33,9 @@ function configuredCpuCount() {
 function threadCount() {
   const configured = configuredCpuCount();
   if (configured > 0) return configured;
+  // A 1 GB Netlify function has half a vCPU: a second thread only adds its
+  // own heap, and Fort Wilderness ran out of room in Trees (1.3.94).
+  if (require("./host-memory").lowMemoryHost()) return 1;
   if (typeof os.availableParallelism === "function") {
     const n = os.availableParallelism();
     if (n > 0) return n;
