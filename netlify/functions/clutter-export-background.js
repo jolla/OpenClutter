@@ -30,6 +30,18 @@ function enableAreaCache() {
  * When the page or this function has no room for that second run, the job
  * is marked failed instead of left running.
  */
+/**
+ * A Netlify export run, with the warm-reuse guard on a low-memory host
+ * (1.3.102): start cold when this process is already large, and leave a
+ * fresh function for the next job when the run left it large.
+ */
+async function runOnNetlify(jobId, inner, opts) {
+  const warm = require("../lib/warm-guard");
+  if ((await warm.beforeRun(jobId)) === "exiting") return;
+  await completeExportJob(jobId, inner, opts);
+  await warm.afterRun(jobId);
+}
+
 exports.handler = async (event) => {
   jobs.bindBlobs(event);
   if (event && event.blobs) enableAreaCache();
@@ -85,7 +97,7 @@ exports.handler = async (event) => {
       return { statusCode: 202, body: "" };
     }
     await jobs.updateJob(jobId, { workerFallback: "heartbeat-stale" }).catch(() => {});
-    await completeExportJob(jobId, inner, { warning: RERUN_NOTE, worker: "netlify", netlifyBeat: true });
+    await runOnNetlify(jobId, inner, { warning: RERUN_NOTE, worker: "netlify", netlifyBeat: true });
     return { statusCode: 202, body: "" };
   }
   if (fly.fallback) {
@@ -94,9 +106,9 @@ exports.handler = async (event) => {
       return { statusCode: 202, body: "" };
     }
     await jobs.updateJob(jobId, { workerFallback: fly.reason || "invoke-failed" }).catch(() => {});
-    await completeExportJob(jobId, inner, { warning: FALLBACK_NOTE, worker: "netlify", netlifyBeat: true });
+    await runOnNetlify(jobId, inner, { warning: FALLBACK_NOTE, worker: "netlify", netlifyBeat: true });
     return { statusCode: 202, body: "" };
   }
-  await completeExportJob(jobId, inner, { worker: "netlify", netlifyBeat: true });
+  await runOnNetlify(jobId, inner, { worker: "netlify", netlifyBeat: true });
   return { statusCode: 202, body: "" };
 };

@@ -98,7 +98,7 @@ function maxRssMb() {
 }
 
 // Netlify runs this process has started, and its RSS when this one began:
-// a warm function reused after a heavy export shows here (1.3.103).
+// a warm function reused after a heavy export shows here (1.3.102).
 let processRuns = 0;
 
 function startNetlifyBeat(jobId, attempt) {
