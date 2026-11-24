@@ -63,11 +63,28 @@ function createDiskCache(opts) {
     if (process.env[env + "_DIR"]) return process.env[env + "_DIR"];
     try {
       const home = os.homedir();
-      if (home) return path.join(home, ".cache/openclutter", subdir);
+      if (home) return writableOrEmpty(path.join(home, ".cache/openclutter", subdir));
     } catch {
       /* no home directory in this runtime */
     }
     return "";
+  }
+
+  // A read-only home (Netlify functions) turns the default cache off
+  // instead of failing every write mid-stream (1.3.93). Checked once.
+  let homeChecked = null;
+  function writableOrEmpty(root) {
+    if (homeChecked && homeChecked.root === root) return homeChecked.ok ? root : "";
+    let ok = false;
+    try {
+      fs.mkdirSync(root, { recursive: true });
+      fs.accessSync(root, fs.constants.W_OK);
+      ok = true;
+    } catch {
+      ok = false;
+    }
+    homeChecked = { root, ok };
+    return ok ? root : "";
   }
 
   function cachePathFor(key) {

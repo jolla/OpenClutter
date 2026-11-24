@@ -741,9 +741,26 @@ async function fetchMsGlobalFootprintsWork(frame, fetchFn, opts) {
     let writeP = Promise.resolve();
     if (useCache && !fromDisk) {
       const [toFile, toParse] = teeReadable(limiter);
-      writeP = msCache.writeFromStream(item.url, toFile).catch(() => 0);
+      // A cache that cannot be written (a read-only home on Netlify) must not
+      // stop the parse: an unread tee side holds back the other (1.3.93).
+      const drain = () => {
+        if (!toFile.readableEnded && !toFile.destroyed) toFile.resume();
+      };
+      writeP = msCache.writeFromStream(item.url, toFile).then(
+        (n) => {
+          drain();
+          return n;
+        },
+        () => {
+          drain();
+          return 0;
+        }
+      );
       parseSource = toParse;
     }
+    // A dropped or timed-out body fails this tile instead of crashing the
+    // process with an unhandled stream error (1.3.93).
+    source.on("error", (err) => limiter.destroy(err));
     source.pipe(limiter);
     let chunk;
     try {

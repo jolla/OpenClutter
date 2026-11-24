@@ -108,3 +108,67 @@ test("on a low-memory host the Overture street read decodes one row group at a t
     else process.env.OPENCLUTTER_LOW_MEMORY = keep;
   }
 });
+
+test("a Microsoft tile still parses when the disk cache cannot be written (read-only home)", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const zlib = require("node:zlib");
+  const { Readable } = require("node:stream");
+  const ms = require("../netlify/lib/ms-global");
+  const box = { west: -87.9217, south: 42.89544, east: -87.9155, north: 42.90276 };
+  const ring = [[-87.918, 42.899], [-87.917, 42.899], [-87.917, 42.9], [-87.918, 42.9], [-87.918, 42.899]];
+  const inside = { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [ring] } };
+  // Many far-away rows: well past the stream buffers, so an unread tee side
+  // would hold the parse back (the pre-1.3.93 Netlify hang).
+  const far = { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [ring.map(([x, y]) => [x + 5, y + 5])] } };
+  const lines = [JSON.stringify(inside)];
+  for (let i = 0; i < 4000; i++) {
+    const r = ring.map(([x, y], k) => [x + 5 + Math.sin(i * 7 + k) * 0.01, y + 5 + Math.cos(i * 3 + k) * 0.01]);
+    lines.push(JSON.stringify(Object.assign({}, far, { geometry: { type: "Polygon", coordinates: [r] } })));
+  }
+  const gz = zlib.gzipSync(Buffer.from(lines.join("\n") + "\n"));
+  assert.ok(gz.length > 64 * 1024);
+  const ro = fs.mkdtempSync(path.join(os.tmpdir(), "oc-ro-"));
+  fs.chmodSync(ro, 0o555);
+  ms.setMsCacheDir(path.join(ro, "cache"));
+  try {
+    const res = () => ({
+      ok: true,
+      headers: { get: (n) => (String(n).toLowerCase() === "content-length" ? String(gz.length) : null) },
+      body: Readable.from([gz.subarray(0, gz.length >> 1), gz.subarray(gz.length >> 1)]),
+    });
+    const t0 = Date.now();
+    const pack = await Promise.race([
+      ms.fetchMsGlobalFootprints(box, async () => res(), { diskCache: true }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("hung")), 5000)),
+    ]);
+    assert.equal(pack.features.length, 1);
+    assert.ok(Date.now() - t0 < 5000);
+  } finally {
+    ms.setMsCacheDir(undefined);
+    fs.chmodSync(ro, 0o755);
+    fs.rmSync(ro, { recursive: true, force: true });
+  }
+});
+
+test("the default disk cache turns off when the home folder is read-only", () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const ro = fs.mkdtempSync(path.join(os.tmpdir(), "oc-home-"));
+  fs.chmodSync(ro, 0o555);
+  const keep = { home: process.env.HOME, ctx: process.env.NODE_TEST_CONTEXT, dir: process.env.OC_T_CACHE_DIR };
+  try {
+    process.env.HOME = ro;
+    delete process.env.NODE_TEST_CONTEXT;
+    delete process.env.OC_T_CACHE_DIR;
+    const c = require("../netlify/lib/disk-cache").createDiskCache({ envPrefix: "OC_T_CACHE", subdir: "t", maxBytes: 1e6, ttlMs: 1e6 });
+    assert.equal(c.dir(), "");
+  } finally {
+    process.env.HOME = keep.home;
+    if (keep.ctx !== undefined) process.env.NODE_TEST_CONTEXT = keep.ctx;
+    fs.chmodSync(ro, 0o755);
+    fs.rmSync(ro, { recursive: true, force: true });
+  }
+});
