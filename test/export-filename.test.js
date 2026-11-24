@@ -366,6 +366,33 @@ describe("enclosing area fallback", () => {
     assert.equal(names.toronto.includes("Sheppard"), false);
     assert.equal(names.toronto.includes("EY-Tower"), false);
   });
+
+  it("keeps the Photon enclosing place when Nominatim uses the full lookup budget", async () => {
+    const fwFeatures = {
+      features: [
+        { properties: { name: "Possum Path", osm_key: "highway", osm_value: "service", type: "street", district: "Bay Lake", state: "Florida", countrycode: "US" } },
+        { properties: { name: "Disney's Fort Wilderness Campground", osm_key: "tourism", osm_value: "camp_site", type: "house", city: "KIss", district: "Bay Lake", state: "Florida", countrycode: "US", extent: [-81.5635, 28.4134, -81.5502, 28.3937] } },
+      ],
+    };
+    const fetchImpl = async (url) => {
+      if (String(url).includes("photon.komoot.io")) {
+        return { ok: true, json: async () => fwFeatures };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      return { ok: true, json: async () => ({ address: { city: "Bay Lake", state: "Florida", country_code: "us" } }) };
+    };
+    fn.setLookupForTests();
+    const t0 = Date.now();
+    const name = await fn.resolveExportZipName({
+      name: "Site",
+      ...FW,
+      now: NOW,
+      timeoutMs: 80,
+      fetch: fetchImpl,
+    });
+    assert.equal(name, "Disneys-Fort-Wilderness_Bay-Lake-FL_5.2km2_20261124.zip");
+    assert.equal(Date.now() - t0 < 200, true);
+  });
 });
 
 describe("safeZipFilename", () => {

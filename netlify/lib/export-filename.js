@@ -685,36 +685,56 @@ async function lookupPlace(lat, lon, opts) {
   if (typeof lookupOverride === "function") return lookupOverride(lat, lon, o);
   if (skipLiveLookup(o)) return { place: "", locality: "" };
   const timeoutMs = o.timeoutMs || LOOKUP_TIMEOUT_MS;
+  // Leave a little slack so a late Nominatim wait cannot outrun the
+  // outer 2 s cap and drop a Photon hit already in hand.
+  const budget = Math.max(100, timeoutMs - 150);
+  const started = Date.now();
+  const remaining = () => Math.max(0, budget - (Date.now() - started));
   const box = o.west != null ? { west: o.west, south: o.south, east: o.east, north: o.north } : null;
   const photonP = withTimeout(
     photonReverse(lat, lon, {
       fetch: o.fetch,
       userAgent: o.userAgent,
-      timeoutMs,
+      timeoutMs: budget,
       limit: 10,
     }),
-    timeoutMs
+    budget
   );
   const nomP = withTimeout(
     nominatimReverse(lat, lon, {
       fetch: o.fetch,
       env: o.env,
       userAgent: o.userAgent || defaultUserAgent,
-      timeoutMs,
+      timeoutMs: budget,
     }),
-    timeoutMs
+    budget
   );
-  const [photon, nom] = await Promise.all([photonP, nomP]);
+  const photon = await photonP;
   const features = Array.isArray(photon) ? photon : photon ? [photon] : [];
-  const picked = pickEnclosingPlace(features, box);
+  let picked;
+  try {
+    picked = pickEnclosingPlace(features, box);
+  } catch {
+    picked = { place: "", locality: "" };
+  }
+  if (picked.place && picked.locality) return picked;
+  const cityFromPhoton = cityFallback(features, null);
+  if (picked.place && cityFromPhoton.locality) {
+    picked.locality = cityFromPhoton.locality;
+    return picked;
+  }
+  if (!picked.place && cityFromPhoton.locality) return cityFromPhoton;
+  const left = remaining();
+  if (left < 80) return picked.place ? picked : cityFromPhoton;
+  const nom = await withTimeout(nomP, left);
+  const nomData = nom && nom.ok ? nom.data : null;
   if (picked.place) {
-    if (!picked.locality && nom && nom.ok && nom.data) {
-      picked.locality = placeFromNominatim(nom.data).locality || "";
+    if (!picked.locality && nomData) {
+      picked.locality = placeFromNominatim(nomData).locality || "";
     }
     return picked;
   }
-  const city = cityFallback(features, nom && nom.ok ? nom.data : null);
-  return city;
+  return cityFallback(features, nomData);
 }
 
 async function resolveExportZipName(opts) {
