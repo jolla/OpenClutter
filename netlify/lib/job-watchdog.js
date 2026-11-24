@@ -1,6 +1,9 @@
 "use strict";
 
-const NETLIFY_SILENCE_MS = 2 * 60 * 1000;
+// 5 minutes, not 2 (1.3.94): on half a vCPU a live Fort Wilderness run held
+// its main thread past 2 minutes in Trees and was failed while still working.
+// A dead run is failed sooner by the retry check (about 1 minute after).
+const NETLIFY_SILENCE_MS = 5 * 60 * 1000;
 const NETLIFY_LIMIT_MS = 16 * 60 * 1000;
 const LEGACY_LIMIT_MS = 20 * 60 * 1000;
 

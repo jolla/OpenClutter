@@ -198,3 +198,11 @@ test("cpu pool: one thread on a 1 GB host; Fly's configured count and roomy host
       else process.env.FLY_MACHINE_CPUS = keepFly;
     }
   }));
+
+test("a live Netlify run whose main thread is busy for 3 minutes is not failed; 5 minutes of silence is", () => {
+  const { stalledJobPatch, NETLIFY_SILENCE_MS } = require("../netlify/lib/job-watchdog");
+  assert.equal(NETLIFY_SILENCE_MS, 5 * 60 * 1000);
+  const job = { state: "running", worker: "netlify", stage: "Trees", createdAt: T - 240000, netlifyStartedAt: T - 240000, netlifyBeatAt: T - 180000 };
+  assert.equal(stalledJobPatch(job, T), null);
+  assert.equal(stalledJobPatch(Object.assign({}, job, { createdAt: T - 400000, netlifyStartedAt: T - 400000, netlifyBeatAt: T - NETLIFY_SILENCE_MS - 1 }), T).state, "error");
+});

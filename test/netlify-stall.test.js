@@ -14,7 +14,7 @@ test("a live Netlify run is left alone", () => {
   assert.equal(stalledJobPatch(job, T), null);
 });
 
-test("a Netlify run with no beat for two minutes fails with a clear error", () => {
+test("a Netlify run with no beat for five minutes fails with a clear error", () => {
   const job = { state: "running", worker: "netlify", stage: "Fetching footprints", createdAt: T - 300000, netlifyStartedAt: T - 300000, netlifyBeatAt: T - NETLIFY_SILENCE_MS - 1 };
   const p = stalledJobPatch(job, T);
   assert.equal(p.state, "error");
