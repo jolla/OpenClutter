@@ -2146,7 +2146,9 @@ async function handleClutterNorthUp(event) {
       const wantLegacy = gfLib.isTrueMetres() && gfLib.needsGroundMeterImage((+frame.south + +frame.north) / 2);
       const [locked, legacy] = await stageClock.timeSpan("aerialStitch", () =>
         Promise.all([
-          lockIsotropicImageryBounded(frame, imgBuf, { maxSide }),
+          testHost && body.imageLock === "inline"
+            ? Promise.resolve(Object.assign({ mode: "inline", attempts: 0, wallMs: 0 }, require("../lib/geo-frame").lockIsotropicImagery(frame, imgBuf, { maxSide })))
+            : lockIsotropicImageryBounded(frame, imgBuf, { maxSide }),
           wantLegacy ? lockIsotropicImageryBounded(preLock.frame, preLock.imgBuf, { maxSide, legacy: true }) : null,
         ])
       );
