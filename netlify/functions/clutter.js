@@ -2137,13 +2137,35 @@ async function handleClutterNorthUp(event) {
     if (imgBuf) {
       frame = applyImageryMeta(frame, imgMeta, jpegSize(imgBuf), { requestBbox });
       const preLock = { frame, imgBuf };
-      const locked = stageClock.timeSpanSync("aerialStitch", () =>
-        lockIsotropicImagery(frame, imgBuf, { maxSide })
+      // Bounded since 1.3.91: the lock (decode, resample, encode) runs on its
+      // own thread with a deadline, so a stuck plate cannot hold every other
+      // stage (the g-r188 Fort Wilderness stall sat here for 480 s).
+      const { lockIsotropicImageryBounded } = require("../lib/image-lock");
+      const gfLib = require("../lib/geo-frame");
+      // The legacy plate is only read when the main lock goes to ground meters.
+      const wantLegacy = gfLib.isTrueMetres() && gfLib.needsGroundMeterImage((+frame.south + +frame.north) / 2);
+      const [locked, legacy] = await stageClock.timeSpan("aerialStitch", () =>
+        Promise.all([
+          lockIsotropicImageryBounded(frame, imgBuf, { maxSide }),
+          wantLegacy ? lockIsotropicImageryBounded(preLock.frame, preLock.imgBuf, { maxSide, legacy: true }) : null,
+        ])
       );
+      if (process.env.OPENCLUTTER_STAGE_LOG) {
+        const t = locked.timing || {};
+        process.stderr.write(
+          "stage aerialLock wall=" + locked.wallMs + " attempts=" + locked.attempts +
+            " decode=" + (t.decodeMs | 0) + " resize=" + (t.resizeMs | 0) + " encode=" + (t.encodeMs | 0) + "\n"
+        );
+      }
+      if (locked.failed) {
+        warnings.push(
+          "Aerial image kept on its own pixel grid: the ground-meter resample " +
+            (locked.timedOut ? "timed out" : "failed") + " twice."
+        );
+      }
       frame = locked.frame;
       imgBuf = locked.jpegBuf;
-      if (locked.groundMeters && require("../lib/geo-frame").isTrueMetres()) {
-        const legacy = lockIsotropicImagery(preLock.frame, preLock.imgBuf, { maxSide, legacy: true });
+      if (locked.groundMeters && legacy && !legacy.failed) {
         if (!legacy.groundMeters && legacy.frame && legacy.jpegBuf) vehicleImagery = { frame: legacy.frame, imgBuf: legacy.jpegBuf };
       }
       if (devHost && imageryPlate) warnings.push(mapImageNote(imageryPlate, frame, imgBuf));

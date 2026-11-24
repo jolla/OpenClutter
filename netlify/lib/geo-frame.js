@@ -792,21 +792,37 @@ function lockIsotropicImagery(frame, jpegBuf, opts = {}) {
   if (!jpegBuf || jpegBuf.length < 100) {
     return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
   }
+  const timing = opts.timing && typeof opts.timing === "object" ? opts.timing : null;
+  const quality = opts.quality != null ? opts.quality : 85;
+  // opts.legacy: the pre-trueMetres plate (ground meters only past 54N). The
+  // vehicle detectors read it so their tuned thresholds see the same pixels.
+  const latMid = (+frame.south + +frame.north) / 2;
+  const groundMeters = opts.legacy ? groundMeterStretch(latMid) >= GROUND_METER_STRETCH : needsGroundMeterImage(latMid);
+  // No resample needed: the JPEG header has the size, so skip the full
+  // decode (a 3,300 px plate costs seconds of main-thread time to decode).
+  const head = jpegSize(jpegBuf);
+  if (!groundMeters && head && head.width > 0 && head.height > 0 && Math.max(head.width, head.height) <= maxSide) {
+    const padM0 = Math.max(frame.widthM, frame.lengthM, 2500) * 2.5;
+    const locked0 = unifyFrameMpu(
+      geoFrame(
+        { west: frame.west, south: frame.south, east: frame.east, north: frame.north },
+        { imgW: head.width, imgH: head.height, maxSpanM: padM0, minSpanM: 1 }
+      )
+    );
+    return { frame: locked0, jpegBuf, resampled: false, groundMeters };
+  }
   let raw;
+  let tPhase = Date.now();
   try {
     const jpeg = require("jpeg-js");
     raw = jpeg.decode(jpegBuf, { useTArray: true, maxResolutionInMP: 20, formatAsRGBA: true });
   } catch {
     return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
   }
+  if (timing) timing.decodeMs = Date.now() - tPhase;
   if (!raw || !raw.data || !(raw.width > 0) || !(raw.height > 0)) {
     return { frame: unifyFrameMpu(frame), jpegBuf, resampled: false };
   }
-  const quality = opts.quality != null ? opts.quality : 85;
-  // opts.legacy: the pre-trueMetres plate (ground meters only past 54N). The
-  // vehicle detectors read it so their tuned thresholds see the same pixels.
-  const latMid = (+frame.south + +frame.north) / 2;
-  const groundMeters = opts.legacy ? groundMeterStretch(latMid) >= GROUND_METER_STRETCH : needsGroundMeterImage(latMid);
   let imgW = raw.width;
   let imgH = raw.height;
   let outBuf = jpegBuf;
@@ -824,9 +840,13 @@ function lockIsotropicImagery(frame, jpegBuf, opts = {}) {
     targetH = Math.max(64, Math.round(raw.height * k));
   }
   if (targetW !== raw.width || targetH !== raw.height) {
+    tPhase = Date.now();
     const rgba = resizeRgba(raw.data, raw.width, raw.height, targetW, targetH);
+    if (timing) timing.resizeMs = Date.now() - tPhase;
     try {
+      tPhase = Date.now();
       outBuf = encodeJpegRgba(rgba, targetW, targetH, quality);
+      if (timing) timing.encodeMs = Date.now() - tPhase;
       imgW = targetW;
       imgH = targetH;
       resampled = true;
