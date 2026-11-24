@@ -2572,6 +2572,13 @@ async function handleClutterNorthUp(event) {
         finishPartialLidar(firstLidar, lidarBox, { maxMs: lidarCapMs(background) })
       );
       scaleLidar = lidar;
+      if (lidar && !lidar.skipped && lidar.lowMemoryCap) {
+        const capNote =
+          "Lidar canopy read at " +
+          (+lidar.spacingM || 0).toFixed(1) +
+          " m spacing: this export ran on the backup server, which reads at most 12 MB of the cloud. Export again later for the full read.";
+        if (warnings.indexOf(capNote) < 0) warnings.push(capNote);
+      }
       if (lidar && !lidar.skipped && lidar.grid) padLidar = lidar.grid;
       if (exportMode.isSiteTypes() && lidar && !lidar.skipped && lidar.grid) {
         // Model heights the lidar contradicts (a park model at 20 m) take the lidar height.

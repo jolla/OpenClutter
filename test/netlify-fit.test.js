@@ -148,3 +148,15 @@ test("background function: a source-tiles batch never reads the job; a dead retr
     areaCache.runTileBatch = keep.run;
   }
 });
+
+test("lidar: a 1 GB host caps the cloud at 12 MB and says so; a roomy host keeps 32 MB and no new field or note", async () => {
+  const lidar = require("../netlify/lib/usgs-lidar");
+  assert.equal(lidar.MAX_BYTES, 32 * 1024 * 1024);
+  assert.equal(lidar.LOW_MEMORY_MAX_BYTES, 12 * 1024 * 1024);
+  const sample = { project: "P", points: 10, bytes: 1024, spacingM: 8, ms: 1000, km2: 0 };
+  assert.ok(!/backup server/.test(lidar.lidarNote(sample)));
+  assert.match(lidar.lidarNote(Object.assign({ lowMemoryCap: true }, sample)), /backup server, which reads at most 12 MB/);
+  const src = require("node:fs").readFileSync(require.resolve("../netlify/lib/usgs-lidar"), "utf8");
+  assert.match(src, /if \(lowMemoryCap\) result\.lowMemoryCap = true;/);
+  assert.match(src, /const lowMemoryCap = !\(opt\.maxBytes > 0\) && require\("\.\/host-memory"\)\.lowMemoryHost\(\);/);
+});

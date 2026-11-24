@@ -33,6 +33,12 @@ const MERCATOR_R = 20037508.342789244;
 /** Caps for one export. A Wynn-sized draw fits near 3 m; 1 m does not. */
 const MAX_POINTS = 3600000;
 const MAX_BYTES = 32 * 1024 * 1024;
+/**
+ * A 1 GB host (a Netlify fallback run) reads a coarser cloud (1.3.94).
+ * The 32 MB Fort Wilderness read decoded past 1 GB there and the run was
+ * killed; 12 MB is about half the decode memory, at twice the spacing.
+ */
+const LOW_MEMORY_MAX_BYTES = 12 * 1024 * 1024;
 const BYTES_PER_POINT = 8;
 const MAX_TILES = 80;
 const MAX_MS = 32000;
@@ -1147,6 +1153,7 @@ function lidarNote(sample) {
       Math.round(sample.fullPoints / 1000) +
       "k points), past this export. A cached nDSM for the project would carry that finer grid.";
   }
+  if (sample.lowMemoryCap) line += " This export ran on the backup server, which reads at most 12 MB of the cloud; export again later for the full read.";
   return line;
 }
 
@@ -1428,9 +1435,10 @@ async function fetchUsgsLidarWork(frame, opts) {
   const opt = opts || {};
   const fetchImpl = opt.fetchImpl || fetch;
   const started = Date.now();
+  const lowMemoryCap = !(opt.maxBytes > 0) && require("./host-memory").lowMemoryHost();
   const caps = {
     maxPoints: opt.maxPoints > 0 ? opt.maxPoints : MAX_POINTS,
-    maxBytes: opt.maxBytes > 0 ? opt.maxBytes : MAX_BYTES,
+    maxBytes: opt.maxBytes > 0 ? opt.maxBytes : lowMemoryCap ? LOW_MEMORY_MAX_BYTES : MAX_BYTES,
     maxTiles: opt.maxTiles > 0 ? opt.maxTiles : MAX_TILES,
     maxMs: opt.maxMs > 0 ? opt.maxMs : MAX_MS,
   };
@@ -1592,6 +1600,7 @@ async function fetchUsgsLidarWork(frame, opts) {
     tried,
     frame,
   };
+  if (lowMemoryCap) result.lowMemoryCap = true;
   // A newer survey can rank first from a wide project bbox while none of
   // its points land in the draw (Lancaster: 2016 VT river, kept 0). Try
   // the next survey instead of fusing an empty grid and skipping lidar
@@ -1643,6 +1652,7 @@ module.exports = {
   EPT_BUCKET,
   MAX_POINTS,
   MAX_BYTES,
+  LOW_MEMORY_MAX_BYTES,
   MAX_TILES,
   MAX_MS,
   TILE_FETCH_MS,
