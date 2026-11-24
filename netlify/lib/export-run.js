@@ -89,7 +89,7 @@ async function otherWorkerFinished(jobId, worker) {
  * 10 seconds while the function is alive, with its memory and the stages
  * still open, so export-status can fail a run whose function died (1.3.93).
  */
-function startNetlifyBeat(jobId) {
+function startNetlifyBeat(jobId, attempt) {
   let peakRss = 0;
   const sample = () => {
     const r = process.memoryUsage.rss();
@@ -109,7 +109,10 @@ function startNetlifyBeat(jobId) {
     jobs
       .readJob(jobId)
       .then((cur) => {
-        if (!cur || jobs.isTerminalState(cur.state)) return null;
+        // Keep beating after the silence rule failed this attempt: the page
+        // is still watching for its late finish (1.3.95).
+        const mine = attempt && cur && cur.stoppedAttempt === attempt;
+        if (!cur || (jobs.isTerminalState(cur.state) && !mine)) return null;
         return jobs.updateJob(jobId, {
           netlifyBeatAt: Date.now(),
           netlifyBeat: {
@@ -139,12 +142,17 @@ async function completeExportJob(jobId, inner, opts) {
   const worker = opts && opts.worker ? String(opts.worker) : "";
   // Cancelled before it started (page Cancel while queued): run nothing.
   if (await jobs.jobCancelled(jobId)) return CANCELLED;
+  // One id per Netlify attempt: only this attempt may replace a silence
+  // error with its own late done (1.3.95).
+  const attempt = opts && opts.netlifyBeat ? require("node:crypto").randomUUID() : "";
+  const mark = (p) => (attempt ? Object.assign(p, { netlifyAttempt: attempt }) : p);
   try {
     const patch = { state: "running", stage: "Fetching aerial" };
     if (worker) patch.worker = worker;
     if (opts && opts.netlifyBeat) {
       patch.netlifyStartedAt = Date.now();
       patch.netlifyBeatAt = Date.now();
+      patch.netlifyAttempt = attempt;
     }
     if (warning) patch.warnings = [warning];
     await jobs.updateJob(jobId, patch);
@@ -152,7 +160,7 @@ async function completeExportJob(jobId, inner, opts) {
     return { ok: false, reason: "job-write-failed" };
   }
   const stopTiles = startTilePulse(jobId);
-  const stopBeat = opts && opts.netlifyBeat ? startNetlifyBeat(jobId) : () => {};
+  const stopBeat = opts && opts.netlifyBeat ? startNetlifyBeat(jobId, attempt) : () => {};
   try {
     const result = await clutter.runBackgroundExport(inner, async (patch) => {
       if (opts && typeof opts.onProgress === "function") {
@@ -186,7 +194,7 @@ async function completeExportJob(jobId, inner, opts) {
         await jobs.deleteZip(jobId).catch(() => {});
         return CANCELLED;
       }
-      await jobs.updateJob(jobId, {
+      await jobs.updateJob(jobId, mark({
         state: "done",
         stage: "Site ready",
         error: null,
@@ -194,7 +202,7 @@ async function completeExportJob(jobId, inner, opts) {
         siteStats: data.site.stats || null,
         warnings: withWarning(Array.isArray(data.site.warnings) ? data.site.warnings : [], warning),
         timings: data.site.timings || null,
-      });
+      }));
       return { ok: true, finished: true };
     }
     if (status !== 200 || !data.zipBase64) {
@@ -223,7 +231,7 @@ async function completeExportJob(jobId, inner, opts) {
       return CANCELLED;
     }
     const warnings = withWarning(Array.isArray(data.warnings) ? data.warnings : [], warning);
-    await jobs.updateJob(jobId, {
+    await jobs.updateJob(jobId, mark({
       state: "done",
       stage: "Zip ready",
       error: null,
@@ -235,7 +243,7 @@ async function completeExportJob(jobId, inner, opts) {
       terrainStatus: data.terrainStatus || "",
       gpsClipboard: data.gpsClipboard || null,
       timings: data.timings || null,
-    });
+    }));
     return { ok: true, finished: true };
   } catch (err) {
     if (await jobs.jobCancelled(jobId)) return CANCELLED;

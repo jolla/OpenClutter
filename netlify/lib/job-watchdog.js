@@ -28,7 +28,34 @@ function stalledJobPatch(job, now = Date.now()) {
     error: "The export worker stopped during " + stage + ". Export again. If it happens again, draw a smaller area.",
     stoppedReason: reason,
     stoppedStage: stage,
+    // Only a silent beat can be a live run with a busy main thread. That
+    // same attempt may still finish and replace this error (1.3.95).
+    stoppedAttempt: reason === "heartbeat-stale" && job.netlifyAttempt ? String(job.netlifyAttempt) : null,
   };
+}
+
+/**
+ * True when `patch` is the done write of the very Netlify attempt that the
+ * silence rule failed (1.3.95). A new job, another attempt, a Fly write,
+ * a retry-check failure, a deadline, or a job the page cancelled never
+ * qualifies.
+ */
+function lateDoneAllowed(cur, patch) {
+  if (!cur || cur.state !== "error" || cur.stoppedReason !== "heartbeat-stale") return false;
+  if (!cur.stoppedAttempt || !patch || patch.state !== "done") return false;
+  return String(patch.netlifyAttempt || "") === String(cur.stoppedAttempt);
+}
+
+/**
+ * Milliseconds the page should keep watching a job the silence rule failed,
+ * because its attempt may still finish; 0 when it cannot. The platform
+ * stops a Netlify run 15 minutes after it starts.
+ */
+function lateDoneWindowMs(job, now = Date.now()) {
+  if (!job || job.state !== "error" || job.stoppedReason !== "heartbeat-stale" || !job.stoppedAttempt) return 0;
+  const start = +job.netlifyStartedAt || 0;
+  if (!start) return 0;
+  return Math.max(0, start + NETLIFY_LIMIT_MS - now);
 }
 
 /** A Netlify attempt beats every 10 s; one silent this long has died. */
@@ -70,4 +97,4 @@ function deadAttemptPatch(job) {
   };
 }
 
-module.exports = { NETLIFY_DEAD_BEAT_MS, priorNetlifyAttempt, deadAttemptPatch, NETLIFY_SILENCE_MS, NETLIFY_LIMIT_MS, LEGACY_LIMIT_MS, stalledJobPatch };
+module.exports = { lateDoneAllowed, lateDoneWindowMs, NETLIFY_DEAD_BEAT_MS, priorNetlifyAttempt, deadAttemptPatch, NETLIFY_SILENCE_MS, NETLIFY_LIMIT_MS, LEGACY_LIMIT_MS, stalledJobPatch };

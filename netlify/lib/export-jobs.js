@@ -298,7 +298,12 @@ async function cancelJob(id) {
   if (!validJobId(id)) return null;
   const cur = await readJob(id);
   if (!cur) return null;
-  if (isTerminalState(cur.state)) return cur;
+  if (isTerminalState(cur.state)) {
+    // Cancel while the page still watched a quiet run: its late finish
+    // must not bring the job back (1.3.95).
+    if (cur.stoppedAttempt) return updateJob(id, { stoppedAttempt: null });
+    return cur;
+  }
   return updateJob(id, {
     state: "cancelled",
     stage: CANCEL_STAGE,
@@ -400,7 +405,12 @@ function mergeStep(prev, step) {
 
 function mergeJobPatch(cur, patch) {
   const incoming = Object.assign({}, patch || {});
-  if (isTerminalState(cur.state)) {
+  if (require("./job-watchdog").lateDoneAllowed(cur, patch)) {
+    // The attempt the silence rule failed finished after all (1.3.95).
+    incoming.error = null;
+    incoming.stoppedAttempt = null;
+    incoming.lateDone = true;
+  } else if (isTerminalState(cur.state)) {
     if (patch && patch.state && patch.state !== cur.state) return { unchanged: true, job: cur };
     delete incoming.state;
     delete incoming.error;

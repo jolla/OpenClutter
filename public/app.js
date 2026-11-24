@@ -3001,6 +3001,7 @@ async function pollExport(jobId) {
   const ceiling = 15 * 60 * 1000;
   let misses = 0;
   let blocked = null;
+  let quietError = "";
   while (Date.now() - started < ceiling) {
     let data = null;
     try {
@@ -3023,11 +3024,25 @@ async function pollExport(jobId) {
       checkExportRun(run);
       continue;
     }
-    if (data.state === "error") {
-      endExportProgress();
-      throw new Error(data.error || "Export failed.");
-    }
     checkExportRun(run);
+    if (data.state === "error") {
+      if (!OpenClutterProgress.lateDoneWait(data)) {
+        endExportProgress();
+        throw new Error(data.error || "Export failed.");
+      }
+      quietError = data.error || "Export failed.";
+      // It may only be a busy main thread on the backup server (1.3.95).
+      // Watch this job, not a later export. Cancel/new export invalidates
+      // `run`, so a late result can never replace a new job's result.
+      showExportProgress(Object.assign({}, data, {
+        state: "running",
+        stage: "Waiting for the backup server to finish",
+        stageLabel: "The backup server is quiet. Waiting for this export to finish.",
+      }));
+      await sleep(1500);
+      checkExportRun(run);
+      continue;
+    }
     showExportProgress(data);
     if (data.state === "done") return data;
     // A third export waiting on the per-user cap has not started work yet,
@@ -3037,6 +3052,10 @@ async function pollExport(jobId) {
     }
     await sleep(1500);
     checkExportRun(run);
+  }
+  if (quietError) {
+    endExportProgress();
+    throw new Error(quietError);
   }
   throw new Error("Export timed out after 15 minutes. Draw a smaller area and try again.");
 }

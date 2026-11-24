@@ -164,7 +164,13 @@
     return pct;
   }
 
+  /** A quiet backup run can still finish (1.3.95); never wait on a new job. */
+  function lateDoneWait(data) {
+    return !!(data && data.state === "error" && +data.lateDoneWaitMs > 0);
+  }
+
   return {
+    lateDoneWait: lateDoneWait,
     STAGES: STAGES,
     WEIGHT_TOTAL: WEIGHT_TOTAL,
     markStage: markStage,

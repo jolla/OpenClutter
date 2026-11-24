@@ -78,6 +78,10 @@ exports.handler = async (event) => {
     stages: job.stages || [],
     steps: job.steps || {},
     error: job.error || null,
+    // No attempt id is exposed. The page keeps watching only this job
+    // until its platform clock runs out (1.3.95).
+    lateDoneWaitMs: require("../lib/job-watchdog").lateDoneWindowMs(job),
+    lateDone: !!job.lateDone,
     stats: job.stats || null,
     warnings: job.warnings || [],
     zipFilename: job.zipFilename || null,
