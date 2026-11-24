@@ -33,6 +33,7 @@ Newest first. Version numbers come from `package.json` (`npm run bump`). Before 
 
 ## 1.3
 
+- **1.3.89** (Nov 23, 2026): bug fix, /dev only (feedback #23). Parts of a large building no longer go missing: a square-sided piece of a split roof is no longer dropped as a diagonal wedge, a three-corner roof piece from the terrain split keeps its Copy terrain zone, and a roof piece whose simplified outline crossed itself is cleaned or cut in half instead of being dropped. On the reported Las Vegas Strip draw this fills the Encore garage and the low roofs east of the pool. roofRepair:false turns it off. Production gets this in the Nov 30 weekly release.
 - **1.3.88** (Nov 23, 2026): weekly production release. Adaptive terrain is on by default for every host, not only /dev; ?adaptiveTerrain=0 on the page (now read on every host) or adaptiveTerrain:false in a request still turns it off. No other export change from 1.3.87.
 - **1.3.87** (Nov 23, 2026): /dev only. Buildings and street map now read Overture release 2026-11-18.0 (the building and street row-group indexes are rebuilt from that release). Production keeps reading 2026-10-21.0 until the next weekly release.
 - **1.3.86** (Nov 22, 2026): /dev only. Official npm timing checks for a hung optional source and a retried aerial JPEG now use a short injected deadline, so they stay meaningful without waiting out the live join clocks. Production export timing is unchanged. Production gets this in the Nov 30 weekly release.
