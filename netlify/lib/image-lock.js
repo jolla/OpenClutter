@@ -149,7 +149,30 @@ async function lockIsotropicImageryBounded(frame, jpegBuf, opts = {}, deps = {})
   });
 }
 
+/** /dev probe: lock a generated 1400 px plate at 60N and say how it ran. */
+async function lockProbe() {
+  const jpeg = require("jpeg-js");
+  const w = 1400;
+  const h = 1400;
+  const data = Buffer.alloc(w * h * 4, 128);
+  const buf = jpeg.encode({ data, width: w, height: h }, 80).data;
+  const frame = gf.geoFrame({ west: 25.0, south: 60.0, east: 25.05, north: 60.025 }, { imgW: w, imgH: h, maxSpanM: 50000, minSpanM: 1 });
+  const r = await lockIsotropicImageryBounded(frame, buf, { maxSide: 2048 });
+  return {
+    file: workerFile(),
+    taskRoot: process.env.LAMBDA_TASK_ROOT || null,
+    mode: r.mode,
+    attempts: r.attempts,
+    wallMs: r.wallMs,
+    timing: r.timing || null,
+    failed: r.failed || null,
+    resampled: r.resampled,
+    out: r.frame ? [r.frame.imgW, r.frame.imgH] : null,
+  };
+}
+
 module.exports = {
+  lockProbe,
   workerFile,
   workerCandidates,
   IMAGE_LOCK_MS,

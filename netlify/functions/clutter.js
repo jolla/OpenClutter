@@ -1610,6 +1610,10 @@ async function handleClutterNorthUp(event) {
       "content-disposition, x-hamina-width-m, x-hamina-length-m, x-hamina-mpu, x-hamina-alignment",
   };
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: cors, body: "" };
+  if (event.httpMethod === "GET" && event.queryStringParameters && event.queryStringParameters.lockProbe === "1" && isDevTestHost(event)) {
+    // /dev hosts only: does this function bundle run the aerial lock thread?
+    return { statusCode: 200, headers: Object.assign({ "content-type": "application/json" }, cors), body: JSON.stringify(await require("../lib/image-lock").lockProbe()) };
+  }
   if (event.httpMethod !== "POST") return { statusCode: 405, headers: cors, body: "POST only" };
   let body;
   try {
@@ -2146,9 +2150,7 @@ async function handleClutterNorthUp(event) {
       const wantLegacy = gfLib.isTrueMetres() && gfLib.needsGroundMeterImage((+frame.south + +frame.north) / 2);
       const [locked, legacy] = await stageClock.timeSpan("aerialStitch", () =>
         Promise.all([
-          testHost && body.imageLock === "inline"
-            ? Promise.resolve(Object.assign({ mode: "inline", attempts: 0, wallMs: 0 }, require("../lib/geo-frame").lockIsotropicImagery(frame, imgBuf, { maxSide })))
-            : lockIsotropicImageryBounded(frame, imgBuf, { maxSide }),
+          lockIsotropicImageryBounded(frame, imgBuf, { maxSide }),
           wantLegacy ? lockIsotropicImageryBounded(preLock.frame, preLock.imgBuf, { maxSide, legacy: true }) : null,
         ])
       );
