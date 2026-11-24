@@ -248,7 +248,17 @@ async function fetchStreetMapsWork(bbox, opts) {
   const fullFetch = o.fetchOsmMaps || fetchOsmMaps;
 
   const ovtWork = stageClock.timeSource("overture", () =>
-    require("./host-memory").oneHeavySource(() => ovtFetch(bbox, { signal: null, deadlineMs: o.overtureDeadlineMs }), !!o.tile)
+    require("./host-memory").oneHeavySource(
+      () =>
+        require("./source-proc").heavyRead(
+          "street",
+          [bbox, { deadlineMs: o.overtureDeadlineMs }],
+          () => ovtFetch(bbox, { signal: null, deadlineMs: o.overtureDeadlineMs }),
+          !!o.tile && ovtFetch === fetchOvertureStreet,
+          { deadlineMs: (o.overtureDeadlineMs > 0 ? o.overtureDeadlineMs : require("./overture-street").STREET_DEADLINE_MS) + 15000 }
+        ),
+      !!o.tile
+    )
   );
   const gapDeadline = capGapDeadline(o.deadlineMs);
   const gapWork = stageClock.timeSource("overpass", () =>

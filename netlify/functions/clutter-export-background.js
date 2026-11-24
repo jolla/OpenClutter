@@ -1,5 +1,11 @@
 "use strict";
 
+// OPE-14: this same file is the child process for heavy source reads on a
+// small host. In the child only the read runs; the handler is never called.
+const sourceProc = require("../lib/source-proc");
+sourceProc.setChildEntry(__filename);
+if (sourceProc.isChild()) sourceProc.childMain();
+
 const jobs = require("../lib/export-jobs");
 const areaCache = require("../lib/area-cache");
 const { completeExportJob } = require("../lib/export-run");

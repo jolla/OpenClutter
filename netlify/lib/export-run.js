@@ -183,6 +183,9 @@ function startNetlifyBeat(jobId, attempt) {
             // (MemTotal - MemAvailable), sampled like peakRssMb (OPE-14).
             peakTreeRssMb: Math.round(peakTree / 1e6),
             peakSandboxMb: Math.round(peakSandbox / 1e6),
+            // Heavy source reads in child processes (OPE-14): their own peak.
+            childMaxRssMb: require("./source-proc").stats().childMaxRssMb || null,
+            childReads: require("./source-proc").stats().runs + "/" + require("./source-proc").stats().failures,
             heapMb: Math.round(mem.heapUsed / 1e6),
             limitMb: require("./host-memory").functionMemoryMb() || null,
             open,
