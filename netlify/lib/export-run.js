@@ -97,11 +97,60 @@ function maxRssMb() {
   }
 }
 
+/**
+ * Memory of this process and its child processes (OPE-14), and what the
+ * whole function sandbox has in use, in bytes. Linux only; 0 elsewhere.
+ */
+function childPids() {
+  const fs = require("node:fs");
+  let ids = [];
+  try {
+    for (const t of fs.readdirSync("/proc/self/task")) {
+      try {
+        const line = fs.readFileSync("/proc/self/task/" + t + "/children", "utf8").trim();
+        if (line) ids = ids.concat(line.split(/\s+/));
+      } catch {
+        /* a thread that just ended */
+      }
+    }
+  } catch {
+    return [];
+  }
+  return ids;
+}
+
+function processRss(pid) {
+  try {
+    const m = require("node:fs").readFileSync("/proc/" + pid + "/status", "utf8").match(/VmRSS:\s+(\d+)/);
+    return m ? +m[1] * 1024 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function sandboxUsedBytes() {
+  try {
+    const t = require("node:fs").readFileSync("/proc/meminfo", "utf8");
+    const total = +(t.match(/MemTotal:\s+(\d+)/) || [])[1];
+    const avail = +(t.match(/MemAvailable:\s+(\d+)/) || [])[1];
+    return total > 0 && avail >= 0 ? (total - avail) * 1024 : 0;
+  } catch {
+    return 0;
+  }
+}
+
 function startNetlifyBeat(jobId, attempt) {
   let peakRss = 0;
+  let peakTree = 0;
+  let peakSandbox = 0;
   const sample = () => {
     const r = process.memoryUsage.rss();
     if (r > peakRss) peakRss = r;
+    let tree = r;
+    for (const pid of childPids()) tree += processRss(pid);
+    if (tree > peakTree) peakTree = tree;
+    const used = sandboxUsedBytes();
+    if (used > peakSandbox) peakSandbox = used;
   };
   const sampler = setInterval(sample, 500);
   if (typeof sampler.unref === "function") sampler.unref();
@@ -130,6 +179,10 @@ function startNetlifyBeat(jobId, attempt) {
             // thread, so a long synchronous stage hides its own peak and it
             // shows up at the next stage instead (1.3.101).
             maxRssMb: maxRssMb(),
+            // This process plus its child processes, and the whole sandbox
+            // (MemTotal - MemAvailable), sampled like peakRssMb (OPE-14).
+            peakTreeRssMb: Math.round(peakTree / 1e6),
+            peakSandboxMb: Math.round(peakSandbox / 1e6),
             heapMb: Math.round(mem.heapUsed / 1e6),
             limitMb: require("./host-memory").functionMemoryMb() || null,
             open,
