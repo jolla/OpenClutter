@@ -126,6 +126,8 @@ const SYNC_LARGE_ROOFS = 240;
 // is written. The page polls for that same 15 minutes.
 const BACKGROUND_PLATFORM_MS = 15 * 60 * 1000;
 const BACKGROUND_ANSWER_MS = BACKGROUND_PLATFORM_MS - 60 * 1000;
+/** Largest map plate on a 1 GB host (a Netlify fallback run), 1.3.94. */
+const LOW_MEMORY_PLATE_SIDE = 2048;
 // Canopy height, world cover, and lidar start with the map. Each stops on
 // its own clock. A miss keeps the buildings. They do not run one after
 // another until the page gives up.
@@ -1728,7 +1730,18 @@ async function handleClutterNorthUp(event) {
     return enqueueBackgroundExport(event, body, cors);
   }
   const background = isBackgroundExport();
-  const steps = imagerySteps(devHost, body);
+  let steps = imagerySteps(devHost, body);
+  // A 1 GB host (a Netlify fallback run) fits at most a 2048 px plate
+  // (1.3.94); a 3260 px Fort Wilderness plate and its stitch left too
+  // little room for the footprint reads. Fly and the benches keep theirs.
+  let lowMemoryPlateFrom = 0;
+  if (background && require("../lib/host-memory").lowMemoryHost() && steps[0].maxSide > LOW_MEMORY_PLATE_SIDE) {
+    const fit = steps.filter((step) => step.maxSide <= LOW_MEMORY_PLATE_SIDE);
+    if (fit.length) {
+      lowMemoryPlateFrom = steps[0].maxSide;
+      steps = fit;
+    }
+  }
   const maxSide = steps[0].maxSide;
   let frame;
   try {
@@ -1823,6 +1836,11 @@ async function handleClutterNorthUp(event) {
   let lidarSettled = true;
   let worldCover = null;
   const warnings = [];
+  if (lowMemoryPlateFrom && needImage) {
+    warnings.push(
+      "Map image capped at " + steps[0].maxSide + " px (asked " + lowMemoryPlateFrom + " px): this export ran on the backup server, which has less memory. Export again later for the full plate."
+    );
+  }
   const started = Date.now();
   stageClock.enter(stageClock.createClock());
   const sharpRoom = devHost && imageryRoomKind(body.imageryQuality) !== "";
@@ -1967,7 +1985,7 @@ async function handleClutterNorthUp(event) {
     if (!devHost) {
       overtureJob = beginOptional((signal) =>
         stageClock.timeSource("overtureBuildings", () =>
-          oneHeavySource(() => fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) }))
+          oneHeavySource(() => fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) }), background)
         )
       );
       if (needImage) {
@@ -1996,19 +2014,21 @@ async function handleClutterNorthUp(event) {
       if (!overtureJob) {
         overtureJob = beginOptional((signal) =>
           stageClock.timeSource("overtureBuildings", () =>
-            oneHeavySource(() => fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) }))
+            oneHeavySource(() => fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) }), background)
           )
         );
       }
     }
     const msFrame = frame;
     const globalJob = stageClock.timeSource("microsoft", () =>
-      oneHeavySource(() =>
-        fetchMsGlobalFootprints(
-          msFrame,
-          (url) => fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(coreBudget) }),
-          { diskCache: true }
-        )
+      oneHeavySource(
+        () =>
+          fetchMsGlobalFootprints(
+            msFrame,
+            (url) => fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(coreBudget) }),
+            { diskCache: true }
+          ),
+        background
       ).catch(() => ({ features: [] }))
     );
     const usaFrame = frame;
@@ -2022,7 +2042,7 @@ async function handleClutterNorthUp(event) {
           (url, signal) => fetch(url, { headers: { "user-agent": UA }, signal: signal || usaCtrl.signal }),
           { diskCache: true, signal: usaCtrl.signal }
         ).finally(() => clearTimeout(usaTimer));
-      }).catch((err) => ({
+      }, background).catch((err) => ({
         features: [],
         failed: true,
         emptyReason: err && err.name === "AbortError" ? "timeout" : "error",
@@ -2036,7 +2056,7 @@ async function handleClutterNorthUp(event) {
         north: requestBbox.north,
       };
       coverJob = beginOptional((signal) =>
-        stageClock.timeSource("worldcover", () => oneHeavySource(() => fetchWorldCoverImpl(coverFrame, { signal })))
+        stageClock.timeSource("worldcover", () => oneHeavySource(() => fetchWorldCoverImpl(coverFrame, { signal }), background))
       );
     }
     if ((lidarOn || lidarCanopyOn) && !lidarPromise) {
@@ -2052,7 +2072,7 @@ async function handleClutterNorthUp(event) {
             north: requestBbox.north,
           };
       lidarPromise = stageClock.timeSource("lidar", () =>
-        oneHeavySource(() => fetchUsgsLidar(lidarBox, { maxMs: lidarCapMs(background) }))
+        oneHeavySource(() => fetchUsgsLidar(lidarBox, { maxMs: lidarCapMs(background) }), background)
           .then((value) => {
             lidarSettled = true;
             return value;
@@ -2071,7 +2091,7 @@ async function handleClutterNorthUp(event) {
         north: frame.north,
       };
       chmJob = beginOptional((signal) =>
-        stageClock.timeSource("canopy", () => oneHeavySource(() => fetchChmGridImpl(chmFrame, { signal })))
+        stageClock.timeSource("canopy", () => oneHeavySource(() => fetchChmGridImpl(chmFrame, { signal }), background))
       );
     }
     const clientHitsEarly = includeFoliage ? normalizeCanopyHits(body.canopyHits) : [];
@@ -2228,7 +2248,7 @@ async function handleClutterNorthUp(event) {
     if (!overtureJob) {
       overtureJob = beginOptional((signal) =>
         stageClock.timeSource("overtureBuildings", () =>
-          oneHeavySource(() => fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) }))
+          oneHeavySource(() => fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) }), background)
         )
       );
     }

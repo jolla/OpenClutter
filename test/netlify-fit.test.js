@@ -66,6 +66,15 @@ test("roomy host (Fly, benches): heavy sources start at once, in the same tick, 
     assert.deepEqual(order, ["a", "b"]);
   }));
 
+test("1 GB host, short synchronous request: heavy sources are not queued", () =>
+  withHost({ mem: "1024" }, async () => {
+    const { oneHeavySource } = require("../netlify/lib/host-memory");
+    const order = [];
+    oneHeavySource(() => order.push("a"), false);
+    oneHeavySource(() => order.push("b"), false);
+    assert.deepEqual(order, ["a", "b"]);
+  }));
+
 test("1 GB host: heavy sources run one at a time, and a failure does not stall the queue", () =>
   withHost({ mem: "1024" }, async () => {
     const { oneHeavySource } = require("../netlify/lib/host-memory");
@@ -159,4 +168,11 @@ test("lidar: a 1 GB host caps the cloud at 12 MB and says so; a roomy host keeps
   const src = require("node:fs").readFileSync(require.resolve("../netlify/lib/usgs-lidar"), "utf8");
   assert.match(src, /if \(lowMemoryCap\) result\.lowMemoryCap = true;/);
   assert.match(src, /const lowMemoryCap = !\(opt\.maxBytes > 0\) && require\("\.\/host-memory"\)\.lowMemoryHost\(\);/);
+});
+
+test("map plate: a 1 GB background run caps at 2048 px with a note; roomy hosts keep the plan", () => {
+  const src = require("node:fs").readFileSync(require.resolve("../netlify/functions/clutter"), "utf8");
+  assert.match(src, /const LOW_MEMORY_PLATE_SIDE = 2048;/);
+  assert.match(src, /if \(background && require\("\.\.\/lib\/host-memory"\)\.lowMemoryHost\(\) && steps\[0\]\.maxSide > LOW_MEMORY_PLATE_SIDE\)/);
+  assert.match(src, /"Map image capped at " \+ steps\[0\]\.maxSide \+ " px \(asked " \+ lowMemoryPlateFrom \+ " px\): this export ran on the backup server/);
 });

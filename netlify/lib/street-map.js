@@ -248,7 +248,7 @@ async function fetchStreetMapsWork(bbox, opts) {
   const fullFetch = o.fetchOsmMaps || fetchOsmMaps;
 
   const ovtWork = stageClock.timeSource("overture", () =>
-    require("./host-memory").oneHeavySource(() => ovtFetch(bbox, { signal: null, deadlineMs: o.overtureDeadlineMs }))
+    require("./host-memory").oneHeavySource(() => ovtFetch(bbox, { signal: null, deadlineMs: o.overtureDeadlineMs }), !!o.tile)
   );
   const gapDeadline = capGapDeadline(o.deadlineMs);
   const gapWork = stageClock.timeSource("overpass", () =>

@@ -30,12 +30,13 @@ function readConcurrency(normal) {
  * The heavy export sources (Microsoft tiles, Overture buildings and street
  * map, USA Structures, lidar, world cover, canopy height) on a small host
  * run one at a time (1.3.94). Each alone fits in 1 GB; Fort Wilderness ran
- * six at once and died at 1014 MB, three times. On a roomy host `fn` runs
- * right away, in the same tick, so Fly and the benches are unchanged.
+ * six at once and died at 1014 MB, three times. On a roomy host, or for a
+ * short synchronous request (`active` false), `fn` runs right away in the
+ * same tick, so Fly and the benches are unchanged.
  */
 let heavyTail = Promise.resolve();
-function oneHeavySource(fn) {
-  if (!lowMemoryHost()) return fn();
+function oneHeavySource(fn, active = true) {
+  if (!active || !lowMemoryHost()) return fn();
   const run = heavyTail.then(() => fn());
   heavyTail = run.then(
     () => {},
