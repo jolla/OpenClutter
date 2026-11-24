@@ -53,6 +53,15 @@ exports.handler = async (event) => {
   const inner = payload.event;
   if (!jobs.validJobId(jobId) || !inner || !inner.body) return { statusCode: 202, body: "" };
   if (await jobs.jobCancelled(jobId)) return { statusCode: 202, body: "" };
+  // A platform retry after a Netlify attempt died: fail now with a clear
+  // error instead of dying the same way twice more (1.3.94).
+  const { priorNetlifyAttempt, deadAttemptPatch } = require("../lib/job-watchdog");
+  const prior = await priorNetlifyAttempt(jobs.readJob, jobId);
+  if (prior.verdict === "alive" || prior.verdict === "finished") return { statusCode: 202, body: "" };
+  if (prior.verdict === "dead") {
+    await jobs.updateJob(jobId, deadAttemptPatch(prior.job)).catch(() => {});
+    return { statusCode: 202, body: "" };
+  }
 
   const fly = await handOffExport(jobId, inner);
   if (fly.handed || fly.stay) {

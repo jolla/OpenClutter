@@ -105,6 +105,16 @@ function loadMsIndex() {
  * all sit just above the old 120 MB cap.
  */
 const MAX_GZIP_BYTES = 512 * 1024 * 1024;
+/**
+ * On a 1 GB host (a Netlify fallback run) a tile over this is left out
+ * with the usual partial or omitted note (1.3.94). A city tile streams
+ * for minutes there while the other sources wait their turn.
+ */
+const LOW_MEMORY_GZIP_BYTES = 128 * 1024 * 1024;
+
+function tileCapBytes() {
+  return require("./host-memory").lowMemoryHost() ? LOW_MEMORY_GZIP_BYTES : MAX_GZIP_BYTES;
+}
 const MS_CACHE_MAX_BYTES = 512 * 1024 * 1024;
 const MS_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const msCache = require("./disk-cache").createDiskCache({
@@ -594,13 +604,13 @@ function nodeReadableFromResponse(res) {
  * doubles that only expose arrayBuffer still work when the payload is
  * under the runaway cap.
  */
-async function readableFromResponse(res, len) {
+async function readableFromResponse(res, len, cap = MAX_GZIP_BYTES) {
   const stream = nodeReadableFromResponse(res);
   if (stream) return stream;
   if (res && typeof res.arrayBuffer === "function") {
-    if (len > MAX_GZIP_BYTES) return null;
+    if (len > cap) return null;
     const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length > MAX_GZIP_BYTES) return null;
+    if (buf.length > cap) return null;
     return Readable.from(buf);
   }
   return null;
@@ -687,6 +697,7 @@ async function fetchMsGlobalFootprintsWork(frame, fetchFn, opts) {
   let skippedBytes = 0;
   let skippedErrors = 0;
   const useCache = msCacheEnabled(fetchFn, opts);
+  const cap = tileCapBytes();
   const fetchImpl = fetchFn || fetch;
   const keep = FOOTPRINT_KEEP;
   for (const item of urls) {
@@ -721,22 +732,22 @@ async function fetchMsGlobalFootprintsWork(frame, fetchFn, opts) {
       }
       const len = contentLength(res);
       expectedBytes = len;
-      if (len > MAX_GZIP_BYTES) {
+      if (len > cap) {
         skipped++;
         skippedBytes += len;
         await releaseBody(res);
         continue;
       }
-      source = await readableFromResponse(res, len);
+      source = await readableFromResponse(res, len, cap);
       if (!source) {
         skipped++;
         skippedBytes += len;
-        skippedErrors += len > MAX_GZIP_BYTES ? 0 : 1;
+        skippedErrors += len > cap ? 0 : 1;
         await releaseBody(res);
         continue;
       }
     }
-    const limiter = createByteLimit(MAX_GZIP_BYTES);
+    const limiter = createByteLimit(cap);
     let parseSource = limiter;
     let writeP = Promise.resolve();
     if (useCache && !fromDisk) {
@@ -781,7 +792,9 @@ async function fetchMsGlobalFootprintsWork(frame, fetchFn, opts) {
     if (useCache) await writeParsedFeatures(item.url, bbox, keep, chunk);
     for (const f of chunk) features.push(f);
   }
-  return { features, quadkeys: keys, files: urls.length, skipped, skippedBytes, skippedErrors };
+  const pack = { features, quadkeys: keys, files: urls.length, skipped, skippedBytes, skippedErrors };
+  if (cap !== MAX_GZIP_BYTES) pack.capBytes = cap;
+  return pack;
 }
 
 function megabytes(bytes) {
@@ -791,8 +804,9 @@ function megabytes(bytes) {
 function globalSkipWarning(pack) {
   if (!pack || !pack.skipped) return "";
   const mb = megabytes(pack.skippedBytes);
-  const limit = megabytes(MAX_GZIP_BYTES);
-  const parseFail = pack.skippedErrors > 0 && !(pack.skippedBytes > MAX_GZIP_BYTES);
+  const capBytes = pack.capBytes > 0 ? pack.capBytes : MAX_GZIP_BYTES;
+  const limit = megabytes(capBytes);
+  const parseFail = pack.skippedErrors > 0 && !(pack.skippedBytes > capBytes);
   if (parseFail) {
     return (
       "Microsoft building footprints omitted: the footprint tile could not be parsed. Other building sources are included."
@@ -836,6 +850,7 @@ module.exports = {
   featuresFromGzipBuffer,
   mergeFootprintFeatures,
   MAX_GZIP_BYTES,
+  LOW_MEMORY_GZIP_BYTES,
   FOOTPRINT_KEEP,
   fetchMsGlobalFootprints,
   setMsCacheDir,

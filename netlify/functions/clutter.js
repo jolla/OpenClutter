@@ -172,6 +172,7 @@ const { fetchOutdoorClutter, OUTDOOR_MISS } = require("../lib/outdoor-clutter");
 /** Wait for the park-context photo (park-context.js); a miss keeps the draw-only pads. */
 const PARK_CONTEXT_MS = 20000;
 const { fetchBuildingDetail, shapeBuildings } = require("../lib/building-shape");
+const { oneHeavySource } = require("../lib/host-memory");
 const { dropStaleCampFootprints } = require("../lib/stale-footprints");
 const { fetchUsgsLidar, finishPartialLidar, applyLidarSample, checkSourceHeights, lidarNote, lidarStatusLine, rankProjects, heightForRing } = require("../lib/usgs-lidar");
 const { fuseLidarCanopy, keepLidarOpen, clearInside, clearThinLinesGrid, vehicleFeatures, lidarCanopyNote } = require("../lib/lidar-canopy");
@@ -1966,7 +1967,7 @@ async function handleClutterNorthUp(event) {
     if (!devHost) {
       overtureJob = beginOptional((signal) =>
         stageClock.timeSource("overtureBuildings", () =>
-          fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
+          oneHeavySource(() => fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) }))
         )
       );
       if (needImage) {
@@ -1995,32 +1996,37 @@ async function handleClutterNorthUp(event) {
       if (!overtureJob) {
         overtureJob = beginOptional((signal) =>
           stageClock.timeSource("overtureBuildings", () =>
-            fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
+            oneHeavySource(() => fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) }))
           )
         );
       }
     }
+    const msFrame = frame;
     const globalJob = stageClock.timeSource("microsoft", () =>
-      fetchMsGlobalFootprints(
-        frame,
-        (url) => fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(coreBudget) }),
-        { diskCache: true }
+      oneHeavySource(() =>
+        fetchMsGlobalFootprints(
+          msFrame,
+          (url) => fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(coreBudget) }),
+          { diskCache: true }
+        )
       ).catch(() => ({ features: [] }))
     );
-    const usaCtrl = new AbortController();
-    const usaTimer = setTimeout(() => usaCtrl.abort(), coreBudget);
+    const usaFrame = frame;
     const usaJob = stageClock.timeSource("usaStructures", () =>
-      fetchUsaStructures(
-        frame,
-        (url, signal) => fetch(url, { headers: { "user-agent": UA }, signal: signal || usaCtrl.signal }),
-        { diskCache: true, signal: usaCtrl.signal }
-      )
-        .catch((err) => ({
-          features: [],
-          failed: true,
-          emptyReason: err && err.name === "AbortError" ? "timeout" : "error",
-        }))
-        .finally(() => clearTimeout(usaTimer))
+      oneHeavySource(() => {
+        // The clock starts when the read does, also behind the queue.
+        const usaCtrl = new AbortController();
+        const usaTimer = setTimeout(() => usaCtrl.abort(), coreBudget);
+        return fetchUsaStructures(
+          usaFrame,
+          (url, signal) => fetch(url, { headers: { "user-agent": UA }, signal: signal || usaCtrl.signal }),
+          { diskCache: true, signal: usaCtrl.signal }
+        ).finally(() => clearTimeout(usaTimer));
+      }).catch((err) => ({
+        features: [],
+        failed: true,
+        emptyReason: err && err.name === "AbortError" ? "timeout" : "error",
+      }))
     );
     if (includeFoliage && !coverJob) {
       const coverFrame = {
@@ -2030,7 +2036,7 @@ async function handleClutterNorthUp(event) {
         north: requestBbox.north,
       };
       coverJob = beginOptional((signal) =>
-        stageClock.timeSource("worldcover", () => fetchWorldCoverImpl(coverFrame, { signal }))
+        stageClock.timeSource("worldcover", () => oneHeavySource(() => fetchWorldCoverImpl(coverFrame, { signal })))
       );
     }
     if ((lidarOn || lidarCanopyOn) && !lidarPromise) {
@@ -2046,7 +2052,7 @@ async function handleClutterNorthUp(event) {
             north: requestBbox.north,
           };
       lidarPromise = stageClock.timeSource("lidar", () =>
-        fetchUsgsLidar(lidarBox, { maxMs: lidarCapMs(background) })
+        oneHeavySource(() => fetchUsgsLidar(lidarBox, { maxMs: lidarCapMs(background) }))
           .then((value) => {
             lidarSettled = true;
             return value;
@@ -2065,7 +2071,7 @@ async function handleClutterNorthUp(event) {
         north: frame.north,
       };
       chmJob = beginOptional((signal) =>
-        stageClock.timeSource("canopy", () => fetchChmGridImpl(chmFrame, { signal }))
+        stageClock.timeSource("canopy", () => oneHeavySource(() => fetchChmGridImpl(chmFrame, { signal })))
       );
     }
     const clientHitsEarly = includeFoliage ? normalizeCanopyHits(body.canopyHits) : [];
@@ -2222,7 +2228,7 @@ async function handleClutterNorthUp(event) {
     if (!overtureJob) {
       overtureJob = beginOptional((signal) =>
         stageClock.timeSource("overtureBuildings", () =>
-          fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) })
+          oneHeavySource(() => fetchOvertureImpl(overtureFrame, { signal, filter: padFootprintBbox(overtureFrame) }))
         )
       );
     }
