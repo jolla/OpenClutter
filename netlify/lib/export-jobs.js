@@ -456,7 +456,7 @@ async function updateJob(id, patch) {
     for (let attempt = 0; attempt < 8; attempt++) {
       const loaded = await loadJobRecord(store, id);
       const cur = loaded.job || freshJob(id);
-      const merged = mergeJobPatch(cur, patch);
+      const merged = mergeJobPatch(cur, typeof patch === "function" ? patch(cur) : patch);
       if (merged.unchanged) return cur;
       const entering = !isTerminalState(cur.state) && isTerminalState(merged.job.state);
       const field = entering && !cur.usageCounted ? exportCountField(merged.job.state) : "";

@@ -35,6 +35,12 @@ exports.handler = async (event) => {
     await jobs.kickStart(id).catch(() => {});
     job = (await jobs.readJob(id).catch(() => job)) || job;
   }
+  // A platform kill (OOM or function deadline) cannot catch and write its
+  // own error. Evaluate against the latest record under the update lock.
+  const { stalledJobPatch } = require("../lib/job-watchdog");
+  if (stalledJobPatch(job)) {
+    job = await jobs.updateJob(id, (cur) => stalledJobPatch(cur)).catch(() => job);
+  }
   const beat = String(job.heartbeatStage || "");
   const stored = String(job.stage || "");
   const live =
@@ -80,5 +86,7 @@ exports.handler = async (event) => {
     terrainStatus: job.terrainStatus || "",
     gpsClipboard: job.gpsClipboard || null,
     worker: job.worker || job.heartbeatStage || null,
+    netlifyBeatAt: job.netlifyBeatAt || null,
+    netlifyBeat: job.netlifyBeat || null,
   });
 };

@@ -9,6 +9,8 @@
 const { AsyncLocalStorage } = require("node:async_hooks");
 
 const als = new AsyncLocalStorage();
+// The last clock entered in this process (one export per Netlify function).
+let lastClock = null;
 
 function createClock() {
   return {
@@ -21,7 +23,8 @@ function createClock() {
 
 function enter(clock) {
   als.enterWith(clock || createClock());
-  return als.getStore();
+  lastClock = als.getStore();
+  return lastClock;
 }
 
 function beginSpan(name) {
@@ -202,8 +205,23 @@ async function timeSubstage(name, fn, extra) {
   }
 }
 
+/** Spans still open on the last clock: [[name, seconds open], ...], oldest first. */
+function openSpans() {
+  const clock = lastClock;
+  if (!clock || !clock.open) return [];
+  const now = Date.now();
+  const out = [];
+  for (const name of Object.keys(clock.open)) {
+    const slot = clock.open[name];
+    if (slot && slot.n > 0) out.push([name, Math.round((now - slot.t) / 1000)]);
+  }
+  out.sort((a, b) => b[1] - a[1]);
+  return out;
+}
+
 module.exports = {
   createClock,
+  openSpans,
   enter,
   beginSpan,
   timeSpan,

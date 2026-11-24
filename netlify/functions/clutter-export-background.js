@@ -76,7 +76,7 @@ exports.handler = async (event) => {
       return { statusCode: 202, body: "" };
     }
     await jobs.updateJob(jobId, { workerFallback: "heartbeat-stale" }).catch(() => {});
-    await completeExportJob(jobId, inner, { warning: RERUN_NOTE, worker: "netlify" });
+    await completeExportJob(jobId, inner, { warning: RERUN_NOTE, worker: "netlify", netlifyBeat: true });
     return { statusCode: 202, body: "" };
   }
   if (fly.fallback) {
@@ -85,9 +85,9 @@ exports.handler = async (event) => {
       return { statusCode: 202, body: "" };
     }
     await jobs.updateJob(jobId, { workerFallback: fly.reason || "invoke-failed" }).catch(() => {});
-    await completeExportJob(jobId, inner, { warning: FALLBACK_NOTE, worker: "netlify" });
+    await completeExportJob(jobId, inner, { warning: FALLBACK_NOTE, worker: "netlify", netlifyBeat: true });
     return { statusCode: 202, body: "" };
   }
-  await completeExportJob(jobId, inner);
+  await completeExportJob(jobId, inner, { worker: "netlify", netlifyBeat: true });
   return { statusCode: 202, body: "" };
 };

@@ -84,6 +84,37 @@ async function otherWorkerFinished(jobId, worker) {
   return !!(who && who !== worker);
 }
 
+/**
+ * Netlify runs have no Fly heartbeat. This beat writes netlifyBeatAt every
+ * 10 seconds while the function is alive, with its memory and the stages
+ * still open, so export-status can fail a run whose function died (1.3.93).
+ */
+function startNetlifyBeat(jobId) {
+  const beat = () => {
+    let open = [];
+    try {
+      open = require("./stage-clock").openSpans().slice(0, 6);
+    } catch {
+      open = [];
+    }
+    const mem = process.memoryUsage();
+    jobs
+      .readJob(jobId)
+      .then((cur) => {
+        if (!cur || jobs.isTerminalState(cur.state)) return null;
+        return jobs.updateJob(jobId, {
+          netlifyBeatAt: Date.now(),
+          netlifyBeat: { rssMb: Math.round(mem.rss / 1e6), heapMb: Math.round(mem.heapUsed / 1e6), open },
+        });
+      })
+      .catch(() => {});
+  };
+  beat();
+  const timer = setInterval(beat, jobs.HEARTBEAT_MS);
+  if (typeof timer.unref === "function") timer.unref();
+  return () => clearInterval(timer);
+}
+
 const CANCELLED = { ok: true, finished: false, cancelled: true, reason: "cancelled" };
 
 async function completeExportJob(jobId, inner, opts) {
@@ -94,12 +125,17 @@ async function completeExportJob(jobId, inner, opts) {
   try {
     const patch = { state: "running", stage: "Fetching aerial" };
     if (worker) patch.worker = worker;
+    if (opts && opts.netlifyBeat) {
+      patch.netlifyStartedAt = Date.now();
+      patch.netlifyBeatAt = Date.now();
+    }
     if (warning) patch.warnings = [warning];
     await jobs.updateJob(jobId, patch);
   } catch {
     return { ok: false, reason: "job-write-failed" };
   }
   const stopTiles = startTilePulse(jobId);
+  const stopBeat = opts && opts.netlifyBeat ? startNetlifyBeat(jobId) : () => {};
   try {
     const result = await clutter.runBackgroundExport(inner, async (patch) => {
       if (opts && typeof opts.onProgress === "function") {
@@ -199,6 +235,7 @@ async function completeExportJob(jobId, inner, opts) {
     return { ok: true, finished: false };
   } finally {
     stopTiles();
+    stopBeat();
   }
 }
 
