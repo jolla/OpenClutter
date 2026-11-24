@@ -3,6 +3,7 @@
 const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");
 const fn = require("../netlify/lib/export-filename");
+const nominatim = require("../netlify/lib/nominatim");
 
 const FORT = {
   west: -81.535,
@@ -133,7 +134,7 @@ describe("placeFromPhoton and placeFromNominatim", () => {
       properties: {
         name: "Disney's Fort Wilderness Resort & Campground",
         osm_key: "tourism",
-        osm_value: "hotel",
+        osm_value: "camp_site",
         city: "Bay Lake",
         state: "Florida",
         countrycode: "US",
@@ -214,6 +215,156 @@ describe("resolveExportZipName", () => {
       now: NOW,
     });
     assert.match(name, /^Wynn-Golf_Las-Vegas-NV_\d+(\.\d+)?km2_20261124\.zip$/);
+  });
+});
+
+describe("enclosing area fallback", () => {
+  const FW = { west: -81.57, south: 28.3935, east: -81.546, north: 28.4135 };
+  const KOA = { west: -112.15926, south: 35.32465, east: -112.15474, north: 35.32957 };
+  const WYNN = { west: -115.1735, south: 36.1205, east: -115.1488, north: 36.1355 };
+  const PISMO = { west: -120.6398, south: 35.131, east: -120.6346, north: 35.137 };
+  const TORONTO = { west: -79.39, south: 43.645, east: -79.375, north: 43.655 };
+  const NOW = new Date("2026-11-24T15:30:00Z");
+
+  it("treats Possum Path and other road loops as roads, not places", () => {
+    assert.equal(fn.isRoadOrPath({ name: "Possum Path", osm_key: "highway", osm_value: "service", type: "street" }), true);
+    assert.equal(fn.isRoadOrPath({ name: "Erin Court", osm_key: "highway", osm_value: "residential", type: "street" }), true);
+    assert.equal(fn.isRoadOrPath({ name: "Disney's Fort Wilderness Campground", osm_key: "tourism", osm_value: "camp_site" }), false);
+  });
+
+  it("picks the enclosing campground over a road loop at the centre of Fort Wilderness", () => {
+    const picked = fn.pickEnclosingPlace(
+      [
+        { properties: { name: "Possum Path", osm_key: "highway", osm_value: "service", type: "street", district: "Bay Lake", state: "Florida", countrycode: "US", extent: [-81.5587, 28.4039, -81.5578, 28.4027] } },
+        { properties: { name: "Disney's Fort Wilderness Campground", osm_key: "tourism", osm_value: "camp_site", type: "house", city: "KIss", district: "Bay Lake", state: "Florida", countrycode: "US", extent: [-81.5635, 28.4134, -81.5502, 28.3937] } },
+        { properties: { name: "Comfort Station", osm_key: "amenity", osm_value: "toilets", type: "house", district: "Bay Lake", state: "Florida", countrycode: "US" } },
+      ],
+      FW
+    );
+    assert.equal(picked.place, "Disneys-Fort-Wilderness-Campground");
+    assert.equal(picked.locality, "Bay-Lake-FL");
+  });
+
+  it("picks a nearby KOA campground over the street at the centre", () => {
+    const picked = fn.pickEnclosingPlace(
+      [
+        { properties: { name: "Erin Court", osm_key: "highway", osm_value: "residential", type: "street", county: "Coconino", state: "Arizona", countrycode: "US" } },
+        { properties: { name: "Shell", osm_key: "amenity", osm_value: "fuel", type: "house", county: "Coconino", state: "Arizona", countrycode: "US" } },
+        { properties: { name: "KOA Campground", osm_key: "tourism", osm_value: "caravan_site", type: "house", county: "Coconino", state: "Arizona", countrycode: "US" } },
+      ],
+      KOA
+    );
+    assert.equal(picked.place, "KOA-Campground");
+    assert.equal(picked.locality, "AZ");
+  });
+
+  it("picks the Pismo RV park that covers the box, not a house or a lane", () => {
+    const picked = fn.pickEnclosingPlace(
+      [
+        { properties: { osm_key: "place", osm_value: "house", type: "house", street: "South Dolliver Street", city: "Pismo Beach", state: "California", countrycode: "US" } },
+        { properties: { name: "Shoreline Lane", osm_key: "highway", osm_value: "service", type: "street", city: "Pismo Beach", state: "California", countrycode: "US" } },
+        { properties: { name: "Pismo Coast Village RV Resort", osm_key: "tourism", osm_value: "caravan_site", type: "house", city: "Pismo Beach", state: "California", countrycode: "US", extent: [-120.6394, 35.1365, -120.6351, 35.1316] } },
+      ],
+      PISMO
+    );
+    assert.equal(picked.place, "Pismo-Coast-Village-RV-Resort");
+    assert.equal(picked.locality, "Pismo-Beach-CA");
+  });
+
+  it("falls back to city and state when a dense-city or large-strip box has no enclosing site", () => {
+    assert.deepEqual(
+      fn.pickEnclosingPlace(
+        [
+          { properties: { name: "Encore Resort Boulevard", osm_key: "highway", osm_value: "service", type: "street", city: "Winchester", state: "Nevada", countrycode: "US" } },
+          { properties: { name: "EY Tower", osm_key: "building", osm_value: "yes", type: "house", city: "Toronto", state: "Ontario", countrycode: "CA" } },
+        ],
+        WYNN
+      ),
+      { place: "", locality: "Winchester-NV" }
+    );
+  });
+
+  it("names five unsearched boxes from a Photon reverse list, not the first road hit", async () => {
+    const replies = {
+      fw: {
+        features: [
+          { properties: { name: "Possum Path", osm_key: "highway", osm_value: "service", type: "street", district: "Bay Lake", state: "Florida", countrycode: "US", extent: [-81.5587, 28.4039, -81.5578, 28.4027] } },
+          { properties: { name: "Disney's Fort Wilderness Campground", osm_key: "tourism", osm_value: "camp_site", district: "Bay Lake", state: "Florida", countrycode: "US", extent: [-81.5635, 28.4134, -81.5502, 28.3937] } },
+        ],
+      },
+      koa: {
+        features: [
+          { properties: { name: "Erin Court", osm_key: "highway", osm_value: "residential", type: "street", state: "Arizona", countrycode: "US" } },
+          { properties: { name: "KOA Campground", osm_key: "tourism", osm_value: "caravan_site", state: "Arizona", countrycode: "US" } },
+        ],
+      },
+      wynn: {
+        features: [
+          { properties: { name: "Encore Resort Boulevard", osm_key: "highway", osm_value: "service", type: "street", city: "Winchester", state: "Nevada", countrycode: "US" } },
+        ],
+      },
+      pismo: {
+        features: [
+          { properties: { osm_key: "place", osm_value: "house", type: "house", city: "Pismo Beach", state: "California", countrycode: "US" } },
+          { properties: { name: "Pismo Coast Village RV Resort", osm_key: "tourism", osm_value: "caravan_site", city: "Pismo Beach", state: "California", countrycode: "US", extent: [-120.6394, 35.1365, -120.6351, 35.1316] } },
+        ],
+      },
+      toronto: {
+        features: [
+          { properties: { name: "EY Tower", osm_key: "building", osm_value: "yes", type: "house", city: "Toronto", state: "Ontario", countrycode: "CA" } },
+          { properties: { name: "Sheppard Street", osm_key: "highway", osm_value: "residential", type: "street", city: "Toronto", state: "Ontario", countrycode: "CA" } },
+        ],
+      },
+    };
+    const nomi = {
+      fw: { name: "Bay Lake", address: { state: "Florida", country_code: "us" } },
+      koa: { name: "Red Lake", address: { village: "Red Lake", state: "Arizona", country_code: "us" } },
+      wynn: { name: "Winchester", address: { town: "Winchester", state: "Nevada", country_code: "us" } },
+      pismo: { name: "Pismo Beach", address: { village: "Pismo Beach", state: "California", country_code: "us" } },
+      toronto: { name: "Toronto", address: { city: "Toronto", state: "Ontario", country_code: "ca" } },
+    };
+    function siteOf(url) {
+      if (url.includes("-81.55")) return "fw";
+      if (url.includes("-112.15")) return "koa";
+      if (url.includes("-115.16")) return "wynn";
+      if (url.includes("-120.63")) return "pismo";
+      if (url.includes("-79.38")) return "toronto";
+      return "";
+    }
+    const stubFetch = async (url) => {
+      const site = siteOf(String(url));
+      if (String(url).includes("photon.komoot.io")) {
+        return { ok: true, json: async () => replies[site] || { features: [] } };
+      }
+      return { ok: true, json: async () => nomi[site] || {} };
+    };
+    fn.setLookupForTests();
+    const names = {};
+    for (const [id, box] of [
+      ["fw", FW],
+      ["koa", KOA],
+      ["wynn", WYNN],
+      ["pismo", PISMO],
+      ["toronto", TORONTO],
+    ]) {
+      nominatim._setStore(null);
+      names[id] = await fn.resolveExportZipName({
+        name: "Site",
+        ...box,
+        now: NOW,
+        fetch: stubFetch,
+      });
+    }
+    assert.equal(names.fw, "Disneys-Fort-Wilderness_Bay-Lake-FL_5.2km2_20261124.zip");
+    assert.equal(names.koa, "KOA-Campground_AZ_22ha_20261124.zip");
+    assert.match(names.wynn, /^Winchester-NV_[0-9.]+km2_20261124\.zip$/);
+    assert.equal(names.pismo, "Pismo-Coast-Village-RV_Pismo-Beach-CA_31ha_20261124.zip");
+    assert.match(names.toronto, /^Toronto-ON_[0-9.]+(ha|km2|m2)_20261124\.zip$/);
+    assert.equal(names.fw.includes("Possum"), false);
+    assert.equal(names.koa.includes("Erin"), false);
+    assert.equal(names.wynn.includes("Boulevard"), false);
+    assert.equal(names.toronto.includes("Sheppard"), false);
+    assert.equal(names.toronto.includes("EY-Tower"), false);
   });
 });
 
