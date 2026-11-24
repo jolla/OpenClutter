@@ -196,6 +196,8 @@ async function completeExportJob(jobId, inner, opts) {
     } catch {
       data = {};
     }
+    // The body string is a third copy of the zip (as base64) once parsed (1.3.100).
+    if (result) result.body = null;
     if (status === 200 && data.site) {
       if (await otherWorkerFinished(jobId, worker)) {
         return { ok: true, finished: false, reason: "other-worker-finished" };
@@ -235,6 +237,7 @@ async function completeExportJob(jobId, inner, opts) {
     }
     if (await jobs.jobCancelled(jobId)) return CANCELLED;
     const zip = Buffer.from(data.zipBase64, "base64");
+    data.zipBase64 = null;
     await jobs.saveZip(jobId, zip);
     // Cancel can land while the zip is written: drop the stored zip so a
     // cancelled job leaves no file behind.
