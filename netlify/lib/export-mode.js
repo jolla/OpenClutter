@@ -298,14 +298,13 @@ function isStaleTowers() {
   return staleTowers;
 }
 
-// Adaptive terrain (1.3.2, /dev): the DEM is read at its native posting
-// (GLO-30 full resolution, a 3DEP raster beside getSamples) and the Copy
-// terrain mesh spends its floor budget where that DEM is steep or curved
-// (pit walls, ski runs) instead of on a fixed 20x20 lattice. Same 1500 floor
-// and 400 KB paste caps. Off by default; on for /dev hosts unless the
-// request sends adaptiveTerrain:false (?adaptiveTerrain=0 on the page).
-// Production stays off by default until the weekly release turns it on.
-// A request may send adaptiveTerrain:true to run the prod path in gates.
+// Adaptive terrain (1.3.2; production default on as of the 1.3.88 weekly
+// release): the DEM is read at its native posting (GLO-30 full resolution,
+// a 3DEP raster beside getSamples) and the Copy terrain mesh spends its
+// floor budget where that DEM is steep or curved (pit walls, ski runs)
+// instead of on a fixed 20x20 lattice. Same 1500 floor and 400 KB paste caps.
+// On for every host unless the request sends adaptiveTerrain:false
+// (?adaptiveTerrain=0 on the page).
 let adaptiveTerrain = false;
 
 function setAdaptiveTerrain(on) {
@@ -317,16 +316,14 @@ function isAdaptiveTerrain() {
 }
 
 /**
- * On for /dev hosts unless the request opts out. Production stays off
- * until the Monday weekly release, but a request may send
- * adaptiveTerrain:true so prod-host gates can run the Monday path now
- * without making it live (the Fly worker is not redeployed).
+ * On for every host unless the request opts out. testHost is kept so
+ * callers and tests can still pass the page host; it no longer changes
+ * the default (the 1.3.88 weekly release turned production on).
  */
 function adaptiveTerrainWanted(testHost, body) {
   const v = body && body.adaptiveTerrain;
   if (v === false || v === 0 || v === "0" || v === "false") return false;
-  if (testHost) return true;
-  return v === true || v === 1 || v === "1" || v === "true";
+  return true;
 }
 
 // smoothEdges: a canopy outline traced on the height grid is cut at its

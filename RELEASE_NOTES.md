@@ -1,3 +1,30 @@
+# OpenClutter v1.3.88
+
+Released Nov 23, 2026 on openclutter.com. dev.openclutter.com runs the same build.
+
+## What's new
+
+- **Adaptive terrain.** Copy terrain follows the native elevation grid on steep or curved ground (pit walls, ski runs) instead of a fixed lattice. ?adaptiveTerrain=0 turns it off.
+- **Larger exports.** Up to 14 MB (8.37 MB of OpenIntent JSON plus the map image), so large wooded sites keep more of their canopy.
+- **Overture street map and buildings.** Roads, parking, water, woods, barriers, and lights come from Overture Maps (release 2026-11-18.0), with a smaller OpenStreetMap query for campgrounds, palms, and other gaps.
+- **Worldwide building outlines.** Exports outside the US add Microsoft's global building outlines, and the false USA data note is gone.
+- **Steadier results.** Brief outages of the aerial map, building outlines, street map, ground, and lidar are retried and cached, so the same site gives the same result. An empty OpenStreetMap answer is no longer taken as complete, and a hung street-map read stops at its 30 second deadline.
+- **Faster exports.** Waterfront, city, and hillside exports finish sooner (for example Sydney 126 s to 50 s, Seattle 116 s to 74 s).
+- **Trees.** Floating trees are reseated on the ground, trees that grew together are split, tile-shaped woods and stale lidar crowns over open ground are cleaned up, and tropical woods are not shortened.
+- **Fewer false objects.** Fewer false buildings from parcels, parking lots, parks, and rail lines; bridges no longer raise a whole road.
+- **Wall materials.** Buildings get per-type wall materials (wood frame, shed, carport, masonry, big-box, civic, glass, metal warehouse) from OSM and Overture tags.
+- **What's new.** A dated, larger, resizable What's new box. The Hamina steps lead with drag-and-drop import and say Copy terrain needs Planner Plus.
+
+## Data
+
+Overture Maps release 2026-11-18.0 for buildings and the street map. Microsoft Global ML building footprints outside the US.
+
+## Git / deploy
+
+- Tag `v1.3.88` on `main`; `dev` is at the same commit.
+- The detection preview and forest=crowns or merge stay on dev.openclutter.com only. Cars stay off.
+- Fly worker `openclutter-export` is redeployed from this commit. Rollback target if smoke fails: v128 / deployment-01M7JW2RWTAHGAN68MVRD40ZF3.
+
 # OpenClutter v1.3.38
 
 Released Nov 16, 2026 on openclutter.com. dev.openclutter.com runs the same build.
