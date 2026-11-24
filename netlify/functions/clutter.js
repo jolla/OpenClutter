@@ -2056,7 +2056,10 @@ async function handleClutterNorthUp(event) {
         north: requestBbox.north,
       };
       coverJob = beginOptional((signal) =>
-        stageClock.timeSource("worldcover", () => oneHeavySource(() => fetchWorldCoverImpl(coverFrame, { signal }), background))
+        // Not in the heavy-source queue: it is a small windowed GeoTIFF
+        // read, and its join clock runs from the export start, so behind
+        // street and lidar it always timed out on Netlify (1.3.97).
+        stageClock.timeSource("worldcover", () => fetchWorldCoverImpl(coverFrame, { signal }))
       );
     }
     if ((lidarOn || lidarCanopyOn) && !lidarPromise) {
