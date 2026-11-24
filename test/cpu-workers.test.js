@@ -331,7 +331,7 @@ describe("export status worker field", () => {
     jobs.setExportStoreForTests(null);
   });
 
-  it("returns the Fly worker id, or the last heartbeat stage", async () => {
+  it("returns the real worker, never the heartbeat stage (1.3.96)", async () => {
     jobs.setExportStoreForTests(memoryStore());
     const id = "55555555-5555-4555-8555-555555555555";
     await jobs.createJob(id);
@@ -352,6 +352,6 @@ describe("export status worker field", () => {
       queryStringParameters: { job: other },
     });
     const beatBody = JSON.parse(beat.body);
-    assert.equal(beatBody.worker, "Trees");
+    assert.equal(beatBody.worker, null);
   });
 });
