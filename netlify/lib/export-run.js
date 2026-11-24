@@ -89,6 +89,14 @@ async function otherWorkerFinished(jobId, worker) {
  * 10 seconds while the function is alive, with its memory and the stages
  * still open, so export-status can fail a run whose function died (1.3.93).
  */
+function maxRssMb() {
+  try {
+    return Math.round((process.resourceUsage().maxRSS * 1024) / 1e6);
+  } catch {
+    return null;
+  }
+}
+
 function startNetlifyBeat(jobId, attempt) {
   let peakRss = 0;
   const sample = () => {
@@ -118,6 +126,10 @@ function startNetlifyBeat(jobId, attempt) {
           netlifyBeat: {
             rssMb: Math.round(mem.rss / 1e6),
             peakRssMb: Math.round(peakRss / 1e6),
+            // The kernel's high-water mark. peakRssMb is sampled on the main
+            // thread, so a long synchronous stage hides its own peak and it
+            // shows up at the next stage instead (1.3.100).
+            maxRssMb: maxRssMb(),
             heapMb: Math.round(mem.heapUsed / 1e6),
             limitMb: require("./host-memory").functionMemoryMb() || null,
             open,
