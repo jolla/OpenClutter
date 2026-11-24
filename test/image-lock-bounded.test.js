@@ -123,11 +123,11 @@ test("the thread file is looked for under the Lambda task root", () => {
   }
 });
 
-test("a small plate locks inline", async () => {
+test("even a small plate uses a bounded thread", async () => {
   const small = plate(64, 64);
   const fr = gf.geoFrame(bboxN, { imgW: 64, imgH: 64, maxSpanM: 50000, minSpanM: 1 });
   const got = await lockIsotropicImageryBounded(fr, small, { maxSide: 1040 });
-  assert.equal(got.mode, "inline");
+  assert.equal(got.mode, "thread");
 });
 
 test("a plate that needs no resample is sized from its header without a decode", () => {

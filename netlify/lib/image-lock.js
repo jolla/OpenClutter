@@ -18,8 +18,6 @@ const gf = require("./geo-frame");
 /** Per-attempt deadline. A 3,300 px plate normally locks in 3 to 6 s. */
 const IMAGE_LOCK_MS = 40000;
 const IMAGE_LOCK_ATTEMPTS = 2;
-/** Plates at or under this many pixels lock inline (well under a second). */
-const IMAGE_LOCK_INLINE_PX = 1200 * 1200;
 
 /**
  * Where the thread file is. In the repo and on Fly it sits beside this file.
@@ -62,7 +60,7 @@ function spawnLock(workerData) {
 /** The unresampled plate on its own pixel grid: no decode, no wait. */
 function keepPlate(frame, jpegBuf, t0, extra) {
   return Object.assign(
-    { frame: gf.unifyFrameMpu(frame), jpegBuf, resampled: false, groundMeters: false, wallMs: Date.now() - t0 },
+    { frame: frame ? gf.unifyFrameMpu(frame) : frame, jpegBuf, resampled: false, groundMeters: false, wallMs: Date.now() - t0 },
     extra
   );
 }
@@ -103,13 +101,11 @@ function attempt(spawn, data, ms) {
  */
 async function lockIsotropicImageryBounded(frame, jpegBuf, opts = {}, deps = {}) {
   const t0 = Date.now();
-  const size = jpegBuf ? gf.jpegSize(jpegBuf) : null;
-  const px = size ? size.width * size.height : 0;
-  const small = !jpegBuf || jpegBuf.length < 100 || px <= IMAGE_LOCK_INLINE_PX;
-  if (deps.inline === true || (deps.inline == null && small)) {
-    const timing = {};
-    const out = gf.lockIsotropicImagery(frame, jpegBuf, Object.assign({}, opts, { timing }));
-    return Object.assign({}, out, { attempts: 0, wallMs: Date.now() - t0, timing, mode: "inline" });
+  // There is no timer capable of stopping synchronous JPEG work. Even a
+  // small plate therefore uses the thread; the only inline result is the
+  // constant-work, no-decode path for an absent image.
+  if (!frame || !jpegBuf || jpegBuf.length < 100) {
+    return keepPlate(frame, jpegBuf, t0, { attempts: 0, mode: "kept" });
   }
   // A large plate never locks on the main thread (1.3.92): with no thread
   // file there is no deadline that can stop it, so keep the plate instead.
@@ -158,6 +154,5 @@ module.exports = {
   workerCandidates,
   IMAGE_LOCK_MS,
   IMAGE_LOCK_ATTEMPTS,
-  IMAGE_LOCK_INLINE_PX,
   lockIsotropicImageryBounded,
 };
