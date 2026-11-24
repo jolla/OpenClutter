@@ -1431,6 +1431,7 @@ function clearFinishedShape() {
   dropBoxGraphics();
   if (!map.hasLayer(drawn)) map.addLayer(drawn);
   cancelAreaName();
+  lastReversePlace = null;
   committedBounds = null;
   committedLabel = null;
   bbox = null;
@@ -2053,6 +2054,8 @@ const SUGGEST_CACHE_MS = 30 * 60 * 1000;
 const GEOCODE_CACHE_MS = 24 * 60 * 60 * 1000;
 let searchTyped = false;
 let lastAutoName = "";
+let lastPickedPlace = null;
+let lastReversePlace = null;
 let areaNameTimer = null;
 let areaNameSeq = 0;
 
@@ -2112,6 +2115,14 @@ async function fillAreaName(seq, box) {
     }
     searchInput.value = label;
     lastAutoName = label;
+    lastReversePlace = {
+      name: data.feature && String(data.feature).trim() ? String(data.feature).trim() : "",
+      locality: data.place && String(data.place).trim() ? String(data.place).trim() : "",
+      box: { south: box.south, west: box.west, north: box.north, east: box.east },
+    };
+    if (!lastReversePlace.name && !lastReversePlace.locality) {
+      lastReversePlace = { name: label, locality: "", box: lastReversePlace.box };
+    }
   } catch (err) {
     /* A failed lookup leaves the search box as it is. */
   }
@@ -2275,6 +2286,13 @@ async function runSearch(q, extra) {
 function pickSuggestion(s) {
   searchTyped = true;
   searchInput.value = s.text || s.label;
+  lastPickedPlace = {
+    name: s.label || s.name || "",
+    locality: s.detail || "",
+    lat: Number(s.lat),
+    lon: Number(s.lon),
+  };
+  if (!lastPickedPlace.name) lastPickedPlace = null;
   if (Number.isFinite(s.lat) && Number.isFinite(s.lon)) {
     suggestSeq++;
     closeSuggest();
@@ -2948,6 +2966,29 @@ function stopServerExport(jobId) {
   }
 }
 
+function boxContainsPoint(box, lat, lon) {
+  if (!box || !Number.isFinite(+lat) || !Number.isFinite(+lon)) return false;
+  return +lat >= box.south && +lat <= box.north && +lon >= box.west && +lon <= box.east;
+}
+
+/** Place sent with an export so the zip can be named for the drawn area. */
+function exportPlaceFields() {
+  const out = { name: document.getElementById("q").value || "Site" };
+  let picked = null;
+  if (lastPickedPlace && lastPickedPlace.name && boxContainsPoint(bbox, lastPickedPlace.lat, lastPickedPlace.lon)) {
+    picked = lastPickedPlace;
+  } else if (lastReversePlace && (lastReversePlace.name || lastReversePlace.locality) && lastReversePlace.box && sameBox(bbox, lastReversePlace.box)) {
+    picked = lastReversePlace;
+  }
+  if (picked && (picked.name || picked.locality)) {
+    out.pickedPlace = {
+      name: String(picked.name || "").slice(0, 120),
+      locality: picked.locality ? String(picked.locality).slice(0, 120) : "",
+    };
+  }
+  return out;
+}
+
 async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, includeTerrain) {
   const foliage = includeFoliage === true;
   const terrain = includeTerrain !== false;
@@ -2958,7 +2999,7 @@ async function enqueueExport(trees, treesSource, canopyHits, includeFoliage, inc
     body: JSON.stringify({
       ...bbox,
       rotate: rotateForExport(),
-      name: document.getElementById("q").value || "Site",
+      ...exportPlaceFields(),
       includeFoliage: foliage,
       includeWater: false,
       includeParking: clutterChecked("include-parking"),
@@ -3111,7 +3152,7 @@ async function exportOnce(trees, treesSource, canopyHits, includeFoliage, includ
       // A polygon exports as this axis-aligned box. The API frame is west/south/east/north.
       ...bbox,
       rotate: rotateForExport(),
-      name: document.getElementById("q").value || "Site",
+      ...exportPlaceFields(),
       includeFoliage: foliage,
       includeWater: false,
       includeParking: clutterChecked("include-parking"),

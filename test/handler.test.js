@@ -140,7 +140,8 @@ describe("clutter handler (mocked Esri)", () => {
     });
     assert.equal(body.terrainClipboard.tiePoints[0].lat, body.frame.south);
     assert.equal(body.terrainClipboard.tiePoints[0].lon, body.frame.west);
-    assert.match(body.zipFilename, /\.zip$/);
+    assert.match(body.zipFilename, /^Wynn-Golf_[0-9.]+km2_[0-9]{8}\.zip$/);
+    assert.notEqual(body.zipFilename, "Wynn-Golf-openintent.zip");
     const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
     assert.deepEqual(Object.keys(files).sort(), ["ATTRIBUTION.txt", "images/Wynn-Golf.jpg", "openIntent_Wynn-Golf.json"]);
     const exportStats = body.stats;
@@ -296,9 +297,26 @@ describe("clutter handler (mocked Esri)", () => {
     });
     assert.equal(res.statusCode, 200);
     assert.equal(res.headers["content-type"], "application/zip");
+    assert.match(res.headers["content-disposition"], /^attachment; filename="Wynn-Golf_[0-9.]+km2_[0-9]{8}\.zip"$/);
     const files = unzipStore(Buffer.from(res.body, "base64"));
     assert.deepEqual(Object.keys(files).sort(), ["ATTRIBUTION.txt", "images/Wynn-Golf.jpg", "openIntent_Wynn-Golf.json"]);
     assert.ok(files["openIntent_Wynn-Golf.json"]);
+  });
+
+  it("names the zip from a picked place and leaves inner OpenIntent names alone", async () => {
+    const res = await handler({
+      httpMethod: "POST",
+      body: JSON.stringify({
+        ...WYNN,
+        format: "bundle",
+        pickedPlace: { name: "Wynn Las Vegas", locality: "Las Vegas, NV" },
+      }),
+    });
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.match(body.zipFilename, /^Wynn-Las-Vegas_Las-Vegas-NV_[0-9.]+km2_[0-9]{8}\.zip$/);
+    const files = unzipStore(Buffer.from(body.zipBase64, "base64"));
+    assert.deepEqual(Object.keys(files).sort(), ["ATTRIBUTION.txt", "images/Wynn-Golf.jpg", "openIntent_Wynn-Golf.json"]);
   });
 
   it("echoes client treesSource and does not draw NLCD squares when canopy height misses", async () => {

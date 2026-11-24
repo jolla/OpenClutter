@@ -1,6 +1,7 @@
 "use strict";
 
 const { userAgent: UA } = require("../lib/version");
+const exportFilename = require("../lib/export-filename");
 // Netlify hobby kills the function around 10s. The JPEG is the long pole
 // (Oak Creek ~6s) and must start immediately. Imagery metadata is the same
 // Esri export and used to be awaited for up to 7s before that download began,
@@ -1749,6 +1750,19 @@ async function handleClutterNorthUp(event) {
   } catch (e) {
     return json(400, cors, { error: String(e.message || e) });
   }
+
+  // Name the zip while the rest of the export runs. The lookup is capped
+  // at 2 s and must not delay packing. A miss falls back to coordinates.
+  const zipNamePromise = exportFilename.resolveExportZipName({
+    name: body.name,
+    pickedPlace: body.pickedPlace,
+    west: frame.west,
+    south: frame.south,
+    east: frame.east,
+    north: frame.north,
+    areaM2: frame.widthM && frame.lengthM ? frame.widthM * frame.lengthM : 0,
+    userAgent: UA,
+  });
 
   let affine = null;
   if (Array.isArray(body.controlPoints) && body.controlPoints.length) {
@@ -3608,6 +3622,24 @@ async function handleClutterNorthUp(event) {
     });
   }
 
+  let zipFilename = "openclutter.zip";
+  try {
+    zipFilename = exportFilename.safeZipFilename(await zipNamePromise);
+  } catch {
+    const parsed = exportFilename.parseNamedLabel(body && body.name);
+    zipFilename = exportFilename.safeZipFilename(
+      exportFilename.buildExportZipName({
+        place: parsed.place,
+        locality: parsed.locality,
+        west: frame.west,
+        south: frame.south,
+        east: frame.east,
+        north: frame.north,
+        areaM2: frame.widthM && frame.lengthM ? frame.widthM * frame.lengthM : 0,
+      })
+    );
+  }
+
   if (format === "zip") {
     return {
       statusCode: 200,
@@ -3615,7 +3647,7 @@ async function handleClutterNorthUp(event) {
         ...cors,
         ...frameHeaders,
         "content-type": "application/zip",
-        "content-disposition": `attachment; filename="${built.slug}-openintent.zip"`,
+        "content-disposition": `attachment; filename="${zipFilename}"`,
       },
       body: built.zip.toString("base64"),
       isBase64Encoded: true,
@@ -3660,7 +3692,7 @@ async function handleClutterNorthUp(event) {
       frame: built.frame,
       stats: built.stats,
       timings,
-      zipFilename: `${built.slug}-openintent.zip`,
+      zipFilename,
       zipBase64: built.zip.toString("base64"),
       terrainFilename: terrainFields.terrainFilename,
       terrainClipboard: terrainFields.terrainClipboard,
